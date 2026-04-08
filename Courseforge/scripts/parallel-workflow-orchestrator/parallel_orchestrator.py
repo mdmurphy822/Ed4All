@@ -390,18 +390,18 @@ class ParallelWorkflowOrchestrator:
                 return f"{size_bytes / (1024 * 1024):.1f} MB"
             else:
                 return f"{size_bytes / 1024:.1f} KB"
-        except:
+        except (OSError, ValueError):
             return "Unknown"
-    
+
     def _count_total_files(self) -> int:
         """Count total files in package"""
         if not self.final_package_path:
             return 0
-        
+
         try:
             with zipfile.ZipFile(self.final_package_path, 'r') as zipf:
                 return len(zipf.filelist)
-        except:
+        except (OSError, zipfile.BadZipFile):
             return 0
     
     async def _cleanup_on_error(self):
