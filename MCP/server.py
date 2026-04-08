@@ -31,6 +31,10 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 _PROJECT_ROOT = _SCRIPT_DIR.parent
 sys.path.insert(0, str(_PROJECT_ROOT))
 
+# Configure logging to stderr (required for stdio servers)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 # Import secure path utilities
 from lib.secure_paths import validate_path_within_root, PathTraversalError, is_safe_path
 
@@ -56,10 +60,6 @@ try:
     SECRETS_FILTER_AVAILABLE = True
 except ImportError:
     SECRETS_FILTER_AVAILABLE = False
-
-# Configure logging to stderr (required for stdio servers)
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # =============================================================================
 # SECURITY CONFIGURATION
