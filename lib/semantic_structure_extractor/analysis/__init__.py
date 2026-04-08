@@ -6,8 +6,8 @@ Provides:
 - ConceptGraphBuilder: Build concept co-occurrence graphs with centrality metrics
 """
 
-from .content_profiler import ContentProfiler, ContentProfile
-from .concept_graph import ConceptGraphBuilder, ConceptGraph
+from .concept_graph import ConceptGraph, ConceptGraphBuilder
+from .content_profiler import ContentProfile, ContentProfiler
 
 __all__ = [
     'ContentProfiler',

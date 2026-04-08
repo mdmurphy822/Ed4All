@@ -10,14 +10,13 @@ educational metadata. Implements RAG library patterns for content profiling:
 - Content type classification
 """
 
-import re
-import math
 import json
-from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Tuple, Set
-from pathlib import Path
+import re
 from collections import Counter, defaultdict
+from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set
 
 
 class ContentType(Enum):

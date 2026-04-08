@@ -11,7 +11,8 @@ DART outputs semantic HTML with:
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
+
 from bs4 import BeautifulSoup, Tag
 
 
@@ -338,8 +339,8 @@ def extract_heading_hierarchy(html_path: str) -> Dict[str, Any]:
 
 
 if __name__ == "__main__":
-    import sys
     import json
+    import sys
 
     if len(sys.argv) < 2:
         print("Usage: python heading_parser.py <html_file>")

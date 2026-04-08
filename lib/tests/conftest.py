@@ -1,12 +1,13 @@
 """
 Ed4All lib/ test configuration and shared fixtures.
 """
-import pytest
-import sys
 import json
+import sys
 import zipfile
 from pathlib import Path
 from unittest.mock import Mock
+
+import pytest
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -128,7 +129,7 @@ def temp_json_file(tmp_path, sample_json_data):
 def sample_tool_capability():
     """Pre-configured ToolCapability for registry tests."""
     try:
-        from lib.tool_registry import ToolCapability, SandboxLevel
+        from lib.tool_registry import SandboxLevel, ToolCapability
         return ToolCapability(
             name="test_tool",
             description="A test tool for unit tests",

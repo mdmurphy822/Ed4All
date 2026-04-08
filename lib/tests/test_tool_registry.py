@@ -1,19 +1,20 @@
 """
 Tests for lib/tool_registry.py - Tool capabilities and sandbox enforcement.
 """
-import pytest
-import sys
 import json
+import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
     from lib.tool_registry import (
+        SandboxLevel,
         ToolCapability,
         ToolRegistry,
-        ValidationResult,
-        SandboxLevel,
+        ValidationResult,  # noqa: F401
         get_registry,
         register_tool,
     )

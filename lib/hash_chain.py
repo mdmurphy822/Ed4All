@@ -16,13 +16,12 @@ import fcntl
 import json
 import os
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional
 
-from .provenance import hash_content, DEFAULT_ALGORITHM
-
+from .provenance import DEFAULT_ALGORITHM, hash_content
 
 # ============================================================================
 # LOCK CONFIGURATION (matches sequence_manager.py)
@@ -214,7 +213,7 @@ class HashChainedLog:
                     raise ChainLockTimeoutError(
                         f"Failed to acquire lock for {self.log_path} "
                         f"after {elapsed:.2f}s ({attempts} attempts)"
-                    )
+                    ) from None
 
                 # Calculate backoff delay
                 backoff_index = min(attempts - 1, len(self.lock_retry_backoff) - 1)

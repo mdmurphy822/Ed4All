@@ -137,7 +137,6 @@ Division (STEM/ARTS)
 | `ontology/` | Taxonomy definitions and mappings |
 | `schema/` | JSON Schema for validation |
 | `tools/` | Python CLI for management |
-| `docs/` | Documentation |
 
 ## Common Tasks
 

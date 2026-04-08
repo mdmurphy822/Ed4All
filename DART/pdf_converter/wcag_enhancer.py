@@ -21,11 +21,11 @@ Features:
 """
 
 import re
-from dataclasses import dataclass, field
-from typing import List, Dict, Optional, Tuple
-from bs4 import BeautifulSoup, NavigableString, Tag
 import unicodedata
+from dataclasses import dataclass
+from typing import Dict, List, Optional
 
+from bs4 import BeautifulSoup, NavigableString, Tag
 
 # =============================================================================
 # Configuration
@@ -1385,7 +1385,7 @@ def enhance_html_file(input_path: str, output_path: str = None,
         output_path = Path(output_path)
 
     # Read input
-    with open(input_path, 'r', encoding='utf-8') as f:
+    with open(input_path, encoding='utf-8') as f:
         html = f.read()
 
     # Enhance

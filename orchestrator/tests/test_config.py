@@ -1,19 +1,19 @@
 """
 Tests for orchestrator/core/config.py - Orchestrator configuration management.
 """
-import pytest
 import sys
-import yaml
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
     from orchestrator.core.config import (
+        AgentConfig,
         OrchestratorConfig,
         WorkflowConfig,
         WorkflowPhase,
-        AgentConfig,
     )
 except ImportError:
     pytest.skip("config not available", allow_module_level=True)

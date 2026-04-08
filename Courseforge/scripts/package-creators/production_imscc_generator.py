@@ -712,7 +712,7 @@ class ProductionIMSCCGenerator:
 
         except Exception as e:
             self.emergency_cleanup()
-            raise SystemExit(f"PRODUCTION GENERATION FAILED: {e}")
+            raise SystemExit(f"PRODUCTION GENERATION FAILED: {e}") from e
 
 def main():
     """Main execution function for production IMSCC generation."""

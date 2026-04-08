@@ -8,11 +8,11 @@ Phase 0 Hardening - Requirement 3: Hard Validation Gates
 """
 
 import importlib
-from dataclasses import dataclass, field, asdict
+import logging
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
-import logging
+from typing import Any, Dict, List, Optional, Protocol, Tuple
 
 logger = logging.getLogger(__name__)
 

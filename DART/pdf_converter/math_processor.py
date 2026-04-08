@@ -5,10 +5,10 @@ Detects mathematical content from various sources (LaTeX, Unicode symbols, patte
 and converts them to accessible MathML format.
 """
 
-import re
 import logging
+import re
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +121,7 @@ class MathDetector:
         return blocks
 
     def _detect_latex_delimiters(self, text: str) -> List[MathBlock]:
-        """Detect \(...\) and \[...\] patterns."""
+        r"""Detect \(...\) and \[...\] patterns."""
         blocks = []
 
         for match in self.LATEX_PAREN.finditer(text):

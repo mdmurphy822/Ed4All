@@ -8,12 +8,12 @@ Phase 0 Hardening - Requirement 8: Training Capture Quality Controls
 """
 
 import hashlib
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set, Tuple
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -433,7 +433,7 @@ class LeakChecker:
                     question_id=question_id,
                     assessment_id="response_check",
                     location=f"pattern:{pattern_name}",
-                    message=f"Response contains answer revelation pattern"
+                    message="Response contains answer revelation pattern"
                 )
                 leaks.append(leak)
 

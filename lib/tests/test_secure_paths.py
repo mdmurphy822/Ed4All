@@ -1,23 +1,24 @@
 """
 Tests for lib/secure_paths.py - Path validation and ZIP security.
 """
-import pytest
-import sys
 import os
+import sys
 import zipfile
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
     from lib.secure_paths import (
-        validate_path_within_root,
-        sanitize_path_component,
-        safe_extract_zip,
-        safe_join_path,
-        is_safe_path,
         PathTraversalError,
         ZipSlipError,
+        is_safe_path,
+        safe_extract_zip,
+        safe_join_path,
+        sanitize_path_component,
+        validate_path_within_root,
     )
 except ImportError:
     pytest.skip("secure_paths not available", allow_module_level=True)

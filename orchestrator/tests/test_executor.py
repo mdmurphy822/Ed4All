@@ -1,22 +1,21 @@
 """
 Tests for orchestrator/core/executor.py - Task execution and workflow management.
 """
-import pytest
-import sys
 import json
-import asyncio
+import sys
 from pathlib import Path
-from unittest.mock import Mock, AsyncMock, patch, MagicMock
-from datetime import datetime
+from unittest.mock import AsyncMock, Mock, patch
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
     from orchestrator.core.executor import (
-        TaskExecutor,
-        ExecutionResult,
-        ToolRegistryError,
         AGENT_TOOL_MAPPING,
+        ExecutionResult,
+        TaskExecutor,
+        ToolRegistryError,
     )
 except ImportError:
     pytest.skip("executor not available", allow_module_level=True)
@@ -249,7 +248,7 @@ class TestTaskExecution:
         """Should execute task successfully."""
         executor = TaskExecutor(tool_registry=mock_tool_registry)
 
-        task = {"agent_type": "content-generator", "params": {"week": 1}}
+        task = {"agent_type": "content-generator", "params": {"project_id": "TEST_001", "week": 1}}
         with patch.object(executor, '_load_task', return_value=task):
             with patch.object(executor, '_update_task_status'):
                 result = await executor.execute_task("W001", "T001")
@@ -265,7 +264,7 @@ class TestTaskExecution:
         capture.log_decision = Mock()
         executor = TaskExecutor(tool_registry=mock_tool_registry, capture=capture)
 
-        task = {"agent_type": "content-generator", "params": {}}
+        task = {"agent_type": "content-generator", "params": {"project_id": "TEST_001"}}
         with patch.object(executor, '_load_task', return_value=task):
             with patch.object(executor, '_update_task_status'):
                 await executor.execute_task("W001", "T001")
@@ -295,7 +294,7 @@ class TestRetryLogic:
         registry = {"generate_course_content": failing_tool}
         executor = TaskExecutor(tool_registry=registry, max_retries=3)
 
-        task = {"agent_type": "content-generator", "params": {}}
+        task = {"agent_type": "content-generator", "params": {"project_id": "TEST_001"}}
         with patch.object(executor, '_load_task', return_value=task):
             with patch.object(executor, '_update_task_status'):
                 result = await executor.execute_task("W001", "T001")
@@ -312,14 +311,15 @@ class TestRetryLogic:
 
         registry = {"generate_course_content": always_fails}
         executor = TaskExecutor(tool_registry=registry, max_retries=2)
+        executor.poison_detector = None  # Disable poison pill for retry-count test
 
-        task = {"agent_type": "content-generator", "params": {}}
+        task = {"agent_type": "content-generator", "params": {"project_id": "TEST_001"}}
         with patch.object(executor, '_load_task', return_value=task):
             with patch.object(executor, '_update_task_status'):
                 result = await executor.execute_task("W001", "T001")
 
         assert result.status == "ERROR"
-        assert result.retry_count == 2
+        assert result.retry_count == 3  # 1 initial + 2 retries = 3 total attempts
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -329,14 +329,14 @@ class TestRetryLogic:
 
         async def permanent_failure(**kwargs):
             call_count[0] += 1
-            raise FileNotFoundError("Config file missing")
+            raise FileNotFoundError("File not found: config.yaml")
 
         registry = {"generate_course_content": permanent_failure}
         executor = TaskExecutor(tool_registry=registry, max_retries=3)
 
         # Mock error classifier to mark as permanent
         if executor.error_classifier:
-            task = {"agent_type": "content-generator", "params": {}}
+            task = {"agent_type": "content-generator", "params": {"project_id": "TEST_001"}}
             with patch.object(executor, '_load_task', return_value=task):
                 with patch.object(executor, '_update_task_status'):
                     result = await executor.execute_task("W001", "T001")
@@ -389,7 +389,7 @@ class TestWorkflowExecution:
         with patch('orchestrator.core.executor.STATE_PATH', tmp_path / "state"):
             with patch.object(mock_executor, 'execute_task') as mock_exec:
                 mock_exec.return_value = ExecutionResult(task_id="T001", status="COMPLETE")
-                results = await mock_executor.execute_workflow("W001", parallel=True)
+                await mock_executor.execute_workflow("W001", parallel=True)
 
         # Should have called execute_task for each task
         assert mock_exec.call_count >= 1
@@ -412,25 +412,31 @@ class TestWorkflowExecution:
         with patch('orchestrator.core.executor.STATE_PATH', tmp_path / "state"):
             with patch.object(mock_executor, 'execute_task') as mock_exec:
                 mock_exec.return_value = ExecutionResult(task_id="T001", status="COMPLETE")
-                results = await mock_executor.execute_workflow("W001", parallel=False)
+                await mock_executor.execute_workflow("W001", parallel=False)
 
         assert mock_exec.call_count >= 1
 
     @pytest.mark.unit
     @pytest.mark.asyncio
-    async def test_execute_workflow_respects_max_concurrent(self, mock_executor):
+    async def test_execute_workflow_respects_max_concurrent(self, mock_executor, tmp_path):
         """Should respect max_concurrent limit."""
-        # This is an implicit test - verify the parameter is passed correctly
-        with patch.object(mock_executor, '_execute_parallel') as mock_parallel:
-            mock_parallel.return_value = {}
+        state_path = tmp_path / "state" / "workflows"
+        state_path.mkdir(parents=True)
 
-            with patch('orchestrator.core.executor.STATE_PATH') as mock_path:
-                mock_path.__truediv__ = Mock(return_value=Mock(exists=Mock(return_value=True)))
+        workflow = {
+            "tasks": [
+                {"id": "T001", "status": "PENDING", "agent_type": "content-generator"},
+                {"id": "T002", "status": "PENDING", "agent_type": "content-generator"},
+            ]
+        }
+        (state_path / "W001.json").write_text(json.dumps(workflow))
 
-                # Mock file read
-                with patch('builtins.open', Mock()):
-                    with patch('json.load', return_value={"tasks": []}):
-                        await mock_executor.execute_workflow("W001", max_concurrent=3)
+        with patch('orchestrator.core.executor.STATE_PATH', tmp_path / "state"):
+            with patch.object(mock_executor, 'execute_task') as mock_exec:
+                mock_exec.return_value = ExecutionResult(task_id="T001", status="COMPLETE")
+                await mock_executor.execute_workflow("W001", max_concurrent=3)
+
+        assert mock_exec.call_count >= 1
 
 
 # =============================================================================

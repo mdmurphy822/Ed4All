@@ -26,7 +26,7 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Any, Callable, Dict, Optional, Type
 
-from .param_mapper import TaskParameterMapper, ParameterMappingError
+from .param_mapper import ParameterMappingError, TaskParameterMapper
 
 logger = logging.getLogger(__name__)
 
@@ -214,8 +214,8 @@ class DARTConversionAdapter(ToolAdapter):
 
     def pre_invoke(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Validate paths before invocation."""
-        from lib.secure_paths import validate_path_within_root
         from lib.paths import PROJECT_ROOT
+        from lib.secure_paths import validate_path_within_root
 
         if 'combined_json_path' in params:
             validate_path_within_root(params['combined_json_path'], PROJECT_ROOT)

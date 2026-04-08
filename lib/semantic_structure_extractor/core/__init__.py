@@ -6,14 +6,14 @@ These modules provide the foundational parsing capabilities:
 - ContentBlockClassifier: Classify content blocks by type
 """
 
-from .heading_parser import HeadingParser, HeadingHierarchy, HeadingNode
 from .content_block_classifier import (
-    ContentBlockClassifier,
-    ContentBlock,
     BlockType,
+    ContentBlock,
+    ContentBlockClassifier,
     Definition,
-    KeyTerm
+    KeyTerm,
 )
+from .heading_parser import HeadingHierarchy, HeadingNode, HeadingParser
 
 __all__ = [
     # Heading parser

@@ -9,13 +9,13 @@ import re
 from typing import Optional
 
 from .query_decomposition import (
-    QueryIntent,
-    QueryAspect,
-    SubQuery,
-    DecomposedQuery,
     BLOOM_LEVELS,
-    INTENT_CHUNK_TYPES,
     INTENT_ASPECT_RULES,
+    INTENT_CHUNK_TYPES,
+    DecomposedQuery,
+    QueryAspect,
+    QueryIntent,
+    SubQuery,
 )
 
 

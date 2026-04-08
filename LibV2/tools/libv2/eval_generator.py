@@ -11,13 +11,13 @@ import json
 import logging
 import random
 import re
-from dataclasses import dataclass, field
+from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
-from collections import Counter
+from typing import Dict, List, Optional, Tuple
 
-from .eval_harness import EvalSet, EvalQuery
+from .eval_harness import EvalQuery, EvalSet
 
 logger = logging.getLogger(__name__)
 
@@ -378,7 +378,7 @@ if __name__ == "__main__":
         print(f"Saved to: {path}")
 
         # Show sample queries
-        print(f"\nSample queries:")
+        print("\nSample queries:")
         for q in eval_set.queries[:5]:
             print(f"  [{q.query_id}] {q.query_text}")
             print(f"    Expected: {q.expected_chunk_ids[0]}")

@@ -426,7 +426,7 @@ class CrossCourseRAG:
         try:
             from libv2.retriever import retrieve_chunks
         except ImportError as e:
-            raise ImportError(f"LibV2 retriever not available: {e}")
+            raise ImportError(f"LibV2 retriever not available: {e}") from e
 
         results = retrieve_chunks(
             repo_root=LIBV2_ROOT,

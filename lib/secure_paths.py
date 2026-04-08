@@ -76,7 +76,7 @@ def validate_path_within_root(
         # Paths are on different drives (Windows) or otherwise incompatible
         raise PathTraversalError(
             f"Path not within allowed root: {path}"
-        )
+        ) from None
 
     return resolved_path
 
@@ -220,7 +220,7 @@ def safe_extract_zip(
             except ValueError:
                 raise ZipSlipError(
                     f"ZIP entry on different path: {member_name}"
-                )
+                ) from None
 
             # Check extension if whitelist provided
             if allowed_extensions is not None:

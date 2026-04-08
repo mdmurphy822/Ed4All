@@ -7,10 +7,10 @@ Prevents vocabulary explosion and ensures tag consistency.
 import json
 import logging
 import re
-from dataclasses import dataclass, field
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
-from collections import Counter
 
 logger = logging.getLogger(__name__)
 
@@ -407,7 +407,6 @@ def clean_course_concepts(
     chunks_modified = 0
 
     for chunk in chunks:
-        original_tags = set(chunk.get("concept_tags", []))
         chunk, removed = vocab.clean_chunk_tags(chunk, remove_invalid)
 
         if removed:
@@ -455,8 +454,8 @@ if __name__ == "__main__":
 
     analysis = analyze_course_concepts(course_dir, repo_root)
 
-    print(f"\nConcept Vocabulary Analysis")
-    print(f"===========================")
+    print("\nConcept Vocabulary Analysis")
+    print("===========================")
     print(f"Total tags: {analysis.total_tags}")
     print(f"Unique tags: {analysis.unique_tags}")
     print(f"Valid tags: {analysis.valid_tags}")
@@ -465,6 +464,6 @@ if __name__ == "__main__":
     print(f"Not in taxonomy: {analysis.not_in_taxonomy}")
 
     if analysis.top_invalid:
-        print(f"\nTop Invalid Tags:")
+        print("\nTop Invalid Tags:")
         for tag, reason, count in analysis.top_invalid[:10]:
             print(f"  {tag}: {reason} ({count}x)")

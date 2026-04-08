@@ -1,11 +1,12 @@
 """
 Ed4All orchestrator/ test configuration and shared fixtures.
 """
-import pytest
-import sys
 import json
+import sys
 from pathlib import Path
-from unittest.mock import Mock, AsyncMock
+from unittest.mock import AsyncMock, Mock
+
+import pytest
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -257,7 +258,7 @@ def sample_errors():
 def mock_tool_registry():
     """Mock tool registry for executor tests."""
     try:
-        from lib.tool_registry import ToolRegistry, ToolCapability, SandboxLevel
+        from lib.tool_registry import SandboxLevel, ToolCapability, ToolRegistry
 
         registry = ToolRegistry()
 

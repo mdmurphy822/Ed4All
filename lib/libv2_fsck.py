@@ -8,13 +8,13 @@ Phase 0 Hardening - Requirement 6: LibV2 Storage Invariants
 """
 
 import json
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
-import logging
 
-from .provenance import hash_file
 from .content_store import ContentStore
+from .provenance import hash_file
 
 logger = logging.getLogger(__name__)
 
@@ -217,7 +217,7 @@ class LibV2Fsck:
                     with open(temp_path, 'w') as f:
                         json.dump(index, f, indent=2)
                     temp_path.rename(course_index)
-                    logger.info(f"Fixed course index: removed dangling entries")
+                    logger.info("Fixed course index: removed dangling entries")
 
             except json.JSONDecodeError as e:
                 result.issues.append(FsckIssue(

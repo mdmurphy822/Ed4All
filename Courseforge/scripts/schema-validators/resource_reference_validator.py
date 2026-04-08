@@ -196,8 +196,6 @@ class ResourceReferenceValidator:
 
     def _validate_organization_refs(self, root: ET.Element, ns: str) -> None:
         """Validate that organization item identifierrefs point to valid resources"""
-        ns_prefix = f'{{{ns}}}' if ns else ''
-
         # Find all items with identifierref
         for elem in root.iter():
             if elem.tag.endswith('item') or elem.tag == 'item':

@@ -4,7 +4,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, List
+from typing import List, Optional
 
 try:
     import jsonschema

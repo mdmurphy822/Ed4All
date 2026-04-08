@@ -334,7 +334,6 @@ class IMSCCManifestValidator:
                 res_count += 1
                 res_id = elem.get('identifier')
                 res_type = elem.get('type')
-                res_href = elem.get('href')
 
                 if res_id:
                     self.resource_ids.add(res_id)

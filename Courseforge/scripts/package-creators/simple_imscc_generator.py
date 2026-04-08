@@ -95,10 +95,6 @@ def create_imscc_package(input_path=None, output_file=None):
         for week_file in week_files:
             week_number = int(re.search(r'week_(\d+)', week_file.name).group(1))
 
-            # Read week content
-            with open(week_file, 'r', encoding='utf-8') as f:
-                week_content = f.read()
-
             # Generate 7 HTML files for this week
             sub_module_types = [
                 "overview", "concept_summary_01", "concept_summary_02",

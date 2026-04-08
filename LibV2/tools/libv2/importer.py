@@ -10,18 +10,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from .validator import ValidationError, validate_course_strict
 from .models.course import (
     ArxivMetadata,
     Classification,
     ContentProfile,
     CourseManifest,
-    OntologyMapping,
     SLMProcessing,
     SourceArtifact,
     SourceArtifacts,
     SourceforgeManifest,
 )
+from .validator import ValidationError, validate_course_strict
 
 logger = logging.getLogger(__name__)
 

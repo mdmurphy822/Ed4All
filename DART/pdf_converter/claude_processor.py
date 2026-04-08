@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -103,10 +103,10 @@ class ResponseCache:
 
         if cache_path.exists():
             try:
-                with open(cache_path, 'r', encoding='utf-8') as f:
+                with open(cache_path, encoding='utf-8') as f:
                     logger.debug(f"Cache hit for key {key[:8]}...")
                     return json.load(f)
-            except (json.JSONDecodeError, IOError):
+            except (OSError, json.JSONDecodeError):
                 logger.warning(f"Failed to read cache file {cache_path}")
                 return None
         return None
@@ -120,7 +120,7 @@ class ResponseCache:
             with open(cache_path, 'w', encoding='utf-8') as f:
                 json.dump(response, f, indent=2)
             logger.debug(f"Cached response with key {key[:8]}...")
-        except IOError as e:
+        except OSError as e:
             logger.warning(f"Failed to write cache: {e}")
 
 
@@ -244,7 +244,7 @@ Return ONLY the JSON object, no other text.'''
             except ImportError:
                 raise ClaudeProcessingError(
                     "anthropic package not installed. Run: pip install anthropic"
-                )
+                ) from None
         return self._client
 
     def process_text(
@@ -289,7 +289,6 @@ Return ONLY the JSON object, no other text.'''
 
         # Call Claude API
         try:
-            import anthropic
 
             response = self.client.messages.create(
                 model=self.model,
@@ -302,8 +301,8 @@ Return ONLY the JSON object, no other text.'''
         except Exception as e:
             error_str = str(e).lower()
             if 'rate' in error_str and 'limit' in error_str:
-                raise ClaudeRateLimitError(f"Rate limit exceeded: {e}")
-            raise ClaudeAPIError(f"API error: {e}")
+                raise ClaudeRateLimitError(f"Rate limit exceeded: {e}") from e
+            raise ClaudeAPIError(f"API error: {e}") from e
 
         # Parse response
         response_text = response.content[0].text

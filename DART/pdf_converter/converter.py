@@ -8,13 +8,12 @@ Pipeline: PDF -> pdftotext (or OCR fallback) -> Claude Review -> Semantic HTML -
 """
 
 import html
-import re
 import logging
+import re
 import subprocess
-import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from .claude_processor import ClaudeProcessor, DocumentStructure
@@ -212,7 +211,7 @@ class PDFToAccessibleHTML:
             logger.info("="*60)
             logger.info("TEXT EXTRACTION COMPLETE")
             logger.info("="*60)
-            logger.info(f"To generate gold-standard HTML, run in Claude Code:")
+            logger.info("To generate gold-standard HTML, run in Claude Code:")
             logger.info(f"  'Review {text_output_path} and generate accessible HTML'")
             if extracted_images:
                 logger.info(f"  Include the {len(extracted_images)} extracted images from {images_dir}")
@@ -256,8 +255,8 @@ class PDFToAccessibleHTML:
     def _extract_with_ocr(self, pdf_path: str) -> str:
         """Fallback: Extract text using OCR."""
         try:
-            from pdf2image import convert_from_path
             import pytesseract
+            from pdf2image import convert_from_path
 
             images = convert_from_path(pdf_path, dpi=self.dpi)
             text_parts = []
@@ -311,8 +310,8 @@ class PDFToAccessibleHTML:
         images_with_alt_text = 0
 
         try:
-            from .image_extractor import PDFImageExtractor, ImageProcessor
             from .alt_text_generator import AltTextGenerator
+            from .image_extractor import ImageProcessor, PDFImageExtractor
 
             # Extract images (raster + vector if enabled)
             with PDFImageExtractor(
@@ -1158,7 +1157,7 @@ class PDFToAccessibleHTML:
 
                 if is_references:
                     html_parts.extend([
-                        f'  <section id="references" class="references" aria-labelledby="references-heading">',
+                        '  <section id="references" class="references" aria-labelledby="references-heading">',
                         f'    <h{level} id="references-heading">{content}</h{level}>',
                         '    <ol>',
                     ])

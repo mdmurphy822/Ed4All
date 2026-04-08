@@ -5,12 +5,12 @@ Centralized configuration management for the Ed4All orchestrator.
 """
 
 import logging
-import os
 import sys
-import yaml
-from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+from pathlib import Path
+from typing import Dict, List, Optional
+
+import yaml
 
 # Add project path for lib imports
 _CORE_DIR = Path(__file__).resolve().parent
@@ -18,12 +18,12 @@ _PROJECT_ROOT = _CORE_DIR.parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.paths import (
+from lib.paths import (  # noqa: E402
+    CONFIG_PATH,
+    COURSEFORGE_PATH,
+    DART_PATH,
     PROJECT_ROOT,
     STATE_PATH,
-    CONFIG_PATH,
-    DART_PATH,
-    COURSEFORGE_PATH,
     TRAINFORGE_PATH,
 )
 
@@ -108,9 +108,9 @@ class OrchestratorConfig:
                 with open(workflows_path, 'r') as f:
                     data = yaml.safe_load(f)
             except yaml.YAMLError as e:
-                raise ValueError(f"Invalid YAML in {workflows_path}: {e}")
+                raise ValueError(f"Invalid YAML in {workflows_path}: {e}") from e
             except FileNotFoundError:
-                raise ValueError(f"Config file not found: {workflows_path}")
+                raise ValueError(f"Config file not found: {workflows_path}") from None
 
             # Validate data structure
             if data is None:
@@ -153,7 +153,7 @@ class OrchestratorConfig:
                         phases=phases
                     )
             except (KeyError, TypeError) as e:
-                raise ValueError(f"Malformed workflows config structure: {e}")
+                raise ValueError(f"Malformed workflows config structure: {e}") from e
 
         # Load agents
         agents_path = config_dir / "agents.yaml"
@@ -162,9 +162,9 @@ class OrchestratorConfig:
                 with open(agents_path, 'r') as f:
                     data = yaml.safe_load(f)
             except yaml.YAMLError as e:
-                raise ValueError(f"Invalid YAML in {agents_path}: {e}")
+                raise ValueError(f"Invalid YAML in {agents_path}: {e}") from e
             except FileNotFoundError:
-                raise ValueError(f"Config file not found: {agents_path}")
+                raise ValueError(f"Config file not found: {agents_path}") from None
 
             # Validate data structure
             if data is None:
@@ -189,7 +189,7 @@ class OrchestratorConfig:
                         max_instances=agent_data.get("max_instances", 1)
                     )
             except (KeyError, TypeError) as e:
-                raise ValueError(f"Malformed agents config structure: {e}")
+                raise ValueError(f"Malformed agents config structure: {e}") from e
 
         return instance
 

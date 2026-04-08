@@ -10,8 +10,7 @@ import hashlib
 import io
 import logging
 import re
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)

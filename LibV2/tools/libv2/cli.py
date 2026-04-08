@@ -9,8 +9,8 @@ import click
 
 try:
     from rich.console import Console
-    from rich.table import Table
     from rich.panel import Panel
+    from rich.table import Table
     console = Console()
     RICH_AVAILABLE = True
 except ImportError:
@@ -321,7 +321,7 @@ def catalog_search(ctx, query: str, domain: Optional[str], difficulty: Optional[
 @click.pass_context
 def catalog_stats(ctx):
     """Show catalog statistics."""
-    from .catalog import load_master_catalog, get_catalog_statistics
+    from .catalog import get_catalog_statistics, load_master_catalog
 
     repo_root = ctx.obj["repo_root"]
     catalog = load_master_catalog(repo_root)
@@ -333,7 +333,7 @@ def catalog_stats(ctx):
     stats = get_catalog_statistics(catalog)
 
     if RICH_AVAILABLE:
-        console.print(Panel(f"[bold]LibV2 Repository Statistics[/bold]"))
+        console.print(Panel("[bold]LibV2 Repository Statistics[/bold]"))
         console.print(f"Total Courses: [cyan]{stats['total_courses']}[/cyan]")
         console.print(f"Total Chunks: [cyan]{stats['total_chunks']:,}[/cyan]")
         console.print(f"Total Tokens: [cyan]{stats['total_tokens']:,}[/cyan]")
@@ -556,12 +556,12 @@ def course_info(ctx, slug: str):
 
         # Source package info
         if manifest.source_package:
-            console.print(f"\n[bold]Source Package:[/bold]")
+            console.print("\n[bold]Source Package:[/bold]")
             console.print(f"  IMSCC: [cyan]{manifest.source_package}[/cyan]")
 
         # SLM processing info
         if manifest.slm_processing:
-            console.print(f"\n[bold]SLM Processing:[/bold]")
+            console.print("\n[bold]SLM Processing:[/bold]")
             if manifest.slm_processing.slm_version:
                 console.print(f"  Version: [cyan]{manifest.slm_processing.slm_version}[/cyan]")
             console.print(f"  Generation: {manifest.slm_processing.generation}")
@@ -620,7 +620,7 @@ def link_outcomes(ctx, slug: str, objectives: str, threshold: float):
         )
 
         print_success(f"Linked learning outcomes for: {slug}")
-        print(f"\nStatistics:")
+        print("\nStatistics:")
         print(f"  Outcomes loaded: {stats['outcomes_loaded']}")
         print(f"  Course-level outcomes: {stats['course_level_outcomes']}")
         print(f"  Total chunks: {stats['total_chunks']}")
@@ -715,13 +715,13 @@ def concepts_analyze(ctx, slug: str, output: str):
                 print_warning(f"\n{analysis.invalid_tags} tags have format violations")
 
             if analysis.top_tags:
-                print(f"\nTop 10 Tags:")
+                print("\nTop 10 Tags:")
                 for tag, count in analysis.top_tags[:10]:
                     marker = "*" if tag in [t for t, _ in analysis.format_violations] else ""
                     print(f"  {tag}: {count}{marker}")
 
             if analysis.top_invalid:
-                print(f"\nTop Invalid Tags:")
+                print("\nTop Invalid Tags:")
                 for tag, reason, count in analysis.top_invalid[:10]:
                     print(f"  {tag}: {reason} ({count}x)")
 
@@ -771,7 +771,7 @@ def concepts_clean(ctx, slug: str, keep_invalid: bool, skip_guardrails: bool, dr
         print(f"Invalid tags to {'normalize' if keep_invalid else 'remove'}: {analysis.invalid_tags}")
 
         if analysis.top_invalid:
-            print(f"\nSample invalid tags:")
+            print("\nSample invalid tags:")
             for tag, reason, count in analysis.top_invalid[:5]:
                 print(f"  {tag}: {reason} ({count}x)")
 
@@ -787,7 +787,7 @@ def concepts_clean(ctx, slug: str, keep_invalid: bool, skip_guardrails: bool, dr
             clean_guardrails=not skip_guardrails,
         )
 
-        print_success(f"\nCleaning complete!")
+        print_success("\nCleaning complete!")
         print(f"  Chunks modified: {stats['chunks_modified']}")
         print(f"  Tags removed: {stats['tags_removed']}")
         if "guardrails_topics_removed" in stats:
@@ -850,11 +850,11 @@ def eval_generate(ctx, slug: str, num_queries: int, output: str):
             }, indent=2))
         else:
             print_success(f"Generated eval set for: {slug}")
-            print(f"\nStatistics:")
+            print("\nStatistics:")
             print(f"  Total queries: {len(eval_set.queries)}")
             print(f"  Saved to: {path}")
 
-            print(f"\nSample queries:")
+            print("\nSample queries:")
             for q in eval_set.queries[:5]:
                 print(f"  [{q.query_id}] {q.query_text}")
 
@@ -914,13 +914,13 @@ def eval_run(ctx, slug: str, output: Optional[str], verbose: bool, fmt: str):
             print(f"\nEvaluation Results: {slug}")
             print("=" * 50)
             print(f"Total queries: {report.total_queries}")
-            print(f"\nRetrieval Metrics:")
+            print("\nRetrieval Metrics:")
             print(f"  Hit@1:  {report.hit_at_1:.1%}")
             print(f"  Hit@5:  {report.hit_at_5:.1%}")
             print(f"  Hit@10: {report.hit_at_10:.1%}")
             print(f"  MRR:    {report.mrr:.4f}")
             print(f"  MAP@10: {report.map_at_10:.4f}")
-            print(f"\nLatency:")
+            print("\nLatency:")
             print(f"  Avg: {report.avg_latency_ms:.1f}ms")
             print(f"  Min: {report.min_latency_ms:.1f}ms")
             print(f"  Max: {report.max_latency_ms:.1f}ms")

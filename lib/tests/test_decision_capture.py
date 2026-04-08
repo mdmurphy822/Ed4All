@@ -1,22 +1,21 @@
 """
 Tests for lib/decision_capture.py - Decision event capture system.
 """
-import pytest
 import sys
-import json
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
-from dataclasses import asdict
+from unittest.mock import Mock, patch
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
     from lib.decision_capture import (
         DecisionCapture,
-        MLFeatures,
         InputRef,
-        OutputArtifact,
+        MLFeatures,
         OutcomeSignals,
+        OutputArtifact,
     )
 except ImportError:
     pytest.skip("decision_capture not available", allow_module_level=True)
@@ -511,8 +510,6 @@ class TestSave:
         if hasattr(capture, 'save'):
             capture.save()
 
-            # Check that files were created
-            output_files = list(capture.output_dir.glob("*.json*"))
             # May or may not have files depending on implementation
             assert capture.output_dir.exists()
 

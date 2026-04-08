@@ -38,8 +38,7 @@ try:
 except ImportError:
     HAS_YAML = False
 
-from lib.paths import PROJECT_ROOT, CONFIG_PATH, STATE_PATH
-
+from lib.paths import CONFIG_PATH, PROJECT_ROOT, STATE_PATH
 
 # =============================================================================
 # APP CONFIGURATION

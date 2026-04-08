@@ -9,23 +9,20 @@ Phase 0.5 Enhancement: Builder Pattern for RunContext (C2)
 
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from .run_manager import (
-    RunContext,
-    RunManifest,
-    RunManager,
-    RUNS_PATH,
     HARDENED_MODE,
+    RUNS_PATH,
+    RunContext,
+    RunManager,
 )
 
 if TYPE_CHECKING:
-    from .sequence_manager import SequenceManager
     from .audit_logger import AuditLogger
-    from .tool_registry import ToolRegistry
+    from .sequence_manager import SequenceManager
 
 
 # ============================================================================
@@ -259,12 +256,12 @@ class RunContextBuilder:
 
     def _create_sequence_manager(self, run_id: str) -> "SequenceManager":
         """Create a sequence manager for the run."""
-        from .sequence_manager import SequenceManager
         from .path_constants import (
-            get_lock_timeout,
-            get_lock_retry_count,
             get_lock_retry_backoff,
+            get_lock_retry_count,
+            get_lock_timeout,
         )
+        from .sequence_manager import SequenceManager
 
         return SequenceManager(
             run_id=run_id,

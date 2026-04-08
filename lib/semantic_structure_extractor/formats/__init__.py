@@ -6,7 +6,7 @@ Supports multiple input formats:
 - HTML (via main extractor)
 """
 
-from .markdown_parser import MarkdownParser, MarkdownDocument, detect_format
+from .markdown_parser import MarkdownDocument, MarkdownParser, detect_format
 
 __all__ = [
     'MarkdownParser',

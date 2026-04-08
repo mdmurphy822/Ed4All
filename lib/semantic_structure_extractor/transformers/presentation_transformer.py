@@ -10,12 +10,11 @@ format, ready for PPTX generation. Implements:
 """
 
 import json
-import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Tuple
-from pathlib import Path
 from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class SlideType(Enum):
@@ -372,9 +371,6 @@ class PresentationTransformer:
         content = block.get('content', '') or block.get('text', '')
         items = block.get('items', [])
         block_id = block.get('id', f'block_{chapter_idx}_{block_idx}')
-
-        # Determine slide type
-        slide_type = self.BLOCK_TO_SLIDE_MAPPING.get(block_type, SlideType.CONTENT)
 
         # Transform based on block type
         if block_type in ('list_ordered', 'list_unordered', 'unordered_list', 'ordered_list'):

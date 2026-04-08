@@ -5,60 +5,33 @@ Provides decision capture utilities for DART, Courseforge, and Trainforge operat
 All Claude decisions are logged for training data collection.
 """
 
-from .decision_capture import (
-    DecisionCapture,
-    DARTDecisionCapture,
-    MLFeatures,
-    InputRef,
-    OutcomeSignals,
-    create_capture,
-    create_dart_capture
-)
-
-from .streaming_capture import (
-    StreamingDecisionCapture,
-    CaptureValidator,
-    create_streaming_capture,
-    validate_phase_capture,
-    get_capture_stats
-)
-
-from .trainforge_capture import (
-    TrainforgeDecisionCapture,
-    QuestionData,
-    RAGMetrics,
-    AlignmentCheck,
-    create_trainforge_capture
-)
-
-from .validation import (
-    validate_decision,
-    validate_phase_completeness,
-    validate_capture_file,
-    CaptureValidator as SchemaValidator,
-    load_schema,
-    check_jsonschema_available
-)
-
 from .constants import (
-    PROJECT_DIR,
-    TRAINING_DIR,
-    TRAINING_DIR_LEGACY,
-    SCHEMAS_DIR,
-    LIBV2_ROOT,
     LIBV2_CATALOG,
     LIBV2_COURSES,
     LIBV2_ONTOLOGY,
+    LIBV2_ROOT,
     LIBV2_SCHEMA,
     MIN_DECISIONS_PER_PHASE,
     OPERATION_MAP,
-    VALID_DECISION_TYPES,
+    PROJECT_DIR,
     QUALITY_THRESHOLDS,
+    SCHEMAS_DIR,
+    TRAINING_DIR,
+    TRAINING_DIR_LEGACY,
+    VALID_DECISION_TYPES,
     VALIDATE_DECISIONS,
-    validate_project_paths,
     ensure_training_dir,
+    validate_project_paths,
 )
-
+from .decision_capture import (
+    DARTDecisionCapture,
+    DecisionCapture,
+    InputRef,
+    MLFeatures,
+    OutcomeSignals,
+    create_capture,
+    create_dart_capture,
+)
 from .libv2_storage import (
     LibV2Storage,
     LibV2StorageError,
@@ -66,12 +39,33 @@ from .libv2_storage import (
     list_all_courses,
     validate_libv2_structure,
 )
-
 from .quality import (
     assess_decision_quality,
     assess_from_inputs_ref,
     calculate_quality_breakdown,
     check_quality_acceptable,
+)
+from .streaming_capture import (
+    CaptureValidator,
+    StreamingDecisionCapture,
+    create_streaming_capture,
+    get_capture_stats,
+    validate_phase_capture,
+)
+from .trainforge_capture import (
+    AlignmentCheck,
+    QuestionData,
+    RAGMetrics,
+    TrainforgeDecisionCapture,
+    create_trainforge_capture,
+)
+from .validation import CaptureValidator as SchemaValidator
+from .validation import (
+    check_jsonschema_available,
+    load_schema,
+    validate_capture_file,
+    validate_decision,
+    validate_phase_completeness,
 )
 
 __all__ = [

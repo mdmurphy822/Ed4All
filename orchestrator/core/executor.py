@@ -25,7 +25,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Any, Optional, Callable, Awaitable, List, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 # Add project path
 _CORE_DIR = Path(__file__).resolve().parent
@@ -33,32 +33,38 @@ _PROJECT_ROOT = _CORE_DIR.parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.paths import PROJECT_ROOT, STATE_PATH
-from .param_mapper import TaskParameterMapper, ParameterMappingError
-from .config import OrchestratorConfig
+from lib.paths import STATE_PATH  # noqa: E402
+
+from .config import OrchestratorConfig  # noqa: E402
+from .param_mapper import ParameterMappingError, TaskParameterMapper  # noqa: E402
 
 # Phase 0 Hardening: Import hardening modules with graceful fallback
 try:
-    from .error_classifier import ErrorClassifier, PoisonPillDetector, ErrorClass
+    from .error_classifier import ErrorClass, ErrorClassifier, PoisonPillDetector
     HARDENING_ERROR_CLASSIFIER = True
 except ImportError:
     HARDENING_ERROR_CLASSIFIER = False
     ErrorClass = None
 
 try:
-    from .checkpoint import CheckpointManager, PhaseCheckpoint
+    from .checkpoint import CheckpointManager, PhaseCheckpoint  # noqa: F401
     HARDENING_CHECKPOINTS = True
 except ImportError:
     HARDENING_CHECKPOINTS = False
 
 try:
-    from .validation_gates import ValidationGateManager, GateConfig, GateSeverity, GateResult
+    from .validation_gates import (  # noqa: F401
+        GateConfig,
+        GateResult,
+        GateSeverity,
+        ValidationGateManager,
+    )
     HARDENING_VALIDATION_GATES = True
 except ImportError:
     HARDENING_VALIDATION_GATES = False
 
 try:
-    from .lockfile import LockfileManager
+    from .lockfile import LockfileManager  # noqa: F401
     HARDENING_LOCKFILE = True
 except ImportError:
     HARDENING_LOCKFILE = False
@@ -759,10 +765,12 @@ class TaskExecutor:
                         status="ERROR",
                         error=str(result),
                     )
+                    task["status"] = "ERROR"
                 else:
                     results[task_id] = result
                     if result.status == "COMPLETE":
                         completed_ids.add(task_id)
+                    task["status"] = result.status
 
         return results
 
@@ -1015,7 +1023,7 @@ if __name__ == "__main__":
 
     # Demo - would need actual tool registry in practice
     async def demo():
-        executor = TaskExecutor()
+        _ = TaskExecutor()
         print(f"Agent to tool mapping: {len(AGENT_TOOL_MAPPING)} mappings")
         for agent, tool in AGENT_TOOL_MAPPING.items():
             print(f"  {agent} -> {tool}")

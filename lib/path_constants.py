@@ -7,10 +7,7 @@ These values can be overridden via config/workflows.yaml hardening section.
 Phase 0.5 Enhancement: Centralized Path Constants (B2)
 """
 
-import os
-from pathlib import Path
 from typing import Any, Dict, Optional
-
 
 # ============================================================================
 # SECURITY CONSTANTS
@@ -154,6 +151,7 @@ def load_hardening_config() -> Dict[str, Any]:
 
     try:
         import yaml
+
         from .paths import CONFIG_PATH
 
         config_path = CONFIG_PATH / "workflows.yaml"

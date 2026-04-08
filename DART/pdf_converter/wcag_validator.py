@@ -28,11 +28,12 @@ Usage:
 
 import json
 import re
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
+
 from bs4 import BeautifulSoup
 
 
@@ -226,7 +227,7 @@ class WCAGValidator:
         """
         file_path = Path(file_path)
 
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, encoding='utf-8') as f:
             content = f.read()
 
         return self.validate(content, str(file_path))
@@ -680,8 +681,8 @@ def validate_html_file(file_path: str, strict: bool = False) -> ValidationReport
 # =============================================================================
 
 if __name__ == '__main__':
-    import sys
     import argparse
+    import sys
 
     parser = argparse.ArgumentParser(
         description='Validate HTML content for WCAG 2.2 AA accessibility compliance'

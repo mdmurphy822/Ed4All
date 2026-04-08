@@ -25,7 +25,7 @@ def load_metadata(images_dir: Path) -> list:
     if not metadata_path.exists():
         raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
 
-    with open(metadata_path, 'r', encoding='utf-8') as f:
+    with open(metadata_path, encoding='utf-8') as f:
         return json.load(f)
 
 
@@ -121,7 +121,7 @@ def find_figure_references(text: str) -> list[int]:
 def embed_images(html_path: Path, images_dir: Path, output_path: Path = None) -> None:
     """Embed images into HTML file near their references."""
     # Load HTML
-    with open(html_path, 'r', encoding='utf-8') as f:
+    with open(html_path, encoding='utf-8') as f:
         soup = BeautifulSoup(f.read(), 'html.parser')
 
     # Load metadata

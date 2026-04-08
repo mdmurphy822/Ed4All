@@ -14,7 +14,6 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Optional, List
 
 # Add project root to path for imports
 _MCP_DIR = Path(__file__).resolve().parents[1]
@@ -27,10 +26,10 @@ logger = logging.getLogger(__name__)
 # Import advisor module
 try:
     from Courseforge.lib.learning_science_advisor import (
-        get_advisor,
-        LearningScienceAdvisor,
-        PedagogicalContext,
         CONTEXT_KEYWORDS,
+        LearningScienceAdvisor,  # noqa: F401
+        PedagogicalContext,  # noqa: F401
+        get_advisor,
     )
     HAS_ADVISOR = True
 except ImportError as e:

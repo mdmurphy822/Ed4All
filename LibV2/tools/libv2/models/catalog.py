@@ -57,7 +57,6 @@ class CatalogEntry:
     @classmethod
     def from_manifest(cls, manifest: "CourseManifest") -> "CatalogEntry":
         """Create catalog entry from a course manifest."""
-        from .course import CourseManifest
 
         # Determine primary difficulty
         dist = manifest.content_profile.difficulty_distribution

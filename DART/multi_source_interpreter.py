@@ -599,12 +599,6 @@ def synthesize_roster(tables: List[Dict], pdftotext: List[str]) -> List[Tuple[st
     text = '\n'.join(pdftotext)
     pairs = []
 
-    roster_labels = [
-        'Wrong/No Course', 'Enabling Courses', 'Preview Week', 'No Course Content',
-        'Student Course', 'Professor Complaint', 'Add New Shells', 'Roster',
-        'Merged Course Requests', 'Continuing Education', 'Non-Credit'
-    ]
-
     # Get labels from tables
     table_labels = []
     for table in tables:
@@ -821,7 +815,6 @@ def render_from_synthesized(synthesized: Dict) -> str:
 
 def generate_html_from_synthesized(synthesized: Dict) -> str:
     """Generate complete accessible HTML from synthesized data."""
-    code = synthesized['campus_code']
     name = synthesized['campus_name']
     sections = synthesized['sections']
 

@@ -4,15 +4,14 @@ Training Data Analysis Tools
 Provides tools for analyzing captured decision data quality and distribution.
 """
 
+import hashlib
 import json
 import logging
-import os
 import sys
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Any, Optional
-import hashlib
+from typing import Any, Dict, List
 
 # Add project root to path for imports
 _MCP_DIR = Path(__file__).resolve().parents[1]
@@ -20,7 +19,7 @@ _PROJECT_ROOT = _MCP_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.paths import TRAINING_DIR
+from lib.paths import TRAINING_DIR  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

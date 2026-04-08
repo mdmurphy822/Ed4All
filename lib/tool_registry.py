@@ -9,12 +9,12 @@ Phase 0 Hardening - Requirement 7: MCP Contract Hardening
 
 import hashlib
 import json
-from dataclasses import dataclass, field, asdict
+import logging
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
-import logging
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -372,7 +372,7 @@ class ToolRegistry:
                     allowed = True
                     break
             if not allowed:
-                return False, f"Path not in allowed list"
+                return False, "Path not in allowed list"
 
         # Check write permission
         if operation == "write" and not cap.can_write_files:

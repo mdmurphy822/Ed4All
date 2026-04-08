@@ -80,7 +80,7 @@ class ContentValidator:
         try:
             content = file_path.read_text(encoding='utf-8')
         except Exception as e:
-            raise Pattern162PreventionError(f"Cannot read content file {file_path}: {e}")
+            raise Pattern162PreventionError(f"Cannot read content file {file_path}: {e}") from e
 
         # Remove HTML tags to count actual content
         text_content = re.sub(r'<[^>]+>', '', content)
@@ -189,7 +189,7 @@ class ContentValidator:
             tree = ET.parse(manifest_path)
             root = tree.getroot()
         except ET.ParseError as e:
-            raise Pattern162PreventionError(f"Invalid manifest XML: {e}")
+            raise Pattern162PreventionError(f"Invalid manifest XML: {e}") from e
 
         # Find all resource references in manifest
         resources = root.findall('.//{http://www.imsglobal.org/xsd/imsccv1p2/imscp_v1p1}resource')
@@ -260,7 +260,7 @@ class ContentValidator:
                         )
 
             except ET.ParseError as e:
-                raise Pattern162PreventionError(f"Invalid assessment XML in {file.name}: {e}")
+                raise Pattern162PreventionError(f"Invalid assessment XML in {file.name}: {e}") from e
 
         logging.info(f"✅ Assessment functionality validated: {len(assessment_files)} files")
         return True
@@ -304,7 +304,7 @@ class ContentValidator:
             raise
         except Exception as e:
             logging.error(f"❌ Validation error: {e}")
-            raise Pattern162PreventionError(f"Validation failed: {e}")
+            raise Pattern162PreventionError(f"Validation failed: {e}") from e
 
 def main():
     parser = argparse.ArgumentParser(

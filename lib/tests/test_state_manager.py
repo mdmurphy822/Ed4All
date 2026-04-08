@@ -1,20 +1,21 @@
 """
 Tests for lib/state_manager.py - Atomic JSON operations.
 """
-import pytest
-import sys
 import json
+import sys
 import threading
 import time
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
     from lib.state_manager import (
-        atomic_write_json,
         atomic_read_json,
         atomic_update_json,
+        atomic_write_json,
     )
 except ImportError:
     pytest.skip("state_manager not available", allow_module_level=True)

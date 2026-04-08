@@ -8,11 +8,11 @@ Phase 0 Hardening - Requirement 8: Training Capture Quality Controls
 """
 
 import json
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Any
-import logging
+from typing import Any, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 

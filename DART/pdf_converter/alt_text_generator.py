@@ -10,7 +10,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from .image_extractor import ExtractedImage
@@ -129,16 +129,12 @@ class AltTextGenerator:
         Returns:
             AltTextResult
         """
-        last_error = None
-
         for attempt in range(self.MAX_RETRIES):
             try:
                 return self._call_claude_vision(image, context)
 
             except Exception as e:
                 error_str = str(e).lower()
-                last_error = e
-
                 # Check for rate limit
                 if 'rate' in error_str or '429' in error_str:
                     delay = self.BASE_DELAY * (2 ** attempt)

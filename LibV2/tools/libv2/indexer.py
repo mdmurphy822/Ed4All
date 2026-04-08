@@ -4,7 +4,6 @@ import json
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 from .catalog import generate_master_catalog, load_course_manifest, save_master_catalog
 from .models.catalog import MasterCatalog

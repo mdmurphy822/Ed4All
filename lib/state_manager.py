@@ -8,8 +8,14 @@ to prevent race conditions in concurrent access scenarios.
 import fcntl
 import json
 import os
+import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+# In-process locks for atomic_update_json to prevent race conditions
+# between threads (fcntl only protects against other processes)
+_update_locks: Dict[str, threading.Lock] = {}
+_update_locks_guard = threading.Lock()
 
 
 def atomic_write_json(path: Path, data: Dict[str, Any], indent: int = 2) -> None:
@@ -106,23 +112,30 @@ def atomic_update_json(
         atomic_update_json(path, increment_counter, default={})
     """
     path = Path(path)
-    temp_path = path.with_suffix('.tmp')
 
-    # Ensure parent directory exists
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # Serialize read-update-write per path to prevent concurrent thread races
+    key = str(path.resolve())
+    with _update_locks_guard:
+        if key not in _update_locks:
+            _update_locks[key] = threading.Lock()
+        lock = _update_locks[key]
 
-    # Read current data
-    if path.exists():
-        current = atomic_read_json(path)
-    elif default is not None:
-        current = default.copy()
-    else:
-        current = {}
+    with lock:
+        # Ensure parent directory exists
+        path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Apply update
-    updated = update_fn(current)
+        # Read current data
+        if path.exists():
+            current = atomic_read_json(path)
+        elif default is not None:
+            current = default.copy()
+        else:
+            current = {}
 
-    # Write atomically
-    atomic_write_json(path, updated)
+        # Apply update
+        updated = update_fn(current)
 
-    return updated
+        # Write atomically
+        atomic_write_json(path, updated)
+
+        return updated

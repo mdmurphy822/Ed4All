@@ -341,7 +341,6 @@ class DARTBatchProcessor:
         logger.info(f"Processing: {source_path.name}")
 
         # Determine output path
-        output_filename = source_path.stem + '.html'
         task_output_dir = self.output_dir / source_path.stem
         task_output_dir.mkdir(parents=True, exist_ok=True)
 

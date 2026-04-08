@@ -7,12 +7,10 @@ Integrates decision capture for training data collection.
 
 import json
 import logging
-import os
-import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional
 
 # Add project root to path for imports
 _MCP_DIR = Path(__file__).resolve().parents[1]
@@ -20,8 +18,8 @@ _PROJECT_ROOT = _MCP_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.paths import PROJECT_ROOT, COURSEFORGE_PATH
-from lib.secure_paths import (
+from lib.paths import COURSEFORGE_PATH  # noqa: E402
+from lib.secure_paths import (  # noqa: E402
     safe_extract_zip,
     sanitize_path_component,
     validate_path_within_root,
@@ -29,7 +27,7 @@ from lib.secure_paths import (
 
 # Import new telemetry system
 try:
-    from LibV2.telemetry import CaptureSession, ArtifactRef
+    from LibV2.telemetry import ArtifactRef, CaptureSession  # noqa: F401
     HAS_TELEMETRY = True
 except ImportError:
     HAS_TELEMETRY = False

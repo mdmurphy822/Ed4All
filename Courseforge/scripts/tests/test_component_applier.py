@@ -351,11 +351,8 @@ class TestBootstrapIntegration:
         applier.apply_to_file(input_path, output_path)
 
         if output_path.exists():
-            content = output_path.read_text()
-            # Should have some Bootstrap classes
-            bootstrap_classes = ['btn', 'card', 'accordion', 'alert', 'collapse']
-            has_bootstrap = any(cls in content for cls in bootstrap_classes)
-            # May or may not add classes depending on pattern detection
+            output_path.read_text()  # Verify file is readable
+            # May or may not add Bootstrap classes depending on pattern detection
             assert True
 
     @pytest.mark.integration

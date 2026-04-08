@@ -183,7 +183,7 @@ class BulletproofIMSCCGenerator:
 
         except Exception as e:
             self.emergency_cleanup()
-            raise SystemExit(f"BULLETPROOF GENERATION FAILED: {e}")
+            raise SystemExit(f"BULLETPROOF GENERATION FAILED: {e}") from e
 
     def generate_simple_manifest(self, course_data: Dict[str, Any]) -> str:
         """Generate minimal IMS Common Cartridge manifest."""

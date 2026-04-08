@@ -7,15 +7,14 @@ query decomposition, parallel sub-query execution, and result fusion.
 import concurrent.futures
 import sys
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 from .query_decomposer import QueryDecomposer
 from .query_decomposition import DecomposedQuery, SubQuery
-from .result_fusion import ResultFuser, FusionResult
+from .result_fusion import FusionResult, ResultFuser
 from .retriever import (
     RetrievalResult,
     retrieve_chunks,
-    ChunkFilter,
 )
 
 # Add lib to path for decision capture

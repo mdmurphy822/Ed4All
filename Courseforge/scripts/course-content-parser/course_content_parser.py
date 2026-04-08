@@ -725,7 +725,7 @@ class CourseContentParser:
 
         except Exception as e:
             self.cleanup_temps()
-            raise SystemExit(f"ATOMIC EXECUTION FAILED: {e}")
+            raise SystemExit(f"ATOMIC EXECUTION FAILED: {e}") from e
 
         finally:
             if self.execution_lock and self.execution_lock.exists():

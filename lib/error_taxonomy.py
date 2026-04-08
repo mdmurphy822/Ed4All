@@ -8,10 +8,10 @@ Phase 0 Hardening - Requirement 7: MCP Contract Hardening
 """
 
 import json
-from dataclasses import dataclass, asdict
+import traceback
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Dict, Optional
-import traceback
 
 
 class ErrorCategory(Enum):
@@ -147,6 +147,10 @@ def _classify_exception(exc: Exception) -> tuple:
     exc_type = type(exc).__name__
     message = str(exc).lower()
 
+    # Timeout errors (must be checked before IOError since TimeoutError inherits from OSError)
+    if isinstance(exc, TimeoutError):
+        return ErrorCategory.TIMEOUT_ERROR, ErrorCode.TASK_TIMEOUT
+
     # File errors
     if isinstance(exc, FileNotFoundError):
         return ErrorCategory.SYSTEM_ERROR, ErrorCode.FILE_NOT_FOUND
@@ -161,7 +165,7 @@ def _classify_exception(exc: Exception) -> tuple:
     if isinstance(exc, MemoryError):
         return ErrorCategory.SYSTEM_ERROR, ErrorCode.OUT_OF_MEMORY
 
-    # Timeout errors
+    # Timeout errors (string-based fallback for non-builtin timeout exceptions)
     if "timeout" in exc_type.lower() or "timeout" in message:
         return ErrorCategory.TIMEOUT_ERROR, ErrorCode.TASK_TIMEOUT
 
