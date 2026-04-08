@@ -616,7 +616,8 @@ class TaskExecutor:
         try:
             with open(workflow_path) as f:
                 workflow = json.load(f)
-        except (json.JSONDecodeError, IOError):
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Failed to load workflow {workflow_id}: {e}")
             return None
 
         for task in workflow.get("tasks", []):
@@ -641,7 +642,8 @@ class TaskExecutor:
         try:
             with open(workflow_path) as f:
                 workflow = json.load(f)
-        except (json.JSONDecodeError, IOError):
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Failed to read workflow {workflow_id} for task update: {e}")
             return False
 
         for task in workflow.get("tasks", []):
