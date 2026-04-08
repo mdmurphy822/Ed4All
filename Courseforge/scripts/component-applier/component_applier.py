@@ -24,12 +24,11 @@ import logging
 import os
 import re
 import sys
-from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any, TYPE_CHECKING
-from html.parser import HTMLParser
+from typing import TYPE_CHECKING, Dict, List, Optional
+
 from bs4 import BeautifulSoup
 
 # Add Ed4All lib to path for decision capture

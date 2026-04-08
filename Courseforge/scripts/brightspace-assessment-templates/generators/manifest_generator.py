@@ -4,15 +4,15 @@ IMSCC Manifest XML Generator
 Generates imsmanifest.xml files with correct IMSCC 1.3 format and resource types.
 """
 
-import os
-from typing import List, Optional, Dict, Set
 from dataclasses import dataclass, field
 from pathlib import Path
-from .base_generator import BaseGenerator, escape_for_cdata, escape_xml_attribute, generate_brightspace_id
+from typing import Dict, List, Set
+
+from .base_generator import BaseGenerator, escape_for_cdata, escape_xml_attribute
 from .constants import (
+    MAX_TITLE_LENGTH,
     NAMESPACES,
     RESOURCE_TYPES,
-    MAX_TITLE_LENGTH,
 )
 
 

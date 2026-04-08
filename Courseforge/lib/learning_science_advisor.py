@@ -15,10 +15,10 @@ import re
 import sys
 import time
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Iterator
+from typing import Optional
 
 # Add project root to path for LibV2 imports
 ED4ALL_ROOT = Path(__file__).resolve().parents[2]  # Courseforge/lib/learning_science_advisor.py → Ed4All/
@@ -146,7 +146,7 @@ def _tokenize(text: str) -> list[str]:
     return [t for t in tokens if t not in STOP_WORDS and len(t) > 2]
 
 
-class LearningScieceAdvisor:
+class LearningScienceAdvisor:
     """
     Middleware for querying Learning Science corpus.
 
@@ -157,7 +157,7 @@ class LearningScieceAdvisor:
     - Token budget management
 
     Example:
-        >>> advisor = LearningScieceAdvisor()
+        >>> advisor = LearningScienceAdvisor()
         >>> context = advisor.query(
         ...     topic="teaching database normalization",
         ...     context_type="cognitive_load",
@@ -580,14 +580,14 @@ class LearningScieceAdvisor:
 
 
 # Singleton instance for reuse
-_advisor_instance: Optional[LearningScieceAdvisor] = None
+_advisor_instance: Optional[LearningScienceAdvisor] = None
 
 
-def get_advisor() -> LearningScieceAdvisor:
+def get_advisor() -> LearningScienceAdvisor:
     """Get or create singleton advisor instance."""
     global _advisor_instance
     if _advisor_instance is None:
-        _advisor_instance = LearningScieceAdvisor()
+        _advisor_instance = LearningScienceAdvisor()
     return _advisor_instance
 
 

@@ -13,10 +13,10 @@ Equal Treatment Principle:
 
 import json
 import sys
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
-from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 # Add lib directory to path for semantic structure extractor
 # (consolidated from Courseforge and Slideforge into shared lib)
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
     from lib.decision_capture import DecisionCapture
 
 from bloom_taxonomy_mapper import BloomLevel, BloomTaxonomyMapper
-from objective_formatter import ObjectiveFormatter, LearningObjective
+from objective_formatter import LearningObjective, ObjectiveFormatter
 
 
 @dataclass

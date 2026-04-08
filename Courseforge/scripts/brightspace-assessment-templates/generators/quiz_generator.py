@@ -5,18 +5,22 @@ Generates IMSCC QTI 1.2 assessment XML files with support for all 5 question typ
 """
 
 import uuid
-from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
-from .base_generator import BaseGenerator, escape_for_cdata, escape_xml_attribute, generate_brightspace_id
+from typing import Any, Dict, List
+
+from .base_generator import (
+    BaseGenerator,
+    escape_for_cdata,
+    escape_xml_attribute,
+    generate_brightspace_id,
+)
 from .constants import (
-    NAMESPACES,
-    SCHEMA_LOCATIONS,
-    RESOURCE_TYPES,
-    QTI_QUESTION_PROFILES,
     MAX_POINTS,
-    MIN_POINTS,
     MAX_TITLE_LENGTH,
+    MIN_POINTS,
+    NAMESPACES,
+    RESOURCE_TYPES,
 )
 
 

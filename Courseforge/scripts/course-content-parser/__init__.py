@@ -7,7 +7,6 @@ and structuring content from markdown, HTML, and other input formats
 into a standardized course structure.
 """
 
-from pathlib import Path
 
 __version__ = "1.0.0"
 __all__ = []

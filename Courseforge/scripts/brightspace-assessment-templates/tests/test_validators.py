@@ -6,8 +6,8 @@ Tests all validator classes for correct namespace detection, XML validation,
 and error handling.
 """
 
-import unittest
 import sys
+import unittest
 from pathlib import Path
 
 # Add parent directory to path
@@ -16,8 +16,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from validators import (
     AssignmentValidator,
     DiscussionValidator,
-    QTIValidator,
     ManifestValidator,
+    QTIValidator,
     ValidationResult,
 )
 

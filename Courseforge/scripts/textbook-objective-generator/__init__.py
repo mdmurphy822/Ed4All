@@ -6,24 +6,19 @@ following the Equal Treatment Principle.
 """
 
 from .bloom_taxonomy_mapper import (
+    BLOOM_VERBS,
     BloomLevel,
     BloomTaxonomyMapper,
     BloomVerb,
-    BLOOM_VERBS,
     get_bloom_verbs,
-    suggest_bloom_level
+    suggest_bloom_level,
 )
-
-from .objective_formatter import (
-    ObjectiveFormatter,
-    LearningObjective
-)
-
+from .objective_formatter import LearningObjective, ObjectiveFormatter
 from .textbook_objective_generator import (
-    TextbookObjectiveGenerator,
     ChapterObjectives,
     SectionObjectives,
-    generate_objectives
+    TextbookObjectiveGenerator,
+    generate_objectives,
 )
 
 __version__ = "1.0.0"

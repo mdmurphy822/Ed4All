@@ -3,9 +3,10 @@ Tests for the Remediation Validator Module
 Course Quality and Compliance Validation Testing
 """
 
-import pytest
 import sys
 from pathlib import Path
+
+import pytest
 
 # Add module path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'remediation-validator'))
@@ -37,7 +38,7 @@ class TestRemediationValidator:
         report = v.validate()
 
         # Should have WCAG score
-        assert hasattr(report, 'wcag_score') or hasattr(report, 'accessibility_score')
+        assert hasattr(report, 'wcag_compliance')
 
     @pytest.mark.unit
     @pytest.mark.accessibility

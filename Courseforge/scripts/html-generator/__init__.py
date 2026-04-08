@@ -7,7 +7,6 @@ framework integration, WCAG 2.2 AA accessibility compliance, and
 responsive design support.
 """
 
-from pathlib import Path
 
 __version__ = "1.0.0"
 __all__ = []

@@ -13,9 +13,9 @@ Dependencies:
     - os (built-in)
 """
 
-import zipfile
-import os
 import argparse
+import os
+import zipfile
 from pathlib import Path
 
 # Configurable paths via environment variables
@@ -43,17 +43,17 @@ def create_simple_imscc(source_dir=None, output_path=None):
         from datetime import datetime
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output = os.path.join(DEFAULT_EXPORTS_DIR, f'{timestamp}_course.imscc')
-    
+
     files = [
         "imsmanifest.xml",
         # Week 1
-        "week_01_overview.html", "week_01_concept_summary_01.html", "week_01_concept_summary_02.html", 
+        "week_01_overview.html", "week_01_concept_summary_01.html", "week_01_concept_summary_02.html",
         "week_01_key_concepts.html", "week_01_visual_content.html", "week_01_application_examples.html", "week_01_study_questions.html",
         # Week 2
-        "week_02_overview.html", "week_02_concept_summary_01.html", "week_02_concept_summary_02.html", 
+        "week_02_overview.html", "week_02_concept_summary_01.html", "week_02_concept_summary_02.html",
         "week_02_key_concepts.html", "week_02_visual_content.html", "week_02_application_examples.html", "week_02_study_questions.html",
         # Week 3
-        "week_03_overview.html", "week_03_concept_summary_01.html", "week_03_concept_summary_02.html", 
+        "week_03_overview.html", "week_03_concept_summary_01.html", "week_03_concept_summary_02.html",
         "week_03_key_concepts.html", "week_03_visual_content.html", "week_03_application_examples.html", "week_03_study_questions.html",
         # Week 4
         "week_04_overview.html", "week_04_concept_summary_01.html", "week_04_concept_summary_02.html",
@@ -63,9 +63,9 @@ def create_simple_imscc(source_dir=None, output_path=None):
         "quiz_week_01.xml", "quiz_week_02.xml", "quiz_week_03.xml", "quiz_week_04.xml",
         "discussion_week_01.xml", "discussion_week_02.xml", "discussion_week_03.xml", "discussion_week_04.xml"
     ]
-    
+
     print("Creating simple IMSCC package...")
-    
+
     with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as zipf:
         for filename in files:
             filepath = os.path.join(source, filename)
@@ -74,7 +74,7 @@ def create_simple_imscc(source_dir=None, output_path=None):
                 print(f"Added: {filename}")
             else:
                 print(f"Missing: {filename}")
-    
+
     print(f"Package created: {output}")
 
 def main():

@@ -6,8 +6,8 @@ Tests all generator classes for correct namespace usage, XML structure,
 and Brightspace compatibility.
 """
 
-import unittest
 import sys
+import unittest
 from pathlib import Path
 
 # Add parent directory to path
@@ -15,33 +15,28 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from generators import (
     AssignmentGenerator,
-    DiscussionGenerator,
-    QuizGenerator,
-    ManifestGenerator,
-    ResourceEntry,
-    QuestionType,
-    QuizQuestion,
     Choice,
+    DiscussionGenerator,
+    ManifestGenerator,
+    QuestionType,
+    QuizGenerator,
+    QuizQuestion,
     generate_brightspace_id,
 )
 from generators.base_generator import (
     escape_xml_attribute,
-    escape_for_cdata,
-    escape_xml_content,
+)
+from generators.constants import (
+    MAX_POINTS,
+    MAX_TITLE_LENGTH,
+    MIN_POINTS,
 )
 from generators.quiz_generator import (
+    create_essay_question,
+    create_fill_in_blank_question,
     create_multiple_choice_question,
     create_multiple_response_question,
     create_true_false_question,
-    create_fill_in_blank_question,
-    create_essay_question,
-    AssessmentType,
-)
-from generators.constants import (
-    MAX_TITLE_LENGTH,
-    MAX_POINTS,
-    MIN_POINTS,
-    MAX_CONTENT_LENGTH,
 )
 
 

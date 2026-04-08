@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 try:
     from Courseforge.lib.learning_science_advisor import (
         get_advisor,
-        LearningScieceAdvisor,
+        LearningScienceAdvisor,
         PedagogicalContext,
         CONTEXT_KEYWORDS,
     )

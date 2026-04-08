@@ -3,15 +3,16 @@ Tests for the Accessibility Validator Module
 WCAG 2.2 AA Compliance Testing
 """
 
-import pytest
 import sys
 from pathlib import Path
+
+import pytest
 
 # Add module path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'accessibility-validator'))
 
 try:
-    from accessibility_validator import AccessibilityValidator, IssueSeverity
+    from accessibility_validator import AccessibilityValidator
 except ImportError:
     pytest.skip("accessibility_validator module not available", allow_module_level=True)
 
@@ -422,7 +423,7 @@ class TestAccessibilityValidatorEdgeCases:
         try:
             report = validator.validate_file(html_path)
             assert report is not None
-        except Exception as e:
+        except Exception:
             # Some error handling is acceptable
             assert True
 

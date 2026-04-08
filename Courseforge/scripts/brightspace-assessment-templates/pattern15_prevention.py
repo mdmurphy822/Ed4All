@@ -18,11 +18,11 @@ Critical Validation Requirements:
 - All XML must match manifest resource type declarations exactly
 """
 
-import xml.etree.ElementTree as ET
 import logging
-from pathlib import Path
-from typing import Dict, List, Tuple, Optional
 import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+from typing import List, Tuple
 
 # Configure logging
 logging.basicConfig(
@@ -48,11 +48,11 @@ QUIZ_RESOURCE_TYPE = "imsqti_xmlv1p2/imscc_xmlv1p3/assessment"
 
 class Pattern15Validator:
     """Validates assessment XML files to prevent Pattern 15 violations"""
-    
+
     def __init__(self):
         self.errors = []
         self.warnings = []
-        
+
     def validate_package(self, package_dir: Path) -> Tuple[bool, List[str], List[str]]:
         """
         Validates all assessment XML files in IMSCC package directory
@@ -64,52 +64,52 @@ class Pattern15Validator:
             Tuple of (is_valid, errors, warnings)
         """
         logger.info(f"Starting Pattern 15 validation for: {package_dir}")
-        
+
         self.errors = []
         self.warnings = []
-        
+
         # Find all assessment files
         quiz_files = list(package_dir.glob("quiz_*.xml"))
         assignment_files = list(package_dir.glob("assignment_*.xml"))
         discussion_files = list(package_dir.glob("discussion_*.xml"))
-        
+
         # Validate each assessment type
         self._validate_quiz_files(quiz_files)
         self._validate_assignment_files(assignment_files)
         self._validate_discussion_files(discussion_files)
-        
+
         # Check manifest consistency
         manifest_file = package_dir / "imsmanifest.xml"
         if manifest_file.exists():
             self._validate_manifest_consistency(manifest_file, quiz_files, assignment_files, discussion_files)
         else:
             self.errors.append("Missing imsmanifest.xml file")
-        
+
         is_valid = len(self.errors) == 0
-        
+
         if is_valid:
             logger.info("✅ Pattern 15 validation PASSED - All assessment XML files are compliant")
         else:
             logger.error(f"❌ Pattern 15 validation FAILED - {len(self.errors)} errors found")
             for error in self.errors:
                 logger.error(f"  ERROR: {error}")
-        
+
         if self.warnings:
             logger.warning(f"⚠️  {len(self.warnings)} warnings found")
             for warning in self.warnings:
                 logger.warning(f"  WARNING: {warning}")
-        
+
         return is_valid, self.errors, self.warnings
-    
+
     def _validate_quiz_files(self, quiz_files: List[Path]) -> None:
         """Validates quiz XML files for QTI 1.2 compliance"""
         logger.info(f"Validating {len(quiz_files)} quiz files")
-        
+
         for quiz_file in quiz_files:
             try:
                 tree = ET.parse(quiz_file)
                 root = tree.getroot()
-                
+
                 # Critical: Must use <questestinterop> root element
                 if root.tag != f"{{{QTI_NAMESPACE}}}questestinterop":
                     if root.tag == "quiz":
@@ -117,7 +117,7 @@ class Pattern15Validator:
                     else:
                         self.errors.append(f"{quiz_file.name}: Invalid root element '{root.tag}' - must be <questestinterop>")
                     continue
-                
+
                 # Check for required QTI namespace (handle both lxml and ElementTree)
                 has_qti_namespace = False
                 if hasattr(root, 'nsmap') and root.nsmap:
@@ -127,43 +127,43 @@ class Pattern15Validator:
                     has_qti_namespace = QTI_NAMESPACE in str(root.attrib) or QTI_NAMESPACE in root.tag
                 if not has_qti_namespace:
                     self.errors.append(f"{quiz_file.name}: Missing QTI 1.2 namespace: {QTI_NAMESPACE}")
-                
+
                 # Check for required assessment element
                 assessment = root.find(f".//{{{QTI_NAMESPACE}}}assessment")
                 if assessment is None:
                     self.errors.append(f"{quiz_file.name}: Missing required <assessment> element")
                     continue
-                
+
                 # Check for required qtimetadata
                 qtimetadata = assessment.find(f".//{{{QTI_NAMESPACE}}}qtimetadata")
                 if qtimetadata is None:
                     self.errors.append(f"{quiz_file.name}: Missing required <qtimetadata> section")
-                
+
                 # Check for section and item structure
                 section = assessment.find(f".//{{{QTI_NAMESPACE}}}section")
                 if section is None:
                     self.errors.append(f"{quiz_file.name}: Missing required <section> element")
-                
+
                 items = assessment.findall(f".//{{{QTI_NAMESPACE}}}item")
                 if not items:
                     self.errors.append(f"{quiz_file.name}: No <item> elements found - quiz must contain questions")
-                
+
                 logger.info(f"✅ {quiz_file.name}: QTI 1.2 format validation passed")
-                
+
             except ET.ParseError as e:
                 self.errors.append(f"{quiz_file.name}: XML parsing error - {str(e)}")
             except Exception as e:
                 self.errors.append(f"{quiz_file.name}: Validation error - {str(e)}")
-    
+
     def _validate_assignment_files(self, assignment_files: List[Path]) -> None:
         """Validates assignment XML files for D2L compliance"""
         logger.info(f"Validating {len(assignment_files)} assignment files")
-        
+
         for assignment_file in assignment_files:
             try:
                 tree = ET.parse(assignment_file)
                 root = tree.getroot()
-                
+
                 # Check for IMSCC assignment root element
                 if not (root.tag == "assignment" or root.tag.endswith("}assignment")):
                     self.errors.append(f"{assignment_file.name}: Invalid root element '{root.tag}' - must be <assignment>")
@@ -190,12 +190,12 @@ class Pattern15Validator:
                     self.warnings.append(f"{assignment_file.name}: Missing <submission_formats> element")
 
                 logger.info(f"✅ {assignment_file.name}: IMSCC assignment format validation passed")
-                
+
             except ET.ParseError as e:
                 self.errors.append(f"{assignment_file.name}: XML parsing error - {str(e)}")
             except Exception as e:
                 self.errors.append(f"{assignment_file.name}: Validation error - {str(e)}")
-    
+
     def _validate_discussion_files(self, discussion_files: List[Path]) -> None:
         """Validates discussion XML files for IMSCC compliance"""
         logger.info(f"Validating {len(discussion_files)} discussion files")
@@ -231,28 +231,28 @@ class Pattern15Validator:
                     self.errors.append(f"{discussion_file.name}: Missing required <text> element")
 
                 logger.info(f"✅ {discussion_file.name}: IMSCC discussion format validation passed")
-                
+
             except ET.ParseError as e:
                 self.errors.append(f"{discussion_file.name}: XML parsing error - {str(e)}")
             except Exception as e:
                 self.errors.append(f"{discussion_file.name}: Validation error - {str(e)}")
-    
-    def _validate_manifest_consistency(self, manifest_file: Path, quiz_files: List[Path], 
+
+    def _validate_manifest_consistency(self, manifest_file: Path, quiz_files: List[Path],
                                      assignment_files: List[Path], discussion_files: List[Path]) -> None:
         """Validates manifest resource types match assessment XML formats"""
         logger.info("Validating manifest resource type consistency")
-        
+
         try:
             tree = ET.parse(manifest_file)
             root = tree.getroot()
-            
+
             # Find all resource elements
             resources = root.findall(".//resource")
-            
+
             for resource in resources:
                 resource_type = resource.get("type", "")
                 href = resource.get("href", "")
-                
+
                 if href.startswith("quiz_") and href.endswith(".xml"):
                     # Quiz resources must declare QTI type (IMSCC 1.3)
                     if resource_type != QUIZ_RESOURCE_TYPE:
@@ -267,9 +267,9 @@ class Pattern15Validator:
                     # Discussion resources must declare IMSCC discussion type
                     if resource_type != DISCUSSION_RESOURCE_TYPE:
                         self.errors.append(f"Manifest: Discussion resource '{href}' has incorrect type '{resource_type}' - should be '{DISCUSSION_RESOURCE_TYPE}'")
-            
+
             logger.info("✅ Manifest resource type consistency validation passed")
-            
+
         except ET.ParseError as e:
             self.errors.append(f"Manifest parsing error: {str(e)}")
         except Exception as e:
@@ -281,15 +281,15 @@ def main():
         print("Usage: python pattern15_prevention.py <package_directory>")
         print("Example: python pattern15_prevention.py /exports/20250806_013225/")
         sys.exit(1)
-    
+
     package_dir = Path(sys.argv[1])
     if not package_dir.exists():
         print(f"Error: Directory '{package_dir}' does not exist")
         sys.exit(1)
-    
+
     validator = Pattern15Validator()
     is_valid, errors, warnings = validator.validate_package(package_dir)
-    
+
     if is_valid:
         print("\n✅ PATTERN 15 VALIDATION PASSED")
         print("All assessment XML files are properly formatted for Brightspace import")

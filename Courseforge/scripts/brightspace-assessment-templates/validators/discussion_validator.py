@@ -4,8 +4,7 @@ Discussion Topic XML Validator
 Validates IMSCC discussion topic XML files for correct format and Brightspace compatibility.
 """
 
-from typing import List, Optional
-from .xml_validator import IMSCCValidator, ValidationResult, ValidationLevel
+from .xml_validator import IMSCCValidator, ValidationLevel, ValidationResult
 
 try:
     from lxml import etree

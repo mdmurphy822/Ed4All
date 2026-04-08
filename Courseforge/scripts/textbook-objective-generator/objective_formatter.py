@@ -12,15 +12,10 @@ Equal Treatment: Generates objectives for ALL extracted content.
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
+from typing import Any, Dict, List, Optional
 
-from bloom_taxonomy_mapper import (
-    BloomLevel,
-    BloomTaxonomyMapper,
-    BloomVerb,
-    BLOOM_VERBS
-)
+from bloom_taxonomy_mapper import BLOOM_VERBS, BloomLevel, BloomTaxonomyMapper
 
 
 @dataclass

@@ -8,11 +8,11 @@ Equal Treatment Principle: This module does NOT filter or rank importance.
 All extracted content is treated equally and mapped to appropriate Bloom's levels.
 """
 
-import re
 import random
+import re
 from dataclasses import dataclass
-from typing import List, Dict, Any, Optional, Tuple
 from enum import Enum
+from typing import Dict, List, Optional
 
 
 class BloomLevel(Enum):

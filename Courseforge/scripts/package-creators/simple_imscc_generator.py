@@ -7,15 +7,14 @@ Usage:
 """
 
 import argparse
-import json
 import logging
 import os
 import re
 import sys
-import zipfile
 import uuid
-from pathlib import Path
+import zipfile
 from datetime import datetime
+from pathlib import Path
 
 # Configure logging
 logging.basicConfig(
@@ -61,55 +60,55 @@ def create_imscc_package(input_path=None, output_file=None):
         output_file = os.path.join(output_dir, 'linear_algebra_course.imscc')
     else:
         output_dir = os.path.dirname(output_file)
-    
-    print(f"🚀 Creating IMSCC package")
+
+    print("🚀 Creating IMSCC package")
     print(f"📂 Input: {input_path}")
     print(f"📁 Output: {output_file}")
-    
+
     try:
         # Create output directory
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        
+
         # Create temporary directory
         temp_dir = Path(output_dir) / "temp_files"
         temp_dir.mkdir(exist_ok=True)
-        
+
         # Parse course info
         course_info_path = Path(input_path) / "course_info.md"
         with open(course_info_path, 'r', encoding='utf-8') as f:
             course_content = f.read()
-            
+
         # Extract course title
         title_match = re.search(r'^#\s+(.+)$', course_content, re.MULTILINE)
         course_title = title_match.group(1) if title_match else "Linear Algebra Course"
-        
+
         print(f"📚 Course Title: {course_title}")
-        
+
         # Find week files
         modules_dir = Path(input_path) / "modules"
         week_files = sorted(modules_dir.glob("week_*.md"))
-        
+
         print(f"📄 Found {len(week_files)} week files")
-        
+
         # Generate HTML files
         html_files = []
         for week_file in week_files:
             week_number = int(re.search(r'week_(\d+)', week_file.name).group(1))
-            
+
             # Read week content
             with open(week_file, 'r', encoding='utf-8') as f:
                 week_content = f.read()
-            
+
             # Generate 7 HTML files for this week
             sub_module_types = [
-                "overview", "concept_summary_01", "concept_summary_02", 
+                "overview", "concept_summary_01", "concept_summary_02",
                 "key_concepts", "visual_content", "application_examples", "study_questions"
             ]
-            
+
             for module_type in sub_module_types:
                 filename = f"week_{week_number:02d}_{module_type}.html"
                 title = f"Module {week_number}: {module_type.replace('_', ' ').title()}"
-                
+
                 # Create HTML content
                 html_content = f"""<!DOCTYPE html>
 <html lang="en">
@@ -136,21 +135,21 @@ def create_imscc_package(input_path=None, output_file=None):
     <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"></script>
 </body>
 </html>"""
-                
+
                 # Write HTML file
                 html_path = temp_dir / filename
                 with open(html_path, 'w', encoding='utf-8') as f:
                     f.write(html_content)
-                
+
                 html_files.append(filename)
-        
+
         print(f"✅ Generated {len(html_files)} HTML files")
-        
+
         # Generate assignment XML
         assignment_files = []
         for week_num in range(1, len(week_files) + 1):
             assignment_filename = f"assignment_week_{week_num:02d}.xml"
-            
+
             assignment_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <assignment xmlns="http://www.d2l.org/xsd/d2lcp_v1p0">
     <header>
@@ -187,19 +186,19 @@ def create_imscc_package(input_path=None, output_file=None):
         </rubric>
     </grading>
 </assignment>"""
-            
+
             # Write assignment file
             assignment_path = temp_dir / assignment_filename
             with open(assignment_path, 'w', encoding='utf-8') as f:
                 f.write(assignment_xml)
-            
+
             assignment_files.append(assignment_filename)
-        
+
         print(f"✅ Generated {len(assignment_files)} assignment files")
-        
+
         # Generate manifest
         course_id = str(uuid.uuid4())
-        
+
         # Create resource entries
         resources = []
         for html_file in html_files:
@@ -208,19 +207,19 @@ def create_imscc_package(input_path=None, output_file=None):
         <resource identifier="{resource_id}" type="webcontent" href="{html_file}">
             <file href="{html_file}"/>
         </resource>""")
-        
+
         for assignment_file in assignment_files:
             resource_id = f"resource_{assignment_file.replace('.xml', '').replace('_', '')}"
             resources.append(f"""
         <resource identifier="{resource_id}" type="assignment_xmlv1p0" href="{assignment_file}">
             <file href="{assignment_file}"/>
         </resource>""")
-        
+
         # Create organization items
         items = []
         for week_num in range(1, len(week_files) + 1):
             week_items = []
-            
+
             # Add HTML items for this week
             week_html_files = [f for f in html_files if f.startswith(f'week_{week_num:02d}_')]
             for html_file in week_html_files:
@@ -231,7 +230,7 @@ def create_imscc_package(input_path=None, output_file=None):
                       identifierref="{resource_id}">
                     <title>{title}</title>
                 </item>""")
-            
+
             # Add assignment for this week
             assignment_file = f"assignment_week_{week_num:02d}.xml"
             resource_id = f"resource_{assignment_file.replace('.xml', '').replace('_', '')}"
@@ -240,13 +239,13 @@ def create_imscc_package(input_path=None, output_file=None):
                       identifierref="{resource_id}">
                     <title>Week {week_num} Assignment</title>
                 </item>""")
-            
+
             items.append(f"""
             <item identifier="week_{week_num}" identifierref="">
                 <title>Week {week_num}</title>
                 {''.join(week_items)}
             </item>""")
-        
+
         # Generate manifest content
         manifest_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <manifest identifier="{course_id}" version="1.2.0"
@@ -281,27 +280,27 @@ def create_imscc_package(input_path=None, output_file=None):
         {''.join(resources)}
     </resources>
 </manifest>"""
-        
+
         # Write manifest
         manifest_path = temp_dir / 'imsmanifest.xml'
         with open(manifest_path, 'w', encoding='utf-8') as f:
             f.write(manifest_content)
-        
+
         print("✅ Generated manifest file")
-        
+
         # Create IMSCC package
         with zipfile.ZipFile(output_file, 'w', zipfile.ZIP_DEFLATED) as zipf:
             for file_path in temp_dir.iterdir():
                 if file_path.is_file():
                     zipf.write(file_path, file_path.name)
-        
+
         # Cleanup temp directory
         import shutil
         shutil.rmtree(temp_dir)
-        
+
         # Validate package
         package_size = Path(output_file).stat().st_size
-        
+
         print("🎉 IMSCC Package Created Successfully!")
         print(f"📁 Location: {output_file}")
         print(f"📊 Size: {package_size:,} bytes")
@@ -310,9 +309,9 @@ def create_imscc_package(input_path=None, output_file=None):
         print(f"📚 Weeks: {len(week_files)}")
         print()
         print("✅ Ready for import into Brightspace!")
-        
+
         return True
-        
+
     except Exception as e:
         print(f"❌ Error creating IMSCC package: {e}")
         import traceback

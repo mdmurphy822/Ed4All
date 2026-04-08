@@ -3,9 +3,10 @@ Tests for the Component Applier Module
 Interactive Component Application Testing
 """
 
-import pytest
 import sys
 from pathlib import Path
+
+import pytest
 
 # Add module path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'component-applier'))
@@ -282,9 +283,9 @@ class TestComponentApplier:
         fake_path = tmp_path / 'nonexistent.html'
         output_path = temp_output_dir / 'output.html'
 
-        # Should raise appropriate error
-        with pytest.raises((FileNotFoundError, OSError, Exception)):
-            applier.apply_to_file(fake_path, output_path)
+        # Method catches errors internally and returns a failed result
+        result = applier.apply_to_file(fake_path, output_path)
+        assert result.success is False
 
 
 class TestComponentMappings:

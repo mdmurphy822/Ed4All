@@ -6,11 +6,11 @@ for course generation.
 """
 
 from .textbook_loader import (
-    TextbookLoader,
+    DEFAULT_TEXTBOOKS_DIR,
     TextbookContent,
+    TextbookLoader,
     TextbookSection,
     load_textbooks,
-    DEFAULT_TEXTBOOKS_DIR,
 )
 
 __all__ = [

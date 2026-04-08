@@ -17,11 +17,10 @@ RESOURCE TYPES:
 - Discussion: imsdt_xmlv1p3
 """
 
-import os
-import sys
 import logging
+import sys
 from pathlib import Path
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, List, Optional
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent))
@@ -36,28 +35,24 @@ if TYPE_CHECKING:
 
 from generators import (
     AssignmentGenerator,
-    DiscussionGenerator,
-    QuizGenerator,
-    QuestionType,
-    QuizQuestion,
     Choice,
+    DiscussionGenerator,
     ManifestGenerator,
-    ResourceEntry,
-    generate_brightspace_id,
+    QuestionType,
+    QuizGenerator,
+    QuizQuestion,
 )
 from generators.quiz_generator import (
+    AssessmentType,
+    create_essay_question,
+    create_fill_in_blank_question,
     create_multiple_choice_question,
     create_true_false_question,
-    create_fill_in_blank_question,
-    create_essay_question,
-    AssessmentType,
 )
 from validators import (
     AssignmentValidator,
     DiscussionValidator,
     QTIValidator,
-    ManifestValidator,
-    ValidationResult,
 )
 
 # Configure logging
