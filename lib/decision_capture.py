@@ -749,11 +749,12 @@ class DARTDecisionCapture(DecisionCapture):
         )
 
     def save(self, filename: Optional[str] = None) -> Path:
-        """Save with DART-specific details."""
+        """Save with DART-specific details using atomic write."""
         if filename is None:
             filename = f"dart_conversion_{self.pdf_name}_{self.session_id}.json"
 
         output_path = self.output_dir / filename
+        legacy_output_path = self.legacy_output_dir / filename
 
         data = {
             "course_code": self.course_code,
@@ -772,8 +773,27 @@ class DARTDecisionCapture(DecisionCapture):
             }
         }
 
-        with open(output_path, 'w') as f:
+        # Atomic write to primary location
+        temp_path = output_path.with_suffix('.tmp')
+        with open(temp_path, 'w') as f:
             json.dump(data, f, indent=2)
+            f.flush()
+            try:
+                os.fsync(f.fileno())
+            except OSError:
+                pass
+        os.rename(temp_path, output_path)
+
+        # Also save to legacy location
+        try:
+            legacy_temp_path = legacy_output_path.with_suffix('.tmp')
+            with open(legacy_temp_path, 'w') as f:
+                json.dump(data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.rename(legacy_temp_path, legacy_output_path)
+        except OSError as e:
+            logger.warning("Failed to save DART capture to legacy location: %s", e)
 
         return output_path
 

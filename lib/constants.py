@@ -87,6 +87,20 @@ OPERATION_MAP: Dict[str, str] = {
     "source_usage": "use_source",
     "outcome_signal": "record_outcome",
     "alignment_check": "check_alignment",
+    # DART operations
+    "structure_detection": "detect_structure",
+    "heading_assignment": "assign_heading",
+    "alt_text_generation": "generate_alt_text",
+    "math_conversion": "convert_math",
+    # Courseforge operations
+    "format_decision": "decide_format",
+    "component_selection": "select_component",
+    "example_selection": "select_example",
+    "strategy_decision": "decide_strategy",
+    "source_interpretation": "interpret_source",
+    # Trainforge operations
+    "quality_judgment": "judge_quality",
+    "learning_objective_mapping": "map_learning_objective",
     # LibV2 RAG operations
     "query_decomposition": "decompose_query",
     "retrieval_ranking": "rank_results",
@@ -138,6 +152,9 @@ VALID_DECISION_TYPES: Set[str] = {
     "chunk_deduplication",
     "index_strategy",
 }
+
+# Decision types with relaxed quality requirements (shorter rationale acceptable)
+RELAXED_DECISION_TYPES = frozenset({"prompt_response", "file_creation", "source_usage"})
 
 # Quality assessment thresholds
 QUALITY_THRESHOLDS = {

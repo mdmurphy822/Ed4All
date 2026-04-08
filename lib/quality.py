@@ -7,7 +7,7 @@ training data meets minimum quality standards.
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from .constants import QUALITY_THRESHOLDS
+from .constants import QUALITY_THRESHOLDS, RELAXED_DECISION_TYPES
 
 
 def assess_decision_quality(
@@ -28,7 +28,7 @@ def assess_decision_quality(
         Quality level: "exemplary", "proficient", "developing", or "inadequate"
     """
     # Some decision types have relaxed requirements
-    relaxed_types = {"prompt_response", "file_creation", "source_usage"}
+    relaxed_types = RELAXED_DECISION_TYPES
 
     rationale_length = len(rationale) if rationale else 0
     has_inputs = bool(inputs_ref and len(inputs_ref) > 0)

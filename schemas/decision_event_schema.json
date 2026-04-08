@@ -271,7 +271,13 @@
         "full_prompt": {"type": "string"},
         "full_response": {"type": "string"},
         "processing_time_ms": {"type": "number"},
-        "token_count": {"type": "integer"}
+        "token_count": {"type": "integer"},
+        "quality_gate_passed": {"type": "boolean"},
+        "quality_gate_reason": {"type": "string"},
+        "validation_issues": {
+          "type": ["array", "null"],
+          "items": {"type": "string"}
+        }
       },
       "additionalProperties": true
     }
