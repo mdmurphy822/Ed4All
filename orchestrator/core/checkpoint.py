@@ -260,7 +260,7 @@ class CheckpointManager:
             with open(path) as f:
                 data = json.load(f)
             return PhaseCheckpoint.from_dict(data)
-        except (json.JSONDecodeError, IOError, TypeError) as e:
+        except (OSError, json.JSONDecodeError, TypeError) as e:
             logger.error(f"Failed to load checkpoint {phase_name}: {e}")
             return None
 

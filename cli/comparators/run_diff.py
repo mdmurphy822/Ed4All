@@ -7,11 +7,11 @@ Phase 0 Hardening - Requirement 9: CLI Integrity Checks
 """
 
 import json
+import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-import sys
+from typing import Any, Dict, List, Optional
 
 # Add project root to path
 _COMPARATORS_DIR = Path(__file__).resolve().parent
@@ -133,7 +133,7 @@ class DiffResult:
     def _format_markdown(self) -> str:
         """Format as Markdown."""
         lines = [
-            f"# Run Comparison",
+            "# Run Comparison",
             "",
             f"**Run A:** `{self.run_a_id}`",
             f"**Run B:** `{self.run_b_id}`",
@@ -467,7 +467,7 @@ class RunDiff:
         try:
             with open(path) as f:
                 return json.load(f)
-        except (json.JSONDecodeError, IOError):
+        except (OSError, json.JSONDecodeError):
             return None
 
     def _load_decisions(self, run_path: Path) -> Dict[str, Any]:
@@ -499,7 +499,7 @@ class RunDiff:
                                 rationale_lengths.append(len(rationale))
                         except json.JSONDecodeError:
                             pass
-            except IOError:
+            except OSError:
                 pass
 
         result["by_type"] = dict(result["by_type"])

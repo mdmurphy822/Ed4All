@@ -275,7 +275,7 @@ class RunFinalizer:
         if decisions_dir.exists():
             for jsonl_file in decisions_dir.glob("*.jsonl"):
                 try:
-                    with open(jsonl_file, 'r') as f:
+                    with open(jsonl_file) as f:
                         report.total_decisions += sum(1 for line in f if line.strip())
                 except Exception:
                     pass
@@ -285,7 +285,7 @@ class RunFinalizer:
         if audit_dir.exists():
             for jsonl_file in audit_dir.glob("*.jsonl"):
                 try:
-                    with open(jsonl_file, 'r') as f:
+                    with open(jsonl_file) as f:
                         report.total_audit_events += sum(1 for line in f if line.strip())
                 except Exception:
                     pass
@@ -396,7 +396,7 @@ def load_finalization_report(run_path: Path) -> Optional[FinalizationReport]:
     if not report_path.exists():
         return None
 
-    with open(report_path, 'r') as f:
+    with open(report_path) as f:
         data = json.load(f)
 
     return FinalizationReport.from_dict(data)

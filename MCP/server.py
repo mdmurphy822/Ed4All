@@ -427,7 +427,7 @@ async def read_file(path: str) -> str:
         )
         log_file_access("read_file", path, allowed=True)
 
-        with open(safe_path, 'r') as f:
+        with open(safe_path) as f:
             return f.read()
     except PathTraversalError as e:
         log_file_access("read_file", path, allowed=False, error=str(e))
@@ -510,7 +510,7 @@ def get_file_content(path: str) -> str:
         )
         log_file_access("resource:file", path, allowed=True)
 
-        with open(safe_path, 'r') as f:
+        with open(safe_path) as f:
             return f.read()
     except PathTraversalError as e:
         log_file_access("resource:file", path, allowed=False, error=str(e))

@@ -368,6 +368,63 @@ class TestAuditCallback:
 # CONVENIENCE FUNCTION TESTS
 # =============================================================================
 
+class TestAppend:
+    """Test WriteFacade.append() method."""
+
+    @pytest.mark.unit
+    def test_append_creates_file(self, facade, tmp_path):
+        """append() should create file if it doesn't exist."""
+        file_path = tmp_path / "allowed" / "new.log"
+
+        result = facade.append(file_path, "line 1\n")
+
+        assert result.success is True
+        assert file_path.exists()
+        assert file_path.read_text() == "line 1\n"
+
+    @pytest.mark.unit
+    def test_append_adds_to_existing(self, facade, tmp_path):
+        """append() should add to existing file content."""
+        file_path = tmp_path / "allowed" / "existing.log"
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        file_path.write_text("line 1\n")
+
+        result = facade.append(file_path, "line 2\n")
+
+        assert result.success is True
+        assert file_path.read_text() == "line 1\nline 2\n"
+
+    @pytest.mark.unit
+    def test_append_validates_path(self, facade):
+        """append() should reject paths outside allowed directories."""
+        result = facade.append(Path("/etc/passwd"), "data")
+
+        assert result.success is False
+        assert result.error is not None
+
+    @pytest.mark.unit
+    def test_append_in_transaction(self, facade, tmp_path):
+        """append() should participate in transactions."""
+        file_path = tmp_path / "allowed" / "txn.log"
+
+        facade.begin_transaction()
+        result = facade.append(file_path, "txn line\n")
+        assert result.success is True
+        facade.commit_transaction()
+
+        assert file_path.read_text() == "txn line\n"
+
+    @pytest.mark.unit
+    def test_append_bytes(self, facade, tmp_path):
+        """append() should handle bytes content."""
+        file_path = tmp_path / "allowed" / "binary.log"
+
+        result = facade.append(file_path, b"binary data")
+
+        assert result.success is True
+        assert file_path.read_bytes() == b"binary data"
+
+
 class TestConvenienceFunctions:
     """Test convenience functions."""
 

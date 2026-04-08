@@ -121,7 +121,7 @@ class PresentationTransformer:
         """Load default configuration."""
         config_path = Path(__file__).parent / "config" / "extractor_config.json"
         if config_path.exists():
-            with open(config_path, 'r') as f:
+            with open(config_path) as f:
                 return json.load(f)
         return {}
 

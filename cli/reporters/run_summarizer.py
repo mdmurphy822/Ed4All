@@ -7,12 +7,12 @@ Phase 0 Hardening - Requirement 9: CLI Integrity Checks
 """
 
 import json
+import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-import sys
 
 # Add project root to path
 _REPORTERS_DIR = Path(__file__).resolve().parent
@@ -340,8 +340,8 @@ class RunSummarizer:
             "",
             "## Overview",
             "",
-            f"| Field | Value |",
-            f"|-------|-------|",
+            "| Field | Value |",
+            "|-------|-------|",
             f"| Status | {summary.status} |",
             f"| Workflow | {summary.workflow_type or 'N/A'} |",
             f"| Created | {summary.created_at or 'N/A'} |",

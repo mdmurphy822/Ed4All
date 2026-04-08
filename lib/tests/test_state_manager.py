@@ -51,14 +51,15 @@ class TestAtomicWriteJson:
         assert json_path.parent.exists()
 
     @pytest.mark.unit
-    def test_atomic_rename_on_success(self, tmp_path, sample_json_data):
-        """Temp file should be removed after atomic rename."""
+    def test_no_temp_files_after_write(self, tmp_path, sample_json_data):
+        """No temp files should remain after atomic write."""
         json_path = tmp_path / "test.json"
 
         atomic_write_json(json_path, sample_json_data)
 
-        temp_path = json_path.with_suffix('.tmp')
-        assert not temp_path.exists()
+        # Verify only the target file exists (no leftover .tmp files)
+        remaining = list(tmp_path.glob("*.tmp"))
+        assert remaining == [], f"Temp files left behind: {remaining}"
         assert json_path.exists()
 
     @pytest.mark.unit

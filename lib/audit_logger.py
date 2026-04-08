@@ -222,17 +222,23 @@ class Redactor:
             result = pattern.sub("[REDACTED]", result)
         return result
 
-    def redact_dict(self, data: Dict[str, Any], path: str = "") -> Dict[str, Any]:
+    _MAX_REDACT_DEPTH = 20
+
+    def redact_dict(self, data: Dict[str, Any], path: str = "", _depth: int = 0) -> Dict[str, Any]:
         """
         Recursively redact sensitive data from a dictionary.
 
         Args:
             data: Dictionary to redact
             path: Current path for tracking redacted fields
+            _depth: Current recursion depth (internal)
 
         Returns:
             Redacted dictionary
         """
+        if _depth > self._MAX_REDACT_DEPTH:
+            return {"_truncated": "max redaction depth exceeded"}
+
         result = {}
         for key, value in data.items():
             current_path = f"{path}.{key}" if path else key
@@ -247,10 +253,10 @@ class Redactor:
                     self.redacted_fields.append(current_path)
                 result[key] = redacted
             elif isinstance(value, dict):
-                result[key] = self.redact_dict(value, current_path)
+                result[key] = self.redact_dict(value, current_path, _depth + 1)
             elif isinstance(value, list):
                 result[key] = [
-                    self.redact_dict(item, f"{current_path}[{i}]") if isinstance(item, dict)
+                    self.redact_dict(item, f"{current_path}[{i}]", _depth + 1) if isinstance(item, dict)
                     else self.redact_string(item) if isinstance(item, str)
                     else item
                     for i, item in enumerate(value)

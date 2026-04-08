@@ -266,13 +266,13 @@ class StreamingDecisionCapture:
         if self._file is None:
             try:
                 self._file = open(self.stream_path, 'a')
-            except (IOError, OSError) as e:
+            except OSError as e:
                 raise RuntimeError(f"Failed to open stream file {self.stream_path}: {e}") from e
 
             # Also open legacy file for dual-write
             try:
                 self._legacy_file = open(self.legacy_stream_path, 'a')
-            except (IOError, OSError) as e:
+            except OSError as e:
                 import sys
                 print(f"Warning: Failed to open legacy stream file {self.legacy_stream_path}: {e}", file=sys.stderr)
                 self._legacy_file = None
@@ -281,7 +281,7 @@ class StreamingDecisionCapture:
             if self._run_stream_path:
                 try:
                     self._run_file = open(self._run_stream_path, 'a')
-                except (IOError, OSError) as e:
+                except OSError as e:
                     import sys
                     print(f"Warning: Failed to open run stream file {self._run_stream_path}: {e}", file=sys.stderr)
                     self._run_file = None
@@ -336,7 +336,7 @@ class StreamingDecisionCapture:
                 f.flush()
                 os.fsync(f.fileno())
             os.rename(legacy_temp_path, self.legacy_meta_path)
-        except (IOError, OSError) as e:
+        except OSError as e:
             import sys
             print(f"Warning: Failed to write legacy meta: {e}", file=sys.stderr)
 
@@ -350,7 +350,7 @@ class StreamingDecisionCapture:
                     f.flush()
                     os.fsync(f.fileno())
                 os.rename(run_temp_path, run_meta_path)
-            except (IOError, OSError) as e:
+            except OSError as e:
                 import sys
                 print(f"Warning: Failed to write run meta: {e}", file=sys.stderr)
 
@@ -705,10 +705,10 @@ class StreamingDecisionCapture:
         # Try to load existing meta to preserve started_at
         if self.meta_path.exists():
             try:
-                with open(self.meta_path, 'r') as f:
+                with open(self.meta_path) as f:
                     existing_meta = json.load(f)
                     meta.update(existing_meta)
-            except (json.JSONDecodeError, IOError):
+            except (OSError, json.JSONDecodeError):
                 pass  # Use default meta if file is corrupt
 
         meta["completed_at"] = datetime.now().isoformat()
@@ -725,7 +725,7 @@ class StreamingDecisionCapture:
                 f.flush()
                 os.fsync(f.fileno())
             os.rename(temp_path, self.meta_path)
-        except (IOError, OSError):
+        except OSError:
             pass  # Best effort - don't fail finalization on meta write error
 
         # Write to legacy location
@@ -736,7 +736,7 @@ class StreamingDecisionCapture:
                 f.flush()
                 os.fsync(f.fileno())
             os.rename(legacy_temp_path, self.legacy_meta_path)
-        except (IOError, OSError):
+        except OSError:
             pass  # Best effort
 
         # Phase 0 Hardening: Write to run-specific location
@@ -749,7 +749,7 @@ class StreamingDecisionCapture:
                     f.flush()
                     os.fsync(f.fileno())
                 os.rename(run_temp_path, run_meta_path)
-            except (IOError, OSError):
+            except OSError:
                 pass  # Best effort
 
     def __enter__(self):
@@ -794,13 +794,13 @@ class CaptureValidator:
 
         for jsonl_file in jsonl_files:
             try:
-                with open(jsonl_file, 'r') as f:
+                with open(jsonl_file) as f:
                     for line in f:
                         if line.strip():
                             decision = json.loads(line)
                             total_decisions += 1
                             decision_types.add(decision.get("decision_type", "unknown"))
-            except (json.JSONDecodeError, IOError) as e:
+            except (OSError, json.JSONDecodeError) as e:
                 result["issues"].append(f"Error reading {jsonl_file.name}: {e}")
 
         result["decision_count"] = total_decisions

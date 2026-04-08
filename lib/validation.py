@@ -59,7 +59,7 @@ def load_schema(schema_name: str) -> Dict[str, Any]:
     if not schema_path.exists():
         raise FileNotFoundError(f"Schema not found: {schema_path}")
 
-    with open(schema_path, 'r') as f:
+    with open(schema_path) as f:
         schema = json.load(f)
 
     _SCHEMA_CACHE[schema_name] = schema
@@ -238,7 +238,7 @@ def validate_capture_file(
         return result
 
     try:
-        with open(filepath, 'r') as f:
+        with open(filepath) as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
                 if not line:
@@ -325,7 +325,7 @@ class CaptureValidator:
 
             # Load decisions for phase completeness check
             try:
-                with open(jsonl_file, 'r') as f:
+                with open(jsonl_file) as f:
                     for line in f:
                         line = line.strip()
                         if line:

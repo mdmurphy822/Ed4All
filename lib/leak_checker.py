@@ -474,7 +474,7 @@ class LeakChecker:
         response_leaks = []
         response_normalized = self._normalize(response)
 
-        for answer_hash, reg in self._answer_registry.items():
+        for _answer_hash, reg in self._answer_registry.items():
             if assessment_id and reg.assessment_id != assessment_id:
                 continue
 

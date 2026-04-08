@@ -7,12 +7,11 @@ Phase 0 Hardening - Requirement 9: CLI Integrity Checks
 """
 
 import json
+import sys
 from dataclasses import dataclass, field
-from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple
-import sys
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 # Add project root to path
 _EXPORTERS_DIR = Path(__file__).resolve().parent
@@ -226,7 +225,7 @@ class TrainingExporter:
                             yield event
                         except json.JSONDecodeError:
                             continue
-            except IOError:
+            except OSError:
                 continue
 
     def _passes_filters(
@@ -451,7 +450,7 @@ def list_exportable_runs(runs_root: Optional[Path] = None) -> List[Dict[str, Any
             try:
                 with open(df) as f:
                     decision_count += sum(1 for _ in f)
-            except IOError:
+            except OSError:
                 pass
 
         if decision_count == 0:
@@ -464,7 +463,7 @@ def list_exportable_runs(runs_root: Optional[Path] = None) -> List[Dict[str, Any
             try:
                 with open(manifest_path) as f:
                     manifest = json.load(f)
-            except (json.JSONDecodeError, IOError):
+            except (OSError, json.JSONDecodeError):
                 pass
 
         runs.append({

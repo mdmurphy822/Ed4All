@@ -7,10 +7,10 @@ Phase 0 Hardening - Requirement 9: CLI Integrity Checks
 """
 
 import json
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-import sys
 
 # Add project root to path
 _VALIDATORS_DIR = Path(__file__).resolve().parent
@@ -321,7 +321,7 @@ class RunValidator:
                     result.issues.append(ValidationIssue(
                         severity="warning",
                         category="broken_symlink",
-                        message=f"Artifact symlink target missing",
+                        message="Artifact symlink target missing",
                         path=str(artifact),
                         fixable=True,
                         fix_action="remove_symlink"
@@ -345,7 +345,7 @@ class RunValidator:
 
             try:
                 with open(decision_file) as f:
-                    for line_num, line in enumerate(f, 1):
+                    for _line_num, line in enumerate(f, 1):
                         line_count += 1
                         try:
                             event = json.loads(line)
@@ -394,7 +394,7 @@ class RunValidator:
         try:
             with open(self.run_path / "run_manifest.json") as f:
                 json.load(f)
-        except (json.JSONDecodeError, IOError):
+        except (OSError, json.JSONDecodeError):
             return False
 
         return True

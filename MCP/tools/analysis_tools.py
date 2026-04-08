@@ -151,7 +151,7 @@ def _content_hash(record: Dict[str, Any]) -> str:
         "decision": record.get("decision", ""),
         "rationale": record.get("rationale", "")[:100],
     }, sort_keys=True)
-    return hashlib.md5(key_content.encode()).hexdigest()[:12]
+    return hashlib.sha256(key_content.encode()).hexdigest()[:12]
 
 
 def register_analysis_tools(mcp):
