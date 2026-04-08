@@ -337,7 +337,9 @@ class LibV2Fsck:
             ))
 
     def _check_symlinks(self, result: FsckResult, fix: bool) -> None:
-        """Check for broken symlinks."""
+        """Check for broken symlinks and symlinks escaping blob directory."""
+        blobs_dir = (self.libv2_root / "blobs").resolve()
+
         for path in self.libv2_root.rglob("*"):
             if path.is_symlink():
                 result.checked_files += 1
@@ -357,6 +359,22 @@ class LibV2Fsck:
                         path.unlink()
                         result.fixed_count += 1
                         logger.info(f"Removed broken symlink: {path}")
+
+                elif blobs_dir.exists() and not str(target).startswith(str(blobs_dir)):
+                    # Symlink target escapes the blob directory
+                    result.issues.append(FsckIssue(
+                        severity="error",
+                        category="symlink_escape",
+                        path=str(path),
+                        message=f"Symlink target escapes blob directory: {target}",
+                        fixable=True,
+                        fix_action="remove_symlink"
+                    ))
+
+                    if fix:
+                        path.unlink()
+                        result.fixed_count += 1
+                        logger.warning(f"Removed symlink escaping blob directory: {path}")
 
     def _check_orphans(self, result: FsckResult, fix: bool) -> None:
         """Check for orphaned files (not referenced by any manifest)."""

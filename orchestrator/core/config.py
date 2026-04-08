@@ -225,6 +225,7 @@ class OrchestratorConfig:
             "missing_agents": [],
             "missing_sources": [],
             "invalid_dependencies": [],
+            "invalid_validators": [],
         }
 
         # Check 1: All workflow agents exist in agents config
@@ -246,6 +247,41 @@ class OrchestratorConfig:
                     issues["missing_sources"].append(issue)
                     if fail_fast:
                         raise ValueError(issue)
+
+        # Check 3: Validate validator paths from workflows.yaml can be imported
+        workflows_path = self.config_dir / "workflows.yaml"
+        if workflows_path.exists():
+            try:
+                with open(workflows_path, 'r') as f:
+                    raw_config = yaml.safe_load(f) or {}
+                for wf_name, wf_data in raw_config.get("workflows", {}).items():
+                    for phase in wf_data.get("phases", []):
+                        for gate in phase.get("validation_gates", []):
+                            validator_path = gate.get("validator", "")
+                            if not validator_path:
+                                continue
+                            if '.' not in validator_path:
+                                issue = f"Invalid validator path (no module separator): '{validator_path}' in workflow '{wf_name}'"
+                                issues["invalid_validators"].append(issue)
+                                if fail_fast:
+                                    raise ValueError(issue)
+                                continue
+                            module_path, class_name = validator_path.rsplit('.', 1)
+                            try:
+                                import importlib
+                                mod = importlib.import_module(module_path)
+                                if not hasattr(mod, class_name):
+                                    issue = f"Validator class '{class_name}' not found in module '{module_path}' (workflow '{wf_name}')"
+                                    issues["invalid_validators"].append(issue)
+                                    if fail_fast:
+                                        raise ValueError(issue)
+                            except ImportError as e:
+                                issue = f"Cannot import validator module '{module_path}': {e} (workflow '{wf_name}')"
+                                issues["invalid_validators"].append(issue)
+                                if fail_fast:
+                                    raise ValueError(issue)
+            except yaml.YAMLError:
+                pass  # Already validated during load()
 
         # Log summary if not fail_fast
         if not fail_fast:

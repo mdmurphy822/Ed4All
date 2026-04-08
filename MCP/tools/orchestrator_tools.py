@@ -114,6 +114,7 @@ def register_orchestrator_tools(mcp):
             })
 
         except Exception as e:
+            logger.exception("Orchestrator tool error")
             return json.dumps({"error": str(e)})
 
     @mcp.tool()
@@ -138,6 +139,7 @@ def register_orchestrator_tools(mcp):
             return json.dumps(workflow)
 
         except Exception as e:
+            logger.exception("Orchestrator tool error")
             return json.dumps({"error": str(e)})
 
     @mcp.tool()
@@ -171,11 +173,8 @@ def register_orchestrator_tools(mcp):
                 agent_config = config.get_agent(agent_type)
 
                 if not agent_config:
-                    available_agents = list(config.agents.keys())
                     return json.dumps({
-                        "error": f"Unknown agent type: {agent_type}",
-                        "available_agents": available_agents[:10],  # Limit for readability
-                        "total_agents": len(available_agents)
+                        "error": f"Unknown agent type: {agent_type}. Check config/agents.yaml for valid types."
                     })
             except Exception as config_err:
                 logger.warning(f"Config validation skipped: {config_err}")
@@ -186,7 +185,7 @@ def register_orchestrator_tools(mcp):
             if not tool_name:
                 return json.dumps({
                     "error": f"No tool mapping for agent type: {agent_type}",
-                    "available_mappings": list(AGENT_TOOL_MAPPING.keys())
+                    "hint": "Check executor.py AGENT_TOOL_MAPPING for valid types."
                 })
 
             # Validate workflow exists
@@ -229,6 +228,7 @@ def register_orchestrator_tools(mcp):
             })
 
         except Exception as e:
+            logger.exception("Orchestrator tool error")
             return json.dumps({"error": str(e)})
 
     @mcp.tool()
@@ -286,6 +286,7 @@ def register_orchestrator_tools(mcp):
             })
 
         except Exception as e:
+            logger.exception("Orchestrator tool error")
             return json.dumps({"error": str(e)})
 
     @mcp.tool()
@@ -332,6 +333,7 @@ def register_orchestrator_tools(mcp):
             })
 
         except Exception as e:
+            logger.exception("Orchestrator tool error")
             return json.dumps({"error": str(e)})
 
     @mcp.tool()
@@ -388,6 +390,7 @@ def register_orchestrator_tools(mcp):
             })
 
         except Exception as e:
+            logger.exception("Orchestrator tool error")
             return json.dumps({"error": str(e)})
 
     @mcp.tool()
@@ -427,6 +430,7 @@ def register_orchestrator_tools(mcp):
             })
 
         except Exception as e:
+            logger.exception("Orchestrator tool error")
             return json.dumps({"error": str(e)})
 
     @mcp.tool()
@@ -474,7 +478,7 @@ def register_orchestrator_tools(mcp):
             if not tool_name:
                 return json.dumps({
                     "error": f"No tool mapping for agent type: {agent_type}",
-                    "available_mappings": list(AGENT_TOOL_MAPPING.keys())
+                    "hint": "Check executor.py AGENT_TOOL_MAPPING for valid types."
                 })
 
             # Update task status to IN_PROGRESS
@@ -501,6 +505,7 @@ def register_orchestrator_tools(mcp):
             })
 
         except Exception as e:
+            logger.exception("Orchestrator tool error")
             return json.dumps({"error": str(e)})
 
     @mcp.tool()
@@ -588,4 +593,5 @@ def register_orchestrator_tools(mcp):
             })
 
         except Exception as e:
+            logger.exception("Orchestrator tool error")
             return json.dumps({"error": str(e)})

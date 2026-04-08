@@ -11,7 +11,9 @@ Phase 0.5 Enhancement: Artifact Deduplication (E2)
 import hashlib
 import logging
 import os
+import re
 import shutil
+import tempfile
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional, Tuple
@@ -112,12 +114,19 @@ class ContentStore:
         self.blobs_dir = root_path / "blobs" / algorithm
         self.blobs_dir.mkdir(parents=True, exist_ok=True)
 
+    _VALID_HASH_RE = re.compile(r'^[0-9a-f]+$')
+
     def _get_blob_path(self, content_hash: str) -> Path:
         """
         Get path for blob by hash (sharded by first 2 chars).
 
         This sharding prevents directory size issues with many blobs.
+
+        Raises:
+            ValueError: If content_hash contains non-hex characters (path traversal prevention)
         """
+        if not content_hash or not self._VALID_HASH_RE.match(content_hash):
+            raise ValueError(f"Invalid content hash (must be hex): {content_hash!r}")
         return self.blobs_dir / content_hash[:2] / content_hash
 
     def _compute_hash(self, content: bytes) -> str:
@@ -336,13 +345,21 @@ class ContentStore:
         if not blob_path.exists():
             return False
 
-        blob_path.unlink()
+        try:
+            blob_path.unlink()
+        except OSError as e:
+            logger.error(f"Failed to delete blob {content_hash[:12]}...: {e}")
+            return False
+
         logger.debug(f"Deleted blob: {content_hash[:12]}...")
 
         # Clean up empty shard directory
         shard_dir = blob_path.parent
-        if shard_dir.exists() and not any(shard_dir.iterdir()):
-            shard_dir.rmdir()
+        try:
+            if shard_dir.exists() and not any(shard_dir.iterdir()):
+                shard_dir.rmdir()
+        except OSError as e:
+            logger.warning(f"Failed to clean up shard directory {shard_dir}: {e}")
 
         return True
 
@@ -373,11 +390,14 @@ class ContentStore:
         link_path = run_path / "artifacts" / artifact_name
         link_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Remove existing link if present
-        if link_path.exists() or link_path.is_symlink():
-            link_path.unlink()
+        # Atomic symlink creation: create temp symlink then rename (avoids TOCTOU race)
+        tmp_fd, tmp_name = tempfile.mkstemp(dir=link_path.parent)
+        os.close(tmp_fd)
+        tmp_path = Path(tmp_name)
+        tmp_path.unlink()  # mkstemp creates a file; we need to symlink
+        tmp_path.symlink_to(blob_path.resolve())
+        tmp_path.rename(link_path)
 
-        link_path.symlink_to(blob_path.resolve())
         logger.debug(f"Linked blob {content_hash[:12]}... to {artifact_name}")
 
         return link_path
@@ -574,9 +594,13 @@ class ContentStore:
                     blob = hash_to_blob.get(content_hash)
                     if blob:
                         if not dry_run:
-                            # Replace file with symlink
-                            artifact_path.unlink()
-                            artifact_path.symlink_to(blob.path.resolve())
+                            # Atomic symlink replacement (avoids TOCTOU race)
+                            tmp_fd, tmp_name = tempfile.mkstemp(dir=artifact_path.parent)
+                            os.close(tmp_fd)
+                            tmp_path = Path(tmp_name)
+                            tmp_path.unlink()
+                            tmp_path.symlink_to(blob.path.resolve())
+                            tmp_path.rename(artifact_path)
 
                         result.artifacts_deduplicated += 1
                         result.space_saved_bytes += size_bytes
@@ -694,14 +718,26 @@ class ContentStore:
                     errors.append(f"Broken symlink: {artifact_path}")
                     continue
 
+                # Validate symlink target is within blobs directory
+                blobs_resolved = self.blobs_dir.resolve()
+                if not str(target).startswith(str(blobs_resolved) + os.sep):
+                    errors.append(f"Symlink target escapes blob directory: {artifact_path} -> {target}")
+                    continue
+
                 content = target.read_bytes()
 
-                # Remove symlink and write file
-                artifact_path.unlink()
-                with open(artifact_path, 'wb') as f:
-                    f.write(content)
-                    f.flush()
-                    os.fsync(f.fileno())
+                # Atomic restore: write to temp file then rename
+                tmp_fd, tmp_name = tempfile.mkstemp(dir=artifact_path.parent)
+                try:
+                    with os.fdopen(tmp_fd, 'wb') as f:
+                        f.write(content)
+                        f.flush()
+                        os.fsync(f.fileno())
+                    artifact_path.unlink()
+                    Path(tmp_name).rename(artifact_path)
+                except Exception:
+                    os.unlink(tmp_name)
+                    raise
 
                 restored += 1
 

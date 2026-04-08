@@ -211,11 +211,24 @@ class DecisionCapture:
         """Infer operation from decision type for ML labeling."""
         return OPERATION_MAP.get(decision_type, f"decide_{decision_type}")
 
+    def close(self):
+        """Explicitly close all stream file handles."""
+        for attr in ('_stream_file', '_legacy_stream_file', '_run_stream_file'):
+            fh = getattr(self, attr, None)
+            if fh and not fh.closed:
+                try:
+                    fh.flush()
+                    fh.close()
+                except OSError:
+                    pass
+            setattr(self, attr, None)
+
     def _write_with_facade(self, line: str) -> bool:
         """
         Write decision to all locations using WriteFacade for atomicity.
 
         Phase 0.5: Centralized write discipline with transaction semantics.
+        Uses append-only writes to avoid read-modify-write race conditions.
 
         Args:
             line: JSON line to write
@@ -251,13 +264,8 @@ class DecisionCapture:
 
             success = True
             for path in paths:
-                # Read existing content if file exists
-                existing = ""
-                if path.exists():
-                    existing = path.read_text()
-
-                # Append new line
-                result = facade.write(path, existing + line)
+                # Append-only write: avoids read-modify-write race condition
+                result = facade.append(path, line)
                 if not result.success:
                     success = False
                     break
@@ -274,8 +282,8 @@ class DecisionCapture:
             print(f"Warning: WriteFacade transaction failed: {e}", file=sys.stderr)
             try:
                 facade.rollback_transaction()
-            except Exception:
-                pass
+            except Exception as rollback_err:
+                print(f"Warning: WriteFacade rollback also failed: {rollback_err}", file=sys.stderr)
             return False
 
     def set_module_context(
@@ -297,79 +305,41 @@ class DecisionCapture:
             f"{self.module_id}_{self.session_id}".encode()
         ).hexdigest()[:12]
 
-    def log_decision(
+    def _build_record(
         self,
         decision_type: str,
         decision: str,
         rationale: str,
-        operation: Optional[str] = None,
-        alternatives_considered: Optional[List[str]] = None,
-        context: Optional[str] = None,
-        confidence: Optional[float] = None,
-        ml_features: Optional[MLFeatures] = None,
-        inputs_ref: Optional[List[InputRef]] = None,
-        prompt_ref: Optional[str] = None,
-        outcome: Optional[OutcomeSignals] = None,
-        # Phase 0 Hardening: New optional fields
-        task_id: Optional[str] = None,
-        is_default: bool = False,
-        outputs: Optional[List[OutputArtifact]] = None,
+        operation: Optional[str],
+        alternatives_considered: Optional[List[str]],
+        context: Optional[str],
+        confidence: Optional[float],
+        ml_features: Optional[MLFeatures],
+        inputs_ref: Optional[List[InputRef]],
+        prompt_ref: Optional[str],
+        outcome: Optional[OutcomeSignals],
+        task_id: Optional[str],
+        is_default: bool,
+        outputs: Optional[List[OutputArtifact]],
         **kwargs
-    ):
-        """
-        Log a decision point with ML-trainable fields.
-
-        Decision types:
-        - research_approach: How research was conducted
-        - source_selection: Which sources were chosen
-        - content_structure: How content is organized
-        - content_depth: Level of detail decisions
-        - pedagogical_strategy: Teaching approach choices
-        - accessibility_measures: WCAG compliance decisions
-        - textbook_integration: How textbook content was used
-        - existing_content_usage: How existing IMSCC was incorporated
-        - question_generation: Assessment question creation
-        - distractor_generation: MCQ distractor creation
-        - validation_result: Quality validation outcomes
-
-        ML fields:
-        - operation: Explicit action label (inferred if not provided)
-        - ml_features: Categorical fields for ML training
-        - inputs_ref: References to source materials used
-        - prompt_ref: Prompt template version/hash
-        - outcome: Outcome signals for preference training
-
-        Phase 0 Hardening fields:
-        - task_id: Orchestrator task ID for cross-linking
-        - is_default: True if this captures a non-decision (default used)
-        - outputs: Output artifact references (pointers, not blobs)
-        """
-        # Phase 0 Hardening: Get event_id and seq
+    ) -> Dict[str, Any]:
+        """Build a decision record dict from parameters."""
         seq, event_id = get_sequence_for_context(self.run_id if self._run_context else None)
 
-        # Assess rationale quality
         rationale_length = len(rationale) if rationale else 0
         quality_level = self._assess_quality(rationale_length, inputs_ref, alternatives_considered, decision_type)
-
-        # Use task_id from parameter or instance
         effective_task_id = task_id or self.task_id
 
         record = {
-            # Phase 0 Hardening: Event identification
             "event_id": event_id,
             "seq": seq,
-            # Stable IDs for linking
             "run_id": self.run_id,
             "course_id": self.course_id,
             "module_id": self.module_id,
             "artifact_id": self.artifact_id,
-            # Phase 0 Hardening: Cross-link to orchestrator
             "task_id": effective_task_id,
-            # Tool identification
             "tool": self.tool,
-            # Explicit operation
             "operation": operation or self._infer_operation(decision_type),
-            # Core decision fields
             "timestamp": datetime.now().isoformat(),
             "phase": self.phase,
             "decision_type": decision_type,
@@ -378,18 +348,12 @@ class DecisionCapture:
             "alternatives_considered": alternatives_considered or [],
             "context": context,
             "confidence": confidence,
-            # Phase 0 Hardening: Non-decision flag
             "is_default": is_default,
-            # ML features (categorical)
             "ml_features": asdict(ml_features) if ml_features else {},
-            # Input references (enhanced with hash_algorithm)
             "inputs_ref": [asdict(ref) for ref in (inputs_ref or [])],
             "prompt_ref": prompt_ref,
-            # Phase 0 Hardening: Output artifact pointers
             "outputs": [asdict(out) for out in (outputs or [])],
-            # Outcome signals
             "outcome": asdict(outcome) if outcome else None,
-            # Quality metadata
             "metadata": {
                 "rationale_length": rationale_length,
                 "quality_level": quality_level,
@@ -398,10 +362,7 @@ class DecisionCapture:
             }
         }
 
-        # Quality gating: tag decisions below "proficient" so downstream
-        # consumers (e.g., training data export) can filter them out.
-        # Decisions with quality_gate_passed=False should not be used
-        # for fine-tuning or RAG corpus assembly.
+        # Quality gating for training corpus filtering
         from .quality import check_quality_acceptable
         quality_ok, quality_reason = check_quality_acceptable(
             quality_level, minimum_level="proficient"
@@ -417,60 +378,91 @@ class DecisionCapture:
                 file=sys.stderr,
             )
 
-        # Validate record before storing (if validation enabled)
-        if VALIDATE_DECISIONS:
-            try:
-                from .validation import validate_decision
-                is_valid, issues = validate_decision(record, self.tool)
-                if not is_valid:
-                    import sys
-                    print(f"Warning: Decision validation issues: {issues}", file=sys.stderr)
-                    record["metadata"]["validation_issues"] = issues
-            except ImportError:
-                pass  # Validation module not available
-            except Exception as e:
+        return record
+
+    def _validate_record(self, record: Dict[str, Any]) -> None:
+        """Validate a decision record, adding issues to metadata if found."""
+        if not VALIDATE_DECISIONS:
+            return
+        try:
+            from .validation import validate_decision
+            is_valid, issues = validate_decision(record, self.tool)
+            if not is_valid:
                 import sys
-                print(f"Warning: Decision validation error: {e}", file=sys.stderr)
+                print(f"Warning: Decision validation issues: {issues}", file=sys.stderr)
+                record["metadata"]["validation_issues"] = issues
+        except ImportError:
+            pass  # Validation module not available
+        except Exception as e:
+            import sys
+            print(f"Warning: Decision validation error: {e}", file=sys.stderr)
 
+    def _write_to_streams(self, record: Dict[str, Any]) -> None:
+        """Write a decision record to all configured stream locations."""
+        if not self.streaming_mode:
+            return
+
+        line = json.dumps(record) + '\n'
+
+        # Phase 0.5: Try WriteFacade first for atomic writes
+        if self._write_with_facade(line):
+            return
+
+        # Fall back to legacy triple-write
+        for fh, label in [
+            (self._stream_file, "decision stream"),
+            (self._legacy_stream_file, "legacy stream"),
+            (self._run_stream_file, "run stream"),
+        ]:
+            if fh:
+                try:
+                    fh.write(line)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                except OSError as e:
+                    import sys
+                    print(f"Warning: {label} write failed: {e}", file=sys.stderr)
+
+    def log_decision(
+        self,
+        decision_type: str,
+        decision: str,
+        rationale: str,
+        operation: Optional[str] = None,
+        alternatives_considered: Optional[List[str]] = None,
+        context: Optional[str] = None,
+        confidence: Optional[float] = None,
+        ml_features: Optional[MLFeatures] = None,
+        inputs_ref: Optional[List[InputRef]] = None,
+        prompt_ref: Optional[str] = None,
+        outcome: Optional[OutcomeSignals] = None,
+        task_id: Optional[str] = None,
+        is_default: bool = False,
+        outputs: Optional[List[OutputArtifact]] = None,
+        **kwargs
+    ):
+        """Log a decision point with ML-trainable fields."""
+        record = self._build_record(
+            decision_type=decision_type,
+            decision=decision,
+            rationale=rationale,
+            operation=operation,
+            alternatives_considered=alternatives_considered,
+            context=context,
+            confidence=confidence,
+            ml_features=ml_features,
+            inputs_ref=inputs_ref,
+            prompt_ref=prompt_ref,
+            outcome=outcome,
+            task_id=task_id,
+            is_default=is_default,
+            outputs=outputs,
+            **kwargs
+        )
+
+        self._validate_record(record)
         self.decisions.append(record)
-
-        # Stream immediately if in streaming mode (triple-write in hardened mode)
-        if self.streaming_mode:
-            line = json.dumps(record) + '\n'
-
-            # Phase 0.5: Try WriteFacade first for atomic writes
-            if self._write_with_facade(line):
-                # WriteFacade handled the write with transaction semantics
-                return
-
-            # Fall back to legacy triple-write
-            if self._stream_file:
-                # Primary location
-                self._stream_file.write(line)
-                self._stream_file.flush()
-                try:
-                    os.fsync(self._stream_file.fileno())
-                except OSError as e:
-                    import sys
-                    print(f"Warning: fsync failed for decision stream: {e}", file=sys.stderr)
-            # Legacy location
-            if self._legacy_stream_file:
-                try:
-                    self._legacy_stream_file.write(line)
-                    self._legacy_stream_file.flush()
-                    os.fsync(self._legacy_stream_file.fileno())
-                except OSError as e:
-                    import sys
-                    print(f"Warning: legacy stream write failed: {e}", file=sys.stderr)
-            # Phase 0 Hardening: Run-specific location
-            if self._run_stream_file:
-                try:
-                    self._run_stream_file.write(line)
-                    self._run_stream_file.flush()
-                    os.fsync(self._run_stream_file.fileno())
-                except OSError as e:
-                    import sys
-                    print(f"Warning: run stream write failed: {e}", file=sys.stderr)
+        self._write_to_streams(record)
 
     def _assess_quality(
         self,
@@ -590,16 +582,7 @@ class DecisionCapture:
 
     def save(self, filename: Optional[str] = None) -> Path:
         """Save the decision capture to JSON file (triple-write in hardened mode)."""
-        if self._stream_file:
-            self._stream_file.close()
-            self._stream_file = None
-        if self._legacy_stream_file:
-            self._legacy_stream_file.close()
-            self._legacy_stream_file = None
-        # Phase 0 Hardening: Close run stream file
-        if self._run_stream_file:
-            self._run_stream_file.close()
-            self._run_stream_file = None
+        self.close()
 
         if filename is None:
             filename = f"decisions_{self.session_id}.json"
@@ -679,22 +662,10 @@ class DecisionCapture:
         return result
 
     def __del__(self):
-        if hasattr(self, '_stream_file') and self._stream_file and not self._stream_file.closed:
-            try:
-                self._stream_file.close()
-            except Exception:
-                pass
-        if hasattr(self, '_legacy_stream_file') and self._legacy_stream_file and not self._legacy_stream_file.closed:
-            try:
-                self._legacy_stream_file.close()
-            except Exception:
-                pass
-        # Phase 0 Hardening: Close run stream file
-        if hasattr(self, '_run_stream_file') and self._run_stream_file and not self._run_stream_file.closed:
-            try:
-                self._run_stream_file.close()
-            except Exception:
-                pass
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def __enter__(self):
         return self

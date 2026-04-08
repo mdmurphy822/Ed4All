@@ -267,6 +267,83 @@ class WriteFacade:
                 error=f"Write failed: {e}",
             )
 
+    def append(
+        self,
+        path: Union[str, Path],
+        content: Union[str, bytes],
+        encoding: str = "utf-8",
+    ) -> WriteResult:
+        """
+        Append content to a file atomically using file locking.
+
+        Unlike write(), this opens the file in append mode with an exclusive
+        lock, avoiding read-modify-write race conditions.
+
+        Args:
+            path: Path to append to
+            content: Content to append (str or bytes)
+            encoding: Encoding for string content
+
+        Returns:
+            WriteResult with operation status
+        """
+        import fcntl
+        path = Path(path)
+
+        try:
+            self.validate_path(path)
+
+            if isinstance(content, str):
+                content_bytes = content.encode(encoding)
+            else:
+                content_bytes = content
+
+            content_hash = hashlib.sha256(content_bytes).hexdigest()
+
+            if self._in_transaction:
+                self._backup_for_rollback(path)
+
+            path.parent.mkdir(parents=True, exist_ok=True)
+
+            # Append with exclusive lock — no read-modify-write race
+            with open(path, 'ab') as f:
+                fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+                try:
+                    f.write(content_bytes)
+                    f.flush()
+                    os.fsync(f.fileno())
+                finally:
+                    fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+
+            result = WriteResult(
+                success=True,
+                path=str(path),
+                bytes_written=len(content_bytes),
+                content_hash=f"sha256:{content_hash}",
+            )
+
+            if self._in_transaction:
+                self._transaction_writes.append(path)
+
+            if self.audit_callback:
+                self.audit_callback(result)
+
+            return result
+
+        except (PathSecurityError, WriteValidationError) as e:
+            return WriteResult(
+                success=False,
+                path=str(path),
+                error=str(e),
+            )
+
+        except Exception as e:
+            return WriteResult(
+                success=False,
+                path=str(path),
+                error=f"Append failed: {e}",
+            )
+
     def write_json(
         self,
         path: Union[str, Path],

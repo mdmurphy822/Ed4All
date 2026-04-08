@@ -8,6 +8,7 @@ to prevent race conditions in concurrent access scenarios.
 import fcntl
 import json
 import os
+import tempfile
 import threading
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -37,24 +38,33 @@ def atomic_write_json(path: Path, data: Dict[str, Any], indent: int = 2) -> None
         TypeError: If data is not JSON serializable
     """
     path = Path(path)
-    temp_path = path.with_suffix('.tmp')
 
     # Ensure parent directory exists
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(temp_path, 'w') as f:
-        # Acquire exclusive lock
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        try:
-            json.dump(data, f, indent=indent)
-            f.flush()
-            os.fsync(f.fileno())  # Force disk write
-        finally:
-            # Release lock
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    # Use unique temp file to avoid collision when multiple writers target the same path
+    fd, temp_name = tempfile.mkstemp(dir=path.parent, suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w') as f:
+            # Acquire exclusive lock
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                json.dump(data, f, indent=indent)
+                f.flush()
+                os.fsync(f.fileno())  # Force disk write
+            finally:
+                # Release lock
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
-    # Atomic rename (POSIX guarantees atomicity)
-    os.rename(temp_path, path)
+        # Atomic rename (POSIX guarantees atomicity)
+        os.rename(temp_name, path)
+    except Exception:
+        # Clean up temp file on failure
+        try:
+            os.unlink(temp_name)
+        except OSError:
+            pass
+        raise
 
 
 def atomic_read_json(path: Path, default: Optional[Dict] = None) -> Dict[str, Any]:
