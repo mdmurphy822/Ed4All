@@ -371,6 +371,11 @@ class TestAuditCallback:
 class TestAppend:
     """Test WriteFacade.append() method."""
 
+    @pytest.fixture
+    def facade(self, tmp_path):
+        """Create facade with tmp_path as allowed."""
+        return WriteFacade(allowed_paths=[tmp_path])
+
     @pytest.mark.unit
     def test_append_creates_file(self, facade, tmp_path):
         """append() should create file if it doesn't exist."""

@@ -9,10 +9,17 @@ Phase 0 Hardening - Requirement 2: Execution Model Hardening
 import json
 import logging
 import os
+import sys
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+_CHECKPOINT_DIR = Path(__file__).resolve().parent.parent.parent
+if str(_CHECKPOINT_DIR) not in sys.path:
+    sys.path.insert(0, str(_CHECKPOINT_DIR))
+
+from lib.secure_paths import sanitize_path_component  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +93,7 @@ class CheckpointManager:
 
     def _checkpoint_path(self, phase_name: str) -> Path:
         """Get path for checkpoint file."""
-        safe_name = phase_name.replace("/", "_").replace("\\", "_")
+        safe_name = sanitize_path_component(phase_name, allow_dots=True)
         return self.checkpoints_dir / f"{safe_name}_checkpoint.json"
 
     def start_phase(

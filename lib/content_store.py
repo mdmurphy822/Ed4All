@@ -616,7 +616,7 @@ class ContentStore:
             result.success = True
             logger.info(f"Deduplication complete: {result.summary}")
 
-        except Exception as e:
+        except (OSError, ValueError) as e:
             result.errors.append(str(e))
             logger.error(f"Deduplication failed: {e}")
 

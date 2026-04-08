@@ -8,7 +8,7 @@
   "properties": {
     "run_id": {
       "type": "string",
-      "pattern": "^RUN_[0-9]{8}_[0-9]{6}_[a-f0-9]{8}$",
+      "pattern": "^[A-Za-z0-9_]+$",
       "description": "Run this event belongs to"
     },
     "event_id": {

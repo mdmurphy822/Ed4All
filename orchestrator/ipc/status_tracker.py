@@ -110,8 +110,10 @@ class StatusTracker:
         try:
             with open(status_path) as f:
                 data = json.load(f)
+                if not isinstance(data, dict):
+                    return None
                 return StatusUpdate(**data)
-        except (OSError, json.JSONDecodeError):
+        except (OSError, json.JSONDecodeError, TypeError):
             return None
 
     def update_status(

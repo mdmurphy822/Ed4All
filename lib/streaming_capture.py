@@ -22,6 +22,7 @@ Adapted from INTEGRATOR CURRICULUM streaming_capture.py
 
 import hashlib
 import json
+import logging
 import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -33,6 +34,8 @@ from .decision_capture import InputRef, MLFeatures, OutcomeSignals
 from .libv2_storage import LibV2Storage
 from .paths import TRAINING_DIR as LEGACY_TRAINING_DIR
 from .quality import assess_decision_quality
+
+logger = logging.getLogger(__name__)
 
 # Phase 0 hardening imports (graceful fallback for backwards compatibility)
 try:
@@ -265,25 +268,23 @@ class StreamingDecisionCapture:
         """Ensure stream files are open (triple-write to all locations)."""
         if self._file is None:
             try:
-                self._file = open(self.stream_path, 'a')
+                self._file = open(self.stream_path, 'a', encoding='utf-8')
             except OSError as e:
                 raise RuntimeError(f"Failed to open stream file {self.stream_path}: {e}") from e
 
             # Also open legacy file for dual-write
             try:
-                self._legacy_file = open(self.legacy_stream_path, 'a')
+                self._legacy_file = open(self.legacy_stream_path, 'a', encoding='utf-8')
             except OSError as e:
-                import sys
-                print(f"Warning: Failed to open legacy stream file {self.legacy_stream_path}: {e}", file=sys.stderr)
+                logger.warning("Failed to open legacy stream file %s: %s", self.legacy_stream_path, e)
                 self._legacy_file = None
 
             # Phase 0 Hardening: Open run-specific file for triple-write
             if self._run_stream_path:
                 try:
-                    self._run_file = open(self._run_stream_path, 'a')
+                    self._run_file = open(self._run_stream_path, 'a', encoding='utf-8')
                 except OSError as e:
-                    import sys
-                    print(f"Warning: Failed to open run stream file {self._run_stream_path}: {e}", file=sys.stderr)
+                    logger.warning("Failed to open run stream file %s: %s", self._run_stream_path, e)
                     self._run_file = None
 
             self._started_at = datetime.now().isoformat()

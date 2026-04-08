@@ -250,7 +250,9 @@ def register_courseforge_tools(mcp):
             Generation status and content paths
         """
         try:
-            project_path = EXPORTS_PATH / project_id
+            project_path = validate_path_within_root(
+                EXPORTS_PATH / project_id, EXPORTS_PATH
+            )
             if not project_path.exists():
                 return json.dumps({"error": f"Project not found: {project_id}"})
 
@@ -324,7 +326,9 @@ def register_courseforge_tools(mcp):
             IMSCC package path and validation report
         """
         try:
-            project_path = EXPORTS_PATH / project_id
+            project_path = validate_path_within_root(
+                EXPORTS_PATH / project_id, EXPORTS_PATH
+            )
             if not project_path.exists():
                 return json.dumps({"error": f"Project not found: {project_id}"})
 
@@ -446,7 +450,9 @@ def register_courseforge_tools(mcp):
             Remediation report with before/after metrics
         """
         try:
-            project_path = EXPORTS_PATH / project_id
+            project_path = validate_path_within_root(
+                EXPORTS_PATH / project_id, EXPORTS_PATH
+            )
             if not project_path.exists():
                 return json.dumps({"error": f"Project not found: {project_id}"})
 
