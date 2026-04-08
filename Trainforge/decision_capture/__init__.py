@@ -1,11 +1,11 @@
 """Trainforge decision capture components."""
 
 from .decision_logger import (
-    TrainforgeDecisionLogger,
-    trainforge_capture_session,
+    AlignmentCheck,
     QuestionData,
     RAGMetrics,
-    AlignmentCheck,
+    TrainforgeDecisionLogger,
+    trainforge_capture_session,
 )
 
 __all__ = [

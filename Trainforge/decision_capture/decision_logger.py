@@ -10,7 +10,6 @@ distractor creation, and validation for Claude training data.
 import logging
 import sys
 from contextlib import contextmanager
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -21,14 +20,12 @@ ED4ALL_ROOT = Path(__file__).resolve().parents[2]  # decision_capture/decision_l
 if str(ED4ALL_ROOT) not in sys.path:
     sys.path.insert(0, str(ED4ALL_ROOT))
 
-from lib.trainforge_capture import (
-    TrainforgeDecisionCapture,
+from lib.trainforge_capture import (  # noqa: E402
+    AlignmentCheck,
     QuestionData,
     RAGMetrics,
-    AlignmentCheck,
-    create_trainforge_capture
+    TrainforgeDecisionCapture,
 )
-from lib.decision_capture import InputRef, MLFeatures
 
 
 class SessionError(Exception):
@@ -97,17 +94,14 @@ class TrainforgeDecisionLogger:
         self._capture.phase = f"trainforge-{phase}"
         return self
 
-    def end_session(self) -> Optional[Path]:
+    def end_session(self) -> None:
         """
-        End the current session and save captures.
-
-        Returns:
-            Path to saved capture file
+        End the current session and finalize captures.
         """
         if self._capture:
             try:
-                result = self._capture.save()
-                return result
+                self._capture.finalize()
+                return None
             finally:
                 self._capture = None
         return None
@@ -491,13 +485,15 @@ class TrainforgeDecisionLogger:
 
     def get_decision_count(self) -> int:
         """Get the number of decisions logged in this session."""
-        return len(self._capture.decisions) if self._capture else 0
+        return self._capture._decision_count if self._capture else 0
 
     def validate_session(self) -> Dict[str, Any]:
         """Validate the current session has sufficient decisions."""
         if self._capture:
-            return self._capture.validate()
-        return {"valid": False, "issues": ["No active session"]}
+            count = self._capture._decision_count
+            valid = count > 0
+            return {"valid": valid, "decision_count": count, "issues": [] if valid else ["No decisions logged"]}
+        return {"valid": False, "decision_count": 0, "issues": ["No active session"]}
 
 
 @contextmanager

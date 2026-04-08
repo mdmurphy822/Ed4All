@@ -25,12 +25,12 @@ Usage:
 """
 
 from .libv2_bridge import (
-    TrainforgeRAG,
     CrossCourseRAG,
     RAGChunk,
     RetrievalMetrics,
-    get_rag_for_course,
+    TrainforgeRAG,
     get_cross_course_rag,
+    get_rag_for_course,
 )
 
 __all__ = [

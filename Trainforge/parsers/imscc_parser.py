@@ -5,13 +5,12 @@ Extracts content from IMSCC (IMS Common Cartridge) packages for assessment gener
 Supports packages from Brightspace, Canvas, Blackboard, Moodle, and generic IMSCC.
 """
 
-import json
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 
 # Add project root to path for imports
 _PARSERS_DIR = Path(__file__).resolve().parent
@@ -20,7 +19,7 @@ _PROJECT_ROOT = _TRAINFORGE_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.secure_paths import safe_extract_zip
+from lib.secure_paths import safe_extract_zip  # noqa: E402
 
 
 @dataclass
