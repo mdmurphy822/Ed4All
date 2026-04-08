@@ -1,0 +1,665 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Bootstrap 5 Migration Schema",
+  "description": "Schema defining the migration path from Bootstrap 4.3.1 to Bootstrap 5 based on research findings from educational templates",
+  "version": "1.0.0",
+  "type": "object",
+  "properties": {
+    "migrationPlan": {
+      "type": "object",
+      "properties": {
+        "currentVersion": {
+          "type": "string",
+          "enum": ["Bootstrap_4.3.1", "Bootstrap_4.5"],
+          "default": "Bootstrap_4.3.1",
+          "description": "Current Bootstrap version in use"
+        },
+        "targetVersion": {
+          "type": "string",
+          "enum": ["Bootstrap_5.0", "Bootstrap_5.1", "Bootstrap_5.2", "Bootstrap_5.3"],
+          "default": "Bootstrap_5.0",
+          "description": "Target Bootstrap version"
+        },
+        "migrationPhase": {
+          "type": "string",
+          "enum": ["planning", "testing", "partial_migration", "full_migration", "validation"],
+          "default": "planning",
+          "description": "Current phase of migration process"
+        },
+        "compatibilityTesting": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether compatibility testing has been completed"
+        }
+      },
+      "required": ["currentVersion", "targetVersion", "migrationPhase"]
+    },
+    "breakingChanges": {
+      "type": "object",
+      "description": "Bootstrap 5 breaking changes that affect educational templates",
+      "properties": {
+        "jqueryRemoval": {
+          "type": "object",
+          "properties": {
+            "affected": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether this change affects our templates"
+            },
+            "impact": {
+              "type": "string",
+              "enum": ["low", "medium", "high", "critical"],
+              "default": "low",
+              "description": "Impact level for educational templates (low because we use minimal JavaScript)"
+            },
+            "resolution": {
+              "type": "string",
+              "default": "Use vanilla JavaScript or Bootstrap 5 native components",
+              "description": "How to resolve this breaking change"
+            },
+            "priority": {
+              "type": "string",
+              "enum": ["immediate", "high", "medium", "low"],
+              "default": "low",
+              "description": "Priority for addressing this change"
+            }
+          }
+        },
+        "utilityAPI": {
+          "type": "object",
+          "properties": {
+            "affected": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether utility classes changes affect our templates"
+            },
+            "impact": {
+              "type": "string",
+              "enum": ["low", "medium", "high", "critical"],
+              "default": "medium",
+              "description": "Impact level for educational templates"
+            },
+            "benefits": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "Improved color utilities",
+                "Better spacing utilities",
+                "Enhanced typography utilities",
+                "More flexible utility generation"
+              ],
+              "description": "Benefits of Bootstrap 5 utility API for educational content"
+            },
+            "resolution": {
+              "type": "string",
+              "default": "Update utility class usage to Bootstrap 5 syntax",
+              "description": "How to leverage new utility API"
+            }
+          }
+        },
+        "colorSystem": {
+          "type": "object",
+          "properties": {
+            "affected": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether color system changes affect our templates"
+            },
+            "impact": {
+              "type": "string",
+              "enum": ["low", "medium", "high", "critical"],
+              "default": "medium",
+              "description": "Impact level for educational templates"
+            },
+            "improvements": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "Better color contrast ratios",
+                "Improved accessibility color combinations",
+                "More educational-friendly color palette",
+                "Enhanced semantic color meanings"
+              ],
+              "description": "Color system improvements beneficial for educational content"
+            }
+          }
+        },
+        "formControls": {
+          "type": "object",
+          "properties": {
+            "affected": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether form control changes affect our templates"
+            },
+            "impact": {
+              "type": "string",
+              "enum": ["low", "medium", "high", "critical"],
+              "default": "high",
+              "description": "Impact level for educational templates with interactive elements"
+            },
+            "benefits": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "Improved accessibility for form elements",
+                "Better custom checkbox/radio styling",
+                "Enhanced focus indicators",
+                "More consistent form styling across browsers"
+              ],
+              "description": "Form control improvements for educational interactivity"
+            }
+          }
+        }
+      }
+    },
+    "educationalTemplateUpdates": {
+      "type": "object",
+      "description": "Specific updates needed for educational templates",
+      "properties": {
+        "courseCardLayout": {
+          "type": "object",
+          "properties": {
+            "bootstrap4Syntax": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "card-deck",
+                "card-columns", 
+                "media object classes"
+              ],
+              "description": "Bootstrap 4 syntax that needs updating"
+            },
+            "bootstrap5Replacement": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "row row-cols-* for card grids",
+                "CSS Grid utilities",
+                "Flexbox utilities for media objects"
+              ],
+              "description": "Bootstrap 5 replacements for educational card layouts"
+            },
+            "improvementOpportunities": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "Better responsive card grids",
+                "Improved spacing utilities",
+                "Enhanced card hover effects",
+                "More accessible card navigation"
+              ],
+              "description": "Educational improvements available with Bootstrap 5"
+            }
+          }
+        },
+        "accessibilityEnhancements": {
+          "type": "object",
+          "properties": {
+            "focusIndicators": {
+              "type": "object",
+              "properties": {
+                "bootstrap5Improvements": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": [
+                    "Better default focus indicators",
+                    "Improved contrast ratios",
+                    "More consistent focus styling",
+                    "Enhanced keyboard navigation"
+                  ],
+                  "description": "Bootstrap 5 focus indicator improvements"
+                }
+              }
+            },
+            "colorContrast": {
+              "type": "object",
+              "properties": {
+                "wcag22Compliance": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Bootstrap 5 improved WCAG 2.2 compliance"
+                },
+                "contrastRatios": {
+                  "type": "object",
+                  "properties": {
+                    "primaryColors": {
+                      "type": "number",
+                      "minimum": 4.5,
+                      "default": 4.52,
+                      "description": "Bootstrap 5 primary color contrast ratio"
+                    },
+                    "secondaryColors": {
+                      "type": "number",
+                      "minimum": 4.5,
+                      "default": 4.68,
+                      "description": "Bootstrap 5 secondary color contrast ratio"
+                    },
+                    "successColors": {
+                      "type": "number",
+                      "minimum": 4.5,
+                      "default": 4.78,
+                      "description": "Bootstrap 5 success color contrast ratio"
+                    }
+                  }
+                }
+              }
+            },
+            "ariaSupport": {
+              "type": "object",
+              "properties": {
+                "improvedComponents": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": [
+                    "Better accordion ARIA support",
+                    "Improved modal accessibility",
+                    "Enhanced tooltip/popover ARIA",
+                    "More accessible dropdown menus"
+                  ],
+                  "description": "Bootstrap 5 ARIA improvements for educational components"
+                }
+              }
+            }
+          }
+        },
+        "interactiveComponents": {
+          "type": "object",
+          "properties": {
+            "accordion": {
+              "type": "object",
+              "properties": {
+                "bootstrap5Features": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": [
+                    "Improved animation performance",
+                    "Better accessibility support",
+                    "More customization options",
+                    "Enhanced keyboard navigation"
+                  ],
+                  "description": "Bootstrap 5 accordion improvements for educational content"
+                },
+                "educationalBenefits": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": [
+                    "Better content organization",
+                    "Improved reading experience",
+                    "Enhanced mobile usability",
+                    "More accessible content navigation"
+                  ],
+                  "description": "Educational benefits of Bootstrap 5 accordions"
+                }
+              }
+            },
+            "modals": {
+              "type": "object",
+              "properties": {
+                "brighspaceCompatibility": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Whether Bootstrap 5 modals work in Brightspace (likely not)"
+                },
+                "alternatives": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": [
+                    "Use collapsible sections instead",
+                    "Implement popover-style content",
+                    "Use accordion for expandable information",
+                    "Create custom overlay with CSS"
+                  ],
+                  "description": "Alternatives to modals for Brightspace compatibility"
+                }
+              }
+            },
+            "tooltips": {
+              "type": "object",
+              "properties": {
+                "educationalUseCase": {
+                  "type": "string",
+                  "default": "Key term definitions and additional context",
+                  "description": "Primary use case for tooltips in educational content"
+                },
+                "bootstrap5Improvements": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "default": [
+                    "Better positioning algorithms",
+                    "Improved accessibility support",
+                    "More customization options",
+                    "Enhanced mobile support"
+                  ],
+                  "description": "Bootstrap 5 tooltip improvements"
+                },
+                "brighspaceCompatibility": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Whether Bootstrap 5 tooltips work in Brightspace"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "migrationStrategy": {
+      "type": "object",
+      "properties": {
+        "phaseOne": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "default": "CSS Framework Update",
+              "description": "Phase 1 title"
+            },
+            "description": {
+              "type": "string",
+              "default": "Update Bootstrap CSS from 4.3.1 to 5.0 and test basic compatibility",
+              "description": "Phase 1 description"
+            },
+            "tasks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "Update Bootstrap CSS CDN links to version 5.0",
+                "Test basic template rendering",
+                "Verify color scheme compatibility",
+                "Check responsive grid behavior",
+                "Validate accessibility features"
+              ],
+              "description": "Phase 1 tasks"
+            },
+            "successCriteria": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "All existing templates render correctly",
+                "No visual regressions",
+                "Accessibility maintained or improved",
+                "Mobile responsiveness preserved"
+              ],
+              "description": "Phase 1 success criteria"
+            }
+          }
+        },
+        "phaseTwo": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "default": "Component Migration",
+              "description": "Phase 2 title"
+            },
+            "description": {
+              "type": "string",
+              "default": "Migrate existing components to Bootstrap 5 syntax and patterns",
+              "description": "Phase 2 description"
+            },
+            "tasks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "Update card deck syntax to row/col system",
+                "Migrate form controls to Bootstrap 5 syntax",
+                "Update utility classes to new naming",
+                "Enhance accordion components",
+                "Improve button and badge styling"
+              ],
+              "description": "Phase 2 tasks"
+            },
+            "riskMitigation": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "Maintain fallback templates during migration",
+                "Test each component change individually",
+                "Validate Brightspace compatibility",
+                "Ensure accessibility compliance"
+              ],
+              "description": "Phase 2 risk mitigation strategies"
+            }
+          }
+        },
+        "phaseThree": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "string",
+              "default": "Enhancement Integration",
+              "description": "Phase 3 title"
+            },
+            "description": {
+              "type": "string",
+              "default": "Implement new Bootstrap 5 features and educational enhancements",
+              "description": "Phase 3 description"
+            },
+            "tasks": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "Implement new utility API features",
+                "Add enhanced color system usage",
+                "Integrate improved accessibility features",
+                "Create new educational component patterns",
+                "Optimize for performance and usability"
+              ],
+              "description": "Phase 3 tasks"
+            },
+            "educationalImprovements": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "Better visual hierarchy with new typography",
+                "Enhanced interactive elements",
+                "Improved mobile learning experience",
+                "More accessible educational content",
+                "Better course card presentations"
+              ],
+              "description": "Educational improvements from Bootstrap 5"
+            }
+          }
+        }
+      }
+    },
+    "testingRequirements": {
+      "type": "object",
+      "properties": {
+        "brighspaceCompatibility": {
+          "type": "object",
+          "properties": {
+            "testCases": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "IMSCC import with Bootstrap 5 templates",
+                "CSS rendering in Brightspace content area",
+                "Interactive component functionality",
+                "Mobile responsive behavior",
+                "Accessibility tool compatibility",
+                "Print-friendly formatting"
+              ],
+              "description": "Brightspace compatibility test cases"
+            },
+            "validationSteps": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "Import IMSCC package into Brightspace sandbox",
+                "Test on multiple devices and browsers",
+                "Validate with screen reader software",
+                "Check color contrast with accessibility tools",
+                "Verify interactive elements work correctly"
+              ],
+              "description": "Validation steps for Brightspace compatibility"
+            }
+          }
+        },
+        "accessibilityValidation": {
+          "type": "object",
+          "properties": {
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "WAVE Web Accessibility Evaluator",
+                "axe DevTools",
+                "Lighthouse accessibility audit",
+                "NVDA screen reader testing",
+                "Color contrast analyzers"
+              ],
+              "description": "Accessibility validation tools"
+            },
+            "requirements": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "WCAG 2.2 AA compliance maintained",
+                "Keyboard navigation functionality",
+                "Screen reader compatibility",
+                "Color contrast ratios met",
+                "Focus indicators clearly visible"
+              ],
+              "description": "Accessibility requirements"
+            }
+          }
+        },
+        "performanceMetrics": {
+          "type": "object",
+          "properties": {
+            "loadingSpeed": {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "default": "< 2 seconds for template rendering",
+                  "description": "Target loading speed"
+                },
+                "measurement": {
+                  "type": "string",
+                  "default": "Time to first meaningful paint",
+                  "description": "Performance measurement method"
+                }
+              }
+            },
+            "cssSize": {
+              "type": "object",
+              "properties": {
+                "bootstrap4Size": {
+                  "type": "string",
+                  "default": "~180KB (minified)",
+                  "description": "Bootstrap 4 CSS size"
+                },
+                "bootstrap5Size": {
+                  "type": "string",
+                  "default": "~160KB (minified)",
+                  "description": "Bootstrap 5 CSS size (smaller due to optimizations)"
+                },
+                "embeddedSize": {
+                  "type": "string",
+                  "default": "~20KB (critical CSS only)",
+                  "description": "Embedded CSS size for educational templates"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "rollbackPlan": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether rollback plan is available"
+        },
+        "triggers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "Brightspace compatibility issues",
+            "Accessibility regression",
+            "Performance degradation",
+            "Visual rendering problems"
+          ],
+          "description": "Triggers that would initiate rollback"
+        },
+        "steps": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "Switch CDN links back to Bootstrap 4.3.1",
+            "Restore previous template versions",
+            "Re-validate all educational content",
+            "Notify stakeholders of rollback",
+            "Plan alternative migration approach"
+          ],
+          "description": "Rollback execution steps"
+        },
+        "timeline": {
+          "type": "string",
+          "default": "4 hours maximum for complete rollback",
+          "description": "Maximum time for rollback completion"
+        }
+      }
+    }
+  },
+  "required": [
+    "migrationPlan", 
+    "breakingChanges", 
+    "educationalTemplateUpdates", 
+    "migrationStrategy", 
+    "testingRequirements"
+  ]
+}

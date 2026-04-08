@@ -1,0 +1,380 @@
+<!--
+    Template Name: Card Layout Template
+    Category: component
+    WCAG Compliance: 2.2 AA
+    Brightspace Compatible: Yes
+
+    Template Variables:
+    - {{CARD_1_TITLE}}: Card heading
+    - {{CARD_1_CONTENT}}: Card body content
+    - {{CARD_1_LINK}}: Optional link URL
+    - {{CARD_1_LINK_TEXT}}: Link text (default: "Learn more")
+    - {{CARD_1_IMAGE}}: Optional image URL
+    - {{CARD_1_IMAGE_ALT}}: Image alt text (required if image used)
+    - {{CARD_1_BADGE}}: Optional badge text (e.g., "New", "Required")
+    - Repeat pattern for additional cards (CARD_2_, CARD_3_, etc.)
+
+    Dependencies: None (self-contained)
+
+    Usage Notes:
+    - Responsive grid: 3 columns desktop, 2 tablet, 1 mobile
+    - Cards are equal height in each row
+    - Links are optional - remove link section if not needed
+    - Images are optional - remove figure if not needed
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Card Layout Component</title>
+    <style>
+        /* Courseforge CSS Variables */
+        :root {
+            --cf-primary: #2c5aa0;
+            --cf-primary-dark: #1e3d6f;
+            --cf-text: #212529;
+            --cf-text-muted: #6c757d;
+            --cf-background: #ffffff;
+            --cf-background-alt: #f8f9fa;
+            --cf-border: #dee2e6;
+            --cf-success-dark: #1e7e34;
+            --cf-success-light: #d4edda;
+            --cf-border-radius: 8px;
+            --cf-font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            --cf-space-2: 0.5rem;
+            --cf-space-3: 0.75rem;
+            --cf-space-4: 1rem;
+            --cf-space-5: 1.25rem;
+            --cf-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            --cf-shadow-hover: 0 4px 8px rgba(0, 0, 0, 0.12), 0 2px 4px rgba(0, 0, 0, 0.08);
+            --cf-transition: 200ms ease;
+        }
+
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: var(--cf-space-4);
+            font-family: var(--cf-font-family);
+            line-height: 1.6;
+            color: var(--cf-text);
+        }
+
+        /* ========================================
+           CARD GRID CONTAINER
+           ======================================== */
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: var(--cf-space-5);
+            margin: var(--cf-space-4) 0;
+        }
+
+        /* ========================================
+           CARD COMPONENT
+           ======================================== */
+        .card {
+            display: flex;
+            flex-direction: column;
+            background-color: var(--cf-background);
+            border: 1px solid var(--cf-border);
+            border-radius: var(--cf-border-radius);
+            box-shadow: var(--cf-shadow);
+            overflow: hidden;
+            transition: box-shadow var(--cf-transition), transform var(--cf-transition);
+        }
+
+        .card:hover {
+            box-shadow: var(--cf-shadow-hover);
+            transform: translateY(-2px);
+        }
+
+        /* Card with clickable area */
+        .card-link {
+            text-decoration: none;
+            color: inherit;
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+        }
+
+        .card-link:focus {
+            outline: 3px solid var(--cf-primary);
+            outline-offset: 2px;
+        }
+
+        .card-link:focus-visible {
+            outline: 3px solid var(--cf-primary);
+            outline-offset: 2px;
+        }
+
+        /* ========================================
+           CARD IMAGE
+           ======================================== */
+        .card-image {
+            margin: 0;
+            padding: 0;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .card-image img {
+            width: 100%;
+            height: 180px;
+            object-fit: cover;
+            display: block;
+        }
+
+        /* ========================================
+           CARD BADGE
+           ======================================== */
+        .card-badge {
+            position: absolute;
+            top: var(--cf-space-3);
+            right: var(--cf-space-3);
+            padding: var(--cf-space-2) var(--cf-space-3);
+            background-color: var(--cf-success-dark);
+            color: white;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            border-radius: var(--cf-border-radius);
+            letter-spacing: 0.05em;
+        }
+
+        .card-badge-new {
+            background-color: var(--cf-primary);
+        }
+
+        .card-badge-required {
+            background-color: #dc3545;
+        }
+
+        /* ========================================
+           CARD BODY
+           ======================================== */
+        .card-body {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: var(--cf-space-4);
+        }
+
+        .card-title {
+            margin: 0 0 var(--cf-space-3) 0;
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--cf-primary-dark);
+            line-height: 1.3;
+        }
+
+        .card-content {
+            flex: 1;
+            margin: 0 0 var(--cf-space-4) 0;
+            color: var(--cf-text-muted);
+            font-size: 0.9375rem;
+        }
+
+        .card-content p:last-child {
+            margin-bottom: 0;
+        }
+
+        /* ========================================
+           CARD FOOTER / ACTIONS
+           ======================================== */
+        .card-footer {
+            padding: var(--cf-space-3) var(--cf-space-4);
+            background-color: var(--cf-background-alt);
+            border-top: 1px solid var(--cf-border);
+        }
+
+        .card-action {
+            display: inline-flex;
+            align-items: center;
+            padding: var(--cf-space-2) var(--cf-space-4);
+            background-color: var(--cf-primary);
+            color: white;
+            text-decoration: none;
+            font-size: 0.875rem;
+            font-weight: 500;
+            border-radius: var(--cf-border-radius);
+            transition: background-color var(--cf-transition);
+            min-height: 36px; /* WCAG target size */
+        }
+
+        .card-action:hover {
+            background-color: var(--cf-primary-dark);
+        }
+
+        .card-action:focus {
+            outline: 3px solid rgba(44, 90, 160, 0.5);
+            outline-offset: 2px;
+        }
+
+        .card-action::after {
+            content: '\2192'; /* Right arrow */
+            margin-left: var(--cf-space-2);
+        }
+
+        /* ========================================
+           CARD META (optional)
+           ======================================== */
+        .card-meta {
+            display: flex;
+            gap: var(--cf-space-3);
+            margin-top: auto;
+            padding-top: var(--cf-space-3);
+            font-size: 0.8125rem;
+            color: var(--cf-text-muted);
+        }
+
+        .card-meta-item {
+            display: flex;
+            align-items: center;
+            gap: var(--cf-space-2);
+        }
+
+        /* ========================================
+           ACCESSIBILITY
+           ======================================== */
+        /* Screen reader only */
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        /* Focus within card */
+        .card:focus-within {
+            box-shadow: var(--cf-shadow-hover);
+        }
+
+        /* ========================================
+           RESPONSIVE
+           ======================================== */
+        @media (max-width: 992px) {
+            .card-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media (max-width: 600px) {
+            .card-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .card-image img {
+                height: 200px;
+            }
+        }
+
+        /* ========================================
+           PRINT STYLES
+           ======================================== */
+        @media print {
+            .card-grid {
+                display: block;
+            }
+
+            .card {
+                page-break-inside: avoid;
+                margin-bottom: 1rem;
+                box-shadow: none;
+                border: 1px solid #000;
+            }
+
+            .card-image {
+                display: none;
+            }
+
+            .card-action::after {
+                content: ' (' attr(href) ')';
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- CARD GRID LAYOUT -->
+    <div class="card-grid" role="list">
+
+        <!-- Card 1 -->
+        <article class="card" role="listitem">
+            <figure class="card-image">
+                <img src="{{CARD_1_IMAGE}}" alt="{{CARD_1_IMAGE_ALT}}" loading="lazy">
+                <span class="card-badge card-badge-new">{{CARD_1_BADGE}}</span>
+            </figure>
+            <div class="card-body">
+                <h3 class="card-title">{{CARD_1_TITLE}}</h3>
+                <div class="card-content">
+                    {{CARD_1_CONTENT}}
+                </div>
+            </div>
+            <div class="card-footer">
+                <a href="{{CARD_1_LINK}}" class="card-action">{{CARD_1_LINK_TEXT}}</a>
+            </div>
+        </article>
+
+        <!-- Card 2 -->
+        <article class="card" role="listitem">
+            <figure class="card-image">
+                <img src="{{CARD_2_IMAGE}}" alt="{{CARD_2_IMAGE_ALT}}" loading="lazy">
+            </figure>
+            <div class="card-body">
+                <h3 class="card-title">{{CARD_2_TITLE}}</h3>
+                <div class="card-content">
+                    {{CARD_2_CONTENT}}
+                </div>
+            </div>
+            <div class="card-footer">
+                <a href="{{CARD_2_LINK}}" class="card-action">{{CARD_2_LINK_TEXT}}</a>
+            </div>
+        </article>
+
+        <!-- Card 3 -->
+        <article class="card" role="listitem">
+            <figure class="card-image">
+                <img src="{{CARD_3_IMAGE}}" alt="{{CARD_3_IMAGE_ALT}}" loading="lazy">
+            </figure>
+            <div class="card-body">
+                <h3 class="card-title">{{CARD_3_TITLE}}</h3>
+                <div class="card-content">
+                    {{CARD_3_CONTENT}}
+                </div>
+            </div>
+            <div class="card-footer">
+                <a href="{{CARD_3_LINK}}" class="card-action">{{CARD_3_LINK_TEXT}}</a>
+            </div>
+        </article>
+
+    </div>
+
+    <!-- ========================================
+         SIMPLE CARD (No Image) VARIANT
+         ======================================== -->
+    <!--
+    <article class="card">
+        <div class="card-body">
+            <h3 class="card-title">Card Without Image</h3>
+            <div class="card-content">
+                <p>This card variant has no image, useful for text-focused content.</p>
+            </div>
+        </div>
+        <div class="card-footer">
+            <a href="#" class="card-action">Learn more</a>
+        </div>
+    </article>
+    -->
+
+</body>
+</html>

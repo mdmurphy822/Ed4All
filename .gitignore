@@ -1,0 +1,126 @@
+# =============================================================================
+# Python
+# =============================================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.cover
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# =============================================================================
+# Ed4All - LibV2 Content (preserve structure, exclude data)
+# =============================================================================
+LibV2/courses/*
+!LibV2/courses/.gitkeep
+LibV2/catalog/*
+!LibV2/catalog/.gitkeep
+
+# =============================================================================
+# Ed4All - Input/Output Directories
+# =============================================================================
+
+# Courseforge inputs
+Courseforge/inputs/exam-objectives/*
+!Courseforge/inputs/exam-objectives/.gitkeep
+Courseforge/inputs/textbooks/*
+!Courseforge/inputs/textbooks/.gitkeep
+Courseforge/inputs/existing-packages/*
+!Courseforge/inputs/existing-packages/.gitkeep
+
+# Courseforge outputs
+Courseforge/exports/*
+!Courseforge/exports/.gitkeep
+Courseforge/runtime/*
+!Courseforge/runtime/.gitkeep
+
+# DART inputs/outputs
+DART/batch_output/*
+!DART/batch_output/.gitkeep
+DART/output/*
+!DART/output/.gitkeep
+DART/inputs/*
+!DART/inputs/.gitkeep
+
+# Trainforge outputs
+Trainforge/output/*
+!Trainforge/output/.gitkeep
+
+# =============================================================================
+# Ed4All - Runtime & State
+# =============================================================================
+state/locks/*
+!state/locks/.gitkeep
+state/logs/*
+!state/logs/.gitkeep
+state/progress/*
+!state/progress/.gitkeep
+state/status/*
+!state/status/.gitkeep
+state/workflows/*
+!state/workflows/.gitkeep
+state/learning_science_cache/*
+!state/learning_science_cache/.gitkeep
+state/runs/*
+!state/runs/.gitkeep
+
+runtime/
+runs/
+
+# Training captures (generated data)
+training-captures/dart/*
+!training-captures/dart/.gitkeep
+training-captures/courseforge/*
+!training-captures/courseforge/.gitkeep
+training-captures/trainforge/*
+!training-captures/trainforge/.gitkeep
+training-captures/textbook-pipeline/*
+!training-captures/textbook-pipeline/.gitkeep
+
+# MCP runtime
+MCP/runtime/
+
+# =============================================================================
+# Credentials & Sensitive
+# =============================================================================
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+secrets.json
+
+# Claude workspace
+.claude/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/

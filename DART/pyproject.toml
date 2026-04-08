@@ -1,0 +1,85 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dart"
+version = "1.0.0"
+description = "Convert PDF documents to WCAG 2.1 AA compliant accessible HTML"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+keywords = ["pdf", "accessibility", "wcag", "html", "a11y", "converter"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Education",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Text Processing :: Markup :: HTML",
+    "Topic :: Accessibility",
+]
+
+dependencies = [
+    "beautifulsoup4>=4.12.0",
+]
+
+[project.optional-dependencies]
+ocr = [
+    "pdf2image>=1.16.0",
+    "pytesseract>=0.3.10",
+    "Pillow>=10.0.0",
+]
+math = [
+    "latex2mathml>=3.0.0",
+]
+images = [
+    "PyMuPDF>=1.23.0",
+    "Pillow>=10.0.0",
+    "anthropic>=0.18.0",
+]
+full = [
+    "pdf2image>=1.16.0",
+    "pytesseract>=0.3.10",
+    "Pillow>=10.0.0",
+    "pdfplumber>=0.10.0",
+    "latex2mathml>=3.0.0",
+    "PyMuPDF>=1.23.0",
+    "anthropic>=0.18.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+
+[project.scripts]
+pdf-to-html = "pdf_converter.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/mdmurphy822/DART"
+Documentation = "https://github.com/mdmurphy822/DART#readme"
+Issues = "https://github.com/mdmurphy822/DART/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pdf_converter*"]
+
+[tool.black]
+line-length = 100
+target-version = ['py39', 'py310', 'py311', 'py312']
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I", "N", "UP", "B"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

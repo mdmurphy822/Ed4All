@@ -1,0 +1,122 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ed4all.org/schemas/run_manifest_schema.json",
+  "title": "Run Manifest",
+  "description": "Immutable manifest capturing run initialization state for Phase 0 Hardening",
+  "type": "object",
+  "required": ["run_id", "created_at", "workflow_type", "config_hashes", "immutable"],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "pattern": "^RUN_[0-9]{8}_[0-9]{6}_[a-f0-9]{8}$",
+      "description": "Unique run identifier: RUN_YYYYMMDD_HHMMSS_<8-char-uuid>"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of run initialization"
+    },
+    "git_commit": {
+      "type": ["string", "null"],
+      "pattern": "^[a-f0-9]{40}$",
+      "description": "Full git commit hash of Ed4All codebase (null if not a git repo)"
+    },
+    "git_dirty": {
+      "type": "boolean",
+      "default": false,
+      "description": "Whether working directory had uncommitted changes at run start"
+    },
+    "operator": {
+      "type": "string",
+      "description": "User or system that initiated the run"
+    },
+    "goals": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "High-level goals for this run"
+    },
+    "workflow_type": {
+      "type": "string",
+      "enum": ["course_generation", "intake_remediation", "batch_dart", "rag_training"],
+      "description": "Type of workflow being executed"
+    },
+    "workflow_params": {
+      "type": "object",
+      "description": "Parameters passed to the workflow",
+      "additionalProperties": true
+    },
+    "config_hashes": {
+      "type": "object",
+      "description": "SHA-256 hashes of configuration files used",
+      "properties": {
+        "workflows_yaml": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "agents_yaml": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "schemas": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        }
+      },
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^sha256:[a-f0-9]{64}$"
+      }
+    },
+    "environment": {
+      "type": "object",
+      "description": "Relevant environment variables (secrets redacted)",
+      "properties": {
+        "python_version": {"type": "string"},
+        "platform": {"type": "string"},
+        "platform_version": {"type": "string"},
+        "hostname": {"type": "string"}
+      },
+      "additionalProperties": {"type": "string"}
+    },
+    "inputs": {
+      "type": "array",
+      "description": "Primary input files/resources for this run with provenance",
+      "items": {
+        "type": "object",
+        "required": ["path", "content_hash", "hash_algorithm"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path to input file"
+          },
+          "content_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "description": "SHA-256 hash of file contents"
+          },
+          "hash_algorithm": {
+            "type": "string",
+            "enum": ["sha256", "sha512", "blake3"],
+            "default": "sha256"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "immutable": {
+      "type": "boolean",
+      "const": true,
+      "description": "Marker indicating this manifest must not be modified after creation"
+    },
+    "schema_version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "default": "1.0.0",
+      "description": "Version of this schema for forward compatibility"
+    }
+  },
+  "additionalProperties": false
+}

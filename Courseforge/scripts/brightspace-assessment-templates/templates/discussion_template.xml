@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    IMSCC Discussion Topic Template (Correct Format)
+
+    Resource Type: imsdt_xmlv1p3
+    Namespace: http://www.imsglobal.org/xsd/imsccv1p3/imsdt_v1p3
+    Root Element: <topic> (NOT <discussion>)
+
+    IMPORTANT: This template uses the standard IMSCC v1.3 discussion topic format.
+    The root element MUST be <topic>, NOT <discussion>.
+    This format is verified against actual Brightspace exports.
+
+    Placeholders:
+    - {TITLE}: Discussion topic title
+    - {PROMPT}: HTML-escaped discussion prompt/description
+-->
+<topic xmlns="http://www.imsglobal.org/xsd/imsccv1p3/imsdt_v1p3"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="http://www.imsglobal.org/xsd/imsccv1p3/imsdt_v1p3 http://www.imsglobal.org/profile/cc/ccv1p3/ccv1p3_imsdt_v1p3.xsd">
+  <title>{TITLE}</title>
+  <text texttype="text/html">{PROMPT}</text>
+</topic>

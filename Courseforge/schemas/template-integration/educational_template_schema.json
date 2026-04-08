@@ -1,0 +1,563 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Educational Template Integration Schema",
+  "description": "Schema defining integration patterns for educational HTML templates based on research from MIT OCW, Stanford Online, and Bootstrap educational themes",
+  "version": "1.0.0",
+  "type": "object",
+  "properties": {
+    "templateMetadata": {
+      "type": "object",
+      "properties": {
+        "templateName": {
+          "type": "string",
+          "description": "Name of the template being used"
+        },
+        "source": {
+          "type": "string",
+          "enum": ["MIT_OCW", "Stanford_Online", "Bootstrap_Educational", "Custom", "Hybrid"],
+          "description": "Source of the template design patterns"
+        },
+        "frameworkVersion": {
+          "type": "string",
+          "enum": ["Bootstrap_4.3.1", "Bootstrap_4.5", "Bootstrap_5.0", "Custom_CSS"],
+          "description": "CSS framework version used"
+        },
+        "accessibilityLevel": {
+          "type": "string",
+          "enum": ["WCAG_2.0_AA", "WCAG_2.1_AA", "WCAG_2.2_AA"],
+          "default": "WCAG_2.2_AA",
+          "description": "Accessibility compliance level"
+        },
+        "brighspaceCompatible": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether template is compatible with Brightspace/D2L"
+        }
+      },
+      "required": ["templateName", "source", "frameworkVersion", "accessibilityLevel"]
+    },
+    "courseCardLayout": {
+      "type": "object",
+      "description": "Course card presentation patterns from Bootstrap educational themes",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable course card layout"
+        },
+        "gridSystem": {
+          "type": "string",
+          "enum": ["col-md-4", "col-lg-3", "col-md-6", "col-12"],
+          "default": "col-md-6",
+          "description": "Bootstrap grid system for course cards"
+        },
+        "cardElements": {
+          "type": "object",
+          "properties": {
+            "courseImage": {
+              "type": "boolean",
+              "default": true,
+              "description": "Include course thumbnail image"
+            },
+            "courseDuration": {
+              "type": "boolean",
+              "default": true,
+              "description": "Display course duration"
+            },
+            "instructorInfo": {
+              "type": "boolean",
+              "default": true,
+              "description": "Include instructor information"
+            },
+            "courseDescription": {
+              "type": "boolean",
+              "default": true,
+              "description": "Show course description excerpt"
+            },
+            "progressIndicator": {
+              "type": "boolean",
+              "default": true,
+              "description": "Show course progress"
+            },
+            "callToAction": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": true
+                },
+                "buttonText": {
+                  "type": "string",
+                  "default": "Continue Learning",
+                  "description": "Text for CTA button"
+                },
+                "buttonStyle": {
+                  "type": "string",
+                  "enum": ["btn-primary", "btn-outline-primary", "btn-success"],
+                  "default": "btn-primary"
+                }
+              }
+            }
+          }
+        },
+        "hoverEffects": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Enable hover effects on cards"
+            },
+            "animation": {
+              "type": "string",
+              "enum": ["scale", "lift", "glow", "none"],
+              "default": "lift",
+              "description": "Type of hover animation"
+            },
+            "duration": {
+              "type": "string",
+              "default": "0.2s",
+              "description": "Animation duration"
+            }
+          }
+        }
+      }
+    },
+    "heroSection": {
+      "type": "object",
+      "description": "Hero section patterns from modern educational templates",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include hero section in course pages"
+        },
+        "layout": {
+          "type": "string",
+          "enum": ["centered", "split", "background-image", "gradient"],
+          "default": "gradient",
+          "description": "Hero section layout style"
+        },
+        "elements": {
+          "type": "object",
+          "properties": {
+            "title": {
+              "type": "object",
+              "properties": {
+                "fontSize": {
+                  "type": "string",
+                  "default": "2.5rem",
+                  "description": "Hero title font size"
+                },
+                "fontWeight": {
+                  "type": "string",
+                  "enum": ["400", "500", "600", "700"],
+                  "default": "600"
+                },
+                "color": {
+                  "type": "string",
+                  "default": "#ffffff",
+                  "description": "Hero title color"
+                }
+              }
+            },
+            "subtitle": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": true
+                },
+                "fontSize": {
+                  "type": "string",
+                  "default": "1.2rem"
+                },
+                "opacity": {
+                  "type": "number",
+                  "minimum": 0.5,
+                  "maximum": 1.0,
+                  "default": 0.9
+                }
+              }
+            },
+            "callToAction": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": true
+                },
+                "buttonSize": {
+                  "type": "string",
+                  "enum": ["btn-sm", "btn-md", "btn-lg"],
+                  "default": "btn-lg"
+                },
+                "buttonStyle": {
+                  "type": "string",
+                  "enum": ["btn-primary", "btn-outline-light", "btn-light"],
+                  "default": "btn-outline-light"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "navigationStructure": {
+      "type": "object",
+      "description": "Navigation patterns from academic templates",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["horizontal", "vertical", "breadcrumb", "progress-based"],
+          "default": "breadcrumb",
+          "description": "Navigation structure type (note: internal links don't work in Brightspace)"
+        },
+        "courseContext": {
+          "type": "object",
+          "description": "Course navigation context display (replaces internal linking)",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Show course navigation context"
+            },
+            "elements": {
+              "type": "object",
+              "properties": {
+                "previousModule": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Show previous module information"
+                },
+                "nextModule": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Show next module information"
+                },
+                "relatedContent": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Show related content references"
+                },
+                "assignmentInfo": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Show related assignment information"
+                }
+              }
+            },
+            "layout": {
+              "type": "string",
+              "enum": ["grid", "linear", "cards"],
+              "default": "grid",
+              "description": "Layout for navigation context"
+            }
+          }
+        },
+        "progressTracking": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Show progress through course content"
+            },
+            "style": {
+              "type": "string",
+              "enum": ["progress-bar", "step-indicator", "percentage", "checklist"],
+              "default": "progress-bar",
+              "description": "Visual style for progress tracking"
+            },
+            "position": {
+              "type": "string",
+              "enum": ["top", "bottom", "sidebar"],
+              "default": "top",
+              "description": "Position of progress indicator"
+            }
+          }
+        }
+      }
+    },
+    "contentOrganization": {
+      "type": "object",
+      "description": "Content organization patterns from MIT OCW and academic templates",
+      "properties": {
+        "modularStructure": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Use modular content structure"
+            },
+            "moduleTypes": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["course_home", "course_section", "pdf", "videogallery", "video", "assessment", "discussion"]
+              },
+              "default": ["course_section", "assessment"],
+              "description": "Types of content modules to support"
+            }
+          }
+        },
+        "sectionStructure": {
+          "type": "object",
+          "properties": {
+            "aboutCourse": {
+              "type": "boolean",
+              "default": true,
+              "description": "Include About Course section"
+            },
+            "learningObjectives": {
+              "type": "boolean",
+              "default": true,
+              "description": "Include Learning Objectives section"
+            },
+            "prerequisites": {
+              "type": "boolean",
+              "default": true,
+              "description": "Include Prerequisites section"
+            },
+            "courseRequirements": {
+              "type": "boolean",
+              "default": true,
+              "description": "Include Course Requirements section"
+            },
+            "instructorInfo": {
+              "type": "boolean",
+              "default": true,
+              "description": "Include Instructor Information section"
+            }
+          }
+        },
+        "interactiveElements": {
+          "type": "object",
+          "properties": {
+            "accordionSections": {
+              "type": "boolean",
+              "default": true,
+              "description": "Use accordion-style expandable sections"
+            },
+            "modalWindows": {
+              "type": "boolean",
+              "default": false,
+              "description": "Use modal windows for additional information (may not work in Brightspace)"
+            },
+            "hoverTooltips": {
+              "type": "boolean",
+              "default": true,
+              "description": "Use hover tooltips for definitions"
+            },
+            "expandableContent": {
+              "type": "boolean",
+              "default": true,
+              "description": "Use HTML5 details/summary for expandable content"
+            }
+          }
+        }
+      }
+    },
+    "responsiveDesign": {
+      "type": "object",
+      "description": "Responsive design patterns from modern educational templates",
+      "properties": {
+        "mobilePriority": {
+          "type": "boolean",
+          "default": true,
+          "description": "Mobile-first responsive design approach"
+        },
+        "breakpoints": {
+          "type": "object",
+          "properties": {
+            "mobile": {
+              "type": "string",
+              "default": "576px",
+              "description": "Mobile breakpoint"
+            },
+            "tablet": {
+              "type": "string", 
+              "default": "768px",
+              "description": "Tablet breakpoint"
+            },
+            "desktop": {
+              "type": "string",
+              "default": "992px", 
+              "description": "Desktop breakpoint"
+            },
+            "largeDesktop": {
+              "type": "string",
+              "default": "1200px",
+              "description": "Large desktop breakpoint"
+            }
+          }
+        },
+        "adaptiveFeatures": {
+          "type": "object",
+          "properties": {
+            "collapsibleNavigation": {
+              "type": "boolean",
+              "default": true,
+              "description": "Collapsible navigation on mobile"
+            },
+            "stackedCards": {
+              "type": "boolean", 
+              "default": true,
+              "description": "Stack course cards on mobile"
+            },
+            "reducedPadding": {
+              "type": "boolean",
+              "default": true,
+              "description": "Reduce padding on mobile devices"
+            },
+            "touchFriendly": {
+              "type": "boolean",
+              "default": true,
+              "description": "Touch-friendly interface elements"
+            }
+          }
+        }
+      }
+    },
+    "accessibilityEnhancements": {
+      "type": "object",
+      "description": "Accessibility features from academic templates",
+      "properties": {
+        "keyboardNavigation": {
+          "type": "object",
+          "properties": {
+            "tabOrder": {
+              "type": "boolean",
+              "default": true,
+              "description": "Logical tab order for all interactive elements"
+            },
+            "skipLinks": {
+              "type": "boolean",
+              "default": true,
+              "description": "Skip navigation links for screen readers"
+            },
+            "focusIndicators": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": true
+                },
+                "style": {
+                  "type": "string",
+                  "default": "3px solid rgba(0, 102, 204, 0.6)",
+                  "description": "CSS for focus indicators"
+                }
+              }
+            }
+          }
+        },
+        "colorContrast": {
+          "type": "object",
+          "properties": {
+            "minimumRatio": {
+              "type": "number",
+              "minimum": 4.5,
+              "default": 4.5,
+              "description": "Minimum color contrast ratio for WCAG 2.2 AA"
+            },
+            "largeTextRatio": {
+              "type": "number",
+              "minimum": 3.0,
+              "default": 3.0,
+              "description": "Minimum contrast ratio for large text"
+            }
+          }
+        },
+        "ariaLabels": {
+          "type": "object",
+          "properties": {
+            "navigation": {
+              "type": "boolean",
+              "default": true,
+              "description": "ARIA labels for navigation elements"
+            },
+            "landmarks": {
+              "type": "boolean",
+              "default": true,
+              "description": "ARIA landmarks for page structure"
+            },
+            "interactiveElements": {
+              "type": "boolean",
+              "default": true,
+              "description": "ARIA labels for interactive elements"
+            }
+          }
+        },
+        "semanticHTML": {
+          "type": "object",
+          "properties": {
+            "properHeadings": {
+              "type": "boolean",
+              "default": true,
+              "description": "Proper heading hierarchy (H1-H6)"
+            },
+            "landmarks": {
+              "type": "boolean",
+              "default": true,
+              "description": "Use semantic landmarks (main, nav, aside, etc.)"
+            },
+            "lists": {
+              "type": "boolean",
+              "default": true,
+              "description": "Use proper list markup for grouped content"
+            }
+          }
+        }
+      }
+    },
+    "performanceOptimization": {
+      "type": "object",
+      "description": "Performance optimization patterns from research",
+      "properties": {
+        "cssOptimization": {
+          "type": "object",
+          "properties": {
+            "embeddedCSS": {
+              "type": "boolean",
+              "default": true,
+              "description": "Embed CSS in HTML for Brightspace compatibility"
+            },
+            "minification": {
+              "type": "boolean",
+              "default": false,
+              "description": "Minify CSS (may impact readability)"
+            },
+            "criticalCSS": {
+              "type": "boolean",
+              "default": true,
+              "description": "Include only critical CSS"
+            }
+          }
+        },
+        "imageOptimization": {
+          "type": "object",
+          "properties": {
+            "lazyLoading": {
+              "type": "boolean",
+              "default": false,
+              "description": "Lazy load images (may not work in all LMS)"
+            },
+            "responsiveImages": {
+              "type": "boolean",
+              "default": true,
+              "description": "Use responsive image techniques"
+            },
+            "altText": {
+              "type": "boolean",
+              "default": true,
+              "description": "Always include descriptive alt text"
+            }
+          }
+        }
+      }
+    }
+  },
+  "required": ["templateMetadata", "courseCardLayout", "contentOrganization", "responsiveDesign", "accessibilityEnhancements"]
+}

@@ -1,0 +1,1020 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Enhanced Course Content Display Standards",
+  "description": "Updated schema incorporating research findings from MIT OCW, Stanford Online, and Bootstrap educational themes",
+  "version": "2.0.0",
+  "type": "object",
+  "properties": {
+    "pageStructure": {
+      "type": "object",
+      "properties": {
+        "template": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["basic_lesson", "hero_lesson", "card_layout", "academic_module", "interactive_lesson"],
+              "description": "Template type based on research findings"
+            },
+            "framework": {
+              "type": "string",
+              "enum": ["Bootstrap_4.3.1", "Bootstrap_4.5", "Bootstrap_5.0"],
+              "default": "Bootstrap_4.3.1",
+              "description": "CSS framework version"
+            },
+            "designPattern": {
+              "type": "string",
+              "enum": ["MIT_OCW_modular", "Stanford_academic", "Bootstrap_educational", "hybrid"],
+              "description": "Design pattern source"
+            }
+          },
+          "required": ["type", "framework"]
+        },
+        "heroSection": {
+          "type": "object",
+          "description": "Hero section based on modern educational templates",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Include hero section"
+            },
+            "layout": {
+              "type": "string",
+              "enum": ["gradient", "centered", "split", "background-image"],
+              "default": "gradient"
+            },
+            "elements": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "object",
+                  "properties": {
+                    "text": {
+                      "type": "string",
+                      "description": "Hero title text"
+                    },
+                    "htmlTag": {
+                      "type": "string",
+                      "enum": ["h1"],
+                      "default": "h1"
+                    },
+                    "cssClass": {
+                      "type": "string",
+                      "default": "hero-title"
+                    }
+                  }
+                },
+                "subtitle": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "default": true
+                    },
+                    "text": {
+                      "type": "string",
+                      "description": "Hero subtitle text"
+                    },
+                    "cssClass": {
+                      "type": "string",
+                      "default": "hero-subtitle"
+                    }
+                  }
+                },
+                "courseInfo": {
+                  "type": "object",
+                  "properties": {
+                    "courseName": {
+                      "type": "string",
+                      "description": "Course name display"
+                    },
+                    "moduleNumber": {
+                      "type": "string",
+                      "description": "Module number (e.g., 'Module 3 of 12')"
+                    },
+                    "progressPercentage": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 100,
+                      "description": "Course progress percentage"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "title": {
+          "type": "object",
+          "properties": {
+            "format": {
+              "type": "string",
+              "enum": [
+                "Module [Number]: [Title]", 
+                "Week [Number]: [Topic]", 
+                "[Course Code] - [Module Title]",
+                "[Title] | [Course Name]",
+                "[Module Number] of [Total] - [Title]"
+              ],
+              "description": "Standard format for page titles, enhanced with research patterns"
+            },
+            "htmlTag": {
+              "type": "string",
+              "enum": ["h1"],
+              "description": "HTML tag for main page title"
+            },
+            "cssClass": {
+              "type": "string",
+              "default": "module-title",
+              "description": "CSS class for styling the page title"
+            },
+            "contextInfo": {
+              "type": "object",
+              "description": "Additional context information from academic templates",
+              "properties": {
+                "showProgress": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Show progress indicator in title area"
+                },
+                "showDuration": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Show estimated completion time"
+                },
+                "showDifficulty": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Show difficulty level"
+                }
+              }
+            }
+          },
+          "required": ["format", "htmlTag"]
+        },
+        "learningObjectives": {
+          "type": "object",
+          "description": "Enhanced learning objectives section based on academic templates",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Include learning objectives section"
+            },
+            "displayStyle": {
+              "type": "string",
+              "enum": ["card", "callout", "bordered-list", "accordion", "inline"],
+              "default": "callout",
+              "description": "Visual style for objectives display"
+            },
+            "structure": {
+              "type": "string",
+              "enum": ["numbered-list", "bullet-points", "checklist", "cards"],
+              "default": "numbered-list",
+              "description": "How objectives should be structured"
+            },
+            "interactivity": {
+              "type": "object",
+              "properties": {
+                "checkboxes": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Include checkboxes for objective tracking"
+                },
+                "progressTracking": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Show progress through objectives"
+                }
+              }
+            }
+          }
+        },
+        "introduction": {
+          "type": "object",
+          "properties": {
+            "purpose": {
+              "type": "string",
+              "description": "Brief overview paragraph explaining the module content and objectives"
+            },
+            "structure": {
+              "type": "string",
+              "enum": ["single-paragraph", "bullet-points", "accordion", "callout-box", "two-column"],
+              "description": "How introduction content should be structured"
+            },
+            "visualElements": {
+              "type": "object",
+              "description": "Visual elements from educational template research",
+              "properties": {
+                "icon": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Include icon in introduction"
+                },
+                "backgroundImage": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Use background image for introduction"
+                },
+                "colorAccent": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Use color accent border or background"
+                }
+              }
+            }
+          }
+        },
+        "contentSections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/enhancedContentSection"
+          }
+        },
+        "navigationContext": {
+          "type": "object",
+          "description": "Navigation context display (replaces internal linking for Brightspace)",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Show navigation context"
+            },
+            "layout": {
+              "type": "string",
+              "enum": ["grid", "linear", "cards", "sidebar"],
+              "default": "grid",
+              "description": "Layout for navigation context"
+            },
+            "elements": {
+              "type": "object",
+              "properties": {
+                "previousModule": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "default": true
+                    },
+                    "title": {
+                      "type": "string",
+                      "description": "Previous module title"
+                    },
+                    "description": {
+                      "type": "string",
+                      "description": "Brief description"
+                    }
+                  }
+                },
+                "nextModule": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "default": true
+                    },
+                    "title": {
+                      "type": "string",
+                      "description": "Next module title"
+                    },
+                    "description": {
+                      "type": "string",
+                      "description": "Brief description"
+                    }
+                  }
+                },
+                "relatedContent": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "default": true
+                    },
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "title": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": ["reading", "video", "assignment", "discussion"]
+                          }
+                        }
+                      }
+                    }
+                  }
+                },
+                "assignmentInfo": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "default": true
+                    },
+                    "title": {
+                      "type": "string",
+                      "description": "Assignment title"
+                    },
+                    "dueDate": {
+                      "type": "string",
+                      "description": "Assignment due date"
+                    },
+                    "instructions": {
+                      "type": "string",
+                      "description": "Brief assignment instructions"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "required": ["template", "title", "learningObjectives", "introduction", "contentSections"]
+    },
+    "paragraphStructure": {
+      "type": "object",
+      "properties": {
+        "maxLength": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 300,
+          "default": 250,
+          "description": "Maximum recommended paragraph length in words (updated based on readability research)"
+        },
+        "minLength": {
+          "type": "integer",
+          "minimum": 50,
+          "maximum": 150,
+          "default": 75,
+          "description": "Minimum paragraph length in words"
+        },
+        "cssClass": {
+          "type": "string",
+          "default": "content-paragraph",
+          "description": "CSS class for standard paragraphs"
+        },
+        "lineHeight": {
+          "type": "string",
+          "default": "1.6",
+          "description": "Line height for readability (confirmed by accessibility research)"
+        },
+        "typography": {
+          "type": "object",
+          "description": "Typography enhancements from educational templates",
+          "properties": {
+            "fontFamily": {
+              "type": "string",
+              "default": "'Segoe UI', Tahoma, Geneva, Verdana, sans-serif",
+              "description": "Font family for body text"
+            },
+            "fontSize": {
+              "type": "string",
+              "default": "1rem",
+              "description": "Base font size"
+            },
+            "fontWeight": {
+              "type": "string",
+              "enum": ["300", "400", "500"],
+              "default": "400",
+              "description": "Font weight for body text"
+            },
+            "color": {
+              "type": "string",
+              "default": "#212529",
+              "description": "Text color (high contrast for accessibility)"
+            }
+          }
+        }
+      }
+    },
+    "enhancedVisualElements": {
+      "type": "object",
+      "description": "Enhanced visual elements based on educational template research",
+      "properties": {
+        "calloutBoxes": {
+          "type": "object",
+          "properties": {
+            "keyConceptBox": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": true
+                },
+                "style": {
+                  "type": "string",
+                  "enum": ["border-left", "full-border", "background-highlight", "card-style"],
+                  "default": "border-left"
+                },
+                "icon": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Include icon in key concept boxes"
+                },
+                "backgroundColor": {
+                  "type": "string",
+                  "default": "#fff3cd",
+                  "description": "Background color for key concept boxes"
+                },
+                "borderColor": {
+                  "type": "string",
+                  "default": "#856404",
+                  "description": "Border color for key concept boxes"
+                }
+              }
+            },
+            "exampleBox": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": true
+                },
+                "style": {
+                  "type": "string",
+                  "enum": ["border-left", "full-border", "background-highlight", "card-style"],
+                  "default": "border-left"
+                },
+                "backgroundColor": {
+                  "type": "string",
+                  "default": "#d4edda",
+                  "description": "Background color for example boxes"
+                },
+                "borderColor": {
+                  "type": "string",
+                  "default": "#28a745",
+                  "description": "Border color for example boxes"
+                }
+              }
+            },
+            "importantNote": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": true
+                },
+                "style": {
+                  "type": "string",
+                  "enum": ["border-left", "full-border", "background-highlight", "card-style"],
+                  "default": "border-left"
+                },
+                "backgroundColor": {
+                  "type": "string",
+                  "default": "#f8d7da",
+                  "description": "Background color for important notes"
+                },
+                "borderColor": {
+                  "type": "string",
+                  "default": "#721c24",
+                  "description": "Border color for important notes"
+                }
+              }
+            }
+          }
+        },
+        "courseCards": {
+          "type": "object",
+          "description": "Course card layouts from Bootstrap educational templates",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Enable course card layout for content sections"
+            },
+            "gridColumns": {
+              "type": "string",
+              "enum": ["col-12", "col-md-6", "col-lg-4", "col-lg-3"],
+              "default": "col-md-6",
+              "description": "Bootstrap grid columns for cards"
+            },
+            "cardElements": {
+              "type": "object",
+              "properties": {
+                "image": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Include image in content cards"
+                },
+                "duration": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Show estimated reading/completion time"
+                },
+                "difficulty": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Show difficulty level"
+                },
+                "tags": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Show content tags"
+                }
+              }
+            }
+          }
+        },
+        "progressIndicators": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Show progress indicators"
+            },
+            "style": {
+              "type": "string",
+              "enum": ["progress-bar", "step-indicator", "percentage", "circular"],
+              "default": "progress-bar",
+              "description": "Visual style for progress indicators"
+            },
+            "position": {
+              "type": "string",
+              "enum": ["top", "bottom", "sidebar", "floating"],
+              "default": "top",
+              "description": "Position of progress indicators"
+            },
+            "showPercentage": {
+              "type": "boolean",
+              "default": true,
+              "description": "Show percentage completion"
+            }
+          }
+        }
+      }
+    },
+    "keyTermHighlighting": {
+      "type": "object",
+      "properties": {
+        "highlightMethod": {
+          "type": "string",
+          "enum": ["bold", "colored", "accordion", "tooltip", "modal", "popover", "underline"],
+          "description": "Method for highlighting key terms (expanded options)"
+        },
+        "accordionStyle": {
+          "type": "object",
+          "properties": {
+            "framework": {
+              "type": "string",
+              "enum": ["bootstrap-4.3.1", "bootstrap-4.5", "bootstrap-5.0", "html5-details"],
+              "description": "Framework for accordion implementation (updated options)"
+            },
+            "expandIcon": {
+              "type": "string",
+              "default": "chevron-right",
+              "description": "Icon used for collapsed state"
+            },
+            "collapseIcon": {
+              "type": "string",
+              "default": "chevron-down", 
+              "description": "Icon used for expanded state"
+            },
+            "animationDuration": {
+              "type": "string",
+              "default": "0.2s",
+              "description": "CSS animation duration for expand/collapse (optimized)"
+            }
+          }
+        },
+        "tooltipStyle": {
+          "type": "object",
+          "description": "Tooltip styling based on educational templates",
+          "properties": {
+            "trigger": {
+              "type": "string",
+              "enum": ["hover", "click", "focus"],
+              "default": "hover",
+              "description": "Tooltip trigger method"
+            },
+            "position": {
+              "type": "string",
+              "enum": ["top", "bottom", "left", "right", "auto"],
+              "default": "auto",
+              "description": "Tooltip position"
+            },
+            "maxWidth": {
+              "type": "string",
+              "default": "300px",
+              "description": "Maximum width for tooltips"
+            },
+            "backgroundColor": {
+              "type": "string",
+              "default": "#000000",
+              "description": "Tooltip background color"
+            },
+            "textColor": {
+              "type": "string",
+              "default": "#ffffff",
+              "description": "Tooltip text color"
+            }
+          }
+        },
+        "keyTermDefinition": {
+          "type": "object",
+          "properties": {
+            "maxLength": {
+              "type": "integer",
+              "minimum": 50,
+              "maximum": 300,
+              "default": 200,
+              "description": "Maximum length for key term definitions (increased based on research)"
+            },
+            "includeExample": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether to include usage examples"
+            },
+            "includePronunciation": {
+              "type": "boolean",
+              "default": false,
+              "description": "Include pronunciation guide for complex terms"
+            },
+            "includeEtymology": {
+              "type": "boolean",
+              "default": false,
+              "description": "Include word origin for academic terms"
+            }
+          }
+        }
+      },
+      "required": ["highlightMethod"]
+    },
+    "interactiveElements": {
+      "type": "object",
+      "properties": {
+        "expandCollapseAll": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Enable expand/collapse all functionality"
+            },
+            "buttonText": {
+              "type": "object",
+              "properties": {
+                "expandAll": {
+                  "type": "string",
+                  "default": "Expand All Sections",
+                  "description": "Text for expand all button (enhanced)"
+                },
+                "collapseAll": {
+                  "type": "string",
+                  "default": "Collapse All Sections",
+                  "description": "Text for collapse all button (enhanced)"
+                }
+              }
+            },
+            "buttonStyle": {
+              "type": "string",
+              "enum": ["btn-primary", "btn-secondary", "btn-outline-primary", "btn-link"],
+              "default": "btn-outline-primary",
+              "description": "Bootstrap button style"
+            }
+          }
+        },
+        "progressIndicator": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Show progress through content sections"
+            },
+            "style": {
+              "type": "string",
+              "enum": ["progress-bar", "breadcrumb", "step-indicator", "circular", "percentage"],
+              "description": "Visual style for progress indicator (expanded options)"
+            },
+            "showLabels": {
+              "type": "boolean",
+              "default": true,
+              "description": "Show labels on progress indicators"
+            },
+            "showPercentage": {
+              "type": "boolean", 
+              "default": true,
+              "description": "Show percentage completion"
+            }
+          }
+        },
+        "selfAssessment": {
+          "type": "object",
+          "description": "Self-assessment features from educational templates",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": false,
+              "description": "Include self-assessment elements"
+            },
+            "checklistItems": {
+              "type": "boolean",
+              "default": true,
+              "description": "Include checklist items for self-assessment"
+            },
+            "reflectionPrompts": {
+              "type": "boolean",
+              "default": true,
+              "description": "Include reflection prompts"
+            },
+            "progressTracking": {
+              "type": "boolean",
+              "default": true,
+              "description": "Track self-assessment progress"
+            }
+          }
+        }
+      }
+    },
+    "accessibilityRequirements": {
+      "type": "object",
+      "properties": {
+        "wcagLevel": {
+          "type": "string",
+          "enum": ["AA", "AAA", "WCAG_2.1_AA", "WCAG_2.2_AA"],
+          "default": "WCAG_2.2_AA",
+          "description": "WCAG compliance level (updated with specific versions)"
+        },
+        "keyboardNavigation": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Full keyboard navigation support required"
+            },
+            "tabOrder": {
+              "type": "boolean",
+              "default": true,
+              "description": "Logical tab order for all interactive elements"
+            },
+            "skipLinks": {
+              "type": "boolean",
+              "default": true,
+              "description": "Skip navigation links for screen readers"
+            },
+            "focusIndicators": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": true
+                },
+                "style": {
+                  "type": "string",
+                  "default": "3px solid rgba(0, 102, 204, 0.6)",
+                  "description": "CSS for focus indicators"
+                },
+                "offset": {
+                  "type": "string",
+                  "default": "2px",
+                  "description": "Focus indicator offset"
+                }
+              }
+            }
+          }
+        },
+        "screenReaderSupport": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Screen reader compatibility required"
+            },
+            "headingHierarchy": {
+              "type": "boolean",
+              "default": true,
+              "description": "Proper heading hierarchy (H1-H6)"
+            },
+            "landmarks": {
+              "type": "boolean",
+              "default": true,
+              "description": "ARIA landmarks for page structure"
+            },
+            "alternativeText": {
+              "type": "boolean",
+              "default": true,
+              "description": "Descriptive alternative text for images"
+            }
+          }
+        },
+        "colorContrast": {
+          "type": "object",
+          "description": "Color contrast requirements from accessibility research",
+          "properties": {
+            "minimumRatio": {
+              "type": "number",
+              "minimum": 4.5,
+              "default": 4.5,
+              "description": "Minimum color contrast ratio for WCAG 2.2 AA"
+            },
+            "largeTextRatio": {
+              "type": "number",
+              "minimum": 3.0,
+              "default": 3.0,
+              "description": "Minimum contrast ratio for large text (18pt+ or 14pt+ bold)"
+            },
+            "nonTextRatio": {
+              "type": "number",
+              "minimum": 3.0,
+              "default": 3.0,
+              "description": "Minimum contrast ratio for non-text elements"
+            }
+          }
+        },
+        "ariaLabels": {
+          "type": "object",
+          "properties": {
+            "required": {
+              "type": "boolean",
+              "default": true,
+              "description": "ARIA labels required for interactive elements"
+            },
+            "descriptiveText": {
+              "type": "boolean",
+              "default": true,
+              "description": "Descriptive text for complex interactions"
+            },
+            "landmarks": {
+              "type": "boolean",
+              "default": true,
+              "description": "ARIA landmarks for navigation"
+            },
+            "liveRegions": {
+              "type": "boolean",
+              "default": false,
+              "description": "ARIA live regions for dynamic content updates"
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "enhancedContentSection": {
+      "type": "object",
+      "properties": {
+        "sectionTitle": {
+          "type": "string",
+          "description": "Title of the content section"
+        },
+        "sectionType": {
+          "type": "string",
+          "enum": [
+            "learning-objectives", 
+            "content", 
+            "activities", 
+            "assessment", 
+            "summary",
+            "key-concepts",
+            "examples",
+            "case-study",
+            "reflection",
+            "additional-resources"
+          ],
+          "description": "Type of content section (expanded options)"
+        },
+        "displayStyle": {
+          "type": "string",
+          "enum": ["accordion", "tabbed", "linear", "card", "modal", "sidebar", "callout"],
+          "description": "How the section should be displayed (expanded options)"
+        },
+        "visualElements": {
+          "type": "object",
+          "description": "Visual elements for the section",
+          "properties": {
+            "icon": {
+              "type": "string",
+              "description": "Icon class for the section"
+            },
+            "colorScheme": {
+              "type": "string",
+              "enum": ["primary", "secondary", "success", "info", "warning", "danger", "light", "dark"],
+              "description": "Bootstrap color scheme for the section"
+            },
+            "backgroundImage": {
+              "type": "string",
+              "description": "Background image URL (optional)"
+            }
+          }
+        },
+        "interactivity": {
+          "type": "object",
+          "description": "Interactive features for the section",
+          "properties": {
+            "expandable": {
+              "type": "boolean",
+              "default": false,
+              "description": "Make section expandable/collapsible"
+            },
+            "defaultExpanded": {
+              "type": "boolean",
+              "default": true,
+              "description": "Default expanded state"
+            },
+            "trackProgress": {
+              "type": "boolean",
+              "default": false,
+              "description": "Track completion of this section"
+            }
+          }
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "paragraph", 
+                  "list", 
+                  "image", 
+                  "video", 
+                  "interactive",
+                  "callout-box",
+                  "key-concept",
+                  "example",
+                  "important-note",
+                  "definition",
+                  "quote"
+                ]
+              },
+              "text": {
+                "type": "string",
+                "description": "Text content"
+              },
+              "styling": {
+                "type": "object",
+                "description": "Additional styling options",
+                "properties": {
+                  "cssClass": {
+                    "type": "string",
+                    "description": "Additional CSS class"
+                  },
+                  "backgroundColor": {
+                    "type": "string",
+                    "description": "Background color override"
+                  },
+                  "borderColor": {
+                    "type": "string",
+                    "description": "Border color override"
+                  }
+                }
+              },
+              "keyTerms": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "term": {
+                      "type": "string",
+                      "description": "The key term"
+                    },
+                    "definition": {
+                      "type": "string",
+                      "description": "Definition of the key term"
+                    },
+                    "example": {
+                      "type": "string",
+                      "description": "Usage example (optional)"
+                    },
+                    "pronunciation": {
+                      "type": "string",
+                      "description": "Pronunciation guide (optional)"
+                    },
+                    "relatedTerms": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Related terms (optional)"
+                    }
+                  },
+                  "required": ["term", "definition"]
+                }
+              }
+            },
+            "required": ["type", "text"]
+          }
+        }
+      },
+      "required": ["sectionTitle", "sectionType", "displayStyle", "content"]
+    }
+  },
+  "required": [
+    "pageStructure", 
+    "paragraphStructure", 
+    "enhancedVisualElements",
+    "keyTermHighlighting", 
+    "interactiveElements",
+    "accessibilityRequirements"
+  ]
+}

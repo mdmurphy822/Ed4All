@@ -1,0 +1,767 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Academic Course Metadata Schema",
+  "description": "Schema defining comprehensive course metadata structure based on MIT OCW and academic template research",
+  "version": "1.0.0",
+  "type": "object",
+  "properties": {
+    "courseIdentification": {
+      "type": "object",
+      "description": "Course identification information based on MIT OCW course.json structure",
+      "properties": {
+        "courseNumber": {
+          "type": "string",
+          "pattern": "^[A-Z]{2,4}[0-9]{3,4}[A-Z]?$",
+          "description": "Course number (e.g., CS101, MATH205, PSYC150A)",
+          "examples": ["CS101", "MATH205", "PSYC150A"]
+        },
+        "courseTitle": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 100,
+          "description": "Full course title"
+        },
+        "courseSubtitle": {
+          "type": "string",
+          "maxLength": 150,
+          "description": "Optional course subtitle or tagline"
+        },
+        "department": {
+          "type": "string",
+          "description": "Academic department offering the course"
+        },
+        "school": {
+          "type": "string",
+          "description": "School or college within the institution"
+        },
+        "institution": {
+          "type": "string",
+          "description": "Institution name"
+        },
+        "courseLevel": {
+          "type": "string",
+          "enum": ["undergraduate", "graduate", "professional", "continuing_education"],
+          "description": "Academic level of the course"
+        },
+        "credits": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 20,
+              "description": "Number of credit hours"
+            },
+            "unit": {
+              "type": "string",
+              "enum": ["credit_hours", "units", "ECTS", "contact_hours"],
+              "default": "credit_hours",
+              "description": "Credit unit type"
+            }
+          }
+        }
+      },
+      "required": ["courseNumber", "courseTitle", "department", "courseLevel"]
+    },
+    "courseDescription": {
+      "type": "object",
+      "properties": {
+        "shortDescription": {
+          "type": "string",
+          "maxLength": 300,
+          "description": "Brief course description for catalogs and cards"
+        },
+        "longDescription": {
+          "type": "string",
+          "maxLength": 1500,
+          "description": "Detailed course description with learning outcomes"
+        },
+        "prerequisites": {
+          "type": "object",
+          "properties": {
+            "required": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "courseNumber": {
+                    "type": "string",
+                    "description": "Required prerequisite course number"
+                  },
+                  "courseTitle": {
+                    "type": "string",
+                    "description": "Required prerequisite course title"
+                  },
+                  "minimumGrade": {
+                    "type": "string",
+                    "enum": ["A", "A-", "B+", "B", "B-", "C+", "C", "C-", "D", "P"],
+                    "description": "Minimum grade required"
+                  }
+                }
+              },
+              "description": "Required prerequisite courses"
+            },
+            "recommended": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "courseNumber": {
+                    "type": "string",
+                    "description": "Recommended prerequisite course number"
+                  },
+                  "courseTitle": {
+                    "type": "string",
+                    "description": "Recommended prerequisite course title"
+                  },
+                  "reason": {
+                    "type": "string",
+                    "description": "Reason for recommendation"
+                  }
+                }
+              },
+              "description": "Recommended prerequisite courses"
+            },
+            "skills": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Required or recommended skills"
+            }
+          }
+        },
+        "learningOutcomes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "outcome": {
+                "type": "string",
+                "description": "Learning outcome statement"
+              },
+              "bloomsLevel": {
+                "type": "string",
+                "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create"],
+                "description": "Bloom's taxonomy level"
+              },
+              "assessmentMethods": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["exam", "quiz", "assignment", "project", "discussion", "presentation", "portfolio"]
+                },
+                "description": "How this outcome is assessed"
+              }
+            },
+            "required": ["outcome", "bloomsLevel"]
+          },
+          "minItems": 3,
+          "maxItems": 12,
+          "description": "Course learning outcomes"
+        }
+      },
+      "required": ["shortDescription", "learningOutcomes"]
+    },
+    "instructionalTeam": {
+      "type": "object",
+      "description": "Instructional team information based on academic template patterns",
+      "properties": {
+        "primaryInstructor": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Instructor full name"
+            },
+            "title": {
+              "type": "string",
+              "description": "Academic title or position"
+            },
+            "department": {
+              "type": "string",
+              "description": "Primary department affiliation"
+            },
+            "email": {
+              "type": "string",
+              "format": "email",
+              "description": "Contact email address"
+            },
+            "officeHours": {
+              "type": "string",
+              "description": "Office hours information"
+            },
+            "bio": {
+              "type": "string",
+              "maxLength": 500,
+              "description": "Brief instructor biography"
+            },
+            "expertise": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Areas of expertise"
+            }
+          },
+          "required": ["name", "title"]
+        },
+        "additionalInstructors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Instructor name"
+              },
+              "role": {
+                "type": "string",
+                "enum": ["co-instructor", "teaching_assistant", "guest_lecturer", "lab_instructor"],
+                "description": "Role in the course"
+              },
+              "title": {
+                "type": "string",
+                "description": "Academic title or position"
+              },
+              "email": {
+                "type": "string",
+                "format": "email",
+                "description": "Contact email"
+              }
+            },
+            "required": ["name", "role"]
+          }
+        }
+      },
+      "required": ["primaryInstructor"]
+    },
+    "courseStructure": {
+      "type": "object",
+      "description": "Course structure and timeline information",
+      "properties": {
+        "duration": {
+          "type": "object",
+          "properties": {
+            "value": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 52,
+              "description": "Course duration value"
+            },
+            "unit": {
+              "type": "string",
+              "enum": ["weeks", "months", "days", "sessions"],
+              "default": "weeks",
+              "description": "Duration unit"
+            }
+          },
+          "required": ["value", "unit"]
+        },
+        "schedule": {
+          "type": "object",
+          "properties": {
+            "format": {
+              "type": "string",
+              "enum": ["online", "hybrid", "in-person", "self-paced"],
+              "description": "Course delivery format"
+            },
+            "pacing": {
+              "type": "string",
+              "enum": ["instructor-paced", "self-paced", "cohort-based"],
+              "description": "Course pacing structure"
+            },
+            "timeCommitment": {
+              "type": "object",
+              "properties": {
+                "hoursPerWeek": {
+                  "type": "number",
+                  "minimum": 1,
+                  "maximum": 40,
+                  "description": "Expected hours per week"
+                },
+                "breakdown": {
+                  "type": "object",
+                  "properties": {
+                    "lectures": {
+                      "type": "number",
+                      "description": "Hours per week for lectures"
+                    },
+                    "reading": {
+                      "type": "number",
+                      "description": "Hours per week for reading"
+                    },
+                    "assignments": {
+                      "type": "number",
+                      "description": "Hours per week for assignments"
+                    },
+                    "projects": {
+                      "type": "number",
+                      "description": "Hours per week for projects"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "modules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "moduleNumber": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Module number in sequence"
+              },
+              "title": {
+                "type": "string",
+                "description": "Module title"
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 500,
+                "description": "Module description"
+              },
+              "estimatedDuration": {
+                "type": "object",
+                "properties": {
+                  "value": {
+                    "type": "number",
+                    "description": "Estimated time to complete"
+                  },
+                  "unit": {
+                    "type": "string",
+                    "enum": ["hours", "days", "weeks"],
+                    "description": "Time unit"
+                  }
+                }
+              },
+              "learningObjectives": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Module-specific learning objectives"
+              },
+              "contentTypes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": ["lecture", "reading", "video", "interactive", "assignment", "discussion", "quiz", "project"]
+                },
+                "description": "Types of content in this module"
+              },
+              "assessments": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": ["formative", "summative"]
+                    },
+                    "format": {
+                      "type": "string",
+                      "enum": ["quiz", "assignment", "discussion", "project", "exam"]
+                    },
+                    "weight": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 100,
+                      "description": "Percentage of total grade"
+                    }
+                  }
+                }
+              }
+            },
+            "required": ["moduleNumber", "title", "learningObjectives"]
+          },
+          "description": "Course modules or units"
+        }
+      },
+      "required": ["duration", "schedule", "modules"]
+    },
+    "assessmentFramework": {
+      "type": "object",
+      "description": "Assessment strategy and grading information",
+      "properties": {
+        "gradingScale": {
+          "type": "object",
+          "properties": {
+            "scale": {
+              "type": "string",
+              "enum": ["letter", "numeric", "pass_fail", "satisfactory_unsatisfactory"],
+              "description": "Type of grading scale used"
+            },
+            "breakdown": {
+              "type": "object",
+              "properties": {
+                "A": {
+                  "type": "string",
+                  "default": "90-100%",
+                  "description": "A grade range"
+                },
+                "B": {
+                  "type": "string",
+                  "default": "80-89%",
+                  "description": "B grade range"
+                },
+                "C": {
+                  "type": "string",
+                  "default": "70-79%",
+                  "description": "C grade range"
+                },
+                "D": {
+                  "type": "string",
+                  "default": "60-69%",
+                  "description": "D grade range"
+                },
+                "F": {
+                  "type": "string",
+                  "default": "0-59%",
+                  "description": "F grade range"
+                }
+              }
+            }
+          }
+        },
+        "assessmentDistribution": {
+          "type": "object",
+          "properties": {
+            "participation": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 50,
+              "description": "Percentage for participation/engagement"
+            },
+            "assignments": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 70,
+              "description": "Percentage for assignments"
+            },
+            "quizzes": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 50,
+              "description": "Percentage for quizzes"
+            },
+            "exams": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 70,
+              "description": "Percentage for exams"
+            },
+            "projects": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 70,
+              "description": "Percentage for projects"
+            },
+            "discussions": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 30,
+              "description": "Percentage for discussion participation"
+            }
+          }
+        },
+        "policies": {
+          "type": "object",
+          "properties": {
+            "latePolicy": {
+              "type": "string",
+              "description": "Late assignment policy"
+            },
+            "makeupPolicy": {
+              "type": "string",
+              "description": "Makeup exam/assignment policy"
+            },
+            "attendancePolicy": {
+              "type": "string",
+              "description": "Attendance policy (if applicable)"
+            },
+            "academicIntegrity": {
+              "type": "string",
+              "description": "Academic integrity expectations"
+            }
+          }
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "description": "Course resources and materials",
+      "properties": {
+        "textbooks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string",
+                "description": "Textbook title"
+              },
+              "authors": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Textbook authors"
+              },
+              "edition": {
+                "type": "string",
+                "description": "Edition information"
+              },
+              "isbn": {
+                "type": "string",
+                "pattern": "^(97[89])?[0-9]{9}[0-9X]$",
+                "description": "ISBN number"
+              },
+              "required": {
+                "type": "boolean",
+                "description": "Whether textbook is required"
+              },
+              "digitalAccess": {
+                "type": "boolean",
+                "description": "Whether digital version is available"
+              }
+            },
+            "required": ["title", "authors", "required"]
+          }
+        },
+        "supplementaryMaterials": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": {
+                "type": "string",
+                "description": "Resource title"
+              },
+              "type": {
+                "type": "string",
+                "enum": ["article", "video", "website", "software", "dataset", "tutorial"],
+                "description": "Type of resource"
+              },
+              "url": {
+                "type": "string",
+                "format": "uri",
+                "description": "Resource URL (if applicable)"
+              },
+              "accessRequirements": {
+                "type": "string",
+                "description": "Any special access requirements"
+              },
+              "description": {
+                "type": "string",
+                "description": "Brief description of the resource"
+              }
+            },
+            "required": ["title", "type"]
+          }
+        },
+        "technology": {
+          "type": "object",
+          "properties": {
+            "lms": {
+              "type": "string",
+              "enum": ["Brightspace", "Canvas", "Blackboard", "Moodle", "Custom"],
+              "description": "Learning Management System used"
+            },
+            "requiredSoftware": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "description": "Software name"
+                  },
+                  "version": {
+                    "type": "string",
+                    "description": "Required version"
+                  },
+                  "cost": {
+                    "type": "string",
+                    "enum": ["free", "paid", "institutional"],
+                    "description": "Cost structure"
+                  },
+                  "platform": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "enum": ["Windows", "Mac", "Linux", "Web", "Mobile"]
+                    },
+                    "description": "Supported platforms"
+                  }
+                }
+              }
+            },
+            "hardwareRequirements": {
+              "type": "object",
+              "properties": {
+                "minimumSpecs": {
+                  "type": "string",
+                  "description": "Minimum hardware specifications"
+                },
+                "recommendedSpecs": {
+                  "type": "string",
+                  "description": "Recommended hardware specifications"
+                },
+                "specialEquipment": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  },
+                  "description": "Any special equipment needed"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "accessibility": {
+      "type": "object",
+      "description": "Accessibility and accommodation information",
+      "properties": {
+        "wcagCompliance": {
+          "type": "string",
+          "enum": ["WCAG_2.0_AA", "WCAG_2.1_AA", "WCAG_2.2_AA"],
+          "default": "WCAG_2.2_AA",
+          "description": "WCAG compliance level"
+        },
+        "accommodations": {
+          "type": "object",
+          "properties": {
+            "visualImpairments": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Accommodations for visual impairments"
+            },
+            "hearingImpairments": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Accommodations for hearing impairments"
+            },
+            "motorImpairments": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Accommodations for motor impairments"
+            },
+            "cognitiveSupport": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "Cognitive accessibility features"
+            }
+          }
+        },
+        "universalDesign": {
+          "type": "object",
+          "properties": {
+            "principles": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "equitable_use",
+                  "flexibility_in_use", 
+                  "simple_and_intuitive",
+                  "perceptible_information",
+                  "tolerance_for_error",
+                  "low_physical_effort",
+                  "size_and_space"
+                ]
+              },
+              "description": "Universal Design for Learning principles applied"
+            },
+            "multipleRepresentations": {
+              "type": "boolean",
+              "default": true,
+              "description": "Multiple ways to represent information"
+            },
+            "multipleEngagement": {
+              "type": "boolean",
+              "default": true,
+              "description": "Multiple ways to engage with content"
+            },
+            "multipleExpression": {
+              "type": "boolean",
+              "default": true,
+              "description": "Multiple ways to express knowledge"
+            }
+          }
+        }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Administrative metadata about the course information",
+      "properties": {
+        "version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "description": "Semantic version of course metadata"
+        },
+        "lastUpdated": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Last update timestamp"
+        },
+        "updatedBy": {
+          "type": "string",
+          "description": "Person who last updated the metadata"
+        },
+        "approvedBy": {
+          "type": "string",
+          "description": "Person who approved the course metadata"
+        },
+        "effectiveDate": {
+          "type": "string",
+          "format": "date",
+          "description": "Date when metadata becomes effective"
+        },
+        "expirationDate": {
+          "type": "string",
+          "format": "date",
+          "description": "Date when metadata expires/needs review"
+        },
+        "keywords": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Keywords for course discovery and search"
+        },
+        "categories": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Course categories and tags"
+        }
+      },
+      "required": ["version", "lastUpdated", "updatedBy"]
+    }
+  },
+  "required": [
+    "courseIdentification",
+    "courseDescription", 
+    "instructionalTeam",
+    "courseStructure",
+    "assessmentFramework",
+    "accessibility",
+    "metadata"
+  ]
+}

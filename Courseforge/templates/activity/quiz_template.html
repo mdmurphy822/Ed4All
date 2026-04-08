@@ -1,0 +1,300 @@
+<!--
+    Quiz Activity Template
+    QTI 1.2 / D2L Brightspace Compatible
+    WCAG 2.2 AA Compliant
+
+    Template Variables:
+    - {{QUIZ_TITLE}}: Title of the quiz
+    - {{QUIZ_DESCRIPTION}}: Overview of the quiz
+    - {{LEARNING_OBJECTIVES}}: What the quiz assesses
+    - {{INSTRUCTIONS}}: Quiz-taking instructions
+    - {{TIME_LIMIT}}: Time allowed (if any)
+    - {{ATTEMPTS}}: Number of attempts allowed
+    - {{DUE_DATE}}: Quiz availability end date
+    - {{POINTS_POSSIBLE}}: Total points
+    - {{QUESTION_COUNT}}: Number of questions
+    - {{WEEK_NUMBER}}: Week number
+    - {{MODULE_NAME}}: Module name
+    - {{TOPICS_COVERED}}: Topics included in quiz
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{QUIZ_TITLE}} - Quiz</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.3.1/dist/css/bootstrap.min.css">
+    <style>
+        .quiz-container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        .quiz-header {
+            background: linear-gradient(135deg, #6f42c1, #4a2882);
+            color: white;
+            padding: 2rem;
+            border-radius: 8px;
+            margin-bottom: 2rem;
+        }
+        .stat-badge {
+            background-color: rgba(255, 255, 255, 0.2);
+            padding: 0.5rem 1rem;
+            border-radius: 20px;
+            display: inline-block;
+            margin: 0.25rem;
+        }
+        .objectives-box {
+            background-color: #f3e8ff;
+            border-left: 4px solid #6f42c1;
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .topics-box {
+            background-color: #e7f3ff;
+            border: 1px solid #2c5aa0;
+            border-radius: 4px;
+            padding: 1rem;
+            margin: 1rem 0;
+        }
+        .instructions-box {
+            background-color: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 4px;
+            padding: 1.5rem;
+            margin: 1rem 0;
+        }
+        .tips-box {
+            background-color: #d4edda;
+            border: 1px solid #28a745;
+            border-radius: 4px;
+            padding: 1rem;
+            margin: 1rem 0;
+        }
+        .warning-box {
+            background-color: #f8d7da;
+            border: 1px solid #dc3545;
+            border-radius: 4px;
+            padding: 1rem;
+            margin: 1rem 0;
+        }
+        .quiz-info-table td {
+            padding: 0.5rem 1rem;
+        }
+        .quiz-info-table th {
+            padding: 0.5rem 1rem;
+            text-align: left;
+            width: 40%;
+        }
+        /* WCAG 2.2 2.4.13 Focus Appearance - minimum 2px outline with 3:1 contrast */
+        a:focus, button:focus, input:focus, select:focus, textarea:focus {
+            outline: 2px solid #6f42c1;
+            outline-offset: 2px;
+        }
+
+        /* WCAG 2.2 2.5.8 Target Size (Minimum) - 24x24 CSS pixels minimum */
+        a, button, input, select, textarea, [role="button"], [tabindex="0"] {
+            min-height: 24px;
+            min-width: 24px;
+        }
+
+        /* WCAG 2.2 2.4.11/2.4.12 Focus Not Obscured */
+        *:focus {
+            scroll-margin-top: 80px;
+            scroll-margin-bottom: 80px;
+        }
+
+        .sr-only-focusable:focus,
+        .sr-only-focusable:active {
+            position: static;
+            width: auto;
+            height: auto;
+            overflow: visible;
+            clip: auto;
+            white-space: normal;
+        }
+    </style>
+</head>
+<body>
+    <a href="#main-content" class="sr-only sr-only-focusable">Skip to main content</a>
+
+    <main id="main-content" class="quiz-container" role="main">
+        <header>
+            <nav aria-label="Breadcrumb">
+                <ol class="breadcrumb">
+                    <li class="breadcrumb-item"><a href="../index.html">Course Home</a></li>
+                    <li class="breadcrumb-item"><a href="week_{{WEEK_NUMBER}}.html">Week {{WEEK_NUMBER}}</a></li>
+                    <li class="breadcrumb-item active" aria-current="page">{{QUIZ_TITLE}}</li>
+                </ol>
+            </nav>
+
+            <div class="quiz-header">
+                <h1>{{QUIZ_TITLE}}</h1>
+                <p class="lead mb-3">{{MODULE_NAME}} - Week {{WEEK_NUMBER}} Assessment</p>
+                <div class="d-flex flex-wrap">
+                    <span class="stat-badge">{{QUESTION_COUNT}} Questions</span>
+                    <span class="stat-badge">{{POINTS_POSSIBLE}} Points</span>
+                    <span class="stat-badge">{{TIME_LIMIT}}</span>
+                    <span class="stat-badge">{{ATTEMPTS}} Attempt(s)</span>
+                </div>
+            </div>
+        </header>
+
+        <section aria-labelledby="overview-heading">
+            <h2 id="overview-heading">Quiz Overview</h2>
+            <p>{{QUIZ_DESCRIPTION}}</p>
+
+            <table class="table quiz-info-table">
+                <caption class="sr-only">Quiz details and parameters</caption>
+                <tbody>
+                    <tr>
+                        <th scope="row">Available Until</th>
+                        <td>{{DUE_DATE}}</td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Time Limit</th>
+                        <td>{{TIME_LIMIT}}</td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Attempts Allowed</th>
+                        <td>{{ATTEMPTS}}</td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Points Possible</th>
+                        <td>{{POINTS_POSSIBLE}}</td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Question Types</th>
+                        <td>Multiple Choice, True/False, Multiple Select</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <section aria-labelledby="objectives-heading">
+            <h2 id="objectives-heading">Learning Objectives Assessed</h2>
+            <div class="objectives-box" role="note">
+                <p>This quiz assesses your understanding of the following objectives:</p>
+                {{LEARNING_OBJECTIVES}}
+            </div>
+        </section>
+
+        <section aria-labelledby="topics-heading">
+            <h2 id="topics-heading">Topics Covered</h2>
+            <div class="topics-box" role="note">
+                {{TOPICS_COVERED}}
+            </div>
+        </section>
+
+        <section aria-labelledby="instructions-heading">
+            <h2 id="instructions-heading">Instructions</h2>
+            <div class="instructions-box" role="note">
+                {{INSTRUCTIONS}}
+
+                <h3 class="h5 mt-3">General Guidelines</h3>
+                <ul>
+                    <li>Read each question carefully before selecting your answer</li>
+                    <li>For multiple select questions, choose ALL correct answers</li>
+                    <li>You can flag questions to review before submitting</li>
+                    <li>Once submitted, your answers cannot be changed</li>
+                    <li>Your score will be available immediately after submission</li>
+                </ul>
+            </div>
+        </section>
+
+        <section aria-labelledby="tips-heading">
+            <h2 id="tips-heading">Tips for Success</h2>
+            <div class="tips-box" role="note">
+                <ul>
+                    <li><strong>Review materials:</strong> Study the weekly readings and lecture notes</li>
+                    <li><strong>Take your time:</strong> Use the full time available if needed</li>
+                    <li><strong>Eliminate wrong answers:</strong> Narrow down choices before selecting</li>
+                    <li><strong>Check your work:</strong> Review flagged questions before submitting</li>
+                    <li><strong>Technical preparation:</strong> Ensure stable internet connection</li>
+                </ul>
+            </div>
+        </section>
+
+        <section aria-labelledby="policies-heading">
+            <h2 id="policies-heading">Academic Integrity</h2>
+            <div class="warning-box" role="alert">
+                <h3 class="h5">Important Notice</h3>
+                <p>This quiz is to be completed independently. Use of unauthorized materials, collaboration with others, or any form of academic dishonesty is prohibited and may result in:</p>
+                <ul>
+                    <li>Zero grade for this assessment</li>
+                    <li>Academic integrity violation report</li>
+                    <li>Further disciplinary action</li>
+                </ul>
+                <p class="mb-0">By starting this quiz, you acknowledge that you will complete it honestly and independently.</p>
+            </div>
+        </section>
+
+        <section aria-labelledby="preparation-heading">
+            <h2 id="preparation-heading">Before You Begin</h2>
+            <div class="card">
+                <div class="card-body">
+                    <h3 class="card-title h5">Preparation Checklist</h3>
+                    <ul class="list-unstyled">
+                        <li><input type="checkbox" id="check1"> <label for="check1">I have reviewed all required materials</label></li>
+                        <li><input type="checkbox" id="check2"> <label for="check2">I have a stable internet connection</label></li>
+                        <li><input type="checkbox" id="check3"> <label for="check3">I have {{TIME_LIMIT}} available to complete the quiz</label></li>
+                        <li><input type="checkbox" id="check4"> <label for="check4">I understand the academic integrity policy</label></li>
+                        <li><input type="checkbox" id="check5"> <label for="check5">I am ready to begin</label></li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <div class="text-center my-4">
+            <a href="{{QUIZ_LINK}}" class="btn btn-primary btn-lg">
+                Start Quiz
+                <span class="sr-only">{{QUIZ_TITLE}}</span>
+            </a>
+            <p class="mt-2 text-muted">
+                <small>Quiz will open in a new window. Timer starts when you click.</small>
+            </p>
+        </div>
+
+        <section aria-labelledby="support-heading">
+            <h2 id="support-heading">Need Help?</h2>
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <div class="card h-100">
+                        <div class="card-body">
+                            <h3 class="card-title h5">Technical Issues</h3>
+                            <p class="card-text">If you experience technical difficulties during the quiz, contact technical support immediately.</p>
+                            <a href="../support/technical-help.html" class="btn btn-outline-secondary">Technical Support</a>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6 mb-3">
+                    <div class="card h-100">
+                        <div class="card-body">
+                            <h3 class="card-title h5">Content Questions</h3>
+                            <p class="card-text">Questions about quiz content should be directed to your instructor.</p>
+                            <a href="../contact-instructor.html" class="btn btn-outline-secondary">Contact Instructor</a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <nav aria-label="Activity navigation" class="mt-4 pt-4 border-top">
+            <div class="d-flex justify-content-between">
+                <a href="{{PREV_ACTIVITY}}" class="btn btn-outline-primary">
+                    <span aria-hidden="true">&larr;</span> Previous Activity
+                </a>
+                <a href="{{NEXT_ACTIVITY}}" class="btn btn-primary">
+                    Next Activity <span aria-hidden="true">&rarr;</span>
+                </a>
+            </div>
+        </nav>
+    </main>
+
+    <footer role="contentinfo" class="text-center py-3 mt-4 border-top">
+        <p class="mb-0">&copy; {{YEAR}} {{INSTITUTION}}. All rights reserved.</p>
+    </footer>
+</body>
+</html>

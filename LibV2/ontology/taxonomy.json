@@ -1,0 +1,470 @@
+{
+  "version": "1.0.0",
+  "description": "LibV2 internal taxonomy for STEM and Arts classification",
+  "divisions": {
+    "STEM": {
+      "name": "Science, Technology, Engineering, Mathematics",
+      "description": "Scientific and technical disciplines",
+      "domains": {
+        "physics": {
+          "name": "Physics",
+          "description": "Study of matter, energy, and fundamental forces",
+          "subdomains": {
+            "mechanics": {
+              "name": "Mechanics",
+              "topics": ["kinematics", "dynamics", "statics", "fluid-mechanics", "rigid-body-dynamics"]
+            },
+            "electromagnetism": {
+              "name": "Electromagnetism",
+              "topics": ["electrostatics", "circuits", "magnetism", "electromagnetic-waves", "optics"]
+            },
+            "thermodynamics": {
+              "name": "Thermodynamics",
+              "topics": ["heat-transfer", "entropy", "statistical-mechanics", "kinetic-theory"]
+            },
+            "quantum-mechanics": {
+              "name": "Quantum Mechanics",
+              "topics": ["wave-functions", "quantum-states", "operators", "quantum-entanglement"]
+            },
+            "relativity": {
+              "name": "Relativity",
+              "topics": ["special-relativity", "general-relativity", "spacetime"]
+            },
+            "astrophysics": {
+              "name": "Astrophysics",
+              "topics": ["stellar-physics", "cosmology", "galactic-dynamics"]
+            }
+          }
+        },
+        "chemistry": {
+          "name": "Chemistry",
+          "description": "Study of matter composition, properties, and reactions",
+          "subdomains": {
+            "organic-chemistry": {
+              "name": "Organic Chemistry",
+              "topics": ["hydrocarbons", "functional-groups", "reaction-mechanisms", "stereochemistry"]
+            },
+            "inorganic-chemistry": {
+              "name": "Inorganic Chemistry",
+              "topics": ["coordination-compounds", "main-group-elements", "transition-metals"]
+            },
+            "physical-chemistry": {
+              "name": "Physical Chemistry",
+              "topics": ["thermodynamics", "kinetics", "quantum-chemistry", "spectroscopy"]
+            },
+            "biochemistry": {
+              "name": "Biochemistry",
+              "topics": ["proteins", "enzymes", "metabolism", "nucleic-acids"]
+            },
+            "analytical-chemistry": {
+              "name": "Analytical Chemistry",
+              "topics": ["chromatography", "mass-spectrometry", "electrochemistry"]
+            }
+          }
+        },
+        "biology": {
+          "name": "Biology",
+          "description": "Study of living organisms",
+          "subdomains": {
+            "molecular-biology": {
+              "name": "Molecular Biology",
+              "topics": ["dna-replication", "transcription", "translation", "gene-regulation"]
+            },
+            "cell-biology": {
+              "name": "Cell Biology",
+              "topics": ["cell-structure", "membrane-transport", "cell-signaling", "cell-cycle"]
+            },
+            "genetics": {
+              "name": "Genetics",
+              "topics": ["mendelian-genetics", "population-genetics", "genomics", "epigenetics"]
+            },
+            "ecology": {
+              "name": "Ecology",
+              "topics": ["ecosystems", "population-dynamics", "community-ecology", "conservation"]
+            },
+            "evolution": {
+              "name": "Evolution",
+              "topics": ["natural-selection", "speciation", "phylogenetics", "molecular-evolution"]
+            },
+            "physiology": {
+              "name": "Physiology",
+              "topics": ["nervous-system", "cardiovascular", "respiratory", "endocrine"]
+            },
+            "microbiology": {
+              "name": "Microbiology",
+              "topics": ["bacteriology", "virology", "immunology", "microbial-ecology"]
+            }
+          }
+        },
+        "mathematics": {
+          "name": "Mathematics",
+          "description": "Study of numbers, quantities, structures, and patterns",
+          "subdomains": {
+            "algebra": {
+              "name": "Algebra",
+              "topics": ["linear-algebra", "abstract-algebra", "group-theory", "ring-theory"]
+            },
+            "calculus": {
+              "name": "Calculus",
+              "topics": ["differential-calculus", "integral-calculus", "multivariable-calculus", "vector-calculus"]
+            },
+            "analysis": {
+              "name": "Analysis",
+              "topics": ["real-analysis", "complex-analysis", "functional-analysis", "measure-theory"]
+            },
+            "statistics": {
+              "name": "Statistics",
+              "topics": ["probability", "inference", "regression", "bayesian-statistics"]
+            },
+            "discrete-mathematics": {
+              "name": "Discrete Mathematics",
+              "topics": ["combinatorics", "graph-theory", "number-theory", "logic"]
+            },
+            "geometry": {
+              "name": "Geometry",
+              "topics": ["euclidean-geometry", "differential-geometry", "topology", "algebraic-geometry"]
+            }
+          }
+        },
+        "computer-science": {
+          "name": "Computer Science",
+          "description": "Study of computation and information processing",
+          "subdomains": {
+            "algorithms": {
+              "name": "Algorithms",
+              "topics": ["sorting", "searching", "graph-algorithms", "dynamic-programming", "complexity-theory"]
+            },
+            "data-structures": {
+              "name": "Data Structures",
+              "topics": ["arrays", "trees", "hash-tables", "graphs", "heaps"]
+            },
+            "machine-learning": {
+              "name": "Machine Learning",
+              "topics": ["supervised-learning", "unsupervised-learning", "deep-learning", "reinforcement-learning", "nlp"]
+            },
+            "software-engineering": {
+              "name": "Software Engineering",
+              "topics": ["design-patterns", "testing", "version-control", "agile", "devops"]
+            },
+            "databases": {
+              "name": "Databases",
+              "topics": ["relational-databases", "sql", "nosql", "data-modeling", "query-optimization"]
+            },
+            "computer-networks": {
+              "name": "Computer Networks",
+              "topics": ["tcp-ip", "routing", "network-security", "distributed-systems"]
+            },
+            "operating-systems": {
+              "name": "Operating Systems",
+              "topics": ["process-management", "memory-management", "file-systems", "concurrency"]
+            },
+            "programming-languages": {
+              "name": "Programming Languages",
+              "topics": ["compilers", "interpreters", "type-systems", "functional-programming"]
+            },
+            "cybersecurity": {
+              "name": "Cybersecurity",
+              "topics": ["cryptography", "network-security", "application-security", "forensics"]
+            },
+            "retrieval-augmented-generation": {
+              "name": "Retrieval-Augmented Generation",
+              "topics": ["rag-architecture", "embedding-models", "vector-databases", "chunking-strategies", "retrieval-methods", "context-building", "rag-evaluation", "production-rag-systems"]
+            }
+          }
+        },
+        "engineering": {
+          "name": "Engineering",
+          "description": "Application of science to design and build systems",
+          "subdomains": {
+            "electrical-engineering": {
+              "name": "Electrical Engineering",
+              "topics": ["circuit-analysis", "signal-processing", "power-systems", "control-systems"]
+            },
+            "mechanical-engineering": {
+              "name": "Mechanical Engineering",
+              "topics": ["mechanics-of-materials", "thermodynamics", "machine-design", "manufacturing"]
+            },
+            "civil-engineering": {
+              "name": "Civil Engineering",
+              "topics": ["structural-engineering", "geotechnical", "transportation", "environmental"]
+            },
+            "chemical-engineering": {
+              "name": "Chemical Engineering",
+              "topics": ["process-engineering", "reaction-engineering", "separations", "process-control"]
+            },
+            "aerospace-engineering": {
+              "name": "Aerospace Engineering",
+              "topics": ["aerodynamics", "propulsion", "flight-mechanics", "spacecraft-design"]
+            },
+            "biomedical-engineering": {
+              "name": "Biomedical Engineering",
+              "topics": ["biomechanics", "medical-imaging", "biomaterials", "tissue-engineering"]
+            }
+          }
+        },
+        "medicine": {
+          "name": "Medicine & Health Sciences",
+          "description": "Study of health, disease, and medical treatment",
+          "subdomains": {
+            "anatomy": {
+              "name": "Anatomy",
+              "topics": ["gross-anatomy", "histology", "neuroanatomy", "embryology"]
+            },
+            "physiology": {
+              "name": "Physiology",
+              "topics": ["cardiovascular-physiology", "renal-physiology", "neurophysiology", "endocrinology"]
+            },
+            "pharmacology": {
+              "name": "Pharmacology",
+              "topics": ["pharmacokinetics", "pharmacodynamics", "drug-classes", "toxicology"]
+            },
+            "pathology": {
+              "name": "Pathology",
+              "topics": ["cellular-pathology", "systemic-pathology", "clinical-pathology"]
+            },
+            "clinical-medicine": {
+              "name": "Clinical Medicine",
+              "topics": ["internal-medicine", "surgery", "pediatrics", "psychiatry"]
+            },
+            "public-health": {
+              "name": "Public Health",
+              "topics": ["epidemiology", "biostatistics", "health-policy", "global-health"]
+            }
+          }
+        },
+        "environmental-science": {
+          "name": "Environmental Science",
+          "description": "Study of environment and environmental problems",
+          "subdomains": {
+            "climate-science": {
+              "name": "Climate Science",
+              "topics": ["climate-modeling", "paleoclimatology", "atmospheric-science"]
+            },
+            "conservation": {
+              "name": "Conservation",
+              "topics": ["biodiversity", "habitat-restoration", "wildlife-management"]
+            },
+            "sustainability": {
+              "name": "Sustainability",
+              "topics": ["renewable-energy", "sustainable-development", "circular-economy"]
+            },
+            "earth-science": {
+              "name": "Earth Science",
+              "topics": ["geology", "oceanography", "hydrology", "soil-science"]
+            }
+          }
+        },
+        "data-science": {
+          "name": "Data Science",
+          "description": "Extraction of knowledge from data",
+          "subdomains": {
+            "data-analysis": {
+              "name": "Data Analysis",
+              "topics": ["exploratory-data-analysis", "statistical-analysis", "hypothesis-testing"]
+            },
+            "data-visualization": {
+              "name": "Data Visualization",
+              "topics": ["charts", "dashboards", "interactive-visualization", "storytelling"]
+            },
+            "big-data": {
+              "name": "Big Data",
+              "topics": ["distributed-computing", "hadoop", "spark", "stream-processing"]
+            },
+            "data-engineering": {
+              "name": "Data Engineering",
+              "topics": ["etl", "data-pipelines", "data-warehousing", "data-lakes"]
+            }
+          }
+        },
+        "educational-technology": {
+          "name": "Educational Technology",
+          "description": "Technology-enhanced learning, instructional design, and assessment",
+          "subdomains": {
+            "instructional-design": {
+              "name": "Instructional Design",
+              "topics": ["addie", "sam", "backward-design", "dick-carey", "merrills-principles", "learning-theories"]
+            },
+            "assessment-design": {
+              "name": "Assessment Design",
+              "topics": ["assessment-types", "test-blueprinting", "item-writing", "psychometrics", "rubric-development", "accessible-assessment", "digital-assessment", "standards-alignment"]
+            },
+            "online-learning": {
+              "name": "Online Learning",
+              "topics": ["lms-administration", "course-delivery", "learner-engagement", "multimedia-learning"]
+            },
+            "learning-analytics": {
+              "name": "Learning Analytics",
+              "topics": ["data-driven-instruction", "learner-tracking", "outcome-measurement"]
+            }
+          }
+        }
+      }
+    },
+    "ARTS": {
+      "name": "Arts & Humanities",
+      "description": "Creative and humanistic disciplines",
+      "domains": {
+        "education": {
+          "name": "Education & Professional Development",
+          "description": "Teaching, learning, and professional skill development",
+          "subdomains": {
+            "career-development": {
+              "name": "Career Development",
+              "topics": ["resume-writing", "job-search", "personal-branding", "professional-networking", "interview-skills"]
+            },
+            "professional-writing": {
+              "name": "Professional Writing",
+              "topics": ["business-writing", "technical-writing", "communication-skills"]
+            },
+            "instructional-design": {
+              "name": "Instructional Design",
+              "topics": ["curriculum-development", "learning-objectives", "assessment-design"]
+            }
+          }
+        },
+        "design": {
+          "name": "Design",
+          "description": "Creative problem-solving and visual communication",
+          "subdomains": {
+            "ux-design": {
+              "name": "User Experience Design",
+              "topics": ["user-research", "information-architecture", "usability", "interaction-design"]
+            },
+            "ui-design": {
+              "name": "User Interface Design",
+              "topics": ["visual-design", "typography", "color-theory", "layout"]
+            },
+            "graphic-design": {
+              "name": "Graphic Design",
+              "topics": ["branding", "print-design", "digital-design", "illustration"]
+            },
+            "industrial-design": {
+              "name": "Industrial Design",
+              "topics": ["product-design", "ergonomics", "materials", "prototyping"]
+            },
+            "web-design": {
+              "name": "Web Design",
+              "topics": ["responsive-design", "accessibility", "css", "design-systems"]
+            }
+          }
+        },
+        "visual-arts": {
+          "name": "Visual Arts",
+          "description": "Creation of visual works",
+          "subdomains": {
+            "painting": {
+              "name": "Painting",
+              "topics": ["oil-painting", "watercolor", "acrylic", "techniques"]
+            },
+            "sculpture": {
+              "name": "Sculpture",
+              "topics": ["clay", "metal", "wood", "mixed-media"]
+            },
+            "photography": {
+              "name": "Photography",
+              "topics": ["composition", "lighting", "digital-photography", "post-processing"]
+            },
+            "digital-art": {
+              "name": "Digital Art",
+              "topics": ["digital-painting", "3d-modeling", "animation", "generative-art"]
+            }
+          }
+        },
+        "music": {
+          "name": "Music",
+          "description": "Theory and practice of music",
+          "subdomains": {
+            "music-theory": {
+              "name": "Music Theory",
+              "topics": ["harmony", "rhythm", "counterpoint", "form"]
+            },
+            "composition": {
+              "name": "Composition",
+              "topics": ["songwriting", "orchestration", "arrangement", "electronic-music"]
+            },
+            "performance": {
+              "name": "Performance",
+              "topics": ["technique", "interpretation", "improvisation"]
+            }
+          }
+        },
+        "literature": {
+          "name": "Literature",
+          "description": "Study of written works",
+          "subdomains": {
+            "creative-writing": {
+              "name": "Creative Writing",
+              "topics": ["fiction", "poetry", "screenwriting", "narrative"]
+            },
+            "literary-analysis": {
+              "name": "Literary Analysis",
+              "topics": ["literary-theory", "criticism", "comparative-literature"]
+            }
+          }
+        },
+        "philosophy": {
+          "name": "Philosophy",
+          "description": "Study of fundamental questions",
+          "subdomains": {
+            "ethics": {
+              "name": "Ethics",
+              "topics": ["metaethics", "normative-ethics", "applied-ethics"]
+            },
+            "epistemology": {
+              "name": "Epistemology",
+              "topics": ["knowledge", "belief", "justification", "skepticism"]
+            },
+            "logic": {
+              "name": "Logic",
+              "topics": ["formal-logic", "informal-logic", "argumentation"]
+            },
+            "metaphysics": {
+              "name": "Metaphysics",
+              "topics": ["ontology", "causation", "free-will", "mind-body"]
+            }
+          }
+        },
+        "history": {
+          "name": "History",
+          "description": "Study of past events",
+          "subdomains": {
+            "ancient-history": {
+              "name": "Ancient History",
+              "topics": ["mesopotamia", "egypt", "greece", "rome"]
+            },
+            "medieval-history": {
+              "name": "Medieval History",
+              "topics": ["feudalism", "crusades", "byzantine", "islamic-golden-age"]
+            },
+            "modern-history": {
+              "name": "Modern History",
+              "topics": ["enlightenment", "industrial-revolution", "world-wars", "cold-war"]
+            }
+          }
+        },
+        "linguistics": {
+          "name": "Linguistics",
+          "description": "Scientific study of language",
+          "subdomains": {
+            "phonetics": {
+              "name": "Phonetics",
+              "topics": ["articulation", "acoustics", "transcription"]
+            },
+            "syntax": {
+              "name": "Syntax",
+              "topics": ["phrase-structure", "transformational-grammar", "parsing"]
+            },
+            "semantics": {
+              "name": "Semantics",
+              "topics": ["meaning", "reference", "compositionality"]
+            },
+            "computational-linguistics": {
+              "name": "Computational Linguistics",
+              "topics": ["nlp", "machine-translation", "speech-recognition"]
+            }
+          }
+        }
+      }
+    }
+  }
+}

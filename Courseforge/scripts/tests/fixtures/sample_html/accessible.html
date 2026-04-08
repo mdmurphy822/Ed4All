@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Accessible Test Page - WCAG 2.2 AA Compliant</title>
+    <style>
+        .skip-link {
+            position: absolute;
+            top: -40px;
+            left: 0;
+            background: #2c5aa0;
+            color: white;
+            padding: 8px 16px;
+            z-index: 100;
+        }
+        .skip-link:focus {
+            top: 0;
+        }
+        /* WCAG 2.2 2.4.13 Focus Appearance - minimum 2px outline with 3:1 contrast */
+        a:focus, button:focus, input:focus, select:focus, textarea:focus {
+            outline: 2px solid #2c5aa0;
+            outline-offset: 2px;
+        }
+
+        /* WCAG 2.2 2.5.8 Target Size (Minimum) - 24x24 CSS pixels */
+        a, button, input, select, textarea, [role="button"], [tabindex="0"] {
+            min-height: 24px;
+            min-width: 24px;
+        }
+
+        /* WCAG 2.2 2.4.11/2.4.12 Focus Not Obscured */
+        *:focus {
+            scroll-margin-top: 80px;
+            scroll-margin-bottom: 80px;
+        }
+        /* Color contrast meets 4.5:1 minimum */
+        body {
+            color: #1a1a1a;
+            background-color: #ffffff;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+        }
+        a { color: #2c5aa0; }
+        .callout-info {
+            border-left: 4px solid #117a8b;
+            padding: 1rem;
+            background: #f8f9fa;
+        }
+    </style>
+</head>
+<body>
+    <!-- Skip Link -->
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <!-- Header with ARIA landmark -->
+    <header role="banner">
+        <nav aria-label="Main navigation">
+            <ul>
+                <li><a href="index.html">Home</a></li>
+                <li><a href="about.html">About Us</a></li>
+                <li><a href="contact.html">Contact Information</a></li>
+            </ul>
+        </nav>
+    </header>
+
+    <!-- Main Content with ARIA landmark -->
+    <main id="main-content" role="main">
+        <h1>Welcome to the Accessible Course</h1>
+
+        <!-- Learning Objectives Section -->
+        <section aria-labelledby="objectives-heading">
+            <h2 id="objectives-heading">Learning Objectives</h2>
+            <p>After completing this module, you will be able to:</p>
+            <ul>
+                <li>Understand web accessibility fundamentals</li>
+                <li>Apply WCAG 2.2 AA guidelines to content</li>
+                <li>Create accessible HTML structures</li>
+            </ul>
+        </section>
+
+        <!-- Content Section with Image -->
+        <section aria-labelledby="content-heading">
+            <h2 id="content-heading">Introduction to Accessibility</h2>
+            <p>Web accessibility ensures that websites, tools, and technologies are designed
+               so that people with disabilities can use them effectively.</p>
+
+            <figure>
+                <img src="diagram.png"
+                     alt="Network topology diagram showing three servers connected to a central router, with a firewall between the router and internet connection"
+                     width="600" height="400">
+                <figcaption>Figure 1: Basic network architecture diagram</figcaption>
+            </figure>
+
+            <h3>Key Principles</h3>
+            <p>The four principles of web accessibility are:</p>
+            <ol>
+                <li><strong>Perceivable:</strong> Information must be presentable in ways users can perceive</li>
+                <li><strong>Operable:</strong> User interface components must be operable</li>
+                <li><strong>Understandable:</strong> Information and UI operation must be understandable</li>
+                <li><strong>Robust:</strong> Content must be robust enough for various assistive technologies</li>
+            </ol>
+
+            <!-- Callout Box -->
+            <div class="callout-info" role="note">
+                <strong>Note:</strong> This content demonstrates proper use of semantic HTML,
+                ARIA landmarks, and accessibility best practices.
+            </div>
+        </section>
+
+        <!-- Form Section -->
+        <section aria-labelledby="form-heading">
+            <h2 id="form-heading">Contact Form</h2>
+            <form action="/submit" method="post">
+                <div>
+                    <label for="full-name">Full Name <span aria-hidden="true">*</span></label>
+                    <input type="text" id="full-name" name="full_name" required aria-required="true">
+                </div>
+                <div>
+                    <label for="email">Email Address <span aria-hidden="true">*</span></label>
+                    <input type="email" id="email" name="email" required aria-required="true"
+                           aria-describedby="email-help">
+                    <small id="email-help">We will use this email for course communications.</small>
+                </div>
+                <fieldset>
+                    <legend>Preferred Contact Method</legend>
+                    <div>
+                        <input type="radio" id="contact-email" name="contact_method" value="email">
+                        <label for="contact-email">Email</label>
+                    </div>
+                    <div>
+                        <input type="radio" id="contact-phone" name="contact_method" value="phone">
+                        <label for="contact-phone">Phone</label>
+                    </div>
+                </fieldset>
+                <button type="submit">Submit Form</button>
+            </form>
+        </section>
+
+        <!-- Table Section -->
+        <section aria-labelledby="table-heading">
+            <h2 id="table-heading">Course Schedule</h2>
+            <table>
+                <caption>Weekly Module Schedule and Topics</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">Week</th>
+                        <th scope="col">Topic</th>
+                        <th scope="col">Duration</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <th scope="row">Week 1</th>
+                        <td>Introduction to Accessibility</td>
+                        <td>2 hours</td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Week 2</th>
+                        <td>WCAG Guidelines Overview</td>
+                        <td>3 hours</td>
+                    </tr>
+                    <tr>
+                        <th scope="row">Week 3</th>
+                        <td>Practical Implementation</td>
+                        <td>4 hours</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+
+        <!-- Navigation -->
+        <nav aria-label="Page navigation">
+            <a href="previous.html">Previous: Course Overview</a>
+            <a href="next.html">Next: WCAG Guidelines</a>
+        </nav>
+    </main>
+
+    <!-- Footer with ARIA landmark -->
+    <footer role="contentinfo">
+        <p>&copy; 2025 Courseforge. All rights reserved.</p>
+        <p><a href="accessibility-statement.html">Accessibility Statement</a></p>
+    </footer>
+</body>
+</html>

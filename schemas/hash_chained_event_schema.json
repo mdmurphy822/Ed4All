@@ -1,0 +1,36 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ed4all.org/schemas/hash_chained_event_schema.json",
+  "title": "Hash-Chained Event",
+  "description": "Schema for tamper-evident hash-chained events",
+  "type": "object",
+  "required": ["seq", "prev_hash", "event_hash", "timestamp", "event"],
+  "properties": {
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonically increasing sequence number starting from 0"
+    },
+    "prev_hash": {
+      "type": "string",
+      "pattern": "^genesis$|^[a-f0-9]{64}$",
+      "description": "Hash of the previous event ('genesis' for first event)"
+    },
+    "event_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "SHA-256 hash of (prev_hash + JSON(event))"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp when event was appended"
+    },
+    "event": {
+      "type": "object",
+      "description": "The actual event payload (can be any valid JSON object)",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": false
+}

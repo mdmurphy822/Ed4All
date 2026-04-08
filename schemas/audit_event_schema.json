@@ -1,0 +1,206 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ed4all.org/schemas/audit_event_schema.json",
+  "title": "Unified Audit Event",
+  "description": "Schema for unified audit logging across all Ed4All components",
+  "type": "object",
+  "required": ["run_id", "event_id", "seq", "timestamp", "event_type"],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "pattern": "^RUN_[0-9]{8}_[0-9]{6}_[a-f0-9]{8}$",
+      "description": "Run this event belongs to"
+    },
+    "event_id": {
+      "type": "string",
+      "pattern": "^EVT_[a-f0-9]{16}$",
+      "description": "Unique event identifier"
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Monotonically increasing sequence number within run"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of event"
+    },
+    "event_type": {
+      "type": "string",
+      "enum": [
+        "file_access",
+        "tool_invocation",
+        "state_change",
+        "decision_event",
+        "workflow_event",
+        "validation_event",
+        "error",
+        "security_event"
+      ],
+      "description": "Category of audit event"
+    },
+    "component": {
+      "type": "string",
+      "description": "Component that generated this event (dart, courseforge, trainforge, orchestrator)"
+    },
+    "worker_id": {
+      "type": ["string", "null"],
+      "description": "Worker/process identifier if applicable"
+    },
+    "task_id": {
+      "type": ["string", "null"],
+      "pattern": "^T-[a-f0-9]{8}$",
+      "description": "Orchestrator task ID if applicable"
+    },
+    "details": {
+      "oneOf": [
+        {"$ref": "#/definitions/file_access_details"},
+        {"$ref": "#/definitions/tool_invocation_details"},
+        {"$ref": "#/definitions/state_change_details"},
+        {"$ref": "#/definitions/workflow_event_details"},
+        {"$ref": "#/definitions/validation_event_details"},
+        {"$ref": "#/definitions/error_details"},
+        {"$ref": "#/definitions/security_event_details"},
+        {"type": "object", "additionalProperties": true}
+      ],
+      "description": "Event-type-specific details"
+    },
+    "redacted_fields": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Fields that were redacted per security policy"
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Additional metadata"
+    }
+  },
+  "definitions": {
+    "file_access_details": {
+      "type": "object",
+      "required": ["operation", "path"],
+      "properties": {
+        "operation": {
+          "type": "string",
+          "enum": ["read", "write", "delete", "create", "list"]
+        },
+        "path": {"type": "string"},
+        "content_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "success": {"type": "boolean"}
+      }
+    },
+    "tool_invocation_details": {
+      "type": "object",
+      "required": ["tool_name"],
+      "properties": {
+        "tool_name": {"type": "string"},
+        "tool_version": {"type": "string"},
+        "args_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{12,64}$",
+          "description": "Hash of arguments (for privacy)"
+        },
+        "result_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{12,64}$",
+          "description": "Hash of result (for privacy)"
+        },
+        "duration_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "exit_status": {"type": "integer"},
+        "success": {"type": "boolean"},
+        "error_type": {"type": ["string", "null"]}
+      }
+    },
+    "state_change_details": {
+      "type": "object",
+      "required": ["state_file", "change_type"],
+      "properties": {
+        "state_file": {"type": "string"},
+        "change_type": {
+          "type": "string",
+          "enum": ["create", "update", "delete", "lock", "unlock"]
+        },
+        "previous_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "new_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "workflow_event_details": {
+      "type": "object",
+      "required": ["workflow_id", "event_subtype"],
+      "properties": {
+        "workflow_id": {"type": "string"},
+        "event_subtype": {
+          "type": "string",
+          "enum": ["start", "phase_start", "phase_complete", "task_dispatch", "task_complete", "complete", "failed", "aborted"]
+        },
+        "phase": {"type": ["string", "null"]},
+        "task_ids": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    },
+    "validation_event_details": {
+      "type": "object",
+      "required": ["validator_name", "passed"],
+      "properties": {
+        "validator_name": {"type": "string"},
+        "validator_version": {"type": "string"},
+        "target": {"type": "string"},
+        "passed": {"type": "boolean"},
+        "score": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "issue_count": {"type": "integer"},
+        "waived": {"type": "boolean"},
+        "waiver_reason": {"type": ["string", "null"]}
+      }
+    },
+    "error_details": {
+      "type": "object",
+      "required": ["error_type", "message"],
+      "properties": {
+        "error_type": {"type": "string"},
+        "error_class": {"type": "string"},
+        "message": {"type": "string"},
+        "recoverable": {"type": "boolean"},
+        "stack_trace": {"type": ["string", "null"]},
+        "context": {"type": "object"}
+      }
+    },
+    "security_event_details": {
+      "type": "object",
+      "required": ["security_event_type"],
+      "properties": {
+        "security_event_type": {
+          "type": "string",
+          "enum": ["sandbox_violation", "permission_denied", "secret_detected", "path_traversal_attempt"]
+        },
+        "attempted_action": {"type": "string"},
+        "blocked": {"type": "boolean"},
+        "source": {"type": "string"}
+      }
+    }
+  },
+  "additionalProperties": false
+}

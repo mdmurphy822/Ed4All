@@ -1,0 +1,39 @@
+{
+  "min_word_counts": {
+    "overview": 200,
+    "concept_summary": 300,
+    "key_concept": 50,
+    "application_example": 250,
+    "study_questions": 150
+  },
+  "min_sub_modules": 1,
+  "max_sub_modules": 20,
+  "max_weeks": 16,
+  "validation_strict": true,
+  "content_quality": {
+    "remove_hardcoded_references": true,
+    "validate_template_resolution": true,
+    "require_substantial_content": true
+  },
+  "parsing_patterns": {
+    "week_file_pattern": "week_*.md",
+    "assignment_patterns": [
+      "Assignment",
+      "Writing Assignment", 
+      "Discussion",
+      "Quiz"
+    ],
+    "concept_patterns": [
+      "Concept",
+      "Theory",
+      "Principle",
+      "Framework"
+    ]
+  },
+  "output_format": {
+    "include_metadata": true,
+    "preserve_markdown_structure": false,
+    "clean_html_tags": true,
+    "normalize_whitespace": true
+  }
+}

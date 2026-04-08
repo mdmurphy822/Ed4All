@@ -1,0 +1,1132 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "WCAG 2.2 AA Compliance Schema for Educational Templates",
+  "description": "Comprehensive accessibility schema based on research findings from academic templates and WCAG 2.2 AA requirements",
+  "version": "2.0.0",
+  "type": "object",
+  "properties": {
+    "complianceLevel": {
+      "type": "object",
+      "properties": {
+        "standard": {
+          "type": "string",
+          "enum": ["WCAG_2.0_AA", "WCAG_2.1_AA", "WCAG_2.2_AA"],
+          "default": "WCAG_2.2_AA",
+          "description": "WCAG standard and level"
+        },
+        "testing": {
+          "type": "object",
+          "properties": {
+            "automated": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["axe-core", "WAVE", "Lighthouse", "Pa11y", "aXe DevTools"]
+              },
+              "description": "Automated testing tools used"
+            },
+            "manual": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["NVDA", "JAWS", "VoiceOver", "TalkBack", "keyboard_testing", "color_contrast_analyzer"]
+              },
+              "description": "Manual testing tools and methods"
+            },
+            "lastTested": {
+              "type": "string",
+              "format": "date",
+              "description": "Date of last accessibility testing"
+            }
+          }
+        }
+      },
+      "required": ["standard"]
+    },
+    "perceivableRequirements": {
+      "type": "object",
+      "description": "WCAG 2.2 Perceivable principle requirements",
+      "properties": {
+        "textAlternatives": {
+          "type": "object",
+          "description": "1.1 Text Alternatives",
+          "properties": {
+            "nonTextContent": {
+              "type": "object",
+              "properties": {
+                "images": {
+                  "type": "object",
+                  "properties": {
+                    "altTextRequired": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "All images must have alt text"
+                    },
+                    "altTextGuidelines": {
+                      "type": "object",
+                      "properties": {
+                        "maxLength": {
+                          "type": "integer",
+                          "default": 125,
+                          "description": "Maximum recommended alt text length"
+                        },
+                        "descriptive": {
+                          "type": "boolean",
+                          "default": true,
+                          "description": "Alt text must be descriptive, not redundant"
+                        },
+                        "contextual": {
+                          "type": "boolean",
+                          "default": true,
+                          "description": "Alt text should be contextually relevant"
+                        }
+                      }
+                    },
+                    "decorativeImages": {
+                      "type": "object",
+                      "properties": {
+                        "emptyAlt": {
+                          "type": "boolean",
+                          "default": true,
+                          "description": "Decorative images should have empty alt attribute"
+                        },
+                        "rolePresentation": {
+                          "type": "boolean",
+                          "default": true,
+                          "description": "Use role='presentation' for decorative images"
+                        }
+                      }
+                    }
+                  }
+                },
+                "formElements": {
+                  "type": "object",
+                  "properties": {
+                    "labelsRequired": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "All form elements must have labels"
+                    },
+                    "labelAssociation": {
+                      "type": "string",
+                      "enum": ["explicit", "implicit", "aria-label", "aria-labelledby"],
+                      "default": "explicit",
+                      "description": "Method for associating labels with form elements"
+                    }
+                  }
+                },
+                "multimedia": {
+                  "type": "object",
+                  "properties": {
+                    "captions": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Video content must have captions"
+                    },
+                    "transcripts": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Audio content must have transcripts"
+                    },
+                    "audioDescription": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Video content should have audio descriptions (recommended)"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "timeBased": {
+          "type": "object",
+          "description": "1.2 Time-based Media",
+          "properties": {
+            "captionsRequired": {
+              "type": "boolean",
+              "default": true,
+              "description": "Captions required for video content"
+            },
+            "transcriptRequired": {
+              "type": "boolean",
+              "default": true,
+              "description": "Transcripts required for audio content"
+            },
+            "signLanguage": {
+              "type": "boolean",
+              "default": false,
+              "description": "Sign language interpretation (AAA level)"
+            }
+          }
+        },
+        "adaptable": {
+          "type": "object",
+          "description": "1.3 Adaptable",
+          "properties": {
+            "semanticMarkup": {
+              "type": "object",
+              "properties": {
+                "headingHierarchy": {
+                  "type": "object",
+                  "properties": {
+                    "logicalOrder": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Headings must follow logical hierarchy (H1-H6)"
+                    },
+                    "skipLevels": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Don't skip heading levels"
+                    },
+                    "descriptive": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Headings must be descriptive"
+                    }
+                  }
+                },
+                "lists": {
+                  "type": "object",
+                  "properties": {
+                    "properMarkup": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Use proper list markup (ul, ol, li)"
+                    },
+                    "nestedLists": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Support properly nested lists"
+                    }
+                  }
+                },
+                "tables": {
+                  "type": "object",
+                  "properties": {
+                    "dataTablesOnly": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Tables only for tabular data, not layout"
+                    },
+                    "headers": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Tables must have proper headers"
+                    },
+                    "scope": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Use scope attribute for complex tables"
+                    },
+                    "caption": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Tables should have captions"
+                    }
+                  }
+                }
+              }
+            },
+            "landmarks": {
+              "type": "object",
+              "properties": {
+                "roleAttributes": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["main", "navigation", "banner", "contentinfo", "complementary", "form", "search"]
+                  },
+                  "description": "ARIA landmark roles to use"
+                },
+                "semanticElements": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["main", "nav", "header", "footer", "aside", "section", "article"]
+                  },
+                  "description": "HTML5 semantic elements to use"
+                }
+              }
+            },
+            "readingOrder": {
+              "type": "object",
+              "properties": {
+                "logicalSequence": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Content must have logical reading order"
+                },
+                "tabOrder": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Tab order must be logical"
+                }
+              }
+            }
+          }
+        },
+        "distinguishable": {
+          "type": "object",
+          "description": "1.4 Distinguishable",
+          "properties": {
+            "colorContrast": {
+              "type": "object",
+              "properties": {
+                "minimumRatio": {
+                  "type": "number",
+                  "minimum": 4.5,
+                  "default": 4.5,
+                  "description": "Minimum contrast ratio for normal text (AA level)"
+                },
+                "largeTextRatio": {
+                  "type": "number",
+                  "minimum": 3.0,
+                  "default": 3.0,
+                  "description": "Minimum contrast ratio for large text (18pt+ or 14pt+ bold)"
+                },
+                "nonTextRatio": {
+                  "type": "number",
+                  "minimum": 3.0,
+                  "default": 3.0,
+                  "description": "Minimum contrast ratio for UI components and graphics"
+                },
+                "enhancedRatio": {
+                  "type": "number",
+                  "minimum": 7.0,
+                  "default": 7.0,
+                  "description": "Enhanced contrast ratio (AAA level, optional)"
+                }
+              }
+            },
+            "colorUsage": {
+              "type": "object",
+              "properties": {
+                "notSoleIndicator": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Color cannot be the sole means of conveying information"
+                },
+                "additionalCues": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["icons", "patterns", "text", "shapes", "underlines"]
+                  },
+                  "description": "Additional visual cues beyond color"
+                }
+              }
+            },
+            "textResize": {
+              "type": "object",
+              "properties": {
+                "zoomSupport": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Support 200% zoom without horizontal scrolling"
+                },
+                "textSpacing": {
+                  "type": "object",
+                  "properties": {
+                    "lineHeight": {
+                      "type": "number",
+                      "minimum": 1.5,
+                      "default": 1.6,
+                      "description": "Minimum line height for readability"
+                    },
+                    "paragraphSpacing": {
+                      "type": "number",
+                      "minimum": 2.0,
+                      "default": 2.0,
+                      "description": "Minimum paragraph spacing (relative to line height)"
+                    },
+                    "letterSpacing": {
+                      "type": "number",
+                      "minimum": 0.12,
+                      "default": 0.12,
+                      "description": "Minimum letter spacing (relative to font size)"
+                    },
+                    "wordSpacing": {
+                      "type": "number",
+                      "minimum": 0.16,
+                      "default": 0.16,
+                      "description": "Minimum word spacing (relative to font size)"
+                    }
+                  }
+                }
+              }
+            },
+            "audioControl": {
+              "type": "object",
+              "properties": {
+                "autoPlay": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Audio should not auto-play"
+                },
+                "controls": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Audio/video must have controls"
+                },
+                "pauseControl": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Users must be able to pause/stop audio"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "operableRequirements": {
+      "type": "object",
+      "description": "WCAG 2.2 Operable principle requirements",
+      "properties": {
+        "keyboardAccessible": {
+          "type": "object",
+          "description": "2.1 Keyboard Accessible",
+          "properties": {
+            "keyboardNavigation": {
+              "type": "object",
+              "properties": {
+                "allFunctionality": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "All functionality available via keyboard"
+                },
+                "noKeyboardTrap": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "No keyboard traps"
+                },
+                "focusOrder": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Logical focus order"
+                },
+                "skipLinks": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Skip navigation links provided"
+                }
+              }
+            },
+            "focusManagement": {
+              "type": "object",
+              "properties": {
+                "visibleFocus": {
+                  "type": "object",
+                  "properties": {
+                    "indicator": {
+                      "type": "string",
+                      "default": "3px solid rgba(0, 102, 204, 0.6)",
+                      "description": "CSS for focus indicators"
+                    },
+                    "offset": {
+                      "type": "string",
+                      "default": "2px",
+                      "description": "Focus indicator offset"
+                    },
+                    "allElements": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "All interactive elements must have visible focus"
+                    }
+                  }
+                },
+                "contextChanges": {
+                  "type": "object",
+                  "properties": {
+                    "onFocus": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Context should not change on focus alone"
+                    },
+                    "onInput": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Context should not change on input alone"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "seizures": {
+          "type": "object",
+          "description": "2.3 Seizures and Physical Reactions",
+          "properties": {
+            "flashingContent": {
+              "type": "object",
+              "properties": {
+                "threeFlashesPerSecond": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "No more than 3 flashes per second"
+                },
+                "generalFlashThreshold": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Below general flash and red flash thresholds"
+                }
+              }
+            },
+            "motionAnimation": {
+              "type": "object",
+              "properties": {
+                "respectMotionPreferences": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Respect prefers-reduced-motion setting"
+                },
+                "essentialAnimation": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Animation only when essential to functionality"
+                }
+              }
+            }
+          }
+        },
+        "navigable": {
+          "type": "object",
+          "description": "2.4 Navigable",
+          "properties": {
+            "bypassBlocks": {
+              "type": "object",
+              "properties": {
+                "skipLinks": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Skip navigation links provided"
+                },
+                "headingStructure": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Proper heading structure for navigation"
+                }
+              }
+            },
+            "pageTitle": {
+              "type": "object",
+              "properties": {
+                "descriptive": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Page titles must be descriptive"
+                },
+                "unique": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Page titles should be unique within course"
+                },
+                "format": {
+                  "type": "string",
+                  "default": "[Module Title] | [Course Name]",
+                  "description": "Standard format for page titles"
+                }
+              }
+            },
+            "linkPurpose": {
+              "type": "object",
+              "properties": {
+                "descriptiveText": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Link text must describe purpose"
+                },
+                "contextualLinks": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Links understandable from context"
+                },
+                "noGenericText": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Avoid generic link text like 'click here'"
+                }
+              }
+            },
+            "headings": {
+              "type": "object",
+              "properties": {
+                "descriptive": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Headings must be descriptive"
+                },
+                "hierarchical": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Proper heading hierarchy"
+                }
+              }
+            },
+            "focusNotObscured": {
+              "type": "object",
+              "description": "2.4.11 Focus Not Obscured (Minimum) - WCAG 2.2 Level A",
+              "properties": {
+                "minimumVisibility": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Focus indicator not entirely hidden by author-created content"
+                },
+                "enhancedVisibility": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "2.4.12 Focus indicator fully visible (WCAG 2.2 Level AA)"
+                }
+              }
+            },
+            "focusAppearance": {
+              "type": "object",
+              "description": "2.4.13 Focus Appearance - WCAG 2.2 Level AA",
+              "properties": {
+                "minimumOutlineWidth": {
+                  "type": "integer",
+                  "minimum": 2,
+                  "default": 2,
+                  "description": "Minimum focus outline width in CSS pixels"
+                },
+                "contrastRatio": {
+                  "type": "number",
+                  "minimum": 3.0,
+                  "default": 3.0,
+                  "description": "Minimum contrast ratio between focused and unfocused states"
+                },
+                "minimumArea": {
+                  "type": "string",
+                  "default": "2px solid outline or equivalent area",
+                  "description": "Focus indicator must have minimum area equal to 2px outline"
+                }
+              }
+            }
+          }
+        },
+        "inputModalities": {
+          "type": "object",
+          "description": "2.5 Input Modalities - WCAG 2.2 additions",
+          "properties": {
+            "draggingMovements": {
+              "type": "object",
+              "description": "2.5.7 Dragging Movements - WCAG 2.2 Level AA",
+              "properties": {
+                "singlePointerAlternative": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Single pointer alternative for all drag operations"
+                },
+                "noPathDependence": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Functionality does not depend on dragging path"
+                }
+              }
+            },
+            "targetSize": {
+              "type": "object",
+              "description": "2.5.8 Target Size (Minimum) - WCAG 2.2 Level AA",
+              "properties": {
+                "minimumSize": {
+                  "type": "integer",
+                  "minimum": 24,
+                  "default": 24,
+                  "description": "Minimum target size in CSS pixels"
+                },
+                "spacing": {
+                  "type": "integer",
+                  "default": 0,
+                  "description": "Spacing between adjacent targets if smaller than 24px"
+                },
+                "exceptions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["inline", "user_agent", "essential", "equivalent"]
+                  },
+                  "description": "Exceptions to minimum target size requirement"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "understandableRequirements": {
+      "type": "object",
+      "description": "WCAG 2.2 Understandable principle requirements",
+      "properties": {
+        "readable": {
+          "type": "object",
+          "description": "3.1 Readable",
+          "properties": {
+            "language": {
+              "type": "object",
+              "properties": {
+                "pageLanguage": {
+                  "type": "string",
+                  "default": "en",
+                  "description": "Language of page specified in HTML"
+                },
+                "partLanguage": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Language of parts specified when different from page"
+                }
+              }
+            },
+            "readingLevel": {
+              "type": "object",
+              "properties": {
+                "appropriate": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Reading level appropriate for intended audience"
+                },
+                "supplementaryContent": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Provide supplementary content for difficult reading (AAA level)"
+                }
+              }
+            }
+          }
+        },
+        "predictable": {
+          "type": "object",
+          "description": "3.2 Predictable",
+          "properties": {
+            "consistentNavigation": {
+              "type": "boolean",
+              "default": true,
+              "description": "Navigation consistent across pages"
+            },
+            "consistentIdentification": {
+              "type": "boolean",
+              "default": true,
+              "description": "Components with same functionality identified consistently"
+            },
+            "contextChanges": {
+              "type": "object",
+              "properties": {
+                "onRequest": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Context changes only occur on user request"
+                },
+                "beforeInteraction": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Users informed of context changes before interaction"
+                }
+              }
+            },
+            "consistentHelp": {
+              "type": "object",
+              "description": "3.2.6 Consistent Help - WCAG 2.2 Level A",
+              "properties": {
+                "helpLocation": {
+                  "type": "string",
+                  "enum": ["header", "footer", "sidebar", "consistent_position"],
+                  "default": "footer",
+                  "description": "Help mechanisms appear in consistent location across pages"
+                },
+                "helpMechanisms": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["contact_info", "help_center", "chat", "faq", "support_form"]
+                  },
+                  "description": "Types of help mechanisms provided"
+                }
+              }
+            }
+          }
+        },
+        "inputAssistance": {
+          "type": "object",
+          "description": "3.3 Input Assistance",
+          "properties": {
+            "errorIdentification": {
+              "type": "boolean",
+              "default": true,
+              "description": "Input errors automatically identified and described"
+            },
+            "labels": {
+              "type": "boolean",
+              "default": true,
+              "description": "Labels or instructions provided for user input"
+            },
+            "errorSuggestion": {
+              "type": "boolean",
+              "default": true,
+              "description": "Suggestions provided for fixing input errors"
+            },
+            "errorPrevention": {
+              "type": "object",
+              "properties": {
+                "legal": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Error prevention for legal/financial commitments"
+                },
+                "reversible": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Submissions are reversible"
+                },
+                "checked": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Data checked for input errors"
+                }
+              }
+            },
+            "redundantEntry": {
+              "type": "object",
+              "description": "3.3.7 Redundant Entry - WCAG 2.2 Level A",
+              "properties": {
+                "autoPopulate": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Previously entered information auto-populated or selectable"
+                },
+                "exceptions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["security", "essential", "invalid_data"]
+                  },
+                  "description": "Exceptions to redundant entry requirement"
+                }
+              }
+            },
+            "accessibleAuthentication": {
+              "type": "object",
+              "description": "3.3.8 Accessible Authentication (Minimum) - WCAG 2.2 Level AA",
+              "properties": {
+                "noCognitiveTests": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "No cognitive function tests (memorization, transcription, puzzle solving)"
+                },
+                "allowCopyPaste": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Allow copying and pasting of passwords"
+                },
+                "allowPasswordManagers": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Support password manager autofill"
+                },
+                "alternatives": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["object_recognition", "personal_content", "biometric", "email_link"]
+                  },
+                  "description": "Alternative authentication methods if cognitive test is present"
+                }
+              }
+            },
+            "accessibleAuthenticationEnhanced": {
+              "type": "object",
+              "description": "3.3.9 Accessible Authentication (Enhanced) - WCAG 2.2 Level AAA",
+              "properties": {
+                "noObjectRecognition": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "No object recognition tests (AAA level)"
+                },
+                "noPersonalContent": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "No personal content recognition (AAA level)"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "robustRequirements": {
+      "type": "object",
+      "description": "WCAG 2.2 Robust principle requirements",
+      "properties": {
+        "compatible": {
+          "type": "object",
+          "description": "4.1 Compatible",
+          "properties": {
+            "parsing": {
+              "type": "object",
+              "properties": {
+                "validHTML": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "HTML should be valid and well-formed"
+                },
+                "uniqueIDs": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "All IDs must be unique"
+                },
+                "completeElements": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Elements have complete start/end tags"
+                }
+              }
+            },
+            "nameRoleValue": {
+              "type": "object",
+              "properties": {
+                "standardControls": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Use standard HTML controls when possible"
+                },
+                "customControls": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Custom controls have accessible name"
+                    },
+                    "role": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Custom controls have appropriate role"
+                    },
+                    "value": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Custom controls communicate value"
+                    },
+                    "state": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Custom controls communicate state changes"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "educationalAccessibility": {
+      "type": "object",
+      "description": "Educational-specific accessibility considerations",
+      "properties": {
+        "cognitiveAccessibility": {
+          "type": "object",
+          "properties": {
+            "clearLanguage": {
+              "type": "boolean",
+              "default": true,
+              "description": "Use clear, simple language"
+            },
+            "consistentLayout": {
+              "type": "boolean",
+              "default": true,
+              "description": "Consistent layout across educational materials"
+            },
+            "chunkingContent": {
+              "type": "boolean",
+              "default": true,
+              "description": "Break content into manageable chunks"
+            },
+            "progressIndicators": {
+              "type": "boolean",
+              "default": true,
+              "description": "Provide clear progress indicators"
+            },
+            "multipleFormats": {
+              "type": "boolean",
+              "default": true,
+              "description": "Provide content in multiple formats"
+            }
+          }
+        },
+        "learningDifferences": {
+          "type": "object",
+          "properties": {
+            "dyslexiaSupport": {
+              "type": "object",
+              "properties": {
+                "fontChoices": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Dyslexia-friendly font options"
+                },
+                "lineSpacing": {
+                  "type": "number",
+                  "minimum": 1.5,
+                  "default": 1.6,
+                  "description": "Adequate line spacing"
+                },
+                "textAlignment": {
+                  "type": "string",
+                  "enum": ["left", "justify"],
+                  "default": "left",
+                  "description": "Left alignment preferred for dyslexia"
+                }
+              }
+            },
+            "attentionSupport": {
+              "type": "object",
+              "properties": {
+                "minimizeDissignatures": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Minimize distracting elements"
+                },
+                "focusManagement": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Clear focus management"
+                },
+                "sectionHeadings": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Clear section headings for organization"
+                }
+              }
+            }
+          }
+        },
+        "assistiveTechnology": {
+          "type": "object",
+          "properties": {
+            "screenReaders": {
+              "type": "object",
+              "properties": {
+                "testedWith": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "enum": ["NVDA", "JAWS", "VoiceOver", "TalkBack"]
+                  },
+                  "description": "Screen readers tested with"
+                },
+                "skipNavigation": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Skip navigation provided"
+                },
+                "headingNavigation": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Proper heading structure for navigation"
+                },
+                "landmarkNavigation": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "ARIA landmarks for navigation"
+                }
+              }
+            },
+            "voiceControl": {
+              "type": "object",
+              "properties": {
+                "clickableElements": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "All clickable elements have accessible names"
+                },
+                "voiceCommands": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Support standard voice commands"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "testing": {
+      "type": "object",
+      "description": "Accessibility testing protocols",
+      "properties": {
+        "automatedTesting": {
+          "type": "object",
+          "properties": {
+            "tools": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["axe-core", "WAVE", "Lighthouse", "Pa11y", "Tenon"]
+              },
+              "description": "Automated testing tools to use"
+            },
+            "frequency": {
+              "type": "string",
+              "enum": ["every_build", "weekly", "monthly", "on_demand"],
+              "default": "every_build",
+              "description": "Automated testing frequency"
+            }
+          }
+        },
+        "manualTesting": {
+          "type": "object",
+          "properties": {
+            "keyboardTesting": {
+              "type": "boolean",
+              "default": true,
+              "description": "Manual keyboard navigation testing"
+            },
+            "screenReaderTesting": {
+              "type": "boolean",
+              "default": true,
+              "description": "Screen reader testing with real users"
+            },
+            "colorContrastTesting": {
+              "type": "boolean",
+              "default": true,
+              "description": "Color contrast ratio testing"
+            },
+            "usabilityTesting": {
+              "type": "boolean",
+              "default": true,
+              "description": "Usability testing with users with disabilities"
+            }
+          }
+        },
+        "userTesting": {
+          "type": "object",
+          "properties": {
+            "disabilityRepresentation": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["visual", "auditory", "motor", "cognitive"]
+              },
+              "description": "Types of disabilities represented in user testing"
+            },
+            "feedbackIntegration": {
+              "type": "boolean",
+              "default": true,
+              "description": "Process for integrating user feedback"
+            }
+          }
+        }
+      }
+    }
+  },
+  "required": [
+    "complianceLevel",
+    "perceivableRequirements", 
+    "operableRequirements",
+    "understandableRequirements",
+    "robustRequirements",
+    "educationalAccessibility"
+  ]
+}

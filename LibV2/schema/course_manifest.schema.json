@@ -1,0 +1,217 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://libv2.local/schema/course_manifest.schema.json",
+  "title": "Course Manifest",
+  "description": "Extended metadata for a course in the LibV2 repository",
+  "type": "object",
+  "required": ["libv2_version", "slug", "import_timestamp", "sourceforge_manifest", "classification", "content_profile"],
+  "properties": {
+    "libv2_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$",
+      "description": "LibV2 schema version"
+    },
+    "slug": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$",
+      "minLength": 3,
+      "maxLength": 100,
+      "description": "URL-safe unique identifier"
+    },
+    "import_timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the course was imported to LibV2"
+    },
+    "sourceforge_manifest": {
+      "type": "object",
+      "required": ["sourceforge_version", "export_timestamp", "course_id", "course_title"],
+      "properties": {
+        "sourceforge_version": {
+          "type": "string",
+          "description": "Sourceforge version that produced this output"
+        },
+        "export_timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "course_id": {
+          "type": "string",
+          "description": "Original course identifier from Sourceforge"
+        },
+        "course_title": {
+          "type": "string",
+          "description": "Human-readable course title"
+        }
+      }
+    },
+    "classification": {
+      "type": "object",
+      "required": ["division", "primary_domain"],
+      "properties": {
+        "division": {
+          "type": "string",
+          "enum": ["STEM", "ARTS"],
+          "description": "Top-level division"
+        },
+        "primary_domain": {
+          "type": "string",
+          "description": "Main domain classification"
+        },
+        "secondary_domains": {
+          "type": "array",
+          "items": {"type": "string"},
+          "default": [],
+          "description": "Additional relevant domains"
+        },
+        "subdomains": {
+          "type": "array",
+          "items": {"type": "string"},
+          "default": [],
+          "description": "Specific subdomains within the domain"
+        },
+        "topics": {
+          "type": "array",
+          "items": {"type": "string"},
+          "default": [],
+          "description": "Specific topics covered"
+        },
+        "subtopics": {
+          "type": "array",
+          "items": {"type": "string"},
+          "default": [],
+          "description": "Granular subtopics"
+        }
+      }
+    },
+    "ontology_mappings": {
+      "type": "object",
+      "properties": {
+        "acm_ccs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["code", "term"],
+            "properties": {
+              "code": {"type": "string"},
+              "term": {"type": "string"},
+              "relevance": {"type": "integer", "minimum": 0, "maximum": 1000}
+            }
+          },
+          "description": "ACM Computing Classification System mappings"
+        },
+        "lcsh": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["uri", "term"],
+            "properties": {
+              "uri": {"type": "string"},
+              "term": {"type": "string"},
+              "type": {"type": "string", "enum": ["primary", "related", "broader", "narrower"]}
+            }
+          },
+          "description": "Library of Congress Subject Headings"
+        }
+      }
+    },
+    "relationships": {
+      "type": "object",
+      "properties": {
+        "prerequisites": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Course slugs that should be completed before this one"
+        },
+        "related_courses": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Related course slugs"
+        },
+        "successor_courses": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Courses that build on this one"
+        }
+      }
+    },
+    "content_profile": {
+      "type": "object",
+      "required": ["total_chunks", "total_tokens"],
+      "properties": {
+        "difficulty_distribution": {
+          "type": "object",
+          "properties": {
+            "foundational": {"type": "integer", "minimum": 0},
+            "intermediate": {"type": "integer", "minimum": 0},
+            "advanced": {"type": "integer", "minimum": 0}
+          }
+        },
+        "chunk_type_distribution": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        },
+        "total_chunks": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total_concepts": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "language": {
+          "type": "string",
+          "pattern": "^[a-z]{2}$",
+          "default": "en"
+        }
+      }
+    },
+    "quality_metadata": {
+      "type": "object",
+      "properties": {
+        "validation_status": {
+          "type": "string",
+          "enum": ["pending", "validated", "failed"]
+        },
+        "last_validated": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completeness_score": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "annotation_coverage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "properties": {
+        "source_type": {
+          "type": "string",
+          "description": "Original format (imscc, pdf, epub, etc.)"
+        },
+        "source_path": {
+          "type": "string",
+          "description": "Original file path"
+        },
+        "original_provider": {
+          "type": "string",
+          "description": "Content provider or institution"
+        },
+        "import_pipeline_version": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

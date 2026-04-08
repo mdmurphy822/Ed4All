@@ -1,0 +1,546 @@
+<!--
+    Template Name: Inline Quiz Template
+    Category: interactive
+    WCAG Compliance: 2.2 AA
+    Brightspace Compatible: Yes
+
+    Template Variables:
+    - {{QUIZ_ID}}: Unique identifier
+    - {{QUIZ_TITLE}}: Quiz heading
+    - {{QUIZ_INTRO}}: Introduction/instructions
+    - {{Q1_TEXT}}: Question 1 text
+    - {{Q1_TYPE}}: 'radio' (single) or 'checkbox' (multiple)
+    - {{Q1_OPT_A}}, {{Q1_OPT_B}}, {{Q1_OPT_C}}, {{Q1_OPT_D}}: Options
+    - {{Q1_CORRECT}}: Correct answer(s) - 'A', 'B', 'C', 'D' or comma-separated
+    - {{Q1_EXPLANATION}}: Explanation for the answer
+    - Repeat pattern for Q2_, Q3_, etc.
+
+    Dependencies: JavaScript (included)
+
+    Usage Notes:
+    - Multiple question types supported
+    - Immediate feedback on submit
+    - Shows score and explanations
+    - Can be retried
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Inline Quiz Component</title>
+    <style>
+        /* Courseforge CSS Variables */
+        :root {
+            --cf-primary: #2c5aa0;
+            --cf-primary-dark: #1e3d6f;
+            --cf-primary-light: #e7f3ff;
+            --cf-success-dark: #1e7e34;
+            --cf-success-light: #d4edda;
+            --cf-danger-dark: #721c24;
+            --cf-danger-light: #f8d7da;
+            --cf-warning-light: #fff3cd;
+            --cf-text: #212529;
+            --cf-text-muted: #6c757d;
+            --cf-background: #ffffff;
+            --cf-background-alt: #f8f9fa;
+            --cf-border: #dee2e6;
+            --cf-border-radius: 8px;
+            --cf-font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            --cf-space-2: 0.5rem;
+            --cf-space-3: 0.75rem;
+            --cf-space-4: 1rem;
+            --cf-space-5: 1.25rem;
+            --cf-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            --cf-transition: 200ms ease;
+        }
+
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: var(--cf-space-4);
+            font-family: var(--cf-font-family);
+            line-height: 1.6;
+            color: var(--cf-text);
+        }
+
+        /* ========================================
+           QUIZ CONTAINER
+           ======================================== */
+        .inline-quiz {
+            background-color: var(--cf-background);
+            border: 1px solid var(--cf-border);
+            border-radius: var(--cf-border-radius);
+            box-shadow: var(--cf-shadow);
+            margin: var(--cf-space-4) 0;
+            overflow: hidden;
+        }
+
+        /* ========================================
+           QUIZ HEADER
+           ======================================== */
+        .quiz-header {
+            padding: var(--cf-space-4) var(--cf-space-5);
+            background: linear-gradient(135deg, var(--cf-primary) 0%, var(--cf-primary-dark) 100%);
+            color: white;
+        }
+
+        .quiz-title {
+            margin: 0 0 var(--cf-space-2) 0;
+            font-size: 1.25rem;
+            font-weight: 600;
+        }
+
+        .quiz-intro {
+            margin: 0;
+            opacity: 0.9;
+            font-size: 0.9375rem;
+        }
+
+        /* ========================================
+           QUESTION
+           ======================================== */
+        .quiz-question {
+            padding: var(--cf-space-5);
+            border-bottom: 1px solid var(--cf-border);
+        }
+
+        .quiz-question:last-of-type {
+            border-bottom: none;
+        }
+
+        .question-number {
+            display: inline-block;
+            padding: var(--cf-space-2) var(--cf-space-3);
+            background-color: var(--cf-primary);
+            color: white;
+            font-size: 0.875rem;
+            font-weight: 600;
+            border-radius: var(--cf-border-radius);
+            margin-bottom: var(--cf-space-3);
+        }
+
+        .question-text {
+            margin: 0 0 var(--cf-space-4) 0;
+            font-size: 1.0625rem;
+            font-weight: 500;
+        }
+
+        /* ========================================
+           OPTIONS
+           ======================================== */
+        .question-options {
+            margin: 0;
+            padding: 0;
+            border: none;
+        }
+
+        .question-options legend {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        .option-label {
+            display: flex;
+            align-items: flex-start;
+            padding: var(--cf-space-3) var(--cf-space-4);
+            margin-bottom: var(--cf-space-2);
+            background-color: var(--cf-background-alt);
+            border: 2px solid var(--cf-border);
+            border-radius: var(--cf-border-radius);
+            cursor: pointer;
+            transition: border-color var(--cf-transition), background-color var(--cf-transition);
+        }
+
+        .option-label:hover {
+            border-color: var(--cf-primary);
+            background-color: var(--cf-primary-light);
+        }
+
+        .option-label:focus-within {
+            outline: 2px solid var(--cf-primary);
+            outline-offset: 2px;
+        }
+
+        .option-label input {
+            flex-shrink: 0;
+            margin: 3px var(--cf-space-3) 0 0;
+            width: 18px;
+            height: 18px;
+        }
+
+        .option-letter {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            margin-right: var(--cf-space-3);
+            background-color: var(--cf-border);
+            border-radius: 50%;
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--cf-text-muted);
+        }
+
+        .option-text {
+            flex: 1;
+        }
+
+        /* Answered states */
+        .quiz-question[data-answered="true"] .option-label {
+            pointer-events: none;
+        }
+
+        .option-label.correct {
+            border-color: var(--cf-success-dark);
+            background-color: var(--cf-success-light);
+        }
+
+        .option-label.correct .option-letter {
+            background-color: var(--cf-success-dark);
+            color: white;
+        }
+
+        .option-label.incorrect {
+            border-color: var(--cf-danger-dark);
+            background-color: var(--cf-danger-light);
+        }
+
+        .option-label.incorrect .option-letter {
+            background-color: var(--cf-danger-dark);
+            color: white;
+        }
+
+        /* ========================================
+           EXPLANATION
+           ======================================== */
+        .question-explanation {
+            margin-top: var(--cf-space-4);
+            padding: var(--cf-space-4);
+            background-color: var(--cf-warning-light);
+            border-radius: var(--cf-border-radius);
+            border-left: 4px solid #856404;
+        }
+
+        .question-explanation[hidden] {
+            display: none;
+        }
+
+        .question-explanation strong {
+            color: #856404;
+        }
+
+        /* ========================================
+           QUIZ FOOTER / RESULTS
+           ======================================== */
+        .quiz-footer {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: var(--cf-space-3);
+            padding: var(--cf-space-4) var(--cf-space-5);
+            background-color: var(--cf-background-alt);
+            border-top: 1px solid var(--cf-border);
+        }
+
+        .quiz-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: var(--cf-space-3) var(--cf-space-5);
+            font-family: inherit;
+            font-size: 1rem;
+            font-weight: 500;
+            border: none;
+            border-radius: var(--cf-border-radius);
+            cursor: pointer;
+            transition: background-color var(--cf-transition);
+            min-height: 44px;
+        }
+
+        .quiz-btn:focus {
+            outline: 3px solid var(--cf-primary);
+            outline-offset: 2px;
+        }
+
+        .quiz-submit {
+            background-color: var(--cf-primary);
+            color: white;
+        }
+
+        .quiz-submit:hover {
+            background-color: var(--cf-primary-dark);
+        }
+
+        .quiz-submit:disabled {
+            background-color: var(--cf-text-muted);
+            cursor: not-allowed;
+        }
+
+        .quiz-reset {
+            background-color: transparent;
+            color: var(--cf-primary);
+            border: 1px solid var(--cf-primary);
+            display: none;
+        }
+
+        .quiz-reset:hover {
+            background-color: var(--cf-primary-light);
+        }
+
+        .inline-quiz[data-submitted="true"] .quiz-submit {
+            display: none;
+        }
+
+        .inline-quiz[data-submitted="true"] .quiz-reset {
+            display: inline-flex;
+        }
+
+        /* Results */
+        .quiz-results {
+            flex: 1;
+            font-weight: 500;
+        }
+
+        .quiz-results[hidden] {
+            display: none;
+        }
+
+        .quiz-score {
+            font-size: 1.125rem;
+            color: var(--cf-primary-dark);
+        }
+
+        /* ========================================
+           RESPONSIVE
+           ======================================== */
+        @media (max-width: 600px) {
+            .quiz-header,
+            .quiz-question,
+            .quiz-footer {
+                padding: var(--cf-space-4);
+            }
+
+            .quiz-footer {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .quiz-btn {
+                width: 100%;
+            }
+        }
+
+        /* ========================================
+           PRINT STYLES
+           ======================================== */
+        @media print {
+            .quiz-footer {
+                display: none;
+            }
+
+            .question-explanation {
+                display: block !important;
+            }
+
+            .quiz-question {
+                page-break-inside: avoid;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- INLINE QUIZ COMPONENT -->
+    <form class="inline-quiz" id="{{QUIZ_ID}}" data-submitted="false">
+
+        <!-- Header -->
+        <div class="quiz-header">
+            <h3 class="quiz-title">{{QUIZ_TITLE}}</h3>
+            <p class="quiz-intro">{{QUIZ_INTRO}}</p>
+        </div>
+
+        <!-- Question 1 -->
+        <div class="quiz-question" data-question="1" data-correct="{{Q1_CORRECT}}" data-answered="false">
+            <span class="question-number">Question 1</span>
+            <p class="question-text" id="{{QUIZ_ID}}-q1">{{Q1_TEXT}}</p>
+
+            <fieldset class="question-options" aria-labelledby="{{QUIZ_ID}}-q1">
+                <legend>Select your answer</legend>
+
+                <label class="option-label" data-option="A">
+                    <input type="{{Q1_TYPE}}" name="{{QUIZ_ID}}-q1" value="A">
+                    <span class="option-letter">A</span>
+                    <span class="option-text">{{Q1_OPT_A}}</span>
+                </label>
+
+                <label class="option-label" data-option="B">
+                    <input type="{{Q1_TYPE}}" name="{{QUIZ_ID}}-q1" value="B">
+                    <span class="option-letter">B</span>
+                    <span class="option-text">{{Q1_OPT_B}}</span>
+                </label>
+
+                <label class="option-label" data-option="C">
+                    <input type="{{Q1_TYPE}}" name="{{QUIZ_ID}}-q1" value="C">
+                    <span class="option-letter">C</span>
+                    <span class="option-text">{{Q1_OPT_C}}</span>
+                </label>
+
+                <label class="option-label" data-option="D">
+                    <input type="{{Q1_TYPE}}" name="{{QUIZ_ID}}-q1" value="D">
+                    <span class="option-letter">D</span>
+                    <span class="option-text">{{Q1_OPT_D}}</span>
+                </label>
+            </fieldset>
+
+            <div class="question-explanation" hidden>
+                <strong>Explanation:</strong> {{Q1_EXPLANATION}}
+            </div>
+        </div>
+
+        <!-- Question 2 -->
+        <div class="quiz-question" data-question="2" data-correct="{{Q2_CORRECT}}" data-answered="false">
+            <span class="question-number">Question 2</span>
+            <p class="question-text" id="{{QUIZ_ID}}-q2">{{Q2_TEXT}}</p>
+
+            <fieldset class="question-options" aria-labelledby="{{QUIZ_ID}}-q2">
+                <legend>Select your answer</legend>
+
+                <label class="option-label" data-option="A">
+                    <input type="{{Q2_TYPE}}" name="{{QUIZ_ID}}-q2" value="A">
+                    <span class="option-letter">A</span>
+                    <span class="option-text">{{Q2_OPT_A}}</span>
+                </label>
+
+                <label class="option-label" data-option="B">
+                    <input type="{{Q2_TYPE}}" name="{{QUIZ_ID}}-q2" value="B">
+                    <span class="option-letter">B</span>
+                    <span class="option-text">{{Q2_OPT_B}}</span>
+                </label>
+
+                <label class="option-label" data-option="C">
+                    <input type="{{Q2_TYPE}}" name="{{QUIZ_ID}}-q2" value="C">
+                    <span class="option-letter">C</span>
+                    <span class="option-text">{{Q2_OPT_C}}</span>
+                </label>
+
+                <label class="option-label" data-option="D">
+                    <input type="{{Q2_TYPE}}" name="{{QUIZ_ID}}-q2" value="D">
+                    <span class="option-letter">D</span>
+                    <span class="option-text">{{Q2_OPT_D}}</span>
+                </label>
+            </fieldset>
+
+            <div class="question-explanation" hidden>
+                <strong>Explanation:</strong> {{Q2_EXPLANATION}}
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="quiz-footer">
+            <button type="submit" class="quiz-btn quiz-submit">Submit Quiz</button>
+            <button type="button" class="quiz-btn quiz-reset">Try Again</button>
+            <div class="quiz-results" hidden aria-live="polite">
+                <span class="quiz-score"></span>
+            </div>
+        </div>
+
+    </form>
+
+    <!-- Quiz Script -->
+    <script>
+        (function() {
+            'use strict';
+
+            document.querySelectorAll('.inline-quiz').forEach(function(quiz) {
+                var submitBtn = quiz.querySelector('.quiz-submit');
+                var resetBtn = quiz.querySelector('.quiz-reset');
+                var resultsDiv = quiz.querySelector('.quiz-results');
+                var scoreSpan = quiz.querySelector('.quiz-score');
+                var questions = quiz.querySelectorAll('.quiz-question');
+
+                // Handle submit
+                quiz.addEventListener('submit', function(event) {
+                    event.preventDefault();
+
+                    var totalQuestions = questions.length;
+                    var correctCount = 0;
+
+                    questions.forEach(function(question) {
+                        var correctAnswers = question.dataset.correct.split(',').map(function(a) { return a.trim().toUpperCase(); });
+                        var options = question.querySelectorAll('.option-label');
+                        var selectedInputs = question.querySelectorAll('input:checked');
+                        var selectedValues = Array.prototype.slice.call(selectedInputs).map(function(i) { return i.value.toUpperCase(); });
+
+                        question.dataset.answered = 'true';
+
+                        // Check each option
+                        var isQuestionCorrect = true;
+                        options.forEach(function(option) {
+                            var optionValue = option.dataset.option.toUpperCase();
+                            var isSelected = selectedValues.indexOf(optionValue) > -1;
+                            var isCorrectOption = correctAnswers.indexOf(optionValue) > -1;
+
+                            if (isCorrectOption) {
+                                option.classList.add('correct');
+                                if (!isSelected) isQuestionCorrect = false;
+                            } else if (isSelected) {
+                                option.classList.add('incorrect');
+                                isQuestionCorrect = false;
+                            }
+                        });
+
+                        if (isQuestionCorrect) correctCount++;
+
+                        // Show explanation
+                        var explanation = question.querySelector('.question-explanation');
+                        if (explanation) explanation.hidden = false;
+                    });
+
+                    // Show results
+                    quiz.dataset.submitted = 'true';
+                    resultsDiv.hidden = false;
+                    scoreSpan.textContent = 'Score: ' + correctCount + ' / ' + totalQuestions + ' (' + Math.round(correctCount / totalQuestions * 100) + '%)';
+                });
+
+                // Handle reset
+                resetBtn.addEventListener('click', function() {
+                    quiz.dataset.submitted = 'false';
+                    resultsDiv.hidden = true;
+
+                    questions.forEach(function(question) {
+                        question.dataset.answered = 'false';
+
+                        // Clear selections
+                        question.querySelectorAll('input').forEach(function(input) {
+                            input.checked = false;
+                        });
+
+                        // Clear classes
+                        question.querySelectorAll('.option-label').forEach(function(option) {
+                            option.classList.remove('correct', 'incorrect');
+                        });
+
+                        // Hide explanation
+                        var explanation = question.querySelector('.question-explanation');
+                        if (explanation) explanation.hidden = true;
+                    });
+                });
+            });
+        })();
+    </script>
+
+</body>
+</html>

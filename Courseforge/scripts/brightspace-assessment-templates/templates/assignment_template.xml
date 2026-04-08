@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    IMSCC Assignment Template (Correct Format)
+
+    Resource Type: assignment_xmlv1p0
+    Namespace: http://www.imsglobal.org/xsd/imscc_extensions/assignment
+
+    IMPORTANT: This template uses the standard IMSCC extensions namespace,
+    NOT the deprecated d2l_2p0 namespace. This format is verified against
+    actual Brightspace exports and will import correctly.
+
+    Placeholders:
+    - {IDENTIFIER}: Unique identifier (format: i + 32-char UUID hex)
+    - {TITLE}: Assignment title
+    - {INSTRUCTIONS}: HTML-escaped instructions
+    - {POINTS}: Points possible (will be formatted as X.000000000)
+    - {SUBMISSION_FORMATS}: One or more <format type="X"/> elements
+-->
+<assignment xmlns="http://www.imsglobal.org/xsd/imscc_extensions/assignment"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="http://www.imsglobal.org/xsd/imscc_extensions/assignment http://www.imsglobal.org/profile/cc/cc_extensions/cc_extresource_assignmentv1p0_v1p0.xsd"
+            identifier="{IDENTIFIER}">
+  <title>{TITLE}</title>
+  <instructor_text texttype="text/html">{INSTRUCTIONS}</instructor_text>
+  <submission_formats>
+    {SUBMISSION_FORMATS}
+  </submission_formats>
+  <gradable points_possible="{POINTS}">true</gradable>
+</assignment>

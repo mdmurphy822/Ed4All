@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Page - Broken Heading Hierarchy</title>
+</head>
+<body>
+    <main>
+        <!-- Issue 1: Starting with H1 is correct, but then skipping to H3 -->
+        <h1>Main Page Title</h1>
+
+        <!-- Issue 2: Skipped H2, jumped straight to H3 -->
+        <h3>This H3 Skips H2</h3>
+        <p>Content that should be under an H2 heading first.</p>
+
+        <!-- Issue 3: Skipped multiple levels -->
+        <h5>This H5 Skips H4</h5>
+        <p>Content that skips from H3 to H5.</p>
+
+        <!-- Issue 4: Going back up then skipping again -->
+        <h2>Back to H2</h2>
+        <p>Some content here.</p>
+
+        <!-- Issue 5: Another skip -->
+        <h4>H4 Without H3 Parent</h4>
+        <p>This H4 appears without an H3 parent.</p>
+
+        <!-- Issue 6: Multiple H1s on page -->
+        <h1>Second H1 on Same Page</h1>
+        <p>Having multiple H1s is problematic for screen readers.</p>
+
+        <!-- Issue 7: H6 appearing without proper hierarchy -->
+        <h6>Random H6</h6>
+        <p>This H6 has no proper context.</p>
+
+        <!-- Issue 8: Empty heading -->
+        <h2></h2>
+        <p>The above H2 is empty.</p>
+
+        <!-- Issue 9: Heading with only whitespace -->
+        <h3>   </h3>
+        <p>The above H3 contains only whitespace.</p>
+
+        <!-- Correct heading for comparison -->
+        <h2>Properly Structured Section</h2>
+        <h3>Subsection A</h3>
+        <p>Content under subsection A.</p>
+        <h3>Subsection B</h3>
+        <p>Content under subsection B.</p>
+        <h4>Sub-subsection B.1</h4>
+        <p>Content under B.1.</p>
+    </main>
+</body>
+</html>

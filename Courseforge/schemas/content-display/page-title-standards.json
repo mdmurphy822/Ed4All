@@ -1,0 +1,336 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Page Title Standards",
+  "description": "Standardized formats and conventions for course page titles",
+  "type": "object",
+  "properties": {
+    "titleFormats": {
+      "type": "object",
+      "properties": {
+        "modulePages": {
+          "type": "object",
+          "properties": {
+            "format": {
+              "type": "string",
+              "default": "Module {number}: {title}",
+              "description": "Standard format for module page titles"
+            },
+            "examples": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "Module 1: Introduction to Quantum Computing",
+                "Module 2: Quantum Gates and Circuits", 
+                "Module 3: Quantum Algorithms"
+              ]
+            },
+            "numberFormat": {
+              "type": "string",
+              "enum": ["numeric", "zero-padded", "roman"],
+              "default": "numeric",
+              "description": "Format for module numbers"
+            }
+          }
+        },
+        "weeklyPages": {
+          "type": "object",
+          "properties": {
+            "format": {
+              "type": "string", 
+              "default": "Week {number}: {topic}",
+              "description": "Standard format for weekly page titles"
+            },
+            "examples": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "Week 1: Course Introduction and Fundamentals",
+                "Week 2: Core Concepts and Applications",
+                "Week 3: Advanced Topics and Practice"
+              ]
+            }
+          }
+        },
+        "lessonPages": {
+          "type": "object",
+          "properties": {
+            "format": {
+              "type": "string",
+              "default": "{module} - Lesson {number}: {title}",
+              "description": "Format for individual lesson pages"
+            },
+            "examples": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "Module 1 - Lesson 1: Basic Principles",
+                "Module 1 - Lesson 2: Practical Applications",
+                "Module 2 - Lesson 1: Advanced Concepts"
+              ]
+            }
+          }
+        },
+        "assessmentPages": {
+          "type": "object",
+          "properties": {
+            "assignments": {
+              "type": "string",
+              "default": "Assignment {number}: {title}",
+              "description": "Format for assignment page titles"
+            },
+            "quizzes": {
+              "type": "string",
+              "default": "Quiz {number}: {topic}",
+              "description": "Format for quiz page titles"
+            },
+            "discussions": {
+              "type": "string", 
+              "default": "Discussion {number}: {topic}",
+              "description": "Format for discussion page titles"
+            },
+            "examples": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "Assignment 1: Quantum Circuit Design",
+                "Quiz 1: Basic Quantum Mechanics",
+                "Discussion 1: Real-World Applications"
+              ]
+            }
+          }
+        },
+        "resourcePages": {
+          "type": "object",
+          "properties": {
+            "format": {
+              "type": "string",
+              "default": "Resources: {category}",
+              "description": "Format for resource page titles"
+            },
+            "examples": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": [
+                "Resources: Additional Readings",
+                "Resources: Video Library",
+                "Resources: External Tools"
+              ]
+            }
+          }
+        }
+      }
+    },
+    "htmlStructure": {
+      "type": "object",
+      "properties": {
+        "mainTitle": {
+          "type": "object",
+          "properties": {
+            "htmlTag": {
+              "type": "string",
+              "enum": ["h1"],
+              "default": "h1",
+              "description": "HTML tag for main page title (must be h1 for accessibility)"
+            },
+            "cssClass": {
+              "type": "string",
+              "default": "page-title",
+              "description": "CSS class for main page title"
+            },
+            "attributes": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "default": "main-title",
+                  "description": "ID attribute for main title (for skip links)"
+                },
+                "tabindex": {
+                  "type": "string",
+                  "default": "-1",
+                  "description": "Tabindex for programmatic focus"
+                }
+              }
+            }
+          }
+        },
+        "subtitle": {
+          "type": "object",
+          "properties": {
+            "htmlTag": {
+              "type": "string",
+              "enum": ["h2", "p"],
+              "default": "h2",
+              "description": "HTML tag for subtitle"
+            },
+            "cssClass": {
+              "type": "string", 
+              "default": "page-subtitle",
+              "description": "CSS class for subtitle"
+            },
+            "format": {
+              "type": "string",
+              "default": "{courseCode} - {courseName}",
+              "description": "Format for subtitle content"
+            }
+          }
+        }
+      }
+    },
+    "seoOptimization": {
+      "type": "object",
+      "properties": {
+        "pageTitle": {
+          "type": "object",
+          "properties": {
+            "format": {
+              "type": "string",
+              "default": "{pageTitle} | {courseName} | {institutionName}",
+              "description": "Format for HTML page title tag"
+            },
+            "maxLength": {
+              "type": "integer",
+              "minimum": 30,
+              "maximum": 60,
+              "default": 60,
+              "description": "Maximum length for page title (SEO best practice)"
+            }
+          }
+        },
+        "metaDescription": {
+          "type": "object",
+          "properties": {
+            "format": {
+              "type": "string",
+              "default": "Learn about {topic} in {courseName}. {brief_description}",
+              "description": "Format for meta description"
+            },
+            "maxLength": {
+              "type": "integer",
+              "minimum": 120,
+              "maximum": 160,
+              "default": 155,
+              "description": "Maximum length for meta description"
+            }
+          }
+        }
+      }
+    },
+    "accessibilityRequirements": {
+      "type": "object",
+      "properties": {
+        "skipLink": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Include skip link to main content"
+            },
+            "text": {
+              "type": "string",
+              "default": "Skip to main content",
+              "description": "Text for skip link"
+            },
+            "target": {
+              "type": "string",
+              "default": "#main-content",
+              "description": "Target element for skip link"
+            }
+          }
+        },
+        "headingHierarchy": {
+          "type": "object",
+          "properties": {
+            "enforceOrder": {
+              "type": "boolean",
+              "default": true,
+              "description": "Enforce proper heading order (h1, h2, h3, etc.)"
+            },
+            "uniqueH1": {
+              "type": "boolean",
+              "default": true,
+              "description": "Ensure only one h1 per page"
+            }
+          }
+        }
+      }
+    },
+    "stylingGuidelines": {
+      "type": "object",
+      "properties": {
+        "typography": {
+          "type": "object",
+          "properties": {
+            "fontFamily": {
+              "type": "string",
+              "default": "inherit",
+              "description": "Font family for titles (inherit from theme)"
+            },
+            "fontWeight": {
+              "type": "string",
+              "default": "bold",
+              "description": "Font weight for titles"
+            },
+            "fontSize": {
+              "type": "object",
+              "properties": {
+                "h1": {
+                  "type": "string",
+                  "default": "2.5rem",
+                  "description": "Font size for h1 titles"
+                },
+                "h2": {
+                  "type": "string",
+                  "default": "2rem",
+                  "description": "Font size for h2 subtitles"
+                }
+              }
+            }
+          }
+        },
+        "spacing": {
+          "type": "object",
+          "properties": {
+            "marginBottom": {
+              "type": "string",
+              "default": "1.5rem",
+              "description": "Bottom margin for titles"
+            },
+            "paddingTop": {
+              "type": "string",
+              "default": "1rem",
+              "description": "Top padding for titles"
+            }
+          }
+        },
+        "colors": {
+          "type": "object",
+          "properties": {
+            "primary": {
+              "type": "string",
+              "default": "inherit",
+              "description": "Primary color for titles (inherit from theme)"
+            },
+            "secondary": {
+              "type": "string",
+              "default": "#6c757d",
+              "description": "Secondary color for subtitles"
+            }
+          }
+        }
+      }
+    }
+  },
+  "required": ["titleFormats", "htmlStructure", "accessibilityRequirements"]
+}

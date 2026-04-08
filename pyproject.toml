@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ed4all"
+version = "1.0.0"
+description = "Unified orchestration for accessible educational content"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+keywords = ["education", "accessibility", "wcag", "imscc", "lms"]
+
+dependencies = [
+    "beautifulsoup4>=4.12.0",
+    "lxml>=4.9.0",
+    "pyyaml>=6.0.0",
+    "click>=8.0.0",
+    "rich>=13.0.0",
+    "jsonschema>=4.17.0",
+]
+
+[project.optional-dependencies]
+dart = [
+    "pdf2image>=1.16.0",
+    "pytesseract>=0.3.10",
+    "Pillow>=10.0.0",
+    "pdfplumber>=0.10.0",
+    "PyMuPDF>=1.23.0",
+    "anthropic>=0.18.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+full = ["ed4all[dart,dev]"]
+
+[project.scripts]
+ed4all = "cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lib*", "orchestrator*", "MCP*", "cli*"]
+
+[tool.coverage.run]
+source = ["lib", "orchestrator", "MCP"]
+branch = true
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+fail_under = 60
+show_missing = true
+
+[tool.ruff]
+line-length = 100
+select = ["E", "F", "W", "I"]
