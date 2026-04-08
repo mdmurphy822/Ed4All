@@ -186,6 +186,19 @@ def register_pipeline_tools(mcp):
                 staged_files.append(str(dest))
                 logger.info(f"Staged: {html_path.name} -> {dest}")
 
+                # Validate HTML structure
+                if html_path.suffix.lower() in ('.html', '.htm'):
+                    try:
+                        content = dest.read_text(encoding='utf-8', errors='ignore')[:5000]
+                        content_lower = content.lower()
+                        if '<html' not in content_lower and '<body' not in content_lower:
+                            errors.append(
+                                f"Warning: {html_path.name} may not be valid HTML "
+                                f"(missing <html> and <body> tags)"
+                            )
+                    except OSError:
+                        pass  # File was copied, just can't validate
+
                 # Copy accompanying JSON if exists (DART synthesized metadata)
                 json_path = html_path.with_suffix(".json")
                 if json_path.exists():

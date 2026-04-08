@@ -224,6 +224,14 @@ def register_trainforge_tools(mcp):
 
             # Open and analyze
             with zipfile.ZipFile(imscc, 'r') as z:
+                # Validate IMSCC structure: imsmanifest.xml is required
+                if 'imsmanifest.xml' not in z.namelist():
+                    return json.dumps({
+                        "error": f"Invalid IMSCC package: missing imsmanifest.xml in {imscc.name}",
+                        "hint": "A valid IMSCC package must contain an imsmanifest.xml file"
+                    })
+                analysis["has_manifest"] = True
+
                 for name in z.namelist():
                     if name.endswith('.html'):
                         analysis["content"]["html_modules"] += 1
@@ -269,7 +277,8 @@ def register_trainforge_tools(mcp):
         objective_ids: str,
         bloom_levels: str,
         question_count: int = 10,
-        course_slug: str = ""
+        course_slug: str = "",
+        imscc_path: str = ""
     ) -> str:
         """
         Generate assessments from course content using RAG retrieval.
@@ -281,6 +290,8 @@ def register_trainforge_tools(mcp):
                          (remember, understand, apply, analyze, evaluate, create)
             question_count: Number of questions to generate (default: 10)
             course_slug: LibV2 course slug for RAG retrieval (optional)
+            imscc_path: Path to IMSCC package for direct content extraction (optional).
+                       Used as fallback when RAG corpus is unavailable.
 
         Returns:
             Generated assessment data with question IDs and RAG-retrieved content
@@ -323,6 +334,39 @@ def register_trainforge_tools(mcp):
                         logger.info(f"RAG initialized for {course_slug}: {corpus_stats.get('chunk_count', 0)} chunks")
                 except Exception as e:
                     logger.warning(f"Could not initialize RAG for {course_slug}: {e}")
+
+            # If RAG unavailable, try direct IMSCC content extraction
+            imscc_content_chunks = []
+            if not rag and imscc_path:
+                import zipfile
+                imscc_file = Path(imscc_path)
+                if imscc_file.exists() and imscc_file.suffix == '.imscc':
+                    try:
+                        validate_path_within_root(imscc_file.resolve(), _PROJECT_ROOT)
+                        with zipfile.ZipFile(imscc_file, 'r') as z:
+                            if 'imsmanifest.xml' not in z.namelist():
+                                logger.warning("IMSCC at %s missing imsmanifest.xml", imscc_path)
+                            for name in z.namelist():
+                                if name.endswith('.html'):
+                                    content = z.read(name).decode('utf-8', errors='ignore')
+                                    # Strip HTML tags for text content
+                                    import re
+                                    text = re.sub(r'<[^>]+>', ' ', content)
+                                    text = ' '.join(text.split())
+                                    if len(text) > 50:
+                                        imscc_content_chunks.append({
+                                            "source": name,
+                                            "content": text[:2000],
+                                            "word_count": len(text.split())
+                                        })
+                        logger.info(
+                            "Extracted %d content chunks from IMSCC %s",
+                            len(imscc_content_chunks), imscc_file.name
+                        )
+                    except (ValueError, zipfile.BadZipFile) as e:
+                        logger.warning("Failed to extract IMSCC content from %s: %s", imscc_path, e)
+                elif imscc_path:
+                    logger.warning("IMSCC path not found or invalid: %s", imscc_path)
 
             # Generate assessment using RAG-retrieved chunks
             questions = []
@@ -375,6 +419,10 @@ def register_trainforge_tools(mcp):
                             rag_metrics["retrieval_count"] += 1
                         except Exception as e:
                             logger.warning(f"RAG retrieval failed for {obj_id}: {e}")
+
+                    # Fallback: use IMSCC content chunks if RAG unavailable
+                    if not source_chunks and imscc_content_chunks:
+                        source_chunks = imscc_content_chunks[:5]
 
                     # Generate questions for this objective/level combo
                     for _ in range(questions_per_combo):
