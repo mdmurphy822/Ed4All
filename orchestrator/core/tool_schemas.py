@@ -198,7 +198,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
 
     "generate_assessments": {
         "required": ["course_id", "objective_ids", "bloom_levels"],
-        "optional": ["question_count"],
+        "optional": ["question_count", "course_slug", "imscc_path"],
         "defaults": {
             "question_count": 10,
         },
@@ -209,6 +209,9 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "levels": "bloom_levels",
             "count": "question_count",
             "num_questions": "question_count",
+            "slug": "course_slug",
+            "package": "imscc_path",
+            "imscc": "imscc_path",
         },
         "description": "Generate assessments from course content",
     },
