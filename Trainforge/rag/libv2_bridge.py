@@ -34,7 +34,7 @@ except ImportError:
 if str(LIBV2_TOOLS_PATH) not in sys.path:
     sys.path.insert(0, str(LIBV2_TOOLS_PATH))
 
-from lib.libv2_storage import LIBV2_ROOT, LIBV2_COURSES, LibV2Storage
+from lib.libv2_storage import LIBV2_COURSES, LIBV2_ROOT  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

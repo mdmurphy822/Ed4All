@@ -6,7 +6,7 @@ Parses QTI 1.2 format assessment files from IMSCC packages.
 
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 
 
 @dataclass

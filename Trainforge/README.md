@@ -12,14 +12,15 @@ Trainforge generates comprehensive training data for Claude by:
 
 ## Quick Start
 
-```bash
-# Process a single course
-python -m scripts.assessment-pipeline.run_assessment \
-    --course-code PYTHON_101 \
-    --output training-captures/trainforge/PYTHON_101/
+```python
+from Trainforge.parsers.imscc_parser import IMSCCParser
+from Trainforge.generators.assessment_generator import AssessmentGenerator
 
-# Batch process multiple courses
-python scripts/batch_process.py --config config/batch.yaml
+# Parse IMSCC package
+parser = IMSCCParser()
+package = parser.parse("/path/to/course.imscc")
+
+# Generate assessments via MCP tools or direct API
 ```
 
 ## Directory Structure
@@ -28,24 +29,27 @@ python scripts/batch_process.py --config config/batch.yaml
 Trainforge/
 ├── CLAUDE.md                    # Agent instructions
 ├── README.md                    # This file
+├── parsers/                     # Content extraction
+│   ├── imscc_parser.py          # IMSCC package parsing
+│   ├── qti_parser.py           # QTI assessment parsing
+│   └── html_content_parser.py  # HTML content extraction
+├── rag/                         # RAG integration
+│   └── libv2_bridge.py         # LibV2 retrieval interface
+├── generators/                  # Assessment generation
+│   ├── assessment_generator.py  # Main orchestrator
+│   └── question_factory.py     # Question type factory
+├── decision_capture/            # Decision capture integration
+│   └── decision_logger.py      # Central capture logger
+├── validation/                  # Quality validation
 ├── agents/                      # Agent specifications
-│   ├── CLAUDE.md               # Agent coordination protocols
 │   ├── content-analyzer.md     # Content analysis agent
 │   ├── assessment-generator.md # Question generation agent
 │   └── validator.md            # Quality validation agent
-├── scripts/                     # Automation scripts
-│   ├── CLAUDE.md               # Script governance
-│   ├── assessment-pipeline/    # Core pipeline scripts
-│   └── archive/                # Archived scripts
-├── templates/                   # Output templates
-│   ├── assessment/             # Assessment JSON templates
-│   └── validation/             # Validation report templates
-├── decision_capture/           # Decision capture integration
-├── examples/                   # Sample outputs
+├── examples/                    # Sample outputs
 │   └── sample_assessment.json  # Example assessment
-└── docs/                       # Extended documentation
-    ├── RAG_INTEGRATION.md      # LibV2 integration guide
-    └── BLOOM_TAXONOMY.md       # Bloom's level targeting
+├── output/                      # Generated output
+└── tests/                       # Test suite
+    └── test_parsers.py         # Parser smoke tests
 ```
 
 ## Pipeline Workflow
@@ -91,7 +95,7 @@ chunks = retriever.retrieve(
 )
 ```
 
-See `docs/RAG_INTEGRATION.md` for detailed usage.
+See `Trainforge/rag/libv2_bridge.py` for the retrieval interface.
 
 ## Assessment Quality Standards
 
@@ -105,7 +109,7 @@ Every generated question must meet:
 | Stem Clarity | Unambiguous, complete question |
 | Content Grounding | Supported by RAG-retrieved content |
 
-See `docs/BLOOM_TAXONOMY.md` for level definitions.
+See `Trainforge/CLAUDE.md` for Bloom's level targeting details.
 
 ## Decision Capture
 

@@ -102,27 +102,30 @@ with create_trainforge_capture("INT_101", "/path/to/INT_101.imscc") as capture:
 Trainforge/
 ├── __init__.py
 ├── CLAUDE.md                    # This file
+├── README.md
 ├── parsers/
 │   ├── imscc_parser.py          # IMSCC package extraction
 │   ├── qti_parser.py            # QTI 1.2 assessment parsing
 │   └── html_content_parser.py   # HTML content extraction
 ├── rag/
-│   ├── chunk_indexer.py         # Semantic chunking
-│   ├── retriever.py             # Content retrieval
-│   └── embedding_manager.py     # Vector embeddings
+│   └── libv2_bridge.py          # LibV2 RAG integration (retrieval, cross-course)
 ├── generators/
 │   ├── assessment_generator.py  # Main generation orchestrator
-│   ├── question_factory.py      # Question type factory
-│   └── distractor_generator.py  # MCQ distractors
+│   └── question_factory.py      # Question type factory
 ├── decision_capture/
-│   ├── decision_logger.py       # Central capture
-│   └── hooks/                   # Capture hooks
+│   └── decision_logger.py       # Central capture (wraps lib.trainforge_capture)
 ├── validation/
-│   ├── quality_validator.py     # Quality validation
-│   └── feedback/                # Feedback loop
-└── agents/
-    ├── assessment_generator_agent.py
-    └── validator_agent.py
+│   └── __init__.py              # Placeholder for validators
+├── agents/
+│   ├── CLAUDE.md                # Agent coordination protocols
+│   ├── content-analyzer.md      # Content analysis agent
+│   ├── assessment-generator.md  # Question generation agent
+│   └── validator.md             # Quality validation agent
+├── examples/
+│   └── sample_assessment.json   # Example assessment output
+├── output/                      # Generated output directory
+└── tests/
+    └── test_parsers.py          # Parser smoke tests
 ```
 
 ---
