@@ -400,6 +400,25 @@ class DecisionCapture:
             }
         }
 
+        # Quality gating: tag decisions below "proficient" so downstream
+        # consumers (e.g., training data export) can filter them out.
+        # Decisions with quality_gate_passed=False should not be used
+        # for fine-tuning or RAG corpus assembly.
+        from .quality import check_quality_acceptable
+        quality_ok, quality_reason = check_quality_acceptable(
+            quality_level, minimum_level="proficient"
+        )
+        record["metadata"]["quality_gate_passed"] = quality_ok
+        if not quality_ok:
+            record["metadata"]["quality_gate_reason"] = quality_reason
+            import sys
+            print(
+                f"Quality gate: decision '{decision_type}' rated "
+                f"'{quality_level}' (below proficient) — flagged for "
+                f"exclusion from training corpus",
+                file=sys.stderr,
+            )
+
         # Validate record before storing (if validation enabled)
         if VALIDATE_DECISIONS:
             try:

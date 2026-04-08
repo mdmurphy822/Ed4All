@@ -15,10 +15,10 @@ import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 # Add project paths
-ED4ALL_ROOT = Path(__file__).resolve().parents[3]  # scripts/textbook-loader/textbook_loader.py → Ed4All/
+ED4ALL_ROOT = Path(__file__).resolve().parents[3]  # → Ed4All/
 if str(ED4ALL_ROOT) not in sys.path:
     sys.path.insert(0, str(ED4ALL_ROOT))
 
@@ -166,7 +166,10 @@ class TextbookLoader:
             self.capture.log_decision(
                 decision_type="textbook_integration",
                 decision=f"Loaded {len(textbooks)} textbooks from {textbooks_dir}",
-                rationale=f"Files scanned: {len(html_files)}, Successfully loaded: {len(textbooks)}",
+                rationale=(
+                    f"Files scanned: {len(html_files)}, "
+                    f"Successfully loaded: {len(textbooks)}"
+                ),
             )
 
         return textbooks
@@ -174,6 +177,11 @@ class TextbookLoader:
     def load_file(self, html_file: Path) -> Optional[TextbookContent]:
         """
         Load a single DART-processed HTML file.
+
+        If a .quality.json sidecar file exists (produced by DART's
+        multi_source_interpreter), its metadata is attached to the
+        TextbookContent so downstream consumers can assess source
+        reliability.
 
         Args:
             html_file: Path to HTML file
@@ -188,16 +196,43 @@ class TextbookLoader:
 
         parser = self._get_parser()
 
+        content = None
         if parser:
             # Use Trainforge HTML parser
             try:
                 parsed = parser.parse_file(str(html_file))
-                return self._convert_parsed_content(html_file, parsed)
+                content = self._convert_parsed_content(html_file, parsed)
             except Exception as e:
                 logger.warning(f"Parser failed for {html_file}: {e}, using basic parsing")
 
-        # Fallback to basic parsing
-        return self._basic_parse(html_file)
+        if content is None:
+            # Fallback to basic parsing
+            content = self._basic_parse(html_file)
+
+        # Load DART quality report if available
+        if content is not None:
+            quality_path = html_file.with_suffix('.quality.json')
+            if quality_path.exists():
+                try:
+                    quality_data = json.loads(
+                        quality_path.read_text(encoding='utf-8')
+                    )
+                    content.metadata["dart_quality"] = quality_data
+                    content.metadata["dart_confidence"] = quality_data.get(
+                        "confidence_score", 0.0
+                    )
+                    logger.info(
+                        "Loaded DART quality report for %s (confidence: %.2f)",
+                        html_file.name,
+                        quality_data.get("confidence_score", 0.0),
+                    )
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.warning(
+                        "Failed to load quality report for %s: %s",
+                        html_file.name, e,
+                    )
+
+        return content
 
     def _convert_parsed_content(
         self,

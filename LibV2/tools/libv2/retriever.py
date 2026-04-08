@@ -64,13 +64,12 @@ class RetrievalResult:
 
 # TF-IDF utilities (ported from rag_poc.py but used lazily)
 
-# Minimum TF-IDF relevance threshold (Phase I.1)
-# Results below this threshold are filtered unless all results are below it
-# In that case, return top 3 anyway to prevent empty results
-MIN_RELEVANCE_THRESHOLD = 0.3
-
-# Minimum results to return when all scores are below threshold
-MIN_FALLBACK_RESULTS = 3
+# Minimum TF-IDF relevance threshold
+# Results below this threshold are filtered. If no results meet the
+# threshold, an empty list is returned rather than low-quality fallbacks.
+# This ensures downstream consumers (Trainforge) only receive content
+# with sufficient relevance for high-quality question generation.
+MIN_RELEVANCE_THRESHOLD = 0.5
 
 STOP_WORDS = {
     'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
@@ -155,19 +154,16 @@ class LazyTFIDF:
 
         results.sort(key=lambda x: x[1], reverse=True)
 
-        # Phase I.1: Apply relevance threshold with fallback
-        # Filter results below threshold, but return top N if all are below
+        # Apply relevance threshold — no fallback.
+        # Returning low-relevance chunks degrades downstream quality
+        # (Trainforge generates poor questions from weak source material).
+        # An empty result signals "insufficient source material" which is
+        # more useful than silently passing low-quality content.
         above_threshold = [
             (chunk, score) for chunk, score in results
             if score >= MIN_RELEVANCE_THRESHOLD
         ]
-
-        if above_threshold:
-            return above_threshold[:limit]
-        else:
-            # Fallback: return top MIN_FALLBACK_RESULTS even if below threshold
-            # This prevents empty results on niche queries
-            return results[:min(limit, MIN_FALLBACK_RESULTS)]
+        return above_threshold[:limit]
 
 
 def _matches_filter(chunk: dict, chunk_filter: ChunkFilter) -> bool:

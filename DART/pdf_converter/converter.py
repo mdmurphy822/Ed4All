@@ -47,6 +47,9 @@ class ConversionResult:
     wcag_compliant: bool = True
     wcag_issues_count: int = 0
     wcag_critical_count: int = 0
+    # Quality metadata for downstream consumers
+    quality_score: float = 0.0  # 0.0-1.0 overall quality
+    wcag_issues: Optional[list] = None  # Detailed WCAG issues
 
 
 class PDFToAccessibleHTML:

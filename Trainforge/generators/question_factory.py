@@ -16,7 +16,7 @@ Supports:
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 if TYPE_CHECKING:
     from lib.decision_capture import DecisionCapture
@@ -64,13 +64,17 @@ class Question:
         }
 
 
+class BloomAlignmentError(Exception):
+    """Raised when a question type is misaligned with Bloom's taxonomy level."""
+
+
 class QuestionFactory:
     """
     Factory for creating assessment questions.
 
     Centralizes question creation with:
     - Type-specific validation
-    - Bloom's alignment checks
+    - Bloom's alignment checks (blocking by default)
     - Decision capture logging
     """
 
@@ -93,9 +97,20 @@ class QuestionFactory:
         "create": ["essay", "short_answer"],
     }
 
-    def __init__(self, capture: Optional["DecisionCapture"] = None):
-        """Initialize factory with optional decision capture."""
+    def __init__(
+        self,
+        capture: Optional["DecisionCapture"] = None,
+        enforce_bloom_alignment: bool = True,
+    ):
+        """Initialize factory with optional decision capture.
+
+        Args:
+            capture: Optional DecisionCapture for logging
+            enforce_bloom_alignment: If True, reject questions that
+                don't align with their target Bloom's level
+        """
         self.capture = capture
+        self.enforce_bloom_alignment = enforce_bloom_alignment
 
     def create_multiple_choice(
         self,
@@ -120,6 +135,9 @@ class QuestionFactory:
         Returns:
             Question object
         """
+        # Validate Bloom's alignment before creating
+        self.validate_bloom_alignment("multiple_choice", bloom_level)
+
         question_id = f"MCQ-{str(uuid.uuid4())[:8]}"
 
         # Validate exactly one correct answer
@@ -177,6 +195,9 @@ class QuestionFactory:
         Returns:
             Question object
         """
+        # Validate Bloom's alignment before creating
+        self.validate_bloom_alignment("multiple_response", bloom_level)
+
         question_id = f"MRQ-{str(uuid.uuid4())[:8]}"
 
         question_choices = [
@@ -230,6 +251,9 @@ class QuestionFactory:
         Returns:
             Question object
         """
+        # Validate Bloom's alignment before creating
+        self.validate_bloom_alignment("true_false", bloom_level)
+
         question_id = f"TF-{str(uuid.uuid4())[:8]}"
 
         choices = [
@@ -281,6 +305,9 @@ class QuestionFactory:
         Returns:
             Question object
         """
+        # Validate Bloom's alignment before creating
+        self.validate_bloom_alignment("fill_in_blank", bloom_level)
+
         question_id = f"FIB-{str(uuid.uuid4())[:8]}"
 
         if self.capture:
@@ -325,6 +352,9 @@ class QuestionFactory:
         Returns:
             Question object
         """
+        # Validate Bloom's alignment before creating
+        self.validate_bloom_alignment("short_answer", bloom_level)
+
         question_id = f"SA-{str(uuid.uuid4())[:8]}"
 
         if self.capture:
@@ -369,6 +399,9 @@ class QuestionFactory:
         Returns:
             Question object
         """
+        # Validate Bloom's alignment before creating
+        self.validate_bloom_alignment("essay", bloom_level)
+
         question_id = f"ESS-{str(uuid.uuid4())[:8]}"
 
         if self.capture:
@@ -396,22 +429,41 @@ class QuestionFactory:
         """
         Validate that question type is appropriate for Bloom's level.
 
+        When enforce_bloom_alignment is True, raises BloomAlignmentError
+        for misaligned questions instead of just logging a warning.
+
         Args:
             question_type: Type of question
             bloom_level: Target Bloom's level
 
         Returns:
             True if aligned, False otherwise
+
+        Raises:
+            BloomAlignmentError: If enforce_bloom_alignment is True and
+                the question type doesn't match the Bloom's level
         """
         valid_types = self.BLOOM_QUESTION_MAP.get(bloom_level, [])
         is_aligned = question_type in valid_types
 
-        if not is_aligned and self.capture:
-            self.capture.log_decision(
-                decision_type="alignment_warning",
-                decision=f"{question_type} may not be optimal for {bloom_level}",
-                rationale=f"Recommended types: {valid_types}",
+        if not is_aligned:
+            msg = (
+                f"{question_type} is not aligned with Bloom's level "
+                f"'{bloom_level}'. Valid types: {valid_types}"
             )
+
+            if self.capture:
+                self.capture.log_decision(
+                    decision_type="bloom_alignment_rejection",
+                    decision=f"Rejected {question_type} for {bloom_level}",
+                    rationale=msg,
+                )
+
+            if self.enforce_bloom_alignment:
+                logger.warning("Bloom alignment rejected: %s", msg)
+                raise BloomAlignmentError(msg)
+            else:
+                logger.warning("Bloom alignment warning: %s", msg)
 
         return is_aligned
 
