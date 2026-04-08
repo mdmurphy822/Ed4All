@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .constants import MIN_DECISIONS_PER_PHASE, OPERATION_MAP
+from .constants import MIN_DECISIONS_PER_PHASE, OPERATION_MAP, RELAXED_DECISION_TYPES
 from .decision_capture import InputRef, MLFeatures, OutcomeSignals
 from .libv2_storage import LibV2Storage
 from .paths import TRAINING_DIR as LEGACY_TRAINING_DIR
@@ -338,8 +338,7 @@ class StreamingDecisionCapture:
                 os.fsync(f.fileno())
             os.rename(legacy_temp_path, self.legacy_meta_path)
         except OSError as e:
-            import sys
-            print(f"Warning: Failed to write legacy meta: {e}", file=sys.stderr)
+            logger.warning("Failed to write legacy meta: %s", e)
 
         # Phase 0 Hardening: Write to run-specific location
         if self._run_output_dir:
@@ -352,8 +351,7 @@ class StreamingDecisionCapture:
                     os.fsync(f.fileno())
                 os.rename(run_temp_path, run_meta_path)
             except OSError as e:
-                import sys
-                print(f"Warning: Failed to write run meta: {e}", file=sys.stderr)
+                logger.warning("Failed to write run meta: %s", e)
 
     def log_decision(
         self,
@@ -398,9 +396,8 @@ class StreamingDecisionCapture:
 
         # Rationale quality assessment
         rationale_length = len(rationale) if rationale else 0
-        if rationale_length < 20 and decision_type not in ('prompt_response', 'file_creation', 'source_usage'):
-            import sys
-            print(f"Warning: Short rationale ({rationale_length} chars) for {decision_type}", file=sys.stderr)
+        if rationale_length < 20 and decision_type not in RELAXED_DECISION_TYPES:
+            logger.warning("Short rationale (%d chars) for %s", rationale_length, decision_type)
 
         # Assess decision quality using centralized quality module
         quality_level = assess_decision_quality(rationale, inputs_ref, alternatives_considered, decision_type)
@@ -451,8 +448,7 @@ class StreamingDecisionCapture:
         try:
             os.fsync(self._file.fileno())
         except OSError as e:
-            import sys
-            print(f"Warning: fsync failed (primary): {e}", file=sys.stderr)
+            logger.warning("fsync failed (primary): %s", e)
 
         # Legacy location (training-captures)
         if self._legacy_file:
@@ -461,8 +457,7 @@ class StreamingDecisionCapture:
                 self._legacy_file.flush()
                 os.fsync(self._legacy_file.fileno())
             except OSError as e:
-                import sys
-                print(f"Warning: legacy write failed: {e}", file=sys.stderr)
+                logger.warning("legacy write failed: %s", e)
 
         # Phase 0 Hardening: Run-specific location (state/runs/{run_id}/decisions/)
         if self._run_file:
@@ -471,16 +466,14 @@ class StreamingDecisionCapture:
                 self._run_file.flush()
                 os.fsync(self._run_file.fileno())
             except OSError as e:
-                import sys
-                print(f"Warning: run-specific write failed: {e}", file=sys.stderr)
+                logger.warning("run-specific write failed: %s", e)
 
         # Phase 0 Hardening: Write to hash chain for tamper evidence
         if self._hash_chain:
             try:
                 self._hash_chain.append(record_dict)
             except Exception as e:
-                import sys
-                print(f"Warning: hash chain append failed: {e}", file=sys.stderr)
+                logger.warning("hash chain append failed: %s", e)
 
         self._decision_count += 1
 
