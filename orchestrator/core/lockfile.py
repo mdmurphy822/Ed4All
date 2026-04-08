@@ -10,6 +10,7 @@ Phase 0 Hardening - Requirement 1: Deterministic Orchestration
 import hashlib
 import json
 import logging
+import os
 import shutil
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -243,12 +244,18 @@ class LockfileManager:
     def _atomic_write(self, path: Path, data: Dict) -> None:
         """Atomically write JSON data to path."""
         temp_path = path.with_suffix('.tmp')
-        with open(temp_path, 'w') as f:
-            json.dump(data, f, indent=2)
-            f.flush()
-            import os
-            os.fsync(f.fileno())
-        temp_path.rename(path)
+        try:
+            with open(temp_path, 'w') as f:
+                json.dump(data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            temp_path.rename(path)
+        except Exception:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
 
 
 def create_run_lockfile(

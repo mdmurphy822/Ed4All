@@ -227,7 +227,6 @@ def export_training(ctx, run_id: str, output_format: str, output: str,
     if stats.warnings:
         for warning in stats.warnings:
             click.secho(f"Warning: {warning}", fg='yellow')
-        return
 
     click.secho(f"Exported {stats.exported_events} training examples to {output}", fg='green')
 

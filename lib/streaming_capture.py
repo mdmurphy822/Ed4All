@@ -637,7 +637,7 @@ class StreamingDecisionCapture:
         Phase 0 Hardening: Returns verification result or None if no chain.
 
         Returns:
-            Dict with 'valid', 'length', 'error' (if any) or None if no chain
+            Dict with 'valid', 'total_events', 'error' (if any) or None if no chain
         """
         if not self._hash_chain:
             return None
@@ -646,13 +646,13 @@ class StreamingDecisionCapture:
             verification = self._hash_chain.verify()
             return {
                 "valid": verification.valid,
-                "length": verification.length,
-                "error": verification.error if not verification.valid else None
+                "total_events": verification.total_events,
+                "error": verification.error_message if not verification.valid else None
             }
         except Exception as e:
             return {
                 "valid": False,
-                "length": 0,
+                "total_events": 0,
                 "error": str(e)
             }
 
@@ -680,7 +680,7 @@ class StreamingDecisionCapture:
             try:
                 verification = self._hash_chain.verify()
                 hash_chain_valid = verification.valid
-                hash_chain_length = verification.length
+                hash_chain_length = verification.total_events
             except Exception:
                 hash_chain_valid = False
 
