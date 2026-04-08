@@ -657,7 +657,7 @@ class ReplayEngine:
         prev_hash = None
 
         with open(chain_path) as f:
-            for line in f:
+            for line_no, line in enumerate(f, 1):
                 line = line.strip()
                 if not line:
                     continue
@@ -669,10 +669,18 @@ class ReplayEngine:
                     if prev_hash is None:
                         # First entry should have null or empty prev_hash
                         if stored_prev and stored_prev != "":
+                            logger.error(
+                                "Hash chain corruption at line %d: first entry has prev_hash=%s",
+                                line_no, stored_prev
+                            )
                             return False
                     else:
                         # Subsequent entries should chain correctly
                         if stored_prev != prev_hash:
+                            logger.error(
+                                "Hash chain break at line %d: expected prev_hash=%s, got=%s",
+                                line_no, prev_hash, stored_prev
+                            )
                             return False
 
                     # Compute hash for next iteration
@@ -681,7 +689,11 @@ class ReplayEngine:
                     content = json.dumps(entry_copy, sort_keys=True)
                     prev_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
 
-                except (json.JSONDecodeError, KeyError):
+                except (json.JSONDecodeError, KeyError) as e:
+                    logger.error(
+                        "Hash chain corruption at line %d: %s, content: %s",
+                        line_no, e, line[:100]
+                    )
                     return False
 
         return True

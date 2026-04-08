@@ -354,12 +354,18 @@ class CheckpointManager:
         path = self._checkpoint_path(checkpoint.phase_name)
         temp_path = path.with_suffix('.tmp')
 
-        with open(temp_path, 'w') as f:
-            json.dump(checkpoint.to_dict(), f, indent=2)
-            f.flush()
-            os.fsync(f.fileno())
-
-        temp_path.rename(path)
+        try:
+            with open(temp_path, 'w') as f:
+                json.dump(checkpoint.to_dict(), f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            temp_path.rename(path)
+        except Exception:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
 
 
 def get_resume_point(run_path: Path) -> Optional[Dict[str, Any]]:

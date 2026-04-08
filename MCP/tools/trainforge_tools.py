@@ -614,7 +614,7 @@ def register_trainforge_tools(mcp):
                 "decision": record.get("decision", ""),
                 "rationale": record.get("rationale", "")[:100],
             }, sort_keys=True)
-            return hashlib.md5(key.encode()).hexdigest()[:12]
+            return hashlib.sha256(key.encode()).hexdigest()[:12]
 
         try:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -649,6 +649,7 @@ def register_trainforge_tools(mcp):
 
             # Load all records
             all_records = []
+            load_errors = []
             for df in decision_files:
                 try:
                     with open(df) as f:
@@ -657,7 +658,9 @@ def register_trainforge_tools(mcp):
                                 record = json.loads(line)
                                 record["_source_file"] = str(df)
                                 all_records.append(record)
-                except Exception:
+                except (OSError, json.JSONDecodeError) as e:
+                    load_errors.append(f"{df.name}: {e}")
+                    logger.warning("Failed to load decision file %s: %s", df, e)
                     continue
 
             # Initialize filter statistics
@@ -869,7 +872,7 @@ def register_trainforge_tools(mcp):
             with open(manifest_file, 'w') as f:
                 json.dump(manifest, f, indent=2)
 
-            return json.dumps({
+            result = {
                 "success": True,
                 "export_id": export_id,
                 "format": format_type,
@@ -878,7 +881,11 @@ def register_trainforge_tools(mcp):
                 "manifest_path": str(manifest_file),
                 "filter_stats": filter_stats,
                 "quality_distribution": dict(quality_distribution),
-            })
+            }
+            if load_errors:
+                result["load_errors"] = load_errors[:20]  # Cap to avoid huge responses
+                result["load_error_count"] = len(load_errors)
+            return json.dumps(result)
 
         except Exception as e:
             logger.exception("Error exporting training data")

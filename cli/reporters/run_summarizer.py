@@ -261,13 +261,16 @@ class RunSummarizer:
         if not artifacts_dir.exists():
             return
 
+        inaccessible = 0
         for artifact in artifacts_dir.rglob("*"):
             if artifact.is_file():
                 summary.artifacts_count += 1
                 try:
                     summary.artifacts_size_bytes += artifact.stat().st_size
-                except Exception:
-                    pass
+                except OSError:
+                    inaccessible += 1
+        if inaccessible:
+            summary.errors.append(f"Could not stat {inaccessible} artifact file(s)")
 
     def _format_text(self, summary: RunSummary) -> str:
         """Format summary as plain text."""

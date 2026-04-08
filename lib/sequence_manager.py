@@ -124,28 +124,42 @@ class SequenceManager:
         return datetime.now().isoformat()
 
     def _atomic_write(self, data: dict) -> None:
-        """Atomically write sequence state."""
+        """Atomically write sequence state.
+
+        Uses a dedicated .lock file for mutual exclusion so that concurrent
+        processes coordinate correctly.  The rename is performed while the
+        lock is still held to close the previous race window.
+        """
+        lock_path = self.sequence_path.with_suffix('.lock')
         temp_path = self.sequence_path.with_suffix('.tmp')
 
-        with open(temp_path, 'w') as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        with open(lock_path, 'w') as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
             try:
-                json.dump(data, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
+                with open(temp_path, 'w') as f:
+                    json.dump(data, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.rename(temp_path, self.sequence_path)
+            except Exception:
+                try:
+                    Path(temp_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+                raise
             finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-
-        os.rename(temp_path, self.sequence_path)
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _atomic_read(self) -> dict:
         """Atomically read sequence state."""
-        with open(self.sequence_path) as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_SH)
+        lock_path = self.sequence_path.with_suffix('.lock')
+        with open(lock_path, 'w') as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_SH)
             try:
-                return json.load(f)
+                with open(self.sequence_path) as f:
+                    return json.load(f)
             finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def _acquire_lock_with_timeout(
         self,
