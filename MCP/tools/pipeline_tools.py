@@ -20,6 +20,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from lib.paths import PROJECT_ROOT  # noqa: E402
+from MCP.tools.path_validation import validate_path_within_root  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,13 @@ def register_pipeline_tools(mcp):
                     return json.dumps({"error": f"No PDF files found in directory: {pdf_paths}"})
             else:
                 pdfs = [Path(p.strip()) for p in pdf_paths.split(",")]
+
+            # Validate PDF paths are within project root
+            for pdf in pdfs:
+                try:
+                    validate_path_within_root(pdf.resolve(), PROJECT_ROOT)
+                except ValueError as e:
+                    return json.dumps({"error": f"PDF path validation failed: {e}"})
 
             # Validate inputs
             missing_pdfs = [str(p) for p in pdfs if not p.exists()]
@@ -300,7 +308,7 @@ def register_pipeline_tools(mcp):
             if not path.exists():
                 return json.dumps({"error": f"File not found: {html_path}"})
 
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 content = f.read()
 
             markers = {

@@ -125,7 +125,7 @@ class LockfileManager:
         try:
             with open(self.lockfile_path) as f:
                 lockfile_data = json.load(f)
-        except (json.JSONDecodeError, IOError) as e:
+        except (OSError, json.JSONDecodeError) as e:
             return False, [f"Failed to read lockfile: {e}"]
 
         issues = []
@@ -158,7 +158,7 @@ class LockfileManager:
         try:
             with open(self.lockfile_path) as f:
                 lockfile_data = json.load(f)
-        except (json.JSONDecodeError, IOError) as e:
+        except (OSError, json.JSONDecodeError) as e:
             return False, [f"Failed to read lockfile: {e}"]
 
         differences = []
@@ -220,7 +220,7 @@ class LockfileManager:
             with open(self.lockfile_path) as f:
                 data = json.load(f)
             return ConfigLockfile.from_dict(data)
-        except (json.JSONDecodeError, IOError, TypeError) as e:
+        except (OSError, json.JSONDecodeError, TypeError) as e:
             logger.error(f"Failed to load lockfile: {e}")
             return None
 

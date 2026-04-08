@@ -78,6 +78,8 @@ def register_orchestrator_tools(mcp):
             workflow_id = f"WF-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:8]}"
 
             workflow_params = json.loads(params) if params else {}
+            if not isinstance(workflow_params, dict):
+                return json.dumps({"error": "params must be a JSON object, not array or scalar"})
 
             workflow = {
                 "id": workflow_id,

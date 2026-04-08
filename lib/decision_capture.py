@@ -186,7 +186,7 @@ class DecisionCapture:
             self._legacy_stream_path = self.legacy_output_dir / f"decisions_{self.session_id}.jsonl"
             try:
                 self._stream_file = open(self._stream_path, 'a')
-            except (IOError, OSError) as e:
+            except OSError as e:
                 import sys
                 print(f"Warning: Failed to open stream file {self._stream_path}: {e}", file=sys.stderr)
                 self.streaming_mode = False
@@ -194,7 +194,7 @@ class DecisionCapture:
             # Also open legacy stream file for dual-write
             try:
                 self._legacy_stream_file = open(self._legacy_stream_path, 'a')
-            except (IOError, OSError) as e:
+            except OSError as e:
                 import sys
                 print(f"Warning: Failed to open legacy stream file {self._legacy_stream_path}: {e}", file=sys.stderr)
                 self._legacy_stream_file = None
@@ -202,7 +202,7 @@ class DecisionCapture:
             if self._run_decisions_path:
                 try:
                     self._run_stream_file = open(self._run_decisions_path, 'a')
-                except (IOError, OSError) as e:
+                except OSError as e:
                     import sys
                     print(f"Warning: Failed to open run stream file {self._run_decisions_path}: {e}", file=sys.stderr)
                     self._run_stream_file = None
@@ -629,7 +629,7 @@ class DecisionCapture:
                 f.flush()
                 os.fsync(f.fileno())
             os.rename(legacy_temp_path, legacy_output_path)
-        except (IOError, OSError) as e:
+        except OSError as e:
             import sys
             print(f"Warning: Failed to save to legacy location: {e}", file=sys.stderr)
 

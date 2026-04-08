@@ -89,7 +89,7 @@ def atomic_read_json(path: Path, default: Optional[Dict] = None) -> Dict[str, An
             return default
         raise FileNotFoundError(f"File not found: {path}")
 
-    with open(path, 'r') as f:
+    with open(path) as f:
         # Acquire shared lock (allows concurrent reads)
         fcntl.flock(f.fileno(), fcntl.LOCK_SH)
         try:

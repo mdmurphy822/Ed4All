@@ -22,7 +22,7 @@ except ImportError:
     print("Error: click library required. Install with: pip install click")
     sys.exit(1)
 
-from lib.paths import STATE_PATH, LIBV2_PATH
+from lib.paths import LIBV2_PATH, STATE_PATH
 
 
 @click.group()
@@ -56,8 +56,9 @@ def validate_run(ctx, run_id: str, verbose: bool, fix: bool, output_json: bool):
     - Artifact hashes
     - Decision schema compliance
     """
-    from .validators.run_validator import RunValidator
     import json
+
+    from .validators.run_validator import RunValidator
 
     verbose = verbose or ctx.obj.get('verbose', False)
     validator = RunValidator(run_id)
@@ -144,8 +145,9 @@ def diff_runs(ctx, run_a: str, run_b: str, config_only: bool,
     - Decision patterns
     - Outcomes and metrics
     """
-    from .comparators.run_diff import RunDiff
     import json
+
+    from .comparators.run_diff import RunDiff
 
     differ = RunDiff(run_a, run_b)
 
@@ -195,8 +197,9 @@ def export_training(ctx, run_id: str, output_format: str, output: str,
     - openai: OpenAI-compatible format
     - dpo: Direct Preference Optimization pairs
     """
-    from .exporters.training_exporter import TrainingExporter
     import json
+
+    from .exporters.training_exporter import TrainingExporter
 
     verbose = verbose or ctx.obj.get('verbose', False)
 
@@ -258,8 +261,9 @@ def fsck(ctx, fix: bool, verbose: bool, output_json: bool):
     - Run manifest validity
     - Symlink targets
     """
-    from lib.libv2_fsck import LibV2Fsck
     import json
+
+    from lib.libv2_fsck import LibV2Fsck
 
     verbose = verbose or ctx.obj.get('verbose', False)
 
@@ -305,7 +309,6 @@ def fsck(ctx, fix: bool, verbose: bool, output_json: bool):
 def list_runs(ctx, limit: int, status: str, output_json: bool):
     """List recent runs."""
     import json
-    from datetime import datetime
 
     runs_dir = STATE_PATH / "runs"
     if not runs_dir.exists():
@@ -434,8 +437,8 @@ def textbook_to_course(ctx, pdf_path, course_name, objectives, weeks,
         ed4all textbook-to-course book.pdf -n CS_101 --no-assessments
         ed4all textbook-to-course ./textbooks/ -n BIO_301  # Directory of PDFs
     """
-    import json as json_lib
     import asyncio
+    import json as json_lib
 
     pdf_path = Path(pdf_path)
 

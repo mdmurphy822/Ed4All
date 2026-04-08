@@ -174,7 +174,7 @@ class SemanticStructureExtractor:
         if config_path:
             path = Path(config_path)
             if path.exists():
-                with open(path, 'r') as f:
+                with open(path) as f:
                     loaded = json.load(f)
                     default_config.update(loaded)
 
@@ -236,7 +236,7 @@ class SemanticStructureExtractor:
             Dictionary conforming to textbook_structure_schema.json
         """
         path = Path(file_path)
-        with open(path, 'r', encoding='utf-8') as f:
+        with open(path, encoding='utf-8') as f:
             content = f.read()
 
         # Auto-detect format if needed
@@ -250,7 +250,7 @@ class SemanticStructureExtractor:
 
         return self.extract(content, str(path), format=format)
 
-    def extract(self, content: str, source_path: str = "", format: str = "auto") -> Dict[str, Any]:
+    def extract(self, content: str, source_path: str = "", format: str = "auto") -> Dict[str, Any]:  # noqa: F811
         """
         Extract semantic structure from content (HTML or Markdown).
 
@@ -924,7 +924,7 @@ def extract_for_presentation(file_path: str, config_path: Optional[str] = None) 
     """
     extractor = SemanticStructureExtractor(config_path)
     path = Path(file_path)
-    with open(path, 'r', encoding='utf-8') as f:
+    with open(path, encoding='utf-8') as f:
         content = f.read()
     return extractor.extract_for_presentation(content, str(path))
 
@@ -971,7 +971,7 @@ def main():
 
     # Read input file
     path = Path(args.input_file)
-    with open(path, 'r', encoding='utf-8') as f:
+    with open(path, encoding='utf-8') as f:
         content = f.read()
 
     # Extract based on mode

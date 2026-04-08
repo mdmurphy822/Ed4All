@@ -153,6 +153,14 @@ class ValidationGateManager:
         self._waivers: Dict[str, GateWaiver] = {}
         self._results_history: List[GateResult] = []
 
+    # Allowlist of module prefixes permitted for validator imports.
+    # Prevents arbitrary module loading (e.g., os, subprocess) via config.
+    ALLOWED_VALIDATOR_PREFIXES = (
+        "lib.validators.",
+        "lib.leak_checker",
+        "DART.pdf_converter.",
+    )
+
     def load_validator(self, validator_path: str) -> Validator:
         """
         Dynamically load a validator class.
@@ -165,13 +173,21 @@ class ValidationGateManager:
             Validator instance
 
         Raises:
-            ImportError: If module not found
+            ImportError: If module not found or not in allowlist
             AttributeError: If class not found in module
         """
         if validator_path in self._validators:
             return self._validators[validator_path]
 
         module_path, class_name = validator_path.rsplit('.', 1)
+
+        # Security: only allow imports from known validator modules
+        if not any(module_path.startswith(p) for p in self.ALLOWED_VALIDATOR_PREFIXES):
+            raise ImportError(
+                f"Validator module '{module_path}' not in allowlist. "
+                f"Allowed prefixes: {self.ALLOWED_VALIDATOR_PREFIXES}"
+            )
+
         module = importlib.import_module(module_path)
         validator_class = getattr(module, class_name)
         validator = validator_class()

@@ -74,8 +74,8 @@ class RunContextBuilder:
         self._with_registry_snapshot: bool = False
 
         # Pre-built components (if provided externally)
-        self._sequence_manager: Optional["SequenceManager"] = None
-        self._audit_logger: Optional["AuditLogger"] = None
+        self._sequence_manager: Optional[SequenceManager] = None
+        self._audit_logger: Optional[AuditLogger] = None
         self._registry_snapshot: Optional[Dict[str, Any]] = None
 
         # Run manager instance
@@ -111,7 +111,7 @@ class RunContextBuilder:
 
     def with_sequence_manager(
         self,
-        manager: Optional["SequenceManager"] = None,
+        manager: Optional[SequenceManager] = None,
     ) -> RunContextBuilder:
         """
         Enable sequence manager for this context.
@@ -125,7 +125,7 @@ class RunContextBuilder:
 
     def with_audit_logger(
         self,
-        logger: Optional["AuditLogger"] = None,
+        logger: Optional[AuditLogger] = None,
     ) -> RunContextBuilder:
         """
         Enable audit logger for this context.
@@ -254,7 +254,7 @@ class RunContextBuilder:
     # PRIVATE HELPERS
     # ========================================================================
 
-    def _create_sequence_manager(self, run_id: str) -> "SequenceManager":
+    def _create_sequence_manager(self, run_id: str) -> SequenceManager:
         """Create a sequence manager for the run."""
         from .path_constants import (
             get_lock_retry_backoff,
@@ -271,7 +271,7 @@ class RunContextBuilder:
             lock_retry_backoff=get_lock_retry_backoff(),
         )
 
-    def _create_audit_logger(self, context: RunContext) -> "AuditLogger":
+    def _create_audit_logger(self, context: RunContext) -> AuditLogger:
         """Create an audit logger for the run."""
         from .audit_logger import AuditLogger
 

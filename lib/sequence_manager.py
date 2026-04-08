@@ -140,7 +140,7 @@ class SequenceManager:
 
     def _atomic_read(self) -> dict:
         """Atomically read sequence state."""
-        with open(self.sequence_path, 'r') as f:
+        with open(self.sequence_path) as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_SH)
             try:
                 return json.load(f)

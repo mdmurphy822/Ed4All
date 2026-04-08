@@ -105,7 +105,7 @@ class OrchestratorConfig:
         workflows_path = config_dir / "workflows.yaml"
         if workflows_path.exists():
             try:
-                with open(workflows_path, 'r') as f:
+                with open(workflows_path) as f:
                     data = yaml.safe_load(f)
             except yaml.YAMLError as e:
                 raise ValueError(f"Invalid YAML in {workflows_path}: {e}") from e
@@ -159,7 +159,7 @@ class OrchestratorConfig:
         agents_path = config_dir / "agents.yaml"
         if agents_path.exists():
             try:
-                with open(agents_path, 'r') as f:
+                with open(agents_path) as f:
                     data = yaml.safe_load(f)
             except yaml.YAMLError as e:
                 raise ValueError(f"Invalid YAML in {agents_path}: {e}") from e
@@ -252,7 +252,7 @@ class OrchestratorConfig:
         workflows_path = self.config_dir / "workflows.yaml"
         if workflows_path.exists():
             try:
-                with open(workflows_path, 'r') as f:
+                with open(workflows_path) as f:
                     raw_config = yaml.safe_load(f) or {}
                 for wf_name, wf_data in raw_config.get("workflows", {}).items():
                     for phase in wf_data.get("phases", []):
@@ -279,7 +279,7 @@ class OrchestratorConfig:
                                 issue = f"Cannot import validator module '{module_path}': {e} (workflow '{wf_name}')"
                                 issues["invalid_validators"].append(issue)
                                 if fail_fast:
-                                    raise ValueError(issue)
+                                    raise ValueError(issue) from e
             except yaml.YAMLError:
                 pass  # Already validated during load()
 

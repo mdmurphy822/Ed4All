@@ -141,7 +141,7 @@ class ConceptGraphBuilder:
         """Load default configuration."""
         config_path = Path(__file__).parent / "config" / "extractor_config.json"
         if config_path.exists():
-            with open(config_path, 'r') as f:
+            with open(config_path) as f:
                 return json.load(f)
         return {}
 
@@ -240,7 +240,7 @@ class ConceptGraphBuilder:
         self._calculate_betweenness(graph)
 
         # Calculate composite score
-        weights = config.get('centrality_weights', {
+        weights = self.config.get('centrality_weights', {
             'frequency': 0.2,
             'tfidf': 0.3,
             'pagerank': 0.3,

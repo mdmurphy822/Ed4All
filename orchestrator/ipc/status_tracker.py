@@ -108,10 +108,10 @@ class StatusTracker:
             return None
 
         try:
-            with open(status_path, 'r') as f:
+            with open(status_path) as f:
                 data = json.load(f)
                 return StatusUpdate(**data)
-        except (json.JSONDecodeError, IOError):
+        except (OSError, json.JSONDecodeError):
             return None
 
     def update_status(
@@ -215,7 +215,7 @@ class StatusTracker:
                     return False
                 finally:
                     fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-        except IOError:
+        except OSError:
             return False
         finally:
             # Clean up claim lock file
@@ -320,13 +320,13 @@ class StatusTracker:
                     # Check existing lock
                     if lock_path.exists():
                         try:
-                            with open(lock_path, 'r') as f:
+                            with open(lock_path) as f:
                                 existing = json.load(f)
 
                             expires = datetime.fromisoformat(existing["expires"])
                             if datetime.now() < expires:
                                 return False  # Still locked
-                        except (json.JSONDecodeError, IOError, KeyError):
+                        except (OSError, json.JSONDecodeError, KeyError):
                             pass  # Corrupted lock, allow override
 
                     # Create lock
@@ -349,7 +349,7 @@ class StatusTracker:
                     return True
                 finally:
                     fcntl.flock(acq_lock.fileno(), fcntl.LOCK_UN)
-        except IOError:
+        except OSError:
             return False
         finally:
             # Clean up acquisition lock file
@@ -375,7 +375,7 @@ class StatusTracker:
             return True
 
         try:
-            with open(lock_path, 'r') as f:
+            with open(lock_path) as f:
                 existing = json.load(f)
 
             if existing.get("owner") != owner:
@@ -385,7 +385,7 @@ class StatusTracker:
             self.update_progress_md()
             return True
 
-        except (json.JSONDecodeError, IOError):
+        except (OSError, json.JSONDecodeError):
             return False
 
     def get_all_status(self) -> List[StatusUpdate]:
@@ -394,10 +394,10 @@ class StatusTracker:
 
         for status_file in self.status_dir.glob("*.json"):
             try:
-                with open(status_file, 'r') as f:
+                with open(status_file) as f:
                     data = json.load(f)
                     statuses.append(StatusUpdate(**data))
-            except (json.JSONDecodeError, IOError):
+            except (OSError, json.JSONDecodeError):
                 continue
 
         return statuses
@@ -456,7 +456,7 @@ class StatusTracker:
         if workflows_dir.exists():
             for wf_file in workflows_dir.glob("*.json"):
                 try:
-                    with open(wf_file, 'r') as f:
+                    with open(wf_file) as f:
                         wf = json.load(f)
                     progress = wf.get("progress", {})
                     wf_total = progress.get("total", 0)
@@ -465,7 +465,7 @@ class StatusTracker:
                         f"| {wf.get('id', '-')} | {wf.get('type', '-')} | {wf.get('status', '-')} | "
                         f"{wf.get('created_at', '-')[:16]} | {wf_completed}/{wf_total} |\n"
                     )
-                except (json.JSONDecodeError, IOError):
+                except (OSError, json.JSONDecodeError):
                     continue
 
         # Component Status Table
@@ -486,7 +486,7 @@ class StatusTracker:
 
         for lock_file in self.locks_dir.glob("*.lock"):
             try:
-                with open(lock_file, 'r') as f:
+                with open(lock_file) as f:
                     lock = json.load(f)
 
                 # Check if expired
@@ -496,7 +496,7 @@ class StatusTracker:
                         f"| {lock['resource']} | {lock['owner']} | "
                         f"{lock.get('acquired', '-')[:16]} | {lock.get('expires', '-')[:16]} |\n"
                     )
-            except (json.JSONDecodeError, IOError):
+            except (OSError, json.JSONDecodeError):
                 continue
 
         # Error Log
@@ -561,7 +561,7 @@ class StatusTracker:
 
         for heartbeat_file in HEARTBEAT_DIR.glob("*.heartbeat"):
             try:
-                with open(heartbeat_file, 'r') as f:
+                with open(heartbeat_file) as f:
                     data = json.load(f)
 
                 component = data.get("component", "")
@@ -582,7 +582,7 @@ class StatusTracker:
                         "timeout_minutes": timeout_mins,
                         "dead_for_minutes": (now - last_heartbeat).total_seconds() / 60
                     })
-            except (json.JSONDecodeError, ValueError, IOError):
+            except (OSError, json.JSONDecodeError, ValueError):
                 continue
 
         return dead_workers

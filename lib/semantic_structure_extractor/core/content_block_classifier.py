@@ -644,7 +644,7 @@ def classify_html_content(html_path: str) -> Dict[str, Any]:
     Returns:
         Dictionary containing classified blocks
     """
-    with open(html_path, 'r', encoding='utf-8') as f:
+    with open(html_path, encoding='utf-8') as f:
         html_content = f.read()
 
     classifier = ContentBlockClassifier()

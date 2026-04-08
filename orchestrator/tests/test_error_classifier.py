@@ -129,7 +129,7 @@ class TestErrorClassifier:
     @pytest.mark.unit
     def test_classifies_disk_full_as_poison_pill(self, classifier):
         """Disk full should be POISON_PILL."""
-        error = IOError("Disk full")
+        error = OSError("Disk full")
         result = classifier.classify(error, "T001")
 
         assert result.error_class == ErrorClass.POISON_PILL

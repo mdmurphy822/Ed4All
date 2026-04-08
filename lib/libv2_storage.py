@@ -244,7 +244,7 @@ class LibV2Storage:
             return {"exists": False, "chunk_count": 0, "size_bytes": 0}
 
         chunk_count = 0
-        with open(chunks_path, 'r') as f:
+        with open(chunks_path) as f:
             for _ in f:
                 chunk_count += 1
 
@@ -323,7 +323,7 @@ class LibV2Storage:
     def get_metadata(self) -> Dict[str, Any]:
         """Load course metadata from catalog."""
         if self.metadata_path.exists():
-            with open(self.metadata_path, 'r') as f:
+            with open(self.metadata_path) as f:
                 return json.load(f)
         return {}
 
@@ -342,7 +342,7 @@ class LibV2Storage:
     def get_manifest(self) -> Dict[str, Any]:
         """Load course manifest."""
         if self.manifest_path.exists():
-            with open(self.manifest_path, 'r') as f:
+            with open(self.manifest_path) as f:
                 return json.load(f)
         return {}
 

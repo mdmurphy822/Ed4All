@@ -344,7 +344,7 @@ def register_dart_tools(mcp):
             except PathTraversalError as e:
                 return json.dumps({"error": f"Security error: {e}"})
 
-            with open(html, 'r', encoding='utf-8') as f:
+            with open(html, encoding='utf-8') as f:
                 content = f.read()
 
             issues = []

@@ -72,7 +72,7 @@ class DecisionRecord:
     raw: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "DecisionRecord":
+    def from_dict(cls, data: Dict[str, Any]) -> DecisionRecord:
         """Create from dictionary."""
         return cls(
             event_id=data.get("event_id", ""),

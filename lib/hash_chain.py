@@ -162,7 +162,7 @@ class HashChainedLog:
     def _load_chain_state(self) -> None:
         """Load the current chain state from existing log."""
         last_event = None
-        with open(self.log_path, 'r') as f:
+        with open(self.log_path) as f:
             for line in f:
                 line = line.strip()
                 if line:
@@ -301,7 +301,7 @@ class HashChainedLog:
             List of ChainedEvent objects
         """
         events = []
-        with open(self.log_path, 'r') as f:
+        with open(self.log_path) as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_SH)
             try:
                 for line in f:
@@ -324,7 +324,7 @@ class HashChainedLog:
             List of ChainedEvent objects in range
         """
         events = []
-        with open(self.log_path, 'r') as f:
+        with open(self.log_path) as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_SH)
             try:
                 for line in f:
@@ -347,7 +347,7 @@ class HashChainedLog:
         Yields:
             ChainedEvent objects
         """
-        with open(self.log_path, 'r') as f:
+        with open(self.log_path) as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_SH)
             try:
                 for line in f:
@@ -480,7 +480,7 @@ class HashChainedLog:
         Returns:
             ChainedEvent if found, None otherwise
         """
-        with open(self.log_path, 'r') as f:
+        with open(self.log_path) as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_SH)
             try:
                 for line in f:
@@ -524,7 +524,7 @@ class ChainIndex:
 
     def _load_index(self) -> None:
         """Load index from file."""
-        with open(self.index_path, 'r') as f:
+        with open(self.index_path) as f:
             data = json.load(f)
             self._index = {int(k): v for k, v in data.get("offsets", {}).items()}
 
@@ -548,7 +548,7 @@ class ChainIndex:
         self._index = {}
         offset = 0
 
-        with open(self.log.log_path, 'r') as f:
+        with open(self.log.log_path) as f:
             while True:
                 line = f.readline()
                 if not line:

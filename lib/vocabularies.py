@@ -154,7 +154,7 @@ class ControlledVocabulary:
                     logger.debug(f"Loaded vocabulary: {vocab_name} ({len(values)} values)")
                 elif isinstance(values, dict) and 'values' in values:
                     self._vocabularies[vocab_name] = set(values['values'])
-            except (json.JSONDecodeError, IOError) as e:
+            except (OSError, json.JSONDecodeError) as e:
                 logger.warning(f"Failed to load vocabulary {vocab_file}: {e}")
 
     def validate(

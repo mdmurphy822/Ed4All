@@ -204,7 +204,7 @@ def sample_exceptions():
         "type": TypeError("Expected string, got int"),
         "value": ValueError("Invalid value: -1"),
         "key": KeyError("missing_key"),
-        "io": IOError("Disk full"),
+        "io": OSError("Disk full"),
         "generic": Exception("Something went wrong"),
     }
 
