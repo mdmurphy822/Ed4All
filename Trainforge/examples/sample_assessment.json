@@ -1,0 +1,293 @@
+{
+  "assessment_id": "ASM-PYTHON_101-20260110-001",
+  "course_code": "PYTHON_101",
+  "course_title": "Introduction to Python Programming",
+  "generated_at": "2026-01-10T15:30:00Z",
+  "generator_version": "1.0.0",
+  "metadata": {
+    "total_questions": 10,
+    "learning_objectives_covered": 5,
+    "bloom_distribution": {
+      "remember": 2,
+      "understand": 3,
+      "apply": 3,
+      "analyze": 2,
+      "evaluate": 0,
+      "create": 0
+    },
+    "rag_metrics": {
+      "total_chunks_retrieved": 127,
+      "chunks_used": 45,
+      "average_relevance_score": 0.84
+    }
+  },
+  "learning_objectives": [
+    {
+      "id": "LO-1.1",
+      "text": "Define fundamental programming concepts including variables, data types, and operators",
+      "bloom_level": "remember",
+      "questions_mapped": ["Q001", "Q002"]
+    },
+    {
+      "id": "LO-1.2",
+      "text": "Explain the purpose and behavior of control flow structures",
+      "bloom_level": "understand",
+      "questions_mapped": ["Q003", "Q004"]
+    },
+    {
+      "id": "LO-2.1",
+      "text": "Apply function definitions to solve programming problems",
+      "bloom_level": "apply",
+      "questions_mapped": ["Q005", "Q006"]
+    },
+    {
+      "id": "LO-2.2",
+      "text": "Implement exception handling for robust error management",
+      "bloom_level": "apply",
+      "questions_mapped": ["Q007"]
+    },
+    {
+      "id": "LO-3.1",
+      "text": "Compare and contrast different data structures for specific use cases",
+      "bloom_level": "analyze",
+      "questions_mapped": ["Q008", "Q009", "Q010"]
+    }
+  ],
+  "questions": [
+    {
+      "id": "Q001",
+      "type": "multiple_choice",
+      "bloom_level": "remember",
+      "learning_objective": "LO-1.1",
+      "stem": "Which of the following correctly defines a variable in Python?",
+      "options": [
+        {"id": "A", "text": "var x = 10", "is_correct": false},
+        {"id": "B", "text": "x = 10", "is_correct": true},
+        {"id": "C", "text": "int x = 10", "is_correct": false},
+        {"id": "D", "text": "let x = 10", "is_correct": false}
+      ],
+      "correct_answer": "B",
+      "distractor_rationale": {
+        "A": "Syntax from JavaScript - common confusion for students with prior JS experience",
+        "C": "Syntax from statically-typed languages like C/Java - students may expect explicit type declaration",
+        "D": "Syntax from JavaScript ES6 - common confusion for students with prior JS experience"
+      },
+      "source_chunks": ["python-101_mod1_chunk_12", "python-101_mod1_chunk_15"],
+      "generation_rationale": "Tests recognition of Python's dynamic typing and assignment syntax"
+    },
+    {
+      "id": "Q002",
+      "type": "multiple_choice",
+      "bloom_level": "remember",
+      "learning_objective": "LO-1.1",
+      "stem": "What data type does Python assign to the value 3.14?",
+      "options": [
+        {"id": "A", "text": "int", "is_correct": false},
+        {"id": "B", "text": "float", "is_correct": true},
+        {"id": "C", "text": "double", "is_correct": false},
+        {"id": "D", "text": "decimal", "is_correct": false}
+      ],
+      "correct_answer": "B",
+      "distractor_rationale": {
+        "A": "Confusion between integer and floating-point representation",
+        "C": "Terminology from other languages (C, Java) - Python doesn't have a 'double' type",
+        "D": "Confusion with Python's decimal module vs built-in float type"
+      },
+      "source_chunks": ["python-101_mod1_chunk_23"],
+      "generation_rationale": "Tests recall of Python's numeric data types"
+    },
+    {
+      "id": "Q003",
+      "type": "multiple_choice",
+      "bloom_level": "understand",
+      "learning_objective": "LO-1.2",
+      "stem": "Which statement best explains why Python uses indentation for code blocks?",
+      "options": [
+        {"id": "A", "text": "To make the code more compact", "is_correct": false},
+        {"id": "B", "text": "To define the scope and structure of code blocks", "is_correct": true},
+        {"id": "C", "text": "To allow the interpreter to run faster", "is_correct": false},
+        {"id": "D", "text": "To maintain compatibility with other languages", "is_correct": false}
+      ],
+      "correct_answer": "B",
+      "distractor_rationale": {
+        "A": "Misconception that indentation is purely aesthetic",
+        "C": "Misconception about indentation affecting runtime performance",
+        "D": "Misconception about Python's design philosophy"
+      },
+      "source_chunks": ["python-101_mod2_chunk_05", "python-101_mod2_chunk_08"],
+      "generation_rationale": "Tests understanding of Python's syntactic design decisions"
+    },
+    {
+      "id": "Q004",
+      "type": "multiple_choice",
+      "bloom_level": "understand",
+      "learning_objective": "LO-1.2",
+      "stem": "Explain what happens when a 'while' loop's condition is initially False.",
+      "options": [
+        {"id": "A", "text": "The loop body executes once then stops", "is_correct": false},
+        {"id": "B", "text": "The loop body never executes", "is_correct": true},
+        {"id": "C", "text": "Python raises a SyntaxError", "is_correct": false},
+        {"id": "D", "text": "The loop runs indefinitely", "is_correct": false}
+      ],
+      "correct_answer": "B",
+      "distractor_rationale": {
+        "A": "Confusion with do-while loop behavior from other languages",
+        "C": "Misconception that false conditions cause errors",
+        "D": "Confusion between false and infinite loop conditions"
+      },
+      "source_chunks": ["python-101_mod2_chunk_34"],
+      "generation_rationale": "Tests comprehension of loop initialization behavior"
+    },
+    {
+      "id": "Q005",
+      "type": "multiple_choice",
+      "bloom_level": "apply",
+      "learning_objective": "LO-2.1",
+      "stem": "You need to write a function that calculates the factorial of a number. Which function definition correctly implements this using recursion?",
+      "options": [
+        {"id": "A", "text": "def factorial(n): return n * factorial(n)", "is_correct": false},
+        {"id": "B", "text": "def factorial(n): if n <= 1: return 1; return n * factorial(n-1)", "is_correct": true},
+        {"id": "C", "text": "def factorial(n): return factorial(n-1) * n", "is_correct": false},
+        {"id": "D", "text": "def factorial(n): return n * n-1", "is_correct": false}
+      ],
+      "correct_answer": "B",
+      "distractor_rationale": {
+        "A": "Missing base case - would cause infinite recursion",
+        "C": "Missing base case - would cause infinite recursion (different order)",
+        "D": "Not actually recursive - shows misunderstanding of recursion concept"
+      },
+      "source_chunks": ["python-101_mod3_chunk_67", "python-101_mod3_chunk_68"],
+      "generation_rationale": "Tests application of recursive function definition with base case"
+    },
+    {
+      "id": "Q006",
+      "type": "multiple_choice",
+      "bloom_level": "apply",
+      "learning_objective": "LO-2.1",
+      "stem": "Given the requirement to process a list of temperatures and convert each from Celsius to Fahrenheit, which function signature is most appropriate?",
+      "options": [
+        {"id": "A", "text": "def convert(): temperatures = []", "is_correct": false},
+        {"id": "B", "text": "def convert(celsius_list): return [c * 9/5 + 32 for c in celsius_list]", "is_correct": true},
+        {"id": "C", "text": "def convert(c): return c * 9/5 + 32", "is_correct": false},
+        {"id": "D", "text": "def convert(temperatures): print(temperatures)", "is_correct": false}
+      ],
+      "correct_answer": "B",
+      "distractor_rationale": {
+        "A": "Doesn't accept parameters - can't process provided list",
+        "C": "Only handles single value, not a list",
+        "D": "Doesn't perform conversion - only prints input"
+      },
+      "source_chunks": ["python-101_mod3_chunk_42", "python-101_mod3_chunk_45"],
+      "generation_rationale": "Tests application of function parameters and list comprehension"
+    },
+    {
+      "id": "Q007",
+      "type": "multiple_choice",
+      "bloom_level": "apply",
+      "learning_objective": "LO-2.2",
+      "stem": "You are writing code to read user input that should be converted to an integer. Which exception handling approach correctly catches invalid input?",
+      "options": [
+        {"id": "A", "text": "try: num = int(input()) except: pass", "is_correct": false},
+        {"id": "B", "text": "try: num = int(input()) except ValueError: print('Invalid input')", "is_correct": true},
+        {"id": "C", "text": "if int(input()): num = input()", "is_correct": false},
+        {"id": "D", "text": "try: num = int(input()) catch ValueError: print('Invalid')", "is_correct": false}
+      ],
+      "correct_answer": "B",
+      "distractor_rationale": {
+        "A": "Bare except clause - bad practice that catches all exceptions silently",
+        "C": "Not using exception handling at all - would crash on invalid input",
+        "D": "Wrong keyword - 'catch' is not Python syntax (from Java/C++)"
+      },
+      "source_chunks": ["python-101_mod4_chunk_12", "python-101_mod4_chunk_15"],
+      "generation_rationale": "Tests practical application of exception handling for input validation"
+    },
+    {
+      "id": "Q008",
+      "type": "multiple_choice",
+      "bloom_level": "analyze",
+      "learning_objective": "LO-3.1",
+      "stem": "Compare lists and tuples in Python. Which statement correctly describes a key difference?",
+      "options": [
+        {"id": "A", "text": "Lists use square brackets while tuples use curly braces", "is_correct": false},
+        {"id": "B", "text": "Lists are mutable while tuples are immutable", "is_correct": true},
+        {"id": "C", "text": "Tuples can only contain strings while lists can contain any type", "is_correct": false},
+        {"id": "D", "text": "Lists are faster to iterate than tuples", "is_correct": false}
+      ],
+      "correct_answer": "B",
+      "distractor_rationale": {
+        "A": "Curly braces are for sets/dicts - syntax confusion",
+        "C": "Both can contain any type - misconception about type restrictions",
+        "D": "Actually tuples are slightly faster - performance misconception"
+      },
+      "source_chunks": ["python-101_mod5_chunk_08", "python-101_mod5_chunk_12"],
+      "generation_rationale": "Tests analysis of core differences between data structure types"
+    },
+    {
+      "id": "Q009",
+      "type": "multiple_choice",
+      "bloom_level": "analyze",
+      "learning_objective": "LO-3.1",
+      "stem": "Analyze which data structure would be most efficient for storing and retrieving user information by username.",
+      "options": [
+        {"id": "A", "text": "A list of tuples", "is_correct": false},
+        {"id": "B", "text": "A dictionary with username as key", "is_correct": true},
+        {"id": "C", "text": "A nested list", "is_correct": false},
+        {"id": "D", "text": "A set of usernames", "is_correct": false}
+      ],
+      "correct_answer": "B",
+      "distractor_rationale": {
+        "A": "Would require O(n) search time - inefficient for lookup",
+        "C": "Would require complex indexing and O(n) search - inefficient",
+        "D": "Sets only store values, not key-value pairs - can't store user info"
+      },
+      "source_chunks": ["python-101_mod5_chunk_45", "python-101_mod5_chunk_48"],
+      "generation_rationale": "Tests analysis of data structure efficiency for specific use cases"
+    },
+    {
+      "id": "Q010",
+      "type": "multiple_choice",
+      "bloom_level": "understand",
+      "learning_objective": "LO-3.1",
+      "stem": "Describe the primary purpose of using a set instead of a list in Python.",
+      "options": [
+        {"id": "A", "text": "To maintain insertion order of elements", "is_correct": false},
+        {"id": "B", "text": "To store unique elements and perform set operations", "is_correct": true},
+        {"id": "C", "text": "To allow duplicate values", "is_correct": false},
+        {"id": "D", "text": "To store key-value pairs", "is_correct": false}
+      ],
+      "correct_answer": "B",
+      "distractor_rationale": {
+        "A": "Lists maintain order; sets historically did not (though Python 3.7+ dicts do)",
+        "C": "Opposite of set behavior - sets eliminate duplicates",
+        "D": "Describes dictionaries, not sets"
+      },
+      "source_chunks": ["python-101_mod5_chunk_32"],
+      "generation_rationale": "Tests understanding of set data structure purpose and uniqueness property"
+    }
+  ],
+  "validation": {
+    "validation_id": "VAL-PYTHON_101-20260110-001",
+    "passed": true,
+    "validated_at": "2026-01-10T15:45:00Z",
+    "scores": {
+      "objective_coverage": 1.0,
+      "bloom_alignment": 1.0,
+      "question_quality": 0.92,
+      "distractor_quality": 0.88,
+      "overall": 0.95
+    },
+    "feedback": [
+      {
+        "question_id": "Q005",
+        "issue": "stem_length",
+        "severity": "info",
+        "message": "Question stem is on the longer side but acceptable for scenario-based questions"
+      }
+    ],
+    "revision_required": false
+  },
+  "generation_log": {
+    "decisions_logged": 47,
+    "decision_file": "/training-captures/trainforge/PYTHON_101/phase_question-generation/decisions_20260110_153000.jsonl"
+  }
+}

@@ -1,0 +1,1 @@
+this will be a repo for slm model graphs. need a strong system of categorization. all books in all formats will make their way into this folder after being turned into an slm graph. documentation must be perfect

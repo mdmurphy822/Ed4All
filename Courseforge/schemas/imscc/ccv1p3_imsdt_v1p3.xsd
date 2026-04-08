@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    IMS Common Cartridge Discussion Topic Schema v1.3
+    Based on: http://www.imsglobal.org/profile/cc/ccv1p3/ccv1p3_imsdt_v1p3.xsd
+
+    This schema validates discussion topic XML files for IMSCC packages.
+    Namespace: http://www.imsglobal.org/xsd/imsccv1p3/imsdt_v1p3
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns="http://www.imsglobal.org/xsd/imsccv1p3/imsdt_v1p3"
+           targetNamespace="http://www.imsglobal.org/xsd/imsccv1p3/imsdt_v1p3"
+           elementFormDefault="qualified"
+           version="1.3">
+
+    <!-- Root Element -->
+    <xs:element name="topic" type="Topic.Type"/>
+
+    <!-- Topic Type -->
+    <xs:complexType name="Topic.Type">
+        <xs:sequence>
+            <xs:element name="title" type="xs:normalizedString"/>
+            <xs:element name="text" type="Text.Type"/>
+            <xs:element name="attachments" type="Attachments.Type" minOccurs="0"/>
+            <xs:any namespace="##other" processContents="lax" minOccurs="0" maxOccurs="unbounded"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <!-- Text Type with texttype attribute -->
+    <xs:complexType name="Text.Type">
+        <xs:simpleContent>
+            <xs:extension base="xs:string">
+                <xs:attribute name="texttype" type="TextType.Enum" use="required"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+
+    <!-- Text Type Enumeration -->
+    <xs:simpleType name="TextType.Enum">
+        <xs:restriction base="xs:token">
+            <xs:enumeration value="text/plain"/>
+            <xs:enumeration value="text/html"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <!-- Attachments Type -->
+    <xs:complexType name="Attachments.Type">
+        <xs:sequence>
+            <xs:element name="attachment" type="Attachment.Type" maxOccurs="unbounded"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <!-- Attachment Type -->
+    <xs:complexType name="Attachment.Type">
+        <xs:attribute name="href" type="xs:anyURI" use="required"/>
+    </xs:complexType>
+
+</xs:schema>

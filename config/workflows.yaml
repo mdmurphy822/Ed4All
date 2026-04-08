@@ -1,0 +1,555 @@
+# Ed4All Workflow Definitions
+# Defines available workflow types and their execution phases
+#
+# Phase 0 Hardening: Added retry_policy, poison_pill, and validation_gates
+
+workflows:
+  # Course Generation: Create IMSCC from objectives
+  course_generation:
+    description: Generate IMSCC course package from exam objectives
+
+    # Phase 0: Retry policy configuration
+    retry_policy:
+      max_retries: 3
+      retry_delay_seconds: [5, 30, 120]  # Exponential backoff
+      transient_error_classes:
+        - timeout
+        - rate_limit
+        - connection_error
+        - service_unavailable
+      permanent_error_classes:
+        - validation_error
+        - missing_input
+        - permission_denied
+        - schema_error
+
+    # Phase 0: Poison pill detection
+    poison_pill:
+      threshold: 3  # N same-pattern failures stops batch
+      window_seconds: 300  # 5 minute window
+
+    phases:
+      - name: planning
+        agents: [course-outliner, requirements-collector]
+        parallel: false
+        max_concurrent: 1
+        depends_on: []
+        timeout_minutes: 60
+
+      - name: content_generation
+        agents: [content-generator]
+        parallel: true
+        max_concurrent: 10
+        batch_by: week
+        depends_on: [planning]
+        timeout_minutes: 120
+        batch_timeout_minutes: 30  # Phase 0: Per-batch timeout
+
+        # Phase 0: Validation gates
+        validation_gates:
+          - gate_id: content_structure
+            validator: lib.validators.content.ContentStructureValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
+      - name: packaging
+        agents: [brightspace-packager]
+        parallel: true
+        max_concurrent: 10
+        batch_by: week
+        depends_on: [content_generation]
+        timeout_minutes: 45
+
+        validation_gates:
+          - gate_id: imscc_structure
+            validator: lib.validators.imscc.IMSCCValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
+      - name: validation
+        agents: [oscqr-course-evaluator, quality-assurance]
+        parallel: true
+        max_concurrent: 2
+        depends_on: [packaging]
+        timeout_minutes: 30
+
+        validation_gates:
+          - gate_id: wcag_compliance
+            validator: DART.pdf_converter.wcag_validator.WCAGValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+              min_score: 0.9
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
+          - gate_id: oscqr_score
+            validator: lib.validators.oscqr.OSCQRValidator
+            severity: warning
+            threshold:
+              min_score: 0.7
+            behavior:
+              on_fail: warn
+              on_error: warn
+
+      - name: finalization
+        agents: [brightspace-packager]
+        parallel: false
+        max_concurrent: 1
+        depends_on: [validation]
+        timeout_minutes: 30
+
+  # Intake & Remediation: Import and fix existing IMSCC
+  intake_remediation:
+    description: Import and remediate existing IMSCC packages
+
+    retry_policy:
+      max_retries: 3
+      retry_delay_seconds: [5, 30, 120]
+      transient_error_classes:
+        - timeout
+        - rate_limit
+        - connection_error
+      permanent_error_classes:
+        - validation_error
+        - missing_input
+        - corrupt_package
+
+    poison_pill:
+      threshold: 3
+      window_seconds: 300
+
+    phases:
+      - name: parsing
+        agents: [imscc-intake-parser]
+        parallel: false
+        max_concurrent: 1
+        depends_on: []
+        timeout_minutes: 30
+
+        validation_gates:
+          - gate_id: imscc_parse
+            validator: lib.validators.imscc.IMSCCParseValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
+      - name: analysis
+        agents: [content-analyzer]
+        parallel: false
+        max_concurrent: 1
+        depends_on: [parsing]
+        timeout_minutes: 60
+
+      - name: remediation
+        agents:
+          - dart-automation-coordinator
+          - accessibility-remediation
+          - content-quality-remediation
+          - intelligent-design-mapper
+        parallel: true
+        max_concurrent: 4
+        depends_on: [analysis]
+        timeout_minutes: 90
+        batch_timeout_minutes: 45
+
+      - name: validation
+        agents: [remediation-validator]
+        parallel: false
+        max_concurrent: 1
+        depends_on: [remediation]
+        timeout_minutes: 30
+
+        validation_gates:
+          - gate_id: wcag_compliance
+            validator: DART.pdf_converter.wcag_validator.WCAGValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
+      - name: packaging
+        agents: [brightspace-packager]
+        parallel: false
+        max_concurrent: 1
+        depends_on: [validation]
+        timeout_minutes: 45
+
+  # Batch DART: Multi-source synthesis document conversion
+  batch_dart:
+    description: Batch DART conversion using multi-source synthesis (pdftotext + pdfplumber + OCR)
+    mcp_tools:
+      - batch_convert_multi_source
+      - validate_wcag_compliance
+
+    retry_policy:
+      max_retries: 3
+      retry_delay_seconds: [10, 60, 300]
+      transient_error_classes:
+        - timeout
+        - ocr_failure
+        - memory_error
+      permanent_error_classes:
+        - corrupt_pdf
+        - unsupported_format
+
+    poison_pill:
+      threshold: 5  # Higher threshold for batch conversion
+      window_seconds: 600
+
+    phases:
+      - name: multi_source_synthesis
+        agents: [dart-converter]
+        parallel: true
+        max_concurrent: 4
+        depends_on: []
+        timeout_minutes: 90
+        batch_timeout_minutes: 30
+        description: Synthesize accessible HTML from combined extraction sources
+
+      - name: validation
+        agents: [accessibility-remediation]
+        parallel: true
+        max_concurrent: 4
+        depends_on: [multi_source_synthesis]
+        timeout_minutes: 30
+        description: Validate WCAG 2.2 AA compliance
+
+        validation_gates:
+          - gate_id: wcag_aa_compliance
+            validator: DART.pdf_converter.wcag_validator.WCAGValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+              min_score: 0.95
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
+  # RAG Training: Assessment-based training data generation
+  rag_training:
+    description: Train RAG on assessment data from IMSCC packages
+
+    retry_policy:
+      max_retries: 2
+      retry_delay_seconds: [5, 30]
+      transient_error_classes:
+        - timeout
+        - rate_limit
+      permanent_error_classes:
+        - validation_error
+        - missing_content
+
+    poison_pill:
+      threshold: 3
+      window_seconds: 300
+
+    phases:
+      - name: extraction
+        agents: [assessment-extractor]
+        parallel: false
+        max_concurrent: 1
+        depends_on: []
+        timeout_minutes: 45
+
+      - name: indexing
+        agents: [rag-indexer]
+        parallel: false
+        max_concurrent: 1
+        depends_on: [extraction]
+        timeout_minutes: 60
+
+      - name: assessment_generation
+        agents: [assessment-generator]
+        parallel: true
+        max_concurrent: 5
+        depends_on: [indexing]
+        timeout_minutes: 90
+        batch_timeout_minutes: 30
+
+        validation_gates:
+          - gate_id: assessment_quality
+            validator: lib.validators.assessment.AssessmentQualityValidator
+            severity: critical
+            threshold:
+              min_score: 0.8
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
+          - gate_id: bloom_alignment
+            validator: lib.validators.bloom.BloomAlignmentValidator
+            severity: warning
+            threshold:
+              min_alignment_score: 0.7
+            behavior:
+              on_fail: warn
+              on_error: warn
+
+          - gate_id: leak_check
+            validator: lib.leak_checker.LeakChecker
+            severity: critical
+            threshold:
+              max_leaks: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
+      - name: validation
+        agents: [assessment-validator]
+        parallel: true
+        max_concurrent: 5
+        depends_on: [assessment_generation]
+        timeout_minutes: 30
+
+        validation_gates:
+          - gate_id: final_quality
+            validator: lib.validators.assessment.FinalQualityValidator
+            severity: critical
+            threshold:
+              min_score: 0.85
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
+  # Textbook to Course: Unified pipeline (DART -> Courseforge -> Trainforge)
+  textbook_to_course:
+    description: End-to-end textbook-to-course pipeline (DART -> Courseforge -> Trainforge)
+
+    retry_policy:
+      max_retries: 3
+      retry_delay_seconds: [5, 30, 120]
+      transient_error_classes:
+        - timeout
+        - rate_limit
+        - connection_error
+      permanent_error_classes:
+        - validation_error
+        - missing_input
+        - corrupt_pdf
+
+    poison_pill:
+      threshold: 3
+      window_seconds: 300
+
+    phases:
+      - name: dart_conversion
+        agents: [dart-converter]
+        parallel: true
+        max_concurrent: 4
+        depends_on: []
+        timeout_minutes: 90
+        description: Convert PDF textbooks to accessible HTML via multi-source synthesis
+
+      - name: staging
+        agents: [textbook-stager]
+        parallel: false
+        max_concurrent: 1
+        depends_on: [dart_conversion]
+        timeout_minutes: 10
+        description: Stage DART outputs to Courseforge inputs directory
+
+      - name: objective_extraction
+        agents: [textbook-ingestor]
+        parallel: false
+        max_concurrent: 1
+        depends_on: [staging]
+        timeout_minutes: 60
+        description: Extract structure and synthesize learning objectives from textbook
+
+      - name: course_planning
+        agents: [course-outliner]
+        parallel: false
+        max_concurrent: 1
+        depends_on: [objective_extraction]
+        timeout_minutes: 60
+        description: Create course structure from synthesized objectives
+
+      - name: content_generation
+        agents: [content-generator]
+        parallel: true
+        max_concurrent: 10
+        batch_by: week
+        depends_on: [course_planning]
+        timeout_minutes: 120
+        batch_timeout_minutes: 30
+        description: Generate course content modules
+
+        validation_gates:
+          - gate_id: content_structure
+            validator: lib.validators.content.ContentStructureValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
+      - name: packaging
+        agents: [brightspace-packager]
+        parallel: false
+        max_concurrent: 1
+        depends_on: [content_generation]
+        timeout_minutes: 45
+        description: Package course as IMSCC
+
+        validation_gates:
+          - gate_id: imscc_structure
+            validator: lib.validators.imscc.IMSCCValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
+      - name: trainforge_assessment
+        agents: [assessment-generator]
+        parallel: true
+        max_concurrent: 5
+        depends_on: [packaging]
+        timeout_minutes: 90
+        batch_timeout_minutes: 30
+        description: Generate assessments from IMSCC course package
+        optional: true  # Can be skipped via generate_assessments=false
+
+        validation_gates:
+          - gate_id: assessment_quality
+            validator: lib.validators.assessment.AssessmentQualityValidator
+            severity: critical
+            threshold:
+              min_score: 0.8
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
+      - name: finalization
+        agents: [brightspace-packager]
+        parallel: false
+        max_concurrent: 1
+        depends_on: [trainforge_assessment]
+        timeout_minutes: 30
+        description: Final validation and training data export
+
+# Default settings applied to all workflows
+defaults:
+  task_timeout_minutes: 60
+  retry_attempts: 2
+  retry_delay_seconds: 30
+  batch_timeout_minutes: 30
+
+  # Phase 0: Default gate behaviors
+  validation_gates:
+    behavior:
+      on_fail: block
+      on_error: fail_closed
+
+  # Phase 0: Default poison pill settings
+  poison_pill:
+    threshold: 3
+    window_seconds: 300
+
+# Dependency resolution configuration
+dependency_resolution:
+  mode: strict  # fail if dependency not met
+  allow_skip: false
+
+# Phase 0: Hardening configuration
+hardening:
+  enabled: true
+  strict_mode: false  # Set to true for production
+
+  # Error classification
+  error_classification:
+    enabled: true
+    log_all_errors: true
+
+  # Checkpointing
+  checkpoints:
+    enabled: true
+    checkpoint_dir: state/runs/{run_id}/checkpoints
+
+  # Validation
+  validation:
+    fail_closed: true
+    allow_waivers: true
+    waiver_min_reason_length: 20
+
+  # ==========================================================================
+  # Phase 0.5 Enhancements - All flags default FALSE for backwards compat
+  # ==========================================================================
+
+  # Enforcement Flags (opt-in)
+  enforcement:
+    enforce_write_facade: false      # Route all writes through WriteFacade
+    enforce_finalization: false      # Require finalization before close
+    verify_hash_chain_on_close: false  # Verify hash chains on finalize
+    generate_run_checksums: false    # Generate checksums for all artifacts
+    run_finalization_required: false # Block run close without finalization
+
+  # Concurrency Settings
+  concurrency:
+    lock_timeout_seconds: 30         # Max wait for lock acquisition
+    lock_retry_count: 3              # Number of retry attempts
+    lock_retry_backoff:              # Exponential backoff delays (seconds)
+      - 0.1
+      - 0.5
+      - 2.0
+    max_parallel_tasks: 10           # Max concurrent tasks per batch
+    use_file_locking: true           # Use fcntl file locking
+    atomic_write_strategy: temp_rename  # temp_rename | direct
+
+  # Path Security
+  path_security:
+    max_path_length: 4096            # Maximum path length
+    disallow_absolute_paths: true    # Reject absolute paths in inputs
+    disallow_parent_traversal: true  # Reject .. in paths
+
+  # Environment Capture
+  environment:
+    env_capture_mode: allowlist      # allowlist | hash_only | none
+    env_allowlist:                   # Patterns to capture
+      - "ED4ALL_*"
+      - PATH
+      - HOME
+      - USER
+      - SHELL
+      - LANG
+      - LC_*
+    env_deny_patterns:               # Patterns to always exclude
+      - KEY
+      - TOKEN
+      - SECRET
+      - PASSWORD
+      - CREDENTIAL
+      - PRIVATE
+      - API_KEY
+    max_env_vars_captured: 50        # Safety limit
+
+  # Registry & Schema
+  registry:
+    registry_schema_version: "1.0.0"
+    required_tools: []               # Tools that must be registered
+    strict_signature_match: false    # Require exact signature match
+
+  # Phase 0.5 Features (opt-in)
+  phase_05:
+    enable_deterministic_replay: false  # Enable ReplayEngine
+    enable_artifact_dedup: false        # Enable content-addressed dedup
+    ci_integrity_test_enabled: false    # Enable CI integrity hook

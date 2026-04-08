@@ -1,0 +1,282 @@
+<!--
+    Template Name: Callout Box Template
+    Category: component
+    WCAG Compliance: 2.2 AA
+    Brightspace Compatible: Yes
+
+    Template Variables:
+    - {{CALLOUT_TYPE}}: info|warning|success|danger (required)
+    - {{CALLOUT_TITLE}}: Optional heading text
+    - {{CALLOUT_CONTENT}}: Main content (supports HTML)
+
+    Dependencies: None (self-contained)
+
+    Usage Notes:
+    - Uses both color AND icon to convey meaning (WCAG compliant)
+    - Supports all four semantic variants
+    - Content can include paragraphs, lists, links
+    - Remove title section if no heading needed
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Callout Component</title>
+    <style>
+        /* Courseforge CSS Variables */
+        :root {
+            --cf-primary: #2c5aa0;
+            --cf-success-dark: #1e7e34;
+            --cf-success-light: #d4edda;
+            --cf-success-border: #c3e6cb;
+            --cf-warning-dark: #856404;
+            --cf-warning-light: #fff3cd;
+            --cf-warning-border: #ffeaa7;
+            --cf-danger-dark: #721c24;
+            --cf-danger-light: #f8d7da;
+            --cf-danger-border: #f5c6cb;
+            --cf-info-dark: #0c5460;
+            --cf-info-light: #d1ecf1;
+            --cf-info-border: #bee5eb;
+            --cf-text: #212529;
+            --cf-border-radius: 8px;
+            --cf-border-radius-sm: 4px;
+            --cf-font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            --cf-space-4: 1rem;
+            --cf-space-5: 1.25rem;
+            --cf-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+        }
+
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: var(--cf-space-4);
+            font-family: var(--cf-font-family);
+            line-height: 1.6;
+            color: var(--cf-text);
+        }
+
+        /* ========================================
+           CALLOUT BASE STYLES
+           ======================================== */
+        .callout {
+            position: relative;
+            padding: var(--cf-space-5);
+            padding-left: 3.5rem;
+            margin: var(--cf-space-4) 0;
+            border-left: 4px solid;
+            border-radius: 0 var(--cf-border-radius) var(--cf-border-radius) 0;
+            box-shadow: var(--cf-shadow-sm);
+        }
+
+        .callout::before {
+            position: absolute;
+            left: var(--cf-space-4);
+            top: var(--cf-space-5);
+            font-size: 1.25rem;
+            line-height: 1;
+        }
+
+        .callout-title {
+            margin: 0 0 0.5rem 0;
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+
+        .callout-content {
+            margin: 0;
+        }
+
+        .callout-content p:last-child {
+            margin-bottom: 0;
+        }
+
+        .callout-content ul,
+        .callout-content ol {
+            margin-bottom: 0;
+            padding-left: 1.5rem;
+        }
+
+        /* ========================================
+           CALLOUT VARIANTS
+           ======================================== */
+
+        /* Info Callout */
+        .callout-info {
+            background-color: var(--cf-info-light);
+            border-color: var(--cf-info-dark);
+        }
+
+        .callout-info::before {
+            content: '\2139\FE0F'; /* Info icon */
+        }
+
+        .callout-info .callout-title {
+            color: var(--cf-info-dark);
+        }
+
+        /* Warning Callout */
+        .callout-warning {
+            background-color: var(--cf-warning-light);
+            border-color: var(--cf-warning-dark);
+        }
+
+        .callout-warning::before {
+            content: '\26A0\FE0F'; /* Warning icon */
+        }
+
+        .callout-warning .callout-title {
+            color: var(--cf-warning-dark);
+        }
+
+        /* Success Callout */
+        .callout-success {
+            background-color: var(--cf-success-light);
+            border-color: var(--cf-success-dark);
+        }
+
+        .callout-success::before {
+            content: '\2705'; /* Checkmark icon */
+        }
+
+        .callout-success .callout-title {
+            color: var(--cf-success-dark);
+        }
+
+        /* Danger Callout */
+        .callout-danger {
+            background-color: var(--cf-danger-light);
+            border-color: var(--cf-danger-dark);
+        }
+
+        .callout-danger::before {
+            content: '\1F6AB'; /* Prohibited icon */
+        }
+
+        .callout-danger .callout-title {
+            color: var(--cf-danger-dark);
+        }
+
+        /* ========================================
+           ACCESSIBILITY
+           ======================================== */
+        .callout a {
+            color: inherit;
+            text-decoration: underline;
+        }
+
+        .callout a:hover {
+            text-decoration: none;
+        }
+
+        .callout a:focus {
+            outline: 2px solid var(--cf-primary);
+            outline-offset: 2px;
+        }
+
+        /* Screen reader text for icons */
+        .callout-icon-label {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        /* ========================================
+           RESPONSIVE
+           ======================================== */
+        @media (max-width: 480px) {
+            .callout {
+                padding: var(--cf-space-4);
+                padding-left: 3rem;
+            }
+
+            .callout::before {
+                left: 0.75rem;
+                top: var(--cf-space-4);
+            }
+        }
+
+        /* ========================================
+           PRINT STYLES
+           ======================================== */
+        @media print {
+            .callout {
+                border: 1px solid #000;
+                background: none !important;
+                page-break-inside: avoid;
+            }
+
+            .callout::before {
+                content: none;
+            }
+
+            .callout-info::before { content: "[Info] "; position: static; }
+            .callout-warning::before { content: "[Important] "; position: static; }
+            .callout-success::before { content: "[Success] "; position: static; }
+            .callout-danger::before { content: "[Warning] "; position: static; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- INFO CALLOUT EXAMPLE -->
+    <div class="callout callout-{{CALLOUT_TYPE}}" role="note" aria-labelledby="callout-title-1">
+        <span class="callout-icon-label">{{CALLOUT_TYPE}} message</span>
+        <h4 id="callout-title-1" class="callout-title">{{CALLOUT_TITLE}}</h4>
+        <div class="callout-content">
+            {{CALLOUT_CONTENT}}
+        </div>
+    </div>
+
+    <!-- ========================================
+         USAGE EXAMPLES (Remove in production)
+         ======================================== -->
+    <!--
+    <h2>Callout Examples</h2>
+
+    <div class="callout callout-info" role="note" aria-labelledby="info-title">
+        <span class="callout-icon-label">Information</span>
+        <h4 id="info-title" class="callout-title">Helpful Tip</h4>
+        <div class="callout-content">
+            <p>This is an informational callout. Use it to highlight helpful tips, additional context, or supplementary information that enhances understanding.</p>
+        </div>
+    </div>
+
+    <div class="callout callout-warning" role="alert" aria-labelledby="warning-title">
+        <span class="callout-icon-label">Important notice</span>
+        <h4 id="warning-title" class="callout-title">Important Note</h4>
+        <div class="callout-content">
+            <p>This is a warning callout. Use it to highlight important information that requires attention but is not critical.</p>
+        </div>
+    </div>
+
+    <div class="callout callout-success" role="note" aria-labelledby="success-title">
+        <span class="callout-icon-label">Success message</span>
+        <h4 id="success-title" class="callout-title">Well Done!</h4>
+        <div class="callout-content">
+            <p>This is a success callout. Use it to confirm correct answers, completed tasks, or positive outcomes.</p>
+        </div>
+    </div>
+
+    <div class="callout callout-danger" role="alert" aria-labelledby="danger-title">
+        <span class="callout-icon-label">Critical warning</span>
+        <h4 id="danger-title" class="callout-title">Critical Warning</h4>
+        <div class="callout-content">
+            <p>This is a danger callout. Use it for critical warnings, common errors to avoid, or mandatory requirements.</p>
+        </div>
+    </div>
+    -->
+
+</body>
+</html>

@@ -1,0 +1,82 @@
+<!--
+    QTI True/False Question Template
+    cc_profile: cc.true_false.v0p1
+
+    Binary choice question with True/False options.
+    Uses response_lid with rcardinality="Single" and exactly 2 choices.
+
+    Placeholders:
+    - {ITEM_ID}: Unique item identifier
+    - {POINTS}: Question point value (cc_weighting)
+    - {QUESTION_TEXT}: HTML-escaped question text
+    - {RESPONSE_ID}: Unique response identifier
+    - {TRUE_ID}: Identifier for True option
+    - {FALSE_ID}: Identifier for False option
+    - {CORRECT_ANSWER_ID}: Either {TRUE_ID} or {FALSE_ID}
+    - {FEEDBACK}: General feedback text (HTML-escaped)
+-->
+      <item ident="{ITEM_ID}">
+        <itemmetadata>
+          <qtimetadata>
+            <qtimetadatafield>
+              <fieldlabel>cc_profile</fieldlabel>
+              <fieldentry>cc.true_false.v0p1</fieldentry>
+            </qtimetadatafield>
+            <qtimetadatafield>
+              <fieldlabel>cc_weighting</fieldlabel>
+              <fieldentry>{POINTS}</fieldentry>
+            </qtimetadatafield>
+          </qtimetadata>
+        </itemmetadata>
+        <presentation>
+          <material>
+            <mattext texttype="text/html">{QUESTION_TEXT}</mattext>
+          </material>
+          <response_lid ident="{RESPONSE_ID}" rcardinality="Single">
+            <render_choice>
+              <response_label ident="{TRUE_ID}">
+                <material>
+                  <mattext>True</mattext>
+                </material>
+              </response_label>
+              <response_label ident="{FALSE_ID}">
+                <material>
+                  <mattext>False</mattext>
+                </material>
+              </response_label>
+            </render_choice>
+          </response_lid>
+        </presentation>
+        <resprocessing>
+          <outcomes>
+            <decvar minvalue="0" maxvalue="100" varname="SCORE" vartype="Decimal"/>
+          </outcomes>
+          <respcondition continue="Yes">
+            <conditionvar>
+              <other/>
+            </conditionvar>
+            <displayfeedback feedbacktype="Response" linkrefid="general_fb"/>
+          </respcondition>
+          <respcondition continue="No">
+            <conditionvar>
+              <varequal respident="{RESPONSE_ID}">{CORRECT_ANSWER_ID}</varequal>
+            </conditionvar>
+            <setvar action="Set" varname="SCORE">100</setvar>
+            <displayfeedback feedbacktype="Response" linkrefid="correct_fb"/>
+          </respcondition>
+        </resprocessing>
+        <itemfeedback ident="general_fb">
+          <flow_mat>
+            <material>
+              <mattext texttype="text/html">{FEEDBACK}</mattext>
+            </material>
+          </flow_mat>
+        </itemfeedback>
+        <itemfeedback ident="correct_fb">
+          <flow_mat>
+            <material>
+              <mattext texttype="text/html">{CORRECT_FEEDBACK}</mattext>
+            </material>
+          </flow_mat>
+        </itemfeedback>
+      </item>

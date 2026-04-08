@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Test Page - Missing Alt Text</title>
+</head>
+<body>
+    <main>
+        <h1>Page with Missing Alt Text Issues</h1>
+
+        <p>This page demonstrates various alt text accessibility issues.</p>
+
+        <!-- Issue 1: Completely missing alt attribute -->
+        <h2>Images Missing Alt Attribute</h2>
+        <img src="image1.png">
+        <img src="image2.jpg">
+
+        <!-- Issue 2: Empty alt on informative image -->
+        <h2>Empty Alt on Informative Images</h2>
+        <img src="chart.png" alt="">
+        <img src="diagram.gif" alt="">
+
+        <!-- Issue 3: Non-descriptive alt text -->
+        <h2>Non-Descriptive Alt Text</h2>
+        <img src="photo.jpg" alt="image">
+        <img src="logo.png" alt="logo">
+        <img src="graph.png" alt="graph">
+
+        <!-- Issue 4: Alt text that just repeats filename -->
+        <h2>Alt Text Repeating Filename</h2>
+        <img src="network-diagram.png" alt="network-diagram.png">
+        <img src="flowchart_v2.jpg" alt="flowchart_v2.jpg">
+
+        <!-- Issue 5: Decorative images without proper handling -->
+        <h2>Decorative Images (should have alt="" but missing)</h2>
+        <img src="decorative-border.png">
+        <img src="background-pattern.gif">
+
+        <!-- Issue 6: Complex image without long description -->
+        <h2>Complex Image Without Description</h2>
+        <img src="complex-data-visualization.png" alt="Chart">
+
+        <p>End of test page.</p>
+    </main>
+</body>
+</html>

@@ -1,0 +1,612 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{MODULE_TITLE}} - {{COURSE_NAME}}</title>
+    <style>
+        /* Brightspace-compatible embedded styles - WCAG 2.2 AA compliant */
+        
+        /* Enhanced color palette based on academic template research */
+        :root {
+            --primary-color: #2c5aa0;        /* 4.5:1 contrast ratio */
+            --primary-hover: #1e3d6f;       /* Darker hover state */
+            --secondary-color: #6c757d;      /* 4.5:1 contrast ratio */
+            --success-color: #28a745;        /* 4.5:1 contrast ratio */
+            --success-light: #d4edda;       /* Success background */
+            --warning-color: #856404;        /* 4.5:1 contrast ratio on white */
+            --warning-light: #fff3cd;       /* Warning background */
+            --danger-color: #721c24;         /* 4.5:1 contrast ratio */
+            --danger-light: #f8d7da;        /* Danger background */
+            --info-color: #0c5460;          /* 4.5:1 contrast ratio */
+            --info-light: #e7f3ff;          /* Info background */
+            --light-bg: #f8f9fa;            /* Background color */
+            --dark-text: #212529;           /* High contrast text */
+            --border-color: #dee2e6;        /* Subtle borders */
+            --hover-shadow: 0 4px 8px rgba(0,0,0,0.12), 0 2px 4px rgba(0,0,0,0.08);
+            --focus-color: rgba(0, 102, 204, 0.6);
+            --border-radius: 8px;
+            --border-radius-sm: 4px;
+        }
+        
+        /* Reset and base styles */
+        * {
+            box-sizing: border-box;
+        }
+        
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            line-height: 1.6;
+            color: var(--dark-text);
+            background-color: white;
+        }
+        
+        /* Main container with course card layout support */
+        .lesson-container { 
+            max-width: 800px; 
+            margin: 0 auto; 
+            padding: 20px;
+        }
+        
+        /* Course card header with MIT OCW inspired design */
+        .course-card {
+            background: white;
+            border-radius: var(--border-radius);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 30px;
+            overflow: hidden;
+            transition: all 0.2s ease;
+        }
+        
+        .course-card:hover {
+            box-shadow: var(--hover-shadow);
+            transform: translateY(-2px);
+        }
+        
+        /* Enhanced module header with hero section */
+        .module-header {
+            background: linear-gradient(135deg, var(--primary-color) 0%, #4a90e2 100%);
+            color: white;
+            padding: 40px 30px;
+            border-radius: var(--border-radius);
+            margin-bottom: 30px;
+            text-align: center;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .module-header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><pattern id="grid" width="10" height="10" patternUnits="userSpaceOnUse"><path d="M 10 0 L 0 0 0 10" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="1"/></pattern></defs><rect width="100" height="100" fill="url(%23grid)"/></svg>') repeat;
+            opacity: 0.3;
+        }
+        
+        .module-header-content {
+            position: relative;
+            z-index: 1;
+        }
+        
+        .module-header h1 {
+            margin: 0 0 15px 0;
+            font-size: 2.25rem;
+            font-weight: 700;
+            text-shadow: 0 1px 3px rgba(0,0,0,0.3);
+            letter-spacing: -0.025em;
+        }
+        
+        .module-meta {
+            margin: 0;
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+        
+        /* Enhanced progress indicator with accessibility improvements */
+        /* Hidden per user request - tracking code preserved for LMS integration */
+        .progress-indicator {
+            display: none;
+            background-color: var(--light-bg);
+            padding: 20px;
+            border-radius: var(--border-radius);
+            margin-bottom: 30px;
+            border-left: 4px solid var(--info-color);
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        .progress-indicator h3 {
+            margin: 0 0 15px 0;
+            color: var(--info-color);
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+        
+        .progress-bar {
+            background-color: #e9ecef;
+            height: 10px;
+            border-radius: 5px;
+            overflow: hidden;
+            margin-bottom: 10px;
+            position: relative;
+        }
+        
+        .progress-fill {
+            background: linear-gradient(90deg, var(--success-color) 0%, #20c997 100%);
+            height: 100%;
+            border-radius: 5px;
+            transition: width 0.5s ease;
+            position: relative;
+        }
+        
+        .progress-fill::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            bottom: 0;
+            right: 0;
+            background: linear-gradient(45deg, transparent 33%, rgba(255,255,255,0.3) 33%, rgba(255,255,255,0.3) 66%, transparent 66%);
+            background-size: 30px 30px;
+            animation: progress-shine 2s linear infinite;
+        }
+        
+        @keyframes progress-shine {
+            0% { background-position: -30px 0; }
+            100% { background-position: 30px 0; }
+        }
+        
+        .progress-text {
+            margin: 0;
+            font-size: 0.9rem;
+            color: var(--secondary-color);
+        }
+        
+        /* Enhanced learning objectives with better visual hierarchy */
+        .learning-objectives {
+            background-color: var(--info-light);
+            border-left: 4px solid var(--info-color);
+            padding: 25px;
+            margin: 30px 0;
+            border-radius: 0 var(--border-radius) var(--border-radius) 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        
+        .learning-objectives::before {
+            content: '🎯';
+            font-size: 1.5rem;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+        
+        .learning-objectives h2 {
+            margin-top: 0;
+            color: var(--info-color);
+        }
+        
+        .learning-objectives ul {
+            margin-bottom: 0;
+        }
+        
+        .learning-objectives li {
+            margin: 8px 0;
+        }
+        
+        /* Content sections */
+        .content-section {
+            margin: 30px 0;
+        }
+        
+        .content-section h2 {
+            color: var(--primary-color);
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 8px;
+            margin-bottom: 20px;
+        }
+        
+        .content-section h3 {
+            color: var(--secondary-color);
+            margin-top: 25px;
+        }
+        
+        /* Enhanced special content boxes with icons and better accessibility */
+        .key-concept {
+            background-color: var(--warning-light);
+            border: 1px solid #ffeaa7;
+            border-left: 4px solid var(--warning-color);
+            padding: 25px;
+            border-radius: 0 var(--border-radius) var(--border-radius) 0;
+            margin: 25px 0;
+            position: relative;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        
+        .key-concept::before {
+            content: '💡';
+            font-size: 1.5rem;
+            position: absolute;
+            top: 15px;
+            left: 15px;
+        }
+        
+        .key-concept .content {
+            margin-left: 35px;
+        }
+        
+        .key-concept h3 {
+            margin-top: 0;
+            color: var(--warning-color);
+        }
+        
+        .example-box {
+            background-color: var(--success-light);
+            border: 1px solid #c3e6cb;
+            border-left: 4px solid var(--success-color);
+            padding: 25px;
+            border-radius: 0 var(--border-radius) var(--border-radius) 0;
+            margin: 25px 0;
+            position: relative;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        
+        .example-box::before {
+            content: '📝';
+            font-size: 1.5rem;
+            position: absolute;
+            top: 15px;
+            left: 15px;
+        }
+        
+        .example-box .content {
+            margin-left: 35px;
+        }
+        
+        .example-box h3 {
+            margin-top: 0;
+            color: var(--success-color);
+        }
+        
+        .important-note {
+            background-color: var(--danger-light);
+            border: 1px solid #f5c6cb;
+            border-left: 4px solid var(--danger-color);
+            padding: 25px;
+            border-radius: 0 var(--border-radius) var(--border-radius) 0;
+            margin: 25px 0;
+            position: relative;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        
+        .important-note::before {
+            content: '⚠️';
+            font-size: 1.5rem;
+            position: absolute;
+            top: 15px;
+            left: 15px;
+        }
+        
+        .important-note .content {
+            margin-left: 35px;
+        }
+        
+        .important-note h3 {
+            margin-top: 0;
+            color: var(--danger-color);
+        }
+        
+        /* Enhanced expandable sections with better visual design */
+        .expandable-section {
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius);
+            margin: 25px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            transition: all 0.2s ease;
+        }
+        
+        .expandable-section:hover {
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+        }
+        
+        .expandable-section summary {
+            background-color: var(--light-bg);
+            padding: 18px 20px;
+            cursor: pointer;
+            font-weight: 600;
+            border-radius: var(--border-radius) var(--border-radius) 0 0;
+            outline: none;
+            display: flex;
+            align-items: center;
+            transition: background-color 0.2s ease;
+        }
+        
+        .expandable-section summary::before {
+            content: '📚';
+            margin-right: 10px;
+            font-size: 1.2rem;
+        }
+        
+        .expandable-section summary:hover {
+            background-color: #e9ecef;
+        }
+        
+        .expandable-section summary:focus {
+            box-shadow: 0 0 0 3px var(--focus-color);
+            background-color: #e9ecef;
+        }
+        
+        .expandable-content {
+            padding: 20px;
+        }
+        
+        /* Enhanced navigation context with better UX */
+        .navigation-context {
+            background: linear-gradient(135deg, var(--light-bg) 0%, #f1f3f4 100%);
+            padding: 25px;
+            border-radius: var(--border-radius);
+            margin: 30px 0;
+            border: 1px solid var(--border-color);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }
+        
+        .navigation-context::before {
+            content: '🧭';
+            font-size: 1.5rem;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+        
+        .navigation-context h3 {
+            margin-top: 0;
+            color: var(--primary-color);
+        }
+        
+        .nav-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-top: 15px;
+        }
+        
+        .nav-item {
+            padding: 15px;
+            background-color: white;
+            border-radius: var(--border-radius-sm);
+            border: 1px solid var(--border-color);
+            transition: all 0.2s ease;
+            position: relative;
+        }
+        
+        .nav-item:hover {
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            transform: translateY(-1px);
+        }
+        
+        .nav-item::before {
+            content: '→';
+            color: var(--primary-color);
+            font-weight: bold;
+            margin-right: 8px;
+        }
+        
+        .nav-item strong {
+            color: var(--primary-color);
+        }
+        
+        /* Accessibility improvements */
+        .skip-link {
+            position: absolute;
+            top: -40px;
+            left: 6px;
+            background: var(--primary-color);
+            color: white;
+            padding: 8px;
+            text-decoration: none;
+            border-radius: 0 0 4px 4px;
+        }
+        
+        .skip-link:focus {
+            top: 0;
+        }
+        
+        /* Enhanced focus indicators with consistent design */
+        button:focus,
+        a:focus,
+        input:focus,
+        select:focus,
+        textarea:focus,
+        summary:focus,
+        .nav-item:focus {
+            outline: 3px solid var(--focus-color);
+            outline-offset: 2px;
+        }
+        
+        /* Focus-visible support for modern browsers */
+        button:focus-visible,
+        a:focus-visible,
+        input:focus-visible,
+        select:focus-visible,
+        textarea:focus-visible,
+        summary:focus-visible,
+        .nav-item:focus-visible {
+            outline: 3px solid var(--focus-color);
+            outline-offset: 2px;
+        }
+
+        /* WCAG 2.2 2.4.13 Focus Appearance - minimum 2px outline with 3:1 contrast */
+        :focus, :focus-visible {
+            outline: 2px solid var(--primary-color);
+            outline-offset: 2px;
+        }
+
+        /* WCAG 2.2 2.5.8 Target Size (Minimum) - 24x24 CSS pixels minimum */
+        button, a, input, select, textarea, summary, [role="button"], [tabindex="0"] {
+            min-height: 24px;
+            min-width: 24px;
+        }
+
+        /* WCAG 2.2 2.4.11/2.4.12 Focus Not Obscured - ensure focus is not hidden by sticky elements */
+        *:focus {
+            scroll-margin-top: 80px;
+            scroll-margin-bottom: 80px;
+        }
+        
+        /* Mobile responsiveness */
+        @media (max-width: 768px) {
+            .lesson-container {
+                padding: 15px;
+            }
+            
+            .module-header {
+                padding: 20px 15px;
+            }
+            
+            .module-header h1 {
+                font-size: 1.5rem;
+            }
+            
+            .nav-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .key-concept,
+            .example-box,
+            .important-note,
+            .learning-objectives {
+                padding: 15px;
+            }
+        }
+        
+        /* Print styles */
+        @media print {
+            .lesson-container {
+                max-width: none;
+                margin: 0;
+                padding: 0;
+            }
+            
+            .module-header {
+                background: white !important;
+                color: black !important;
+                border: 2px solid black;
+            }
+            
+            .progress-indicator {
+                display: none;
+            }
+            
+            .expandable-section[open] summary ~ * {
+                display: block !important;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Skip navigation for accessibility -->
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+    
+    <div class="lesson-container">
+        <!-- Enhanced module header with hero design -->
+        <header class="module-header">
+            <div class="module-header-content">
+                <h1>{{MODULE_TITLE}}</h1>
+                <p class="module-meta">{{COURSE_NAME}} | Module {{MODULE_NUMBER}} of {{TOTAL_MODULES}}</p>
+            </div>
+        </header>
+        
+        <!-- Enhanced progress indicator -->
+        <div class="progress-indicator">
+            <h3>Course Progress</h3>
+            <div class="progress-bar" role="progressbar" aria-valuenow="{{PROGRESS_PERCENTAGE}}" aria-valuemin="0" aria-valuemax="100" aria-label="Course completion progress">
+                <div class="progress-fill" style="width: {{PROGRESS_PERCENTAGE}}%"></div>
+            </div>
+            <p class="progress-text">{{PROGRESS_PERCENTAGE}}% Complete ({{COMPLETED_MODULES}} of {{TOTAL_MODULES}} modules)</p>
+        </div>
+        
+        <!-- Enhanced learning objectives -->
+        <section class="learning-objectives" aria-label="Learning Objectives" aria-labelledby="objectives-heading">
+            <h2 id="objectives-heading">Learning Objectives</h2>
+            <p><strong>By the end of this module, you will be able to:</strong></p>
+            <ul role="list">
+                <li role="listitem">{{OBJECTIVE_1}}</li>
+                <li role="listitem">{{OBJECTIVE_2}}</li>
+                <li role="listitem">{{OBJECTIVE_3}}</li>
+                <!-- Add more objectives as needed -->
+            </ul>
+        </section>
+        
+        <!-- Main content -->
+        <main id="main-content" class="content-section">
+            <h2>Introduction</h2>
+            <p>{{INTRODUCTION_CONTENT}}</p>
+            
+            <h2>Key Concepts</h2>
+            
+            <!-- Enhanced key concept box -->
+            <div class="key-concept" role="complementary" aria-label="Key Concept" aria-labelledby="concept1-title">
+                <div class="content">
+                    <h3 id="concept1-title">{{CONCEPT_1_TITLE}}</h3>
+                    <p>{{CONCEPT_1_CONTENT}}</p>
+                </div>
+            </div>
+
+            <!-- Enhanced example box -->
+            <div class="example-box" role="complementary" aria-label="Example" aria-labelledby="example-title">
+                <div class="content">
+                    <h3 id="example-title">Example: {{EXAMPLE_TITLE}}</h3>
+                    <p>{{EXAMPLE_CONTENT}}</p>
+                </div>
+            </div>
+
+            <!-- Enhanced important note -->
+            <div class="important-note" role="alert" aria-label="Important Note" aria-labelledby="important-title">
+                <div class="content">
+                    <h3 id="important-title">Important Note</h3>
+                    <p>{{IMPORTANT_NOTE_CONTENT}}</p>
+                </div>
+            </div>
+            
+            <h2>Detailed Content</h2>
+            <p>{{MAIN_CONTENT}}</p>
+            
+            <!-- Expandable additional resources -->
+            <details class="expandable-section">
+                <summary>Additional Resources (Click to expand)</summary>
+                <div class="expandable-content">
+                    <h4>Further Reading</h4>
+                    <ul>
+                        <li>{{RESOURCE_1}}</li>
+                        <li>{{RESOURCE_2}}</li>
+                        <li>{{RESOURCE_3}}</li>
+                    </ul>
+                </div>
+            </details>
+            
+            <h2>Summary</h2>
+            <p>{{SUMMARY_CONTENT}}</p>
+        </main>
+        
+        <!-- Enhanced navigation context -->
+        <nav class="navigation-context" aria-label="Course navigation">
+            <h3>Course Navigation</h3>
+            <div class="nav-grid" role="list">
+                <div class="nav-item" role="listitem" tabindex="0">
+                    <strong>Previous:</strong> {{PREVIOUS_MODULE_TITLE}}
+                </div>
+                <div class="nav-item" role="listitem" tabindex="0">
+                    <strong>Next:</strong> {{NEXT_MODULE_TITLE}}
+                </div>
+                <div class="nav-item" role="listitem" tabindex="0">
+                    <strong>Related:</strong> {{RELATED_CONTENT}}
+                </div>
+                <div class="nav-item" role="listitem" tabindex="0">
+                    <strong>Assignment:</strong> {{ASSIGNMENT_TITLE}}
+                </div>
+            </div>
+        </nav>
+    </div>
+</body>
+</html>

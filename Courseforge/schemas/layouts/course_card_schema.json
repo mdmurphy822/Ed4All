@@ -1,0 +1,731 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Course Card Layout Schema",
+  "description": "Schema defining course card layouts based on research from Bootstrap educational themes",
+  "version": "1.0.0",
+  "type": "object",
+  "properties": {
+    "cardLayout": {
+      "type": "object",
+      "properties": {
+        "framework": {
+          "type": "string",
+          "enum": ["Bootstrap_4.3.1", "Bootstrap_4.5", "Bootstrap_5.0"],
+          "default": "Bootstrap_4.3.1",
+          "description": "CSS framework version"
+        },
+        "containerType": {
+          "type": "string",
+          "enum": ["container", "container-fluid", "custom"],
+          "default": "container",
+          "description": "Container type for card layout"
+        },
+        "gridSystem": {
+          "type": "object",
+          "properties": {
+            "desktop": {
+              "type": "string",
+              "enum": ["col-lg-12", "col-lg-6", "col-lg-4", "col-lg-3"],
+              "default": "col-lg-4",
+              "description": "Desktop grid columns (≥992px)"
+            },
+            "tablet": {
+              "type": "string", 
+              "enum": ["col-md-12", "col-md-6", "col-md-4"],
+              "default": "col-md-6",
+              "description": "Tablet grid columns (≥768px)"
+            },
+            "mobile": {
+              "type": "string",
+              "enum": ["col-12", "col-6"],
+              "default": "col-12",
+              "description": "Mobile grid columns (<768px)"
+            }
+          }
+        }
+      }
+    },
+    "cardStructure": {
+      "type": "object",
+      "properties": {
+        "cardImage": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Include course image"
+            },
+            "position": {
+              "type": "string",
+              "enum": ["top", "left", "right", "background"],
+              "default": "top",
+              "description": "Image position in card"
+            },
+            "aspectRatio": {
+              "type": "string",
+              "enum": ["16:9", "4:3", "1:1", "3:2"],
+              "default": "16:9",
+              "description": "Image aspect ratio"
+            },
+            "placeholder": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Use placeholder when no image available"
+                },
+                "backgroundColor": {
+                  "type": "string",
+                  "default": "#f8f9fa",
+                  "description": "Placeholder background color"
+                },
+                "icon": {
+                  "type": "string",
+                  "default": "book",
+                  "description": "Placeholder icon"
+                }
+              }
+            },
+            "altText": {
+              "type": "object",
+              "properties": {
+                "required": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Alt text required for accessibility"
+                },
+                "format": {
+                  "type": "string",
+                  "default": "Course thumbnail for [Course Title]",
+                  "description": "Alt text format"
+                }
+              }
+            }
+          }
+        },
+        "cardHeader": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Include card header"
+            },
+            "courseTitle": {
+              "type": "object",
+              "properties": {
+                "htmlTag": {
+                  "type": "string",
+                  "enum": ["h2", "h3", "h4", "h5"],
+                  "default": "h3",
+                  "description": "HTML tag for course title"
+                },
+                "maxLength": {
+                  "type": "integer",
+                  "minimum": 20,
+                  "maximum": 100,
+                  "default": 60,
+                  "description": "Maximum title length for display"
+                },
+                "truncation": {
+                  "type": "string",
+                  "enum": ["ellipsis", "word-break", "none"],
+                  "default": "ellipsis",
+                  "description": "How to handle long titles"
+                }
+              }
+            },
+            "courseCode": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Display course code"
+                },
+                "position": {
+                  "type": "string",
+                  "enum": ["above-title", "below-title", "badge"],
+                  "default": "badge",
+                  "description": "Course code position"
+                },
+                "styling": {
+                  "type": "string",
+                  "enum": ["badge-primary", "badge-secondary", "text-muted", "small"],
+                  "default": "badge-secondary",
+                  "description": "Course code styling"
+                }
+              }
+            }
+          }
+        },
+        "cardBody": {
+          "type": "object",
+          "properties": {
+            "courseDescription": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Include course description"
+                },
+                "maxLength": {
+                  "type": "integer",
+                  "minimum": 50,
+                  "maximum": 300,
+                  "default": 120,
+                  "description": "Maximum description length"
+                },
+                "truncation": {
+                  "type": "string",
+                  "enum": ["ellipsis", "fade-out", "read-more"],
+                  "default": "ellipsis",
+                  "description": "How to handle long descriptions"
+                }
+              }
+            },
+            "metadata": {
+              "type": "object",
+              "properties": {
+                "duration": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Show course duration"
+                    },
+                    "format": {
+                      "type": "string",
+                      "default": "[X] weeks",
+                      "description": "Duration format"
+                    },
+                    "icon": {
+                      "type": "string",
+                      "default": "clock",
+                      "description": "Duration icon"
+                    }
+                  }
+                },
+                "difficulty": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Show difficulty level"
+                    },
+                    "levels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": ["Beginner", "Intermediate", "Advanced", "Expert"]
+                      },
+                      "description": "Available difficulty levels"
+                    },
+                    "display": {
+                      "type": "string",
+                      "enum": ["text", "stars", "badge", "progress"],
+                      "default": "badge",
+                      "description": "How to display difficulty"
+                    }
+                  }
+                },
+                "credits": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "default": false,
+                      "description": "Show credit hours"
+                    },
+                    "format": {
+                      "type": "string",
+                      "default": "[X] credits",
+                      "description": "Credits format"
+                    }
+                  }
+                },
+                "instructor": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Show instructor name"
+                    },
+                    "format": {
+                      "type": "string",
+                      "enum": ["name-only", "title-name", "name-title", "avatar-name"],
+                      "default": "name-only",
+                      "description": "Instructor display format"
+                    },
+                    "avatar": {
+                      "type": "object",
+                      "properties": {
+                        "enabled": {
+                          "type": "boolean",
+                          "default": false,
+                          "description": "Show instructor avatar"
+                        },
+                        "size": {
+                          "type": "string",
+                          "enum": ["sm", "md", "lg"],
+                          "default": "sm",
+                          "description": "Avatar size"
+                        },
+                        "placeholder": {
+                          "type": "string",
+                          "default": "initials",
+                          "description": "Avatar placeholder when no image"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "progressTracking": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Show course progress"
+                },
+                "style": {
+                  "type": "string",
+                  "enum": ["progress-bar", "circular", "percentage", "steps"],
+                  "default": "progress-bar",
+                  "description": "Progress display style"
+                },
+                "showPercentage": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Show percentage completion"
+                },
+                "colors": {
+                  "type": "object",
+                  "properties": {
+                    "notStarted": {
+                      "type": "string",
+                      "default": "#e9ecef",
+                      "description": "Color for not started"
+                    },
+                    "inProgress": {
+                      "type": "string",
+                      "default": "#ffc107",
+                      "description": "Color for in progress"
+                    },
+                    "completed": {
+                      "type": "string",
+                      "default": "#28a745",
+                      "description": "Color for completed"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "cardFooter": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Include card footer"
+            },
+            "callToAction": {
+              "type": "object",
+              "properties": {
+                "button": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Include CTA button"
+                    },
+                    "text": {
+                      "type": "object",
+                      "properties": {
+                        "notStarted": {
+                          "type": "string",
+                          "default": "Start Course",
+                          "description": "Button text when not started"
+                        },
+                        "inProgress": {
+                          "type": "string",
+                          "default": "Continue Learning",
+                          "description": "Button text when in progress"
+                        },
+                        "completed": {
+                          "type": "string",
+                          "default": "Review Course",
+                          "description": "Button text when completed"
+                        }
+                      }
+                    },
+                    "style": {
+                      "type": "object",
+                      "properties": {
+                        "notStarted": {
+                          "type": "string",
+                          "default": "btn-primary",
+                          "description": "Button style when not started"
+                        },
+                        "inProgress": {
+                          "type": "string",
+                          "default": "btn-warning",
+                          "description": "Button style when in progress"
+                        },
+                        "completed": {
+                          "type": "string",
+                          "default": "btn-success",
+                          "description": "Button style when completed"
+                        }
+                      }
+                    },
+                    "size": {
+                      "type": "string",
+                      "enum": ["btn-sm", "btn-md", "btn-lg"],
+                      "default": "btn-md",
+                      "description": "Button size"
+                    },
+                    "fullWidth": {
+                      "type": "boolean",
+                      "default": true,
+                      "description": "Full width button"
+                    }
+                  }
+                }
+              }
+            },
+            "tags": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Show course tags"
+                },
+                "maxTags": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 5,
+                  "default": 3,
+                  "description": "Maximum number of tags to display"
+                },
+                "style": {
+                  "type": "string",
+                  "enum": ["badge-light", "badge-outline", "pill"],
+                  "default": "badge-light",
+                  "description": "Tag display style"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "interactiveFeatures": {
+      "type": "object",
+      "properties": {
+        "hoverEffects": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Enable hover effects"
+            },
+            "animation": {
+              "type": "string",
+              "enum": ["lift", "scale", "glow", "border", "none"],
+              "default": "lift",
+              "description": "Hover animation type"
+            },
+            "duration": {
+              "type": "string",
+              "default": "0.2s",
+              "description": "Animation duration"
+            },
+            "shadow": {
+              "type": "object",
+              "properties": {
+                "enabled": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Add shadow on hover"
+                },
+                "style": {
+                  "type": "string",
+                  "default": "0 4px 8px rgba(0,0,0,0.12), 0 2px 4px rgba(0,0,0,0.08)",
+                  "description": "CSS shadow style"
+                }
+              }
+            }
+          }
+        },
+        "clickableArea": {
+          "type": "object",
+          "properties": {
+            "fullCard": {
+              "type": "boolean",
+              "default": false,
+              "description": "Make entire card clickable (note: may not work in Brightspace)"
+            },
+            "buttonOnly": {
+              "type": "boolean",
+              "default": true,
+              "description": "Only button is clickable (recommended for Brightspace)"
+            }
+          }
+        },
+        "keyboardNavigation": {
+          "type": "object",
+          "properties": {
+            "tabOrder": {
+              "type": "boolean",
+              "default": true,
+              "description": "Logical tab order through cards"
+            },
+            "focusIndicator": {
+              "type": "object",
+              "properties": {
+                "style": {
+                  "type": "string",
+                  "default": "3px solid rgba(0, 102, 204, 0.6)",
+                  "description": "Focus indicator style"
+                },
+                "offset": {
+                  "type": "string",
+                  "default": "2px",
+                  "description": "Focus indicator offset"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "responsiveDesign": {
+      "type": "object",
+      "properties": {
+        "breakpoints": {
+          "type": "object",
+          "properties": {
+            "mobile": {
+              "type": "object",
+              "properties": {
+                "cardSpacing": {
+                  "type": "string",
+                  "default": "mb-4",
+                  "description": "Spacing between cards on mobile"
+                },
+                "imageSize": {
+                  "type": "string",
+                  "enum": ["small", "medium", "large"],
+                  "default": "medium",
+                  "description": "Image size on mobile"
+                },
+                "stackedLayout": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Stack cards vertically on mobile"
+                }
+              }
+            },
+            "tablet": {
+              "type": "object",
+              "properties": {
+                "cardsPerRow": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 3,
+                  "default": 2,
+                  "description": "Cards per row on tablet"
+                },
+                "cardSpacing": {
+                  "type": "string",
+                  "default": "mb-4",
+                  "description": "Spacing between cards on tablet"
+                }
+              }
+            },
+            "desktop": {
+              "type": "object",
+              "properties": {
+                "cardsPerRow": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 4,
+                  "default": 3,
+                  "description": "Cards per row on desktop"
+                },
+                "cardSpacing": {
+                  "type": "string",
+                  "default": "mb-4",
+                  "description": "Spacing between cards on desktop"
+                }
+              }
+            }
+          }
+        },
+        "adaptiveContent": {
+          "type": "object",
+          "properties": {
+            "hideOnMobile": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": ["instructor", "duration", "difficulty", "tags", "description"]
+              },
+              "description": "Elements to hide on mobile devices"
+            },
+            "truncateOnMobile": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "integer",
+                  "default": 40,
+                  "description": "Title character limit on mobile"
+                },
+                "description": {
+                  "type": "integer",
+                  "default": 80,
+                  "description": "Description character limit on mobile"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "accessibility": {
+      "type": "object",
+      "properties": {
+        "ariaLabels": {
+          "type": "object",
+          "properties": {
+            "card": {
+              "type": "string",
+              "default": "Course card for [Course Title]",
+              "description": "ARIA label for entire card"
+            },
+            "image": {
+              "type": "string",
+              "default": "Course thumbnail for [Course Title]",
+              "description": "Alt text for course image"
+            },
+            "progress": {
+              "type": "string",
+              "default": "[X]% complete",
+              "description": "ARIA label for progress indicator"
+            },
+            "button": {
+              "type": "string",
+              "default": "[Action] [Course Title]",
+              "description": "ARIA label for CTA button"
+            }
+          }
+        },
+        "semanticStructure": {
+          "type": "object",
+          "properties": {
+            "useArticle": {
+              "type": "boolean",
+              "default": true,
+              "description": "Wrap card content in <article> element"
+            },
+            "headingLevel": {
+              "type": "string",
+              "enum": ["h2", "h3", "h4", "h5"],
+              "default": "h3",
+              "description": "Heading level for course title"
+            },
+            "landmarkRole": {
+              "type": "string",
+              "enum": ["article", "region", "none"],
+              "default": "article",
+              "description": "ARIA landmark role for card"
+            }
+          }
+        },
+        "colorContrast": {
+          "type": "object",
+          "properties": {
+            "minimumRatio": {
+              "type": "number",
+              "minimum": 4.5,
+              "default": 4.5,
+              "description": "Minimum color contrast ratio"
+            },
+            "textColors": {
+              "type": "object",
+              "properties": {
+                "title": {
+                  "type": "string",
+                  "default": "#212529",
+                  "description": "Title text color (high contrast)"
+                },
+                "description": {
+                  "type": "string",
+                  "default": "#495057",
+                  "description": "Description text color"
+                },
+                "metadata": {
+                  "type": "string",
+                  "default": "#6c757d",
+                  "description": "Metadata text color"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "brighspaceCompatibility": {
+      "type": "object",
+      "properties": {
+        "embeddedCSS": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use embedded CSS for Brightspace compatibility"
+        },
+        "noExternalLinks": {
+          "type": "boolean",
+          "default": true,
+          "description": "Avoid external links (Brightspace strips them)"
+        },
+        "selfContained": {
+          "type": "boolean",
+          "default": true,
+          "description": "Each card must be self-contained"
+        },
+        "printFriendly": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include print-friendly styles"
+        },
+        "mobileCompatible": {
+          "type": "boolean",
+          "default": true,
+          "description": "Mobile-compatible within Brightspace app"
+        }
+      }
+    }
+  },
+  "required": [
+    "cardLayout",
+    "cardStructure", 
+    "interactiveFeatures",
+    "responsiveDesign",
+    "accessibility",
+    "brighspaceCompatibility"
+  ]
+}

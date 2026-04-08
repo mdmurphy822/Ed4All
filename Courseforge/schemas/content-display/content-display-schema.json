@@ -1,0 +1,276 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Course Content Display Standards",
+  "description": "Schema defining how course content should be displayed on web pages, including paragraph structure, key term highlighting, and interactive elements",
+  "type": "object",
+  "properties": {
+    "pageStructure": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "object",
+          "properties": {
+            "format": {
+              "type": "string",
+              "enum": ["Module [Number]: [Title]", "Week [Number]: [Topic]", "[Course Code] - [Module Title]"],
+              "description": "Standard format for page titles"
+            },
+            "htmlTag": {
+              "type": "string",
+              "enum": ["h1"],
+              "description": "HTML tag for main page title"
+            },
+            "cssClass": {
+              "type": "string",
+              "default": "module-title",
+              "description": "CSS class for styling the page title"
+            }
+          },
+          "required": ["format", "htmlTag"]
+        },
+        "introduction": {
+          "type": "object",
+          "properties": {
+            "purpose": {
+              "type": "string",
+              "description": "Brief overview paragraph explaining the module content and objectives"
+            },
+            "structure": {
+              "type": "string",
+              "enum": ["single-paragraph", "bullet-points", "accordion"],
+              "description": "How introduction content should be structured"
+            }
+          }
+        },
+        "contentSections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/contentSection"
+          }
+        }
+      },
+      "required": ["title", "introduction", "contentSections"]
+    },
+    "paragraphStructure": {
+      "type": "object",
+      "properties": {
+        "maxLength": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 300,
+          "description": "Maximum recommended paragraph length in words"
+        },
+        "minLength": {
+          "type": "integer",
+          "minimum": 50,
+          "maximum": 150,
+          "description": "Minimum paragraph length in words"
+        },
+        "cssClass": {
+          "type": "string",
+          "default": "content-paragraph",
+          "description": "CSS class for standard paragraphs"
+        },
+        "lineHeight": {
+          "type": "string",
+          "default": "1.6",
+          "description": "Line height for readability"
+        }
+      }
+    },
+    "keyTermHighlighting": {
+      "type": "object",
+      "properties": {
+        "highlightMethod": {
+          "type": "string",
+          "enum": ["bold", "colored", "accordion", "tooltip", "modal"],
+          "description": "Method for highlighting key terms"
+        },
+        "accordionStyle": {
+          "type": "object",
+          "properties": {
+            "framework": {
+              "type": "string",
+              "enum": ["bootstrap-4.3.1"],
+              "description": "CSS framework for accordion implementation"
+            },
+            "expandIcon": {
+              "type": "string",
+              "default": "chevron-right",
+              "description": "Icon used for collapsed state"
+            },
+            "collapseIcon": {
+              "type": "string",
+              "default": "chevron-down", 
+              "description": "Icon used for expanded state"
+            },
+            "animationDuration": {
+              "type": "string",
+              "default": "0.3s",
+              "description": "CSS animation duration for expand/collapse"
+            }
+          }
+        },
+        "keyTermDefinition": {
+          "type": "object",
+          "properties": {
+            "maxLength": {
+              "type": "integer",
+              "minimum": 50,
+              "maximum": 200,
+              "description": "Maximum length for key term definitions"
+            },
+            "includeExample": {
+              "type": "boolean",
+              "default": true,
+              "description": "Whether to include usage examples"
+            }
+          }
+        }
+      },
+      "required": ["highlightMethod"]
+    },
+    "interactiveElements": {
+      "type": "object",
+      "properties": {
+        "expandCollapseAll": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Enable expand/collapse all functionality"
+            },
+            "buttonText": {
+              "type": "object",
+              "properties": {
+                "expandAll": {
+                  "type": "string",
+                  "default": "Expand All",
+                  "description": "Text for expand all button"
+                },
+                "collapseAll": {
+                  "type": "string",
+                  "default": "Collapse All",
+                  "description": "Text for collapse all button"
+                }
+              }
+            }
+          }
+        },
+        "progressIndicator": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Show progress through content sections"
+            },
+            "style": {
+              "type": "string",
+              "enum": ["progress-bar", "breadcrumb", "step-indicator"],
+              "description": "Visual style for progress indicator"
+            }
+          }
+        }
+      }
+    },
+    "accessibilityRequirements": {
+      "type": "object",
+      "properties": {
+        "wcagLevel": {
+          "type": "string",
+          "enum": ["AA", "AAA"],
+          "default": "AA",
+          "description": "WCAG compliance level"
+        },
+        "keyboardNavigation": {
+          "type": "boolean",
+          "default": true,
+          "description": "Full keyboard navigation support required"
+        },
+        "screenReaderSupport": {
+          "type": "boolean",
+          "default": true,
+          "description": "Screen reader compatibility required"
+        },
+        "ariaLabels": {
+          "type": "object",
+          "properties": {
+            "required": {
+              "type": "boolean",
+              "default": true,
+              "description": "ARIA labels required for interactive elements"
+            },
+            "descriptiveText": {
+              "type": "boolean",
+              "default": true,
+              "description": "Descriptive text for complex interactions"
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "contentSection": {
+      "type": "object",
+      "properties": {
+        "sectionTitle": {
+          "type": "string",
+          "description": "Title of the content section"
+        },
+        "sectionType": {
+          "type": "string",
+          "enum": ["learning-objectives", "content", "activities", "assessment", "summary"],
+          "description": "Type of content section"
+        },
+        "displayStyle": {
+          "type": "string",
+          "enum": ["accordion", "tabbed", "linear", "card"],
+          "description": "How the section should be displayed"
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": ["paragraph", "list", "image", "video", "interactive"]
+              },
+              "text": {
+                "type": "string",
+                "description": "Text content"
+              },
+              "keyTerms": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "term": {
+                      "type": "string",
+                      "description": "The key term"
+                    },
+                    "definition": {
+                      "type": "string",
+                      "description": "Definition of the key term"
+                    },
+                    "example": {
+                      "type": "string",
+                      "description": "Usage example (optional)"
+                    }
+                  },
+                  "required": ["term", "definition"]
+                }
+              }
+            },
+            "required": ["type", "text"]
+          }
+        }
+      },
+      "required": ["sectionTitle", "sectionType", "displayStyle", "content"]
+    }
+  },
+  "required": ["pageStructure", "paragraphStructure", "keyTermHighlighting", "accessibilityRequirements"]
+}

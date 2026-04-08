@@ -1,0 +1,232 @@
+/*
+ * High Contrast Theme for Courseforge
+ * ====================================
+ * WCAG 2.2 AAA compliant color scheme
+ * Minimum 7:1 contrast ratio for all text
+ *
+ * Usage: Add this CSS after your template styles to override
+ * default colors with high contrast alternatives.
+ */
+
+:root {
+    /* ========================================
+       HIGH CONTRAST COLOR PALETTE
+       All combinations meet WCAG AAA (7:1+)
+       ======================================== */
+
+    /* Primary Colors - High Contrast */
+    --cf-primary: #003366;           /* Dark navy - 12.6:1 on white */
+    --cf-primary-dark: #001a33;      /* Darker navy */
+    --cf-primary-light: #cce0ff;     /* Light blue background */
+    --cf-primary-hover: #002244;
+
+    /* Text Colors */
+    --cf-text: #000000;              /* Pure black - 21:1 */
+    --cf-text-muted: #333333;        /* Dark gray - 12.6:1 */
+    --cf-text-inverse: #ffffff;      /* White on dark backgrounds */
+
+    /* Background Colors */
+    --cf-background: #ffffff;
+    --cf-background-alt: #f0f0f0;    /* Light gray - distinct from white */
+
+    /* Semantic Colors - High Contrast Variants */
+    --cf-success: #006600;           /* Dark green - 7.8:1 on white */
+    --cf-success-dark: #004400;
+    --cf-success-light: #ccffcc;
+    --cf-success-border: #006600;
+
+    --cf-warning: #664400;           /* Dark amber - 8.6:1 on white */
+    --cf-warning-dark: #553300;
+    --cf-warning-light: #fff0cc;
+    --cf-warning-border: #664400;
+
+    --cf-danger: #990000;            /* Dark red - 7.0:1 on white */
+    --cf-danger-dark: #660000;
+    --cf-danger-light: #ffcccc;
+    --cf-danger-border: #990000;
+
+    --cf-info: #004466;              /* Dark teal - 9.4:1 on white */
+    --cf-info-dark: #003355;
+    --cf-info-light: #ccf2ff;
+    --cf-info-border: #004466;
+
+    /* Borders - More visible */
+    --cf-border: #666666;
+    --cf-border-light: #999999;
+
+    /* Focus - Highly visible */
+    --cf-focus-color: #ff6600;       /* Orange - high visibility */
+    --cf-focus-ring: 0 0 0 4px #ff6600;
+}
+
+/* ========================================
+   ENHANCED FOCUS INDICATORS
+   ======================================== */
+a:focus,
+button:focus,
+input:focus,
+select:focus,
+textarea:focus,
+[tabindex]:focus,
+summary:focus {
+    outline: 4px solid var(--cf-focus-color) !important;
+    outline-offset: 2px !important;
+}
+
+/* Focus visible for keyboard users */
+:focus-visible {
+    outline: 4px solid var(--cf-focus-color) !important;
+    outline-offset: 2px !important;
+}
+
+/* ========================================
+   LINK ENHANCEMENTS
+   ======================================== */
+a {
+    color: var(--cf-primary);
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+    text-underline-offset: 3px;
+}
+
+a:hover {
+    color: var(--cf-primary-dark);
+    background-color: var(--cf-primary-light);
+}
+
+a:visited {
+    color: #551a8b;                  /* Standard visited purple - 7.1:1 */
+}
+
+/* ========================================
+   ENHANCED BORDERS
+   ======================================== */
+.callout,
+.card,
+.accordion-item,
+.self-check,
+.reveal-box,
+.inline-quiz,
+.timeline-card,
+.progress-container {
+    border-width: 2px !important;
+    border-color: var(--cf-border) !important;
+}
+
+/* ========================================
+   CALLOUT HIGH CONTRAST OVERRIDES
+   ======================================== */
+.callout-info {
+    border-color: var(--cf-info) !important;
+    border-left-width: 6px !important;
+}
+
+.callout-warning {
+    border-color: var(--cf-warning) !important;
+    border-left-width: 6px !important;
+}
+
+.callout-success {
+    border-color: var(--cf-success) !important;
+    border-left-width: 6px !important;
+}
+
+.callout-danger {
+    border-color: var(--cf-danger) !important;
+    border-left-width: 6px !important;
+}
+
+/* ========================================
+   BUTTON ENHANCEMENTS
+   ======================================== */
+button,
+.btn,
+[role="button"] {
+    border: 2px solid currentColor !important;
+}
+
+button:hover,
+.btn:hover,
+[role="button"]:hover {
+    text-decoration: underline;
+}
+
+/* ========================================
+   FORM CONTROL ENHANCEMENTS
+   ======================================== */
+input,
+select,
+textarea {
+    border: 2px solid var(--cf-border) !important;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+    border-color: var(--cf-primary) !important;
+}
+
+/* Radio and checkbox larger targets */
+input[type="radio"],
+input[type="checkbox"] {
+    width: 24px !important;
+    height: 24px !important;
+}
+
+/* ========================================
+   TABLE ENHANCEMENTS
+   ======================================== */
+table {
+    border: 2px solid var(--cf-text) !important;
+}
+
+th,
+td {
+    border: 1px solid var(--cf-border) !important;
+}
+
+th {
+    background-color: var(--cf-background-alt) !important;
+}
+
+/* ========================================
+   PROGRESS INDICATOR ENHANCEMENTS
+   ======================================== */
+.progress-bar {
+    border: 2px solid var(--cf-border) !important;
+}
+
+.progress-fill {
+    background: var(--cf-primary) !important;
+}
+
+.step-circle {
+    border-width: 4px !important;
+}
+
+/* ========================================
+   ICON/SYMBOL CONTRAST
+   ======================================== */
+[aria-hidden="true"] {
+    /* Ensure decorative icons have sufficient contrast */
+    color: var(--cf-text);
+}
+
+/* ========================================
+   SELECTION HIGHLIGHT
+   ======================================== */
+::selection {
+    background-color: var(--cf-primary);
+    color: var(--cf-text-inverse);
+}
+
+/* ========================================
+   PRINT OPTIMIZATIONS
+   ======================================== */
+@media print {
+    * {
+        color: #000 !important;
+        background: #fff !important;
+        border-color: #000 !important;
+    }
+}

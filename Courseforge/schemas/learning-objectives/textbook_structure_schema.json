@@ -1,0 +1,364 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Textbook Structure Schema",
+  "description": "Schema for the intermediate representation of semantic structure extracted from DART-processed HTML",
+  "version": "1.0.0",
+  "type": "object",
+  "properties": {
+    "documentInfo": {
+      "type": "object",
+      "description": "Information about the source document",
+      "properties": {
+        "title": {
+          "type": "string",
+          "description": "Document title"
+        },
+        "sourcePath": {
+          "type": "string",
+          "description": "Path to the source HTML file"
+        },
+        "sourceFormat": {
+          "type": "string",
+          "enum": ["dart_html", "imscc_html", "generic_html"],
+          "description": "Format of the source file"
+        },
+        "extractionTimestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When extraction was performed"
+        },
+        "metadata": {
+          "type": "object",
+          "description": "Additional document metadata",
+          "properties": {
+            "authors": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "description": { "type": "string" },
+            "keywords": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "language": {
+              "type": "string",
+              "default": "en"
+            }
+          }
+        }
+      },
+      "required": ["title", "sourcePath", "sourceFormat"]
+    },
+    "tableOfContents": {
+      "type": "array",
+      "description": "Extracted table of contents structure",
+      "items": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 6,
+            "description": "Heading level (1-6)"
+          },
+          "text": {
+            "type": "string",
+            "description": "Heading text"
+          },
+          "id": {
+            "type": "string",
+            "description": "Element ID for linking"
+          },
+          "children": {
+            "type": "array",
+            "items": { "$ref": "#/properties/tableOfContents/items" }
+          }
+        },
+        "required": ["level", "text"]
+      }
+    },
+    "chapters": {
+      "type": "array",
+      "description": "Extracted chapter/major section content",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique identifier for this chapter"
+          },
+          "headingLevel": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 6
+          },
+          "headingText": {
+            "type": "string",
+            "description": "Chapter heading text"
+          },
+          "headingId": {
+            "type": "string",
+            "description": "HTML element ID"
+          },
+          "explicitObjectives": {
+            "type": "array",
+            "description": "Learning objectives explicitly stated in the content",
+            "items": {
+              "type": "object",
+              "properties": {
+                "text": { "type": "string" },
+                "source": {
+                  "type": "string",
+                  "enum": ["objectives_section", "introduction", "inline"],
+                  "description": "Where the objective was found"
+                }
+              },
+              "required": ["text"]
+            }
+          },
+          "contentBlocks": {
+            "type": "array",
+            "description": "Content blocks within this chapter",
+            "items": { "$ref": "#/definitions/contentBlock" }
+          },
+          "sections": {
+            "type": "array",
+            "description": "Nested sections within the chapter",
+            "items": { "$ref": "#/definitions/section" }
+          }
+        },
+        "required": ["id", "headingText", "contentBlocks"]
+      }
+    },
+    "extractedConcepts": {
+      "type": "object",
+      "description": "All concepts extracted from the document",
+      "properties": {
+        "definitions": {
+          "type": "array",
+          "description": "Extracted term definitions",
+          "items": {
+            "type": "object",
+            "properties": {
+              "term": {
+                "type": "string",
+                "description": "The term being defined"
+              },
+              "definition": {
+                "type": "string",
+                "description": "The definition text"
+              },
+              "sourceType": {
+                "type": "string",
+                "enum": ["dl_element", "strong_colon", "inline_definition", "glossary"],
+                "description": "How the definition was formatted"
+              },
+              "chapterId": {
+                "type": "string",
+                "description": "Chapter where definition appears"
+              },
+              "sectionId": {
+                "type": "string",
+                "description": "Section where definition appears"
+              }
+            },
+            "required": ["term", "definition"]
+          }
+        },
+        "keyTerms": {
+          "type": "array",
+          "description": "Important terms identified by emphasis",
+          "items": {
+            "type": "object",
+            "properties": {
+              "term": { "type": "string" },
+              "context": {
+                "type": "string",
+                "description": "Surrounding text context"
+              },
+              "emphasisType": {
+                "type": "string",
+                "enum": ["strong", "em", "heading", "callout"]
+              },
+              "chapterId": { "type": "string" },
+              "sectionId": { "type": "string" }
+            },
+            "required": ["term"]
+          }
+        },
+        "procedures": {
+          "type": "array",
+          "description": "Step-by-step procedures extracted",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Name/title of the procedure"
+              },
+              "steps": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Ordered steps"
+              },
+              "context": {
+                "type": "string",
+                "description": "When/why to use this procedure"
+              },
+              "chapterId": { "type": "string" },
+              "sectionId": { "type": "string" }
+            },
+            "required": ["name", "steps"]
+          }
+        },
+        "examples": {
+          "type": "array",
+          "description": "Examples and case studies",
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": { "type": "string" },
+              "content": { "type": "string" },
+              "relatedConcept": { "type": "string" },
+              "chapterId": { "type": "string" },
+              "sectionId": { "type": "string" }
+            },
+            "required": ["content"]
+          }
+        }
+      }
+    },
+    "reviewQuestions": {
+      "type": "array",
+      "description": "Review/assessment questions found in the content",
+      "items": {
+        "type": "object",
+        "properties": {
+          "question": { "type": "string" },
+          "chapterId": { "type": "string" },
+          "sectionId": { "type": "string" },
+          "bloomLevel": {
+            "type": "string",
+            "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create"],
+            "description": "Inferred Bloom's level from question wording"
+          }
+        },
+        "required": ["question"]
+      }
+    }
+  },
+  "definitions": {
+    "contentBlock": {
+      "type": "object",
+      "description": "A semantic unit of content",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier"
+        },
+        "blockType": {
+          "type": "string",
+          "enum": [
+            "paragraph",
+            "heading",
+            "list_ordered",
+            "list_unordered",
+            "definition_list",
+            "table",
+            "figure",
+            "callout_info",
+            "callout_warning",
+            "callout_note",
+            "code_block",
+            "blockquote",
+            "example",
+            "summary"
+          ],
+          "description": "Type of content block"
+        },
+        "content": {
+          "type": "string",
+          "description": "Text content (may include inline HTML)"
+        },
+        "listItems": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "For list blocks, the individual items"
+        },
+        "tableData": {
+          "type": "object",
+          "description": "For table blocks, structured table data",
+          "properties": {
+            "caption": { "type": "string" },
+            "headers": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "rows": {
+              "type": "array",
+              "items": {
+                "type": "array",
+                "items": { "type": "string" }
+              }
+            }
+          }
+        },
+        "figureData": {
+          "type": "object",
+          "description": "For figure blocks",
+          "properties": {
+            "src": { "type": "string" },
+            "alt": { "type": "string" },
+            "caption": { "type": "string" }
+          }
+        },
+        "containsDefinitions": {
+          "type": "boolean",
+          "description": "Whether this block contains term definitions"
+        },
+        "containsKeyTerms": {
+          "type": "boolean",
+          "description": "Whether this block contains emphasized key terms"
+        },
+        "wordCount": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Word count of the content"
+        }
+      },
+      "required": ["id", "blockType"]
+    },
+    "section": {
+      "type": "object",
+      "description": "A section within a chapter",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique section identifier"
+        },
+        "headingLevel": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 6
+        },
+        "headingText": {
+          "type": "string"
+        },
+        "headingId": {
+          "type": "string",
+          "description": "HTML element ID"
+        },
+        "contentBlocks": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/contentBlock" }
+        },
+        "subsections": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/section" }
+        }
+      },
+      "required": ["id", "headingText", "contentBlocks"]
+    }
+  },
+  "required": ["documentInfo", "chapters"]
+}

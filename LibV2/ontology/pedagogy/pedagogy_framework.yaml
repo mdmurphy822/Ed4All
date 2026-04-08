@@ -1,0 +1,869 @@
+# Digital Pedagogy Knowledge Framework
+# Used for gap analysis against LibV2 content
+# Version 1.0.0
+
+version: "1.0.0"
+description: "Comprehensive digital pedagogy framework for knowledge gap analysis"
+target_domain: "educational-technology"
+
+# Coverage thresholds
+thresholds:
+  excellent: 0.8
+  good: 0.6
+  partial: 0.4
+  minimal: 0.2
+
+domains:
+  # ==========================================================================
+  # TIER 1: FOUNDATIONAL LEARNING THEORIES
+  # ==========================================================================
+  foundational_theories:
+    name: "Foundational Learning Theories"
+    priority: 1
+    description: "Core theories of how people learn"
+    topics:
+      constructivism:
+        name: "Constructivism"
+        description: "Learning through active construction of knowledge"
+        subtopics:
+          - piaget_cognitive_development
+          - vygotsky_social_constructivism
+          - zone_of_proximal_development
+          - scaffolding
+          - active_learning
+          - discovery_learning
+        coverage_required: high
+        search_terms:
+          - "constructivism"
+          - "Piaget"
+          - "Vygotsky"
+          - "zone of proximal development"
+          - "scaffolding"
+
+      connectivism:
+        name: "Connectivism"
+        description: "Digital age learning theory"
+        subtopics:
+          - networked_learning
+          - digital_age_learning
+          - siemens_downes_theory
+          - learning_networks
+          - distributed_knowledge
+        coverage_required: high
+        search_terms:
+          - "connectivism"
+          - "networked learning"
+          - "Siemens"
+          - "digital age learning"
+
+      behaviorism:
+        name: "Behaviorism"
+        description: "Learning through stimulus-response"
+        subtopics:
+          - operant_conditioning
+          - reinforcement_schedules
+          - programmed_instruction
+          - skinner
+          - stimulus_response
+        coverage_required: medium
+        gap_status: minor
+        search_terms:
+          - "behaviorism"
+          - "operant conditioning"
+          - "reinforcement"
+          - "Skinner"
+
+      cognitivism:
+        name: "Cognitivism"
+        description: "Information processing model of learning"
+        subtopics:
+          - information_processing
+          - schema_theory
+          - cognitive_architecture
+          - mental_models
+          - knowledge_structures
+        coverage_required: high
+        search_terms:
+          - "cognitivism"
+          - "information processing"
+          - "schema theory"
+          - "mental models"
+
+      cognitive_load_theory:
+        name: "Cognitive Load Theory"
+        description: "Managing mental effort in learning"
+        subtopics:
+          - intrinsic_load
+          - extraneous_load
+          - germane_load
+          - working_memory_limitations
+          - split_attention_effect
+          - redundancy_effect
+        coverage_required: high
+        search_terms:
+          - "cognitive load"
+          - "working memory"
+          - "Sweller"
+          - "split attention"
+
+  # ==========================================================================
+  # TIER 2: INSTRUCTIONAL DESIGN MODELS
+  # ==========================================================================
+  instructional_design:
+    name: "Instructional Design Models"
+    priority: 1
+    description: "Systematic approaches to designing instruction"
+    topics:
+      backward_design:
+        name: "Understanding by Design (UbD)"
+        description: "Wiggins & McTighe's backward design approach"
+        subtopics:
+          - wiggins_mctighe
+          - enduring_understandings
+          - essential_questions
+          - assessment_evidence
+          - stage_1_desired_results
+          - stage_2_evidence
+          - stage_3_learning_plan
+        coverage_required: high
+        search_terms:
+          - "Understanding by Design"
+          - "UbD"
+          - "backward design"
+          - "Wiggins"
+          - "McTighe"
+
+      addie:
+        name: "ADDIE Model"
+        description: "Classic instructional design process"
+        subtopics:
+          - analysis_phase
+          - design_phase
+          - development_phase
+          - implementation_phase
+          - evaluation_phase
+        coverage_required: high
+        gap_status: minor
+        search_terms:
+          - "ADDIE"
+          - "instructional design process"
+
+      sam:
+        name: "SAM (Successive Approximation Model)"
+        description: "Agile instructional design"
+        subtopics:
+          - rapid_prototyping
+          - iterative_design
+          - savvy_start
+          - preparation_phase
+          - iterative_development
+        coverage_required: high
+        search_terms:
+          - "SAM model"
+          - "Successive Approximation"
+          - "rapid prototyping"
+
+      dick_carey:
+        name: "Dick & Carey Systematic Design"
+        description: "Systems approach to instructional design"
+        subtopics:
+          - instructional_goals
+          - learner_analysis
+          - performance_objectives
+          - criterion_referenced_tests
+          - instructional_strategies
+        coverage_required: medium
+        search_terms:
+          - "Dick and Carey"
+          - "systematic design"
+          - "instructional goals"
+
+      gagnes_events:
+        name: "Gagne's Nine Events of Instruction"
+        description: "Sequence of instructional events"
+        subtopics:
+          - gain_attention
+          - inform_objectives
+          - stimulate_recall
+          - present_content
+          - provide_guidance
+          - elicit_performance
+          - provide_feedback
+          - assess_performance
+          - enhance_retention
+        coverage_required: high
+        search_terms:
+          - "Gagne"
+          - "nine events"
+          - "conditions of learning"
+
+      merrills_principles:
+        name: "Merrill's First Principles of Instruction"
+        description: "Problem-centered instructional principles"
+        subtopics:
+          - problem_centered
+          - activation_principle
+          - demonstration_principle
+          - application_principle
+          - integration_principle
+        coverage_required: high
+        search_terms:
+          - "Merrill"
+          - "first principles"
+          - "problem-centered"
+
+  # ==========================================================================
+  # TIER 3: MULTIMEDIA LEARNING
+  # ==========================================================================
+  multimedia_learning:
+    name: "Multimedia Learning Principles"
+    priority: 2
+    description: "Effective use of multimedia in instruction"
+    topics:
+      mayer_principles:
+        name: "Mayer's Multimedia Principles"
+        description: "Evidence-based multimedia design"
+        subtopics:
+          - multimedia_principle
+          - contiguity_principle
+          - modality_principle
+          - redundancy_principle
+          - coherence_principle
+          - signaling_principle
+          - segmenting_principle
+          - pretraining_principle
+          - personalization_principle
+        coverage_required: high
+        search_terms:
+          - "Mayer"
+          - "multimedia principle"
+          - "dual coding"
+
+      dual_coding:
+        name: "Dual Coding Theory"
+        description: "Verbal and visual processing"
+        subtopics:
+          - verbal_system
+          - visual_system
+          - referential_connections
+          - paivio
+        coverage_required: medium
+        search_terms:
+          - "dual coding"
+          - "Paivio"
+          - "verbal visual"
+
+  # ==========================================================================
+  # TIER 4: ASSESSMENT & ANALYTICS (HIGH PRIORITY GAPS)
+  # ==========================================================================
+  assessment_analytics:
+    name: "Assessment & Learning Analytics"
+    priority: 1
+    gap_priority: 1
+    description: "Measuring learning and using data"
+    topics:
+      formative_assessment:
+        name: "Formative Assessment"
+        description: "Assessment for learning"
+        subtopics:
+          - diagnostic_assessment
+          - feedback_loops
+          - assessment_for_learning
+          - exit_tickets
+          - think_pair_share
+          - classroom_assessment_techniques
+        coverage_required: high
+        search_terms:
+          - "formative assessment"
+          - "assessment for learning"
+          - "feedback"
+
+      summative_assessment:
+        name: "Summative Assessment"
+        description: "Assessment of learning"
+        subtopics:
+          - criterion_referenced
+          - norm_referenced
+          - high_stakes_testing
+          - final_examinations
+        coverage_required: medium
+        search_terms:
+          - "summative assessment"
+          - "criterion referenced"
+
+      competency_based_assessment:
+        name: "Competency-Based Assessment"
+        description: "Mastery and competency validation"
+        subtopics:
+          - mastery_learning
+          - competency_based_education
+          - proficiency_scales
+          - digital_badges
+          - micro_credentials
+          - skills_verification
+        coverage_required: high
+        gap_status: major
+        search_terms:
+          - "competency-based"
+          - "mastery learning"
+          - "digital badges"
+          - "micro-credentials"
+
+      authentic_assessment:
+        name: "Authentic Assessment"
+        description: "Real-world performance assessment"
+        subtopics:
+          - performance_tasks
+          - project_based_assessment
+          - portfolio_assessment
+          - rubric_design
+          - peer_assessment
+          - self_assessment
+        coverage_required: high
+        gap_status: major
+        search_terms:
+          - "authentic assessment"
+          - "performance assessment"
+          - "portfolio"
+          - "rubric"
+
+      learning_analytics:
+        name: "Learning Analytics"
+        description: "Data-driven instruction"
+        subtopics:
+          - data_driven_instruction
+          - predictive_analytics
+          - learning_dashboards
+          - early_warning_systems
+          - xapi_learning_record_stores
+          - learning_metrics
+          - student_success_prediction
+        coverage_required: high
+        gap_status: critical
+        search_terms:
+          - "learning analytics"
+          - "data-driven"
+          - "xAPI"
+          - "learning record store"
+          - "predictive analytics"
+
+      psychometrics:
+        name: "Psychometrics & Test Design"
+        description: "Scientific measurement of learning"
+        subtopics:
+          - item_analysis
+          - reliability_validity
+          - item_response_theory
+          - test_construction
+          - classical_test_theory
+        coverage_required: medium
+        gap_status: minor
+        search_terms:
+          - "psychometrics"
+          - "item analysis"
+          - "reliability"
+          - "validity"
+
+  # ==========================================================================
+  # TIER 5: ENGAGEMENT & MOTIVATION (HIGH PRIORITY GAPS)
+  # ==========================================================================
+  engagement_motivation:
+    name: "Engagement & Motivation"
+    priority: 1
+    gap_priority: 2
+    description: "Motivating and engaging learners"
+    topics:
+      self_determination_theory:
+        name: "Self-Determination Theory"
+        description: "Intrinsic motivation framework"
+        subtopics:
+          - autonomy
+          - competence
+          - relatedness
+          - intrinsic_motivation
+          - extrinsic_motivation
+          - motivation_continuum
+          - basic_psychological_needs
+        coverage_required: high
+        gap_status: critical
+        search_terms:
+          - "self-determination theory"
+          - "autonomy competence relatedness"
+          - "intrinsic motivation"
+          - "Deci Ryan"
+
+      gamification:
+        name: "Gamification"
+        description: "Game elements in learning"
+        subtopics:
+          - game_mechanics
+          - badges_points_leaderboards
+          - quest_based_learning
+          - meaningful_gamification
+          - game_based_learning
+          - serious_games
+          - player_types
+        coverage_required: high
+        gap_status: major
+        search_terms:
+          - "gamification"
+          - "game-based learning"
+          - "badges points"
+          - "serious games"
+
+      flow_theory:
+        name: "Flow Theory"
+        description: "Optimal engagement state"
+        subtopics:
+          - csikszentmihalyi_flow
+          - challenge_skill_balance
+          - optimal_engagement
+          - flow_state
+          - immersion
+        coverage_required: medium
+        gap_status: major
+        search_terms:
+          - "flow theory"
+          - "Csikszentmihalyi"
+          - "optimal experience"
+
+      expectancy_value:
+        name: "Expectancy-Value Theory"
+        description: "Motivation based on expectations"
+        subtopics:
+          - perceived_value
+          - expectation_success
+          - cost_benefit
+          - task_value
+          - attainment_value
+        coverage_required: medium
+        gap_status: minor
+        search_terms:
+          - "expectancy-value"
+          - "task value"
+          - "motivation"
+
+      attention_engagement:
+        name: "Attention & Engagement Strategies"
+        description: "Capturing and maintaining learner attention"
+        subtopics:
+          - arcs_model
+          - attention_strategies
+          - relevance_strategies
+          - confidence_building
+          - satisfaction_strategies
+        coverage_required: high
+        search_terms:
+          - "ARCS model"
+          - "Keller"
+          - "attention relevance"
+
+  # ==========================================================================
+  # TIER 6: EMERGING TECHNOLOGIES (HIGH PRIORITY GAPS)
+  # ==========================================================================
+  emerging_technologies:
+    name: "Emerging Educational Technologies"
+    priority: 1
+    gap_priority: 3
+    description: "Technology trends in education"
+    topics:
+      ai_education:
+        name: "AI in Education"
+        description: "Artificial intelligence for learning"
+        subtopics:
+          - adaptive_learning_systems
+          - intelligent_tutoring_systems
+          - ai_content_generation
+          - automated_assessment
+          - chatbots_virtual_assistants
+          - ai_ethics_education
+          - personalized_learning_paths
+          - learning_path_optimization
+        coverage_required: high
+        gap_status: critical
+        search_terms:
+          - "AI education"
+          - "adaptive learning"
+          - "intelligent tutoring"
+          - "personalized learning"
+
+      immersive_learning:
+        name: "Immersive Learning Technologies"
+        description: "VR/AR in education"
+        subtopics:
+          - virtual_reality_vr
+          - augmented_reality_ar
+          - mixed_reality
+          - 360_video
+          - simulations
+          - virtual_labs
+          - immersive_experiences
+        coverage_required: high
+        gap_status: critical
+        search_terms:
+          - "virtual reality education"
+          - "augmented reality learning"
+          - "immersive learning"
+          - "educational simulations"
+
+      microlearning:
+        name: "Microlearning"
+        description: "Bite-sized learning"
+        subtopics:
+          - bite_sized_content
+          - mobile_learning
+          - just_in_time_learning
+          - spaced_repetition
+          - retrieval_practice
+          - learning_nuggets
+        coverage_required: high
+        gap_status: major
+        search_terms:
+          - "microlearning"
+          - "spaced repetition"
+          - "mobile learning"
+          - "just-in-time"
+
+      learning_experience_platforms:
+        name: "Learning Experience Platforms"
+        description: "Modern learning platforms"
+        subtopics:
+          - lxp_vs_lms
+          - content_curation
+          - social_learning_features
+          - skills_based_learning
+        coverage_required: medium
+        gap_status: minor
+        search_terms:
+          - "learning experience platform"
+          - "LXP"
+          - "content curation"
+
+  # ==========================================================================
+  # TIER 7: SOCIAL & COLLABORATIVE LEARNING
+  # ==========================================================================
+  social_learning:
+    name: "Social & Collaborative Learning"
+    priority: 2
+    description: "Learning with and from others"
+    topics:
+      community_of_inquiry:
+        name: "Community of Inquiry"
+        description: "CoI framework for online learning"
+        subtopics:
+          - cognitive_presence
+          - social_presence
+          - teaching_presence
+          - practical_inquiry_model
+        coverage_required: high
+        search_terms:
+          - "community of inquiry"
+          - "cognitive presence"
+          - "social presence"
+          - "teaching presence"
+
+      peer_learning:
+        name: "Peer Learning Frameworks"
+        description: "Learning from peers"
+        subtopics:
+          - peer_instruction
+          - collaborative_learning
+          - cooperative_learning
+          - peer_tutoring
+          - think_pair_share
+          - jigsaw_method
+        coverage_required: high
+        gap_status: major
+        search_terms:
+          - "peer learning"
+          - "collaborative learning"
+          - "cooperative learning"
+          - "peer instruction"
+
+      online_discussion:
+        name: "Online Discussion Strategies"
+        description: "Facilitating online discourse"
+        subtopics:
+          - asynchronous_discussion
+          - synchronous_collaboration
+          - discussion_facilitation
+          - discussion_prompts
+          - socratic_method_online
+        coverage_required: medium
+        search_terms:
+          - "online discussion"
+          - "asynchronous"
+          - "discussion facilitation"
+
+      social_learning_theory:
+        name: "Social Learning Theory"
+        description: "Bandura's social cognitive theory"
+        subtopics:
+          - observational_learning
+          - modeling
+          - self_efficacy
+          - bandura
+        coverage_required: medium
+        search_terms:
+          - "social learning theory"
+          - "Bandura"
+          - "observational learning"
+          - "self-efficacy"
+
+  # ==========================================================================
+  # TIER 8: HYBRID & BLENDED LEARNING
+  # ==========================================================================
+  hybrid_blended:
+    name: "Hybrid & Blended Learning"
+    priority: 2
+    description: "Combining online and face-to-face"
+    topics:
+      blended_models:
+        name: "Blended Learning Models"
+        description: "Models for blended instruction"
+        subtopics:
+          - rotation_model
+          - flex_model
+          - enriched_virtual
+          - flipped_classroom
+          - hyflex_model
+          - station_rotation
+          - lab_rotation
+        coverage_required: high
+        gap_status: major
+        search_terms:
+          - "blended learning"
+          - "flipped classroom"
+          - "HyFlex"
+          - "rotation model"
+
+      online_course_design:
+        name: "Online Course Design"
+        description: "Designing effective online courses"
+        subtopics:
+          - asynchronous_design
+          - synchronous_facilitation
+          - presence_strategies
+          - engagement_online
+          - online_activities
+        coverage_required: medium
+        search_terms:
+          - "online course design"
+          - "asynchronous"
+          - "synchronous"
+
+  # ==========================================================================
+  # TIER 9: ACCESSIBILITY & UNIVERSAL DESIGN
+  # ==========================================================================
+  accessibility_udl:
+    name: "Accessibility & Universal Design"
+    priority: 2
+    description: "Designing for all learners"
+    topics:
+      universal_design_learning:
+        name: "Universal Design for Learning (UDL)"
+        description: "CAST's UDL framework"
+        subtopics:
+          - multiple_means_engagement
+          - multiple_means_representation
+          - multiple_means_expression
+          - udl_guidelines
+          - udl_checkpoints
+        coverage_required: high
+        search_terms:
+          - "Universal Design for Learning"
+          - "UDL"
+          - "CAST"
+          - "multiple means"
+
+      accessibility_standards:
+        name: "Accessibility Standards"
+        description: "Technical accessibility requirements"
+        subtopics:
+          - wcag_guidelines
+          - section_508
+          - assistive_technology
+          - alt_text_captions
+          - keyboard_accessibility
+          - screen_reader_compatibility
+        coverage_required: high
+        search_terms:
+          - "WCAG"
+          - "accessibility"
+          - "Section 508"
+          - "assistive technology"
+
+      inclusive_design:
+        name: "Inclusive Design Principles"
+        description: "Designing for diversity"
+        subtopics:
+          - diverse_learners
+          - culturally_responsive_teaching
+          - trauma_informed_practices
+          - differentiated_instruction
+        coverage_required: medium
+        search_terms:
+          - "inclusive design"
+          - "culturally responsive"
+          - "differentiated instruction"
+
+  # ==========================================================================
+  # TIER 10: QUALITY STANDARDS & EVALUATION
+  # ==========================================================================
+  quality_standards:
+    name: "Quality Standards & Evaluation"
+    priority: 2
+    description: "Course quality frameworks"
+    topics:
+      oscqr:
+        name: "OSCQR Standards"
+        description: "SUNY Online Course Quality Review"
+        subtopics:
+          - course_overview_information
+          - learning_objectives_competencies
+          - assessment_measurement
+          - instructional_materials
+          - learner_interaction_engagement
+          - course_technology
+        coverage_required: high
+        search_terms:
+          - "OSCQR"
+          - "online course quality"
+          - "SUNY"
+
+      quality_matters:
+        name: "Quality Matters"
+        description: "QM quality assurance"
+        subtopics:
+          - qm_rubric
+          - alignment_standards
+          - continuous_improvement
+          - qm_certification
+        coverage_required: medium
+        gap_status: minor
+        search_terms:
+          - "Quality Matters"
+          - "QM rubric"
+          - "course quality"
+
+      course_evaluation:
+        name: "Course Evaluation Methods"
+        description: "Evaluating course effectiveness"
+        subtopics:
+          - kirkpatrick_model
+          - student_evaluations
+          - learning_outcomes_assessment
+          - continuous_improvement
+        coverage_required: medium
+        search_terms:
+          - "course evaluation"
+          - "Kirkpatrick"
+          - "learning outcomes assessment"
+
+  # ==========================================================================
+  # TIER 11: LEARNING OBJECTIVES & ALIGNMENT
+  # ==========================================================================
+  learning_objectives:
+    name: "Learning Objectives & Alignment"
+    priority: 2
+    description: "Defining and aligning learning goals"
+    topics:
+      blooms_taxonomy:
+        name: "Bloom's Taxonomy"
+        description: "Cognitive domain classification"
+        subtopics:
+          - remember_understand
+          - apply_analyze
+          - evaluate_create
+          - revised_taxonomy
+          - krathwohl_revision
+          - action_verbs
+        coverage_required: high
+        search_terms:
+          - "Bloom's taxonomy"
+          - "cognitive domain"
+          - "Krathwohl"
+
+      writing_objectives:
+        name: "Writing Learning Objectives"
+        description: "SMART and measurable objectives"
+        subtopics:
+          - smart_objectives
+          - measurable_outcomes
+          - abcd_format
+          - learning_outcomes
+        coverage_required: high
+        search_terms:
+          - "learning objectives"
+          - "SMART"
+          - "measurable outcomes"
+
+      constructive_alignment:
+        name: "Constructive Alignment"
+        description: "Biggs' alignment framework"
+        subtopics:
+          - intended_learning_outcomes
+          - teaching_learning_activities
+          - assessment_tasks
+          - biggs
+        coverage_required: high
+        search_terms:
+          - "constructive alignment"
+          - "Biggs"
+          - "alignment"
+
+  # ==========================================================================
+  # TIER 12: PROFESSIONAL DEVELOPMENT
+  # ==========================================================================
+  professional_development:
+    name: "Educator Professional Development"
+    priority: 3
+    description: "Building educator capacity"
+    topics:
+      digital_literacy:
+        name: "Digital Literacy for Educators"
+        description: "Technology skills for teaching"
+        subtopics:
+          - technology_integration
+          - digital_citizenship
+          - information_literacy
+          - media_literacy
+          - tpack_framework
+          - samr_model
+        coverage_required: high
+        gap_status: major
+        search_terms:
+          - "digital literacy"
+          - "TPACK"
+          - "SAMR"
+          - "technology integration"
+
+      evidence_based_practice:
+        name: "Evidence-Based Practice"
+        description: "Research-informed teaching"
+        subtopics:
+          - action_research
+          - scholarship_of_teaching
+          - educational_research_methods
+          - practitioner_inquiry
+        coverage_required: medium
+        gap_status: major
+        search_terms:
+          - "evidence-based practice"
+          - "action research"
+          - "scholarship of teaching"
+
+      faculty_development:
+        name: "Faculty Development"
+        description: "Supporting educator growth"
+        subtopics:
+          - mentoring_programs
+          - communities_of_practice
+          - professional_learning_communities
+          - peer_observation
+        coverage_required: medium
+        gap_status: minor
+        search_terms:
+          - "faculty development"
+          - "professional learning"
+          - "communities of practice"

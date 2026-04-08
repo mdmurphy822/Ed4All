@@ -1,0 +1,265 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Learning Objectives Document Schema",
+  "description": "Schema for extracted learning objectives from textbooks, course packages, or other educational sources",
+  "version": "1.0.0",
+  "type": "object",
+  "properties": {
+    "documentMetadata": {
+      "type": "object",
+      "description": "Metadata about the source document and extraction process",
+      "properties": {
+        "sourceType": {
+          "type": "string",
+          "enum": ["textbook", "exam_objectives", "imscc_package", "html_content", "hybrid"],
+          "description": "Type of source material"
+        },
+        "sourcePath": {
+          "type": "string",
+          "description": "Path to the original source file"
+        },
+        "sourceTitle": {
+          "type": "string",
+          "description": "Title of the source document"
+        },
+        "sourceAuthors": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Authors of the source material"
+        },
+        "generationTimestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When objectives were extracted"
+        },
+        "toolVersion": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "description": "Version of the extraction tool"
+        },
+        "extractionMethod": {
+          "type": "string",
+          "enum": ["semantic_structure", "explicit_objectives", "ai_synthesis", "hybrid"],
+          "description": "Method used to extract objectives"
+        }
+      },
+      "required": ["sourceType", "generationTimestamp"]
+    },
+    "courseObjectives": {
+      "type": "array",
+      "description": "High-level course learning objectives (8-12 terminal outcomes)",
+      "items": { "$ref": "#/definitions/learningObjective" },
+      "minItems": 3,
+      "maxItems": 15
+    },
+    "chapters": {
+      "type": "array",
+      "description": "Chapter-level organization with nested objectives",
+      "items": {
+        "type": "object",
+        "properties": {
+          "chapterId": {
+            "type": "string",
+            "pattern": "^ch[0-9]+$",
+            "description": "Unique chapter identifier"
+          },
+          "chapterNumber": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Sequential chapter number"
+          },
+          "chapterTitle": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Chapter heading/title"
+          },
+          "chapterDescription": {
+            "type": "string",
+            "description": "Brief description of chapter content"
+          },
+          "sourceReference": {
+            "$ref": "#/definitions/sourceReference"
+          },
+          "chapterObjectives": {
+            "type": "array",
+            "description": "Chapter-level learning objectives",
+            "items": { "$ref": "#/definitions/learningObjective" }
+          },
+          "sections": {
+            "type": "array",
+            "description": "Sections within the chapter",
+            "items": {
+              "type": "object",
+              "properties": {
+                "sectionId": {
+                  "type": "string",
+                  "pattern": "^ch[0-9]+_s[0-9]+$",
+                  "description": "Unique section identifier"
+                },
+                "sectionNumber": {
+                  "type": "string",
+                  "description": "Section number (e.g., 1.1, 1.2)"
+                },
+                "sectionTitle": {
+                  "type": "string",
+                  "minLength": 1,
+                  "description": "Section heading/title"
+                },
+                "sourceReference": {
+                  "$ref": "#/definitions/sourceReference"
+                },
+                "sectionObjectives": {
+                  "type": "array",
+                  "description": "Section-level learning objectives",
+                  "items": { "$ref": "#/definitions/learningObjective" }
+                },
+                "subsections": {
+                  "type": "array",
+                  "description": "Subsections with their objectives",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "subsectionId": {
+                        "type": "string",
+                        "description": "Unique subsection identifier"
+                      },
+                      "subsectionTitle": {
+                        "type": "string",
+                        "description": "Subsection heading/title"
+                      },
+                      "sourceReference": {
+                        "$ref": "#/definitions/sourceReference"
+                      },
+                      "subsectionObjectives": {
+                        "type": "array",
+                        "items": { "$ref": "#/definitions/learningObjective" }
+                      }
+                    },
+                    "required": ["subsectionId", "subsectionTitle"]
+                  }
+                }
+              },
+              "required": ["sectionId", "sectionTitle", "sectionObjectives"]
+            }
+          }
+        },
+        "required": ["chapterId", "chapterTitle", "chapterObjectives"]
+      }
+    },
+    "objectivesSummary": {
+      "type": "object",
+      "description": "Summary statistics about extracted objectives",
+      "properties": {
+        "totalObjectives": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total count of all objectives"
+        },
+        "byBloomLevel": {
+          "type": "object",
+          "description": "Count of objectives per Bloom's level",
+          "properties": {
+            "remember": { "type": "integer", "minimum": 0 },
+            "understand": { "type": "integer", "minimum": 0 },
+            "apply": { "type": "integer", "minimum": 0 },
+            "analyze": { "type": "integer", "minimum": 0 },
+            "evaluate": { "type": "integer", "minimum": 0 },
+            "create": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "byHierarchyLevel": {
+          "type": "object",
+          "description": "Count of objectives per hierarchy level",
+          "properties": {
+            "course": { "type": "integer", "minimum": 0 },
+            "chapter": { "type": "integer", "minimum": 0 },
+            "section": { "type": "integer", "minimum": 0 },
+            "subsection": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "keyConcepts": {
+          "type": "array",
+          "description": "All unique key concepts extracted",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "learningObjective": {
+      "type": "object",
+      "description": "A single learning objective statement",
+      "properties": {
+        "objectiveId": {
+          "type": "string",
+          "description": "Unique identifier for this objective"
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 10,
+          "description": "The complete learning objective statement"
+        },
+        "bloomLevel": {
+          "type": "string",
+          "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create"],
+          "description": "Bloom's taxonomy cognitive level"
+        },
+        "bloomVerb": {
+          "type": "string",
+          "description": "The action verb used in the objective"
+        },
+        "keyConcepts": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Key concepts/terms addressed by this objective"
+        },
+        "sourceReference": {
+          "$ref": "#/definitions/sourceReference"
+        },
+        "assessmentSuggestions": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["exam", "quiz", "assignment", "project", "discussion", "presentation", "portfolio", "demonstration", "case_study"]
+          },
+          "description": "Suggested assessment methods for this objective"
+        },
+        "prerequisiteObjectives": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "IDs of prerequisite objectives"
+        },
+        "extractionSource": {
+          "type": "string",
+          "enum": ["explicit", "definition", "concept", "procedure", "example", "summary", "inferred"],
+          "description": "How this objective was derived"
+        }
+      },
+      "required": ["objectiveId", "statement", "bloomLevel"]
+    },
+    "sourceReference": {
+      "type": "object",
+      "description": "Reference back to the source material",
+      "properties": {
+        "headingId": {
+          "type": "string",
+          "description": "ID of the heading element in source HTML"
+        },
+        "headingText": {
+          "type": "string",
+          "description": "Text of the source heading"
+        },
+        "pageNumber": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Page number in original document (if applicable)"
+        },
+        "elementPath": {
+          "type": "string",
+          "description": "CSS selector path to source element"
+        }
+      }
+    }
+  },
+  "required": ["documentMetadata", "chapters"]
+}

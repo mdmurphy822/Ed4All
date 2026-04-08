@@ -1,0 +1,344 @@
+<!--
+    Template Name: Reveal Content Template
+    Category: interactive
+    WCAG Compliance: 2.2 AA
+    Brightspace Compatible: Yes
+
+    Template Variables:
+    - {{REVEAL_ID}}: Unique identifier
+    - {{REVEAL_PROMPT}}: Text prompting user to reveal (e.g., "What is the answer?")
+    - {{REVEAL_BUTTON_TEXT}}: Button text (default: "Reveal Answer")
+    - {{REVEAL_CONTENT}}: Hidden content to be revealed (supports HTML)
+    - {{REVEAL_CONTEXT}}: Optional context or setup before reveal
+
+    Dependencies: Minimal JavaScript (for toggle)
+
+    Usage Notes:
+    - Click-to-reveal hidden content
+    - Useful for spoilers, answers, hints
+    - Can be reset to hide content again
+    - Accessible: works with keyboard and screen readers
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reveal Content Component</title>
+    <style>
+        /* Courseforge CSS Variables */
+        :root {
+            --cf-primary: #2c5aa0;
+            --cf-primary-dark: #1e3d6f;
+            --cf-primary-light: #e7f3ff;
+            --cf-text: #212529;
+            --cf-text-muted: #6c757d;
+            --cf-background: #ffffff;
+            --cf-background-alt: #f8f9fa;
+            --cf-border: #dee2e6;
+            --cf-success-light: #d4edda;
+            --cf-border-radius: 8px;
+            --cf-font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            --cf-space-2: 0.5rem;
+            --cf-space-3: 0.75rem;
+            --cf-space-4: 1rem;
+            --cf-space-5: 1.25rem;
+            --cf-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            --cf-transition: 200ms ease;
+        }
+
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: var(--cf-space-4);
+            font-family: var(--cf-font-family);
+            line-height: 1.6;
+            color: var(--cf-text);
+        }
+
+        /* ========================================
+           REVEAL CONTAINER
+           ======================================== */
+        .reveal-box {
+            background-color: var(--cf-background);
+            border: 1px solid var(--cf-border);
+            border-radius: var(--cf-border-radius);
+            box-shadow: var(--cf-shadow);
+            margin: var(--cf-space-4) 0;
+            overflow: hidden;
+        }
+
+        /* ========================================
+           REVEAL HEADER/PROMPT
+           ======================================== */
+        .reveal-header {
+            display: flex;
+            align-items: center;
+            gap: var(--cf-space-3);
+            padding: var(--cf-space-4);
+            background-color: var(--cf-background-alt);
+            border-bottom: 1px solid var(--cf-border);
+        }
+
+        .reveal-icon {
+            font-size: 1.25rem;
+        }
+
+        .reveal-prompt {
+            flex: 1;
+            margin: 0;
+            font-size: 1rem;
+            font-weight: 500;
+            color: var(--cf-text);
+        }
+
+        /* ========================================
+           CONTEXT SECTION (optional)
+           ======================================== */
+        .reveal-context {
+            padding: var(--cf-space-4);
+            color: var(--cf-text);
+        }
+
+        .reveal-context p:last-child {
+            margin-bottom: 0;
+        }
+
+        /* ========================================
+           REVEAL BUTTON
+           ======================================== */
+        .reveal-trigger {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            padding: var(--cf-space-4);
+            background-color: var(--cf-primary-light);
+            border: none;
+            border-top: 1px dashed var(--cf-primary);
+            font-family: inherit;
+            font-size: 1rem;
+            font-weight: 500;
+            color: var(--cf-primary);
+            cursor: pointer;
+            transition: background-color var(--cf-transition);
+            min-height: 48px; /* WCAG target size */
+        }
+
+        .reveal-trigger:hover {
+            background-color: #cce0f5;
+        }
+
+        .reveal-trigger:focus {
+            outline: 3px solid var(--cf-primary);
+            outline-offset: -3px;
+        }
+
+        .reveal-trigger:focus-visible {
+            outline: 3px solid var(--cf-primary);
+            outline-offset: 2px;
+        }
+
+        .reveal-trigger::before {
+            content: '\1F441'; /* Eye icon */
+            margin-right: var(--cf-space-2);
+            font-size: 1.25rem;
+        }
+
+        /* Hidden state */
+        .reveal-box[data-revealed="true"] .reveal-trigger {
+            display: none;
+        }
+
+        /* ========================================
+           REVEALED CONTENT
+           ======================================== */
+        .reveal-content {
+            padding: var(--cf-space-5);
+            background-color: var(--cf-success-light);
+            border-top: 3px solid var(--cf-primary);
+            animation: fadeIn 0.3s ease;
+        }
+
+        .reveal-content[hidden] {
+            display: none;
+        }
+
+        .reveal-content > *:first-child {
+            margin-top: 0;
+        }
+
+        .reveal-content > *:last-child {
+            margin-bottom: 0;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        /* Reduced motion */
+        @media (prefers-reduced-motion: reduce) {
+            .reveal-content {
+                animation: none;
+            }
+        }
+
+        /* ========================================
+           HIDE BUTTON (after reveal)
+           ======================================== */
+        .reveal-hide {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            padding: var(--cf-space-3);
+            background-color: var(--cf-background-alt);
+            border: none;
+            border-top: 1px solid var(--cf-border);
+            font-family: inherit;
+            font-size: 0.875rem;
+            color: var(--cf-text-muted);
+            cursor: pointer;
+            transition: color var(--cf-transition);
+            min-height: 44px;
+        }
+
+        .reveal-hide:hover {
+            color: var(--cf-primary);
+        }
+
+        .reveal-hide:focus {
+            outline: 2px solid var(--cf-primary);
+            outline-offset: -2px;
+        }
+
+        .reveal-box[data-revealed="false"] .reveal-hide {
+            display: none;
+        }
+
+        /* ========================================
+           ACCESSIBILITY
+           ======================================== */
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        /* ========================================
+           PRINT STYLES
+           ======================================== */
+        @media print {
+            .reveal-trigger,
+            .reveal-hide {
+                display: none !important;
+            }
+
+            .reveal-content {
+                display: block !important;
+                background: none;
+                border-top: 1px solid #000;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- REVEAL CONTENT COMPONENT -->
+    <div class="reveal-box" id="{{REVEAL_ID}}" data-revealed="false">
+
+        <!-- Header -->
+        <div class="reveal-header">
+            <span class="reveal-icon" aria-hidden="true">&#129300;</span> <!-- Thinking face -->
+            <p class="reveal-prompt">{{REVEAL_PROMPT}}</p>
+        </div>
+
+        <!-- Optional context -->
+        <div class="reveal-context">
+            {{REVEAL_CONTEXT}}
+        </div>
+
+        <!-- Reveal button -->
+        <button type="button"
+                class="reveal-trigger"
+                aria-expanded="false"
+                aria-controls="{{REVEAL_ID}}-content">
+            {{REVEAL_BUTTON_TEXT}}
+        </button>
+
+        <!-- Hidden content -->
+        <div class="reveal-content"
+             id="{{REVEAL_ID}}-content"
+             hidden
+             aria-live="polite">
+            {{REVEAL_CONTENT}}
+        </div>
+
+        <!-- Hide button -->
+        <button type="button" class="reveal-hide">
+            Hide Answer
+        </button>
+
+    </div>
+
+    <!-- ALTERNATIVE: Simple inline reveal using details/summary -->
+    <!--
+    <details class="reveal-simple">
+        <summary>Click to reveal the answer</summary>
+        <div class="reveal-content">
+            The answer content goes here.
+        </div>
+    </details>
+    -->
+
+    <!-- Reveal Script -->
+    <script>
+        (function() {
+            'use strict';
+
+            document.querySelectorAll('.reveal-box').forEach(function(box) {
+                var trigger = box.querySelector('.reveal-trigger');
+                var content = box.querySelector('.reveal-content');
+                var hideBtn = box.querySelector('.reveal-hide');
+
+                // Reveal content
+                trigger.addEventListener('click', function() {
+                    box.dataset.revealed = 'true';
+                    content.hidden = false;
+                    trigger.setAttribute('aria-expanded', 'true');
+
+                    // Move focus to content for screen readers
+                    content.setAttribute('tabindex', '-1');
+                    content.focus();
+                });
+
+                // Hide content
+                hideBtn.addEventListener('click', function() {
+                    box.dataset.revealed = 'false';
+                    content.hidden = true;
+                    trigger.setAttribute('aria-expanded', 'false');
+                    trigger.focus();
+                });
+            });
+        })();
+    </script>
+
+</body>
+</html>

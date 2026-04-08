@@ -1,0 +1,230 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ed4all.org/schemas/session_annotation_schema.json",
+  "title": "Processing Session Annotation",
+  "description": "Schema for aggregated session-level annotations combining all decisions from a processing run",
+  "type": "object",
+  "required": ["session_id", "run_id", "tool", "started_at", "status"],
+  "properties": {
+    "session_id": {
+      "type": "string",
+      "description": "Unique session identifier"
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Processing run identifier (links to decision events)"
+    },
+    "tool": {
+      "type": "string",
+      "enum": ["dart", "courseforge", "trainforge", "orchestrator"],
+      "description": "Tool that executed this session"
+    },
+    "course_id": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Z]{2,3}_[0-9]{3}$",
+      "description": "Course being processed (if applicable)"
+    },
+    "phase": {
+      "type": ["string", "null"],
+      "description": "Processing phase"
+    },
+    "started_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Session start timestamp"
+    },
+    "completed_at": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "Session completion timestamp"
+    },
+    "duration_seconds": {
+      "type": ["number", "null"],
+      "description": "Total session duration"
+    },
+    "status": {
+      "type": "string",
+      "enum": ["running", "complete", "error", "partial", "cancelled"],
+      "description": "Session completion status"
+    },
+    "inputs": {
+      "type": "object",
+      "description": "Input files and resources used",
+      "properties": {
+        "primary_input": {
+          "type": "string",
+          "description": "Main input file/resource"
+        },
+        "textbooks": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Textbook files used"
+        },
+        "existing_imscc": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Existing IMSCC packages processed"
+        },
+        "prompt_templates": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Prompt templates used"
+        },
+        "pdfs_converted": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "PDFs converted via DART"
+        }
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "description": "Outputs produced by session",
+      "properties": {
+        "files_created": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Files created during session"
+        },
+        "imscc_package": {
+          "type": ["string", "null"],
+          "description": "Generated IMSCC package path"
+        },
+        "total_modules": {
+          "type": "integer",
+          "description": "Number of modules generated"
+        },
+        "total_assessments": {
+          "type": "integer",
+          "description": "Number of assessments generated"
+        },
+        "total_questions": {
+          "type": "integer",
+          "description": "Number of questions generated (Trainforge)"
+        },
+        "training_examples_produced": {
+          "type": "integer",
+          "description": "Number of training examples created"
+        }
+      }
+    },
+    "decision_summary": {
+      "type": "object",
+      "description": "Aggregated decision statistics",
+      "properties": {
+        "total_decisions": {
+          "type": "integer",
+          "description": "Total decisions captured"
+        },
+        "by_type": {
+          "type": "object",
+          "additionalProperties": {"type": "integer"},
+          "description": "Count of decisions by type"
+        },
+        "by_quality_level": {
+          "type": "object",
+          "properties": {
+            "exemplary": {"type": "integer"},
+            "proficient": {"type": "integer"},
+            "developing": {"type": "integer"},
+            "inadequate": {"type": "integer"}
+          },
+          "description": "Distribution of decision quality levels"
+        },
+        "avg_rationale_length": {
+          "type": "number",
+          "description": "Average length of decision rationales"
+        },
+        "avg_confidence": {
+          "type": "number",
+          "description": "Average confidence across decisions"
+        }
+      }
+    },
+    "quality_metrics": {
+      "type": "object",
+      "description": "Session quality metrics",
+      "properties": {
+        "validation_pass_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Percentage of outputs passing validation"
+        },
+        "revision_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Percentage of outputs requiring revision"
+        },
+        "error_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Percentage of operations that errored"
+        },
+        "bloom_distribution": {
+          "type": "object",
+          "properties": {
+            "remember": {"type": "integer"},
+            "understand": {"type": "integer"},
+            "apply": {"type": "integer"},
+            "analyze": {"type": "integer"},
+            "evaluate": {"type": "integer"},
+            "create": {"type": "integer"}
+          },
+          "description": "Distribution of Bloom's levels in outputs"
+        }
+      }
+    },
+    "acceptance": {
+      "type": ["object", "null"],
+      "description": "Human review/acceptance status",
+      "properties": {
+        "accepted": {
+          "type": "boolean",
+          "description": "Whether session output was accepted"
+        },
+        "acceptance_timestamp": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "rejection_reason": {
+          "type": ["string", "null"],
+          "description": "Reason for rejection if applicable"
+        },
+        "revision_count": {
+          "type": "integer",
+          "description": "Number of revisions before acceptance"
+        },
+        "superseded_by": {
+          "type": ["string", "null"],
+          "description": "Session ID that supersedes this one"
+        },
+        "reviewer_notes": {
+          "type": ["string", "null"],
+          "description": "Notes from human reviewer"
+        }
+      }
+    },
+    "errors": {
+      "type": "array",
+      "description": "Errors encountered during session",
+      "items": {
+        "type": "object",
+        "properties": {
+          "timestamp": {"type": "string", "format": "date-time"},
+          "error_type": {"type": "string"},
+          "message": {"type": "string"},
+          "recoverable": {"type": "boolean"},
+          "resolution": {"type": "string"}
+        }
+      }
+    },
+    "decision_files": {
+      "type": "array",
+      "description": "Paths to JSONL decision files for this session",
+      "items": {"type": "string"}
+    }
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "export_settings": {
+    "base_directory": "/exports/",
+    "timestamp_format": "YYYYMMDD_HHMMSS",
+    "auto_create_directory": true,
+    "package_formats": [
+      "imscc",
+      "d2l_zip"
+    ],
+    "validation_required": true
+  },
+  "directory_structure": {
+    "exports_root": "/exports/",
+    "timestamped_folders": "YYYYMMDD_HHMMSS",
+    "package_naming": {
+      "imscc": "{course_name}.imscc",
+      "d2l_export": "{course_name}_d2l.zip",
+      "validation_report": "validation_report.md"
+    }
+  },
+  "package_assembly": {
+    "imscc_specifications": {
+      "namespace": "http://www.imsglobal.org/xsd/imsccv1p2/imscp_v1p1",
+      "version": "1.2.0",
+      "schema_validation": true
+    },
+    "bootstrap_framework": {
+      "version": "4.3.1",
+      "include_offline_fallbacks": true,
+      "accordion_functionality": true
+    },
+    "assessment_integration": {
+      "qti_version": "1.2",
+      "d2l_extensions": true,
+      "native_tools": [
+        "assignments",
+        "quizzes", 
+        "discussions"
+      ]
+    }
+  },
+  "validation_checklist": [
+    "export_directory_created",
+    "timestamp_folder_generated", 
+    "imscc_package_saved",
+    "d2l_package_saved",
+    "validation_report_generated",
+    "xml_schema_compliance",
+    "file_reference_integrity",
+    "bootstrap_dependencies_included",
+    "wcag_accessibility_verified",
+    "content_accuracy_validated"
+  ],
+  "required_implementation": {
+    "core_functionality": [
+      "automatic_exports_folder_creation",
+      "timestamped_directory_generation",
+      "dual_format_package_assembly",
+      "export_directory_management"
+    ],
+    "critical_requirements": [
+      "Save all packages to /exports/YYYYMMDD_HHMMSS/ folders",
+      "Use generation timestamp for unique folder identification",
+      "Automatically create /exports/ folder if it doesn't exist",
+      "Apply export structure to all package assembly phases"
+    ]
+  }
+}

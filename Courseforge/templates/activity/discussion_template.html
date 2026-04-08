@@ -1,0 +1,203 @@
+<!--
+    Discussion Activity Template
+    D2L/Brightspace Compatible
+    WCAG 2.2 AA Compliant
+
+    Template Variables:
+    - {{DISCUSSION_TITLE}}: Title of the discussion
+    - {{DISCUSSION_PROMPT}}: Main discussion question/prompt
+    - {{CONTEXT}}: Background context for the discussion
+    - {{REQUIREMENTS}}: Posting requirements
+    - {{INITIAL_POST_DUE}}: Due date for initial post
+    - {{RESPONSE_DUE}}: Due date for responses
+    - {{GRADING_CRITERIA}}: How the discussion will be graded
+    - {{WEEK_NUMBER}}: Week number for organization
+    - {{MODULE_NAME}}: Module name for context
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{DISCUSSION_TITLE}} - Discussion Activity</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.3.1/dist/css/bootstrap.min.css">
+    <style>
+        .discussion-container {
+            max-width: 900px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        .discussion-prompt {
+            background-color: #f8f9fa;
+            border-left: 4px solid #2c5aa0;
+            padding: 1.5rem;
+            margin: 1.5rem 0;
+            border-radius: 0 4px 4px 0;
+        }
+        .requirements-box {
+            background-color: #fff3cd;
+            border: 1px solid #ffc107;
+            border-radius: 4px;
+            padding: 1rem;
+            margin: 1rem 0;
+        }
+        .grading-section {
+            background-color: #d4edda;
+            border: 1px solid #28a745;
+            border-radius: 4px;
+            padding: 1rem;
+            margin: 1rem 0;
+        }
+        .deadline-badge {
+            display: inline-block;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            font-weight: 600;
+        }
+        .initial-deadline {
+            background-color: #dc3545;
+            color: white;
+        }
+        .response-deadline {
+            background-color: #ffc107;
+            color: #1a1a1a;
+        }
+        /* WCAG 2.2 2.4.13 Focus Appearance - minimum 2px outline with 3:1 contrast */
+        a:focus, button:focus, input:focus, select:focus, textarea:focus {
+            outline: 2px solid #2c5aa0;
+            outline-offset: 2px;
+        }
+
+        /* WCAG 2.2 2.5.8 Target Size (Minimum) - 24x24 CSS pixels minimum */
+        a, button, input, select, textarea, [role="button"], [tabindex="0"] {
+            min-height: 24px;
+            min-width: 24px;
+        }
+
+        /* WCAG 2.2 2.4.11/2.4.12 Focus Not Obscured */
+        *:focus {
+            scroll-margin-top: 80px;
+            scroll-margin-bottom: 80px;
+        }
+
+        .sr-only-focusable:focus,
+        .sr-only-focusable:active {
+            position: static;
+            width: auto;
+            height: auto;
+            overflow: visible;
+            clip: auto;
+            white-space: normal;
+        }
+    </style>
+</head>
+<body>
+    <a href="#main-content" class="sr-only sr-only-focusable">Skip to main content</a>
+
+    <main id="main-content" class="discussion-container" role="main">
+        <header>
+            <nav aria-label="Breadcrumb">
+                <ol class="breadcrumb">
+                    <li class="breadcrumb-item"><a href="../index.html">Course Home</a></li>
+                    <li class="breadcrumb-item"><a href="week_{{WEEK_NUMBER}}.html">Week {{WEEK_NUMBER}}</a></li>
+                    <li class="breadcrumb-item active" aria-current="page">{{DISCUSSION_TITLE}}</li>
+                </ol>
+            </nav>
+
+            <h1>{{DISCUSSION_TITLE}}</h1>
+            <p class="lead">{{MODULE_NAME}} - Week {{WEEK_NUMBER}} Discussion Activity</p>
+        </header>
+
+        <section aria-labelledby="context-heading">
+            <h2 id="context-heading">Discussion Context</h2>
+            <p>{{CONTEXT}}</p>
+        </section>
+
+        <section aria-labelledby="prompt-heading">
+            <h2 id="prompt-heading">Discussion Prompt</h2>
+            <div class="discussion-prompt" role="note">
+                <p>{{DISCUSSION_PROMPT}}</p>
+            </div>
+        </section>
+
+        <section aria-labelledby="requirements-heading">
+            <h2 id="requirements-heading">Requirements</h2>
+            <div class="requirements-box" role="note">
+                <h3 class="h5">Posting Requirements</h3>
+                {{REQUIREMENTS}}
+
+                <h3 class="h5 mt-3">Quality Expectations</h3>
+                <ul>
+                    <li>Posts should demonstrate critical thinking and analysis</li>
+                    <li>Support your arguments with evidence from course materials</li>
+                    <li>Engage respectfully with classmates' perspectives</li>
+                    <li>Use proper grammar and professional writing</li>
+                    <li>Cite any external sources used</li>
+                </ul>
+            </div>
+        </section>
+
+        <section aria-labelledby="deadlines-heading">
+            <h2 id="deadlines-heading">Deadlines</h2>
+            <div class="row">
+                <div class="col-md-6 mb-3">
+                    <div class="card">
+                        <div class="card-body">
+                            <h3 class="card-title h5">Initial Post</h3>
+                            <span class="deadline-badge initial-deadline">
+                                Due: {{INITIAL_POST_DUE}}
+                            </span>
+                            <p class="card-text mt-2">Submit your initial response to the discussion prompt.</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-md-6 mb-3">
+                    <div class="card">
+                        <div class="card-body">
+                            <h3 class="card-title h5">Peer Responses</h3>
+                            <span class="deadline-badge response-deadline">
+                                Due: {{RESPONSE_DUE}}
+                            </span>
+                            <p class="card-text mt-2">Reply to at least two classmates' posts.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section aria-labelledby="grading-heading">
+            <h2 id="grading-heading">Grading Criteria</h2>
+            <div class="grading-section" role="note">
+                {{GRADING_CRITERIA}}
+            </div>
+        </section>
+
+        <section aria-labelledby="tips-heading">
+            <h2 id="tips-heading">Tips for Success</h2>
+            <ul>
+                <li><strong>Start early:</strong> Give yourself time to reflect and craft a thoughtful response</li>
+                <li><strong>Read first:</strong> Review all posts before responding to add unique insights</li>
+                <li><strong>Be specific:</strong> Use concrete examples to support your points</li>
+                <li><strong>Ask questions:</strong> Engage your classmates with thoughtful follow-up questions</li>
+                <li><strong>Proofread:</strong> Review your post before submitting</li>
+            </ul>
+        </section>
+
+        <nav aria-label="Activity navigation" class="mt-4 pt-4 border-top">
+            <div class="d-flex justify-content-between">
+                <a href="{{PREV_ACTIVITY}}" class="btn btn-outline-primary">
+                    <span aria-hidden="true">&larr;</span> Previous Activity
+                </a>
+                <a href="{{NEXT_ACTIVITY}}" class="btn btn-primary">
+                    Next Activity <span aria-hidden="true">&rarr;</span>
+                </a>
+            </div>
+        </nav>
+    </main>
+
+    <footer role="contentinfo" class="text-center py-3 mt-4 border-top">
+        <p class="mb-0">&copy; {{YEAR}} {{INSTITUTION}}. All rights reserved.</p>
+    </footer>
+</body>
+</html>

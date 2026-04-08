@@ -1,0 +1,492 @@
+<!--
+    Template Name: Self-Check Template
+    Category: interactive
+    WCAG Compliance: 2.2 AA
+    Brightspace Compatible: Yes
+
+    Template Variables:
+    - {{SELFCHECK_ID}}: Unique identifier
+    - {{QUESTION}}: The question text
+    - {{OPTION_1_TEXT}}: First option text
+    - {{OPTION_1_CORRECT}}: 'true' or 'false'
+    - {{OPTION_1_FEEDBACK}}: Feedback for selecting this option
+    - Repeat for OPTION_2_, OPTION_3_, OPTION_4_
+    - {{EXPLANATION}}: Full explanation shown after answering
+
+    Dependencies: Minimal JavaScript (included)
+
+    Usage Notes:
+    - Provides immediate formative feedback
+    - Single correct answer (radio buttons)
+    - Feedback is specific to each option
+    - Full explanation reveals after attempt
+    - Can be reset and retried
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Self-Check Component</title>
+    <style>
+        /* Courseforge CSS Variables */
+        :root {
+            --cf-primary: #2c5aa0;
+            --cf-primary-dark: #1e3d6f;
+            --cf-primary-light: #e7f3ff;
+            --cf-success-dark: #1e7e34;
+            --cf-success-light: #d4edda;
+            --cf-danger-dark: #721c24;
+            --cf-danger-light: #f8d7da;
+            --cf-text: #212529;
+            --cf-text-muted: #6c757d;
+            --cf-background: #ffffff;
+            --cf-background-alt: #f8f9fa;
+            --cf-border: #dee2e6;
+            --cf-border-radius: 8px;
+            --cf-font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            --cf-space-2: 0.5rem;
+            --cf-space-3: 0.75rem;
+            --cf-space-4: 1rem;
+            --cf-space-5: 1.25rem;
+            --cf-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            --cf-transition: 200ms ease;
+        }
+
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: var(--cf-space-4);
+            font-family: var(--cf-font-family);
+            line-height: 1.6;
+            color: var(--cf-text);
+        }
+
+        /* ========================================
+           SELF-CHECK CONTAINER
+           ======================================== */
+        .self-check {
+            background-color: var(--cf-background);
+            border: 1px solid var(--cf-border);
+            border-radius: var(--cf-border-radius);
+            box-shadow: var(--cf-shadow);
+            overflow: hidden;
+            margin: var(--cf-space-4) 0;
+        }
+
+        /* ========================================
+           HEADER
+           ======================================== */
+        .self-check-header {
+            display: flex;
+            align-items: center;
+            gap: var(--cf-space-3);
+            padding: var(--cf-space-4);
+            background-color: var(--cf-primary);
+            color: white;
+        }
+
+        .self-check-icon {
+            font-size: 1.5rem;
+        }
+
+        .self-check-title {
+            margin: 0;
+            font-size: 1.125rem;
+            font-weight: 600;
+        }
+
+        /* ========================================
+           QUESTION
+           ======================================== */
+        .self-check-question {
+            padding: var(--cf-space-5);
+            background-color: var(--cf-background-alt);
+            border-bottom: 1px solid var(--cf-border);
+        }
+
+        .self-check-question p {
+            margin: 0;
+            font-size: 1.0625rem;
+            font-weight: 500;
+        }
+
+        /* ========================================
+           OPTIONS
+           ======================================== */
+        .self-check-options {
+            padding: var(--cf-space-4);
+        }
+
+        .self-check-option {
+            display: flex;
+            align-items: flex-start;
+            padding: var(--cf-space-3) var(--cf-space-4);
+            margin-bottom: var(--cf-space-2);
+            background-color: var(--cf-background);
+            border: 2px solid var(--cf-border);
+            border-radius: var(--cf-border-radius);
+            cursor: pointer;
+            transition: border-color var(--cf-transition), background-color var(--cf-transition);
+        }
+
+        .self-check-option:hover {
+            border-color: var(--cf-primary);
+            background-color: var(--cf-primary-light);
+        }
+
+        .self-check-option:focus-within {
+            outline: 2px solid var(--cf-primary);
+            outline-offset: 2px;
+        }
+
+        /* Radio input */
+        .self-check-option input[type="radio"] {
+            flex-shrink: 0;
+            width: 20px;
+            height: 20px;
+            margin: 2px var(--cf-space-3) 0 0;
+            cursor: pointer;
+        }
+
+        .self-check-option input[type="radio"]:focus {
+            outline: none; /* Focus handled by parent */
+        }
+
+        /* Option text */
+        .option-text {
+            flex: 1;
+        }
+
+        /* Feedback message */
+        .option-feedback {
+            display: none;
+            margin-top: var(--cf-space-2);
+            padding: var(--cf-space-2) var(--cf-space-3);
+            border-radius: var(--cf-border-radius);
+            font-size: 0.875rem;
+        }
+
+        /* Answered states */
+        .self-check[data-answered="true"] .self-check-option {
+            pointer-events: none;
+        }
+
+        .self-check-option.correct {
+            border-color: var(--cf-success-dark);
+            background-color: var(--cf-success-light);
+        }
+
+        .self-check-option.correct .option-feedback {
+            display: block;
+            background-color: var(--cf-success-dark);
+            color: white;
+        }
+
+        .self-check-option.incorrect {
+            border-color: var(--cf-danger-dark);
+            background-color: var(--cf-danger-light);
+        }
+
+        .self-check-option.incorrect .option-feedback {
+            display: block;
+            background-color: var(--cf-danger-dark);
+            color: white;
+        }
+
+        /* ========================================
+           ACTIONS
+           ======================================== */
+        .self-check-actions {
+            display: flex;
+            gap: var(--cf-space-3);
+            padding: var(--cf-space-4);
+            border-top: 1px solid var(--cf-border);
+            background-color: var(--cf-background-alt);
+        }
+
+        .self-check-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: var(--cf-space-3) var(--cf-space-5);
+            font-family: inherit;
+            font-size: 1rem;
+            font-weight: 500;
+            border: none;
+            border-radius: var(--cf-border-radius);
+            cursor: pointer;
+            transition: background-color var(--cf-transition);
+            min-height: 44px; /* WCAG target size */
+        }
+
+        .self-check-btn:focus {
+            outline: 2px solid var(--cf-primary);
+            outline-offset: 2px;
+        }
+
+        .self-check-submit {
+            background-color: var(--cf-primary);
+            color: white;
+        }
+
+        .self-check-submit:hover {
+            background-color: var(--cf-primary-dark);
+        }
+
+        .self-check-submit:disabled {
+            background-color: var(--cf-text-muted);
+            cursor: not-allowed;
+        }
+
+        .self-check-reset {
+            background-color: transparent;
+            color: var(--cf-primary);
+            border: 1px solid var(--cf-primary);
+            display: none;
+        }
+
+        .self-check-reset:hover {
+            background-color: var(--cf-primary-light);
+        }
+
+        .self-check[data-answered="true"] .self-check-submit {
+            display: none;
+        }
+
+        .self-check[data-answered="true"] .self-check-reset {
+            display: inline-flex;
+        }
+
+        /* ========================================
+           EXPLANATION
+           ======================================== */
+        .self-check-explanation {
+            padding: var(--cf-space-4);
+            background-color: var(--cf-primary-light);
+            border-top: 1px solid var(--cf-border);
+        }
+
+        .self-check-explanation[hidden] {
+            display: none;
+        }
+
+        .self-check-explanation h4 {
+            margin: 0 0 var(--cf-space-2) 0;
+            color: var(--cf-primary-dark);
+        }
+
+        .self-check-explanation p {
+            margin: 0;
+        }
+
+        /* ========================================
+           ACCESSIBILITY
+           ======================================== */
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        /* ========================================
+           PRINT STYLES
+           ======================================== */
+        @media print {
+            .self-check-actions {
+                display: none;
+            }
+
+            .self-check-explanation {
+                display: block !important;
+            }
+
+            .self-check-option {
+                border: 1px solid #000;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- SELF-CHECK COMPONENT -->
+    <div class="self-check" id="{{SELFCHECK_ID}}" data-answered="false">
+
+        <!-- Header -->
+        <div class="self-check-header">
+            <span class="self-check-icon" aria-hidden="true">&#10003;</span>
+            <h3 class="self-check-title">Knowledge Check</h3>
+        </div>
+
+        <!-- Question -->
+        <div class="self-check-question">
+            <p id="{{SELFCHECK_ID}}-question">{{QUESTION}}</p>
+        </div>
+
+        <!-- Options -->
+        <fieldset class="self-check-options" aria-labelledby="{{SELFCHECK_ID}}-question">
+            <legend class="sr-only">Select your answer</legend>
+
+            <label class="self-check-option">
+                <input type="radio"
+                       name="{{SELFCHECK_ID}}"
+                       value="1"
+                       data-correct="{{OPTION_1_CORRECT}}"
+                       data-feedback="{{OPTION_1_FEEDBACK}}">
+                <span class="option-text">{{OPTION_1_TEXT}}</span>
+                <span class="option-feedback" aria-live="polite"></span>
+            </label>
+
+            <label class="self-check-option">
+                <input type="radio"
+                       name="{{SELFCHECK_ID}}"
+                       value="2"
+                       data-correct="{{OPTION_2_CORRECT}}"
+                       data-feedback="{{OPTION_2_FEEDBACK}}">
+                <span class="option-text">{{OPTION_2_TEXT}}</span>
+                <span class="option-feedback" aria-live="polite"></span>
+            </label>
+
+            <label class="self-check-option">
+                <input type="radio"
+                       name="{{SELFCHECK_ID}}"
+                       value="3"
+                       data-correct="{{OPTION_3_CORRECT}}"
+                       data-feedback="{{OPTION_3_FEEDBACK}}">
+                <span class="option-text">{{OPTION_3_TEXT}}</span>
+                <span class="option-feedback" aria-live="polite"></span>
+            </label>
+
+            <label class="self-check-option">
+                <input type="radio"
+                       name="{{SELFCHECK_ID}}"
+                       value="4"
+                       data-correct="{{OPTION_4_CORRECT}}"
+                       data-feedback="{{OPTION_4_FEEDBACK}}">
+                <span class="option-text">{{OPTION_4_TEXT}}</span>
+                <span class="option-feedback" aria-live="polite"></span>
+            </label>
+
+        </fieldset>
+
+        <!-- Actions -->
+        <div class="self-check-actions">
+            <button type="button" class="self-check-btn self-check-submit" disabled>
+                Check Answer
+            </button>
+            <button type="button" class="self-check-btn self-check-reset">
+                Try Again
+            </button>
+        </div>
+
+        <!-- Explanation (shown after answering) -->
+        <div class="self-check-explanation" hidden>
+            <h4>Explanation</h4>
+            <p>{{EXPLANATION}}</p>
+        </div>
+
+    </div>
+
+    <!-- Self-Check Script -->
+    <script>
+        (function() {
+            'use strict';
+
+            document.querySelectorAll('.self-check').forEach(function(component) {
+                var options = component.querySelectorAll('input[type="radio"]');
+                var submitBtn = component.querySelector('.self-check-submit');
+                var resetBtn = component.querySelector('.self-check-reset');
+                var explanation = component.querySelector('.self-check-explanation');
+
+                // Enable submit when option selected
+                options.forEach(function(option) {
+                    option.addEventListener('change', function() {
+                        submitBtn.disabled = false;
+                    });
+                });
+
+                // Handle submit
+                submitBtn.addEventListener('click', function() {
+                    var selected = component.querySelector('input[type="radio"]:checked');
+                    if (!selected) return;
+
+                    var label = selected.closest('.self-check-option');
+                    var isCorrect = selected.dataset.correct === 'true';
+                    var feedback = selected.dataset.feedback;
+                    var feedbackEl = label.querySelector('.option-feedback');
+
+                    // Mark answered
+                    component.dataset.answered = 'true';
+
+                    // Show feedback
+                    if (isCorrect) {
+                        label.classList.add('correct');
+                        feedbackEl.textContent = feedback || 'Correct!';
+                    } else {
+                        label.classList.add('incorrect');
+                        feedbackEl.textContent = feedback || 'Try again.';
+
+                        // Also highlight correct answer
+                        options.forEach(function(opt) {
+                            if (opt.dataset.correct === 'true') {
+                                opt.closest('.self-check-option').classList.add('correct');
+                                var correctFeedback = opt.closest('.self-check-option').querySelector('.option-feedback');
+                                correctFeedback.textContent = opt.dataset.feedback || 'This is the correct answer.';
+                            }
+                        });
+                    }
+
+                    // Show explanation
+                    if (explanation) {
+                        explanation.hidden = false;
+                    }
+
+                    // Announce result to screen readers
+                    var announcement = document.createElement('div');
+                    announcement.setAttribute('role', 'status');
+                    announcement.setAttribute('aria-live', 'polite');
+                    announcement.className = 'sr-only';
+                    announcement.textContent = isCorrect ? 'Correct answer!' : 'Incorrect. The correct answer has been highlighted.';
+                    component.appendChild(announcement);
+                });
+
+                // Handle reset
+                resetBtn.addEventListener('click', function() {
+                    component.dataset.answered = 'false';
+
+                    // Clear selections and states
+                    options.forEach(function(option) {
+                        option.checked = false;
+                        var label = option.closest('.self-check-option');
+                        label.classList.remove('correct', 'incorrect');
+                        label.querySelector('.option-feedback').textContent = '';
+                    });
+
+                    // Hide explanation
+                    if (explanation) {
+                        explanation.hidden = true;
+                    }
+
+                    // Disable submit
+                    submitBtn.disabled = true;
+
+                    // Remove any announcements
+                    var announcements = component.querySelectorAll('[role="status"]');
+                    announcements.forEach(function(a) { a.remove(); });
+                });
+            });
+        })();
+    </script>
+
+</body>
+</html>

@@ -1,0 +1,59 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://libv2.local/schema/catalog_entry.schema.json",
+  "title": "Catalog Entry",
+  "description": "A course entry in the master catalog",
+  "type": "object",
+  "required": ["slug", "title", "division", "primary_domain"],
+  "properties": {
+    "slug": {
+      "type": "string",
+      "description": "URL-safe unique identifier"
+    },
+    "title": {
+      "type": "string",
+      "description": "Human-readable course title"
+    },
+    "division": {
+      "type": "string",
+      "enum": ["STEM", "ARTS"]
+    },
+    "primary_domain": {
+      "type": "string"
+    },
+    "secondary_domains": {
+      "type": "array",
+      "items": {"type": "string"},
+      "default": []
+    },
+    "subdomains": {
+      "type": "array",
+      "items": {"type": "string"},
+      "default": []
+    },
+    "chunk_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "concept_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "token_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "difficulty_primary": {
+      "type": "string",
+      "enum": ["foundational", "intermediate", "advanced", "mixed"]
+    },
+    "language": {
+      "type": "string",
+      "default": "en"
+    },
+    "validation_status": {
+      "type": "string",
+      "enum": ["pending", "validated", "failed"]
+    }
+  }
+}

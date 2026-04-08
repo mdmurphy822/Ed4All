@@ -1,0 +1,413 @@
+<!--
+    Template Name: Tabs Template
+    Category: component
+    WCAG Compliance: 2.2 AA
+    Brightspace Compatible: Yes
+
+    Template Variables:
+    - {{TABS_ID}}: Unique identifier for the tab group
+    - {{TABS_LABEL}}: Accessible label for the tab list
+    - {{TAB_1_LABEL}}: First tab label
+    - {{TAB_1_CONTENT}}: First tab panel content (supports HTML)
+    - {{TAB_1_ACTIVE}}: Add 'true' for default active tab
+    - Repeat pattern for additional tabs (TAB_2_, TAB_3_, etc.)
+
+    Dependencies: Minimal JavaScript (included, keyboard navigation)
+
+    Usage Notes:
+    - ARIA compliant tab pattern with keyboard navigation
+    - Arrow keys navigate between tabs
+    - Enter/Space activates tab
+    - Only one tab can be active at a time
+    - First tab is active by default
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Tabs Component</title>
+    <style>
+        /* Courseforge CSS Variables */
+        :root {
+            --cf-primary: #2c5aa0;
+            --cf-primary-dark: #1e3d6f;
+            --cf-primary-light: #e7f3ff;
+            --cf-text: #212529;
+            --cf-text-muted: #6c757d;
+            --cf-background: #ffffff;
+            --cf-background-alt: #f8f9fa;
+            --cf-border: #dee2e6;
+            --cf-border-radius: 8px;
+            --cf-font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            --cf-space-2: 0.5rem;
+            --cf-space-3: 0.75rem;
+            --cf-space-4: 1rem;
+            --cf-space-5: 1.25rem;
+            --cf-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+            --cf-transition: 200ms ease;
+        }
+
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: var(--cf-space-4);
+            font-family: var(--cf-font-family);
+            line-height: 1.6;
+            color: var(--cf-text);
+        }
+
+        /* ========================================
+           TABS CONTAINER
+           ======================================== */
+        .tabs {
+            margin: var(--cf-space-4) 0;
+        }
+
+        /* ========================================
+           TAB LIST (navigation)
+           ======================================== */
+        .tab-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: var(--cf-space-2);
+            margin: 0;
+            padding: 0;
+            list-style: none;
+            border-bottom: 2px solid var(--cf-border);
+        }
+
+        /* ========================================
+           TAB BUTTONS
+           ======================================== */
+        .tab-button {
+            display: inline-flex;
+            align-items: center;
+            padding: var(--cf-space-3) var(--cf-space-4);
+            margin-bottom: -2px;
+            background: transparent;
+            border: none;
+            border-bottom: 2px solid transparent;
+            font-family: inherit;
+            font-size: 1rem;
+            font-weight: 500;
+            color: var(--cf-text-muted);
+            cursor: pointer;
+            transition: color var(--cf-transition), border-color var(--cf-transition), background-color var(--cf-transition);
+            min-height: 44px; /* WCAG target size */
+            white-space: nowrap;
+        }
+
+        .tab-button:hover {
+            color: var(--cf-primary);
+            background-color: var(--cf-background-alt);
+        }
+
+        .tab-button:focus {
+            outline: none;
+            box-shadow: inset 0 0 0 2px var(--cf-primary);
+            border-radius: var(--cf-border-radius) var(--cf-border-radius) 0 0;
+        }
+
+        .tab-button:focus-visible {
+            outline: 2px solid var(--cf-primary);
+            outline-offset: 2px;
+        }
+
+        /* Active tab */
+        .tab-button[aria-selected="true"] {
+            color: var(--cf-primary);
+            border-bottom-color: var(--cf-primary);
+            background-color: var(--cf-background);
+        }
+
+        /* Tab icon (optional) */
+        .tab-icon {
+            margin-right: var(--cf-space-2);
+            font-size: 1.125rem;
+        }
+
+        /* ========================================
+           TAB PANELS
+           ======================================== */
+        .tab-panel {
+            padding: var(--cf-space-5);
+            background-color: var(--cf-background);
+            border: 1px solid var(--cf-border);
+            border-top: none;
+            border-radius: 0 0 var(--cf-border-radius) var(--cf-border-radius);
+        }
+
+        .tab-panel[hidden] {
+            display: none;
+        }
+
+        .tab-panel > *:first-child {
+            margin-top: 0;
+        }
+
+        .tab-panel > *:last-child {
+            margin-bottom: 0;
+        }
+
+        .tab-panel h3 {
+            color: var(--cf-primary-dark);
+            margin-top: 0;
+        }
+
+        .tab-panel p {
+            margin: 0 0 1rem 0;
+        }
+
+        .tab-panel ul,
+        .tab-panel ol {
+            margin: 0 0 1rem 0;
+            padding-left: 1.5rem;
+        }
+
+        /* ========================================
+           VERTICAL TABS VARIANT
+           ======================================== */
+        .tabs-vertical {
+            display: flex;
+            gap: 0;
+        }
+
+        .tabs-vertical .tab-list {
+            flex-direction: column;
+            border-bottom: none;
+            border-right: 2px solid var(--cf-border);
+            min-width: 200px;
+        }
+
+        .tabs-vertical .tab-button {
+            margin-bottom: 0;
+            margin-right: -2px;
+            border-bottom: none;
+            border-right: 2px solid transparent;
+            text-align: left;
+            justify-content: flex-start;
+        }
+
+        .tabs-vertical .tab-button[aria-selected="true"] {
+            border-right-color: var(--cf-primary);
+            border-bottom-color: transparent;
+        }
+
+        .tabs-vertical .tab-panel {
+            flex: 1;
+            border-top: 1px solid var(--cf-border);
+            border-radius: 0 var(--cf-border-radius) var(--cf-border-radius) 0;
+        }
+
+        /* ========================================
+           RESPONSIVE
+           ======================================== */
+        @media (max-width: 600px) {
+            .tab-list {
+                flex-direction: column;
+                border-bottom: none;
+            }
+
+            .tab-button {
+                width: 100%;
+                margin-bottom: 0;
+                border-bottom: 1px solid var(--cf-border);
+                border-left: 3px solid transparent;
+                justify-content: flex-start;
+            }
+
+            .tab-button[aria-selected="true"] {
+                border-bottom-color: var(--cf-border);
+                border-left-color: var(--cf-primary);
+                background-color: var(--cf-primary-light);
+            }
+
+            .tab-panel {
+                border-top: 1px solid var(--cf-border);
+            }
+
+            /* Vertical tabs stack on mobile */
+            .tabs-vertical {
+                flex-direction: column;
+            }
+
+            .tabs-vertical .tab-list {
+                border-right: none;
+                min-width: auto;
+            }
+        }
+
+        /* ========================================
+           PRINT STYLES
+           ======================================== */
+        @media print {
+            .tab-list {
+                display: none;
+            }
+
+            .tab-panel {
+                display: block !important;
+                border: 1px solid #000;
+                margin-bottom: 1rem;
+                page-break-inside: avoid;
+            }
+
+            .tab-panel::before {
+                content: attr(aria-labelledby);
+                display: block;
+                font-weight: bold;
+                margin-bottom: 0.5rem;
+                border-bottom: 1px solid #000;
+                padding-bottom: 0.5rem;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- TABS COMPONENT -->
+    <div class="tabs" id="{{TABS_ID}}">
+
+        <!-- Tab List -->
+        <div class="tab-list" role="tablist" aria-label="{{TABS_LABEL}}">
+            <button role="tab"
+                    class="tab-button"
+                    id="{{TABS_ID}}-tab-1"
+                    aria-selected="true"
+                    aria-controls="{{TABS_ID}}-panel-1"
+                    tabindex="0">
+                {{TAB_1_LABEL}}
+            </button>
+            <button role="tab"
+                    class="tab-button"
+                    id="{{TABS_ID}}-tab-2"
+                    aria-selected="false"
+                    aria-controls="{{TABS_ID}}-panel-2"
+                    tabindex="-1">
+                {{TAB_2_LABEL}}
+            </button>
+            <button role="tab"
+                    class="tab-button"
+                    id="{{TABS_ID}}-tab-3"
+                    aria-selected="false"
+                    aria-controls="{{TABS_ID}}-panel-3"
+                    tabindex="-1">
+                {{TAB_3_LABEL}}
+            </button>
+        </div>
+
+        <!-- Tab Panels -->
+        <div role="tabpanel"
+             class="tab-panel"
+             id="{{TABS_ID}}-panel-1"
+             aria-labelledby="{{TABS_ID}}-tab-1"
+             tabindex="0">
+            {{TAB_1_CONTENT}}
+        </div>
+
+        <div role="tabpanel"
+             class="tab-panel"
+             id="{{TABS_ID}}-panel-2"
+             aria-labelledby="{{TABS_ID}}-tab-2"
+             tabindex="0"
+             hidden>
+            {{TAB_2_CONTENT}}
+        </div>
+
+        <div role="tabpanel"
+             class="tab-panel"
+             id="{{TABS_ID}}-panel-3"
+             aria-labelledby="{{TABS_ID}}-tab-3"
+             tabindex="0"
+             hidden>
+            {{TAB_3_CONTENT}}
+        </div>
+
+    </div>
+
+    <!-- Keyboard Navigation Script -->
+    <script>
+        (function() {
+            'use strict';
+
+            // Initialize all tab components
+            document.querySelectorAll('[role="tablist"]').forEach(function(tablist) {
+                var tabs = tablist.querySelectorAll('[role="tab"]');
+                var tabsArray = Array.prototype.slice.call(tabs);
+
+                // Handle click on tabs
+                tabs.forEach(function(tab) {
+                    tab.addEventListener('click', function() {
+                        activateTab(tab, tablist);
+                    });
+
+                    // Handle keyboard navigation
+                    tab.addEventListener('keydown', function(event) {
+                        var index = tabsArray.indexOf(tab);
+                        var newIndex;
+
+                        switch(event.key) {
+                            case 'ArrowRight':
+                            case 'ArrowDown':
+                                event.preventDefault();
+                                newIndex = (index + 1) % tabs.length;
+                                tabs[newIndex].focus();
+                                break;
+                            case 'ArrowLeft':
+                            case 'ArrowUp':
+                                event.preventDefault();
+                                newIndex = (index - 1 + tabs.length) % tabs.length;
+                                tabs[newIndex].focus();
+                                break;
+                            case 'Home':
+                                event.preventDefault();
+                                tabs[0].focus();
+                                break;
+                            case 'End':
+                                event.preventDefault();
+                                tabs[tabs.length - 1].focus();
+                                break;
+                            case 'Enter':
+                            case ' ':
+                                event.preventDefault();
+                                activateTab(tab, tablist);
+                                break;
+                        }
+                    });
+                });
+            });
+
+            function activateTab(tab, tablist) {
+                var tabs = tablist.querySelectorAll('[role="tab"]');
+                var container = tablist.parentElement;
+
+                // Deactivate all tabs
+                tabs.forEach(function(t) {
+                    t.setAttribute('aria-selected', 'false');
+                    t.setAttribute('tabindex', '-1');
+                    var panelId = t.getAttribute('aria-controls');
+                    var panel = container.querySelector('#' + panelId);
+                    if (panel) {
+                        panel.hidden = true;
+                    }
+                });
+
+                // Activate clicked tab
+                tab.setAttribute('aria-selected', 'true');
+                tab.setAttribute('tabindex', '0');
+                var panelId = tab.getAttribute('aria-controls');
+                var panel = container.querySelector('#' + panelId);
+                if (panel) {
+                    panel.hidden = false;
+                }
+            }
+        })();
+    </script>
+
+</body>
+</html>

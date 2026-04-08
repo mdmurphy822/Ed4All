@@ -1,0 +1,319 @@
+/*
+ * Dyslexia-Friendly Typography for Courseforge
+ * =============================================
+ * Optimized typography settings to improve readability
+ * for users with dyslexia or reading difficulties.
+ *
+ * Key Features:
+ * - Increased letter and word spacing
+ * - Larger line height
+ * - Sans-serif font with distinct letterforms
+ * - Left-aligned text (no justification)
+ * - Increased paragraph spacing
+ *
+ * Usage: Add this CSS after your template styles to override
+ * default typography with dyslexia-friendly alternatives.
+ */
+
+:root {
+    /* ========================================
+       DYSLEXIA-FRIENDLY FONT STACK
+       ======================================== */
+    /*
+     * OpenDyslexic is specifically designed for dyslexia.
+     * Fallback to other readable sans-serif fonts.
+     * If using OpenDyslexic, include the font files or use a CDN.
+     */
+    --cf-font-family: 'OpenDyslexic', 'Lexie Readable', 'Comic Sans MS',
+                       'Verdana', 'Arial', sans-serif;
+    --cf-font-family-mono: 'OpenDyslexicMono', 'Consolas', 'Courier New', monospace;
+
+    /* ========================================
+       TYPOGRAPHY SETTINGS
+       ======================================== */
+
+    /* Larger base font size */
+    --cf-font-size-base: 1.125rem;   /* 18px instead of 16px */
+
+    /* Increased line height for better tracking */
+    --cf-line-height-base: 1.8;      /* 1.8 instead of 1.6 */
+    --cf-line-height-tight: 1.5;
+    --cf-line-height-loose: 2.0;
+
+    /* Letter spacing */
+    --cf-letter-spacing: 0.05em;     /* Slightly increased */
+    --cf-letter-spacing-wide: 0.1em;
+
+    /* Word spacing */
+    --cf-word-spacing: 0.15em;
+
+    /* Paragraph spacing */
+    --cf-paragraph-spacing: 1.5em;
+}
+
+/* ========================================
+   BASE TYPOGRAPHY
+   ======================================== */
+body {
+    font-family: var(--cf-font-family);
+    font-size: var(--cf-font-size-base);
+    line-height: var(--cf-line-height-base);
+    letter-spacing: var(--cf-letter-spacing);
+    word-spacing: var(--cf-word-spacing);
+
+    /* Never justify text - harder to read for dyslexic users */
+    text-align: left !important;
+}
+
+/* ========================================
+   PARAGRAPH STYLING
+   ======================================== */
+p {
+    margin-bottom: var(--cf-paragraph-spacing);
+    max-width: 75ch; /* Optimal line length for readability */
+}
+
+/* Avoid hyphenation */
+p, li, td, th, dd {
+    hyphens: none !important;
+    -webkit-hyphens: none !important;
+    word-break: normal;
+    overflow-wrap: normal;
+}
+
+/* ========================================
+   HEADINGS
+   ======================================== */
+h1, h2, h3, h4, h5, h6 {
+    font-weight: 700; /* Bold for clear hierarchy */
+    line-height: var(--cf-line-height-tight);
+    letter-spacing: 0.02em;
+    margin-top: 1.5em;
+    margin-bottom: 0.75em;
+}
+
+h1 {
+    font-size: 2rem;
+    border-bottom: 3px solid currentColor;
+    padding-bottom: 0.5em;
+}
+
+h2 {
+    font-size: 1.75rem;
+}
+
+h3 {
+    font-size: 1.5rem;
+}
+
+h4 {
+    font-size: 1.25rem;
+}
+
+/* ========================================
+   LISTS
+   ======================================== */
+ul, ol {
+    padding-left: 2.5em; /* More space for bullet/number */
+    margin-bottom: var(--cf-paragraph-spacing);
+}
+
+li {
+    margin-bottom: 0.75em;
+    padding-left: 0.5em; /* Space after bullet */
+}
+
+/* Larger bullet points */
+ul li::marker {
+    font-size: 1.2em;
+}
+
+/* ========================================
+   LINKS
+   ======================================== */
+a {
+    /* Underline is essential for link recognition */
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+    text-underline-offset: 4px;
+
+    /* Use color AND underline (not color alone) */
+    font-weight: 500;
+}
+
+a:hover {
+    text-decoration-thickness: 3px;
+}
+
+/* ========================================
+   CODE AND PREFORMATTED TEXT
+   ======================================== */
+code, pre, kbd, samp {
+    font-family: var(--cf-font-family-mono);
+    font-size: 0.95em;
+    letter-spacing: 0.03em;
+}
+
+pre {
+    line-height: 1.6;
+    padding: 1.5em;
+    overflow-x: auto;
+}
+
+/* ========================================
+   TABLES
+   ======================================== */
+table {
+    font-size: var(--cf-font-size-base);
+}
+
+th, td {
+    padding: 1em 1.25em;
+    text-align: left;
+}
+
+/* Alternate row colors for easier tracking */
+tbody tr:nth-child(odd) {
+    background-color: rgba(0, 0, 0, 0.03);
+}
+
+/* ========================================
+   FORM ELEMENTS
+   ======================================== */
+input, select, textarea, button {
+    font-family: var(--cf-font-family);
+    font-size: var(--cf-font-size-base);
+    line-height: var(--cf-line-height-base);
+    letter-spacing: var(--cf-letter-spacing);
+}
+
+label {
+    font-weight: 500;
+    display: block;
+    margin-bottom: 0.5em;
+}
+
+/* ========================================
+   CALLOUT AND CONTENT BOXES
+   ======================================== */
+.callout,
+.key-concept,
+.example-box,
+.important-note,
+.accordion-content,
+.tab-panel,
+.self-check-question,
+.reveal-content {
+    font-size: var(--cf-font-size-base);
+    line-height: var(--cf-line-height-base);
+    letter-spacing: var(--cf-letter-spacing);
+}
+
+/* ========================================
+   EMPHASIS
+   ======================================== */
+strong, b {
+    font-weight: 700;
+    /* Slight background helps distinguish */
+    background-color: rgba(255, 255, 0, 0.15);
+    padding: 0 0.2em;
+    border-radius: 2px;
+}
+
+em, i {
+    /* Italic can be hard to read - use oblique or keep upright */
+    font-style: normal;
+    text-decoration: underline;
+    text-decoration-style: dotted;
+}
+
+/* ========================================
+   BLOCKQUOTES
+   ======================================== */
+blockquote {
+    font-size: 1.1em;
+    line-height: 1.9;
+    padding: 1.5em 2em;
+    margin: 1.5em 0;
+    border-left: 5px solid currentColor;
+    background-color: rgba(0, 0, 0, 0.02);
+}
+
+/* ========================================
+   READING AIDS
+   ======================================== */
+
+/* Optional: Reading ruler effect on hover */
+.reading-aid-hover p:hover,
+.reading-aid-hover li:hover {
+    background-color: rgba(255, 255, 0, 0.1);
+    box-shadow: 0 0 0 5px rgba(255, 255, 0, 0.1);
+}
+
+/* Optional: Focus line indicator */
+.reading-aid-focus *:focus {
+    background-color: rgba(255, 255, 0, 0.2);
+}
+
+/* ========================================
+   RESPONSIVE ADJUSTMENTS
+   ======================================== */
+@media (max-width: 768px) {
+    :root {
+        --cf-font-size-base: 1.0625rem; /* Slightly smaller on mobile */
+        --cf-line-height-base: 1.7;
+    }
+
+    p {
+        max-width: 100%;
+    }
+}
+
+/* ========================================
+   PRINT STYLES
+   ======================================== */
+@media print {
+    body {
+        font-size: 12pt;
+        line-height: 1.5;
+        letter-spacing: normal;
+    }
+
+    p {
+        max-width: none;
+    }
+}
+
+/* ========================================
+   OPTIONAL: OPENDYSLEXIC FONT IMPORT
+   Uncomment to use OpenDyslexic font
+   ======================================== */
+/*
+@font-face {
+    font-family: 'OpenDyslexic';
+    src: url('https://cdn.jsdelivr.net/npm/opendyslexic@1.0.3/OpenDyslexic-Regular.otf') format('opentype');
+    font-weight: 400;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: 'OpenDyslexic';
+    src: url('https://cdn.jsdelivr.net/npm/opendyslexic@1.0.3/OpenDyslexic-Bold.otf') format('opentype');
+    font-weight: 700;
+    font-style: normal;
+}
+
+@font-face {
+    font-family: 'OpenDyslexic';
+    src: url('https://cdn.jsdelivr.net/npm/opendyslexic@1.0.3/OpenDyslexic-Italic.otf') format('opentype');
+    font-weight: 400;
+    font-style: italic;
+}
+
+@font-face {
+    font-family: 'OpenDyslexicMono';
+    src: url('https://cdn.jsdelivr.net/npm/opendyslexic@1.0.3/OpenDyslexicMono-Regular.otf') format('opentype');
+    font-weight: 400;
+    font-style: normal;
+}
+*/

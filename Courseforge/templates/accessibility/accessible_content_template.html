@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{PAGE_TITLE}} - {{COURSE_NAME}}</title>
+
+    <!-- Bootstrap 4.3.1 CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@4.3.1/dist/css/bootstrap.min.css"
+          integrity="sha384-ggOyR0iXCbMQv3Xipma34MD+dH/1fQ784/j6cY/iJTQUOhcWr7x9JvoRxT2MZw1T"
+          crossorigin="anonymous">
+
+    <!-- Accessible Custom Styles -->
+    <style>
+        /* Skip Link - Hidden until focused */
+        .skip-link {
+            position: absolute;
+            top: -40px;
+            left: 0;
+            background: #2c5aa0;
+            color: white;
+            padding: 8px 16px;
+            z-index: 100;
+            text-decoration: none;
+            border-radius: 0 0 4px 0;
+        }
+        .skip-link:focus {
+            top: 0;
+            outline: 3px solid #ffc107;
+            outline-offset: 2px;
+        }
+
+        /* Focus Indicators - Enhanced visibility */
+        a:focus, button:focus, input:focus, select:focus, textarea:focus,
+        [tabindex]:focus {
+            outline: 3px solid #ffc107;
+            outline-offset: 2px;
+        }
+
+        /* High Contrast Colors - WCAG 4.5:1 minimum */
+        :root {
+            --cf-text: #1a1a1a;
+            --cf-background: #ffffff;
+            --cf-primary: #2c5aa0;
+            --cf-primary-dark: #1e3d6f;
+            --cf-success: #1e7e34;
+            --cf-warning: #856404;
+            --cf-danger: #bd2130;
+            --cf-info: #117a8b;
+            --cf-light-bg: #f8f9fa;
+            --cf-border: #dee2e6;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            font-size: 1rem;
+            line-height: 1.6;
+            color: var(--cf-text);
+            background-color: var(--cf-background);
+        }
+
+        /* Headings - Clear hierarchy */
+        h1 { font-size: 2.25rem; margin-bottom: 1.5rem; color: var(--cf-primary-dark); }
+        h2 { font-size: 1.75rem; margin-top: 2rem; margin-bottom: 1rem; color: var(--cf-primary-dark); }
+        h3 { font-size: 1.5rem; margin-top: 1.5rem; margin-bottom: 0.75rem; }
+        h4 { font-size: 1.25rem; margin-top: 1.25rem; margin-bottom: 0.5rem; }
+
+        /* Links - Underlined for visibility */
+        a {
+            color: var(--cf-primary);
+            text-decoration: underline;
+        }
+        a:hover {
+            color: var(--cf-primary-dark);
+        }
+
+        /* Lists - Proper spacing */
+        ul, ol {
+            margin-bottom: 1rem;
+            padding-left: 2rem;
+        }
+        li {
+            margin-bottom: 0.5rem;
+        }
+
+        /* Content sections */
+        .content-section {
+            margin-bottom: 2rem;
+        }
+
+        /* HTML5 Details/Summary Accordion */
+        .concept-details {
+            border: 1px solid var(--cf-border);
+            border-radius: 4px;
+            margin-bottom: 0.5rem;
+            background: var(--cf-light-bg);
+        }
+
+        .concept-details summary {
+            padding: 1rem 1.25rem;
+            cursor: pointer;
+            list-style: none;
+        }
+
+        .concept-details summary::-webkit-details-marker {
+            display: none;
+        }
+
+        .concept-details summary::before {
+            content: "+";
+            display: inline-block;
+            width: 1.5rem;
+            font-weight: bold;
+            color: var(--cf-primary);
+        }
+
+        .concept-details[open] summary::before {
+            content: "−";
+        }
+
+        .concept-details summary:focus {
+            outline: 3px solid #ffc107;
+            outline-offset: 2px;
+        }
+
+        .concept-details summary:hover {
+            background: #e9ecef;
+        }
+
+        .concept-details .concept-title {
+            display: inline;
+            font-size: 1rem;
+            font-weight: 600;
+            margin: 0;
+            color: var(--cf-primary);
+        }
+
+        .concept-details .concept-content {
+            padding: 1rem 1.25rem;
+            border-top: 1px solid var(--cf-border);
+            background: white;
+        }
+
+        /* Callout boxes - Color + Icon (not color alone) */
+        .callout {
+            padding: 1rem 1.25rem;
+            margin-bottom: 1rem;
+            border-left: 4px solid;
+            border-radius: 0 4px 4px 0;
+            background-color: var(--cf-light-bg);
+        }
+        .callout-info {
+            border-color: var(--cf-info);
+        }
+        .callout-info::before {
+            content: "ℹ️ Info: ";
+            font-weight: bold;
+        }
+        .callout-warning {
+            border-color: var(--cf-warning);
+            background-color: #fff3cd;
+        }
+        .callout-warning::before {
+            content: "⚠️ Important: ";
+            font-weight: bold;
+        }
+        .callout-success {
+            border-color: var(--cf-success);
+            background-color: #d4edda;
+        }
+        .callout-success::before {
+            content: "✅ Success: ";
+            font-weight: bold;
+        }
+        .callout-danger {
+            border-color: var(--cf-danger);
+            background-color: #f8d7da;
+        }
+        .callout-danger::before {
+            content: "🚫 Warning: ";
+            font-weight: bold;
+        }
+
+        /* Print styles */
+        @media print {
+            .skip-link, nav { display: none; }
+            a[href]::after { content: " (" attr(href) ")"; }
+        }
+    </style>
+</head>
+<body>
+    <!-- Skip Navigation Link -->
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <!-- Header with ARIA landmark -->
+    <header role="banner" class="bg-light py-3 border-bottom">
+        <div class="container">
+            <nav aria-label="Breadcrumb">
+                <ol class="breadcrumb mb-0 bg-transparent p-0">
+                    <li class="breadcrumb-item"><a href="index.html">{{COURSE_NAME}}</a></li>
+                    <li class="breadcrumb-item"><a href="{{MODULE_LINK}}">{{MODULE_NAME}}</a></li>
+                    <li class="breadcrumb-item active" aria-current="page">{{PAGE_TITLE}}</li>
+                </ol>
+            </nav>
+        </div>
+    </header>
+
+    <!-- Main Content with ARIA landmark -->
+    <main id="main-content" role="main" class="container py-4">
+        <!-- Page Title -->
+        <h1>{{PAGE_TITLE}}</h1>
+
+        <!-- Learning Objectives -->
+        <section class="content-section" aria-labelledby="objectives-heading">
+            <h2 id="objectives-heading">Learning Objectives</h2>
+            <p>After completing this section, you will be able to:</p>
+            <ul>
+                <li>{{OBJECTIVE_1}}</li>
+                <li>{{OBJECTIVE_2}}</li>
+                <li>{{OBJECTIVE_3}}</li>
+            </ul>
+        </section>
+
+        <!-- Main Content Section -->
+        <section class="content-section" aria-labelledby="content-heading">
+            <h2 id="content-heading">{{SECTION_TITLE}}</h2>
+
+            <p>{{CONTENT_PARAGRAPH}}</p>
+
+            <!-- Example callout -->
+            <div class="callout callout-info" role="note">
+                This is an example of accessible callout content that uses both color
+                and an icon prefix to convey meaning.
+            </div>
+
+            <!-- Image with proper alt text -->
+            <figure class="figure my-3">
+                <img src="{{IMAGE_SRC}}"
+                     alt="{{IMAGE_ALT_TEXT}}"
+                     class="figure-img img-fluid rounded"
+                     loading="lazy">
+                <figcaption class="figure-caption">
+                    {{IMAGE_CAPTION}}
+                </figcaption>
+            </figure>
+
+            <h3>Subsection</h3>
+            <p>{{SUBSECTION_CONTENT}}</p>
+        </section>
+
+        <!-- Key Concepts with accessible HTML5 accordion -->
+        <section class="content-section" aria-labelledby="concepts-heading">
+            <h2 id="concepts-heading">Key Concepts</h2>
+
+            <details class="concept-details">
+                <summary>
+                    <span class="concept-title">{{CONCEPT_1_TITLE}}</span>
+                </summary>
+                <div class="concept-content">
+                    {{CONCEPT_1_CONTENT}}
+                </div>
+            </details>
+        </section>
+
+        <!-- Navigation to next/previous -->
+        <nav aria-label="Page navigation" class="mt-4 pt-4 border-top">
+            <div class="d-flex justify-content-between">
+                <a href="{{PREV_PAGE}}" class="btn btn-outline-primary">
+                    <span aria-hidden="true">←</span> Previous: {{PREV_TITLE}}
+                </a>
+                <a href="{{NEXT_PAGE}}" class="btn btn-primary">
+                    Next: {{NEXT_TITLE}} <span aria-hidden="true">→</span>
+                </a>
+            </div>
+        </nav>
+    </main>
+
+    <!-- Footer with ARIA landmark -->
+    <footer role="contentinfo" class="bg-light py-3 mt-4 border-top">
+        <div class="container text-center">
+            <p class="mb-0">© {{YEAR}} {{INSTITUTION_NAME}}. All rights reserved.</p>
+        </div>
+    </footer>
+
+    <!-- Bootstrap JS -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.3.1/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

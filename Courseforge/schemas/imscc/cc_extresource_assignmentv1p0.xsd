@@ -1,0 +1,110 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    IMS Common Cartridge Assignment Extension Schema
+    Based on: http://www.imsglobal.org/profile/cc/cc_extensions/cc_extresource_assignmentv1p0_v1p0.xsd
+
+    This schema validates assignment XML files for IMSCC packages.
+    Namespace: http://www.imsglobal.org/xsd/imscc_extensions/assignment
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           xmlns="http://www.imsglobal.org/xsd/imscc_extensions/assignment"
+           targetNamespace="http://www.imsglobal.org/xsd/imscc_extensions/assignment"
+           elementFormDefault="qualified"
+           version="1.0">
+
+    <!-- Root Element -->
+    <xs:element name="assignment" type="Assignment.Type"/>
+
+    <!-- Assignment Type -->
+    <xs:complexType name="Assignment.Type">
+        <xs:sequence>
+            <xs:element name="title" type="xs:normalizedString"/>
+            <xs:element name="text" type="Text.Type" minOccurs="0"/>
+            <xs:element name="instructor_text" type="Text.Type"/>
+            <xs:element name="attachments" type="Attachments.Type" minOccurs="0"/>
+            <xs:element name="gradable" type="Gradable.Type" minOccurs="0"/>
+            <xs:element name="submission_formats" type="SubmissionFormats.Type" minOccurs="0"/>
+            <xs:element name="extensions" type="Extensions.Type" minOccurs="0"/>
+        </xs:sequence>
+        <xs:attribute name="identifier" type="xs:ID"/>
+    </xs:complexType>
+
+    <!-- Text Type with texttype attribute -->
+    <xs:complexType name="Text.Type">
+        <xs:simpleContent>
+            <xs:extension base="xs:string">
+                <xs:attribute name="texttype" type="TextType.Enum" default="text/plain"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+
+    <!-- Text Type Enumeration -->
+    <xs:simpleType name="TextType.Enum">
+        <xs:restriction base="xs:token">
+            <xs:enumeration value="text/plain"/>
+            <xs:enumeration value="text/html"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <!-- Attachments Type -->
+    <xs:complexType name="Attachments.Type">
+        <xs:sequence>
+            <xs:element name="attachment" type="Attachment.Type" maxOccurs="unbounded"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <!-- Attachment Type -->
+    <xs:complexType name="Attachment.Type">
+        <xs:attribute name="href" type="xs:anyURI" use="required"/>
+        <xs:attribute name="role" type="Role.Enum" default="All"/>
+    </xs:complexType>
+
+    <!-- Role Enumeration -->
+    <xs:simpleType name="Role.Enum">
+        <xs:restriction base="xs:token">
+            <xs:enumeration value="All"/>
+            <xs:enumeration value="Learner"/>
+            <xs:enumeration value="Instructor"/>
+            <xs:enumeration value="Manager"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <!-- Gradable Type -->
+    <xs:complexType name="Gradable.Type">
+        <xs:simpleContent>
+            <xs:extension base="xs:boolean">
+                <xs:attribute name="points_possible" type="xs:decimal"/>
+            </xs:extension>
+        </xs:simpleContent>
+    </xs:complexType>
+
+    <!-- Submission Formats Type -->
+    <xs:complexType name="SubmissionFormats.Type">
+        <xs:sequence>
+            <xs:element name="format" type="Format.Type" maxOccurs="unbounded"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <!-- Format Type -->
+    <xs:complexType name="Format.Type">
+        <xs:attribute name="type" type="FormatType.Enum" use="required"/>
+    </xs:complexType>
+
+    <!-- Format Type Enumeration -->
+    <xs:simpleType name="FormatType.Enum">
+        <xs:restriction base="xs:token">
+            <xs:enumeration value="text"/>
+            <xs:enumeration value="html"/>
+            <xs:enumeration value="url"/>
+            <xs:enumeration value="file"/>
+        </xs:restriction>
+    </xs:simpleType>
+
+    <!-- Extensions Type (for platform-specific extensions) -->
+    <xs:complexType name="Extensions.Type">
+        <xs:sequence>
+            <xs:any namespace="##other" processContents="lax" minOccurs="0" maxOccurs="unbounded"/>
+        </xs:sequence>
+    </xs:complexType>
+
+</xs:schema>

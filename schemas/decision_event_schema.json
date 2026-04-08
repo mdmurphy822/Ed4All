@@ -1,0 +1,279 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ed4all.org/schemas/decision_event_schema.json",
+  "title": "Claude Decision Event Schema",
+  "description": "Schema for capturing Claude decisions during DART/Courseforge/Trainforge operations. Phase 0 Hardening adds event_id, seq, task_id, is_default, and outputs fields.",
+  "type": "object",
+  "required": ["run_id", "timestamp", "operation", "decision_type", "decision", "rationale"],
+  "properties": {
+    "event_id": {
+      "type": ["string", "null"],
+      "pattern": "^EVT_[a-f0-9]{16}$",
+      "description": "Phase 0: Unique event identifier (EVT_<16-hex-chars>)"
+    },
+    "seq": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Phase 0: Monotonically increasing sequence number within run"
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Unique identifier for this processing session (format: {TOOL}_{COURSE}_{YYYYMMDD_HHMMSS} or RUN_YYYYMMDD_HHMMSS_<uuid>)"
+    },
+    "course_id": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Z]{2,3}_[0-9]{3}$",
+      "description": "Normalized course code (e.g., MTH_101)"
+    },
+    "module_id": {
+      "type": ["string", "null"],
+      "pattern": "^[A-Z]{2,3}_[0-9]{3}_W[0-9]{2}_M[0-9]{2}$",
+      "description": "Module identifier (e.g., MTH_101_W01_M02)"
+    },
+    "artifact_id": {
+      "type": ["string", "null"],
+      "description": "SHA256 hash (first 12 chars) of produced content"
+    },
+    "task_id": {
+      "type": ["string", "null"],
+      "pattern": "^T-[a-f0-9]{8}$",
+      "description": "Phase 0: Orchestrator task ID for cross-linking decisions to tasks"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of decision"
+    },
+    "operation": {
+      "type": "string",
+      "description": "Explicit action label (e.g., generate_module_html, select_sources, convert_pdf)"
+    },
+    "phase": {
+      "type": ["string", "null"],
+      "enum": ["input-research", "exam-research", "course-outliner", "content-generator", "brightspace-packager", "dart-conversion", "trainforge-assessment", "validation", null],
+      "description": "Processing phase within the tool pipeline"
+    },
+    "tool": {
+      "type": "string",
+      "enum": ["dart", "courseforge", "trainforge", "orchestrator"],
+      "description": "Which tool generated this decision"
+    },
+    "decision_type": {
+      "type": "string",
+      "enum": [
+        "approach_selection",
+        "strategy_decision",
+        "source_selection",
+        "source_interpretation",
+        "textbook_integration",
+        "existing_content_usage",
+        "content_structure",
+        "content_depth",
+        "content_adaptation",
+        "example_selection",
+        "pedagogical_strategy",
+        "assessment_design",
+        "bloom_level_assignment",
+        "learning_objective_mapping",
+        "accessibility_measures",
+        "format_decision",
+        "component_selection",
+        "quality_judgment",
+        "validation_result",
+        "error_handling",
+        "prompt_response",
+        "file_creation",
+        "outcome_signal",
+        "chunk_selection",
+        "question_generation",
+        "distractor_generation",
+        "revision_decision"
+      ],
+      "description": "Category of decision from decision taxonomy"
+    },
+    "decision": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The decision made (what was chosen)"
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 20,
+      "description": "Why this decision was made (critical for training - minimum 20 chars)"
+    },
+    "alternatives_considered": {
+      "type": ["array", "null"],
+      "items": {
+        "type": "object",
+        "properties": {
+          "option": {"type": "string"},
+          "score": {"type": "number"},
+          "reason_rejected": {"type": "string"}
+        }
+      },
+      "description": "Other options that were considered and why they were not chosen"
+    },
+    "context": {
+      "type": ["string", "null"],
+      "description": "Situational context for the decision"
+    },
+    "confidence": {
+      "type": ["number", "null"],
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Confidence level in this decision (0.0 to 1.0)"
+    },
+    "is_default": {
+      "type": "boolean",
+      "default": false,
+      "description": "Phase 0: True if this captures a non-decision (default value used)"
+    },
+    "ml_features": {
+      "type": ["object", "null"],
+      "description": "Categorical fields for ML training",
+      "properties": {
+        "pedagogy_pattern": {
+          "type": "string",
+          "description": "Teaching approach pattern used"
+        },
+        "engagement_patterns": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Student engagement patterns targeted"
+        },
+        "cognitive_load_strategy": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Cognitive load management approaches"
+        },
+        "bloom_levels": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create"]
+          },
+          "description": "Bloom's taxonomy levels involved"
+        },
+        "udl_principles": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Universal Design for Learning principles applied"
+        },
+        "component_types": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Interactive component types used"
+        }
+      }
+    },
+    "inputs_ref": {
+      "type": ["array", "null"],
+      "description": "References to input sources used",
+      "items": {
+        "type": "object",
+        "properties": {
+          "source_type": {
+            "type": "string",
+            "enum": ["textbook", "existing_imscc", "web_search", "prompt_template", "assessment_bank", "pdf", "html", "agent_output"]
+          },
+          "path_or_id": {"type": "string"},
+          "content_hash": {"type": "string"},
+          "hash_algorithm": {
+            "type": "string",
+            "enum": ["sha256", "sha512", "blake3"],
+            "default": "sha256",
+            "description": "Phase 0: Algorithm used for content_hash"
+          },
+          "excerpt_range": {"type": "string"},
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Phase 0: Size of content in bytes"
+          },
+          "byte_range": {
+            "type": ["object", "null"],
+            "description": "Phase 0: Byte range within file",
+            "properties": {
+              "start": {"type": "integer", "minimum": 0},
+              "end": {"type": "integer", "minimum": 0}
+            }
+          }
+        },
+        "required": ["source_type", "path_or_id"]
+      }
+    },
+    "prompt_ref": {
+      "type": ["string", "null"],
+      "description": "Prompt template version/hash used"
+    },
+    "outputs": {
+      "type": ["array", "null"],
+      "description": "Phase 0: Output artifact pointers (not blobs)",
+      "items": {
+        "type": "object",
+        "properties": {
+          "artifact_type": {
+            "type": "string",
+            "description": "Type of artifact (html, imscc, assessment, chunk, etc.)"
+          },
+          "path": {
+            "type": "string",
+            "description": "File path relative to run artifacts"
+          },
+          "content_hash": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "description": "SHA-256 hash of content"
+          },
+          "hash_algorithm": {
+            "type": "string",
+            "enum": ["sha256", "sha512", "blake3"],
+            "default": "sha256"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
+        "required": ["artifact_type", "path"]
+      }
+    },
+    "outcome": {
+      "type": ["object", "null"],
+      "description": "Outcome signals for preference training (DPO/RLHF)",
+      "properties": {
+        "accepted": {"type": "boolean"},
+        "revision_count": {"type": "integer"},
+        "edit_distance": {
+          "type": "string",
+          "enum": ["none", "low", "medium", "high"]
+        },
+        "quality_metrics": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "human_feedback": {"type": "string"}
+      }
+    },
+    "metadata": {
+      "type": ["object", "null"],
+      "description": "Additional key-value pairs",
+      "properties": {
+        "rationale_length": {"type": "integer"},
+        "quality_level": {
+          "type": "string",
+          "enum": ["exemplary", "proficient", "developing", "inadequate"]
+        },
+        "full_prompt": {"type": "string"},
+        "full_response": {"type": "string"},
+        "processing_time_ms": {"type": "number"},
+        "token_count": {"type": "integer"}
+      },
+      "additionalProperties": true
+    }
+  }
+}

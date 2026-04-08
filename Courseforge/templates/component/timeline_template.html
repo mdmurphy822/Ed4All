@@ -1,0 +1,339 @@
+<!--
+    Template Name: Timeline Template
+    Category: component
+    WCAG Compliance: 2.2 AA
+    Brightspace Compatible: Yes
+
+    Template Variables:
+    - {{TIMELINE_ID}}: Unique identifier
+    - {{TIMELINE_TITLE}}: Optional section heading
+    - {{EVENT_1_DATE}}: Date/label for event 1
+    - {{EVENT_1_TITLE}}: Event 1 title
+    - {{EVENT_1_CONTENT}}: Event 1 description (supports HTML)
+    - {{EVENT_1_ICON}}: Optional icon/emoji
+    - Repeat for EVENT_2_, EVENT_3_, etc.
+
+    Dependencies: None (CSS only)
+
+    Usage Notes:
+    - Vertical timeline layout
+    - Alternating left/right on desktop
+    - Stacked on mobile
+    - Responsive and accessible
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Timeline Component</title>
+    <style>
+        /* Courseforge CSS Variables */
+        :root {
+            --cf-primary: #2c5aa0;
+            --cf-primary-dark: #1e3d6f;
+            --cf-primary-light: #e7f3ff;
+            --cf-text: #212529;
+            --cf-text-muted: #6c757d;
+            --cf-background: #ffffff;
+            --cf-background-alt: #f8f9fa;
+            --cf-border: #dee2e6;
+            --cf-border-radius: 8px;
+            --cf-font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            --cf-space-2: 0.5rem;
+            --cf-space-3: 0.75rem;
+            --cf-space-4: 1rem;
+            --cf-space-5: 1.25rem;
+            --cf-space-6: 1.5rem;
+            --cf-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            --cf-transition: 200ms ease;
+        }
+
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: var(--cf-space-4);
+            font-family: var(--cf-font-family);
+            line-height: 1.6;
+            color: var(--cf-text);
+        }
+
+        /* ========================================
+           TIMELINE CONTAINER
+           ======================================== */
+        .timeline {
+            position: relative;
+            max-width: 900px;
+            margin: var(--cf-space-6) auto;
+            padding: 0 var(--cf-space-4);
+        }
+
+        .timeline-title {
+            text-align: center;
+            color: var(--cf-primary-dark);
+            margin-bottom: var(--cf-space-6);
+        }
+
+        /* Central line */
+        .timeline::before {
+            content: '';
+            position: absolute;
+            left: 50%;
+            top: 0;
+            bottom: 0;
+            width: 4px;
+            background: linear-gradient(180deg, var(--cf-primary) 0%, var(--cf-primary-dark) 100%);
+            transform: translateX(-50%);
+            border-radius: 2px;
+        }
+
+        /* ========================================
+           TIMELINE ITEMS
+           ======================================== */
+        .timeline-item {
+            position: relative;
+            width: 50%;
+            padding: 0 var(--cf-space-6);
+            margin-bottom: var(--cf-space-6);
+        }
+
+        /* Left-side items */
+        .timeline-item:nth-child(odd) {
+            left: 0;
+            padding-right: calc(var(--cf-space-6) + 20px);
+            text-align: right;
+        }
+
+        /* Right-side items */
+        .timeline-item:nth-child(even) {
+            left: 50%;
+            padding-left: calc(var(--cf-space-6) + 20px);
+            text-align: left;
+        }
+
+        /* Timeline dot */
+        .timeline-item::before {
+            content: '';
+            position: absolute;
+            top: 15px;
+            width: 20px;
+            height: 20px;
+            background-color: var(--cf-primary);
+            border: 4px solid var(--cf-background);
+            border-radius: 50%;
+            box-shadow: var(--cf-shadow);
+            z-index: 1;
+        }
+
+        .timeline-item:nth-child(odd)::before {
+            right: -10px;
+        }
+
+        .timeline-item:nth-child(even)::before {
+            left: -10px;
+        }
+
+        /* Connector line */
+        .timeline-item::after {
+            content: '';
+            position: absolute;
+            top: 22px;
+            width: 40px;
+            height: 3px;
+            background-color: var(--cf-border);
+        }
+
+        .timeline-item:nth-child(odd)::after {
+            right: 10px;
+        }
+
+        .timeline-item:nth-child(even)::after {
+            left: 10px;
+        }
+
+        /* ========================================
+           TIMELINE CARD
+           ======================================== */
+        .timeline-card {
+            background-color: var(--cf-background);
+            border: 1px solid var(--cf-border);
+            border-radius: var(--cf-border-radius);
+            padding: var(--cf-space-4);
+            box-shadow: var(--cf-shadow);
+            transition: box-shadow var(--cf-transition), transform var(--cf-transition);
+        }
+
+        .timeline-card:hover {
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+            transform: translateY(-2px);
+        }
+
+        .timeline-date {
+            display: inline-block;
+            padding: var(--cf-space-2) var(--cf-space-3);
+            background-color: var(--cf-primary);
+            color: white;
+            font-size: 0.8125rem;
+            font-weight: 600;
+            border-radius: var(--cf-border-radius);
+            margin-bottom: var(--cf-space-3);
+        }
+
+        .timeline-event-title {
+            margin: 0 0 var(--cf-space-2) 0;
+            font-size: 1.125rem;
+            font-weight: 600;
+            color: var(--cf-primary-dark);
+        }
+
+        .timeline-content {
+            margin: 0;
+            color: var(--cf-text);
+            font-size: 0.9375rem;
+        }
+
+        .timeline-content p:last-child {
+            margin-bottom: 0;
+        }
+
+        .timeline-icon {
+            font-size: 1.5rem;
+            margin-bottom: var(--cf-space-2);
+        }
+
+        /* ========================================
+           ACCESSIBILITY
+           ======================================== */
+        .timeline-item:focus-within .timeline-card {
+            outline: 3px solid var(--cf-primary);
+            outline-offset: 2px;
+        }
+
+        /* Screen reader - timeline structure */
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            white-space: nowrap;
+            border: 0;
+        }
+
+        /* ========================================
+           RESPONSIVE
+           ======================================== */
+        @media (max-width: 768px) {
+            .timeline::before {
+                left: 20px;
+            }
+
+            .timeline-item {
+                width: 100%;
+                left: 0 !important;
+                padding-left: 60px !important;
+                padding-right: var(--cf-space-4) !important;
+                text-align: left !important;
+            }
+
+            .timeline-item::before {
+                left: 10px !important;
+                right: auto !important;
+            }
+
+            .timeline-item::after {
+                left: 30px !important;
+                right: auto !important;
+                width: 20px;
+            }
+        }
+
+        /* ========================================
+           PRINT STYLES
+           ======================================== */
+        @media print {
+            .timeline::before,
+            .timeline-item::before,
+            .timeline-item::after {
+                display: none;
+            }
+
+            .timeline-item {
+                width: 100%;
+                left: 0 !important;
+                padding: 0 !important;
+                margin-bottom: 1rem;
+                page-break-inside: avoid;
+            }
+
+            .timeline-card {
+                border: 1px solid #000;
+                box-shadow: none;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- TIMELINE COMPONENT -->
+    <section class="timeline" id="{{TIMELINE_ID}}" aria-labelledby="timeline-heading">
+        <h2 id="timeline-heading" class="timeline-title">{{TIMELINE_TITLE}}</h2>
+
+        <!-- Event 1 -->
+        <article class="timeline-item">
+            <div class="timeline-card" tabindex="0">
+                <span class="timeline-icon" aria-hidden="true">{{EVENT_1_ICON}}</span>
+                <span class="timeline-date">{{EVENT_1_DATE}}</span>
+                <h3 class="timeline-event-title">{{EVENT_1_TITLE}}</h3>
+                <div class="timeline-content">
+                    {{EVENT_1_CONTENT}}
+                </div>
+            </div>
+        </article>
+
+        <!-- Event 2 -->
+        <article class="timeline-item">
+            <div class="timeline-card" tabindex="0">
+                <span class="timeline-icon" aria-hidden="true">{{EVENT_2_ICON}}</span>
+                <span class="timeline-date">{{EVENT_2_DATE}}</span>
+                <h3 class="timeline-event-title">{{EVENT_2_TITLE}}</h3>
+                <div class="timeline-content">
+                    {{EVENT_2_CONTENT}}
+                </div>
+            </div>
+        </article>
+
+        <!-- Event 3 -->
+        <article class="timeline-item">
+            <div class="timeline-card" tabindex="0">
+                <span class="timeline-icon" aria-hidden="true">{{EVENT_3_ICON}}</span>
+                <span class="timeline-date">{{EVENT_3_DATE}}</span>
+                <h3 class="timeline-event-title">{{EVENT_3_TITLE}}</h3>
+                <div class="timeline-content">
+                    {{EVENT_3_CONTENT}}
+                </div>
+            </div>
+        </article>
+
+        <!-- Event 4 -->
+        <article class="timeline-item">
+            <div class="timeline-card" tabindex="0">
+                <span class="timeline-icon" aria-hidden="true">{{EVENT_4_ICON}}</span>
+                <span class="timeline-date">{{EVENT_4_DATE}}</span>
+                <h3 class="timeline-event-title">{{EVENT_4_TITLE}}</h3>
+                <div class="timeline-content">
+                    {{EVENT_4_CONTENT}}
+                </div>
+            </div>
+        </article>
+
+    </section>
+
+</body>
+</html>

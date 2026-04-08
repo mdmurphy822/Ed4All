@@ -1,0 +1,316 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Accordion Container Schema",
+  "description": "Schema for accordion-style containers used for key terms, learning objectives, and expandable content sections",
+  "type": "object",
+  "properties": {
+    "accordionConfiguration": {
+      "type": "object",
+      "properties": {
+        "framework": {
+          "type": "string",
+          "enum": ["bootstrap-4.3.1"],
+          "description": "CSS framework used for accordion implementation"
+        },
+        "defaultState": {
+          "type": "string",
+          "enum": ["collapsed", "expanded", "first-expanded"],
+          "description": "Default state when page loads"
+        },
+        "allowMultipleOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow multiple accordion sections to be open simultaneously"
+        },
+        "animationEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable smooth animations for expand/collapse"
+        }
+      },
+      "required": ["framework", "defaultState"]
+    },
+    "accordionHeader": {
+      "type": "object",
+      "properties": {
+        "htmlStructure": {
+          "type": "string",
+          "default": "<button class=\"btn btn-link accordion-toggle\" type=\"button\" data-toggle=\"collapse\" data-target=\"#{targetId}\" aria-expanded=\"{expanded}\" aria-controls=\"{targetId}\">",
+          "description": "HTML structure for accordion header button"
+        },
+        "iconConfiguration": {
+          "type": "object",
+          "properties": {
+            "iconLibrary": {
+              "type": "string",
+              "enum": ["font-awesome", "bootstrap-icons"],
+              "default": "font-awesome",
+              "description": "Icon library used for expand/collapse indicators"
+            },
+            "expandedIcon": {
+              "type": "string",
+              "default": "fa-chevron-down",
+              "description": "Icon shown when accordion is expanded"
+            },
+            "collapsedIcon": {
+              "type": "string",
+              "default": "fa-chevron-right",
+              "description": "Icon shown when accordion is collapsed"
+            },
+            "iconPosition": {
+              "type": "string",
+              "enum": ["left", "right"],
+              "default": "right",
+              "description": "Position of expand/collapse icon relative to text"
+            }
+          }
+        },
+        "styling": {
+          "type": "object",
+          "properties": {
+            "backgroundColor": {
+              "type": "string",
+              "default": "#f8f9fa",
+              "description": "Background color for accordion headers"
+            },
+            "textColor": {
+              "type": "string", 
+              "default": "#212529",
+              "description": "Text color for accordion headers"
+            },
+            "hoverColor": {
+              "type": "string",
+              "default": "#e9ecef",
+              "description": "Background color on hover"
+            },
+            "borderRadius": {
+              "type": "string",
+              "default": "0.25rem",
+              "description": "Border radius for rounded corners"
+            }
+          }
+        }
+      }
+    },
+    "accordionBody": {
+      "type": "object",
+      "properties": {
+        "htmlStructure": {
+          "type": "string",
+          "default": "<div id=\"{targetId}\" class=\"collapse\" aria-labelledby=\"{headerId}\" data-parent=\"{parentSelector}\"><div class=\"card-body\">",
+          "description": "HTML structure for accordion body container"
+        },
+        "contentTypes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["text", "html", "image", "video", "list", "definition", "example"]
+          },
+          "description": "Types of content that can be displayed in accordion body"
+        },
+        "maxHeight": {
+          "type": "string",
+          "default": "auto",
+          "description": "Maximum height for accordion content (use 'auto' for no limit)"
+        },
+        "padding": {
+          "type": "string",
+          "default": "1rem",
+          "description": "Padding inside accordion body"
+        }
+      }
+    },
+    "keyTermAccordions": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable accordion containers for key term definitions"
+        },
+        "headerFormat": {
+          "type": "string",
+          "default": "Definition: {keyTerm}",
+          "description": "Format for key term accordion headers"
+        },
+        "includeExamples": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include usage examples in key term accordions"
+        },
+        "contentStructure": {
+          "type": "object",
+          "properties": {
+            "definition": {
+              "type": "object",
+              "properties": {
+                "required": {
+                  "type": "boolean",
+                  "default": true,
+                  "description": "Definition is required for all key terms"
+                },
+                "maxLength": {
+                  "type": "integer",
+                  "minimum": 50,
+                  "maximum": 300,
+                  "description": "Maximum length for key term definitions"
+                }
+              }
+            },
+            "example": {
+              "type": "object",
+              "properties": {
+                "required": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Usage example is optional"
+                },
+                "format": {
+                  "type": "string",
+                  "enum": ["text", "code", "scenario"],
+                  "description": "Format for usage examples"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "learningObjectiveAccordions": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Use accordions for learning objectives display"
+        },
+        "groupingStrategy": {
+          "type": "string",
+          "enum": ["individual", "grouped-by-module", "grouped-by-topic"],
+          "description": "How to group learning objectives in accordions"
+        },
+        "headerFormat": {
+          "type": "string",
+          "default": "Learning Objective {number}",
+          "description": "Format for learning objective accordion headers"
+        },
+        "expandFirstByDefault": {
+          "type": "boolean",
+          "default": true,
+          "description": "Expand first learning objective by default"
+        }
+      }
+    },
+    "accessibilityFeatures": {
+      "type": "object",
+      "properties": {
+        "keyboardNavigation": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true,
+              "description": "Enable full keyboard navigation for accordions"
+            },
+            "enterKey": {
+              "type": "string",
+              "default": "toggle",
+              "description": "Action when Enter key is pressed on accordion header"
+            },
+            "spaceKey": {
+              "type": "string", 
+              "default": "toggle",
+              "description": "Action when Space key is pressed on accordion header"
+            },
+            "arrowKeys": {
+              "type": "string",
+              "default": "navigate",
+              "description": "Action when arrow keys are pressed (navigate between accordions)"
+            }
+          }
+        },
+        "ariaAttributes": {
+          "type": "object",
+          "properties": {
+            "expanded": {
+              "type": "boolean",
+              "default": true,
+              "description": "Include aria-expanded attribute"
+            },
+            "controls": {
+              "type": "boolean",
+              "default": true,
+              "description": "Include aria-controls attribute"
+            },
+            "labelledby": {
+              "type": "boolean", 
+              "default": true,
+              "description": "Include aria-labelledby attribute"
+            },
+            "describedby": {
+              "type": "boolean",
+              "default": false,
+              "description": "Include aria-describedby attribute for additional context"
+            }
+          }
+        },
+        "screenReaderSupport": {
+          "type": "object",
+          "properties": {
+            "announceStateChanges": {
+              "type": "boolean",
+              "default": true,
+              "description": "Announce when accordions expand/collapse"
+            },
+            "descriptiveText": {
+              "type": "boolean",
+              "default": true,
+              "description": "Include descriptive text for complex content"
+            },
+            "skipLinks": {
+              "type": "boolean",
+              "default": true,
+              "description": "Provide skip links for long accordion sections"
+            }
+          }
+        }
+      }
+    },
+    "responsiveDesign": {
+      "type": "object",
+      "properties": {
+        "mobileOptimized": {
+          "type": "boolean",
+          "default": true,
+          "description": "Optimize accordion display for mobile devices"
+        },
+        "touchFriendly": {
+          "type": "boolean",
+          "default": true,
+          "description": "Ensure touch targets are appropriately sized"
+        },
+        "breakpoints": {
+          "type": "object",
+          "properties": {
+            "mobile": {
+              "type": "string",
+              "default": "576px",
+              "description": "Mobile breakpoint for responsive behavior"
+            },
+            "tablet": {
+              "type": "string", 
+              "default": "768px",
+              "description": "Tablet breakpoint for responsive behavior"
+            },
+            "desktop": {
+              "type": "string",
+              "default": "992px",
+              "description": "Desktop breakpoint for responsive behavior"
+            }
+          }
+        }
+      }
+    }
+  },
+  "required": ["accordionConfiguration", "accordionHeader", "accordionBody", "accessibilityFeatures"]
+}

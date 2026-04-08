@@ -1,0 +1,228 @@
+# Ed4All Agent Registry
+# Defines available agents and their configurations
+
+agents:
+  # =============================================================================
+  # COURSEFORGE AGENTS
+  # =============================================================================
+
+  course-outliner:
+    source: Courseforge/agents/course-outliner.md
+    type: specialized
+    capabilities:
+      - course_structure
+      - learning_objectives
+      - week_planning
+    max_instances: 1
+
+  requirements-collector:
+    source: Courseforge/agents/requirements-collector.md
+    type: specialized
+    capabilities:
+      - specification_gathering
+      - prerequisite_analysis
+    max_instances: 1
+
+  content-generator:
+    source: Courseforge/agents/content-generator.md
+    type: educational-content-creator
+    capabilities:
+      - html_generation
+      - pattern_22_prevention
+      - blooms_alignment
+    max_instances: 10
+    fallback_agents: []
+
+  brightspace-packager:
+    source: Courseforge/agents/brightspace-packager.md
+    type: specialized
+    capabilities:
+      - imscc_packaging
+      - manifest_generation
+      - qti_formatting
+    max_instances: 10
+
+  oscqr-course-evaluator:
+    source: Courseforge/agents/oscqr-course-evaluator.md
+    type: quality-assurance
+    capabilities:
+      - oscqr_evaluation
+      - quality_scoring
+    max_instances: 2
+
+  quality-assurance:
+    source: Courseforge/agents/quality-assurance.md
+    type: quality-assurance
+    capabilities:
+      - pattern_prevention
+      - validation
+    max_instances: 2
+
+  # =============================================================================
+  # DART/REMEDIATION AGENTS
+  # =============================================================================
+
+  dart-automation-coordinator:
+    source: Courseforge/agents/dart-automation-coordinator.md
+    type: conversion-orchestrator
+    capabilities:
+      - pdf_conversion
+      - batch_processing
+      - conversion_queue_management
+    max_instances: 1
+
+  dart-converter:
+    source: DART/multi_source_interpreter.py
+    type: converter
+    capabilities:
+      - multi_source_synthesis
+      - contact_card_generation
+      - systems_table_synthesis
+      - wcag_compliance
+      - batch_processing
+    max_instances: 4
+    fallback_agents: []
+
+  imscc-intake-parser:
+    source: Courseforge/agents/imscc-intake-parser.md
+    type: parser
+    capabilities:
+      - imscc_extraction
+      - lms_detection
+      - content_inventory
+    max_instances: 1
+
+  content-analyzer:
+    source: Courseforge/agents/content-analyzer.md
+    type: analyzer
+    capabilities:
+      - accessibility_gap_detection
+      - quality_gap_detection
+      - remediation_planning
+    max_instances: 1
+
+  accessibility-remediation:
+    source: Courseforge/agents/accessibility-remediation.md
+    type: remediator
+    capabilities:
+      - wcag_fixes
+      - alt_text
+      - heading_hierarchy
+      - color_contrast
+    max_instances: 4
+
+  content-quality-remediation:
+    source: Courseforge/agents/content-quality-remediation.md
+    type: remediator
+    capabilities:
+      - educational_depth
+      - content_enhancement
+    max_instances: 2
+
+  intelligent-design-mapper:
+    source: Courseforge/agents/intelligent-design-mapper.md
+    type: designer
+    capabilities:
+      - component_selection
+      - interactive_styling
+    max_instances: 2
+
+  remediation-validator:
+    source: Courseforge/agents/remediation-validator.md
+    type: validator
+    capabilities:
+      - final_qa
+      - wcag_verification
+    max_instances: 1
+
+  # =============================================================================
+  # TEXTBOOK PIPELINE AGENTS
+  # =============================================================================
+
+  textbook-stager:
+    source: orchestrator/agents/textbook-stager.md
+    type: utility
+    capabilities:
+      - file_staging
+      - dart_output_detection
+      - directory_management
+    max_instances: 1
+
+  textbook-ingestor:
+    source: Courseforge/agents/textbook-ingestor.md
+    type: extractor
+    capabilities:
+      - dart_html_parsing
+      - structure_extraction
+      - objective_synthesis
+    max_instances: 1
+
+  # =============================================================================
+  # TRAINFORGE AGENTS
+  # =============================================================================
+
+  assessment-extractor:
+    source: Trainforge/agents/assessment-extractor.md
+    type: extractor
+    capabilities:
+      - imscc_parsing
+      - learning_objective_extraction
+      - content_chunking
+    max_instances: 1
+
+  rag-indexer:
+    source: Trainforge/agents/rag-indexer.md
+    type: indexer
+    capabilities:
+      - embedding_generation
+      - vector_indexing
+    max_instances: 1
+
+  assessment-generator:
+    source: Trainforge/agents/assessment-generator.md
+    type: generator
+    capabilities:
+      - question_generation
+      - distractor_generation
+      - blooms_targeting
+    max_instances: 5
+
+  assessment-validator:
+    source: Trainforge/agents/assessment-validator.md
+    type: validator
+    capabilities:
+      - alignment_check
+      - quality_validation
+      - bloom_verification
+    max_instances: 5
+
+# =============================================================================
+# PROJECT PATHS
+# Note: Paths are relative to PROJECT_ROOT (set via ED4ALL_ROOT env var or auto-detected)
+# =============================================================================
+
+projects:
+  dart:
+    path: DART
+    instructions: CLAUDE.md
+
+  courseforge:
+    path: Courseforge
+    instructions: CLAUDE.md
+
+  trainforge:
+    path: Trainforge
+    instructions: CLAUDE.md
+
+  libv2:
+    path: LibV2
+    instructions: CLAUDE.md
+
+# =============================================================================
+# FALLBACK CONFIGURATION
+# =============================================================================
+
+fallback_config:
+  max_fallback_attempts: 2
+  fallback_delay_seconds: 30
+  inherit_context: true

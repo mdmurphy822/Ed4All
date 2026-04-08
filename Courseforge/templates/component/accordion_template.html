@@ -1,0 +1,328 @@
+<!--
+    Template Name: Accordion Template
+    Category: component
+    WCAG Compliance: 2.2 AA
+    Brightspace Compatible: Yes
+
+    Template Variables:
+    - {{ACCORDION_ID}}: Unique identifier for the accordion group
+    - {{SECTION_1_TITLE}}: First section heading
+    - {{SECTION_1_CONTENT}}: First section content (supports HTML)
+    - {{SECTION_1_OPEN}}: Add 'open' attribute for default expanded
+    - Repeat pattern for additional sections (SECTION_2_, SECTION_3_, etc.)
+
+    Dependencies: None (self-contained, uses native HTML5 details/summary)
+
+    Usage Notes:
+    - Uses native HTML5 <details>/<summary> for built-in accessibility
+    - No JavaScript required for basic functionality
+    - Keyboard accessible by default (Enter/Space to toggle)
+    - Add 'open' attribute to details for default expanded state
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Accordion Component</title>
+    <style>
+        /* Courseforge CSS Variables */
+        :root {
+            --cf-primary: #2c5aa0;
+            --cf-primary-dark: #1e3d6f;
+            --cf-text: #212529;
+            --cf-text-muted: #6c757d;
+            --cf-background: #ffffff;
+            --cf-background-alt: #f8f9fa;
+            --cf-border: #dee2e6;
+            --cf-border-radius: 8px;
+            --cf-border-radius-sm: 4px;
+            --cf-font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            --cf-space-3: 0.75rem;
+            --cf-space-4: 1rem;
+            --cf-space-5: 1.25rem;
+            --cf-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+            --cf-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            --cf-transition: 200ms ease;
+        }
+
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: var(--cf-space-4);
+            font-family: var(--cf-font-family);
+            line-height: 1.6;
+            color: var(--cf-text);
+        }
+
+        /* ========================================
+           ACCORDION CONTAINER
+           ======================================== */
+        .accordion {
+            border: 1px solid var(--cf-border);
+            border-radius: var(--cf-border-radius);
+            overflow: hidden;
+            box-shadow: var(--cf-shadow-sm);
+        }
+
+        /* ========================================
+           ACCORDION ITEM (details element)
+           ======================================== */
+        .accordion-item {
+            border-bottom: 1px solid var(--cf-border);
+        }
+
+        .accordion-item:last-child {
+            border-bottom: none;
+        }
+
+        /* Remove default marker */
+        .accordion-item summary {
+            list-style: none;
+        }
+
+        .accordion-item summary::-webkit-details-marker {
+            display: none;
+        }
+
+        /* ========================================
+           ACCORDION HEADER (summary element)
+           ======================================== */
+        .accordion-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: var(--cf-space-4) var(--cf-space-5);
+            background-color: var(--cf-background-alt);
+            cursor: pointer;
+            font-weight: 600;
+            font-size: 1rem;
+            color: var(--cf-primary);
+            transition: background-color var(--cf-transition);
+            min-height: 48px; /* WCAG 2.5.8 target size */
+        }
+
+        .accordion-header:hover {
+            background-color: var(--cf-border);
+        }
+
+        .accordion-header:focus {
+            outline: 2px solid var(--cf-primary);
+            outline-offset: -2px;
+            background-color: var(--cf-border);
+        }
+
+        .accordion-header:focus-visible {
+            outline: 3px solid var(--cf-primary);
+            outline-offset: -3px;
+        }
+
+        /* Header text */
+        .accordion-title {
+            flex: 1;
+            margin: 0;
+            font-size: inherit;
+            font-weight: inherit;
+            color: inherit;
+        }
+
+        /* Expand/collapse indicator */
+        .accordion-icon {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 24px;
+            height: 24px;
+            margin-left: var(--cf-space-3);
+            font-size: 1.25rem;
+            font-weight: bold;
+            color: var(--cf-primary);
+            transition: transform var(--cf-transition);
+        }
+
+        .accordion-icon::before {
+            content: '+';
+        }
+
+        /* Rotated state when open */
+        .accordion-item[open] .accordion-icon::before {
+            content: '\2212'; /* Minus sign */
+        }
+
+        /* ========================================
+           ACCORDION CONTENT
+           ======================================== */
+        .accordion-content {
+            padding: var(--cf-space-4) var(--cf-space-5);
+            background-color: var(--cf-background);
+            border-top: 1px solid var(--cf-border);
+        }
+
+        .accordion-content > *:first-child {
+            margin-top: 0;
+        }
+
+        .accordion-content > *:last-child {
+            margin-bottom: 0;
+        }
+
+        .accordion-content p {
+            margin: 0 0 1rem 0;
+        }
+
+        .accordion-content ul,
+        .accordion-content ol {
+            margin: 0 0 1rem 0;
+            padding-left: 1.5rem;
+        }
+
+        .accordion-content li {
+            margin-bottom: 0.5rem;
+        }
+
+        /* ========================================
+           ACCESSIBILITY ENHANCEMENTS
+           ======================================== */
+        /* Ensure focus is not obscured */
+        .accordion-header:focus {
+            scroll-margin-top: 80px;
+        }
+
+        /* High contrast mode support */
+        @media (forced-colors: active) {
+            .accordion-header {
+                border: 2px solid currentColor;
+            }
+
+            .accordion-item[open] .accordion-header {
+                border-bottom: none;
+            }
+        }
+
+        /* ========================================
+           RESPONSIVE
+           ======================================== */
+        @media (max-width: 480px) {
+            .accordion-header {
+                padding: var(--cf-space-3) var(--cf-space-4);
+            }
+
+            .accordion-content {
+                padding: var(--cf-space-3) var(--cf-space-4);
+            }
+        }
+
+        /* ========================================
+           PRINT STYLES
+           ======================================== */
+        @media print {
+            .accordion {
+                border: 1px solid #000;
+            }
+
+            .accordion-item {
+                page-break-inside: avoid;
+            }
+
+            /* Show all content when printing */
+            .accordion-item .accordion-content {
+                display: block !important;
+            }
+
+            .accordion-icon {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- ACCORDION COMPONENT -->
+    <div class="accordion" id="{{ACCORDION_ID}}">
+
+        <!-- Section 1 -->
+        <details class="accordion-item" {{SECTION_1_OPEN}}>
+            <summary class="accordion-header">
+                <span class="accordion-title">{{SECTION_1_TITLE}}</span>
+                <span class="accordion-icon" aria-hidden="true"></span>
+            </summary>
+            <div class="accordion-content">
+                {{SECTION_1_CONTENT}}
+            </div>
+        </details>
+
+        <!-- Section 2 -->
+        <details class="accordion-item">
+            <summary class="accordion-header">
+                <span class="accordion-title">{{SECTION_2_TITLE}}</span>
+                <span class="accordion-icon" aria-hidden="true"></span>
+            </summary>
+            <div class="accordion-content">
+                {{SECTION_2_CONTENT}}
+            </div>
+        </details>
+
+        <!-- Section 3 -->
+        <details class="accordion-item">
+            <summary class="accordion-header">
+                <span class="accordion-title">{{SECTION_3_TITLE}}</span>
+                <span class="accordion-icon" aria-hidden="true"></span>
+            </summary>
+            <div class="accordion-content">
+                {{SECTION_3_CONTENT}}
+            </div>
+        </details>
+
+    </div>
+
+    <!-- ========================================
+         USAGE EXAMPLES (Remove in production)
+         ======================================== -->
+    <!--
+    <h2>Accordion Example</h2>
+
+    <div class="accordion" id="faq-accordion">
+        <details class="accordion-item" open>
+            <summary class="accordion-header">
+                <span class="accordion-title">What is Universal Design for Learning?</span>
+                <span class="accordion-icon" aria-hidden="true"></span>
+            </summary>
+            <div class="accordion-content">
+                <p>Universal Design for Learning (UDL) is a framework to improve and optimize teaching and learning for all people based on scientific insights into how humans learn.</p>
+                <p>UDL provides flexibility in the ways information is presented, how students respond or demonstrate knowledge, and how students are engaged.</p>
+            </div>
+        </details>
+
+        <details class="accordion-item">
+            <summary class="accordion-header">
+                <span class="accordion-title">What are the three UDL principles?</span>
+                <span class="accordion-icon" aria-hidden="true"></span>
+            </summary>
+            <div class="accordion-content">
+                <p>The three core principles of UDL are:</p>
+                <ul>
+                    <li><strong>Multiple Means of Engagement</strong> - The "why" of learning</li>
+                    <li><strong>Multiple Means of Representation</strong> - The "what" of learning</li>
+                    <li><strong>Multiple Means of Action & Expression</strong> - The "how" of learning</li>
+                </ul>
+            </div>
+        </details>
+
+        <details class="accordion-item">
+            <summary class="accordion-header">
+                <span class="accordion-title">How does UDL benefit all learners?</span>
+                <span class="accordion-icon" aria-hidden="true"></span>
+            </summary>
+            <div class="accordion-content">
+                <p>UDL benefits all learners by providing flexible approaches that can be customized and adjusted for individual needs. Like curb cuts that help everyone (not just wheelchair users), UDL accommodations often benefit learners beyond their original target audience.</p>
+            </div>
+        </details>
+    </div>
+    -->
+
+</body>
+</html>
