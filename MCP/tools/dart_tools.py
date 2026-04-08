@@ -447,7 +447,11 @@ def register_dart_tools(mcp):
         try:
             combined_dir = DART_PATH / "batch_output" / "combined"
             if not combined_dir.exists():
-                return json.dumps({"error": "Combined directory not found"})
+                return json.dumps({
+                    "error": "No combined DART outputs found. Run DART batch processing first.",
+                    "expected_path": str(combined_dir),
+                    "hint": "Use batch_convert_documents or convert_pdf_multi_source to generate combined outputs"
+                })
 
             # Import campus names
             sys.path.insert(0, str(DART_PATH))

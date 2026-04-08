@@ -18,6 +18,7 @@ _PROJECT_ROOT = _MCP_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from lib.libv2_storage import LibV2Storage  # noqa: E402
 from lib.paths import COURSEFORGE_PATH  # noqa: E402
 from lib.secure_paths import (  # noqa: E402
     safe_extract_zip,
@@ -362,10 +363,24 @@ def register_courseforge_tools(mcp):
             with open(config_path, 'w') as f:
                 json.dump(config, f, indent=2)
 
+            # Store IMSCC in LibV2 for downstream discovery
+            libv2_package_path = None
+            try:
+                import shutil
+                storage = LibV2Storage(project_id)
+                libv2_dest = storage.get_package_output_path()
+                libv2_dest.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(package_path, libv2_dest)
+                libv2_package_path = str(libv2_dest)
+                logger.info("Stored IMSCC in LibV2: %s", libv2_dest)
+            except Exception as e:
+                logger.warning("Failed to store IMSCC in LibV2: %s", e)
+
             return json.dumps({
                 "success": True,
                 "project_id": project_id,
                 "package_path": str(package_path),
+                "libv2_package_path": libv2_package_path,
                 "validation": validation_results if validate else None,
                 "status": "ready_for_packaging"
             })

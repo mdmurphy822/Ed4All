@@ -429,6 +429,16 @@ workflows:
         optional: true  # Can be skipped via generate_assessments=false
 
         validation_gates:
+          - gate_id: imscc_input_valid
+            validator: lib.validators.imscc.IMSCCValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Pre-condition - verify IMSCC from packaging phase is valid
+
           - gate_id: assessment_quality
             validator: lib.validators.assessment.AssessmentQualityValidator
             severity: critical
