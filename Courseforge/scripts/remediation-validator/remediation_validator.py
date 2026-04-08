@@ -22,15 +22,13 @@ Usage:
 import argparse
 import json
 import logging
-import os
 import re
 import sys
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Any
-from html.parser import HTMLParser
+from typing import Dict, List, Optional
 from xml.etree import ElementTree as ET
 
 # Configure logging

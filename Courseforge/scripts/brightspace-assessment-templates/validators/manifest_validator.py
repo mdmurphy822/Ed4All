@@ -4,9 +4,10 @@ IMSCC Manifest XML Validator
 Validates imsmanifest.xml files for correct format and Brightspace compatibility.
 """
 
-from typing import List, Dict, Set, Optional
 from pathlib import Path
-from .xml_validator import IMSCCValidator, ValidationResult, ValidationLevel
+from typing import Set
+
+from .xml_validator import IMSCCValidator, ValidationLevel, ValidationResult
 
 try:
     from lxml import etree

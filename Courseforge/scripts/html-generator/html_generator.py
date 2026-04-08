@@ -10,14 +10,14 @@ Version: 1.0.0
 Created: 2025-08-05
 """
 
+import argparse
 import json
-import os
+import logging
 import re
 import sys
-import logging
 from pathlib import Path
-from typing import Dict, List, Any, Optional
-import argparse
+from typing import Any, Dict, List, Optional
+
 
 class HTMLGenerator:
     """
@@ -26,7 +26,7 @@ class HTMLGenerator:
     Implements atomic operations with comprehensive validation to create
     professional Bootstrap-based HTML pages for IMSCC generation.
     """
-    
+
     def __init__(self, config_path: Optional[str] = None):
         """
         Initialize HTML generator with configuration and logging.
@@ -38,7 +38,7 @@ class HTMLGenerator:
         self.config = self.load_config(config_path)
         self.temp_files = []
         self.execution_lock = None
-        
+
     def setup_logging(self):
         """Configure comprehensive logging for all operations."""
         logging.basicConfig(
@@ -50,7 +50,7 @@ class HTMLGenerator:
             ]
         )
         self.logger = logging.getLogger(__name__)
-        
+
     def load_config(self, config_path: Optional[str]) -> Dict[str, Any]:
         """
         Load HTML generator configuration with defaults.
@@ -85,14 +85,14 @@ class HTMLGenerator:
                 "accordion_animation_duration": "0.3s"
             }
         }
-        
+
         if config_path and Path(config_path).exists():
             with open(config_path, 'r') as f:
                 user_config = json.load(f)
                 default_config.update(user_config)
-                
+
         return default_config
-    
+
     def validate_execution_environment(self, input_path: str, output_dir: str):
         """
         Comprehensive pre-flight validation before HTML generation.
@@ -105,15 +105,15 @@ class HTMLGenerator:
             SystemExit: If validation fails
         """
         self.logger.info("Starting execution environment validation")
-        
+
         # Validate input file exists and is readable
         input_file = Path(input_path)
         if not input_file.exists():
             raise SystemExit(f"CRITICAL ERROR: Input file does not exist: {input_path}")
-            
+
         if not input_file.is_file():
             raise SystemExit(f"CRITICAL ERROR: Input path is not a file: {input_path}")
-        
+
         # Validate JSON structure
         try:
             with open(input_file, 'r', encoding='utf-8') as f:
@@ -123,23 +123,23 @@ class HTMLGenerator:
             raise SystemExit(f"CRITICAL ERROR: Invalid JSON format: {e}")
         except Exception as e:
             raise SystemExit(f"CRITICAL ERROR: Cannot read input file: {e}")
-        
+
         # Validate output directory
         output_path = Path(output_dir)
         if output_path.exists() and any(output_path.iterdir()):
             raise SystemExit(f"COLLISION DETECTED: Output directory not empty: {output_dir}")
-        
+
         # Create execution lock
         self.execution_lock = output_path / '.html_generation_lock'
         if self.execution_lock.exists():
             raise SystemExit("EXECUTION LOCK ERROR: Another HTML generator process is running")
-        
+
         # Create output directory and lock
         output_path.mkdir(parents=True, exist_ok=True)
         self.execution_lock.touch()
-        
+
         self.logger.info("Execution environment validation passed")
-    
+
     def validate_input_structure(self, data: Dict[str, Any]):
         """
         Validate structured JSON input meets requirements.
@@ -154,18 +154,18 @@ class HTMLGenerator:
         for section in required_sections:
             if section not in data:
                 raise SystemExit(f"VALIDATION ERROR: Missing required section: {section}")
-        
+
         # Validate weeks structure
         if not isinstance(data['weeks'], list) or not data['weeks']:
             raise SystemExit("VALIDATION ERROR: Weeks section must be non-empty list")
-        
+
         for week in data['weeks']:
             if 'sub_modules' not in week or not isinstance(week['sub_modules'], list):
                 raise SystemExit(f"VALIDATION ERROR: Week {week.get('week_number', '?')} missing sub_modules")
-            
+
             if len(week['sub_modules']) != 7:
                 raise SystemExit(f"VALIDATION ERROR: Week {week.get('week_number', '?')} has {len(week['sub_modules'])} sub-modules, expected 7")
-    
+
     def generate_html_template(self, title: str, content: str, page_type: str = "standard") -> str:
         """
         Generate complete HTML page with Bootstrap framework.
@@ -229,7 +229,7 @@ class HTMLGenerator:
             }}
         </style>
         """
-        
+
         # Custom JavaScript for accordion functionality
         custom_js = """
         <script>
@@ -272,7 +272,7 @@ class HTMLGenerator:
             });
         </script>
         """
-        
+
         html_template = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -316,9 +316,9 @@ class HTMLGenerator:
     {custom_js}
 </body>
 </html>"""
-        
+
         return html_template
-    
+
     def format_content_paragraphs(self, content: str) -> str:
         """
         Format content text into properly structured paragraphs.
@@ -331,24 +331,24 @@ class HTMLGenerator:
         """
         if not content:
             return '<p class="content-paragraph">Content to be developed.</p>'
-        
+
         # Split content into paragraphs
         paragraphs = content.split('\n\n')
         paragraphs = [p.strip() for p in paragraphs if p.strip()]
-        
+
         if not paragraphs:
             return '<p class="content-paragraph">Content to be developed.</p>'
-        
+
         # Format each paragraph
         formatted_paragraphs = []
         for paragraph in paragraphs:
             # Clean paragraph text
             clean_paragraph = re.sub(r'\s+', ' ', paragraph).strip()
-            
+
             # Skip very short paragraphs
             if len(clean_paragraph.split()) < 10:
                 continue
-            
+
             # Ensure proper paragraph length (50-300 words as per standards)
             words = clean_paragraph.split()
             if len(words) > 300:
@@ -368,9 +368,9 @@ class HTMLGenerator:
                     formatted_paragraphs[-1] = combined
                 else:
                     formatted_paragraphs.append(f'<p class="content-paragraph">{clean_paragraph}</p>')
-        
+
         return '\n'.join(formatted_paragraphs) if formatted_paragraphs else '<p class="content-paragraph">Content to be developed.</p>'
-    
+
     def generate_overview_html(self, sub_module: Dict[str, Any], week_number: int) -> str:
         """
         Generate HTML content for module overview pages.
@@ -401,9 +401,9 @@ class HTMLGenerator:
             </div>
         </div>
         """
-        
+
         return content_html
-    
+
     def generate_concept_summary_html(self, sub_module: Dict[str, Any], week_number: int) -> str:
         """
         Generate HTML content for concept summary pages.
@@ -433,9 +433,9 @@ class HTMLGenerator:
             </div>
         </div>
         """
-        
+
         return content_html
-    
+
     def generate_key_concepts_html(self, sub_module: Dict[str, Any], week_number: int) -> str:
         """
         Generate HTML content for interactive key concepts accordion.
@@ -448,16 +448,16 @@ class HTMLGenerator:
             str: HTML content for key concepts accordion
         """
         key_concepts = sub_module.get('key_concepts', [])
-        
+
         if not key_concepts:
             # Extract concepts from content if not explicitly provided
             content = sub_module.get('content', '')
             key_concepts = self.extract_concepts_from_content(content)
-        
+
         accordion_items = []
         for i, concept in enumerate(key_concepts[:10]):  # Maximum 10 concepts
             concept_id = f"concept{week_number}_{i+1}"
-            
+
             if isinstance(concept, dict):
                 term = concept.get('term', f'Concept {i+1}')
                 definition = concept.get('definition', 'Definition to be provided.')
@@ -465,7 +465,7 @@ class HTMLGenerator:
                 # Handle string format
                 term = f"Key Concept {i+1}"
                 definition = str(concept)
-            
+
             accordion_item = f"""
             <div class="card">
                 <div class="card-header" id="heading{concept_id}">
@@ -487,7 +487,7 @@ class HTMLGenerator:
             </div>
             """
             accordion_items.append(accordion_item)
-        
+
         content_html = f"""
         <div class="content-section">
             <p class="lead">Explore the key concepts for this module. Click on each term to reveal its definition and explanation.</p>
@@ -504,9 +504,9 @@ class HTMLGenerator:
             </div>
         </div>
         """
-        
+
         return content_html
-    
+
     def generate_visual_content_html(self, sub_module: Dict[str, Any], week_number: int) -> str:
         """
         Generate HTML content for visual/graphical/math display pages.
@@ -556,9 +556,9 @@ class HTMLGenerator:
             </div>
         </div>
         """
-        
+
         return content_html
-    
+
     def generate_application_examples_html(self, sub_module: Dict[str, Any], week_number: int) -> str:
         """
         Generate HTML content for application examples pages.
@@ -605,9 +605,9 @@ class HTMLGenerator:
             </div>
         </div>
         """
-        
+
         return content_html
-    
+
     def generate_real_world_html(self, sub_module: Dict[str, Any], week_number: int) -> str:
         """
         Generate HTML content for real world applications pages.
@@ -662,9 +662,9 @@ class HTMLGenerator:
             </div>
         </div>
         """
-        
+
         return content_html
-    
+
     def generate_study_questions_html(self, sub_module: Dict[str, Any], week_number: int) -> str:
         """
         Generate HTML content for study questions pages.
@@ -710,9 +710,9 @@ class HTMLGenerator:
             </div>
         </div>
         """
-        
+
         return content_html
-    
+
     def format_learning_objectives(self, objectives: List[str]) -> str:
         """
         Format learning objectives into HTML list.
@@ -725,7 +725,7 @@ class HTMLGenerator:
         """
         if not objectives:
             return '<p class="content-paragraph">Learning objectives will be provided.</p>'
-        
+
         objectives_html = '<ul class="list-group list-group-flush">'
         for i, objective in enumerate(objectives):
             objectives_html += f'''
@@ -735,9 +735,9 @@ class HTMLGenerator:
             </li>
             '''
         objectives_html += '</ul>'
-        
+
         return objectives_html
-    
+
     def format_key_concepts_inline(self, key_concepts: List[Any]) -> str:
         """
         Format key concepts inline with content.
@@ -750,13 +750,13 @@ class HTMLGenerator:
         """
         if not key_concepts:
             return ''
-        
+
         concepts_html = '''
         <div class="content-section">
             <h3>Key Terms</h3>
             <div class="row">
         '''
-        
+
         for i, concept in enumerate(key_concepts[:6]):  # Limit to 6 inline concepts
             if isinstance(concept, dict):
                 term = concept.get('term', f'Term {i+1}')
@@ -764,7 +764,7 @@ class HTMLGenerator:
             else:
                 term = f"Key Term {i+1}"
                 definition = str(concept)
-            
+
             concepts_html += f'''
             <div class="col-md-6 mb-3">
                 <div class="card border-info">
@@ -775,14 +775,14 @@ class HTMLGenerator:
                 </div>
             </div>
             '''
-        
+
         concepts_html += '''
             </div>
         </div>
         '''
-        
+
         return concepts_html
-    
+
     def extract_concepts_from_content(self, content: str) -> List[Dict[str, str]]:
         """
         Extract key concepts from content when not explicitly provided.
@@ -794,14 +794,14 @@ class HTMLGenerator:
             list: List of extracted concept dictionaries
         """
         concepts = []
-        
+
         # Look for definition patterns
         definition_patterns = [
             r'([A-Z][a-zA-Z\s]+):\s*([^.!?]+[.!?])',  # Term: Definition
             r'\*\*([^*]+)\*\*[:\s]*([^.!?]+[.!?])',   # **Term**: Definition
             r'_([^_]+)_[:\s]*([^.!?]+[.!?])'          # _Term_: Definition
         ]
-        
+
         for pattern in definition_patterns:
             matches = re.findall(pattern, content)
             for term, definition in matches[:5]:  # Limit to 5 extracted concepts
@@ -809,7 +809,7 @@ class HTMLGenerator:
                     'term': term.strip(),
                     'definition': definition.strip()
                 })
-        
+
         # If no concepts found, create placeholder
         if not concepts:
             concepts = [
@@ -817,9 +817,9 @@ class HTMLGenerator:
                 {'term': 'Key Concept 2', 'definition': 'Essential understanding for course progression.'},
                 {'term': 'Key Concept 3', 'definition': 'Fundamental principle to master.'}
             ]
-        
+
         return concepts
-    
+
     def generate_html_files(self, input_path: str, output_dir: str) -> Dict[str, Any]:
         """
         Generate all HTML files with atomic execution.
@@ -834,21 +834,21 @@ class HTMLGenerator:
         try:
             # Pre-flight validation
             self.validate_execution_environment(input_path, output_dir)
-            
+
             # Load structured data
             with open(input_path, 'r', encoding='utf-8') as f:
                 course_data = json.load(f)
-            
+
             output_path = Path(output_dir)
             generated_files = []
-            
+
             # Generate HTML files for each week and sub-module
             for week in course_data['weeks']:
                 week_number = week['week_number']
-                
+
                 for sub_module in week['sub_modules']:
                     module_type = sub_module['type']
-                    
+
                     # Generate appropriate filename
                     if module_type == 'concept_summary':
                         # Number concept summaries
@@ -856,10 +856,10 @@ class HTMLGenerator:
                         filename = f"week_{week_number:02d}_concept_summary_{existing_summaries + 1:02d}.html"
                     else:
                         filename = f"week_{week_number:02d}_{module_type}.html"
-                    
+
                     # Generate page title
                     title = f"Module {week_number}: {sub_module['title']}"
-                    
+
                     # Generate content based on type
                     if module_type == 'overview':
                         content = self.generate_overview_html(sub_module, week_number)
@@ -878,21 +878,21 @@ class HTMLGenerator:
                     else:
                         # Default content for unknown types
                         content = self.format_content_paragraphs(sub_module.get('content', ''))
-                    
+
                     # Generate complete HTML
                     html_content = self.generate_html_template(title, content, module_type)
-                    
+
                     # Write HTML file
                     file_path = output_path / filename
                     with open(file_path, 'w', encoding='utf-8') as f:
                         f.write(html_content)
-                    
+
                     generated_files.append(filename)
                     self.logger.info(f"Generated: {filename}")
-            
+
             # Validate output
             self.validate_html_output(output_path, generated_files)
-            
+
             result = {
                 "status": "success",
                 "files_generated": len(generated_files),
@@ -901,18 +901,18 @@ class HTMLGenerator:
                 "total_weeks": len(course_data['weeks']),
                 "generation_time": "2025-08-05"
             }
-            
+
             self.logger.info(f"Successfully generated {len(generated_files)} HTML files")
             return result
-            
+
         except Exception as e:
             self.cleanup_temps()
             raise SystemExit(f"HTML GENERATION FAILED: {e}")
-        
+
         finally:
             if self.execution_lock and self.execution_lock.exists():
                 self.execution_lock.unlink()
-    
+
     def validate_html_output(self, output_path: Path, generated_files: List[str]):
         """
         Validate generated HTML files meet requirements.
@@ -925,31 +925,31 @@ class HTMLGenerator:
             SystemExit: If validation fails
         """
         self.logger.info("Validating HTML output")
-        
+
         # Check all files exist
         for filename in generated_files:
             file_path = output_path / filename
             if not file_path.exists():
                 raise SystemExit(f"VALIDATION ERROR: Generated file missing: {filename}")
-        
+
         # Basic HTML validation
         for filename in generated_files[:3]:  # Sample validation
             file_path = output_path / filename
             with open(file_path, 'r', encoding='utf-8') as f:
                 content = f.read()
-                
+
             # Check for required HTML structure
             required_elements = ['<!DOCTYPE html>', '<html', '<head>', '<body>', '</html>']
             for element in required_elements:
                 if element not in content:
                     raise SystemExit(f"VALIDATION ERROR: Missing required HTML element '{element}' in {filename}")
-            
+
             # Check for Bootstrap framework
             if 'bootstrap' not in content.lower():
                 raise SystemExit(f"VALIDATION ERROR: Bootstrap framework missing in {filename}")
-        
+
         self.logger.info("HTML output validation passed")
-    
+
     def cleanup_temps(self):
         """Clean up temporary files."""
         for temp_file in self.temp_files:
@@ -964,12 +964,12 @@ def main():
     parser.add_argument('--input', required=True, help='Input JSON file path')
     parser.add_argument('--output', required=True, help='Output directory path')
     parser.add_argument('--config', help='Configuration file path (optional)')
-    
+
     args = parser.parse_args()
-    
+
     html_generator = HTMLGenerator(args.config)
     result = html_generator.generate_html_files(args.input, args.output)
-    
+
     print(f"Successfully generated {result['files_generated']} HTML files in {result['output_directory']}")
 
 if __name__ == "__main__":

@@ -19,10 +19,9 @@ Dependencies:
 
 import argparse
 import logging
+import os
 import sys
 import zipfile
-import io
-import os
 from pathlib import Path
 
 # Configure logging
@@ -75,29 +74,29 @@ def build_working_imscc(source_dir=None, output_file=None):
             output_file = Path(output_file_env)
     else:
         output_file = Path(output_file)
-    
+
     print(f"Source: {source_dir}")
     print(f"Output: {output_file}")
     print()
-    
+
     # File lists
     required_files = [
         "imsmanifest.xml",
         # Week content files (28 total)
         *[f"week_{w:02d}_{t}.html" for w in range(1,5) for t in [
-            "overview", "concept_summary_01", "concept_summary_02", 
+            "overview", "concept_summary_01", "concept_summary_02",
             "key_concepts", "visual_content", "application_examples", "study_questions"
         ]],
-        # Assessment files (12 total)  
+        # Assessment files (12 total)
         *[f"{atype}_week_{w:02d}.xml" for w in range(1,5) for atype in ["assignment", "quiz", "discussion"]]
     ]
-    
+
     # Validate source files
     missing_files = []
     for filename in required_files:
         if not (source_dir / filename).exists():
             missing_files.append(filename)
-    
+
     if missing_files:
         print(f"❌ Missing {len(missing_files)} files:")
         for missing in missing_files[:5]:
@@ -105,36 +104,36 @@ def build_working_imscc(source_dir=None, output_file=None):
         if len(missing_files) > 5:
             print(f"   ... and {len(missing_files) - 5} more")
         return False
-    
+
     print(f"✅ All {len(required_files)} source files validated")
-    
+
     # Create package
     try:
         with zipfile.ZipFile(str(output_file), 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zipf:
             total_size = 0
-            
+
             for filename in required_files:
                 source_path = source_dir / filename
                 file_size = source_path.stat().st_size
                 total_size += file_size
-                
+
                 zipf.write(str(source_path), filename)
                 print(f"  📄 {filename} ({file_size:,} bytes)")
-            
-            print(f"\n📊 Package completed:")
+
+            print("\n📊 Package completed:")
             print(f"   Files: {len(required_files)}")
             print(f"   Total size: {total_size:,} bytes")
-            
+
         # Verify package
         package_size = output_file.stat().st_size
         compression = (1 - package_size / total_size) * 100
-        
+
         print(f"   Package size: {package_size:,} bytes")
         print(f"   Compression: {compression:.1f}%")
-        print(f"\n✅ Package created successfully!")
-        
+        print("\n✅ Package created successfully!")
+
         return True
-        
+
     except Exception as e:
         print(f"❌ Error creating package: {e}")
         return False

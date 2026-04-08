@@ -9,11 +9,11 @@ Provides validation utilities for IMSCC package components:
 - Manifest validation
 """
 
-from .xml_validator import IMSCCValidator, ValidationResult
 from .assignment_validator import AssignmentValidator
 from .discussion_validator import DiscussionValidator
-from .qti_validator import QTIValidator
 from .manifest_validator import ManifestValidator
+from .qti_validator import QTIValidator
+from .xml_validator import IMSCCValidator, ValidationResult
 
 __all__ = [
     'IMSCCValidator',

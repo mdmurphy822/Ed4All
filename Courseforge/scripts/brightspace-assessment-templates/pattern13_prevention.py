@@ -7,11 +7,9 @@ This script ensures all future IMSCC packages use proper Brightspace-compatible 
 and resource declarations that will import successfully.
 """
 
-import os
-import sys
 import logging
+import os
 import shutil
-from datetime import datetime
 
 # Configure logging
 logging.basicConfig(
@@ -30,11 +28,11 @@ except ImportError as e:
 
 class Pattern13Prevention:
     """Prevents Brightspace import failures by ensuring proper XML compatibility."""
-    
+
     def __init__(self):
         self.generator = BrightspaceAssessmentGenerator()
         self.template_dir = os.path.dirname(__file__)
-    
+
     def create_corrected_package(self, content_dir, output_dir):
         """Create a new IMSCC package with corrected Brightspace-compatible assessments.
 
@@ -74,7 +72,7 @@ class Pattern13Prevention:
         except IOError as e:
             logger.error(f"Error copying HTML files: {e}")
             raise
-        
+
         # Generate corrected assessment XML files
         assessment_files = []
         try:
@@ -105,7 +103,7 @@ class Pattern13Prevention:
         except IOError as e:
             logger.error(f"Error generating assessment files: {e}")
             raise
-        
+
         # Create assessment metadata file required by QTI
         try:
             self.create_assessment_metadata(output_dir)
@@ -122,7 +120,7 @@ class Pattern13Prevention:
 
         logger.info(f"Pattern 13 Prevention Complete: {len(html_files)} HTML + {len(assessment_files)} assessments + 1 manifest + 1 metadata = {len(html_files) + len(assessment_files) + 2} files")
         return output_dir
-    
+
     def create_assessment_metadata(self, output_dir):
         """Create QTI assessment metadata file required for proper import."""
         metadata_xml = '''<?xml version="1.0" encoding="UTF-8"?>
@@ -130,22 +128,22 @@ class Pattern13Prevention:
     <title>Assessment Support</title>
     <description>QTI assessment base configuration for Brightspace compatibility</description>
 </assessment_meta>'''
-        
+
         with open(os.path.join(output_dir, 'assessment_meta.xml'), 'w', encoding='utf-8') as f:
             f.write(metadata_xml)
         print("✓ Created assessment metadata file")
-    
+
     def generate_corrected_manifest(self, output_dir, html_files, assessment_files):
         """Generate manifest with correct Brightspace resource type declarations."""
-        
+
         # Read the corrected template
         template_path = os.path.join(self.template_dir, "corrected_manifest_template.xml")
         with open(template_path, 'r', encoding='utf-8') as f:
             manifest_template = f.read()
-        
+
         # Build resources section for all files
         resources_xml = ""
-        
+
         # Add HTML resources (weeks 1-4)
         for week in range(1, 5):
             week_resources = f'''
@@ -184,7 +182,7 @@ class Pattern13Prevention:
       <file href="discussion_week_{week:02d}.xml"/>
     </resource>'''
             resources_xml += week_resources
-        
+
         # Add QTI support resource
         resources_xml += '''
     
@@ -192,21 +190,21 @@ class Pattern13Prevention:
     <resource identifier="QTI_ASI_BASE" type="associatedcontent/imscc_xmlv1p1/learning-application-resource" href="assessment_meta.xml">
       <file href="assessment_meta.xml"/>
     </resource>'''
-        
+
         # Build complete organizations section
         organizations_xml = '''
   <organizations default="course_org">
     <organization identifier="course_org" structure="rooted-hierarchy">
       <title>Linear Algebra: Foundations and Applications</title>'''
-      
+
         for week in range(1, 5):
             week_data = {
                 1: "Foundations of Linear Algebra",
-                2: "Vectors and Vector Operations", 
+                2: "Vectors and Vector Operations",
                 3: "Matrices and Matrix Operations",
                 4: "Linear Independence and Spanning Sets"
             }
-            
+
             week_org = f'''
       
       <item identifier="week_{week:02d}" isvisible="true">
@@ -253,11 +251,11 @@ class Pattern13Prevention:
         </item>
       </item>'''
             organizations_xml += week_org
-        
+
         organizations_xml += '''
     </organization>
   </organizations>'''
-        
+
         # Build complete manifest
         manifest_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <manifest identifier="linear_algebra_foundations_course_2025" version="1.3.0"
@@ -288,25 +286,25 @@ class Pattern13Prevention:
   <resources>{resources_xml}
   </resources>
 </manifest>'''
-        
+
         # Write the corrected manifest
         manifest_path = os.path.join(output_dir, 'imsmanifest.xml')
         with open(manifest_path, 'w', encoding='utf-8') as f:
             f.write(manifest_xml)
         print("✅ Generated corrected manifest with proper Brightspace resource types")
-    
+
     def validate_brightspace_compatibility(self, package_dir):
         """Validate that the package meets Brightspace requirements."""
         print("🔍 Validating Brightspace compatibility...")
-        
+
         issues = []
-        
+
         # Check required files
         required_files = ['imsmanifest.xml', 'assessment_meta.xml']
         for file in required_files:
             if not os.path.exists(os.path.join(package_dir, file)):
                 issues.append(f"Missing required file: {file}")
-        
+
         # Check assessment files
         for week in range(1, 5):
             for assessment_type in ['quiz', 'assignment', 'discussion']:
@@ -322,7 +320,7 @@ class Pattern13Prevention:
                             issues.append(f"Assessment file too small: {file_name}")
                         if not content.startswith('<?xml'):
                             issues.append(f"Not proper XML: {file_name}")
-        
+
         if issues:
             print("❌ Compatibility issues found:")
             for issue in issues:
@@ -334,7 +332,7 @@ class Pattern13Prevention:
 
 if __name__ == "__main__":
     prevention = Pattern13Prevention()
-    
+
     # Example usage:
     # prevention.create_corrected_package("source_content_dir", "corrected_output_dir")
     print("Pattern 13 Prevention script ready for use.")

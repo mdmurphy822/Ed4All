@@ -20,17 +20,16 @@ Usage:
 import argparse
 import json
 import logging
-import os
 import re
 import shutil
 import sys
 import tempfile
 import zipfile
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple, Any
+from typing import Any, Dict, List, Optional, Tuple
 from xml.etree import ElementTree as ET
 
 # Add project root to path for imports
@@ -334,7 +333,7 @@ class IMSCCExtractor:
         if not self.imscc_path.exists():
             raise FileNotFoundError(f"IMSCC package not found: {self.imscc_path}")
 
-        if not self.imscc_path.suffix.lower() in ('.imscc', '.zip'):
+        if self.imscc_path.suffix.lower() not in ('.imscc', '.zip'):
             logger.warning(f"Unexpected file extension: {self.imscc_path.suffix}")
 
         # Verify it's a valid ZIP file
@@ -460,7 +459,7 @@ class IMSCCExtractor:
                 if elem is not None and elem.text:
                     title = elem.text.strip()
                     break
-            except (AttributeError, TypeError) as e:
+            except (AttributeError, TypeError, SyntaxError) as e:
                 logger.debug(f"Metadata extraction failed for path {path}: {e}")
                 continue
 
@@ -487,7 +486,7 @@ class IMSCCExtractor:
                 if elem is not None and elem.text:
                     description = elem.text.strip()
                     break
-            except (AttributeError, TypeError) as e:
+            except (AttributeError, TypeError, SyntaxError) as e:
                 logger.debug(f"Description extraction failed for path {path}: {e}")
                 continue
 
@@ -503,7 +502,7 @@ class IMSCCExtractor:
                 if elem is not None and elem.text:
                     language = elem.text.strip()[:2]  # Get 2-letter code
                     break
-            except (AttributeError, TypeError) as e:
+            except (AttributeError, TypeError, SyntaxError) as e:
                 logger.debug(f"Language extraction failed for path {path}: {e}")
                 continue
 
@@ -790,7 +789,7 @@ class IMSCCExtractor:
 ║ Title: {ec.title[:57]:<57} ║
 ║ Source LMS: {ec.source_lms.value:<52} ║
 ║ IMSCC Version: {ec.imscc_version.value:<49} ║
-║ Detection Confidence: {ec.lms_detection_confidence:.0%:<42} ║
+║ Detection Confidence: {f'{ec.lms_detection_confidence:.0%}':<42} ║
 ╠══════════════════════════════════════════════════════════════════╣
 ║ CONTENT INVENTORY                                                 ║
 ╠══════════════════════════════════════════════════════════════════╣

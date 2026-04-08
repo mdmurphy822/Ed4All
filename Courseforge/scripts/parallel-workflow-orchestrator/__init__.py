@@ -7,7 +7,6 @@ multiple agent executions with batch size limits, progress tracking,
 and quality gate enforcement.
 """
 
-from pathlib import Path
 
 __version__ = "1.0.0"
 __all__ = []

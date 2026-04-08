@@ -5,17 +5,17 @@ Generates IMSCC assignment XML files using the correct namespace.
 """
 
 import os
-from typing import List, Optional
+from typing import List
+
 from .base_generator import BaseGenerator, escape_for_cdata, escape_xml_attribute
 from .constants import (
-    NAMESPACES,
-    SCHEMA_LOCATIONS,
-    RESOURCE_TYPES,
-    MAX_POINTS,
-    MIN_POINTS,
-    MAX_TITLE_LENGTH,
     MAX_CONTENT_LENGTH,
-    VALID_SUBMISSION_TYPES,
+    MAX_POINTS,
+    MAX_TITLE_LENGTH,
+    MIN_POINTS,
+    NAMESPACES,
+    RESOURCE_TYPES,
+    SCHEMA_LOCATIONS,
 )
 
 

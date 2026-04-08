@@ -7,10 +7,10 @@ Provides common utilities for all IMSCC XML generators:
 - Template loading
 """
 
-import uuid
 import html
+import uuid
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict
 from xml.sax.saxutils import escape as xml_escape
 
 
@@ -203,5 +203,5 @@ class BaseGenerator:
             from xml.etree import ElementTree as ET
             ET.fromstring(xml_content)
             return True
-        except Exception:
+        except (ET.ParseError, ValueError):
             return False

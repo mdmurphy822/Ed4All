@@ -4,8 +4,9 @@ QTI Assessment XML Validator
 Validates IMSCC QTI 1.2 assessment XML files for correct format and Brightspace compatibility.
 """
 
-from typing import List, Optional, Set
-from .xml_validator import IMSCCValidator, ValidationResult, ValidationLevel
+from typing import Optional, Set
+
+from .xml_validator import IMSCCValidator, ValidationLevel, ValidationResult
 
 try:
     from lxml import etree

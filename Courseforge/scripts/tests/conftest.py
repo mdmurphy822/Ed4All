@@ -3,11 +3,10 @@ Courseforge Test Fixtures
 Shared pytest fixtures for all test modules
 """
 
-import pytest
 import sys
-import tempfile
-import shutil
 from pathlib import Path
+
+import pytest
 
 # Add scripts directory to path for imports
 SCRIPTS_DIR = Path(__file__).parent.parent

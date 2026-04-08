@@ -3,16 +3,17 @@ Tests for the IMSCC Extractor Module
 IMSCC Package Extraction and LMS Detection Testing
 """
 
-import pytest
 import sys
 import zipfile
 from pathlib import Path
+
+import pytest
 
 # Add module path
 sys.path.insert(0, str(Path(__file__).parent.parent / 'imscc-extractor'))
 
 try:
-    from imscc_extractor import IMSCCExtractor, LMSType, ResourceType
+    from imscc_extractor import IMSCCExtractor
 except ImportError:
     pytest.skip("imscc_extractor module not available", allow_module_level=True)
 
@@ -125,7 +126,7 @@ class TestIMSCCExtractor:
 
         # Should extract successfully
         assert result is not None
-        assert result.success is True
+        assert len(result.errors) == 0
 
     @pytest.mark.integration
     @pytest.mark.imscc
@@ -146,7 +147,7 @@ class TestIMSCCExtractor:
         result = extractor.extract()
 
         # Should have HTML resources
-        assert result.html_count > 0 or len(result.resources) > 0
+        assert len(result.html_files) > 0 or len(result.resources) > 0
 
     @pytest.mark.integration
     @pytest.mark.imscc
@@ -328,7 +329,7 @@ class TestIMSCCExtractionAnalysis:
             assert True
         else:
             # At minimum extraction should work
-            assert result.success is True
+            assert len(result.errors) == 0
 
     @pytest.mark.integration
     @pytest.mark.imscc

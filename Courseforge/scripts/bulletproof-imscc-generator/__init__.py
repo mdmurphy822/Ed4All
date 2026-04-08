@@ -7,7 +7,6 @@ validation, pattern prevention, and error handling to ensure successful
 LMS imports.
 """
 
-from pathlib import Path
 
 __version__ = "1.0.0"
 __all__ = []

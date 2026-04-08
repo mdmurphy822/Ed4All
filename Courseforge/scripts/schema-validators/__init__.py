@@ -19,10 +19,10 @@ Usage:
     result = qti_validator.validate_assessment(Path('quiz.xml'))
 """
 
-from .namespace_validator import NamespaceValidator
-from .resource_reference_validator import ResourceReferenceValidator
 from .imscc_manifest_validator import IMSCCManifestValidator
+from .namespace_validator import NamespaceValidator
 from .qti_assessment_validator import QTIAssessmentValidator
+from .resource_reference_validator import ResourceReferenceValidator
 
 __all__ = [
     'NamespaceValidator',

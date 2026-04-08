@@ -4,11 +4,10 @@ Base XML Validator for IMSCC Components
 Provides XSD schema validation and namespace verification for IMSCC XML files.
 """
 
-import os
-from pathlib import Path
-from typing import List, Optional, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
+from typing import List
 
 try:
     from lxml import etree
@@ -289,7 +288,7 @@ class IMSCCValidator:
                                         f"Element '{elem.tag}' has empty or whitespace-only '{attr_name}' attribute",
                                         ValidationLevel.HIGH
                                     )
-            except Exception:
+            except (ValueError, TypeError):
                 pass  # Parsing errors handled elsewhere
 
         return result

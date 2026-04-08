@@ -18,7 +18,7 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 from xml.etree import ElementTree as ET
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -690,7 +690,7 @@ def main():
         print(f"Questions: {result.question_count}")
         print(f"Total Points: {result.total_points}")
         if result.question_types:
-            print(f"\nQuestion Types:")
+            print("\nQuestion Types:")
             for qtype, count in result.question_types.items():
                 print(f"  {qtype}: {count}")
         print(f"\nIssues Found: {len(result.issues)}")

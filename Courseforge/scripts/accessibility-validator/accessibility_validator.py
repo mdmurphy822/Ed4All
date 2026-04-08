@@ -27,14 +27,14 @@ Usage:
 import argparse
 import json
 import logging
-import os
 import re
 import sys
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Set, TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, List, Optional, Set
+
 from bs4 import BeautifulSoup
 
 # Add Ed4All lib to path for decision capture
