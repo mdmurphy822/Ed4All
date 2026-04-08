@@ -118,7 +118,8 @@ class QualityFeedbackStore:
         if not path.exists():
             return 0
 
-        count = sum(1 for line in open(path) if line.strip())
+        with open(path, encoding='utf-8') as f:
+            count = sum(1 for line in f if line.strip())
         path.unlink()
         logger.info("Cleared %d feedback events for %s", count, course_code)
         return count

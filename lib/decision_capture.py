@@ -22,6 +22,7 @@ Adapted from INTEGRATOR CURRICULUM decision_capture.py
 
 import hashlib
 import json
+import logging
 import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -67,6 +68,8 @@ except ImportError:
 
     def is_write_facade_enforced():
         return False
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -185,26 +188,23 @@ class DecisionCapture:
             self._stream_path = self.output_dir / f"decisions_{self.session_id}.jsonl"
             self._legacy_stream_path = self.legacy_output_dir / f"decisions_{self.session_id}.jsonl"
             try:
-                self._stream_file = open(self._stream_path, 'a')
+                self._stream_file = open(self._stream_path, 'a', encoding='utf-8')
             except OSError as e:
-                import sys
-                print(f"Warning: Failed to open stream file {self._stream_path}: {e}", file=sys.stderr)
+                logger.warning("Failed to open stream file %s: %s", self._stream_path, e)
                 self.streaming_mode = False
                 self._stream_file = None
             # Also open legacy stream file for dual-write
             try:
-                self._legacy_stream_file = open(self._legacy_stream_path, 'a')
+                self._legacy_stream_file = open(self._legacy_stream_path, 'a', encoding='utf-8')
             except OSError as e:
-                import sys
-                print(f"Warning: Failed to open legacy stream file {self._legacy_stream_path}: {e}", file=sys.stderr)
+                logger.warning("Failed to open legacy stream file %s: %s", self._legacy_stream_path, e)
                 self._legacy_stream_file = None
             # Phase 0: Also open run-specific stream file
             if self._run_decisions_path:
                 try:
-                    self._run_stream_file = open(self._run_decisions_path, 'a')
+                    self._run_stream_file = open(self._run_decisions_path, 'a', encoding='utf-8')
                 except OSError as e:
-                    import sys
-                    print(f"Warning: Failed to open run stream file {self._run_decisions_path}: {e}", file=sys.stderr)
+                    logger.warning("Failed to open run stream file %s: %s", self._run_decisions_path, e)
                     self._run_stream_file = None
 
     def _infer_operation(self, decision_type: str) -> str:
@@ -278,12 +278,11 @@ class DecisionCapture:
                 return False
 
         except Exception as e:
-            import sys
-            print(f"Warning: WriteFacade transaction failed: {e}", file=sys.stderr)
+            logger.warning("WriteFacade transaction failed: %s", e)
             try:
                 facade.rollback_transaction()
             except Exception as rollback_err:
-                print(f"Warning: WriteFacade rollback also failed: {rollback_err}", file=sys.stderr)
+                logger.warning("WriteFacade rollback also failed: %s", rollback_err)
             return False
 
     def set_module_context(
@@ -370,12 +369,10 @@ class DecisionCapture:
         record["metadata"]["quality_gate_passed"] = quality_ok
         if not quality_ok:
             record["metadata"]["quality_gate_reason"] = quality_reason
-            import sys
-            print(
-                f"Quality gate: decision '{decision_type}' rated "
-                f"'{quality_level}' (below proficient) — flagged for "
-                f"exclusion from training corpus",
-                file=sys.stderr,
+            logger.warning(
+                "Quality gate: decision '%s' rated '%s' (below proficient) "
+                "— flagged for exclusion from training corpus",
+                decision_type, quality_level,
             )
 
         return record
@@ -388,14 +385,12 @@ class DecisionCapture:
             from .validation import validate_decision
             is_valid, issues = validate_decision(record, self.tool)
             if not is_valid:
-                import sys
-                print(f"Warning: Decision validation issues: {issues}", file=sys.stderr)
+                logger.warning("Decision validation issues: %s", issues)
                 record["metadata"]["validation_issues"] = issues
         except ImportError:
             pass  # Validation module not available
         except Exception as e:
-            import sys
-            print(f"Warning: Decision validation error: {e}", file=sys.stderr)
+            logger.warning("Decision validation error: %s", e)
 
     def _write_to_streams(self, record: Dict[str, Any]) -> None:
         """Write a decision record to all configured stream locations."""
@@ -420,8 +415,7 @@ class DecisionCapture:
                     fh.flush()
                     os.fsync(fh.fileno())
                 except OSError as e:
-                    import sys
-                    print(f"Warning: {label} write failed: {e}", file=sys.stderr)
+                    logger.warning("%s write failed: %s", label, e)
 
     def log_decision(
         self,
@@ -630,8 +624,7 @@ class DecisionCapture:
                 os.fsync(f.fileno())
             os.rename(legacy_temp_path, legacy_output_path)
         except OSError as e:
-            import sys
-            print(f"Warning: Failed to save to legacy location: {e}", file=sys.stderr)
+            logger.warning("Failed to save to legacy location: %s", e)
 
         return output_path
 
@@ -674,8 +667,7 @@ class DecisionCapture:
         try:
             self.save()
         except Exception as e:
-            import sys
-            print(f"Error saving decision capture: {e}", file=sys.stderr)
+            logger.error("Error saving decision capture: %s", e)
             if exc_type is None:
                 raise
         return False
