@@ -9,13 +9,12 @@ Phase 0.5 Enhancement: Artifact Deduplication (E2)
 """
 
 import hashlib
+import logging
 import os
 import shutil
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Iterator, Tuple
-import logging
-import json
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +240,38 @@ class ContentStore:
             size_bytes=size_bytes,
             path=blob_path
         )
+
+    def has_content(self, content: bytes) -> bool:
+        """
+        Check if content already exists in the store without storing it.
+
+        Use this for pre-generation deduplication: before processing a
+        document through the pipeline, check if identical content already
+        exists in the store.
+
+        Args:
+            content: Bytes to check
+
+        Returns:
+            True if content already exists in the store
+        """
+        content_hash = self._compute_hash(content)
+        return self._get_blob_path(content_hash).exists()
+
+    def has_file(self, file_path: Path) -> bool:
+        """
+        Check if a file's content already exists in the store.
+
+        Uses streaming hash for memory efficiency.
+
+        Args:
+            file_path: Path to file to check
+
+        Returns:
+            True if identical content already exists
+        """
+        content_hash = self._compute_hash_streaming(file_path)
+        return self._get_blob_path(content_hash).exists()
 
     def retrieve(self, content_hash: str) -> Optional[bytes]:
         """

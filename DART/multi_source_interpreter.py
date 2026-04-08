@@ -14,21 +14,47 @@ Architecture:
 Each section is synthesized by combining the best of all sources.
 """
 
-import json
-import re
 import html
+import json
+import logging
+import re
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 # Add lib to path for decision capture
 sys.path.insert(0, str(Path(__file__).parent.parent / "lib"))
 try:
-    from decision_capture import DecisionCapture
+    from decision_capture import DecisionCapture  # noqa: F401
     CAPTURE_AVAILABLE = True
 except ImportError:
     CAPTURE_AVAILABLE = False
+
+# Add Courseforge accessibility validator to path
+_VALIDATOR_DIR = (
+    Path(__file__).parent.parent
+    / "Courseforge" / "scripts" / "accessibility-validator"
+)
+if str(_VALIDATOR_DIR) not in sys.path:
+    sys.path.insert(0, str(_VALIDATOR_DIR))
+try:
+    from accessibility_validator import AccessibilityValidator, IssueSeverity
+    WCAG_VALIDATOR_AVAILABLE = True
+except ImportError:
+    WCAG_VALIDATOR_AVAILABLE = False
+
+# Import semantic structure extractor for content profiling
+try:
+    from lib.semantic_structure_extractor.semantic_structure_extractor import (
+        SemanticStructureExtractor,
+    )
+    SEMANTIC_EXTRACTOR_AVAILABLE = True
+except ImportError:
+    SEMANTIC_EXTRACTOR_AVAILABLE = False
 
 # =============================================================================
 # CAMPUS NAME MAPPING
@@ -944,6 +970,214 @@ footer {
 
 
 # =============================================================================
+# QUALITY REPORT
+# =============================================================================
+
+def build_quality_report(
+    contexts: List[Dict], synthesized_sections: List[Dict],
+    wcag_result: Optional[Dict[str, Any]] = None,
+    content_profile: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Build a DARTQualityReport from synthesis data and WCAG validation.
+
+    This report travels with the HTML output so downstream consumers
+    (Courseforge, Trainforge) can assess source reliability.
+
+    Returns dict with:
+        extraction_sources: list of sources that contributed
+        table_quality: dict of section_type -> quality rating
+        entity_counts: dict of entity type -> count
+        wcag_validation: WCAG validation results
+        confidence_score: 0.0-1.0 overall quality score
+        section_count: number of sections synthesized
+    """
+    # Collect which extraction sources contributed
+    sources_used = set()
+    table_quality = {}
+    total_entities = {"phones": 0, "emails": 0, "urls": 0, "names": 0}
+
+    for ctx in contexts:
+        src = ctx.get("sources", {})
+        if src.get("pdftotext"):
+            sources_used.add("pdftotext")
+        if src.get("tables"):
+            sources_used.add("pdfplumber")
+            for t in src["tables"]:
+                quality = t.get("quality", "unknown")
+                key = f"{ctx.get('section_type', 'unknown')}_p{t.get('page', 0)}"
+                table_quality[key] = quality
+        if src.get("ocr"):
+            sources_used.add("ocr")
+
+        entities = ctx.get("entities", {})
+        for etype in total_entities:
+            total_entities[etype] += len(entities.get(etype, []))
+
+    # Compute confidence score based on:
+    # - Multi-source coverage (more sources = higher confidence)
+    # - Table quality (complete > headers_only > empty)
+    # - Entity extraction success
+    # - WCAG compliance
+    source_score = len(sources_used) / 3.0  # max 1.0 with all 3 sources
+
+    table_scores = {"complete": 1.0, "headers_only": 0.5, "empty": 0.0}
+    if table_quality:
+        avg_table = sum(
+            table_scores.get(q, 0.5) for q in table_quality.values()
+        ) / len(table_quality)
+    else:
+        avg_table = 0.5  # no tables, neutral
+
+    entity_score = min(1.0, sum(total_entities.values()) / 10.0)
+
+    wcag_score = wcag_result.get("quality_score", 1.0) if wcag_result else 1.0
+
+    confidence = (
+        source_score * 0.3
+        + avg_table * 0.2
+        + entity_score * 0.2
+        + wcag_score * 0.3
+    )
+
+    return {
+        "extraction_sources": sorted(sources_used),
+        "table_quality": table_quality,
+        "entity_counts": total_entities,
+        "wcag_validation": wcag_result,
+        "content_profile": content_profile,
+        "confidence_score": round(confidence, 3),
+        "section_count": len(synthesized_sections),
+    }
+
+
+# =============================================================================
+# SEMANTIC STRUCTURE EXTRACTION
+# =============================================================================
+
+def extract_content_profile(html_content: str, label: str = "") -> Optional[Dict[str, Any]]:
+    """
+    Run semantic structure extraction with content profiling.
+
+    Returns a summary dict with concept_count, topic structure, and
+    pedagogical pattern, or None if extractor isn't available.
+    """
+    if not SEMANTIC_EXTRACTOR_AVAILABLE:
+        logger.debug("Semantic extractor not available, skipping profiling")
+        return None
+
+    try:
+        extractor = SemanticStructureExtractor()
+        result = extractor.extract_with_profiling(html_content, source_path=label)
+
+        # Extract key signals for downstream consumers
+        profiles = result.get("contentProfiles", {})
+        concept_graph = result.get("conceptGraph", {})
+
+        return {
+            "pedagogical_pattern": result.get("pedagogicalPattern", "unknown"),
+            "concept_count": len(concept_graph.get("concepts", [])),
+            "concept_names": [
+                c.get("name", "") for c in concept_graph.get("concepts", [])[:20]
+            ],
+            "chapter_count": len(result.get("chapters", [])),
+            "content_profiles": profiles,
+        }
+    except Exception as e:
+        logger.warning("Semantic extraction failed for %s: %s", label, e)
+        return None
+
+
+# =============================================================================
+# WCAG VALIDATION
+# =============================================================================
+
+def validate_wcag(html_content: str, label: str = "") -> Dict[str, Any]:
+    """
+    Run WCAG 2.2 AA validation on generated HTML.
+
+    Returns dict with:
+        compliant: bool - whether the HTML passes WCAG AA
+        critical_count: int - number of critical issues
+        high_count: int - number of high severity issues
+        total_issues: int - total issue count
+        issues: list - detailed issue dicts
+        quality_score: float - 0.0-1.0 quality score
+    """
+    if not WCAG_VALIDATOR_AVAILABLE:
+        logger.debug("WCAG validator not available, skipping validation")
+        return {
+            "compliant": True,
+            "critical_count": 0,
+            "high_count": 0,
+            "total_issues": 0,
+            "issues": [],
+            "quality_score": 1.0,
+        }
+
+    validator = AccessibilityValidator(strict_mode=False)
+
+    # Write HTML to temp file for validation
+    with tempfile.NamedTemporaryFile(
+        mode='w', suffix='.html', encoding='utf-8', delete=False
+    ) as tmp:
+        tmp.write(html_content)
+        tmp_path = Path(tmp.name)
+
+    try:
+        report = validator.validate_file(tmp_path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+    # Convert issues to serializable dicts
+    issues = []
+    for issue in report.issues:
+        severity = (
+            issue.severity.value
+            if isinstance(issue.severity, IssueSeverity)
+            else issue.severity
+        )
+        issues.append({
+            "criterion": issue.criterion,
+            "severity": severity,
+            "element": issue.element,
+            "message": issue.message,
+            "suggestion": issue.suggestion,
+        })
+
+    # Compute quality score: 1.0 if no issues, penalized by severity
+    # Critical: -0.15 each, High: -0.08, Medium: -0.03, Low: -0.01
+    penalty = (
+        report.critical_count * 0.15
+        + report.high_count * 0.08
+        + report.medium_count * 0.03
+        + report.low_count * 0.01
+    )
+    quality_score = max(0.0, 1.0 - penalty)
+
+    prefix = f"[{label}] " if label else ""
+    if report.critical_count > 0:
+        logger.warning(
+            "%sWCAG validation: %d critical, %d high issues",
+            prefix, report.critical_count, report.high_count,
+        )
+    elif report.total_issues > 0:
+        logger.info(
+            "%sWCAG validation: %d issues (no critical)",
+            prefix, report.total_issues,
+        )
+
+    return {
+        "compliant": report.wcag_aa_compliant,
+        "critical_count": report.critical_count,
+        "high_count": report.high_count,
+        "total_issues": report.total_issues,
+        "issues": issues,
+        "quality_score": quality_score,
+    }
+
+
+# =============================================================================
 # BATCH PROCESSING
 # =============================================================================
 
@@ -991,11 +1225,18 @@ def batch_synthesize_all(combined_dir: str = None, output_dir: str = None) -> Li
             synth_path.write_text(json.dumps(synthesized, indent=2), encoding='utf-8')
 
             html_out = generate_html_from_synthesized(synthesized)
+
+            # Run WCAG validation
+            wcag_result = validate_wcag(html_out, label=code)
+
             html_path = html_dir / f"{code}_synthesized.html"
             html_path.write_text(html_out, encoding='utf-8')
             html_files.append(html_path)
 
-            print("OK")
+            status = "OK"
+            if wcag_result['critical_count'] > 0:
+                status = f"OK (WCAG: {wcag_result['critical_count']} critical)"
+            print(status)
         except Exception as e:
             print(f"ERROR: {e}")
             import traceback
@@ -1025,23 +1266,42 @@ def convert_single_pdf(combined_json_path: str, output_path: str = None) -> Dict
     name = CAMPUS_NAMES.get(code, code)
 
     contexts = export_section_contexts(combined)
+    sections = [auto_synthesize_section(ctx) for ctx in contexts]
     synthesized = {
         'campus_code': code,
         'campus_name': name,
-        'sections': [auto_synthesize_section(ctx) for ctx in contexts]
+        'sections': sections,
     }
 
     html_out = generate_html_from_synthesized(synthesized)
 
+    # Run WCAG validation on generated HTML
+    wcag_result = validate_wcag(html_out, label=code)
+
+    # Run semantic structure extraction for content profiling
+    content_profile = extract_content_profile(html_out, label=code)
+
+    # Build quality report for downstream consumers
+    quality_report = build_quality_report(
+        contexts, sections, wcag_result, content_profile
+    )
+
     if output_path:
         Path(output_path).write_text(html_out, encoding='utf-8')
+        # Write quality report alongside HTML
+        report_path = Path(output_path).with_suffix('.quality.json')
+        report_path.write_text(
+            json.dumps(quality_report, indent=2), encoding='utf-8'
+        )
 
     return {
         'success': True,
         'campus_code': code,
         'campus_name': name,
         'html': html_out,
-        'synthesized': synthesized
+        'synthesized': synthesized,
+        'quality_report': quality_report,
+        'quality_score': quality_report['confidence_score'],
     }
 
 

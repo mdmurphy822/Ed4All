@@ -16,21 +16,21 @@ Functions:
 """
 
 from .assessment_generator import (
-    AssessmentGenerator,
-    AssessmentData,
-    QuestionData,
     BLOOM_LEVELS,
+    AssessmentData,
+    AssessmentGenerator,
+    QuestionData,
     generate_assessment,
 )
-
 from .question_factory import (
-    QuestionFactory,
+    BloomAlignmentError,
     Question,
     QuestionChoice,
+    QuestionFactory,
+    create_essay,
+    create_fib,
     create_mcq,
     create_tf,
-    create_fib,
-    create_essay,
 )
 
 __all__ = [
@@ -41,6 +41,8 @@ __all__ = [
     "QuestionFactory",
     "Question",
     "QuestionChoice",
+    # Exceptions
+    "BloomAlignmentError",
     # Functions
     "generate_assessment",
     "create_mcq",

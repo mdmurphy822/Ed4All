@@ -18,10 +18,10 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 # Add project path
-PROJECT_ROOT = Path(__file__).resolve().parents[2]  # generators/assessment_generator.py → Trainforge/ → Ed4All/
+PROJECT_ROOT = Path(__file__).resolve().parents[2]  # → Ed4All/
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -29,6 +29,13 @@ if TYPE_CHECKING:
     from lib.decision_capture import DecisionCapture
 
 logger = logging.getLogger(__name__)
+
+# Import leak checker for answer-leak detection
+try:
+    from lib.leak_checker import LeakChecker  # noqa: F401
+    LEAK_CHECKER_AVAILABLE = True
+except ImportError:
+    LEAK_CHECKER_AVAILABLE = False
 
 
 # Bloom's Taxonomy levels with associated question patterns
@@ -147,14 +154,18 @@ class AssessmentGenerator:
     def __init__(
         self,
         capture: Optional["DecisionCapture"] = None,
+        check_leaks: bool = True,
     ):
         """
         Initialize the assessment generator.
 
         Args:
             capture: Optional DecisionCapture for logging generation decisions
+            check_leaks: If True, run leak checker on generated questions
         """
         self.capture = capture
+        self.check_leaks = check_leaks and LEAK_CHECKER_AVAILABLE
+        self._leak_checker = LeakChecker(strict_mode=False) if self.check_leaks else None
 
     def generate(
         self,
@@ -185,18 +196,29 @@ class AssessmentGenerator:
             # Build pedagogical rationale
             level_distribution = ", ".join(bloom_levels)
             rationale = (
-                f"Designing assessment to cover {len(objective_ids)} learning objectives "
-                f"because comprehensive objective coverage ensures learners demonstrate mastery across the full scope of the content. "
-                f"Targeting Bloom's levels [{level_distribution}] enables assessment of both foundational knowledge and higher-order thinking skills. "
-                f"The {question_count} question count provides sufficient sampling density to reliably measure competency while respecting learner time constraints."
+                f"Covering {len(objective_ids)} objectives ensures "
+                f"learners demonstrate mastery across the full scope. "
+                f"Bloom's levels [{level_distribution}] assess both "
+                f"foundational and higher-order thinking. "
+                f"{question_count} questions balance sampling density "
+                f"with learner time constraints."
             )
             self.capture.log_decision(
                 decision_type="assessment_planning",
-                decision=f"Planning assessment with {question_count} questions covering {len(objective_ids)} objectives",
+                decision=(
+                    f"Planning assessment with {question_count} "
+                    f"questions covering {len(objective_ids)} objectives"
+                ),
                 rationale=rationale,
                 alternatives_considered=[
-                    {"option": "fewer_questions", "rejected_because": "Insufficient sampling would reduce reliability of competency measurement"},
-                    {"option": "more_questions", "rejected_because": "Would exceed optimal assessment length and cause learner fatigue"},
+                    {
+                        "option": "fewer_questions",
+                        "rejected_because": "Insufficient sampling",
+                    },
+                    {
+                        "option": "more_questions",
+                        "rejected_because": "Exceeds optimal length",
+                    },
                 ],
             )
 
@@ -235,6 +257,56 @@ class AssessmentGenerator:
             )
             questions.append(question)
             idx += 1
+
+        # Run leak checker on generated questions
+        if self._leak_checker and questions:
+            leak_questions = []
+            for q in questions:
+                leak_q = {"id": q.question_id}
+                if q.correct_answer:
+                    leak_q["correct_answer"] = q.correct_answer
+                elif q.choices:
+                    correct = [
+                        c["text"] for c in q.choices if c.get("is_correct")
+                    ]
+                    if correct:
+                        leak_q["correct_answers"] = correct
+                leak_questions.append(leak_q)
+
+            self._leak_checker.register_assessment(assessment_id, leak_questions)
+
+            # Check each question's stem for answer leaks
+            leaked_ids = set()
+            for q in questions:
+                result = self._leak_checker.check_prompt(
+                    q.stem, assessment_id=assessment_id, question_id=q.question_id
+                )
+                if not result.passed:
+                    leaked_ids.add(q.question_id)
+                    logger.warning(
+                        "Leak detected in %s: %d leaks found",
+                        q.question_id, result.leak_count,
+                    )
+
+            # Remove leaked questions
+            if leaked_ids:
+                original_count = len(questions)
+                questions = [q for q in questions if q.question_id not in leaked_ids]
+                logger.warning(
+                    "Removed %d/%d questions with answer leaks",
+                    original_count - len(questions), original_count,
+                )
+
+                if self.capture:
+                    self.capture.log_decision(
+                        decision_type="leak_check_filtering",
+                        decision=f"Removed {len(leaked_ids)} questions with answer leaks",
+                        rationale=(
+                            f"Leak checker detected answer content in question stems "
+                            f"for questions {leaked_ids}. Removing to prevent training "
+                            f"data contamination and maintain RAG corpus integrity."
+                        ),
+                    )
 
         assessment = AssessmentData(
             assessment_id=assessment_id,

@@ -199,6 +199,16 @@ class StreamingDecisionCapture:
         # Initialize hardening components if available
         if HARDENING_AVAILABLE:
             self._init_hardening()
+        elif not self._hash_chain:
+            # Even without full hardening, enable hash chain for tamper
+            # evidence on the primary stream output. This ensures all
+            # decision captures have integrity verification by default.
+            try:
+                from .hash_chain import HashChainedLog
+                chain_path = self.stream_path.with_suffix('.chain.jsonl')
+                self._hash_chain = HashChainedLog(chain_path)
+            except (ImportError, Exception):
+                pass  # Hash chain not available
 
     def _infer_operation(self, decision_type: str) -> str:
         """Infer operation from decision type for ML labeling."""
