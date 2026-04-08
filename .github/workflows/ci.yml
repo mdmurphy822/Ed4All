@@ -27,8 +27,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Lint
-        run: ruff check lib/ orchestrator/ MCP/
-        continue-on-error: true
+        run: ruff check lib/ orchestrator/ MCP/ cli/
 
       - name: Test
         run: pytest --cov --cov-report=xml

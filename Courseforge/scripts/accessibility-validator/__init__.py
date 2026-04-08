@@ -7,7 +7,12 @@ ensuring WCAG 2.2 AA compliance with automated checking for alt text, color
 contrast, heading hierarchy, keyboard navigation, ARIA landmarks, and form labels.
 """
 
-from pathlib import Path
+from .accessibility_validator import (
+    AccessibilityValidator,
+    IssueSeverity,
+    ValidationReport,
+    WCAGIssue,
+)
 
 __version__ = "1.0.0"
 __all__ = ['AccessibilityValidator', 'WCAGIssue', 'IssueSeverity', 'ValidationReport']

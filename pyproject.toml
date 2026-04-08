@@ -46,7 +46,7 @@ where = ["."]
 include = ["lib*", "orchestrator*", "MCP*", "cli*"]
 
 [tool.coverage.run]
-source = ["lib", "orchestrator", "MCP"]
+source = ["lib", "orchestrator", "MCP", "cli"]
 branch = true
 omit = ["*/tests/*", "*/__pycache__/*"]
 

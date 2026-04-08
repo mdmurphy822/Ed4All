@@ -89,7 +89,6 @@ state/runs/*
 !state/runs/.gitkeep
 
 runtime/
-runs/
 
 # Training captures (generated data)
 training-captures/dart/*
@@ -123,4 +122,3 @@ Thumbs.db
 
 # Logs
 *.log
-logs/
