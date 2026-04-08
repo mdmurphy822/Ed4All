@@ -131,7 +131,7 @@ class ContentStore:
                 import blake3
                 return blake3.blake3(content).hexdigest()
             except ImportError:
-                raise RuntimeError("blake3 library not installed")
+                raise RuntimeError("blake3 library not installed") from None
         else:
             raise ValueError(f"Unsupported algorithm: {self.algorithm}")
 
@@ -146,7 +146,7 @@ class ContentStore:
                 import blake3
                 hasher = blake3.blake3()
             except ImportError:
-                raise RuntimeError("blake3 library not installed")
+                raise RuntimeError("blake3 library not installed") from None
         else:
             raise ValueError(f"Unsupported algorithm: {self.algorithm}")
 

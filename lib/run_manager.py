@@ -18,21 +18,20 @@ import fnmatch
 import hashlib
 import json
 import os
-import re
 import subprocess
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from .paths import STATE_PATH, CONFIG_PATH, SCHEMAS_PATH
-from .state_manager import atomic_write_json, atomic_read_json
+from .paths import CONFIG_PATH, SCHEMAS_PATH, STATE_PATH
+from .state_manager import atomic_read_json, atomic_write_json
 
 # Type hints for optional dependencies (avoid circular imports)
 if TYPE_CHECKING:
-    from .sequence_manager import SequenceManager
     from .audit_logger import AuditLogger
+    from .sequence_manager import SequenceManager
 
 
 # ============================================================================

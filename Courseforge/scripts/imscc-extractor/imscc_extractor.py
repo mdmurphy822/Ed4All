@@ -40,7 +40,7 @@ _PROJECT_ROOT = _COURSEFORGE_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.secure_paths import safe_extract_zip, validate_path_within_root
+from lib.secure_paths import safe_extract_zip, validate_path_within_root  # noqa: E402
 
 # Configure logging
 logging.basicConfig(
@@ -377,7 +377,7 @@ class IMSCCExtractor:
             self.manifest_root = self.manifest_tree.getroot()
             logger.info("Manifest parsed successfully")
         except ET.ParseError as e:
-            raise ValueError(f"Failed to parse manifest XML: {e}")
+            raise ValueError(f"Failed to parse manifest XML: {e}") from e
 
     def _detect_lms(self) -> Tuple[LMSType, float, List[str]]:
         """
@@ -919,7 +919,7 @@ def main():
     # Extract
     try:
         extractor = IMSCCExtractor(imscc_path, output_path)
-        result = extractor.extract()
+        extractor.extract()
 
         # Output results
         if args.json:

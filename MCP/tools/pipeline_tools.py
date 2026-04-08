@@ -19,7 +19,7 @@ _PROJECT_ROOT = _MCP_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.paths import PROJECT_ROOT, STATE_PATH
+from lib.paths import PROJECT_ROOT  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

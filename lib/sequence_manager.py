@@ -18,8 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
 
-from .run_manager import get_current_run, RUNS_PATH
-
+from .run_manager import RUNS_PATH, get_current_run
 
 # ============================================================================
 # LOCK CONFIGURATION

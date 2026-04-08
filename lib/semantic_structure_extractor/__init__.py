@@ -25,46 +25,45 @@ Usage:
 __version__ = "2.0.0"
 
 # Core modules
+# Analysis modules
+from .analysis import (
+    ConceptGraph,
+    ConceptGraphBuilder,
+    ContentProfile,
+    ContentProfiler,
+)
 from .core import (
-    HeadingParser,
+    BlockType,
+    ContentBlock,
+    ContentBlockClassifier,
+    Definition,
     HeadingHierarchy,
     HeadingNode,
-    ContentBlockClassifier,
-    ContentBlock,
-    BlockType,
-    Definition,
+    HeadingParser,
     KeyTerm,
 )
 
 # Format parsers
 from .formats import (
-    MarkdownParser,
     MarkdownDocument,
+    MarkdownParser,
     detect_format,
 )
 
-# Analysis modules
-from .analysis import (
-    ContentProfiler,
-    ContentProfile,
-    ConceptGraphBuilder,
-    ConceptGraph,
+# Main extractor and convenience functions
+from .semantic_structure_extractor import (
+    ChapterStructure,
+    ExtractedExample,
+    ExtractedProcedure,
+    ReviewQuestion,
+    SectionStructure,
+    SemanticStructureExtractor,
+    extract_textbook_structure,
 )
 
 # Transformers
 from .transformers import (
     PresentationTransformer,
-)
-
-# Main extractor and convenience functions
-from .semantic_structure_extractor import (
-    SemanticStructureExtractor,
-    ChapterStructure,
-    SectionStructure,
-    ExtractedProcedure,
-    ExtractedExample,
-    ReviewQuestion,
-    extract_textbook_structure,
 )
 
 __all__ = [

@@ -247,7 +247,7 @@ class TestIMSCCExtractor:
     def test_json_output(self, temp_imscc_package, temp_output_dir):
         """Test JSON output generation"""
         extractor = IMSCCExtractor(temp_imscc_package, temp_output_dir)
-        result = extractor.extract()
+        extractor.extract()
 
         # Should be able to convert to JSON
         if hasattr(extractor, 'to_json'):
@@ -260,7 +260,7 @@ class TestIMSCCExtractor:
     def test_summary_output(self, temp_imscc_package, temp_output_dir):
         """Test summary output generation"""
         extractor = IMSCCExtractor(temp_imscc_package, temp_output_dir)
-        result = extractor.extract()
+        extractor.extract()
 
         # Should be able to generate summary
         if hasattr(extractor, 'get_extraction_summary'):

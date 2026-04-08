@@ -7,14 +7,14 @@ Detects poison-pill patterns that should stop batch processing.
 Phase 0 Hardening - Requirement 2: Execution Model Hardening
 """
 
-import re
 import hashlib
+import logging
+import re
 from collections import defaultdict
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Dict, List, Optional, Tuple
-import logging
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 

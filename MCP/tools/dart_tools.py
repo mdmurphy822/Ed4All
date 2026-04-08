@@ -11,11 +11,10 @@ Security: All path inputs are validated to stay within project boundaries.
 import json
 import logging
 import os
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional
 
 # Add project root to path for imports
 _MCP_DIR = Path(__file__).resolve().parents[1]
@@ -23,12 +22,12 @@ _PROJECT_ROOT = _MCP_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.paths import PROJECT_ROOT, DART_PATH
-from lib.secure_paths import validate_path_within_root, PathTraversalError, sanitize_path_component
+from lib.paths import DART_PATH  # noqa: E402
+from lib.secure_paths import PathTraversalError, validate_path_within_root  # noqa: E402
 
 # Import new telemetry system
 try:
-    from LibV2.telemetry import CaptureSession, ArtifactRef, InputRef
+    from LibV2.telemetry import ArtifactRef, CaptureSession, InputRef  # noqa: F401
     HAS_TELEMETRY = True
 except ImportError:
     HAS_TELEMETRY = False
@@ -196,7 +195,7 @@ def register_dart_tools(mcp):
 
             # Import the multi-source interpreter
             sys.path.insert(0, str(DART_PATH))
-            from multi_source_interpreter import convert_single_pdf, CAMPUS_NAMES
+            from multi_source_interpreter import convert_single_pdf
 
             # Initialize capture
             code = combined_path.stem.replace('_combined', '')

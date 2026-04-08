@@ -8,8 +8,7 @@ This enables the TaskExecutor to call tools with the correct signatures
 instead of the broken prompt-first calling convention.
 """
 
-from typing import Dict, List, Any, Optional
-
+from typing import Any, Dict, List, Optional
 
 # =============================================================================
 # TOOL SCHEMAS
@@ -478,9 +477,6 @@ def validate_tool_params(tool_name: str, params: Dict[str, Any]) -> tuple[bool, 
 
     required = schema.get("required", [])
     mapping = schema.get("param_mapping", {})
-
-    # Build reverse mapping to check if mapped params are present
-    reverse_mapping = {v: k for k, v in mapping.items()}
 
     missing = []
     for req_param in required:

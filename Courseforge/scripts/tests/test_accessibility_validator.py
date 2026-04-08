@@ -336,8 +336,6 @@ class TestAccessibilityValidator:
         html_path = write_temp_html(html, 'no_skip_link.html')
         report = validator.validate_file(html_path)
 
-        # May recommend skip link
-        skip_issues = [i for i in report.issues if 'skip' in i.message.lower()]
         # Skip link is recommended but may not be critical
         assert report is not None
 

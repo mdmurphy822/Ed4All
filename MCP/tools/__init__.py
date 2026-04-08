@@ -4,8 +4,8 @@ Ed4All MCP Tools
 Tool modules for DART, Courseforge, Trainforge, and Orchestration operations.
 """
 
-from .dart_tools import register_dart_tools
 from .courseforge_tools import register_courseforge_tools
+from .dart_tools import register_dart_tools
 from .orchestrator_tools import register_orchestrator_tools
 from .trainforge_tools import register_trainforge_tools
 

@@ -11,17 +11,16 @@ with the LibV2 RAG library. This consolidates:
 
 import json
 import logging
-import os
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 # Import paths from centralized module
 from .paths import (
-    LIBV2_PATH,
     LIBV2_CATALOG,
     LIBV2_COURSES,
     LIBV2_ONTOLOGY,
+    LIBV2_PATH,
     LIBV2_SCHEMA,
 )
 

@@ -9,12 +9,12 @@ Phase 0 Hardening - Requirement 1: Deterministic Orchestration
 
 import hashlib
 import json
+import logging
 import shutil
-from dataclasses import dataclass, asdict, field
+from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-import logging
 
 logger = logging.getLogger(__name__)
 

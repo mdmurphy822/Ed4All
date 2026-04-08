@@ -26,25 +26,23 @@ import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 from .constants import (
-    PROJECT_DIR,
-    TRAINING_DIR,
     MIN_DECISIONS_PER_PHASE,
     OPERATION_MAP,
-    VALID_DECISION_TYPES,
     VALIDATE_DECISIONS,
 )
-from .paths import TRAINING_DIR as LEGACY_TRAINING_DIR
 from .libv2_storage import LibV2Storage
+from .paths import TRAINING_DIR as LEGACY_TRAINING_DIR
 from .quality import assess_decision_quality
 
 # Phase 0 Hardening imports (graceful fallback if not available)
 try:
-    from .run_manager import get_current_run, HARDENED_MODE
-    from .sequence_manager import get_sequence_for_context, generate_event_id
-    from .provenance import InputRef as ProvenanceInputRef, OutputRef, create_input_ref, create_output_ref
+    from .provenance import InputRef as ProvenanceInputRef  # noqa: F401
+    from .provenance import OutputRef, create_input_ref, create_output_ref  # noqa: F401
+    from .run_manager import HARDENED_MODE, get_current_run
+    from .sequence_manager import generate_event_id, get_sequence_for_context
     HARDENING_AVAILABLE = True
 except ImportError:
     HARDENING_AVAILABLE = False
@@ -61,8 +59,8 @@ except ImportError:
 
 # Phase 0.5: WriteFacade for centralized write discipline
 try:
-    from .write_facade import WriteFacade, WriteResult
     from .path_constants import is_write_facade_enforced
+    from .write_facade import WriteFacade, WriteResult  # noqa: F401
     WRITE_FACADE_AVAILABLE = True
 except ImportError:
     WRITE_FACADE_AVAILABLE = False

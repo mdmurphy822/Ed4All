@@ -17,14 +17,15 @@ Phase 0 Hardening:
 Run: python server.py
 """
 
-from mcp.server.fastmcp import FastMCP
-import os
-import logging
-import sys
 import json
+import logging
+import os
+import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
+
+from mcp.server.fastmcp import FastMCP
 
 # Add parent directory to path for imports
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -36,11 +37,20 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Import secure path utilities
-from lib.secure_paths import validate_path_within_root, PathTraversalError, is_safe_path
+from lib.secure_paths import (  # noqa: E402
+    PathTraversalError,
+    is_safe_path,
+    validate_path_within_root,
+)
 
 # Phase 0 Hardening: Import tool registry and error taxonomy
 try:
-    from lib.tool_registry import ToolRegistry, ToolCapability, SandboxLevel, get_registry
+    from lib.tool_registry import (  # noqa: F401
+        SandboxLevel,
+        ToolCapability,
+        ToolRegistry,
+        get_registry,
+    )
     TOOL_REGISTRY_AVAILABLE = True
 except ImportError:
     TOOL_REGISTRY_AVAILABLE = False
@@ -48,15 +58,19 @@ except ImportError:
 
 try:
     from lib.error_taxonomy import (
-        StructuredError, ErrorCategory, ErrorCode,
-        input_error, security_error, processing_error
+        ErrorCategory,
+        ErrorCode,
+        StructuredError,
+        input_error,  # noqa: F401
+        processing_error,  # noqa: F401
+        security_error,  # noqa: F401
     )
     ERROR_TAXONOMY_AVAILABLE = True
 except ImportError:
     ERROR_TAXONOMY_AVAILABLE = False
 
 try:
-    from lib.secrets_filter import SecretsFilter, get_secrets_filter
+    from lib.secrets_filter import SecretsFilter, get_secrets_filter  # noqa: F401
     SECRETS_FILTER_AVAILABLE = True
 except ImportError:
     SECRETS_FILTER_AVAILABLE = False
@@ -577,7 +591,7 @@ def startup_hardening() -> None:
     snapshot_hash = save_registry_snapshot()
 
     # Log security configuration
-    logger.info(f"Security configuration:")
+    logger.info("Security configuration:")
     logger.info(f"  - Production mode: {PRODUCTION_MODE}")
     logger.info(f"  - Dev mode: {DEV_MODE}")
     logger.info(f"  - Allowed root: {ALLOWED_FILE_ROOT}")

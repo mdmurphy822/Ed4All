@@ -1,7 +1,6 @@
 """Smoke tests for DART converter module."""
 
 import pytest
-
 from DART.pdf_converter.converter import ConversionResult, TextBlock
 
 

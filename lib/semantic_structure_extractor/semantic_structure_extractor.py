@@ -21,22 +21,21 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Any, Dict, List, Optional
+
 from bs4 import BeautifulSoup, Tag
 
-from .core.heading_parser import HeadingParser, HeadingHierarchy, HeadingNode
+from .analysis.concept_graph import ConceptGraphBuilder
+from .analysis.content_profiler import ContentProfiler
 from .core.content_block_classifier import (
-    ContentBlockClassifier,
-    ContentBlock,
     BlockType,
-    Definition,
-    KeyTerm
+    ContentBlock,
+    ContentBlockClassifier,
 )
+from .core.heading_parser import HeadingHierarchy, HeadingNode, HeadingParser
 
 # Import extended modules
-from .formats.markdown_parser import MarkdownParser, MarkdownDocument, detect_format
-from .analysis.content_profiler import ContentProfiler, ContentProfile
-from .analysis.concept_graph import ConceptGraphBuilder, ConceptGraph
+from .formats.markdown_parser import MarkdownParser, detect_format
 from .transformers.presentation_transformer import PresentationTransformer
 
 
@@ -932,7 +931,6 @@ def extract_for_presentation(file_path: str, config_path: Optional[str] = None) 
 
 def main():
     """CLI entry point."""
-    import sys
     import argparse
 
     parser = argparse.ArgumentParser(

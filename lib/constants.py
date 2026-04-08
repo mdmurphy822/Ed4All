@@ -14,15 +14,15 @@ from typing import Dict, Set
 
 # Import paths from centralized module
 from .paths import (
-    PROJECT_ROOT,
-    SCHEMAS_PATH,
-    LIBV2_PATH,
     LIBV2_CATALOG,
     LIBV2_COURSES,
-    LIBV2_ONTOLOGY,
-    LIBV2_SCHEMA,
+    LIBV2_ONTOLOGY,  # noqa: F401 - re-exported for __init__.py
+    LIBV2_PATH,
+    LIBV2_SCHEMA,  # noqa: F401 - re-exported for __init__.py
+    PROJECT_ROOT,
+    SCHEMAS_PATH,
     TRAINING_DIR,
-    TRAINING_DIR_LEGACY,
+    TRAINING_DIR_LEGACY,  # noqa: F401 - re-exported for __init__.py
 )
 
 # Re-export for backward compatibility

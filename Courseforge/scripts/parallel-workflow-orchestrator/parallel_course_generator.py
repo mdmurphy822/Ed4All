@@ -82,7 +82,7 @@ class ParallelCourseOrchestrator:
 
         # This would interface with Claude Code's agent system
         # For now, we'll simulate the agent call
-        result = await self._simulate_agent_call("general-purpose", agent_prompt)
+        await self._simulate_agent_call("general-purpose", agent_prompt)
 
         # Validate generated files
         expected_files = [
@@ -138,7 +138,7 @@ class ParallelCourseOrchestrator:
 
         print(f"Starting Week {week_number} IMSCC packaging...")
 
-        result = await self._simulate_agent_call("brightspace-packager", agent_prompt)
+        await self._simulate_agent_call("brightspace-packager", agent_prompt)
 
         # Collect packaged files for this week
         packaged_files = []

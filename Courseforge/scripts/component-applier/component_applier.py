@@ -433,7 +433,6 @@ class ComponentApplier:
                 break
 
         if dl:
-            items = []
             dt_elements = dl.find_all('dt')
             dd_elements = dl.find_all('dd')
 

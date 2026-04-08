@@ -1,19 +1,21 @@
 """
 Tests for orchestrator/core/error_classifier.py - Error classification and poison-pill detection.
 """
-import pytest
 import sys
+from datetime import datetime
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
     from orchestrator.core.error_classifier import (
-        ErrorClassifier,
-        ErrorClass,
         ClassifiedError,
+        ErrorClass,
+        ErrorClassifier,
         PoisonPillDetector,
-        PoisonPillResult,
+        PoisonPillResult,  # noqa: F401
     )
 except ImportError:
     pytest.skip("error_classifier not available", allow_module_level=True)
@@ -198,7 +200,7 @@ class TestClassifiedError:
             message="Connection timeout",
             normalized_message="connection timeout",
             task_id="T001",
-            timestamp="2025-01-01T00:00:00",
+            timestamp=datetime.now().isoformat(),
             retry_recommended=True,
             pattern_hash="abc123",
         )
@@ -220,7 +222,7 @@ class TestPoisonPillDetector:
     @pytest.fixture
     def detector(self):
         """Detector with low threshold for testing."""
-        return PoisonPillDetector(threshold=3, time_window_seconds=300)
+        return PoisonPillDetector(threshold=3, window_seconds=300)
 
     @pytest.mark.unit
     def test_no_trigger_below_threshold(self, detector):
@@ -231,7 +233,7 @@ class TestPoisonPillDetector:
             message="Timeout",
             normalized_message="timeout",
             task_id="T001",
-            timestamp="2025-01-01T00:00:00",
+            timestamp=datetime.now().isoformat(),
             retry_recommended=True,
             pattern_hash="abc123",
         )
@@ -252,7 +254,7 @@ class TestPoisonPillDetector:
             message="Timeout",
             normalized_message="timeout",
             task_id="T001",
-            timestamp="2025-01-01T00:00:00",
+            timestamp=datetime.now().isoformat(),
             retry_recommended=True,
             pattern_hash="same_pattern",
         )
@@ -275,7 +277,7 @@ class TestPoisonPillDetector:
             message="Timeout",
             normalized_message="timeout",
             task_id="T001",
-            timestamp="2025-01-01T00:00:00",
+            timestamp=datetime.now().isoformat(),
             retry_recommended=True,
             pattern_hash="abc123",
         )
@@ -297,7 +299,7 @@ class TestPoisonPillDetector:
             message="Timeout",
             normalized_message="timeout",
             task_id="T001",
-            timestamp="2025-01-01T00:00:00",
+            timestamp=datetime.now().isoformat(),
             retry_recommended=True,
             pattern_hash="pattern_a",
         )
@@ -307,7 +309,7 @@ class TestPoisonPillDetector:
             message="Connection failed",
             normalized_message="connection failed",
             task_id="T002",
-            timestamp="2025-01-01T00:00:00",
+            timestamp=datetime.now().isoformat(),
             retry_recommended=True,
             pattern_hash="pattern_b",
         )
@@ -330,7 +332,7 @@ class TestPoisonPillDetector:
             message="Timeout",
             normalized_message="timeout",
             task_id="T001",
-            timestamp="2025-01-01T00:00:00",
+            timestamp=datetime.now().isoformat(),
             retry_recommended=True,
             pattern_hash="abc123",
         )
@@ -355,7 +357,7 @@ class TestRetryPolicy:
         """Retry delays should use exponential backoff."""
         try:
             from orchestrator.core.error_classifier import RetryPolicy
-            policy = RetryPolicy(base_delay=1.0, max_delay=60.0, multiplier=2.0)
+            policy = RetryPolicy(base_delay_seconds=1.0, max_delay_seconds=60.0, exponential_base=2.0)
 
             # Each retry should have longer delay
             delay1 = policy.get_retry_delay(1, None)
@@ -381,7 +383,7 @@ class TestRetryPolicy:
                 message="Timeout",
                 normalized_message="timeout",
                 task_id="T001",
-                timestamp="2025-01-01T00:00:00",
+                timestamp=datetime.now().isoformat(),
                 retry_recommended=True,
                 pattern_hash="abc123",
             )
@@ -404,7 +406,7 @@ class TestRetryPolicy:
                 message="File not found",
                 normalized_message="file not found",
                 task_id="T001",
-                timestamp="2025-01-01T00:00:00",
+                timestamp=datetime.now().isoformat(),
                 retry_recommended=False,
                 pattern_hash="abc123",
             )

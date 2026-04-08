@@ -310,7 +310,6 @@ class QTIAssessmentValidator:
 
     def _validate_metadata(self, assessment: ET.Element, ns: str) -> Tuple[Optional[str], Optional[str]]:
         """Validate qtimetadata section"""
-        ns_prefix = f'{{{ns}}}' if ns else ''
         cc_profile = None
         assessment_type = None
 

@@ -18,8 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .hash_chain import HashChainedLog, VerificationResult
-
+from .hash_chain import HashChainedLog
 
 # ============================================================================
 # CONSTANTS

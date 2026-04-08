@@ -23,23 +23,23 @@ Adapted from INTEGRATOR CURRICULUM streaming_capture.py
 import hashlib
 import json
 import os
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-from dataclasses import dataclass, asdict, field
 
-from .decision_capture import MLFeatures, InputRef, OutcomeSignals
-from .constants import PROJECT_DIR, TRAINING_DIR, MIN_DECISIONS_PER_PHASE, OPERATION_MAP
-from .libv2_storage import LibV2Storage, LIBV2_CATALOG
-from .quality import assess_decision_quality
+from .constants import MIN_DECISIONS_PER_PHASE, OPERATION_MAP
+from .decision_capture import InputRef, MLFeatures, OutcomeSignals
+from .libv2_storage import LibV2Storage
 from .paths import TRAINING_DIR as LEGACY_TRAINING_DIR
+from .quality import assess_decision_quality
 
 # Phase 0 hardening imports (graceful fallback for backwards compatibility)
 try:
-    from .run_manager import get_current_run, RunContext
-    from .sequence_manager import SequenceManager, generate_event_id
     from .hash_chain import HashChainedLog
     from .provenance import OutputRef
+    from .run_manager import RunContext, get_current_run
+    from .sequence_manager import SequenceManager, generate_event_id
     HARDENING_AVAILABLE = True
 except ImportError:
     HARDENING_AVAILABLE = False
@@ -267,7 +267,7 @@ class StreamingDecisionCapture:
             try:
                 self._file = open(self.stream_path, 'a')
             except (IOError, OSError) as e:
-                raise RuntimeError(f"Failed to open stream file {self.stream_path}: {e}")
+                raise RuntimeError(f"Failed to open stream file {self.stream_path}: {e}") from e
 
             # Also open legacy file for dual-write
             try:
@@ -289,7 +289,7 @@ class StreamingDecisionCapture:
             self._started_at = datetime.now().isoformat()
             try:
                 self._write_meta()
-            except Exception as e:
+            except Exception:
                 if self._file:
                     self._file.close()
                     self._file = None

@@ -139,7 +139,7 @@ class Pattern13Prevention:
         # Read the corrected template
         template_path = os.path.join(self.template_dir, "corrected_manifest_template.xml")
         with open(template_path, 'r', encoding='utf-8') as f:
-            manifest_template = f.read()
+            f.read()  # Load template for validation
 
         # Build resources section for all files
         resources_xml = ""

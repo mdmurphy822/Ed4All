@@ -664,7 +664,7 @@ class IMSCCMasterGenerator:
             # Clean up any partial files
             if output_file.exists():
                 output_file.unlink()
-            raise SystemExit(f"IMSCC package creation failed: {e}")
+            raise SystemExit(f"IMSCC package creation failed: {e}") from e
 
     def clean_text(self, text: str) -> str:
         """Clean and normalize text content."""
@@ -711,7 +711,7 @@ class IMSCCMasterGenerator:
                     assignment_files.append(assignment_file)
 
             # Step 4: Generate manifest
-            manifest_file = self.generate_manifest(course_data, html_files, assignment_files, temp_dir)
+            self.generate_manifest(course_data, html_files, assignment_files, temp_dir)
 
             # Step 5: Create IMSCC package
             self.create_imscc_package(temp_dir, output_path, course_data['course_info']['title'])
@@ -760,7 +760,7 @@ class IMSCCMasterGenerator:
             if temp_dir and temp_dir.exists():
                 import shutil
                 shutil.rmtree(temp_dir)
-            raise SystemExit(f"IMSCC GENERATION FAILED: {e}")
+            raise SystemExit(f"IMSCC GENERATION FAILED: {e}") from e
 
         finally:
             # Cleanup

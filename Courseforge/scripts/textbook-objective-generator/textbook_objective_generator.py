@@ -29,8 +29,8 @@ if str(ED4ALL_ROOT) not in sys.path:
 if TYPE_CHECKING:
     from lib.decision_capture import DecisionCapture
 
-from bloom_taxonomy_mapper import BloomLevel, BloomTaxonomyMapper
-from objective_formatter import LearningObjective, ObjectiveFormatter
+from bloom_taxonomy_mapper import BloomLevel, BloomTaxonomyMapper  # noqa: E402
+from objective_formatter import LearningObjective, ObjectiveFormatter  # noqa: E402
 
 
 @dataclass
@@ -169,10 +169,6 @@ class TextbookObjectiveGenerator:
     ) -> List[LearningObjective]:
         """Generate course-level objectives from the overall structure."""
         objectives = []
-
-        # Get document title
-        doc_info = structure.get("documentInfo", {})
-        title = doc_info.get("title", "")
 
         # Generate objectives from main topics (chapter titles)
         chapters = structure.get("chapters", [])

@@ -7,7 +7,7 @@ at module load time and during runtime operations.
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict
 
 logger = logging.getLogger(__name__)
 

@@ -14,7 +14,7 @@ import logging
 import sys
 from pathlib import Path
 
-from . import PDFToAccessibleHTML, ConversionResult, __version__
+from . import PDFToAccessibleHTML, __version__
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -218,7 +218,7 @@ def main(args: list = None) -> int:
     result = converter.convert(str(input_path), str(output_dir))
 
     if result.success:
-        print(f"\nConversion successful!")
+        print("\nConversion successful!")
         print(f"  Output: {result.html_path}")
         print(f"  Title:  {result.title}")
         print(f"  Pages:  {result.pages_processed}")

@@ -1116,7 +1116,7 @@ class BrightspacePackager:
             self._cleanup_temp_files()
             import logging
             logging.critical(f"ATOMIC GENERATION FAILED: {e}")
-            raise SystemExit(f"Package generation failed: {e}")
+            raise SystemExit(f"Package generation failed: {e}") from e
 
     def _validate_single_output(self):
         """
@@ -1787,7 +1787,7 @@ This package was generated using the enhanced Brightspace Package Generator with
             self._cleanup_temp_files()
             import logging
             logging.critical(f"GENERATION FAILED: {e}")
-            raise SystemExit(f"Package generation failed: {e}")
+            raise SystemExit(f"Package generation failed: {e}") from e
 
         finally:
             # Always remove execution lock

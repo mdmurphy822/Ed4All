@@ -8,10 +8,9 @@ Phase 0 Hardening: Requirement 4 (Decision Capture Integrity)
 """
 
 import hashlib
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Union
-
 
 # ============================================================================
 # CONSTANTS
@@ -165,7 +164,7 @@ def get_hasher(algorithm: str = DEFAULT_ALGORITHM):
             import blake3
             return blake3.blake3()
         except ImportError:
-            raise ValueError("blake3 not installed. Install with: pip install blake3")
+            raise ValueError("blake3 not installed. Install with: pip install blake3") from None
     else:
         raise ValueError(f"Unsupported hash algorithm: {algorithm}")
 

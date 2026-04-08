@@ -12,16 +12,15 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from difflib import unified_diff
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
 
 if TYPE_CHECKING:
-    from .run_manager import RunContext
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -612,7 +611,7 @@ class ReplayEngine:
             result["checks"]["manifest_exists"] = True
             try:
                 with open(manifest_path) as f:
-                    manifest = json.load(f)
+                    json.load(f)  # Validate JSON is parseable
                 result["checks"]["manifest_valid"] = True
             except json.JSONDecodeError:
                 result["checks"]["manifest_valid"] = False

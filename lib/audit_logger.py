@@ -14,7 +14,6 @@ Phase 0 Hardening: Requirement 5 (Audit Logging Completeness)
 """
 
 import json
-import os
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
@@ -22,10 +21,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from .hash_chain import HashChainedLog, GENESIS_HASH
+from .hash_chain import HashChainedLog
 from .provenance import hash_content, hash_file
-from .run_manager import get_current_run, RUNS_PATH
-
+from .run_manager import RUNS_PATH, get_current_run
 
 # ============================================================================
 # CONSTANTS AND ENUMS
@@ -351,7 +349,7 @@ class AuditLogger:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Build a complete audit event."""
-        from .sequence_manager import get_sequence_for_context, generate_event_id
+        from .sequence_manager import generate_event_id, get_sequence_for_context
 
         # Get sequence and event ID
         try:
@@ -412,7 +410,7 @@ class AuditLogger:
             Event ID
         """
         event = self._build_event(event_type, details, metadata)
-        chained_event = self._chain.append(event)
+        self._chain.append(event)
         return event["event_id"]
 
     # ========================================================================

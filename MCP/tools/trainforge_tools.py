@@ -6,12 +6,11 @@ Tools for assessment-based RAG training on IMSCC packages.
 
 import json
 import logging
-import os
 import sys
+import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List
-import uuid
+from typing import Optional
 
 # Add project root to path for imports
 _MCP_DIR = Path(__file__).resolve().parents[1]
@@ -19,32 +18,35 @@ _PROJECT_ROOT = _MCP_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.paths import PROJECT_ROOT, TRAINFORGE_PATH, TRAINING_DIR
-from lib.libv2_storage import LibV2Storage, LIBV2_COURSES
-from lib.secure_paths import sanitize_path_component, validate_path_within_root
+from lib.libv2_storage import LibV2Storage  # noqa: E402
+from lib.paths import TRAINFORGE_PATH, TRAINING_DIR  # noqa: E402
+from lib.secure_paths import sanitize_path_component, validate_path_within_root  # noqa: E402
 
 # Import RAG bridge and assessment components
 try:
-    from Trainforge.rag.libv2_bridge import get_rag_for_course, TrainforgeRAG
+    from Trainforge.rag.libv2_bridge import TrainforgeRAG, get_rag_for_course  # noqa: F401
     HAS_RAG_BRIDGE = True
 except ImportError:
     HAS_RAG_BRIDGE = False
 
 try:
-    from Trainforge.generators.assessment_generator import AssessmentGenerator, generate_assessment
+    from Trainforge.generators.assessment_generator import (  # noqa: F401
+        AssessmentGenerator,
+        generate_assessment,
+    )
     HAS_ASSESSMENT_GENERATOR = True
 except ImportError:
     HAS_ASSESSMENT_GENERATOR = False
 
 try:
-    from lib.trainforge_capture import create_trainforge_capture, QuestionData
+    from lib.trainforge_capture import QuestionData, create_trainforge_capture  # noqa: F401
     HAS_LEGACY_CAPTURE = True
 except ImportError:
     HAS_LEGACY_CAPTURE = False
 
 # Import new telemetry system
 try:
-    from LibV2.telemetry import CaptureSession, ArtifactRef, InputRef
+    from LibV2.telemetry import ArtifactRef, CaptureSession, InputRef  # noqa: F401
     HAS_TELEMETRY = True
 except ImportError:
     HAS_TELEMETRY = False
@@ -385,7 +387,6 @@ def register_trainforge_tools(mcp):
                         # Build question with content from chunks if available
                         question_stem = f"Question about {obj_id}"
                         correct_answer = "Correct answer based on content"
-                        distractors = []
 
                         if source_chunks and len(source_chunks) > 0:
                             # Use chunk content to build more specific question

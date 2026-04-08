@@ -255,7 +255,7 @@ class ParallelWorkflowOrchestrator:
             all_resources.append(week_result)
 
         # Use agent to generate manifest
-        manifest_result = await self.agent_coordinator.agent_interface.launch_manifest_generator(
+        await self.agent_coordinator.agent_interface.launch_manifest_generator(
             all_resources, self.export_dir
         )
 

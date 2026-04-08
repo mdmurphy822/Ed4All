@@ -5,14 +5,14 @@ File-based IPC for coordinating parallel processing across multiple terminals.
 Adapted from INTEGRATOR CURRICULUM patterns.
 """
 
+import fcntl
 import json
 import os
 import sys
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Any
-import fcntl
+from typing import Any, Dict, List, Optional
 
 # Add project root to path for imports
 _IPC_DIR = Path(__file__).resolve().parent
@@ -21,7 +21,7 @@ _PROJECT_ROOT = _ORCHESTRATOR_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.paths import PROJECT_ROOT, STATE_PATH
+from lib.paths import PROJECT_ROOT, STATE_PATH  # noqa: E402
 
 PROJECT_DIR = PROJECT_ROOT
 STATE_DIR = STATE_PATH

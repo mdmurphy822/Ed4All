@@ -6,12 +6,11 @@ Tools for workflow orchestration, state management, and agent coordination.
 
 import json
 import logging
-import os
 import sys
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, List, Dict, Any
-import uuid
+from typing import Optional
 
 # Add project root to path for imports
 _MCP_DIR = Path(__file__).resolve().parents[1]
@@ -19,9 +18,9 @@ _PROJECT_ROOT = _MCP_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.paths import PROJECT_ROOT, STATE_PATH, CONFIG_PATH, STATE_LOCKS
-from lib.state_manager import atomic_write_json
-from orchestrator.ipc import StatusTracker
+from lib.paths import STATE_LOCKS, STATE_PATH  # noqa: E402
+from lib.state_manager import atomic_write_json  # noqa: E402
+from orchestrator.ipc import StatusTracker  # noqa: E402
 
 # Shared StatusTracker instance
 _status_tracker = None
@@ -163,8 +162,8 @@ def register_orchestrator_tools(mcp):
         """
         try:
             # Import here to avoid circular imports
-            from orchestrator.core.executor import AGENT_TOOL_MAPPING
             from orchestrator.core.config import OrchestratorConfig
+            from orchestrator.core.executor import AGENT_TOOL_MAPPING
 
             # Validate agent type exists in config
             try:
@@ -449,7 +448,7 @@ def register_orchestrator_tools(mcp):
             Execution result with status and output
         """
         try:
-            from orchestrator.core.executor import TaskExecutor, AGENT_TOOL_MAPPING
+            from orchestrator.core.executor import AGENT_TOOL_MAPPING
 
             # Load task from workflow state
             workflow_path = STATE_PATH / "workflows" / f"{workflow_id}.json"

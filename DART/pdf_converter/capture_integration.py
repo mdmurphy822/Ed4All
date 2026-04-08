@@ -16,9 +16,9 @@ ED4ALL_ROOT = Path(__file__).resolve().parents[2]  # DART/pdf_converter/capture_
 if str(ED4ALL_ROOT) not in sys.path:
     sys.path.insert(0, str(ED4ALL_ROOT))
 
-from lib.decision_capture import DARTDecisionCapture, InputRef
+from lib.decision_capture import DARTDecisionCapture, InputRef  # noqa: E402
 
-from .converter import PDFToAccessibleHTML, ConversionResult
+from .converter import ConversionResult, PDFToAccessibleHTML  # noqa: E402
 
 logger = logging.getLogger(__name__)
 

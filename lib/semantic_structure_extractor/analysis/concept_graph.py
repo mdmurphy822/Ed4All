@@ -11,13 +11,13 @@ Implements:
 - Composite importance scoring
 """
 
-import math
 import json
+import math
+from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Set, Tuple
-from pathlib import Path
-from collections import defaultdict, Counter
 from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 @dataclass
@@ -233,9 +233,6 @@ class ConceptGraphBuilder:
         Args:
             graph: ConceptGraph to update with centrality scores
         """
-        config = self.config.get('concept_extraction', {})
-        algorithm = config.get('centrality_algorithm', 'composite')
-
         # Calculate individual centrality metrics
         self._calculate_frequency_centrality(graph)
         self._calculate_tfidf(graph)

@@ -168,8 +168,6 @@ class TestRemediationValidator:
 
         # Should detect placeholder content
         if hasattr(report, 'issues'):
-            placeholder_issues = [i for i in report.issues
-                                  if 'placeholder' in str(i).lower() or 'todo' in str(i).lower()]
             # May or may not detect depending on implementation
             assert True
         else:

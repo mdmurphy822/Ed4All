@@ -120,9 +120,9 @@ class HTMLGenerator:
                 data = json.load(f)
                 self.validate_input_structure(data)
         except json.JSONDecodeError as e:
-            raise SystemExit(f"CRITICAL ERROR: Invalid JSON format: {e}")
+            raise SystemExit(f"CRITICAL ERROR: Invalid JSON format: {e}") from e
         except Exception as e:
-            raise SystemExit(f"CRITICAL ERROR: Cannot read input file: {e}")
+            raise SystemExit(f"CRITICAL ERROR: Cannot read input file: {e}") from e
 
         # Validate output directory
         output_path = Path(output_dir)
@@ -907,7 +907,7 @@ class HTMLGenerator:
 
         except Exception as e:
             self.cleanup_temps()
-            raise SystemExit(f"HTML GENERATION FAILED: {e}")
+            raise SystemExit(f"HTML GENERATION FAILED: {e}") from e
 
         finally:
             if self.execution_lock and self.execution_lock.exists():

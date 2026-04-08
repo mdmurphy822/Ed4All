@@ -355,7 +355,6 @@ class QTIValidator(IMSCCValidator):
 
         try:
             doc = etree.fromstring(xml_content.encode('utf-8'))
-            ns = {'q': self.QTI_NAMESPACE}
 
             seen_ids: Set[str] = set()
 

@@ -162,8 +162,8 @@ def resolve_in_project(rel_path: str) -> Path:
         ValueError: If path escapes project boundaries or is invalid
     """
     from .path_constants import (
-        MAX_PATH_LENGTH,
         DISALLOW_PARENT_TRAVERSAL,
+        MAX_PATH_LENGTH,
     )
 
     # Check path length
@@ -182,7 +182,7 @@ def resolve_in_project(rel_path: str) -> Path:
     try:
         resolved.relative_to(project_root)
     except ValueError:
-        raise ValueError(f"Path escapes project boundaries: {rel_path}")
+        raise ValueError(f"Path escapes project boundaries: {rel_path}") from None
 
     return resolved
 

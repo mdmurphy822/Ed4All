@@ -18,18 +18,15 @@ Tool Format:
     tool_func(pdf_path="...", output_dir="...", options=None)
 """
 
-import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 from .tool_schemas import (
-    TOOL_SCHEMAS,
-    get_tool_schema,
-    get_required_params,
+    get_defaults,
     get_optional_params,
     get_param_mapping,
-    get_defaults,
-    validate_tool_params,
+    get_required_params,
+    get_tool_schema,
 )
 
 logger = logging.getLogger(__name__)
@@ -216,7 +213,6 @@ class TaskParameterMapper:
             raise ParameterMappingError(f"Unknown tool: {tool_name}")
 
         required = get_required_params(tool_name)
-        optional = get_optional_params(tool_name)
 
         # Validate required params
         for req in required:
@@ -247,7 +243,7 @@ class TaskParameterMapper:
             Tuple of (is_valid, list of issues)
         """
         try:
-            mapped = self.map_task_to_tool_params(task, tool_name)
+            self.map_task_to_tool_params(task, tool_name)
             return True, []
         except ParameterMappingError as e:
             return False, [str(e)]

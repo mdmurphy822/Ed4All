@@ -26,38 +26,36 @@ Workflow:
 """
 
 from .converter import (
-    PDFToAccessibleHTML,
     ConversionResult,
+    PDFToAccessibleHTML,
     TextBlock,
 )
-
 from .wcag_enhancer import (
     WCAGHTMLEnhancer,
     WCAGOptions,
-    enhance_html_wcag,
     enhance_html_file,
+    enhance_html_wcag,
 )
-
 from .wcag_validator import (
-    WCAGValidator,
-    ValidationReport,
-    WCAGIssue,
     IssueSeverity,
+    ValidationReport,
     WCAGCriterion,
-    validate_html_wcag,
+    WCAGIssue,
+    WCAGValidator,
     validate_html_file,
+    validate_html_wcag,
 )
 
 # Optional imports for math and image processing
 try:
-    from .math_processor import MathDetector, MathMLConverter, MathBlock
+    from .math_processor import MathBlock, MathDetector, MathMLConverter
 except ImportError:
     MathDetector = None
     MathMLConverter = None
     MathBlock = None
 
 try:
-    from .image_extractor import PDFImageExtractor, ImageProcessor, ExtractedImage
+    from .image_extractor import ExtractedImage, ImageProcessor, PDFImageExtractor
 except ImportError:
     PDFImageExtractor = None
     ImageProcessor = None
@@ -70,7 +68,7 @@ except ImportError:
     AltTextResult = None
 
 try:
-    from .embed_images import embed_images, load_metadata, create_figure_element
+    from .embed_images import create_figure_element, embed_images, load_metadata
 except ImportError:
     embed_images = None
     load_metadata = None

@@ -7,10 +7,10 @@ Supports configurable patterns and field-based redaction.
 Phase 0 Hardening - Requirement 10: Security Posture
 """
 
+import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Pattern, Set, Tuple, Optional
-import logging
+from typing import Any, Dict, List, Optional, Pattern, Set, Tuple
 
 logger = logging.getLogger(__name__)
 

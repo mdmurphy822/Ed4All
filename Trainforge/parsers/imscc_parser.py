@@ -97,12 +97,12 @@ class IMSCCParser:
                 try:
                     manifest_content = z.read("imsmanifest.xml").decode('utf-8')
                 except UnicodeDecodeError as e:
-                    raise ValueError(f"Encoding error in manifest file: {e}")
+                    raise ValueError(f"Encoding error in manifest file: {e}") from e
 
                 try:
                     root = ET.fromstring(manifest_content)
                 except ET.ParseError as e:
-                    raise ValueError(f"Invalid XML in manifest: {e}")
+                    raise ValueError(f"Invalid XML in manifest: {e}") from e
 
                 # Detect LMS and version
                 source_lms = self._detect_lms(root)
@@ -127,7 +127,7 @@ class IMSCCParser:
                     metadata={"namespaces": self.namespaces}
                 )
         except zipfile.BadZipFile as e:
-            raise ValueError(f"Invalid or corrupted IMSCC file: {e}")
+            raise ValueError(f"Invalid or corrupted IMSCC file: {e}") from e
 
     def _detect_lms(self, root: ET.Element) -> str:
         """Detect source LMS from namespace declarations."""
@@ -284,14 +284,14 @@ class IMSCCParser:
         try:
             output.mkdir(parents=True, exist_ok=True)
         except PermissionError as e:
-            raise PermissionError(f"Cannot create output directory {output_dir}: {e}")
+            raise PermissionError(f"Cannot create output directory {output_dir}: {e}") from e
 
         try:
             # Use safe extraction to prevent Zip Slip attacks
             safe_extract_zip(path, output)
         except zipfile.BadZipFile as e:
-            raise ValueError(f"Invalid or corrupted IMSCC file: {e}")
+            raise ValueError(f"Invalid or corrupted IMSCC file: {e}") from e
         except PermissionError as e:
-            raise PermissionError(f"Cannot write to output directory {output_dir}: {e}")
+            raise PermissionError(f"Cannot write to output directory {output_dir}: {e}") from e
 
         return output

@@ -15,9 +15,10 @@ Identifies:
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any, Tuple
-from bs4 import BeautifulSoup, Tag, NavigableString
 from enum import Enum
+from typing import Any, Dict, List, Optional
+
+from bs4 import BeautifulSoup, NavigableString, Tag
 
 
 class BlockType(Enum):
@@ -325,7 +326,6 @@ class ContentBlockClassifier:
     def _create_paragraph_block_from_element(self, element: Tag) -> ContentBlock:
         """Create a paragraph block from a <p> element."""
         text = element.get_text(strip=True)
-        html = str(element)
 
         block = ContentBlock(
             id=self._generate_block_id(),
@@ -406,8 +406,6 @@ class ContentBlockClassifier:
 
     def _detect_list_subtype(self, element: Tag, content: str) -> BlockType:
         """Detect if an ordered list is a special type (objectives, review questions)."""
-        content_lower = content.lower()
-
         # Check parent for context
         parent = element.parent
         if parent:
@@ -576,7 +574,6 @@ class ContentBlockClassifier:
     def _extract_definitions(self, element: Tag) -> List[Definition]:
         """Extract definitions from an element's content."""
         definitions = []
-        html = str(element)
 
         # Check for <strong>Term</strong>: Definition pattern
         for strong in element.find_all('strong'):
@@ -689,8 +686,8 @@ def classify_html_content(html_path: str) -> Dict[str, Any]:
 
 
 if __name__ == "__main__":
-    import sys
     import json
+    import sys
 
     if len(sys.argv) < 2:
         print("Usage: python content_block_classifier.py <html_file>")

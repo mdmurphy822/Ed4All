@@ -75,9 +75,9 @@ class QTIParser:
             tree = ET.parse(xml_path)
             root = tree.getroot()
         except FileNotFoundError:
-            raise FileNotFoundError(f"QTI file not found: {xml_path}")
+            raise FileNotFoundError(f"QTI file not found: {xml_path}") from None
         except ET.ParseError as e:
-            raise ValueError(f"Invalid QTI XML in {xml_path}: {e}")
+            raise ValueError(f"Invalid QTI XML in {xml_path}: {e}") from e
 
         return self._parse_assessment(root)
 
@@ -97,7 +97,7 @@ class QTIParser:
         try:
             root = ET.fromstring(xml_content)
         except ET.ParseError as e:
-            raise ValueError(f"Invalid QTI XML: {e}")
+            raise ValueError(f"Invalid QTI XML: {e}") from e
 
         return self._parse_assessment(root)
 

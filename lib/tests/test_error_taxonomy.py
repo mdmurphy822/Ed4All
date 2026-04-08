@@ -1,32 +1,33 @@
 """
 Tests for lib/error_taxonomy.py - Structured error handling.
 """
-import pytest
-import sys
 import json
+import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
     from lib.error_taxonomy import (
+        Ed4AllError,
         ErrorCategory,
         ErrorCode,
-        StructuredError,
-        Ed4AllError,
         InputValidationError,
-        SandboxViolationError,
         RateLimitError,
-        input_error,
-        processing_error,
-        output_error,
-        system_error,
-        security_error,
-        timeout_error,
-        error_response,
-        success_response,
+        SandboxViolationError,
+        StructuredError,
         _classify_exception,
         _is_recoverable,
+        error_response,
+        input_error,
+        output_error,
+        processing_error,
+        security_error,
+        success_response,
+        system_error,
+        timeout_error,
     )
 except ImportError:
     pytest.skip("error_taxonomy not available", allow_module_level=True)

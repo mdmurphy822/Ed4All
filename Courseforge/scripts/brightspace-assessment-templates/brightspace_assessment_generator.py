@@ -33,7 +33,7 @@ if str(ED4ALL_ROOT) not in sys.path:
 if TYPE_CHECKING:
     from lib.decision_capture import DecisionCapture
 
-from generators import (
+from generators import (  # noqa: E402
     AssignmentGenerator,
     Choice,
     DiscussionGenerator,
@@ -42,14 +42,14 @@ from generators import (
     QuizGenerator,
     QuizQuestion,
 )
-from generators.quiz_generator import (
+from generators.quiz_generator import (  # noqa: E402
     AssessmentType,
     create_essay_question,
     create_fill_in_blank_question,
     create_multiple_choice_question,
     create_true_false_question,
 )
-from validators import (
+from validators import (  # noqa: E402
     AssignmentValidator,
     DiscussionValidator,
     QTIValidator,

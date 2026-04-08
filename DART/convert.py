@@ -31,7 +31,7 @@ package_dir = Path(__file__).parent
 if str(package_dir) not in sys.path:
     sys.path.insert(0, str(package_dir))
 
-from pdf_converter.cli import main
+from pdf_converter.cli import main  # noqa: E402
 
 if __name__ == '__main__':
     sys.exit(main())

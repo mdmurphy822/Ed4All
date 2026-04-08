@@ -8,12 +8,12 @@ Ensures all training data meets quality standards.
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
-from .constants import SCHEMAS_DIR, VALID_DECISION_TYPES, VALIDATE_DECISIONS
+from .constants import SCHEMAS_DIR, VALID_DECISION_TYPES
 
 try:
-    import jsonschema
+    import jsonschema  # noqa: F401
     from jsonschema import Draft7Validator, ValidationError
     JSONSCHEMA_AVAILABLE = True
 except ImportError:

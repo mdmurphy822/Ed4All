@@ -2,4 +2,4 @@
 
 __version__ = "1.0.0"
 
-from .retriever import retrieve_chunks, RetrievalResult, ChunkFilter
+from .retriever import ChunkFilter, RetrievalResult, retrieve_chunks  # noqa: F401

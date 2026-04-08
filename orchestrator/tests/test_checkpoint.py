@@ -1,10 +1,11 @@
 """
 Tests for orchestrator/core/checkpoint.py - Phase checkpointing for crash recovery.
 """
-import pytest
-import sys
 import json
+import sys
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 

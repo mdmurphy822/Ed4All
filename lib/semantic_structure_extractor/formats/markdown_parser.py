@@ -15,11 +15,12 @@ seamless integration with the semantic structure extractor.
 """
 
 import re
-import yaml
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional, Tuple
-from pathlib import Path
 from enum import Enum, auto
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import yaml
 
 
 class MarkdownBlockType(Enum):

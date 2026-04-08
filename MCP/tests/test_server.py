@@ -8,8 +8,8 @@ import pytest
 # Ensure project root is in path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from lib.secure_paths import validate_path_within_root, is_safe_path
-from lib.tool_registry import ToolRegistry, get_registry
+from lib.secure_paths import is_safe_path, validate_path_within_root
+from lib.tool_registry import get_registry
 
 
 @pytest.mark.unit

@@ -1,7 +1,7 @@
 """Data models for LibV2."""
 
-from .course import CourseManifest, Classification, ContentProfile
 from .catalog import CatalogEntry, MasterCatalog
+from .course import Classification, ContentProfile, CourseManifest
 
 __all__ = [
     "CourseManifest",
