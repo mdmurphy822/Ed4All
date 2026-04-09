@@ -7,6 +7,7 @@ from .executor import (
     TaskExecutor,
     execute_workflow_task,
 )
+from .workflow_runner import WorkflowRunner
 
 __all__ = [
     'OrchestratorConfig',
@@ -14,4 +15,5 @@ __all__ = [
     'ExecutionResult',
     'AGENT_TOOL_MAPPING',
     'execute_workflow_task',
+    'WorkflowRunner',
 ]

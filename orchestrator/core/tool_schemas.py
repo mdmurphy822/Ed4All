@@ -89,6 +89,39 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     },
 
     # =========================================================================
+    # PIPELINE TOOLS (Textbook-to-Course)
+    # =========================================================================
+    "stage_dart_outputs": {
+        "required": ["run_id", "dart_html_paths", "course_name"],
+        "optional": [],
+        "defaults": {},
+        "param_mapping": {
+            "html_paths": "dart_html_paths",
+            "paths": "dart_html_paths",
+            "course": "course_name",
+        },
+        "description": "Stage DART HTML outputs to Courseforge inputs directory",
+    },
+
+    "extract_and_convert_pdf": {
+        "required": ["pdf_path"],
+        "optional": ["course_code", "output_dir"],
+        "defaults": {
+            "course_code": None,
+            "output_dir": None,
+        },
+        "param_mapping": {
+            "input": "pdf_path",
+            "source": "pdf_path",
+            "path": "pdf_path",
+            "pdf": "pdf_path",
+            "course": "course_code",
+            "output": "output_dir",
+        },
+        "description": "Extract sources from PDF and convert to accessible HTML via DART",
+    },
+
+    # =========================================================================
     # COURSEFORGE TOOLS (6)
     # =========================================================================
     "create_course_project": {
@@ -534,6 +567,13 @@ TOOL_CATEGORIES = {
         "release_batch_lock",
         "execute_workflow_task",
         "complete_workflow_task",
+    ],
+    "pipeline": [
+        "stage_dart_outputs",
+        "extract_and_convert_pdf",
+        "create_textbook_pipeline",
+        "run_textbook_pipeline",
+        "get_pipeline_status",
     ],
     "paperforge": [
         "paperforge_create_project",

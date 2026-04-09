@@ -1,0 +1,438 @@
+"""
+Workflow Runner - Executes multi-phase workflows end-to-end.
+
+This module provides the missing orchestration layer that chains
+workflow phases together, routing outputs from each phase into
+the next phase's inputs.
+
+Usage:
+    runner = WorkflowRunner(executor, config)
+    result = await runner.run_workflow(workflow_id)
+"""
+
+import asyncio
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+from .config import OrchestratorConfig, WorkflowPhase
+from .executor import ExecutionResult, TaskExecutor
+
+logger = logging.getLogger(__name__)
+
+STATE_PATH = Path(__file__).resolve().parent.parent.parent / "state"
+
+
+# =============================================================================
+# INTER-PHASE DATA ROUTING
+# =============================================================================
+# Defines how outputs from one phase become inputs to the next.
+# Format: {phase_name: {param_name: (source_type, *source_path)}}
+#   - ("workflow_params", key) => from workflow creation params
+#   - ("phase_outputs", phase_name, key) => from a prior phase's extracted outputs
+#   - ("literal", value) => hardcoded value
+# =============================================================================
+
+PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
+    "dart_conversion": {
+        "pdf_path": ("workflow_params", "pdf_paths"),
+        "course_code": ("workflow_params", "course_name"),
+    },
+    "staging": {
+        "run_id": ("workflow_params", "run_id"),
+        "dart_html_paths": ("phase_outputs", "dart_conversion", "output_paths"),
+        "course_name": ("workflow_params", "course_name"),
+    },
+    "objective_extraction": {
+        "course_name": ("workflow_params", "course_name"),
+        "objectives_path": ("workflow_params", "objectives_path"),
+        "duration_weeks": ("workflow_params", "duration_weeks"),
+    },
+    "course_planning": {
+        "project_id": ("phase_outputs", "objective_extraction", "project_id"),
+    },
+    "content_generation": {
+        "project_id": ("phase_outputs", "objective_extraction", "project_id"),
+    },
+    "packaging": {
+        "project_id": ("phase_outputs", "objective_extraction", "project_id"),
+    },
+    "trainforge_assessment": {
+        "course_id": ("workflow_params", "course_name"),
+        "imscc_path": ("phase_outputs", "packaging", "package_path"),
+        "bloom_levels": ("workflow_params", "bloom_levels"),
+        "question_count": ("workflow_params", "assessment_count"),
+        "objective_ids": ("phase_outputs", "objective_extraction", "objective_ids"),
+    },
+    "finalization": {
+        "project_id": ("phase_outputs", "objective_extraction", "project_id"),
+    },
+}
+
+# Maps phase names to the keys extracted from their task results.
+# After a phase completes, these fields are pulled from the result
+# and stored in workflow state under phase_outputs[phase_name].
+PHASE_OUTPUT_KEYS: Dict[str, List[str]] = {
+    "dart_conversion": ["output_path", "output_paths", "success", "html_length"],
+    "staging": ["staging_dir", "staged_files", "file_count"],
+    "objective_extraction": ["project_id", "project_path", "objective_ids"],
+    "course_planning": ["project_id"],
+    "content_generation": ["project_id", "content_paths", "weeks_prepared"],
+    "packaging": ["package_path", "libv2_package_path", "project_id"],
+    "trainforge_assessment": ["output_path", "assessment_id", "question_count"],
+    "finalization": ["project_id", "package_path"],
+}
+
+
+class WorkflowRunner:
+    """
+    Executes a multi-phase workflow end-to-end with inter-phase data routing.
+
+    Bridges the gap between the workflow YAML definitions and the
+    TaskExecutor's phase-level execution. Handles:
+    - Phase dependency ordering (topological sort via depends_on)
+    - Task creation for each phase from config + routed params
+    - Inter-phase output-to-input data routing
+    - Optional phase skipping
+    - Workflow state persistence for crash recovery
+    """
+
+    def __init__(self, executor: TaskExecutor, config: OrchestratorConfig):
+        self.executor = executor
+        self.config = config
+
+    async def run_workflow(self, workflow_id: str) -> Dict[str, Any]:
+        """
+        Execute all phases of a workflow in dependency order.
+
+        Args:
+            workflow_id: ID of the workflow to execute
+
+        Returns:
+            Dict with workflow_id, status, phase_results, and phase_outputs
+        """
+        # Load workflow state
+        workflow_path = STATE_PATH / "workflows" / f"{workflow_id}.json"
+        if not workflow_path.exists():
+            return {"error": f"Workflow not found: {workflow_id}"}
+
+        with open(workflow_path) as f:
+            workflow_state = json.load(f)
+
+        workflow_type = workflow_state.get("type", "")
+        workflow_params = workflow_state.get("params", {})
+        if isinstance(workflow_params, str):
+            workflow_params = json.loads(workflow_params)
+
+        # Load workflow config from YAML
+        wf_config = self.config.get_workflow(workflow_type)
+        if not wf_config:
+            return {"error": f"Unknown workflow type: {workflow_type}"}
+
+        # Initialize phase outputs (may already exist from partial run)
+        phase_outputs: Dict[str, Dict] = workflow_state.get("phase_outputs", {})
+
+        # Update workflow status
+        workflow_state["status"] = "RUNNING"
+        workflow_state["started_at"] = datetime.now().isoformat()
+        self._save_workflow_state(workflow_path, workflow_state)
+
+        # Sort phases by dependency order
+        sorted_phases = self._topological_sort(wf_config.phases)
+
+        # Execute each phase
+        all_results: Dict[str, Dict] = {}
+        final_status = "COMPLETE"
+
+        for phase_idx, phase in enumerate(sorted_phases):
+            phase_name = phase.name
+
+            # Skip already-completed phases (crash recovery)
+            if phase_name in phase_outputs and phase_outputs[phase_name].get("_completed"):
+                logger.info(f"Skipping already-completed phase: {phase_name}")
+                continue
+
+            # Check if this optional phase should be skipped
+            if self._should_skip_phase(phase, workflow_params):
+                logger.info(f"Skipping optional phase: {phase_name}")
+                phase_outputs[phase_name] = {"_skipped": True, "_completed": True}
+                workflow_state["phase_outputs"] = phase_outputs
+                self._save_workflow_state(workflow_path, workflow_state)
+                continue
+
+            # Check that all dependencies completed
+            if not self._dependencies_met(phase, phase_outputs):
+                logger.error(
+                    f"Phase {phase_name} dependencies not met: {phase.depends_on}"
+                )
+                final_status = "FAILED"
+                break
+
+            logger.info(f"Starting phase {phase_idx + 1}/{len(sorted_phases)}: {phase_name}")
+
+            # Route parameters from workflow params + prior phase outputs
+            routed_params = self._route_params(phase_name, workflow_params, phase_outputs)
+
+            # Create tasks for this phase
+            tasks = self._create_phase_tasks(
+                workflow_id, phase, routed_params
+            )
+
+            # Add tasks to workflow state
+            workflow_state.setdefault("tasks", []).extend(tasks)
+            self._save_workflow_state(workflow_path, workflow_state)
+
+            # Get validation gate configs from phase
+            gate_configs = getattr(phase, "validation_gates", None)
+
+            # Execute the phase
+            results, gates_passed, gate_results = await self.executor.execute_phase(
+                workflow_id=workflow_id,
+                phase_name=phase_name,
+                phase_index=phase_idx,
+                tasks=tasks,
+                gate_configs=gate_configs,
+                max_concurrent=getattr(phase, "max_concurrent", 5),
+            )
+
+            # Extract outputs from results
+            extracted = self._extract_phase_outputs(phase_name, results)
+            extracted["_completed"] = True
+            extracted["_gates_passed"] = gates_passed
+            phase_outputs[phase_name] = extracted
+
+            # Persist phase outputs
+            workflow_state["phase_outputs"] = phase_outputs
+            self._save_workflow_state(workflow_path, workflow_state)
+
+            all_results[phase_name] = {
+                "task_count": len(tasks),
+                "completed": sum(1 for r in results.values() if r.status == "COMPLETE"),
+                "failed": sum(1 for r in results.values() if r.status in ("ERROR", "TIMEOUT")),
+                "gates_passed": gates_passed,
+            }
+
+            # Check if phase failed
+            phase_failed = any(r.status in ("ERROR", "TIMEOUT") for r in results.values())
+            if phase_failed and not getattr(phase, "optional", False):
+                logger.error(f"Phase {phase_name} failed, stopping workflow")
+                final_status = "FAILED"
+                break
+
+            if not gates_passed and not getattr(phase, "optional", False):
+                logger.error(f"Phase {phase_name} failed validation gates, stopping workflow")
+                final_status = "FAILED"
+                break
+
+        # Finalize workflow state
+        workflow_state["status"] = final_status
+        workflow_state["completed_at"] = datetime.now().isoformat()
+        self._save_workflow_state(workflow_path, workflow_state)
+
+        return {
+            "workflow_id": workflow_id,
+            "status": final_status,
+            "phase_results": all_results,
+            "phase_outputs": {
+                k: {pk: pv for pk, pv in v.items() if not pk.startswith("_")}
+                for k, v in phase_outputs.items()
+            },
+        }
+
+    def _route_params(
+        self,
+        phase_name: str,
+        workflow_params: Dict[str, Any],
+        phase_outputs: Dict[str, Dict],
+    ) -> Dict[str, Any]:
+        """
+        Build task params for a phase by resolving the routing table.
+
+        Args:
+            phase_name: Name of the phase to build params for
+            workflow_params: Original workflow creation params
+            phase_outputs: Accumulated outputs from prior phases
+
+        Returns:
+            Dict of resolved parameter values
+        """
+        routing = PHASE_PARAM_ROUTING.get(phase_name, {})
+        params = {}
+
+        for param_name, source_spec in routing.items():
+            source_type = source_spec[0]
+
+            if source_type == "workflow_params":
+                key = source_spec[1]
+                value = workflow_params.get(key)
+                if value is not None:
+                    # Handle list values that need comma-joining for tool params
+                    if isinstance(value, list):
+                        value = ",".join(str(v) for v in value)
+                    params[param_name] = value
+
+            elif source_type == "phase_outputs":
+                phase_key = source_spec[1]
+                output_key = source_spec[2]
+                phase_data = phase_outputs.get(phase_key, {})
+                value = phase_data.get(output_key)
+                if value is not None:
+                    if isinstance(value, list):
+                        value = ",".join(str(v) for v in value)
+                    params[param_name] = value
+
+            elif source_type == "literal":
+                params[param_name] = source_spec[1]
+
+        return params
+
+    def _create_phase_tasks(
+        self,
+        workflow_id: str,
+        phase: WorkflowPhase,
+        routed_params: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
+        """
+        Create task dicts for a phase.
+
+        For parallel phases with multiple agents, creates one task per agent.
+        For sequential phases, creates a single task.
+
+        Args:
+            workflow_id: Parent workflow ID
+            phase: Phase configuration
+            routed_params: Parameters resolved from routing table
+
+        Returns:
+            List of task dicts ready for execute_phase()
+        """
+        tasks = []
+        timestamp = datetime.now().strftime("%H%M%S")
+
+        for agent_name in phase.agents:
+            task_id = f"T-{phase.name}-{agent_name}-{timestamp}"
+            task = {
+                "id": task_id,
+                "agent_type": agent_name,
+                "phase": phase.name,
+                "status": "PENDING",
+                "params": routed_params.copy(),
+                "created_at": datetime.now().isoformat(),
+                "dependencies": [],
+            }
+            tasks.append(task)
+
+        return tasks
+
+    def _extract_phase_outputs(
+        self,
+        phase_name: str,
+        results: Dict[str, ExecutionResult],
+    ) -> Dict[str, Any]:
+        """
+        Extract key output values from phase results for downstream routing.
+
+        Args:
+            phase_name: Name of the completed phase
+            results: Dict of task_id -> ExecutionResult
+
+        Returns:
+            Dict of extracted output values
+        """
+        output_keys = PHASE_OUTPUT_KEYS.get(phase_name, [])
+        extracted = {}
+
+        for result in results.values():
+            if result.status != "COMPLETE":
+                continue
+
+            result_data = result.result
+            if not isinstance(result_data, dict):
+                continue
+
+            for key in output_keys:
+                if key in result_data and key not in extracted:
+                    extracted[key] = result_data[key]
+
+        # Special handling: collect multiple output_paths into output_paths list
+        if phase_name == "dart_conversion":
+            paths = []
+            for result in results.values():
+                if result.status == "COMPLETE" and isinstance(result.result, dict):
+                    path = result.result.get("output_path")
+                    if path:
+                        paths.append(path)
+            if paths:
+                extracted["output_paths"] = ",".join(paths)
+
+        return extracted
+
+    def _should_skip_phase(
+        self, phase: WorkflowPhase, workflow_params: Dict[str, Any]
+    ) -> bool:
+        """Check if an optional phase should be skipped based on workflow params."""
+        if not getattr(phase, "optional", False):
+            return False
+
+        # Skip trainforge_assessment if generate_assessments is False
+        if phase.name == "trainforge_assessment":
+            return not workflow_params.get("generate_assessments", True)
+
+        return False
+
+    def _dependencies_met(
+        self, phase: WorkflowPhase, phase_outputs: Dict[str, Dict]
+    ) -> bool:
+        """Check that all phase dependencies have completed."""
+        for dep in (phase.depends_on or []):
+            dep_output = phase_outputs.get(dep, {})
+            if not dep_output.get("_completed"):
+                return False
+        return True
+
+    def _topological_sort(self, phases: List[WorkflowPhase]) -> List[WorkflowPhase]:
+        """
+        Sort phases respecting depends_on ordering.
+
+        Uses Kahn's algorithm for topological sort.
+        """
+        phase_map = {p.name: p for p in phases}
+        in_degree = {p.name: 0 for p in phases}
+
+        for phase in phases:
+            for dep in (phase.depends_on or []):
+                if dep in in_degree:
+                    in_degree[phase.name] += 1
+
+        queue = [name for name, deg in in_degree.items() if deg == 0]
+        sorted_names = []
+
+        while queue:
+            # Pick the first available (stable sort)
+            name = queue.pop(0)
+            sorted_names.append(name)
+
+            for phase in phases:
+                if name in (phase.depends_on or []):
+                    in_degree[phase.name] -= 1
+                    if in_degree[phase.name] == 0:
+                        queue.append(phase.name)
+
+        # Append any phases not reachable (shouldn't happen with valid config)
+        for phase in phases:
+            if phase.name not in sorted_names:
+                sorted_names.append(phase.name)
+
+        return [phase_map[name] for name in sorted_names if name in phase_map]
+
+    def _save_workflow_state(self, path: Path, state: Dict[str, Any]) -> None:
+        """Persist workflow state to disk."""
+        state["updated_at"] = datetime.now().isoformat()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with open(path, "w") as f:
+                json.dump(state, f, indent=2, default=str)
+        except OSError as e:
+            logger.error(f"Failed to save workflow state: {e}")

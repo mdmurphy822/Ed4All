@@ -94,10 +94,16 @@ AGENT_TOOL_MAPPING = {
     "quality-assurance": "get_courseforge_status",
 
     # -------------------------------------------------------------------------
+    # PIPELINE AGENTS (Textbook-to-Course)
+    # -------------------------------------------------------------------------
+    "textbook-stager": "stage_dart_outputs",
+    "textbook-ingestor": "create_course_project",
+
+    # -------------------------------------------------------------------------
     # DART/REMEDIATION AGENTS (Multi-Source Synthesis)
     # -------------------------------------------------------------------------
     "dart-automation-coordinator": "batch_convert_multi_source",
-    "dart-converter": "convert_pdf_multi_source",
+    "dart-converter": "extract_and_convert_pdf",
     "imscc-intake-parser": "intake_imscc_package",
     "content-analyzer": "analyze_imscc_content",
     "accessibility-remediation": "remediate_course_content",
