@@ -86,16 +86,18 @@ Training Capture (JSONL) + Assessment (JSON)
 Trainforge uses LibV2 for RAG retrieval:
 
 ```python
-from libv2 import MultiRetriever
+from Trainforge.rag.libv2_bridge import TrainforgeRAG, get_rag_for_course
 
-retriever = MultiRetriever(course_slug="python-101")
-chunks = retriever.retrieve(
-    query="exception handling best practices",
-    top_k=10
-)
+rag = get_rag_for_course("python-101")
+if rag.has_corpus:
+    chunks, metrics = rag.retrieve_for_objective(
+        objective_text="exception handling best practices",
+        bloom_level="understand",
+        top_k=10
+    )
 ```
 
-See `Trainforge/rag/libv2_bridge.py` for the retrieval interface.
+See `Trainforge/rag/libv2_bridge.py` for the full retrieval interface.
 
 ## Assessment Quality Standards
 

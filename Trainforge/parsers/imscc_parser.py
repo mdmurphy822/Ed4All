@@ -5,6 +5,7 @@ Extracts content from IMSCC (IMS Common Cartridge) packages for assessment gener
 Supports packages from Brightspace, Canvas, Blackboard, Moodle, and generic IMSCC.
 """
 
+import io
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
@@ -131,27 +132,23 @@ class IMSCCParser:
 
     def _detect_lms(self, root: ET.Element) -> str:
         """Detect source LMS from namespace declarations."""
-        # Get all namespaces with safe error handling
+        root_str = ET.tostring(root, encoding='unicode')
+
+        # Extract namespaces using iterparse with a file-like object
         try:
             self.namespaces = dict([
                 node for _, node in ET.iterparse(
-                    ET.tostring(root, encoding='unicode'),
+                    io.StringIO(root_str),
                     events=['start-ns']
                 )
-            ]) if hasattr(ET, 'iterparse') else {}
-        except Exception:
-            # If namespace detection fails, continue with empty namespaces
+            ])
+        except ET.ParseError:
             self.namespaces = {}
 
-        # Check namespace URIs
-        try:
-            root_str = ET.tostring(root, encoding='unicode')
-            for ns_marker, lms_name in self.LMS_NAMESPACES.items():
-                if ns_marker in root_str:
-                    return lms_name
-        except Exception:
-            # If detection fails, default to generic
-            pass
+        # Check namespace URIs for known LMS markers
+        for ns_marker, lms_name in self.LMS_NAMESPACES.items():
+            if ns_marker in root_str:
+                return lms_name
 
         return "generic"
 
@@ -242,12 +239,23 @@ class IMSCCParser:
         else:
             return 'other'
 
+    # Filename patterns that indicate assessment-type XML content
+    ASSESSMENT_PATTERNS = ('assessment', 'quiz', 'assignment', 'discussion', 'qti')
+
     def _parse_assessments(self, z: zipfile.ZipFile) -> List[Dict[str, Any]]:
-        """Parse QTI assessment files."""
+        """Parse QTI assessment files.
+
+        Matches XML files by filename patterns (assessment, quiz, assignment,
+        discussion, qti) to catch all Courseforge-generated assessment types,
+        not just files literally named 'assessment'.
+        """
         assessments = []
 
         for name in z.namelist():
-            if 'assessment' in name.lower() and name.endswith('.xml'):
+            if not name.endswith('.xml'):
+                continue
+            name_lower = name.lower()
+            if any(pattern in name_lower for pattern in self.ASSESSMENT_PATTERNS):
                 try:
                     content = z.read(name).decode('utf-8', errors='ignore')
                     assessments.append({

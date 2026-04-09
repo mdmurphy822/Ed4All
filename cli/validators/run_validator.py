@@ -133,7 +133,7 @@ class RunValidator:
             return
 
         try:
-            with open(manifest_path) as f:
+            with open(manifest_path, encoding='utf-8') as f:
                 manifest = json.load(f)
 
             # Validate required fields
@@ -188,7 +188,7 @@ class RunValidator:
         result.checked_files += 1
 
         try:
-            with open(lockfile_path) as f:
+            with open(lockfile_path, encoding='utf-8') as f:
                 lockfile = json.load(f)
 
             snapshot_dir = self.run_path / "config_snapshot"
@@ -273,7 +273,7 @@ class RunValidator:
             result.checked_files += 1
 
             try:
-                with open(checkpoint_file) as f:
+                with open(checkpoint_file, encoding='utf-8') as f:
                     checkpoint = json.load(f)
 
                 # Validate required fields
@@ -344,7 +344,7 @@ class RunValidator:
             error_count = 0
 
             try:
-                with open(decision_file) as f:
+                with open(decision_file, encoding='utf-8') as f:
                     for _line_num, line in enumerate(f, 1):
                         line_count += 1
                         try:
@@ -392,7 +392,7 @@ class RunValidator:
 
         # Check manifest is valid JSON
         try:
-            with open(self.run_path / "run_manifest.json") as f:
+            with open(self.run_path / "run_manifest.json", encoding='utf-8') as f:
                 json.load(f)
         except (OSError, json.JSONDecodeError):
             return False
