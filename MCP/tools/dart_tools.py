@@ -475,3 +475,104 @@ def register_dart_tools(mcp):
 
         except Exception as e:
             return json.dumps({"error": str(e)})
+
+    @mcp.tool()
+    async def extract_and_convert_pdf(
+        pdf_path: str,
+        course_code: Optional[str] = None,
+        output_dir: Optional[str] = None,
+    ) -> str:
+        """
+        Full DART pipeline: extract sources from PDF and convert to accessible HTML.
+
+        This wraps the complete DART workflow for use in the textbook-to-course
+        pipeline. It handles PDF source extraction (pdftotext, pdfplumber, OCR)
+        and multi-source synthesis in a single call.
+
+        Args:
+            pdf_path: Path to the PDF file to convert
+            course_code: Optional course code for output organization
+            output_dir: Optional output directory (defaults to DART/output/)
+
+        Returns:
+            JSON with output_path (HTML), success status, and metadata
+        """
+        start_time = datetime.now()
+
+        try:
+            # Validate input path
+            try:
+                pdf = validate_path_within_root(
+                    Path(pdf_path), ALLOWED_ROOT, must_exist=True
+                )
+            except PathTraversalError as e:
+                return json.dumps({"error": f"Security error: {e}"})
+
+            if pdf.suffix.lower() != ".pdf":
+                return json.dumps({"error": f"Not a PDF file: {pdf_path}"})
+
+            # Set up output directory
+            out_dir = Path(output_dir) if output_dir else DART_PATH / "output"
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+            # Import DART modules
+            sys.path.insert(0, str(DART_PATH))
+
+            # Step 1: Extract sources from PDF using multi-source interpreter
+            try:
+                from multi_source_interpreter import (
+                    extract_all_sources,
+                    convert_single_pdf,
+                )
+            except ImportError:
+                # Fallback: try the pdf_converter module
+                try:
+                    from pdf_converter.converter import PDFToAccessibleHTML
+                    converter = PDFToAccessibleHTML()
+                    result = converter.convert(str(pdf))
+                    html_path = out_dir / f"{pdf.stem}.html"
+                    html_path.write_text(result.html, encoding="utf-8")
+
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    return json.dumps({
+                        "success": True,
+                        "output_path": str(html_path),
+                        "method": "pdf_converter_fallback",
+                        "elapsed_seconds": round(elapsed, 2),
+                    })
+                except ImportError:
+                    return json.dumps({
+                        "error": "DART modules not available. "
+                        "Neither multi_source_interpreter nor pdf_converter could be imported.",
+                    })
+
+            # Extract sources (pdftotext + pdfplumber + OCR)
+            code = course_code or pdf.stem
+            combined_dir = DART_PATH / "batch_output" / "combined"
+            combined_dir.mkdir(parents=True, exist_ok=True)
+
+            combined_json_path = combined_dir / f"{code}_combined.json"
+
+            # Run extraction if combined JSON doesn't already exist
+            if not combined_json_path.exists():
+                extract_all_sources(str(pdf), str(combined_json_path))
+
+            # Step 2: Convert using multi-source synthesis
+            html_output = out_dir / f"{code}_synthesized.html"
+            result = convert_single_pdf(str(combined_json_path), str(html_output))
+
+            elapsed = (datetime.now() - start_time).total_seconds()
+
+            return json.dumps({
+                "success": True,
+                "output_path": str(html_output),
+                "combined_json_path": str(combined_json_path),
+                "method": "multi_source_synthesis",
+                "campus_code": code,
+                "elapsed_seconds": round(elapsed, 2),
+                "html_length": result.get("html_length", 0) if isinstance(result, dict) else 0,
+            })
+
+        except Exception as e:
+            logger.error(f"extract_and_convert_pdf failed: {e}")
+            return json.dumps({"error": str(e)})
