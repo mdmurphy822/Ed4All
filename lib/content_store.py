@@ -393,10 +393,16 @@ class ContentStore:
         # Atomic symlink creation: create temp symlink then rename (avoids TOCTOU race)
         tmp_fd, tmp_name = tempfile.mkstemp(dir=link_path.parent)
         os.close(tmp_fd)
-        tmp_path = Path(tmp_name)
-        tmp_path.unlink()  # mkstemp creates a file; we need to symlink
-        tmp_path.symlink_to(blob_path.resolve())
-        tmp_path.rename(link_path)
+        try:
+            os.unlink(tmp_name)  # mkstemp creates a file; we need to symlink
+            os.symlink(blob_path.resolve(), tmp_name)
+            os.rename(tmp_name, link_path)
+        except Exception:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
 
         logger.debug(f"Linked blob {content_hash[:12]}... to {artifact_name}")
 
@@ -720,7 +726,9 @@ class ContentStore:
 
                 # Validate symlink target is within blobs directory
                 blobs_resolved = self.blobs_dir.resolve()
-                if not str(target).startswith(str(blobs_resolved) + os.sep):
+                try:
+                    target.relative_to(blobs_resolved)
+                except ValueError:
                     errors.append(f"Symlink target escapes blob directory: {artifact_path} -> {target}")
                     continue
 

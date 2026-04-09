@@ -186,7 +186,7 @@ class LibV2Fsck:
         if course_index.exists():
             result.checked_files += 1
             try:
-                with open(course_index) as f:
+                with open(course_index, encoding='utf-8') as f:
                     index = json.load(f)
 
                 modified = False
@@ -214,7 +214,7 @@ class LibV2Fsck:
                 # Rewrite if fixed
                 if fix and modified:
                     temp_path = course_index.with_suffix('.tmp')
-                    with open(temp_path, 'w') as f:
+                    with open(temp_path, 'w', encoding='utf-8') as f:
                         json.dump(index, f, indent=2)
                     temp_path.rename(course_index)
                     logger.info("Fixed course index: removed dangling entries")
@@ -250,7 +250,7 @@ class LibV2Fsck:
             result.checked_files += 1
 
             try:
-                with open(manifest_path) as f:
+                with open(manifest_path, encoding='utf-8') as f:
                     manifest = json.load(f)
 
                 # Verify required fields
@@ -304,7 +304,7 @@ class LibV2Fsck:
     ) -> None:
         """Verify config lockfile integrity."""
         try:
-            with open(lockfile_path) as f:
+            with open(lockfile_path, encoding='utf-8') as f:
                 lockfile = json.load(f)
 
             snapshot_dir = run_dir / "config_snapshot"
