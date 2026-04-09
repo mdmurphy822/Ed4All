@@ -468,10 +468,11 @@ class WorkflowRunner:
                     if in_degree[phase.name] == 0:
                         queue.append(phase.name)
 
-        # Append any phases not reachable (shouldn't happen with valid config)
-        for phase in phases:
-            if phase.name not in sorted_names:
-                sorted_names.append(phase.name)
+        # Detect circular dependencies
+        if len(sorted_names) < len(phases):
+            unresolved = {p.name for p in phases} - set(sorted_names)
+            logger.error(f"Circular dependencies detected in phases: {unresolved}")
+            raise ValueError(f"Circular dependencies detected: {unresolved}")
 
         return [phase_map[name] for name in sorted_names if name in phase_map]
 

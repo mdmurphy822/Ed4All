@@ -572,9 +572,6 @@ TOOL_CATEGORIES = {
     "pipeline": [
         "stage_dart_outputs",
         "extract_and_convert_pdf",
-        "create_textbook_pipeline",
-        "run_textbook_pipeline",
-        "get_pipeline_status",
     ],
     "paperforge": [
         "paperforge_create_project",

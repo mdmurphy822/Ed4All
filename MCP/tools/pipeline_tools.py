@@ -420,23 +420,33 @@ def _build_tool_registry() -> dict:
         code = course_code or pdf.stem
 
         sys.path.insert(0, str(DART_PATH))
+
+        # Strategy 1: If combined JSON exists, use multi-source synthesis
+        combined_dir = DART_PATH / "batch_output" / "combined"
+        combined_json = combined_dir / f"{code}_combined.json"
+
+        if combined_json.exists():
+            try:
+                from multi_source_interpreter import convert_single_pdf
+                html_output = out_dir / f"{code}_synthesized.html"
+                convert_single_pdf(str(combined_json), str(html_output))
+                return json.dumps({
+                    "success": True,
+                    "output_path": str(html_output),
+                    "method": "multi_source_synthesis",
+                })
+            except ImportError:
+                pass  # Fall through to Strategy 2
+
+        # Strategy 2: Use pdf_converter for direct PDF-to-HTML
         try:
-            from multi_source_interpreter import extract_all_sources, convert_single_pdf
-
-            combined_dir = DART_PATH / "batch_output" / "combined"
-            combined_dir.mkdir(parents=True, exist_ok=True)
-            combined_json = combined_dir / f"{code}_combined.json"
-
-            if not combined_json.exists():
-                extract_all_sources(str(pdf), str(combined_json))
-
-            html_output = out_dir / f"{code}_synthesized.html"
-            result = convert_single_pdf(str(combined_json), str(html_output))
-
+            from pdf_converter.converter import PDFToAccessibleHTML
+            converter = PDFToAccessibleHTML()
+            result = converter.convert(str(pdf), str(out_dir))
             return json.dumps({
-                "success": True,
-                "output_path": str(html_output),
-                "method": "multi_source_synthesis",
+                "success": result.success,
+                "output_path": result.html_path,
+                "method": "pdf_converter",
             })
         except ImportError:
             return json.dumps({"error": "DART modules not available"})

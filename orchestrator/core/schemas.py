@@ -199,9 +199,12 @@ class TaskResult(BaseModel):
 # WORKFLOW MODELS
 # =============================================================================
 
-class WorkflowPhase(BaseModel):
+class WorkflowPhaseState(BaseModel):
     """
-    A phase within a workflow containing multiple tasks.
+    Runtime state of a workflow phase (task tracking and status).
+
+    Note: For phase configuration (agents, parallel, depends_on, etc.),
+    see orchestrator.core.config.WorkflowPhase instead.
 
     Attributes:
         name: Phase identifier
@@ -238,7 +241,7 @@ class Workflow(BaseModel):
     id: str = Field(..., min_length=1, description="Workflow identifier")
     name: str = Field(..., min_length=1, description="Workflow name")
     status: WorkflowStatus = Field(default=WorkflowStatus.CREATED, description="Current status")
-    phases: List[WorkflowPhase] = Field(default_factory=list, description="Workflow phases")
+    phases: List[WorkflowPhaseState] = Field(default_factory=list, description="Workflow phases")
     tasks: Dict[str, Task] = Field(default_factory=dict, description="All tasks by ID")
     max_concurrent: int = Field(default=10, ge=1, le=50, description="Max parallel tasks")
     created_at: datetime = Field(default_factory=datetime.now, description="Creation time")
