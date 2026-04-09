@@ -196,6 +196,21 @@ agents:
       - bloom_verification
     max_instances: 5
 
+  # =============================================================================
+  # LIBV2 AGENTS
+  # =============================================================================
+
+  libv2-archivist:
+    source: LibV2/tools/libv2/importer.py
+    type: archival
+    capabilities:
+      - artifact_archival
+      - source_preservation
+      - manifest_generation
+      - corpus_indexing
+      - checksum_verification
+    max_instances: 1
+
 # =============================================================================
 # PROJECT PATHS
 # Note: Paths are relative to PROJECT_ROOT (set via ED4ALL_ROOT env var or auto-detected)

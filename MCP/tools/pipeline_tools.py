@@ -289,6 +289,7 @@ def register_pipeline_tools(mcp):
                     "content_generation": _get_phase_status(workflow, "content_generation"),
                     "packaging": _get_phase_status(workflow, "packaging"),
                     "trainforge_assessment": _get_phase_status(workflow, "trainforge_assessment"),
+                    "libv2_archival": _get_phase_status(workflow, "libv2_archival"),
                     "finalization": _get_phase_status(workflow, "finalization")
                 },
                 "params": params
@@ -325,9 +326,10 @@ def register_pipeline_tools(mcp):
                 content = f.read()
 
             markers = {
-                "skip_link": 'class="skip-link"' in content or "class='skip-link'" in content,
+                "skip_link": 'class="skip' in content or "class='skip" in content,
                 "main_role": 'role="main"' in content or "role='main'" in content,
-                "aria_sections": 'aria-labelledby="' in content or "aria-labelledby='" in content
+                "aria_sections": 'aria-labelledby="' in content or "aria-labelledby='" in content,
+                "dart_semantic_classes": 'dart-section' in content or 'dart-document' in content
             }
 
             all_valid = all(markers.values())
@@ -350,13 +352,168 @@ def register_pipeline_tools(mcp):
 
 
     @mcp.tool()
+    async def archive_to_libv2(
+        course_name: str,
+        domain: str,
+        division: str = "STEM",
+        pdf_paths: Optional[str] = None,
+        html_paths: Optional[str] = None,
+        imscc_path: Optional[str] = None,
+        assessment_path: Optional[str] = None,
+        subdomains: Optional[str] = None,
+    ) -> str:
+        """
+        Archive all pipeline artifacts to LibV2 unified repository.
+
+        Stores raw inputs (PDFs), DART outputs (HTML), course packages (IMSCC),
+        and RAG corpus together under a single course slug.
+
+        Args:
+            course_name: Course identifier (e.g., "PHYS_101")
+            domain: Primary domain (e.g., "physics", "computer-science")
+            division: Division classification ("STEM" or "ARTS", default: "STEM")
+            pdf_paths: Comma-separated paths to original PDF inputs
+            html_paths: Comma-separated paths to DART HTML outputs
+            imscc_path: Path to Courseforge IMSCC package
+            assessment_path: Path to Trainforge assessment JSON
+            subdomains: Comma-separated subdomains (e.g., "mechanics,thermodynamics")
+
+        Returns:
+            JSON with course_slug, storage paths, and archival status
+        """
+        try:
+            libv2_root = PROJECT_ROOT / "LibV2"
+
+            # Generate slug from course name
+            slug = course_name.lower().replace("_", "-").replace(" ", "-")
+
+            # Create course directory structure
+            course_dir = libv2_root / "courses" / slug
+            for subdir in [
+                "source/pdf", "source/html", "source/imscc",
+                "corpus", "graph", "pedagogy", "training_specs", "quality"
+            ]:
+                (course_dir / subdir).mkdir(parents=True, exist_ok=True)
+
+            archived = {"pdfs": [], "html": [], "imscc": None, "assessment": None}
+
+            # Archive raw PDFs
+            if pdf_paths:
+                for pdf_str in pdf_paths.split(","):
+                    pdf = Path(pdf_str.strip())
+                    if pdf.exists():
+                        dest = course_dir / "source" / "pdf" / pdf.name
+                        shutil.copy2(pdf, dest)
+                        archived["pdfs"].append(str(dest))
+
+            # Archive DART HTML outputs
+            if html_paths:
+                for html_str in html_paths.split(","):
+                    html_file = Path(html_str.strip())
+                    if html_file.exists():
+                        dest = course_dir / "source" / "html" / html_file.name
+                        shutil.copy2(html_file, dest)
+                        archived["html"].append(str(dest))
+                        # Also copy quality JSON if present
+                        quality_json = html_file.with_suffix(".quality.json")
+                        if quality_json.exists():
+                            shutil.copy2(
+                                quality_json,
+                                course_dir / "quality" / quality_json.name
+                            )
+
+            # Archive IMSCC package
+            if imscc_path:
+                imscc = Path(imscc_path)
+                if imscc.exists():
+                    dest = course_dir / "source" / "imscc" / imscc.name
+                    shutil.copy2(imscc, dest)
+                    archived["imscc"] = str(dest)
+
+            # Archive assessment / RAG corpus output
+            if assessment_path:
+                assess = Path(assessment_path)
+                if assess.exists():
+                    dest = course_dir / "corpus" / assess.name
+                    shutil.copy2(assess, dest)
+                    archived["assessment"] = str(dest)
+
+            # Build manifest
+            import hashlib
+
+            def _sha256(filepath: Path) -> str:
+                h = hashlib.sha256()
+                with open(filepath, "rb") as f:
+                    for chunk in iter(lambda: f.read(8192), b""):
+                        h.update(chunk)
+                return h.hexdigest()
+
+            source_artifacts = {}
+            if archived["pdfs"]:
+                source_artifacts["pdf"] = [
+                    {"path": p, "checksum": _sha256(Path(p)), "size": Path(p).stat().st_size}
+                    for p in archived["pdfs"]
+                ]
+            if archived["html"]:
+                source_artifacts["html"] = [
+                    {"path": p, "checksum": _sha256(Path(p)), "size": Path(p).stat().st_size}
+                    for p in archived["html"]
+                ]
+            if archived["imscc"]:
+                imscc_p = Path(archived["imscc"])
+                source_artifacts["imscc"] = {
+                    "path": archived["imscc"],
+                    "checksum": _sha256(imscc_p),
+                    "size": imscc_p.stat().st_size,
+                }
+
+            manifest = {
+                "libv2_version": "1.2.0",
+                "slug": slug,
+                "import_timestamp": datetime.now().isoformat(),
+                "classification": {
+                    "division": division,
+                    "primary_domain": domain,
+                    "subdomains": [s.strip() for s in subdomains.split(",")] if subdomains else [],
+                },
+                "source_artifacts": source_artifacts,
+                "provenance": {
+                    "source_type": "textbook_to_course_pipeline",
+                    "import_pipeline_version": "1.0.0",
+                },
+            }
+
+            manifest_path = course_dir / "manifest.json"
+            with open(manifest_path, "w") as f:
+                json.dump(manifest, f, indent=2)
+
+            return json.dumps({
+                "success": True,
+                "course_slug": slug,
+                "course_dir": str(course_dir),
+                "manifest_path": str(manifest_path),
+                "archived": archived,
+                "artifact_counts": {
+                    "pdfs": len(archived["pdfs"]),
+                    "html_files": len(archived["html"]),
+                    "imscc": 1 if archived["imscc"] else 0,
+                    "assessment": 1 if archived["assessment"] else 0,
+                },
+            })
+
+        except Exception as e:
+            logger.error(f"Failed to archive to LibV2: {e}")
+            return json.dumps({"error": str(e)})
+
+    @mcp.tool()
     async def run_textbook_pipeline(workflow_id: str) -> str:
         """
         Execute a textbook-to-course pipeline that was previously created.
 
         Runs all phases in dependency order:
         DART conversion -> Staging -> Objective extraction -> Course planning ->
-        Content generation -> IMSCC packaging -> Trainforge assessment -> Finalization
+        Content generation -> IMSCC packaging -> Trainforge assessment ->
+        LibV2 archival -> Finalization
 
         Each phase's outputs are automatically routed to the next phase's inputs.
 
@@ -643,6 +800,84 @@ def _build_tool_registry() -> dict:
     except Exception:
         pass
 
+    # LibV2 archival tool
+    async def _archive_to_libv2(**kwargs):
+        """Wrapper for archive_to_libv2."""
+        import hashlib
+
+        course_name = kwargs.get("course_name", "")
+        domain = kwargs.get("domain", "")
+        division = kwargs.get("division", "STEM")
+        pdf_paths_str = kwargs.get("pdf_paths", "")
+        html_paths_str = kwargs.get("html_paths", "")
+        imscc_path_str = kwargs.get("imscc_path", "")
+        subdomains_str = kwargs.get("subdomains", "")
+
+        slug = course_name.lower().replace("_", "-").replace(" ", "-")
+        libv2_root = _PROJECT_ROOT / "LibV2"
+        course_dir = libv2_root / "courses" / slug
+
+        for subdir in [
+            "source/pdf", "source/html", "source/imscc",
+            "corpus", "graph", "pedagogy", "training_specs", "quality"
+        ]:
+            (course_dir / subdir).mkdir(parents=True, exist_ok=True)
+
+        archived = {"pdfs": [], "html": [], "imscc": None}
+
+        if pdf_paths_str:
+            for p in pdf_paths_str.split(","):
+                src = Path(p.strip())
+                if src.exists():
+                    dest = course_dir / "source" / "pdf" / src.name
+                    shutil.copy2(src, dest)
+                    archived["pdfs"].append(str(dest))
+
+        if html_paths_str:
+            for p in html_paths_str.split(","):
+                src = Path(p.strip())
+                if src.exists():
+                    dest = course_dir / "source" / "html" / src.name
+                    shutil.copy2(src, dest)
+                    archived["html"].append(str(dest))
+
+        if imscc_path_str:
+            src = Path(imscc_path_str)
+            if src.exists():
+                dest = course_dir / "source" / "imscc" / src.name
+                shutil.copy2(src, dest)
+                archived["imscc"] = str(dest)
+
+        manifest = {
+            "libv2_version": "1.2.0",
+            "slug": slug,
+            "import_timestamp": datetime.now().isoformat(),
+            "classification": {
+                "division": division,
+                "primary_domain": domain,
+                "subdomains": [s.strip() for s in subdomains_str.split(",")]
+                if subdomains_str else [],
+            },
+            "provenance": {
+                "source_type": "textbook_to_course_pipeline",
+                "import_pipeline_version": "1.0.0",
+            },
+        }
+
+        manifest_path = course_dir / "manifest.json"
+        with open(manifest_path, "w") as f:
+            json.dump(manifest, f, indent=2)
+
+        return json.dumps({
+            "success": True,
+            "course_slug": slug,
+            "course_dir": str(course_dir),
+            "manifest_path": str(manifest_path),
+            "archived": archived,
+        })
+
+    registry["archive_to_libv2"] = _archive_to_libv2
+
     return registry
 
 
@@ -659,6 +894,7 @@ def _get_phase_status(workflow: dict, phase_name: str) -> dict:
         "content_generation": ["content-generator"],
         "packaging": ["brightspace-packager"],
         "trainforge_assessment": ["assessment-generator"],
+        "libv2_archival": ["libv2-archivist"],
         "finalization": ["brightspace-packager"]
     }
 

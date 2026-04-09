@@ -66,8 +66,17 @@ PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         "question_count": ("workflow_params", "assessment_count"),
         "objective_ids": ("phase_outputs", "objective_extraction", "objective_ids"),
     },
+    "libv2_archival": {
+        "course_name": ("workflow_params", "course_name"),
+        "domain": ("workflow_params", "domain"),
+        "division": ("workflow_params", "division"),
+        "pdf_paths": ("workflow_params", "pdf_paths"),
+        "html_paths": ("phase_outputs", "dart_conversion", "output_paths"),
+        "imscc_path": ("phase_outputs", "packaging", "package_path"),
+    },
     "finalization": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),
+        "course_slug": ("phase_outputs", "libv2_archival", "course_slug"),
     },
 }
 
@@ -82,7 +91,8 @@ PHASE_OUTPUT_KEYS: Dict[str, List[str]] = {
     "content_generation": ["project_id", "content_paths", "weeks_prepared"],
     "packaging": ["package_path", "libv2_package_path", "project_id"],
     "trainforge_assessment": ["output_path", "assessment_id", "question_count"],
-    "finalization": ["project_id", "package_path"],
+    "libv2_archival": ["course_slug", "course_dir", "manifest_path"],
+    "finalization": ["project_id", "package_path", "course_slug"],
 }
 
 
