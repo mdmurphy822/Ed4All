@@ -118,6 +118,11 @@ AGENT_TOOL_MAPPING = {
     "rag-indexer": "analyze_imscc_content",
     "assessment-generator": "generate_assessments",
     "assessment-validator": "validate_assessment",
+
+    # -------------------------------------------------------------------------
+    # LIBV2 AGENTS
+    # -------------------------------------------------------------------------
+    "libv2-archivist": "archive_to_libv2",
 }
 
 

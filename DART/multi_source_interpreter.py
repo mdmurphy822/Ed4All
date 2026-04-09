@@ -714,7 +714,7 @@ def render_contact_cards(contacts: List[Dict]) -> str:
         if not name:
             continue
 
-        parts = ['<div class="contact-card">']
+        parts = ['<div class="contact-card dart-contact-card">']
         parts.append(f'  <h3>{html.escape(name)}</h3>')
 
         title = contact.get('title', '')
@@ -758,12 +758,12 @@ def render_kv_table(pairs: List[Tuple[str, str]], caption: str = "") -> str:
         rows.append(f'    <tr>\n      <th scope="row">{html.escape(key)}</th>\n      <td>{val_html}</td>\n    </tr>')
 
     cap = f'    <caption>{html.escape(caption)}</caption>\n' if caption else ''
-    return f'<table class="info-table">\n{cap}  <tbody>\n' + '\n'.join(rows) + '\n  </tbody>\n</table>'
+    return f'<table class="info-table dart-table dart-table--info">\n{cap}  <tbody>\n' + '\n'.join(rows) + '\n  </tbody>\n</table>'
 
 
 def _render_systems_table(rows: List[Dict], headers: List[str]) -> str:
     """Render 3-column systems table."""
-    parts = ['<table class="info-table">', '  <caption>Campus Systems</caption>']
+    parts = ['<table class="info-table dart-table dart-table--systems">', '  <caption>Campus Systems</caption>']
 
     parts.append('  <thead><tr>')
     for h in headers:
@@ -832,11 +832,25 @@ def generate_html_from_synthesized(synthesized: Dict) -> str:
   </ul>
 </nav>'''
 
+    # Map section types to CSS modifier classes for semantic subclassing
+    _SECTION_TYPE_CSS = {
+        'campus-info': 'dart-section--campus-info',
+        'credentials': 'dart-section--credentials',
+        'contacts': 'dart-section--contacts',
+        'systems': 'dart-section--systems',
+        'roster': 'dart-section--roster',
+        'no-account': 'dart-section--prose',
+        'guest': 'dart-section--prose',
+        'overview': 'dart-section--prose',
+    }
+
     # Render sections
     sections_html = []
     for i, section in enumerate(sections):
         content = render_from_synthesized(section)
-        sections_html.append(f'''<section id="s{i}" aria-labelledby="s{i}-h">
+        stype = section.get('section_type', '')
+        type_class = _SECTION_TYPE_CSS.get(stype, 'dart-section--prose')
+        sections_html.append(f'''<section id="s{i}" class="dart-section {type_class}" aria-labelledby="s{i}-h">
   <h2 id="s{i}-h">{html.escape(section["section_title"])}</h2>
 {content}
 </section>''')
@@ -933,6 +947,20 @@ footer {
   table.info-table th { width: 35%; }
 }
 @media print { .skip, nav.toc { display: none; } }
+
+/* DART Semantic Subclassing */
+.dart-document { position: relative; }
+.dart-title h1 { font-variant: small-caps; letter-spacing: 0.02em; }
+.dart-section { margin: 1.5rem 0; }
+.dart-section--campus-info { border-left: 3px solid var(--accent); padding-left: 1rem; }
+.dart-section--credentials { background: var(--bg2); padding: 1rem 1.25rem; border-radius: 6px; }
+.dart-section--contacts .dart-contact-card + .dart-contact-card { margin-top: 0.75rem; }
+.dart-section--systems .dart-table--systems { font-size: 0.95rem; }
+.dart-section--roster { border-left: 3px solid var(--accent2); padding-left: 1rem; }
+.dart-section--prose > p:first-of-type { font-size: 1.05rem; }
+.dart-table { border-collapse: collapse; width: 100%; }
+.dart-table caption { font-weight: 600; text-align: left; color: var(--accent2); }
+.dart-contact-card { position: relative; }
 '''
 
     return f'''<!DOCTYPE html>
@@ -947,8 +975,8 @@ footer {
 <body>
 <a href="#main" class="skip">Skip to content</a>
 <main id="main" role="main">
-  <article>
-    <header>
+  <article class="dart-document">
+    <header class="dart-title">
       <h1>{html.escape(name)}</h1>
     </header>
 {toc_html}

@@ -449,11 +449,19 @@ workflows:
               on_fail: block
               on_error: fail_closed
 
+      - name: libv2_archival
+        agents: [libv2-archivist]
+        parallel: false
+        max_concurrent: 1
+        depends_on: [packaging, trainforge_assessment]
+        timeout_minutes: 30
+        description: Archive all pipeline artifacts to LibV2 (raw PDFs, DART HTML, IMSCC, RAG corpus)
+
       - name: finalization
         agents: [brightspace-packager]
         parallel: false
         max_concurrent: 1
-        depends_on: [trainforge_assessment]
+        depends_on: [libv2_archival]
         timeout_minutes: 30
         description: Final validation and training data export
 
