@@ -9,8 +9,10 @@ with the LibV2 RAG library. This consolidates:
 - Source materials (textbooks, objectives)
 """
 
+import fcntl
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -244,7 +246,7 @@ class LibV2Storage:
             return {"exists": False, "chunk_count": 0, "size_bytes": 0}
 
         chunk_count = 0
-        with open(chunks_path) as f:
+        with open(chunks_path, encoding='utf-8') as f:
             for _ in f:
                 chunk_count += 1
 
@@ -265,8 +267,14 @@ class LibV2Storage:
         chunks_path = self.get_chunks_path()
         chunks_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(chunks_path, 'a') as f:
-            f.write(json.dumps(chunk) + '\n')
+        with open(chunks_path, 'a', encoding='utf-8') as f:
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                f.write(json.dumps(chunk) + '\n')
+                f.flush()
+                os.fsync(f.fileno())
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
     # ===== Source Material Management =====
 
@@ -313,7 +321,7 @@ class LibV2Storage:
         self.assessments_path.mkdir(parents=True, exist_ok=True)
         assessment_path = self.assessments_path / f"{assessment_id}.json"
 
-        with open(assessment_path, 'w') as f:
+        with open(assessment_path, 'w', encoding='utf-8') as f:
             json.dump(assessment, f, indent=2)
 
         return assessment_path
@@ -323,7 +331,7 @@ class LibV2Storage:
     def get_metadata(self) -> Dict[str, Any]:
         """Load course metadata from catalog."""
         if self.metadata_path.exists():
-            with open(self.metadata_path) as f:
+            with open(self.metadata_path, encoding='utf-8') as f:
                 return json.load(f)
         return {}
 
@@ -336,13 +344,13 @@ class LibV2Storage:
         existing.update(metadata)
         existing["updated_at"] = datetime.now().isoformat()
 
-        with open(self.metadata_path, 'w') as f:
+        with open(self.metadata_path, 'w', encoding='utf-8') as f:
             json.dump(existing, f, indent=2)
 
     def get_manifest(self) -> Dict[str, Any]:
         """Load course manifest."""
         if self.manifest_path.exists():
-            with open(self.manifest_path) as f:
+            with open(self.manifest_path, encoding='utf-8') as f:
                 return json.load(f)
         return {}
 
@@ -352,7 +360,7 @@ class LibV2Storage:
 
         manifest["updated_at"] = datetime.now().isoformat()
 
-        with open(self.manifest_path, 'w') as f:
+        with open(self.manifest_path, 'w', encoding='utf-8') as f:
             json.dump(manifest, f, indent=2)
 
     # ===== Utility Methods =====

@@ -117,7 +117,7 @@ def log_file_access(
             "allowed": allowed,
             "error": error
         }
-        with open(AUDIT_LOG_FILE, "a") as f:
+        with open(AUDIT_LOG_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(event) + "\n")
     except Exception as e:
         logger.warning(f"Failed to write audit log: {e}")
@@ -148,7 +148,7 @@ def log_security_event(
             "details": details or {},
             "production_mode": PRODUCTION_MODE
         }
-        with open(SECURITY_LOG_FILE, "a") as f:
+        with open(SECURITY_LOG_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(event) + "\n")
     except Exception as e:
         logger.warning(f"Failed to write security log: {e}")
@@ -427,7 +427,7 @@ async def read_file(path: str) -> str:
         )
         log_file_access("read_file", path, allowed=True)
 
-        with open(safe_path) as f:
+        with open(safe_path, encoding="utf-8") as f:
             return f.read()
     except PathTraversalError as e:
         log_file_access("read_file", path, allowed=False, error=str(e))
@@ -459,7 +459,7 @@ async def write_file(path: str, content: str) -> str:
         # Ensure parent directory exists
         safe_path.parent.mkdir(parents=True, exist_ok=True)
 
-        with open(safe_path, 'w') as f:
+        with open(safe_path, 'w', encoding="utf-8") as f:
             f.write(content)
         return f"Successfully wrote to {path}"
     except PathTraversalError as e:
@@ -510,7 +510,7 @@ def get_file_content(path: str) -> str:
         )
         log_file_access("resource:file", path, allowed=True)
 
-        with open(safe_path) as f:
+        with open(safe_path, encoding="utf-8") as f:
             return f.read()
     except PathTraversalError as e:
         log_file_access("resource:file", path, allowed=False, error=str(e))
