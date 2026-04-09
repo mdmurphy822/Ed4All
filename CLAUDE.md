@@ -13,10 +13,11 @@ python server.py
 ### Available Workflows
 | Workflow | Description | Max Concurrent |
 |----------|-------------|----------------|
+| `textbook_to_course` | Full PDF → Course → Assessments pipeline | 10 |
 | `course_generation` | Generate new course from objectives | 10 |
 | `intake_remediation` | Import and remediate IMSCC | 4 |
 | `batch_dart` | Batch PDF to HTML conversion | 4 |
-| `rag_training` | Trainforge assessment generation | 4 |
+| `rag_training` | Trainforge assessment generation | 5 |
 
 ---
 
@@ -30,16 +31,22 @@ Ed4All/
 ├── LibV2/                   # Course content repository
 │   ├── courses/             # Educational content storage
 │   ├── catalog/             # Derived indexes
-│   └── tools/               # CLI & retrieval engine
+│   ├── tools/               # CLI & retrieval engine
+│   ├── ontology/            # Taxonomy & pedagogy models
+│   └── schema/              # Catalog & manifest schemas
 ├── MCP/
-│   ├── server.py            # FastMCP server
-│   └── tools/               # Tool modules
-├── orchestrator/            # Multi-terminal coordination
-├── state/                   # Shared state & progress tracking
+│   ├── server.py            # FastMCP server (core file tools)
+│   ├── tools/               # Domain tool modules
+│   └── tests/               # MCP tool tests
+├── orchestrator/            # Workflow execution & coordination
+├── cli/                     # CLI commands (ed4all entry point)
+├── lib/                     # Shared libraries & validators
+├── config/                  # Workflow & agent configs
 ├── schemas/                 # JSON schemas for validation
+├── state/                   # Shared state & progress tracking
 ├── training-captures/       # Decision capture output
-├── lib/                     # Shared libraries
-└── config/                  # Workflow & agent configs
+├── ci/                      # CI integrity checks
+└── .github/                 # CI/CD workflows
 ```
 
 ---
@@ -169,14 +176,25 @@ for i in range(50):
 
 ## MCP Tool Reference
 
+### Core File Tools
+
+| Tool | Description |
+|------|-------------|
+| `list_directory` | List directory contents (READ_ONLY sandbox) |
+| `read_file` | Read file contents (READ_ONLY sandbox) |
+| `write_file` | Write to files (RESTRICTED sandbox: runtime/, state/) |
+| `file_info` | Get file/directory metadata (READ_ONLY sandbox) |
+
 ### DART Tools
 
 | Tool | Description |
 |------|-------------|
-| `convert_pdf_to_html` | Convert single PDF to accessible HTML |
-| `batch_convert_documents` | Batch convert multiple PDFs |
+| `convert_pdf_multi_source` | Convert PDF via multi-source synthesis |
+| `batch_convert_multi_source` | Batch convert multiple PDFs |
 | `validate_wcag_compliance` | Validate HTML accessibility |
 | `get_dart_status` | Get DART processing status |
+| `list_available_campuses` | List configured campus sources |
+| `extract_and_convert_pdf` | Extract and convert a single PDF |
 
 ### Courseforge Tools
 
@@ -197,6 +215,8 @@ for i in range(50):
 | `get_workflow_status` | Check workflow progress |
 | `dispatch_agent_task` | Dispatch task to agent |
 | `poll_task_completions` | Wait for task completions |
+| `execute_workflow_task` | Execute a single workflow task |
+| `complete_workflow_task` | Mark workflow task complete |
 | `update_generation_progress` | Update progress file |
 | `acquire_batch_lock` | Lock resource for batch |
 | `release_batch_lock` | Release batch lock |
@@ -210,6 +230,34 @@ for i in range(50):
 | `validate_assessment` | Validate assessment quality |
 | `export_training_data` | Export training captures |
 | `get_trainforge_status` | Get processing status |
+
+### Pipeline Tools
+
+| Tool | Description |
+|------|-------------|
+| `create_textbook_pipeline` | Initialize textbook-to-course pipeline |
+| `stage_dart_outputs` | Stage DART outputs for Courseforge |
+| `get_pipeline_status` | Check pipeline progress |
+| `validate_dart_markers` | Validate DART output markers |
+| `run_textbook_pipeline` | Execute full textbook pipeline |
+
+### Analysis Tools
+
+| Tool | Description |
+|------|-------------|
+| `analyze_training_data` | Analyze training capture data |
+| `get_quality_distribution` | Get quality score distribution |
+| `preview_export_filter` | Preview export filter results |
+
+### Learning Science Tools
+
+| Tool | Description |
+|------|-------------|
+| `learning_science_query` | Query learning science knowledge base |
+| `get_pedagogical_strategy` | Get strategy for pedagogical context |
+| `validate_with_research` | Validate content against research |
+| `list_learning_science_domains` | List available knowledge domains |
+| `invalidate_learning_science_cache` | Clear learning science cache |
 
 ---
 
@@ -281,16 +329,44 @@ tracker.set_status("W001", "content_generator", "Module_3.html", "IN_PROGRESS")
 
 ```
 1. extraction
-   └── Parse IMSCC, extract content
+   └── Parse IMSCC, extract content & learning objectives
 
-2. embedding
-   └── Create vector embeddings
+2. indexing
+   └── Build vector index for RAG retrieval
 
-3. indexing
-   └── Build RAG index
+3. assessment_generation
+   └── Generate questions with full decision capture
 
-4. assessment_generation
-   └── Generate questions with full capture
+4. validation
+   └── Validate assessment quality and Bloom's alignment
+```
+
+### Textbook-to-Course Workflow
+
+```
+1. dart_conversion
+   └── Convert PDF textbooks to accessible HTML (multi-source synthesis)
+
+2. staging
+   └── Stage DART outputs to Courseforge inputs
+
+3. objective_extraction
+   └── Extract structure and synthesize learning objectives
+
+4. course_planning
+   └── Create course structure from objectives
+
+5. content_generation
+   └── Generate course content modules (parallel batches of 10)
+
+6. packaging
+   └── Package course as IMSCC
+
+7. trainforge_assessment (optional)
+   └── Generate assessments from IMSCC package
+
+8. finalization
+   └── Final validation and training data export
 ```
 
 ---
@@ -302,22 +378,40 @@ tracker.set_status("W001", "content_generator", "Module_3.html", "IN_PROGRESS")
 | Agent | Purpose |
 |-------|---------|
 | `course-outliner` | Create course structure |
+| `requirements-collector` | Gather specifications & prerequisites |
 | `content-generator` | Generate module content |
 | `brightspace-packager` | Package for Brightspace LMS |
+| `oscqr-course-evaluator` | OSCQR quality evaluation |
+| `quality-assurance` | Pattern prevention & validation |
 
-### DART Agents
+### DART / Remediation Agents
 
 | Agent | Purpose |
 |-------|---------|
 | `dart-automation-coordinator` | Orchestrate PDF conversion |
+| `dart-converter` | Multi-source synthesis conversion |
+| `imscc-intake-parser` | Extract & inventory IMSCC packages |
+| `content-analyzer` | Detect accessibility & quality gaps |
+| `accessibility-remediation` | WCAG fixes, alt text, headings |
+| `content-quality-remediation` | Educational depth & enhancement |
+| `intelligent-design-mapper` | Component selection & styling |
+| `remediation-validator` | Final QA & WCAG verification |
+
+### Textbook Pipeline Agents
+
+| Agent | Purpose |
+|-------|---------|
+| `textbook-stager` | Stage DART outputs for Courseforge |
+| `textbook-ingestor` | Parse DART HTML & extract objectives |
 
 ### Trainforge Agents
 
 | Agent | Purpose |
 |-------|---------|
-| `content-analyzer` | Analyze IMSCC content |
-| `assessment-generator` | Generate assessments |
-| `validator` | Validate assessment quality |
+| `assessment-extractor` | Parse IMSCC & extract content |
+| `rag-indexer` | Build vector embeddings & index |
+| `assessment-generator` | Generate questions & distractors |
+| `assessment-validator` | Validate quality & Bloom's alignment |
 
 ---
 
@@ -338,7 +432,7 @@ Every decision rationale MUST:
 
 ### Content Quality (Courseforge)
 
-- WCAG 2.1 AA compliance
+- WCAG 2.2 AA compliance
 - Clear learning objectives per module
 - Consistent formatting
 
@@ -352,19 +446,77 @@ Every decision rationale MUST:
 
 ## Error Handling
 
+### Error Classification (Phase 0 Hardening)
+
+Errors are classified to determine retry behavior:
+- **Transient**: `timeout`, `rate_limit`, `connection_error`, `service_unavailable` → retryable
+- **Permanent**: `validation_error`, `missing_input`, `permission_denied`, `schema_error` → no retry
+
 ### Retry Protocol
 
-Failed tasks retry up to 3 times:
-1. First retry: Immediate
-2. Second retry: After 5 seconds
-3. Third retry: After 30 seconds
+Failed tasks retry up to 3 times with exponential backoff:
+1. First retry: After 5 seconds
+2. Second retry: After 30 seconds
+3. Third retry: After 120 seconds
 4. After 3 failures: Log to error table, require manual intervention
+
+### Poison Pill Detection
+
+Stops a batch when the same error pattern repeats:
+- Default threshold: 3 same-pattern failures within 5 minutes
+- Prevents runaway batch failures from consuming resources
+
+### Phase Checkpointing
+
+Each phase completion creates a checkpoint in `state/runs/{run_id}/checkpoints/`:
+- Enables crash recovery without re-running completed phases
+- Checkpoints include phase outputs and state snapshots
 
 ### Error Logging
 
 All errors logged to:
 - GENERATION_PROGRESS.md error table
 - Individual JSONL capture files
+
+---
+
+## Validation Gates
+
+Validation gates run after workflow phases to enforce quality:
+
+### Gate Configuration
+
+```yaml
+validation_gates:
+  - gate_id: content_structure
+    validator: lib.validators.content.ContentStructureValidator
+    severity: critical     # critical | warning
+    threshold:
+      max_critical_issues: 0
+    behavior:
+      on_fail: block       # block | warn
+      on_error: fail_closed # fail_closed | warn
+```
+
+### Severity Levels
+
+| Severity | Behavior |
+|----------|----------|
+| `critical` | Blocks workflow progression on failure |
+| `warning` | Logs warning, allows workflow to continue |
+
+### Active Gates
+
+| Workflow | Gate | Validator |
+|----------|------|-----------|
+| `course_generation` | `content_structure` | ContentStructureValidator |
+| `course_generation` | `imscc_structure` | IMSCCValidator |
+| `course_generation` | `wcag_compliance` | WCAGValidator |
+| `course_generation` | `oscqr_score` | OSCQRValidator |
+| `batch_dart` | `wcag_aa_compliance` | WCAGValidator |
+| `rag_training` | `assessment_quality` | AssessmentQualityValidator |
+| `rag_training` | `bloom_alignment` | BloomAlignmentValidator |
+| `rag_training` | `leak_check` | LeakChecker |
 
 ---
 
@@ -404,14 +556,12 @@ Location: `config/agents.yaml`
 
 ### Export Command
 
-```python
-from MCP.tools.trainforge_tools import export_training_data
+```bash
+# Via CLI
+ed4all export-training <run_id> --format dpo
 
-result = export_training_data(
-    format="dpo",
-    date_range={"start": "2025-01-01", "end": "2025-01-31"},
-    min_quality="proficient"
-)
+# Via MCP tool
+export_training_data(format="dpo", date_range={"start": "2025-01-01", "end": "2025-01-31"}, min_quality="proficient")
 ```
 
 ---

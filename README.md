@@ -14,6 +14,7 @@
 | **Trainforge** | Assessment-based RAG training |
 | **LibV2** | Educational content repository |
 | **MCP Server** | Unified tool orchestration |
+| **CLI** | Run management, pipelines, and validation |
 
 ## Quick Start
 
@@ -27,7 +28,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/Ed4All.git
+git clone https://github.com/mdmurphy822/Ed4All.git
 cd Ed4All
 
 # Create virtual environment
@@ -44,12 +45,6 @@ pip install -e ".[full]"
 cd MCP && python server.py
 ```
 
-### Run Pipeline
-
-```bash
-ed4all textbook-to-course textbook.pdf -n COURSE_101
-```
-
 ## Workflows
 
 | Workflow | Description |
@@ -58,6 +53,22 @@ ed4all textbook-to-course textbook.pdf -n COURSE_101
 | `course_generation` | Generate course from objectives |
 | `intake_remediation` | Import and fix existing IMSCC |
 | `batch_dart` | Batch PDF conversion |
+| `rag_training` | Assessment-based training data generation |
+
+## CLI
+
+The `ed4all` CLI provides run management and pipeline orchestration:
+
+```bash
+ed4all textbook-to-course textbook.pdf -n COURSE_101  # Full PDF-to-course pipeline
+ed4all validate-run <run_id>                           # Validate run integrity
+ed4all summarize-run <run_id>                          # Generate run report
+ed4all diff-runs <run_a> <run_b>                       # Compare two runs
+ed4all export-training <run_id> --format dpo           # Export training data
+ed4all fsck                                            # LibV2 storage integrity check
+ed4all list-runs                                       # List recent runs
+ed4all verify-chain <chain_file>                       # Verify hash-chained event logs
+```
 
 ## Project Structure
 
@@ -69,11 +80,14 @@ Ed4All/
 ├── LibV2/                   # Course content repository
 ├── MCP/                     # FastMCP server and tools
 ├── orchestrator/            # Multi-terminal coordination
+├── cli/                     # CLI commands and run management
 ├── lib/                     # Shared libraries
 ├── config/                  # Workflow & agent configs
 ├── schemas/                 # JSON schemas for validation
 ├── state/                   # Shared state & progress tracking
-└── training-captures/       # Decision capture output
+├── training-captures/       # Decision capture output
+├── ci/                      # CI integrity checks
+└── .github/                 # CI/CD workflows
 ```
 
 ## Running Tests
@@ -102,7 +116,7 @@ pytest Courseforge/scripts/tests/
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines.
+See [CLAUDE.md](CLAUDE.md) for the orchestration protocol and development guidelines.
 
 ## License
 
