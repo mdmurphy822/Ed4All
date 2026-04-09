@@ -573,29 +573,6 @@ TOOL_CATEGORIES = {
         "stage_dart_outputs",
         "extract_and_convert_pdf",
     ],
-    "paperforge": [
-        "paperforge_create_project",
-        "paperforge_query_arxiv",
-        "paperforge_generate_bibtex",
-        "paperforge_generate_citations",
-        "paperforge_compile_latex",
-        "paperforge_export_markdown",
-        "paperforge_validate_quality",
-        "paperforge_status",
-    ],
-    "historyforge": [
-        "historyforge_create_project_tool",
-        "historyforge_ingest_source_tool",
-        "historyforge_query_archive_tool",
-        "historyforge_analyze_source_tool",
-        "historyforge_compute_theta_tool",
-        "historyforge_build_causality_network_tool",
-        "historyforge_compile_truth_table_tool",
-        "historyforge_validate_coherence_tool",
-        "historyforge_compile_report_tool",
-        "historyforge_validate_quality_tool",
-        "historyforge_status_tool",
-    ],
 }
 
 

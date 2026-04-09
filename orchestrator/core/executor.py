@@ -118,46 +118,6 @@ AGENT_TOOL_MAPPING = {
     "rag-indexer": "analyze_imscc_content",
     "assessment-generator": "generate_assessments",
     "assessment-validator": "validate_assessment",
-
-    # -------------------------------------------------------------------------
-    # PAPERFORGE AGENTS
-    # -------------------------------------------------------------------------
-    "paper-outliner": "paperforge_create_project",
-    "arxiv-research": "paperforge_query_arxiv",
-    "content-synthesizer": "paperforge_generate_citations",
-    "citation-manager": "paperforge_generate_bibtex",
-    "latex-compiler": "paperforge_compile_latex",
-    "markdown-exporter": "paperforge_export_markdown",
-    "quality-validator": "paperforge_validate_quality",
-
-    # -------------------------------------------------------------------------
-    # LAWFORGE AGENTS
-    # -------------------------------------------------------------------------
-    "legal-query-analyzer": "lawforge_decompose_query",
-    "jurisdiction-classifier": "lawforge_rank_authorities",
-    "statute-researcher": "lawforge_search_statutes",
-    "caselaw-researcher": "lawforge_search_cases",
-    "historic-case-researcher": "lawforge_search_historic_cases",
-    "regulation-researcher": "lawforge_search_regulations",
-    "citation-tracker": "lawforge_build_citation_network",
-    "legal-content-synthesizer": "lawforge_export_research_memo",
-    "brief-compiler": "lawforge_compile_brief",
-    "legal-quality-validator": "lawforge_validate_research",
-    "secondary-source-researcher": "lawforge_search_secondary",
-
-    # -------------------------------------------------------------------------
-    # HISTORYFORGE AGENTS
-    # -------------------------------------------------------------------------
-    "project-planner": "historyforge_create_project_tool",
-    "source-ingester": "historyforge_ingest_source_tool",
-    "archive-researcher": "historyforge_query_archive_tool",
-    "source-analyzer": "historyforge_analyze_source_tool",
-    "theta-analyzer": "historyforge_compute_theta_tool",
-    "narrative-synthesizer": "historyforge_compile_report_tool",
-    "citation-assembler": "historyforge_compile_report_tool",
-    "truth-compiler": "historyforge_compile_truth_table_tool",
-    "coherence-validator": "historyforge_validate_quality_tool",
-    "report-generator": "historyforge_compile_report_tool",
 }
 
 
