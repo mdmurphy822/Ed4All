@@ -173,7 +173,7 @@ class AppConfig:
         if not config_file.exists():
             raise FileNotFoundError(f"Config file not found: {config_file}")
 
-        with open(config_file) as f:
+        with open(config_file, encoding='utf-8') as f:
             file_config = yaml.safe_load(f) or {}
 
         return cls._apply_overrides(config, file_config)

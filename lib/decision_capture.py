@@ -611,8 +611,8 @@ class DecisionCapture:
             f.flush()
             try:
                 os.fsync(f.fileno())
-            except OSError:
-                pass
+            except OSError as e:
+                logger.warning("fsync failed on primary save: %s", e)
         os.rename(temp_path, output_path)
 
         # Also save to legacy location
@@ -750,6 +750,8 @@ class DARTDecisionCapture(DecisionCapture):
 
     def save(self, filename: Optional[str] = None) -> Path:
         """Save with DART-specific details using atomic write."""
+        self.close()
+
         if filename is None:
             filename = f"dart_conversion_{self.pdf_name}_{self.session_id}.json"
 
@@ -780,8 +782,8 @@ class DARTDecisionCapture(DecisionCapture):
             f.flush()
             try:
                 os.fsync(f.fileno())
-            except OSError:
-                pass
+            except OSError as e:
+                logger.warning("fsync failed on DART primary save: %s", e)
         os.rename(temp_path, output_path)
 
         # Also save to legacy location

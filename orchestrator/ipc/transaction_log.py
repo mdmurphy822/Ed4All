@@ -7,11 +7,14 @@ tracking workflow events and enabling recovery.
 
 import fcntl
 import json
+import logging
 import os
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 # Transaction log directory (relative to this file)
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -74,11 +77,12 @@ class TransactionLog:
             "details": details or {}
         }
 
-        # Crash-safe append
-        with open(self.log_path, 'a') as f:
+        # Crash-safe append — serialize before acquiring lock
+        event_line = json.dumps(event) + '\n'
+        with open(self.log_path, 'a', encoding='utf-8') as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_EX)
             try:
-                f.write(json.dumps(event) + '\n')
+                f.write(event_line)
                 f.flush()
                 os.fsync(f.fileno())
             finally:
@@ -106,8 +110,8 @@ class TransactionLog:
             return []
 
         events = []
-        with open(self.log_path) as f:
-            for line in f:
+        with open(self.log_path, encoding='utf-8') as f:
+            for line_no, line in enumerate(f, 1):
                 if line.strip():
                     try:
                         event = json.loads(line)
@@ -119,6 +123,10 @@ class TransactionLog:
                             continue
                         events.append(event)
                     except json.JSONDecodeError:
+                        logger.warning(
+                            "Corrupt entry at line %d in transaction log %s",
+                            line_no, self.log_path
+                        )
                         continue
         return events
 

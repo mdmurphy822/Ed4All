@@ -162,7 +162,7 @@ class HashChainedLog:
     def _load_chain_state(self) -> None:
         """Load the current chain state from existing log."""
         last_event = None
-        with open(self.log_path) as f:
+        with open(self.log_path, encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
                 if line:
@@ -272,7 +272,7 @@ class HashChainedLog:
                 )
 
                 # Append to file
-                with open(self.log_path, 'a') as f:
+                with open(self.log_path, 'a', encoding='utf-8') as f:
                     f.write(chained.to_json() + '\n')
                     f.flush()
                     os.fsync(f.fileno())
@@ -301,7 +301,7 @@ class HashChainedLog:
             List of ChainedEvent objects
         """
         events = []
-        with open(self.log_path) as f:
+        with open(self.log_path, encoding='utf-8') as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_SH)
             try:
                 for line in f:
@@ -324,7 +324,7 @@ class HashChainedLog:
             List of ChainedEvent objects in range
         """
         events = []
-        with open(self.log_path) as f:
+        with open(self.log_path, encoding='utf-8') as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_SH)
             try:
                 for line in f:
@@ -347,7 +347,7 @@ class HashChainedLog:
         Yields:
             ChainedEvent objects
         """
-        with open(self.log_path) as f:
+        with open(self.log_path, encoding='utf-8') as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_SH)
             try:
                 for line in f:
@@ -480,7 +480,7 @@ class HashChainedLog:
         Returns:
             ChainedEvent if found, None otherwise
         """
-        with open(self.log_path) as f:
+        with open(self.log_path, encoding='utf-8') as f:
             fcntl.flock(f.fileno(), fcntl.LOCK_SH)
             try:
                 for line in f:
@@ -524,7 +524,7 @@ class ChainIndex:
 
     def _load_index(self) -> None:
         """Load index from file."""
-        with open(self.index_path) as f:
+        with open(self.index_path, encoding='utf-8') as f:
             data = json.load(f)
             self._index = {int(k): v for k, v in data.get("offsets", {}).items()}
 
@@ -535,7 +535,7 @@ class ChainIndex:
             "offsets": {str(k): v for k, v in self._index.items()},
             "updated_at": datetime.now().isoformat(),
         }
-        with open(self.index_path, 'w') as f:
+        with open(self.index_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
 
     def rebuild(self) -> int:
@@ -548,7 +548,7 @@ class ChainIndex:
         self._index = {}
         offset = 0
 
-        with open(self.log.log_path) as f:
+        with open(self.log.log_path, encoding='utf-8') as f:
             while True:
                 line = f.readline()
                 if not line:
