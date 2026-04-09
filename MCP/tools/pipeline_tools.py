@@ -406,57 +406,44 @@ def _build_tool_registry() -> dict:
     registry = {}
 
     # DART tools
-    try:
-        from MCP.tools.dart_tools import register_dart_tools as _  # noqa: F401
+    async def _extract_and_convert_pdf(**kwargs):
+        """Wrapper for DART PDF extraction and conversion."""
+        from lib.paths import DART_PATH
 
-        # Import the actual functions from the DART module
-        sys.path.insert(0, str(_PROJECT_ROOT / "DART"))
+        pdf_path = kwargs.get("pdf_path", "")
+        course_code = kwargs.get("course_code")
+        output_dir_str = kwargs.get("output_dir")
 
-        async def _extract_and_convert_pdf(**kwargs):
-            """Wrapper that imports and calls DART conversion."""
-            from MCP.tools.dart_tools import register_dart_tools
-            # The tool is registered inside the function - we need to call it directly
-            from lib.paths import DART_PATH
-            from lib.secure_paths import validate_path_within_root
-            import json as _json
-            from datetime import datetime as _dt
-            from pathlib import Path as _Path
+        pdf = Path(pdf_path)
+        out_dir = Path(output_dir_str) if output_dir_str else DART_PATH / "output"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        code = course_code or pdf.stem
 
-            pdf_path = kwargs.get("pdf_path", "")
-            course_code = kwargs.get("course_code")
-            output_dir_str = kwargs.get("output_dir")
+        sys.path.insert(0, str(DART_PATH))
+        try:
+            from multi_source_interpreter import extract_all_sources, convert_single_pdf
 
-            pdf = _Path(pdf_path)
-            out_dir = _Path(output_dir_str) if output_dir_str else DART_PATH / "output"
-            out_dir.mkdir(parents=True, exist_ok=True)
-            code = course_code or pdf.stem
+            combined_dir = DART_PATH / "batch_output" / "combined"
+            combined_dir.mkdir(parents=True, exist_ok=True)
+            combined_json = combined_dir / f"{code}_combined.json"
 
-            # Try multi-source interpreter
-            sys.path.insert(0, str(DART_PATH))
-            try:
-                from multi_source_interpreter import extract_all_sources, convert_single_pdf
+            if not combined_json.exists():
+                extract_all_sources(str(pdf), str(combined_json))
 
-                combined_dir = DART_PATH / "batch_output" / "combined"
-                combined_dir.mkdir(parents=True, exist_ok=True)
-                combined_json = combined_dir / f"{code}_combined.json"
+            html_output = out_dir / f"{code}_synthesized.html"
+            result = convert_single_pdf(str(combined_json), str(html_output))
 
-                if not combined_json.exists():
-                    extract_all_sources(str(pdf), str(combined_json))
+            return json.dumps({
+                "success": True,
+                "output_path": str(html_output),
+                "method": "multi_source_synthesis",
+            })
+        except ImportError:
+            return json.dumps({"error": "DART modules not available"})
+        except Exception as e:
+            return json.dumps({"error": f"DART conversion failed: {e}"})
 
-                html_output = out_dir / f"{code}_synthesized.html"
-                result = convert_single_pdf(str(combined_json), str(html_output))
-
-                return _json.dumps({
-                    "success": True,
-                    "output_path": str(html_output),
-                    "method": "multi_source_synthesis",
-                })
-            except ImportError:
-                return _json.dumps({"error": "DART modules not available"})
-
-        registry["extract_and_convert_pdf"] = _extract_and_convert_pdf
-    except ImportError:
-        pass
+    registry["extract_and_convert_pdf"] = _extract_and_convert_pdf
 
     # Pipeline tools - stage_dart_outputs
     async def _stage_dart_outputs(**kwargs):
@@ -545,10 +532,17 @@ def _build_tool_registry() -> dict:
             with open(config_path, "w") as f:
                 json.dump(config_data, f, indent=2)
 
+            # Generate default objective IDs from course name and weeks
+            duration = duration_weeks if isinstance(duration_weeks, int) else 12
+            objective_ids = [
+                f"{course_name}_OBJ_{i}" for i in range(1, duration + 1)
+            ]
+
             return json.dumps({
                 "success": True,
                 "project_id": project_id,
                 "project_path": str(project_path),
+                "objective_ids": ",".join(objective_ids),
                 "config": config_data,
             })
 

@@ -125,9 +125,10 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     # COURSEFORGE TOOLS (6)
     # =========================================================================
     "create_course_project": {
-        "required": ["course_name", "objectives_path"],
-        "optional": ["duration_weeks", "credit_hours"],
+        "required": ["course_name"],
+        "optional": ["objectives_path", "duration_weeks", "credit_hours"],
         "defaults": {
+            "objectives_path": None,
             "duration_weeks": 12,
             "credit_hours": 3,
         },

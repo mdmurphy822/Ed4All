@@ -37,7 +37,7 @@ STATE_PATH = Path(__file__).resolve().parent.parent.parent / "state"
 
 PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
     "dart_conversion": {
-        "pdf_path": ("workflow_params", "pdf_paths"),
+        # Task creation handled specially in _create_phase_tasks (one task per PDF)
         "course_code": ("workflow_params", "course_name"),
     },
     "staging": {
@@ -177,7 +177,7 @@ class WorkflowRunner:
 
             # Create tasks for this phase
             tasks = self._create_phase_tasks(
-                workflow_id, phase, routed_params
+                workflow_id, phase, routed_params, workflow_params
             )
 
             # Add tasks to workflow state
@@ -293,24 +293,72 @@ class WorkflowRunner:
         workflow_id: str,
         phase: WorkflowPhase,
         routed_params: Dict[str, Any],
+        workflow_params: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Create task dicts for a phase.
 
-        For parallel phases with multiple agents, creates one task per agent.
-        For sequential phases, creates a single task.
+        Handles special cases:
+        - dart_conversion: one task per PDF file
+        - content_generation with batch_by=week: one task per week
+        - Default: one task per agent in the phase
 
         Args:
             workflow_id: Parent workflow ID
             phase: Phase configuration
             routed_params: Parameters resolved from routing table
+            workflow_params: Original workflow creation params
 
         Returns:
             List of task dicts ready for execute_phase()
         """
         tasks = []
         timestamp = datetime.now().strftime("%H%M%S")
+        workflow_params = workflow_params or {}
 
+        # Special case: dart_conversion creates one task per PDF
+        if phase.name == "dart_conversion":
+            pdf_paths = workflow_params.get("pdf_paths", [])
+            if isinstance(pdf_paths, str):
+                pdf_paths = [p.strip() for p in pdf_paths.split(",")]
+            for i, pdf_path in enumerate(pdf_paths):
+                task_id = f"T-{phase.name}-{i}-{timestamp}"
+                task = {
+                    "id": task_id,
+                    "agent_type": phase.agents[0],
+                    "phase": phase.name,
+                    "status": "PENDING",
+                    "params": {
+                        "pdf_path": pdf_path,
+                        "course_code": workflow_params.get("course_name", ""),
+                    },
+                    "created_at": datetime.now().isoformat(),
+                    "dependencies": [],
+                }
+                tasks.append(task)
+            return tasks
+
+        # Special case: batch_by week creates one task per week
+        if phase.batch_by == "week":
+            duration = workflow_params.get("duration_weeks", 12)
+            for week in range(1, duration + 1):
+                task_id = f"T-{phase.name}-w{week}-{timestamp}"
+                task = {
+                    "id": task_id,
+                    "agent_type": phase.agents[0],
+                    "phase": phase.name,
+                    "status": "PENDING",
+                    "params": {
+                        **routed_params,
+                        "week_range": f"{week}-{week}",
+                    },
+                    "created_at": datetime.now().isoformat(),
+                    "dependencies": [],
+                }
+                tasks.append(task)
+            return tasks
+
+        # Default: one task per agent
         for agent_name in phase.agents:
             task_id = f"T-{phase.name}-{agent_name}-{timestamp}"
             task = {
