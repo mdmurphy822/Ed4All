@@ -8,7 +8,7 @@ import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -42,6 +42,11 @@ class WorkflowPhase:
     parallel: bool = True
     max_concurrent: int = 10
     batch_by: Optional[str] = None
+    depends_on: List[str] = field(default_factory=list)
+    optional: bool = False
+    timeout_minutes: int = 60
+    validation_gates: Optional[List[Dict[str, Any]]] = None
+    description: str = ""
 
 
 @dataclass
@@ -145,7 +150,12 @@ class OrchestratorConfig:
                             agents=p.get("agents", []),
                             parallel=p.get("parallel", True),
                             max_concurrent=p.get("max_concurrent", 10),
-                            batch_by=p.get("batch_by")
+                            batch_by=p.get("batch_by"),
+                            depends_on=p.get("depends_on", []),
+                            optional=p.get("optional", False),
+                            timeout_minutes=p.get("timeout_minutes", 60),
+                            validation_gates=p.get("validation_gates"),
+                            description=p.get("description", ""),
                         ))
 
                     instance.workflows[name] = WorkflowConfig(
