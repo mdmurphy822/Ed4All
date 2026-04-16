@@ -22,12 +22,12 @@
     },
     "course_id": {
       "type": ["string", "null"],
-      "pattern": "^[A-Z]{2,3}_[0-9]{3}$",
+      "pattern": "^[A-Z]{2,8}_[0-9]{3}$",
       "description": "Normalized course code (e.g., MTH_101)"
     },
     "module_id": {
       "type": ["string", "null"],
-      "pattern": "^[A-Z]{2,3}_[0-9]{3}_W[0-9]{2}_M[0-9]{2}$",
+      "pattern": "^[A-Z]{2,8}_[0-9]{3}_W[0-9]{2}_M[0-9]{2}$",
       "description": "Module identifier (e.g., MTH_101_W01_M02)"
     },
     "artifact_id": {
@@ -50,7 +50,7 @@
     },
     "phase": {
       "type": ["string", "null"],
-      "enum": ["input-research", "exam-research", "course-outliner", "content-generator", "brightspace-packager", "dart-conversion", "trainforge-assessment", "validation", null],
+      "enum": ["input-research", "exam-research", "course-outliner", "content-generator", "brightspace-packager", "dart-conversion", "dart-validation", "trainforge-assessment", "validation", "content-analysis", "question-generation", "assessment-assembly", "courseforge-input-research", "courseforge-exam-research", "courseforge-course-outliner", "courseforge-content-generator", "courseforge-brightspace-packager", "trainforge-content-analysis", "trainforge-question-generation", "trainforge-assessment-assembly", "trainforge-validation", "libv2-retrieval", "libv2-indexing", "libv2-fusion", null],
       "description": "Processing phase within the tool pipeline"
     },
     "tool": {
@@ -87,7 +87,19 @@
         "chunk_selection",
         "question_generation",
         "distractor_generation",
-        "revision_decision"
+        "revision_decision",
+        "source_usage",
+        "alignment_check",
+        "structure_detection",
+        "heading_assignment",
+        "alt_text_generation",
+        "math_conversion",
+        "research_approach",
+        "query_decomposition",
+        "retrieval_ranking",
+        "result_fusion",
+        "chunk_deduplication",
+        "index_strategy"
       ],
       "description": "Category of decision from decision taxonomy"
     },

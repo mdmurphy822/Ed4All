@@ -111,7 +111,7 @@ Task(content-generator, "week_01_module_02_concepts.html")
 |---------|-------|------------|
 | O1 | Orchestrator making pedagogical decisions | Delegate to specialized agents |
 | O5 | Multi-file agent batching | ONE AGENT = ONE FILE always |
-| O6 | Incorrect parallel execution | Exactly 10 Task calls per batch |
+| O6 | Incorrect parallel execution | Maximum 10 Task calls per batch |
 | O7 | Queue saturation | Never exceed 10 simultaneous calls |
 
 ### Content Patterns

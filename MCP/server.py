@@ -559,13 +559,6 @@ except ImportError as e:
     logger.warning(f"Could not register Analysis tools: {e}")
 
 try:
-    from tools.learning_science_tools import register_learning_science_tools
-    register_learning_science_tools(mcp)
-    logger.info("Learning Science tools registered")
-except ImportError as e:
-    logger.warning(f"Could not register Learning Science tools: {e}")
-
-try:
     from tools.pipeline_tools import register_pipeline_tools
     register_pipeline_tools(mcp)
     logger.info("Pipeline tools registered")
@@ -606,7 +599,7 @@ def startup_hardening() -> None:
 
 if __name__ == "__main__":
     logger.info("Starting Ed4All MCP Server")
-    logger.info("Available tool categories: file_ops, dart, courseforge, orchestrator, trainforge, analysis, learning_science")
+    logger.info("Available tool categories: file_ops, dart, courseforge, orchestrator, trainforge, analysis")
 
     # Phase 0 Hardening: Initialize security components
     startup_hardening()

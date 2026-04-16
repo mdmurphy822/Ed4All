@@ -88,8 +88,6 @@ state/status/*
 !state/status/.gitkeep
 state/workflows/*
 !state/workflows/.gitkeep
-state/learning_science_cache/*
-!state/learning_science_cache/.gitkeep
 state/runs/*
 !state/runs/.gitkeep
 

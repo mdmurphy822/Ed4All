@@ -140,11 +140,13 @@ Division (STEM/ARTS)
 
 Each course directory (`courses/[slug]/`) contains:
 - `corpus/` — Chunked content (chunks.jsonl) for RAG retrieval
-- `manifest.json` — Course metadata and classification
+- `course.json` — Course-level learning outcomes and metadata
 - `graph/` — Concept co-occurrence graph
+- `manifest.json` — Course metadata and classification
 - `pedagogy/` — Pedagogical model metadata
 - `quality/` — Quality metrics and assessment reports
-- `sources/` — Source artifacts (IMSCC, PDF, HTML)
+- `source/` — Source artifacts (IMSCC, PDF, HTML)
+- `training_specs/` — Training specification files
 
 ## Common Tasks
 
@@ -172,11 +174,23 @@ libv2 catalog list --division STEM
 ```bash
 libv2 validate --all
 libv2 validate --course [slug]
+libv2 validate indexes
 ```
 
 ### Rebuilding Indexes
 ```bash
 libv2 index rebuild
+```
+
+### Advanced Commands
+```bash
+libv2 link-outcomes <slug> --objectives <outcomes.json>  # Link learning outcomes to chunks
+libv2 concepts analyze <slug>                            # Analyze concept vocabulary
+libv2 concepts clean <slug>                              # Clean concept vocabulary
+libv2 eval generate <slug>                               # Generate evaluation queries
+libv2 eval run <slug>                                    # Run retrieval evaluation
+libv2 eval compare <baseline.json> <comparison.json>     # Compare evaluation results
+libv2 validate indexes                                   # Validate index consistency
 ```
 
 ## File Formats

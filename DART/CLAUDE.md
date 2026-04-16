@@ -14,13 +14,18 @@ DART (Document Accessibility Remediation Tool) converts PDFs to WCAG 2.2 AA comp
 | pdfplumber | Table structure (headers, rows, cols) | Structure detection |
 | OCR | Layout/position validation | Verification |
 
-## Primary Entry Point
+## Entry Points
+
+DART has two entry points serving different purposes:
+
+- **`convert.py`** — Convenience wrapper for PDF to WCAG HTML conversion. Calls `pdf_converter` directly on a raw PDF file.
+- **`multi_source_interpreter.py`** — Multi-source synthesis engine for combined JSON inputs (pdftotext + pdfplumber + OCR). This is the preferred path when pre-extracted source data is available.
 
 ```python
-# Multi-source synthesis (PREFERRED)
+# Multi-source synthesis (PREFERRED when combined JSON exists)
 from multi_source_interpreter import convert_single_pdf, batch_synthesize_all
 
-# Single file conversion
+# Single file conversion from combined JSON
 result = convert_single_pdf("batch_output/combined/ADI_combined.json", "output.html")
 
 # Batch conversion with zip output
@@ -49,6 +54,7 @@ DART is exposed via the Ed4All MCP server with these tools:
 | `validate_wcag_compliance` | Validate HTML for WCAG 2.2 AA |
 | `get_dart_status` | Get DART capabilities |
 | `list_available_campuses` | List available combined JSONs |
+| `extract_and_convert_pdf` | Extract and convert a single PDF to accessible HTML |
 
 ## Architecture
 
@@ -85,6 +91,8 @@ contacts   systems   roster
 | `synthesize_systems_table()` | Build 3-column systems table |
 | `synthesize_roster()` | Build course/roster key-value pairs |
 | `generate_html_from_synthesized()` | Render WCAG HTML from synthesized data |
+| `parse_sections_from_text()` | Parse sections from clean pdftotext output |
+| `validate_wcag()` | Run WCAG 2.2 AA validation on generated HTML |
 | `batch_synthesize_all()` | Process all campuses |
 | `create_zip()` | Package HTML files |
 
@@ -106,7 +114,7 @@ contacts   systems   roster
 DART/
 ├── multi_source_interpreter.py  # PRIMARY - Multi-source synthesis engine
 ├── pdf_converter/               # PDF extraction utilities
-├── batch_output/
+├── batch_output/               # Created at runtime during batch processing
 │   ├── combined/               # *_combined.json input files
 │   ├── synthesized/            # *_synthesized.json intermediate
 │   └── html/                   # *_synthesized.html output files

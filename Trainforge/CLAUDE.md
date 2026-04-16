@@ -146,7 +146,6 @@ Trainforge/
 | True/False | Remember | Fact verification |
 | Short Answer | Apply, Analyze | Demonstrate understanding |
 | Essay | Evaluate, Create | Deep analysis |
-| Matching | Understand | Relationship identification (planned) |
 | Fill-in-Blank | Remember, Understand | Term recognition |
 
 ---
@@ -157,12 +156,12 @@ Questions MUST target specific Bloom's levels:
 
 | Level | Verbs | Question Pattern |
 |-------|-------|------------------|
-| Remember | Define, List, Recall | "What is...?", "List the..." |
-| Understand | Explain, Describe, Summarize | "Explain why...", "Describe how..." |
-| Apply | Apply, Demonstrate, Use | "How would you use...?", "Apply X to..." |
-| Analyze | Analyze, Compare, Contrast | "Compare and contrast...", "What are the differences..." |
-| Evaluate | Evaluate, Judge, Justify | "Evaluate the effectiveness...", "Justify your answer..." |
-| Create | Create, Design, Develop | "Design a...", "Develop a plan for..." |
+| Remember | Define, List, Recall, Identify, Name | "What is...?", "List the..." |
+| Understand | Explain, Describe, Summarize, Interpret, Paraphrase | "Explain why...", "Describe how..." |
+| Apply | Apply, Demonstrate, Use, Solve, Implement | "How would you use...?", "Apply X to..." |
+| Analyze | Analyze, Compare, Contrast, Differentiate, Examine | "Compare and contrast...", "What are the differences..." |
+| Evaluate | Evaluate, Judge, Justify, Critique, Assess | "Evaluate the effectiveness...", "Justify your answer..." |
+| Create | Create, Design, Develop, Construct, Formulate | "Design a...", "Develop a plan for..." |
 
 ---
 

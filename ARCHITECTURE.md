@@ -368,7 +368,6 @@ The unified MCP server (`MCP/server.py`) exposes all component tools through a s
 | **Pipeline** | `create_textbook_pipeline`, `stage_dart_outputs`, `run_textbook_pipeline`, `get_pipeline_status`, `validate_dart_markers` | Pipeline |
 | **LibV2** | `archive_to_libv2` | LibV2 |
 | **Orchestrator** | `create_workflow`, `get_workflow_status`, `dispatch_agent_task`, `poll_task_completions`, `execute_workflow_task` | Orchestrator |
-| **Learning Science** | `learning_science_query`, `get_pedagogical_strategy`, `validate_with_research` | Courseforge |
 | **Analysis** | `analyze_training_data`, `get_quality_distribution`, `preview_export_filter` | Analysis |
 
 ### Orchestration Policies

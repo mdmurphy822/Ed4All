@@ -1,7 +1,7 @@
 # Courseforge
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![WCAG 2.2 AA](https://img.shields.io/badge/WCAG-2.2%20AA-green.svg)](https://www.w3.org/WAI/WCAG22/quickref/)
 
 **Education Reimagined. Access for All.**
@@ -28,15 +28,6 @@ Courseforge uses a multi-agent orchestration system to create high-quality onlin
 - **AI-Powered Accessibility Fixes**: Alt text, heading structure, contrast
 - **Intelligent Component Styling**: AI-selected interactive elements
 - **100% WCAG 2.2 AA Compliance**: Guaranteed accessibility output
-
-## Example Package
-
-See [`examples/intro_python.imscc`](examples/) for a complete 12-week Introduction to Python course demonstrating:
-- Proper IMSCC 1.3 structure
-- QTI 1.2 quizzes with Brightspace compatibility
-- Native assignment integration (`assignment_xmlv1p0`)
-- Discussion topics
-- WCAG 2.2 AA compliant content
 
 ## Quick Start
 
@@ -158,7 +149,7 @@ See `docs/troubleshooting.md` for complete pattern list.
 
 ## Technical Requirements
 
-- Python 3.8+
+- Python 3.9+
 - Claude Code access
 - Brightspace/D2L for import testing
 
