@@ -354,13 +354,21 @@ class HTMLContentParser:
 
         return None, None
 
+    CONCEPT_STOP_WORDS = {
+        "initial post", "replies", "due", "guidelines", "discussion forum",
+        "activity", "question", "feedback", "correct", "incorrect",
+        "submit", "deadline", "points", "grading", "rubric",
+        "estimated time", "readings", "resources", "learning objectives",
+    }
+
     def _extract_concepts(self, html: str) -> List[str]:
         """Extract key concepts from HTML."""
         concepts = []
 
         # Look for bold/strong terms
         bold_terms = re.findall(r'<(?:strong|b)[^>]*>([^<]+)</(?:strong|b)>', html)
-        concepts.extend([t.strip() for t in bold_terms if len(t.strip()) > 2])
+        concepts.extend([t.strip() for t in bold_terms
+                         if len(t.strip()) > 2 and t.strip().lower() not in self.CONCEPT_STOP_WORDS])
 
         # Look for definition terms
         dt_terms = re.findall(r'<dt[^>]*>([^<]+)</dt>', html)

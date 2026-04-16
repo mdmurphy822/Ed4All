@@ -599,6 +599,7 @@ def generate_week(week_data: Dict, output_dir: Path, course_code: str):
     summary_meta = _build_page_metadata(
         course_code, week_num, "summary",
         f"week_{week_num:02d}_summary",
+        objectives=week_data["objectives"],
     )
     summary_html = _wrap_page(
         f"Week {week_num}: Summary &amp; Reflection",
@@ -624,6 +625,7 @@ def generate_week(week_data: Dict, output_dir: Path, course_code: str):
         disc_meta = _build_page_metadata(
             course_code, week_num, "discussion",
             f"week_{week_num:02d}_discussion",
+            objectives=week_data["objectives"],
         )
         disc_html = _wrap_page(
             f"Week {week_num}: Discussion",

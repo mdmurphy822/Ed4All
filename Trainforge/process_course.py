@@ -611,6 +611,22 @@ class CourseProcessor:
         bloom_level, content_type_label, key_terms = self._extract_section_metadata(
             item, section_heading
         )
+        # Fallback: if section metadata didn't provide bloom_level,
+        # derive from page-level JSON-LD objectives or parsed objectives
+        if not bloom_level:
+            cf_meta = item.get("courseforge_metadata")
+            if cf_meta and cf_meta.get("learningObjectives"):
+                for lo in cf_meta["learningObjectives"]:
+                    if lo.get("bloomLevel"):
+                        bloom_level = lo["bloomLevel"]
+                        break
+        if not bloom_level:
+            for lo in item.get("learning_objectives", []):
+                bl = lo.bloom_level if hasattr(lo, "bloom_level") else lo.get("bloom_level")
+                if bl:
+                    bloom_level = bl
+                    break
+
         if bloom_level:
             chunk["bloom_level"] = bloom_level
         if content_type_label:
@@ -742,9 +758,24 @@ class CourseProcessor:
 
     # Pattern for course/terminal/learning objective codes (CO-01, TO-08, LO-003, etc.)
     OBJECTIVE_CODE_RE = re.compile(r'^[a-z]{2}-\d{2,3}$')
+    # Week prefix pattern (w01-, w02-) used by Courseforge JSON-LD but absent in course.json
+    WEEK_PREFIX_RE = re.compile(r'^w\d{2}-', re.IGNORECASE)
 
     # Non-concept tags to filter out (generic metadata, not knowledge concepts)
-    NON_CONCEPT_TAGS = {"estimated-time", "time", "minutes", "hours"}
+    NON_CONCEPT_TAGS = {
+        "estimated-time", "time", "minutes", "hours",
+        # Bloom verbs (pedagogical intent, not domain concepts)
+        "define", "list", "recall", "identify", "name", "state",
+        "explain", "describe", "summarize", "interpret", "paraphrase",
+        "apply", "demonstrate", "implement", "solve", "use", "execute",
+        "analyze", "differentiate", "examine", "compare", "contrast", "organize",
+        "evaluate", "assess", "critique", "judge", "justify", "argue",
+        "create", "design", "develop", "construct", "produce", "formulate",
+        # Course logistics
+        "initial-post", "replies", "due", "guidelines",
+        "correct", "incorrect", "submit", "deadline", "grading",
+        "readings", "resources", "learning-objectives",
+    }
 
     def _extract_concept_tags(self, text: str, item: Dict[str, Any]) -> List[str]:
         tags: List[str] = []
@@ -765,13 +796,6 @@ class CourseProcessor:
             if tag not in tags and any(p in text_lower for p in patterns):
                 tags.append(tag)
 
-        # Learning objectives bloom verbs
-        for lo in item.get("learning_objectives", []):
-            if lo.bloom_verb:
-                tag = normalize_tag(lo.bloom_verb)
-                if tag and tag not in tags:
-                    tags.append(tag)
-
         return tags[:10]
 
     def _extract_objective_refs(self, item: Dict[str, Any]) -> List[str]:
@@ -787,6 +811,8 @@ class CourseProcessor:
             obj_id = lo.id if hasattr(lo, "id") else lo.get("id")
             if obj_id:
                 normalized = obj_id.lower().strip()
+                # Strip week prefix (w01-, w02-) to align with course.json format
+                normalized = self.WEEK_PREFIX_RE.sub('', normalized)
                 if normalized and normalized not in refs:
                     refs.append(normalized)
         if refs:
@@ -1130,7 +1156,16 @@ class CourseProcessor:
         with_html = sum(1 for c in chunks if c.get("html", "").strip())
         html_preservation = with_html / total
 
-        overall = size_compliance * 0.4 + tag_coverage * 0.3 + html_preservation * 0.3
+        # Bloom's level coverage
+        with_bloom = sum(1 for c in chunks if c.get("bloom_level"))
+        bloom_coverage = with_bloom / total
+
+        # Learning outcome reference coverage
+        with_lo_refs = sum(1 for c in chunks if c.get("learning_outcome_refs"))
+        lo_coverage = with_lo_refs / total
+
+        overall = (size_compliance * 0.25 + tag_coverage * 0.2 +
+                   html_preservation * 0.2 + bloom_coverage * 0.2 + lo_coverage * 0.15)
 
         issues: List[str] = []
         recommendations: List[str] = []
@@ -1141,6 +1176,10 @@ class CourseProcessor:
         if tag_coverage < 0.7:
             issues.append("Concept tag coverage below 70%")
             recommendations.append("Enhance concept extraction")
+        if bloom_coverage < 0.9:
+            issues.append(f"Bloom level coverage {bloom_coverage:.0%} — below 90% threshold")
+        if lo_coverage < 0.8:
+            issues.append(f"Learning outcome coverage {lo_coverage:.0%} — below 80% threshold")
         if not issues:
             recommendations.append("Corpus meets all quality thresholds")
 
@@ -1150,6 +1189,8 @@ class CourseProcessor:
                 "chunk_size_compliance": round(size_compliance, 3),
                 "concept_tag_coverage": round(tag_coverage, 3),
                 "html_preservation_rate": round(html_preservation, 3),
+                "bloom_level_coverage": round(bloom_coverage, 3),
+                "learning_outcome_coverage": round(lo_coverage, 3),
                 "avg_chunk_size_words": round(self.stats["total_words"] / total, 1),
             },
             "validation": {"passed": overall >= 0.75, "issues": issues},
