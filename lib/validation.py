@@ -97,7 +97,23 @@ def validate_decision(
     except FileNotFoundError as e:
         return (False, [f"Schema not found: {e}"])
 
-    validator = Draft7Validator(schema)
+    # Pre-load referenced schemas into the store so $ref resolves locally
+    # instead of attempting HTTP fetches for relative filenames.
+    from jsonschema import RefResolver
+    store = {}
+    for schema_file in SCHEMAS_DIR.glob("*.json"):
+        with open(schema_file) as sf:
+            s = json.load(sf)
+        # Map both the bare filename and any $id to the loaded schema
+        store[schema_file.name] = s
+        if "$id" in s:
+            store[s["$id"]] = s
+    resolver = RefResolver(
+        base_uri=SCHEMAS_DIR.as_uri() + "/",
+        referrer=schema,
+        store=store,
+    )
+    validator = Draft7Validator(schema, resolver=resolver)
     errors = list(validator.iter_errors(record))
 
     if errors:

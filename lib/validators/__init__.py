@@ -10,7 +10,9 @@ from .assessment import AssessmentQualityValidator, FinalQualityValidator
 from .bloom import BloomAlignmentValidator
 from .content import ContentStructureValidator
 from .imscc import IMSCCParseValidator, IMSCCValidator
+from .leak_check import LeakCheckValidator
 from .oscqr import OSCQRValidator
+from .question_quality import QuestionQualityValidator
 
 __all__ = [
     "ContentStructureValidator",
@@ -20,4 +22,6 @@ __all__ = [
     "AssessmentQualityValidator",
     "FinalQualityValidator",
     "BloomAlignmentValidator",
+    "LeakCheckValidator",
+    "QuestionQualityValidator",
 ]

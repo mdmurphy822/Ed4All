@@ -2,13 +2,15 @@
 LibV2 RAG Bridge for Trainforge
 
 Provides retrieval interface between Trainforge assessment generation
-and the LibV2 RAG system. Uses LibV2's streaming TF-IDF retrieval
-with multi-query decomposition for complex educational queries.
+and the LibV2 RAG system. Uses LibV2's streaming BM25 retrieval
+with multi-query decomposition, dual chunk-type Bloom mapping,
+and multi-strategy fallback for assessment-optimized retrieval.
 """
 
 import json
 import logging
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -304,6 +306,16 @@ class TrainforgeRAG:
 
         return chunks, metrics
 
+    # Bloom level -> (primary chunk type, secondary chunk type)
+    BLOOM_CHUNK_STRATEGY = {
+        "remember": ("explanation", "example"),
+        "understand": ("explanation", "example"),
+        "apply": ("example", "explanation"),
+        "analyze": ("example", "explanation"),
+        "evaluate": (None, "example"),      # unfiltered primary
+        "create": (None, "explanation"),     # unfiltered primary
+    }
+
     def retrieve_for_objective(
         self,
         objective_text: str,
@@ -311,10 +323,12 @@ class TrainforgeRAG:
         top_k: int = 10,
     ) -> Tuple[List[RAGChunk], RetrievalMetrics]:
         """
-        Retrieve chunks relevant to a learning objective.
+        Retrieve chunks relevant to a learning objective using dual
+        chunk-type retrieval.
 
-        Optimized for assessment generation by considering
-        the learning objective and Bloom's level.
+        Uses both primary and secondary chunk types for the given Bloom
+        level, ensuring assessments have both conceptual and applied
+        content available.
 
         Args:
             objective_text: The learning objective text
@@ -324,24 +338,148 @@ class TrainforgeRAG:
         Returns:
             Tuple of (chunks, metrics)
         """
-        # Build query that incorporates objective and Bloom level
-        # Lower Bloom levels (remember, understand) need definitions/explanations
-        # Higher levels (apply, analyze, evaluate, create) need examples/applications
-        chunk_type = None
-        if bloom_level.lower() in ["remember", "understand"]:
-            chunk_type = "explanation"
-        elif bloom_level.lower() in ["apply", "analyze"]:
-            chunk_type = "example"
-        elif bloom_level.lower() in ["evaluate", "create"]:
-            # For higher order thinking, get mixed content
-            chunk_type = None
+        primary_type, secondary_type = self.BLOOM_CHUNK_STRATEGY.get(
+            bloom_level.lower(), (None, None)
+        )
 
-        return self.multi_query_retrieve(
+        # Primary retrieval with preferred chunk type
+        primary_chunks, primary_metrics = self.multi_query_retrieve(
             query=objective_text,
             top_k=top_k,
-            chunk_type=chunk_type,
+            chunk_type=primary_type,
             auto_decompose=True,
         )
+
+        # Secondary retrieval with complementary chunk type
+        secondary_k = max(3, top_k // 2)
+        secondary_chunks, _ = self.retrieve(
+            query=objective_text,
+            top_k=secondary_k,
+            chunk_type=secondary_type,
+        )
+
+        # Merge: primary first, then secondary (deduplicated)
+        merged = self._merge_chunk_lists(primary_chunks, secondary_chunks, top_k)
+
+        metrics = RetrievalMetrics(
+            query=primary_metrics.query,
+            chunks_retrieved=len(merged),
+            chunks_used=len(merged),
+            retrieval_latency_ms=primary_metrics.retrieval_latency_ms,
+            sub_queries=primary_metrics.sub_queries,
+            was_decomposed=primary_metrics.was_decomposed,
+        )
+
+        return merged, metrics
+
+    def retrieve_with_fallback(
+        self,
+        objective_text: str,
+        bloom_level: str,
+        top_k: int = 10,
+        min_chunks: int = 3,
+    ) -> Tuple[List[RAGChunk], RetrievalMetrics]:
+        """
+        Multi-strategy retrieval with fallback chain.
+
+        Tries increasingly relaxed strategies until enough chunks are found:
+        1. Bloom-aware dual chunk-type retrieval
+        2. Concept-only query without chunk type filter
+        3. Cross-course retrieval
+
+        Args:
+            objective_text: The learning objective text
+            bloom_level: Target Bloom's taxonomy level
+            top_k: Number of results desired
+            min_chunks: Minimum chunks before triggering fallback
+
+        Returns:
+            Tuple of (chunks, metrics)
+        """
+        # Strategy 1: Full objective text + Bloom-aware chunk types
+        chunks, metrics = self.retrieve_for_objective(
+            objective_text, bloom_level, top_k
+        )
+        if len(chunks) >= min_chunks:
+            return chunks, metrics
+
+        logger.info(
+            "Fallback: primary retrieval returned %d chunks (need %d), "
+            "trying concept extraction",
+            len(chunks), min_chunks,
+        )
+
+        # Strategy 2: Extract key concepts and retry without type filter
+        concepts = self._extract_query_concepts(objective_text)
+        if concepts and concepts != objective_text:
+            more_chunks, _ = self.retrieve(
+                query=concepts, top_k=top_k, chunk_type=None
+            )
+            chunks = self._merge_chunk_lists(chunks, more_chunks, top_k)
+            if len(chunks) >= min_chunks:
+                return chunks, metrics
+
+        logger.info(
+            "Fallback: concept retrieval returned %d total, trying cross-course",
+            len(chunks),
+        )
+
+        # Strategy 3: Cross-course retrieval
+        cross_rag = CrossCourseRAG()
+        cross_chunks, _ = cross_rag.retrieve(
+            query=objective_text, top_k=top_k, sample_per_course=3
+        )
+        chunks = self._merge_chunk_lists(chunks, cross_chunks, top_k)
+
+        return chunks, metrics
+
+    @staticmethod
+    def _merge_chunk_lists(
+        primary: List[RAGChunk],
+        secondary: List[RAGChunk],
+        limit: int,
+    ) -> List[RAGChunk]:
+        """Merge two chunk lists, deduplicating by chunk_id, capped at limit."""
+        seen_ids: set = set()
+        merged: List[RAGChunk] = []
+        for chunk in primary:
+            if len(merged) >= limit:
+                break
+            if chunk.chunk_id not in seen_ids:
+                seen_ids.add(chunk.chunk_id)
+                merged.append(chunk)
+        for chunk in secondary:
+            if len(merged) >= limit:
+                break
+            if chunk.chunk_id not in seen_ids:
+                seen_ids.add(chunk.chunk_id)
+                merged.append(chunk)
+        return merged
+
+    @staticmethod
+    def _extract_query_concepts(text: str) -> str:
+        """Extract key concept words from objective text.
+
+        Strips common objective preamble (verbs, articles) to focus
+        on the domain-specific content words.
+        """
+        # Remove common Bloom preamble verbs
+        preamble = (
+            r"^(?:students?\s+(?:will|should|can)\s+(?:be\s+able\s+to\s+)?)?",
+        )
+        cleaned = re.sub(preamble[0], "", text, flags=re.IGNORECASE).strip()
+
+        # Remove leading Bloom verbs
+        bloom_verbs = (
+            "define|list|recall|identify|explain|describe|summarize|"
+            "apply|demonstrate|use|solve|analyze|compare|contrast|"
+            "evaluate|judge|justify|create|design|develop"
+        )
+        cleaned = re.sub(
+            rf"^(?:{bloom_verbs})\s+", "", cleaned, flags=re.IGNORECASE
+        ).strip()
+
+        return cleaned if cleaned else text
 
     def get_corpus_stats(self) -> Dict[str, Any]:
         """Get statistics about the course corpus."""

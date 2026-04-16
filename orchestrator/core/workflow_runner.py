@@ -52,6 +52,8 @@ PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
     },
     "course_planning": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),
+        "course_name": ("workflow_params", "course_name"),
+        "objectives_path": ("workflow_params", "objectives_path"),
     },
     "content_generation": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),

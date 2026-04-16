@@ -488,9 +488,9 @@ def textbook_to_course(ctx, pdf_path, course_name, objectives, weeks,
 
     # Execute pipeline
     try:
-        # Add MCP tools to path
+        # Import standalone pipeline function
         sys.path.insert(0, str(_PROJECT_ROOT / "MCP"))
-        from tools.pipeline_tools import create_textbook_pipeline
+        from MCP.tools.pipeline_tools import create_textbook_pipeline
 
         async def run_pipeline():
             return await create_textbook_pipeline(

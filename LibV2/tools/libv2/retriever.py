@@ -2,7 +2,8 @@
 
 This module provides sample-based querying without loading the entire corpus.
 It filters courses by metadata first, then streams chunks line-by-line from
-chunks.jsonl files, applying filters and ranking with TF-IDF.
+chunks.jsonl files, applying filters and ranking with BM25 + character
+n-gram boosting for improved semantic resilience.
 """
 
 import json
@@ -62,14 +63,14 @@ class RetrievalResult:
         }
 
 
-# TF-IDF utilities (ported from rag_poc.py but used lazily)
+# Retrieval scoring utilities
 
-# Minimum TF-IDF relevance threshold
+# Default minimum relevance threshold.
 # Results below this threshold are filtered. If no results meet the
 # threshold, an empty list is returned rather than low-quality fallbacks.
 # This ensures downstream consumers (Trainforge) only receive content
 # with sufficient relevance for high-quality question generation.
-MIN_RELEVANCE_THRESHOLD = 0.5
+DEFAULT_MIN_RELEVANCE = 0.5
 
 STOP_WORDS = {
     'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
@@ -85,6 +86,9 @@ STOP_WORDS = {
     'further', 'while', 'your', 'you', 'we', 'our', 'they', 'their',
 }
 
+# Backward compatibility alias
+MIN_RELEVANCE_THRESHOLD = DEFAULT_MIN_RELEVANCE
+
 
 def tokenize(text: str) -> list[str]:
     """Simple tokenization for search."""
@@ -93,77 +97,155 @@ def tokenize(text: str) -> list[str]:
     return [t for t in tokens if t not in STOP_WORDS and len(t) > 1]
 
 
-class LazyTFIDF:
-    """TF-IDF index built on already-filtered chunks (not entire corpus)."""
+def _char_trigrams(text: str) -> set[str]:
+    """Extract character trigrams from text for fuzzy matching."""
+    text = text.lower()
+    text = re.sub(r'[^a-z0-9 ]', '', text)
+    trigrams: set[str] = set()
+    for word in text.split():
+        if len(word) >= 3:
+            for i in range(len(word) - 2):
+                trigrams.add(word[i:i + 3])
+    return trigrams
 
-    def __init__(self, chunks: list[dict]):
+
+class LazyBM25:
+    """BM25 index with character n-gram boosting.
+
+    Replaces the previous LazyTFIDF implementation with Okapi BM25
+    for better term saturation and document length normalization.
+    Character trigram overlap provides lightweight fuzzy matching
+    for morphological variants and partial word matches.
+
+    Args:
+        chunks: List of chunk dicts with "text" field.
+        k1: BM25 term frequency saturation parameter (default 1.5).
+        b: BM25 document length normalization (0=none, 1=full, default 0.75).
+        ngram_weight: Weight for character trigram score blending (default 0.15).
+    """
+
+    def __init__(
+        self,
+        chunks: list[dict],
+        k1: float = 1.5,
+        b: float = 0.75,
+        ngram_weight: float = 0.15,
+    ):
         self.chunks = chunks
+        self.k1 = k1
+        self.b = b
+        self.ngram_weight = ngram_weight
         self.doc_freq: dict[str, int] = defaultdict(int)
-        self.tf_cache: list[dict[str, float]] = []
+        self.doc_tokens: list[list[str]] = []
+        self.doc_lengths: list[int] = []
+        self.avgdl: float = 0.0
         self._build_index()
 
     def _build_index(self):
-        """Build TF-IDF index from chunks."""
-        for chunk in self.chunks:
-            text = chunk.get("text", "")
-            tokens = set(tokenize(text))
-            for token in tokens:
-                self.doc_freq[token] += 1
+        """Build BM25 index from chunks."""
+        total_length = 0
 
         for chunk in self.chunks:
             text = chunk.get("text", "")
             tokens = tokenize(text)
-            tf = Counter(tokens)
-            max_tf = max(tf.values()) if tf else 1
-            normalized_tf = {t: c / max_tf for t, c in tf.items()}
-            self.tf_cache.append(normalized_tf)
+            self.doc_tokens.append(tokens)
+            self.doc_lengths.append(len(tokens))
+            total_length += len(tokens)
+
+            for token in set(tokens):
+                self.doc_freq[token] += 1
+
+        n = len(self.chunks)
+        self.avgdl = total_length / n if n > 0 else 1.0
 
     def _idf(self, term: str) -> float:
-        """Calculate IDF for a term."""
-        n_docs = len(self.chunks)
-        doc_freq = self.doc_freq.get(term, 0)
-        if doc_freq == 0:
-            return 0
-        return math.log(n_docs / doc_freq)
+        """BM25 IDF: log((N - df + 0.5) / (df + 0.5) + 1)."""
+        n = len(self.chunks)
+        df = self.doc_freq.get(term, 0)
+        if df == 0:
+            return 0.0
+        return math.log((n - df + 0.5) / (df + 0.5) + 1.0)
 
-    def search(self, query: str, limit: int = 10) -> list[tuple[dict, float]]:
-        """Search using TF-IDF similarity."""
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        min_relevance: Optional[float] = None,
+    ) -> list[tuple[dict, float]]:
+        """Search using BM25 scoring with optional n-gram boosting.
+
+        Args:
+            query: Search query string.
+            limit: Maximum results to return.
+            min_relevance: Minimum score threshold (default: DEFAULT_MIN_RELEVANCE).
+
+        Returns:
+            List of (chunk, score) tuples sorted by descending score.
+        """
+        if min_relevance is None:
+            min_relevance = DEFAULT_MIN_RELEVANCE
+
         query_tokens = tokenize(query)
         if not query_tokens:
             return []
 
-        query_tf = Counter(query_tokens)
-        max_tf = max(query_tf.values())
-        query_tfidf = {}
-        for term, count in query_tf.items():
-            tf = count / max_tf
-            idf = self._idf(term)
-            query_tfidf[term] = tf * idf
-
-        results = []
+        # BM25 scoring
+        results: list[tuple[dict, float]] = []
         for i, chunk in enumerate(self.chunks):
-            doc_tf = self.tf_cache[i]
-            dot_product = 0
-            for term, query_weight in query_tfidf.items():
-                if term in doc_tf:
-                    doc_weight = doc_tf[term] * self._idf(term)
-                    dot_product += query_weight * doc_weight
+            doc_len = self.doc_lengths[i]
+            tf_counts = Counter(self.doc_tokens[i])
 
-            if dot_product > 0:
-                results.append((chunk, dot_product))
+            bm25_score = 0.0
+            for term in query_tokens:
+                if term not in tf_counts:
+                    continue
+                tf = tf_counts[term]
+                idf = self._idf(term)
+                # BM25 formula
+                numerator = tf * (self.k1 + 1)
+                denominator = tf + self.k1 * (1 - self.b + self.b * doc_len / self.avgdl)
+                bm25_score += idf * (numerator / denominator)
+
+            if bm25_score > 0:
+                results.append((chunk, bm25_score))
+
+        if not results:
+            return []
+
+        # Character trigram boosting for fuzzy matching
+        if self.ngram_weight > 0:
+            query_trigrams = _char_trigrams(query)
+            if query_trigrams:
+                for idx, (chunk, bm25_score) in enumerate(results):
+                    chunk_text = chunk.get("text", "")
+                    # Only compute trigrams on first 500 chars for efficiency
+                    chunk_trigrams = _char_trigrams(chunk_text[:500])
+                    if chunk_trigrams:
+                        intersection = len(query_trigrams & chunk_trigrams)
+                        union = len(query_trigrams | chunk_trigrams)
+                        jaccard = intersection / union if union > 0 else 0.0
+                    else:
+                        jaccard = 0.0
+
+                    blended = (
+                        (1 - self.ngram_weight) * bm25_score
+                        + self.ngram_weight * jaccard * bm25_score
+                    )
+                    results[idx] = (chunk, blended)
 
         results.sort(key=lambda x: x[1], reverse=True)
 
         # Apply relevance threshold — no fallback.
-        # Returning low-relevance chunks degrades downstream quality
-        # (Trainforge generates poor questions from weak source material).
-        # An empty result signals "insufficient source material" which is
-        # more useful than silently passing low-quality content.
+        # Returning low-relevance chunks degrades downstream quality.
         above_threshold = [
             (chunk, score) for chunk, score in results
-            if score >= MIN_RELEVANCE_THRESHOLD
+            if score >= min_relevance
         ]
         return above_threshold[:limit]
+
+
+# Backward compatibility alias
+LazyTFIDF = LazyBM25
 
 
 def _matches_filter(chunk: dict, chunk_filter: ChunkFilter) -> bool:
@@ -313,6 +395,7 @@ def retrieve_chunks(
     bloom_level: Optional[str] = None,
     limit: int = 10,
     sample_per_course: Optional[int] = None,
+    min_relevance: Optional[float] = None,
 ) -> list[RetrievalResult]:
     """Retrieve chunks matching query and filters.
 
@@ -335,6 +418,7 @@ def retrieve_chunks(
         bloom_level: Filter by Bloom's taxonomy level
         limit: Maximum results to return
         sample_per_course: Max chunks per course for cross-course search
+        min_relevance: Minimum relevance score (default: DEFAULT_MIN_RELEVANCE)
 
     Returns:
         List of RetrievalResult sorted by relevance score
@@ -401,9 +485,9 @@ def retrieve_chunks(
     if not candidates:
         return []
 
-    # Phase 3: Rank with TF-IDF
-    index = LazyTFIDF(candidates)
-    scored = index.search(query, limit=limit)
+    # Phase 3: Rank with BM25 + n-gram boosting
+    index = LazyBM25(candidates)
+    scored = index.search(query, limit=limit, min_relevance=min_relevance)
 
     # Convert to RetrievalResult
     results = []

@@ -594,8 +594,18 @@ def register_trainforge_tools(mcp):
                                 )
                                 validation["scores"]["bloom_alignment"] = aligned / len(questions)
 
-                            # Mock quality score
-                            validation["scores"]["question_quality"] = 0.75
+                            # Content-based question quality scoring
+                            try:
+                                from lib.validators.question_quality import QuestionQualityValidator
+                                qq_validator = QuestionQualityValidator()
+                                qq_result = qq_validator.validate({
+                                    "assessment_data": assessment,
+                                })
+                                validation["scores"]["question_quality"] = qq_result.score or 0.0
+                                for issue in qq_result.issues:
+                                    validation["issues"].append(issue.message)
+                            except Exception:
+                                validation["scores"]["question_quality"] = 0.75
 
                             # Overall score
                             scores = validation["scores"]

@@ -28,11 +28,28 @@ from typing import Any, Dict, List, Set
 from orchestrator.core.validation_gates import GateIssue, GateResult
 
 
+ASSESSMENT_PLACEHOLDER_PATTERNS = [
+    re.compile(r"Correct answer based on content", re.IGNORECASE),
+    re.compile(r"Plausible distractor [A-C]", re.IGNORECASE),
+    re.compile(r"Statement about .+ content\.", re.IGNORECASE),
+    re.compile(r"The key concept from .+ is _______", re.IGNORECASE),
+    re.compile(r"the concept from (?:LO-|INT|[A-Z]{2,})", re.IGNORECASE),
+    re.compile(r"^Briefly \w+ the key points from ", re.IGNORECASE),
+    re.compile(r"concepts from .+ and provide examples\.", re.IGNORECASE),
+    re.compile(r"^concept term$", re.IGNORECASE),
+    re.compile(r"Review content for objective ", re.IGNORECASE),
+    re.compile(r"This statement is accurate based on ", re.IGNORECASE),
+    re.compile(r"The correct term is found in .+ content", re.IGNORECASE),
+    re.compile(r"A complete response should address all aspects of ", re.IGNORECASE),
+    re.compile(r"Your response should cover the main concepts from ", re.IGNORECASE),
+]
+
+
 class AssessmentQualityValidator:
     """Validates individual assessment quality."""
 
     name = "assessment_quality"
-    version = "1.0.0"
+    version = "1.1.0"
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         """Validate assessment quality.
@@ -133,6 +150,18 @@ class AssessmentQualityValidator:
                 )
             )
 
+        # Check for placeholder content in stem
+        for pattern in ASSESSMENT_PLACEHOLDER_PATTERNS:
+            if pattern.search(text):
+                issues.append(
+                    GateIssue(
+                        severity="error",
+                        code="PLACEHOLDER_QUESTION",
+                        message=f"{q_id}: stem contains placeholder text matching '{pattern.pattern}'",
+                    )
+                )
+                break  # One placeholder hit per question is enough
+
         # Check MCQ-specific issues
         if q_type == "multiple_choice":
             choices = q.get("choices", [])
@@ -153,6 +182,48 @@ class AssessmentQualityValidator:
                         message=f"{q_id}: MCQ has {len(correct)} correct answers (need 1)",
                     )
                 )
+
+            # Check for placeholder content in choices
+            for choice in choices:
+                choice_text = re.sub(r"<[^>]+>", "", choice.get("text", "")).strip()
+                for pattern in ASSESSMENT_PLACEHOLDER_PATTERNS:
+                    if pattern.search(choice_text):
+                        issues.append(
+                            GateIssue(
+                                severity="error",
+                                code="PLACEHOLDER_CHOICE",
+                                message=f"{q_id}: choice contains placeholder text: '{choice_text}'",
+                            )
+                        )
+                        break
+
+        # Check for placeholder in correct_answer (fill-in-blank, T/F)
+        correct_answer = q.get("correct_answer", "")
+        if correct_answer:
+            for pattern in ASSESSMENT_PLACEHOLDER_PATTERNS:
+                if pattern.search(correct_answer):
+                    issues.append(
+                        GateIssue(
+                            severity="error",
+                            code="PLACEHOLDER_ANSWER",
+                            message=f"{q_id}: correct_answer is placeholder text: '{correct_answer}'",
+                        )
+                    )
+                    break
+
+        # Check for placeholder in feedback
+        feedback = re.sub(r"<[^>]+>", "", q.get("feedback", "")).strip()
+        if feedback:
+            for pattern in ASSESSMENT_PLACEHOLDER_PATTERNS:
+                if pattern.search(feedback):
+                    issues.append(
+                        GateIssue(
+                            severity="warning",
+                            code="PLACEHOLDER_FEEDBACK",
+                            message=f"{q_id}: feedback contains placeholder text",
+                        )
+                    )
+                    break
 
         return issues
 

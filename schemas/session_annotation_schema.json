@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://ed4all.org/schemas/session_annotation_schema.json",
+  "$id": "urn:ed4all:schemas:session_annotation_schema",
   "title": "Processing Session Annotation",
   "description": "Schema for aggregated session-level annotations combining all decisions from a processing run",
   "type": "object",

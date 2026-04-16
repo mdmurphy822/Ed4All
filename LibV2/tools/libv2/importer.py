@@ -234,7 +234,7 @@ def import_course(
     target_dir.mkdir(parents=True)
 
     # Copy Sourceforge output
-    for subdir in ["corpus", "graph", "pedagogy", "training_specs"]:
+    for subdir in ["corpus", "graph", "pedagogy", "training_specs", "quality"]:
         src = source_dir / subdir
         if src.exists():
             shutil.copytree(src, target_dir / subdir)
@@ -317,32 +317,19 @@ def import_course(
         else:
             logger.warning(f"arxiv_id '{arxiv_id}' provided but no arxiv_db_path specified; skipping arxiv metadata")
 
-    # Create quality/ directory structure for evaluation artifacts
+    # Create quality/ directory structure if not copied from source
     quality_dir = target_dir / "quality"
     quality_dir.mkdir(exist_ok=True)
-    # Initialize empty quality report structure
-    quality_report = {
-        "oscqr_score": None,
-        "pattern_violations": [],
-        "corrections": [],
-        "last_evaluated": None,
-    }
-    with open(quality_dir / "quality_report.json", "w") as f:
-        json.dump(quality_report, f, indent=2)
-
-    # Run validation
-    validation_result = validate_course_strict(target_dir, repo_root)
-    validation_status = "validated" if validation_result.valid else "failed"
-    validation_timestamp = datetime.now().isoformat()
-
-    if strict_validation and not validation_result.valid:
-        # Cleanup and fail
-        logger.error(f"Validation failed for {slug}: {validation_result.errors}")
-        shutil.rmtree(target_dir)
-        raise ValidationError(
-            f"Import validation failed for {slug}: {len(validation_result.errors)} errors",
-            errors=validation_result.errors,
-        )
+    if not (quality_dir / "quality_report.json").exists():
+        # Initialize empty quality report structure (only if source had none)
+        quality_report = {
+            "oscqr_score": None,
+            "pattern_violations": [],
+            "corrections": [],
+            "last_evaluated": None,
+        }
+        with open(quality_dir / "quality_report.json", "w") as f:
+            json.dump(quality_report, f, indent=2)
 
     # Create Sourceforge manifest object
     sf_manifest = SourceforgeManifest(
@@ -374,7 +361,7 @@ def import_course(
             generation=0,  # Initial import is generation 0
         )
 
-    # Create LibV2 manifest
+    # Create LibV2 manifest (initially without validation — written first so validator can find it)
     manifest = CourseManifest(
         libv2_version="1.2.0",  # Bumped for source artifacts + arxiv metadata
         slug=slug,
@@ -383,17 +370,18 @@ def import_course(
         classification=classification,
         content_profile=content_profile,
         quality_metadata={
-            "validation_status": validation_status,
-            "last_validated": validation_timestamp,
-            "validation_errors": validation_result.errors,
-            "validation_warnings": validation_result.warnings,
+            "validation_status": "pending",
+            "validation_errors": [],
+            "validation_warnings": [],
         },
         provenance={
-            "source_path": str(source_dir),
-            "import_pipeline_version": "1.2.0",
-            "imscc_source": str(imscc_path) if imscc_path else None,
-            "pdf_source": str(pdf_path) if pdf_path else None,
-            "html_source": str(html_path) if html_path else None,
+            k: v for k, v in {
+                "source_path": str(source_dir),
+                "import_pipeline_version": "1.2.0",
+                "imscc_source": str(imscc_path) if imscc_path else None,
+                "pdf_source": str(pdf_path) if pdf_path else None,
+                "html_source": str(html_path) if html_path else None,
+            }.items() if v is not None
         },
         slm_processing=slm_processing,
         source_package=source_package_name,
@@ -401,8 +389,32 @@ def import_course(
         arxiv_metadata=arxiv_metadata,
     )
 
-    # Write manifest
+    # Write manifest (must exist before validation runs)
     manifest_path = target_dir / "manifest.json"
+    with open(manifest_path, "w") as f:
+        json.dump(manifest.to_dict(), f, indent=2)
+
+    # Run validation AFTER manifest is written so validator can find it
+    validation_result = validate_course_strict(target_dir, repo_root)
+    validation_status = "validated" if validation_result.valid else "failed"
+    validation_timestamp = datetime.now().isoformat()
+
+    if strict_validation and not validation_result.valid:
+        # Cleanup and fail
+        logger.error(f"Validation failed for {slug}: {validation_result.errors}")
+        shutil.rmtree(target_dir)
+        raise ValidationError(
+            f"Import validation failed for {slug}: {len(validation_result.errors)} errors",
+            errors=validation_result.errors,
+        )
+
+    # Update manifest with validation results
+    manifest.quality_metadata = {
+        "validation_status": validation_status,
+        "last_validated": validation_timestamp,
+        "validation_errors": validation_result.errors,
+        "validation_warnings": validation_result.warnings,
+    }
     with open(manifest_path, "w") as f:
         json.dump(manifest.to_dict(), f, indent=2)
 

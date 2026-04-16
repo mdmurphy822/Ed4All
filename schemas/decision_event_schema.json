@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://ed4all.org/schemas/decision_event_schema.json",
+  "$id": "urn:ed4all:schemas:decision_event_schema",
   "title": "Claude Decision Event Schema",
   "description": "Schema for capturing Claude decisions during DART/Courseforge/Trainforge operations. Phase 0 Hardening adds event_id, seq, task_id, is_default, and outputs fields.",
   "type": "object",

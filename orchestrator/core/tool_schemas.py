@@ -411,6 +411,19 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "description": "Mark a workflow task as complete or failed",
     },
 
+    "archive_to_libv2": {
+        "required": ["course_name", "domain"],
+        "optional": ["division", "pdf_paths", "html_paths", "imscc_path", "assessment_path", "subdomains"],
+        "defaults": {
+            "division": "STEM",
+        },
+        "param_mapping": {
+            "course_id": "course_name",
+            "name": "course_name",
+        },
+        "description": "Archive pipeline artifacts to LibV2 repository",
+    },
+
 }
 
 
@@ -572,6 +585,7 @@ TOOL_CATEGORIES = {
     "pipeline": [
         "stage_dart_outputs",
         "extract_and_convert_pdf",
+        "archive_to_libv2",
     ],
 }
 

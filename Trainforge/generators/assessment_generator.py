@@ -13,6 +13,7 @@ Decision Capture:
 
 import json
 import logging
+import re
 import sys
 import uuid
 from dataclasses import dataclass, field
@@ -29,6 +30,9 @@ if TYPE_CHECKING:
     from lib.decision_capture import DecisionCapture
 
 logger = logging.getLogger(__name__)
+
+# Import content extractor for content-grounded generation
+from Trainforge.generators.content_extractor import ContentExtractor
 
 # Import leak checker for answer-leak detection
 try:
@@ -155,6 +159,7 @@ class AssessmentGenerator:
         self,
         capture: Optional["DecisionCapture"] = None,
         check_leaks: bool = True,
+        rag: Optional[Any] = None,
     ):
         """
         Initialize the assessment generator.
@@ -162,10 +167,15 @@ class AssessmentGenerator:
         Args:
             capture: Optional DecisionCapture for logging generation decisions
             check_leaks: If True, run leak checker on generated questions
+            rag: Optional TrainforgeRAG instance for self-serving retrieval.
+                 If provided and source_chunks is None during generation,
+                 chunks will be retrieved automatically.
         """
         self.capture = capture
         self.check_leaks = check_leaks and LEAK_CHECKER_AVAILABLE
         self._leak_checker = LeakChecker(strict_mode=False) if self.check_leaks else None
+        self._content_extractor = ContentExtractor()
+        self.rag = rag
 
     def generate(
         self,
@@ -359,6 +369,9 @@ class AssessmentGenerator:
         """
         Generate a single question for the given objective and level.
 
+        If source_chunks is None and self.rag is available, retrieves
+        chunks automatically using the fallback chain.
+
         Args:
             objective_id: Learning objective ID
             bloom_level: Target Bloom's level
@@ -367,6 +380,27 @@ class AssessmentGenerator:
         Returns:
             QuestionData with generated question
         """
+        # Self-serve retrieval if no chunks provided
+        if source_chunks is None and self.rag is not None:
+            try:
+                chunks, _metrics = self.rag.retrieve_with_fallback(
+                    objective_text=objective_id,
+                    bloom_level=bloom_level,
+                )
+                source_chunks = [c.to_dict() for c in chunks]
+                if self.capture and source_chunks:
+                    self.capture.log_decision(
+                        decision_type="chunk_retrieval",
+                        decision=f"Auto-retrieved {len(source_chunks)} chunks for {objective_id}",
+                        rationale=(
+                            f"No source chunks provided; used RAG fallback chain "
+                            f"to retrieve {len(source_chunks)} chunks for objective "
+                            f"'{objective_id}' at Bloom level '{bloom_level}'"
+                        ),
+                    )
+            except Exception as e:
+                logger.warning("RAG retrieval failed for %s: %s", objective_id, e)
+
         question_id = f"Q-{str(uuid.uuid4())[:8]}"
 
         # Select question type based on Bloom's level
@@ -415,25 +449,42 @@ class AssessmentGenerator:
 
         # Generate question based on type
         if question_type == "multiple_choice":
-            return self._generate_multiple_choice(
+            question = self._generate_multiple_choice(
                 question_id, objective_id, bloom_level, level_config, source_chunks
             )
         elif question_type == "true_false":
-            return self._generate_true_false(
+            question = self._generate_true_false(
                 question_id, objective_id, bloom_level, level_config, source_chunks
             )
         elif question_type == "fill_in_blank":
-            return self._generate_fill_in_blank(
+            question = self._generate_fill_in_blank(
                 question_id, objective_id, bloom_level, level_config, source_chunks
             )
         elif question_type == "essay":
-            return self._generate_essay(
+            question = self._generate_essay(
                 question_id, objective_id, bloom_level, level_config, source_chunks
             )
         else:
-            return self._generate_short_answer(
+            question = self._generate_short_answer(
                 question_id, objective_id, bloom_level, level_config, source_chunks
             )
+
+        # Log content grounding decision
+        if self.capture:
+            is_grounded = (
+                question.generation_rationale
+                and "TEMPLATE_FALLBACK" not in question.generation_rationale
+            )
+            self.capture.log_decision(
+                decision_type="question_generation",
+                decision=(
+                    f"Generated {question_type} question {question_id} "
+                    f"({'content-grounded' if is_grounded else 'template fallback'})"
+                ),
+                rationale=question.generation_rationale or "No rationale available",
+            )
+
+        return question
 
     def _generate_multiple_choice(
         self,
@@ -443,19 +494,109 @@ class AssessmentGenerator:
         level_config: Dict[str, Any],
         source_chunks: Optional[List[Dict[str, Any]]],
     ) -> QuestionData:
-        """Generate a multiple choice question."""
+        """Generate a multiple choice question from content."""
         verb = level_config["verbs"][0]
         pattern = level_config["patterns"][0]
 
-        stem = f"<p>{pattern.replace('...', f' the concept from {objective_id}')}</p>"
+        # Try content-grounded generation
+        if source_chunks:
+            terms = self._content_extractor.extract_key_terms(source_chunks)
+            statements = self._content_extractor.extract_factual_statements(source_chunks)
 
+            if terms:
+                # Use a key term: ask for its definition
+                target = terms[0]
+                stem = f"<p>Which of the following best describes <em>{target.term}</em>?</p>"
+
+                correct_text = target.definition
+                # Trim to reasonable length
+                if len(correct_text) > 200:
+                    correct_text = correct_text[:197] + "..."
+
+                # Build distractors from other terms' definitions
+                distractors = []
+                for other in terms[1:4]:
+                    if other.definition != target.definition:
+                        d_text = other.definition
+                        if len(d_text) > 200:
+                            d_text = d_text[:197] + "..."
+                        distractors.append(d_text)
+
+                # Fill remaining distractors from factual statements
+                for stmt in statements:
+                    if len(distractors) >= 3:
+                        break
+                    if stmt.statement.lower() != target.definition.lower():
+                        d_text = stmt.statement
+                        if len(d_text) > 200:
+                            d_text = d_text[:197] + "..."
+                        distractors.append(d_text)
+
+                # Pad if still not enough
+                while len(distractors) < 3:
+                    distractors.append(
+                        f"A concept unrelated to {target.term} in this context"
+                    )
+
+                choices = [
+                    {"text": f"<p>{correct_text}</p>", "is_correct": True},
+                ]
+                for d in distractors[:3]:
+                    choices.append({"text": f"<p>{d}</p>", "is_correct": False})
+
+                return QuestionData(
+                    question_id=question_id,
+                    question_type="multiple_choice",
+                    stem=stem,
+                    bloom_level=bloom_level,
+                    objective_id=objective_id,
+                    choices=choices,
+                    points=2.0,
+                    feedback=f"<p>{target.context_sentence}</p>",
+                    source_chunks=[target.source_chunk_id],
+                    generation_rationale=(
+                        f"MCQ grounded in key term '{target.term}' at "
+                        f"{bloom_level} level; distractors from related content"
+                    ),
+                )
+
+            elif statements and len(statements) >= 4:
+                # Use a factual statement: ask which is true
+                correct_stmt = statements[0]
+                stem = f"<p>Which of the following statements is correct?</p>"
+
+                choices = [
+                    {"text": f"<p>{correct_stmt.statement}</p>", "is_correct": True},
+                ]
+                for other in statements[1:4]:
+                    # Negate the statement for distractors
+                    negated = self._negate_statement(other.statement)
+                    choices.append({"text": f"<p>{negated}</p>", "is_correct": False})
+
+                return QuestionData(
+                    question_id=question_id,
+                    question_type="multiple_choice",
+                    stem=stem,
+                    bloom_level=bloom_level,
+                    objective_id=objective_id,
+                    choices=choices,
+                    points=2.0,
+                    feedback=f"<p>{correct_stmt.statement}</p>",
+                    source_chunks=[correct_stmt.source_chunk_id],
+                    generation_rationale=(
+                        f"MCQ using correct-statement selection at {bloom_level} "
+                        f"level; distractors are negated content statements"
+                    ),
+                )
+
+        # Fallback: template-based (flagged for validation)
+        stem = f"<p>{pattern.replace('...', f' the concept from {objective_id}')}</p>"
         choices = [
             {"text": "<p>Correct answer based on content</p>", "is_correct": True},
             {"text": "<p>Plausible distractor A</p>", "is_correct": False},
             {"text": "<p>Plausible distractor B</p>", "is_correct": False},
             {"text": "<p>Plausible distractor C</p>", "is_correct": False},
         ]
-
         return QuestionData(
             question_id=question_id,
             question_type="multiple_choice",
@@ -465,8 +606,8 @@ class AssessmentGenerator:
             choices=choices,
             points=2.0,
             feedback=f"<p>Review content for objective {objective_id}.</p>",
-            source_chunks=[c.get("chunk_id", "") for c in (source_chunks or [])[:2]],
-            generation_rationale=f"MCQ using verb '{verb}' at {bloom_level} level",
+            source_chunks=[c.get("chunk_id", c.get("id", "")) for c in (source_chunks or [])[:2]],
+            generation_rationale=f"TEMPLATE_FALLBACK: no source chunks; MCQ using verb '{verb}' at {bloom_level} level",
         )
 
     def _generate_true_false(
@@ -477,7 +618,58 @@ class AssessmentGenerator:
         level_config: Dict[str, Any],
         source_chunks: Optional[List[Dict[str, Any]]],
     ) -> QuestionData:
-        """Generate a true/false question."""
+        """Generate a true/false question from content."""
+        if source_chunks:
+            statements = self._content_extractor.extract_factual_statements(source_chunks)
+
+            if statements:
+                stmt = statements[0]
+                # Randomly decide true vs false (use question_id hash for determinism)
+                make_false = hash(question_id) % 2 == 0
+
+                if make_false:
+                    negated = self._negate_statement(stmt.statement)
+                    return QuestionData(
+                        question_id=question_id,
+                        question_type="true_false",
+                        stem=f"<p>{negated}</p>",
+                        bloom_level=bloom_level,
+                        objective_id=objective_id,
+                        choices=[
+                            {"text": "True", "is_correct": False},
+                            {"text": "False", "is_correct": True},
+                        ],
+                        correct_answer="False",
+                        points=1.0,
+                        feedback=f"<p>The correct statement is: {stmt.statement}</p>",
+                        source_chunks=[stmt.source_chunk_id],
+                        generation_rationale=(
+                            f"T/F (false) at {bloom_level} level; negated factual "
+                            f"statement about '{stmt.key_subject}'"
+                        ),
+                    )
+                else:
+                    return QuestionData(
+                        question_id=question_id,
+                        question_type="true_false",
+                        stem=f"<p>{stmt.statement}</p>",
+                        bloom_level=bloom_level,
+                        objective_id=objective_id,
+                        choices=[
+                            {"text": "True", "is_correct": True},
+                            {"text": "False", "is_correct": False},
+                        ],
+                        correct_answer="True",
+                        points=1.0,
+                        feedback=f"<p>This is correct. {stmt.statement}</p>",
+                        source_chunks=[stmt.source_chunk_id],
+                        generation_rationale=(
+                            f"T/F (true) at {bloom_level} level; factual statement "
+                            f"about '{stmt.key_subject}'"
+                        ),
+                    )
+
+        # Fallback
         return QuestionData(
             question_id=question_id,
             question_type="true_false",
@@ -491,7 +683,7 @@ class AssessmentGenerator:
             correct_answer="True",
             points=1.0,
             feedback=f"<p>This statement is accurate based on {objective_id}.</p>",
-            generation_rationale=f"T/F question at {bloom_level} level",
+            generation_rationale=f"TEMPLATE_FALLBACK: no source chunks; T/F question at {bloom_level} level",
         )
 
     def _generate_fill_in_blank(
@@ -502,7 +694,39 @@ class AssessmentGenerator:
         level_config: Dict[str, Any],
         source_chunks: Optional[List[Dict[str, Any]]],
     ) -> QuestionData:
-        """Generate a fill-in-the-blank question."""
+        """Generate a fill-in-the-blank question from content."""
+        if source_chunks:
+            terms = self._content_extractor.extract_key_terms(source_chunks)
+
+            if terms:
+                target = terms[0]
+                # Replace the term in the context sentence with a blank
+                blanked = re.sub(
+                    re.escape(target.term),
+                    "_______",
+                    target.context_sentence,
+                    count=1,
+                    flags=re.IGNORECASE,
+                )
+                # Only use if the blank actually replaced something
+                if "_______" in blanked and blanked != target.context_sentence:
+                    return QuestionData(
+                        question_id=question_id,
+                        question_type="fill_in_blank",
+                        stem=f"<p>Complete the following: {blanked}</p>",
+                        bloom_level=bloom_level,
+                        objective_id=objective_id,
+                        correct_answer=target.term,
+                        points=1.0,
+                        feedback=f"<p>The answer is <strong>{target.term}</strong>. {target.context_sentence}</p>",
+                        source_chunks=[target.source_chunk_id],
+                        generation_rationale=(
+                            f"Fill-in-blank at {bloom_level} level; blanked term "
+                            f"'{target.term}' from source content"
+                        ),
+                    )
+
+        # Fallback
         return QuestionData(
             question_id=question_id,
             question_type="fill_in_blank",
@@ -512,7 +736,7 @@ class AssessmentGenerator:
             correct_answer="concept term",
             points=1.0,
             feedback=f"<p>The correct term is found in {objective_id} content.</p>",
-            generation_rationale=f"Fill-in-blank at {bloom_level} level",
+            generation_rationale=f"TEMPLATE_FALLBACK: no source chunks; Fill-in-blank at {bloom_level} level",
         )
 
     def _generate_essay(
@@ -523,9 +747,71 @@ class AssessmentGenerator:
         level_config: Dict[str, Any],
         source_chunks: Optional[List[Dict[str, Any]]],
     ) -> QuestionData:
-        """Generate an essay question."""
+        """Generate an essay question from content."""
         verb = level_config["verbs"][0]
 
+        if source_chunks:
+            relationships = self._content_extractor.extract_relationships(source_chunks)
+            examples = self._content_extractor.extract_examples(source_chunks)
+
+            if relationships:
+                rel = relationships[0]
+                stem = (
+                    f"<p>{verb.capitalize()} the relationship between "
+                    f"<em>{rel.concept_a}</em> and <em>{rel.concept_b}</em>. "
+                    f"Support your analysis with specific examples from the course material.</p>"
+                )
+                # Build rubric points from content
+                rubric_points = [f"Explains connection between {rel.concept_a} and {rel.concept_b}"]
+                if examples:
+                    rubric_points.append(f"Uses relevant examples (e.g., {examples[0].description[:80]}...)")
+                for other_rel in relationships[1:3]:
+                    rubric_points.append(f"Addresses: {other_rel.full_statement[:80]}...")
+                rubric_text = "</li><li>".join(rubric_points)
+                feedback = f"<p>A strong response should:</p><ul><li>{rubric_text}</li></ul>"
+
+                chunk_ids = list({rel.source_chunk_id})
+                if examples:
+                    chunk_ids.append(examples[0].source_chunk_id)
+
+                return QuestionData(
+                    question_id=question_id,
+                    question_type="essay",
+                    stem=stem,
+                    bloom_level=bloom_level,
+                    objective_id=objective_id,
+                    points=10.0,
+                    feedback=feedback,
+                    source_chunks=chunk_ids[:3],
+                    generation_rationale=(
+                        f"Essay at {bloom_level} level; explores relationship "
+                        f"between '{rel.concept_a}' and '{rel.concept_b}'"
+                    ),
+                )
+
+            elif examples:
+                ex = examples[0]
+                stem = (
+                    f"<p>{verb.capitalize()} the following scenario: "
+                    f"<em>{ex.description}</em>. "
+                    f"What principles does this illustrate, and how could "
+                    f"they be applied in a different context?</p>"
+                )
+                return QuestionData(
+                    question_id=question_id,
+                    question_type="essay",
+                    stem=stem,
+                    bloom_level=bloom_level,
+                    objective_id=objective_id,
+                    points=10.0,
+                    feedback=f"<p>A complete response should identify the underlying principles illustrated by this example and propose a novel application.</p>",
+                    source_chunks=[ex.source_chunk_id],
+                    generation_rationale=(
+                        f"Essay at {bloom_level} level; based on example from content"
+                    ),
+                )
+
+        # Fallback
         return QuestionData(
             question_id=question_id,
             question_type="essay",
@@ -534,7 +820,7 @@ class AssessmentGenerator:
             objective_id=objective_id,
             points=10.0,
             feedback=f"<p>A complete response should address all aspects of {objective_id}.</p>",
-            generation_rationale=f"Essay using verb '{verb}' at {bloom_level} level",
+            generation_rationale=f"TEMPLATE_FALLBACK: no source chunks; Essay using verb '{verb}' at {bloom_level} level",
         )
 
     def _generate_short_answer(
@@ -545,9 +831,82 @@ class AssessmentGenerator:
         level_config: Dict[str, Any],
         source_chunks: Optional[List[Dict[str, Any]]],
     ) -> QuestionData:
-        """Generate a short answer question."""
+        """Generate a short answer question from content."""
         verb = level_config["verbs"][0]
 
+        if source_chunks:
+            relationships = self._content_extractor.extract_relationships(source_chunks)
+            procedures = self._content_extractor.extract_procedures(source_chunks)
+            terms = self._content_extractor.extract_key_terms(source_chunks)
+
+            if procedures:
+                proc = procedures[0]
+                stem = (
+                    f"<p>Briefly {verb} the steps involved in "
+                    f"<em>{proc.title.lower()}</em>.</p>"
+                )
+                model_answer = "; ".join(proc.steps[:4])
+                return QuestionData(
+                    question_id=question_id,
+                    question_type="short_answer",
+                    stem=stem,
+                    bloom_level=bloom_level,
+                    objective_id=objective_id,
+                    correct_answer=model_answer,
+                    points=5.0,
+                    feedback=f"<p>Key steps: {model_answer}</p>",
+                    source_chunks=[proc.source_chunk_id],
+                    generation_rationale=(
+                        f"Short answer at {bloom_level} level; asks about procedure "
+                        f"'{proc.title}' ({len(proc.steps)} steps)"
+                    ),
+                )
+
+            elif relationships:
+                rel = relationships[0]
+                stem = (
+                    f"<p>Briefly {verb} the relationship between "
+                    f"<em>{rel.concept_a}</em> and <em>{rel.concept_b}</em>.</p>"
+                )
+                return QuestionData(
+                    question_id=question_id,
+                    question_type="short_answer",
+                    stem=stem,
+                    bloom_level=bloom_level,
+                    objective_id=objective_id,
+                    correct_answer=rel.full_statement,
+                    points=5.0,
+                    feedback=f"<p>{rel.full_statement}</p>",
+                    source_chunks=[rel.source_chunk_id],
+                    generation_rationale=(
+                        f"Short answer at {bloom_level} level; relationship between "
+                        f"'{rel.concept_a}' and '{rel.concept_b}'"
+                    ),
+                )
+
+            elif terms:
+                target = terms[0]
+                stem = (
+                    f"<p>In your own words, briefly {verb} what "
+                    f"<em>{target.term}</em> means and why it is significant.</p>"
+                )
+                return QuestionData(
+                    question_id=question_id,
+                    question_type="short_answer",
+                    stem=stem,
+                    bloom_level=bloom_level,
+                    objective_id=objective_id,
+                    correct_answer=target.definition,
+                    points=5.0,
+                    feedback=f"<p>{target.context_sentence}</p>",
+                    source_chunks=[target.source_chunk_id],
+                    generation_rationale=(
+                        f"Short answer at {bloom_level} level; defines term "
+                        f"'{target.term}'"
+                    ),
+                )
+
+        # Fallback
         return QuestionData(
             question_id=question_id,
             question_type="short_answer",
@@ -556,8 +915,57 @@ class AssessmentGenerator:
             objective_id=objective_id,
             points=5.0,
             feedback=f"<p>Your response should cover the main concepts from {objective_id}.</p>",
-            generation_rationale=f"Short answer using verb '{verb}' at {bloom_level} level",
+            generation_rationale=f"TEMPLATE_FALLBACK: no source chunks; Short answer using verb '{verb}' at {bloom_level} level",
         )
+
+    @staticmethod
+    def _negate_statement(statement: str) -> str:
+        """Negate a factual statement for T/F false items or MCQ distractors.
+
+        Uses simple verb-aware negation: inserts 'not' after the first
+        auxiliary/copula verb, or swaps key qualifiers.
+        """
+        # Try qualifier swaps first (more natural sounding)
+        swaps = [
+            (r"\balways\b", "never"),
+            (r"\bnever\b", "always"),
+            (r"\ball\b", "no"),
+            (r"\bno\b", "all"),
+            (r"\bincreases?\b", "decreases"),
+            (r"\bdecreases?\b", "increases"),
+            (r"\bmore\b", "less"),
+            (r"\bless\b", "more"),
+            (r"\bbefore\b", "after"),
+            (r"\bafter\b", "before"),
+        ]
+        for pattern, replacement in swaps:
+            if re.search(pattern, statement, re.IGNORECASE):
+                return re.sub(pattern, replacement, statement, count=1, flags=re.IGNORECASE)
+
+        # Insert 'not' after auxiliary/copula verbs
+        negation_targets = [
+            (r"\b(is)\b", r"\1 not"),
+            (r"\b(are)\b", r"\1 not"),
+            (r"\b(was)\b", r"\1 not"),
+            (r"\b(were)\b", r"\1 not"),
+            (r"\b(has)\b", r"\1 not"),
+            (r"\b(have)\b", r"\1 not"),
+            (r"\b(can)\b", r"\1not"),
+            (r"\b(will)\b", r"\1 not"),
+            (r"\b(does)\b", r"\1 not"),
+            (r"\b(do)\b", r"\1 not"),
+            (r"\b(should)\b", r"\1 not"),
+            (r"\b(would)\b", r"\1 not"),
+            (r"\b(provides?)\b", r"does not provide"),
+            (r"\b(requires?)\b", r"does not require"),
+            (r"\b(includes?)\b", r"does not include"),
+        ]
+        for pattern, replacement in negation_targets:
+            if re.search(pattern, statement, re.IGNORECASE):
+                return re.sub(pattern, replacement, statement, count=1, flags=re.IGNORECASE)
+
+        # Last resort: prepend "It is not true that"
+        return f"It is not true that {statement[0].lower()}{statement[1:]}"
 
     def generate_for_objective(
         self,

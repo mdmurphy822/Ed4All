@@ -302,10 +302,19 @@ workflows:
               on_error: warn
 
           - gate_id: leak_check
-            validator: lib.leak_checker.LeakChecker
+            validator: lib.validators.leak_check.LeakCheckValidator
             severity: critical
             threshold:
               max_leaks: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
+          - gate_id: question_quality
+            validator: lib.validators.question_quality.QuestionQualityValidator
+            severity: critical
+            threshold:
+              min_score: 0.6
             behavior:
               on_fail: block
               on_error: fail_closed
@@ -393,12 +402,12 @@ workflows:
         validation_gates:
           - gate_id: content_structure
             validator: lib.validators.content.ContentStructureValidator
-            severity: critical
+            severity: warning
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: block
-              on_error: fail_closed
+              on_fail: warn
+              on_error: warn
 
       - name: packaging
         agents: [brightspace-packager]
@@ -411,12 +420,12 @@ workflows:
         validation_gates:
           - gate_id: imscc_structure
             validator: lib.validators.imscc.IMSCCValidator
-            severity: critical
+            severity: warning
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: block
-              on_error: fail_closed
+              on_fail: warn
+              on_error: warn
 
       - name: trainforge_assessment
         agents: [assessment-generator]

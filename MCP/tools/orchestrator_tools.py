@@ -53,6 +53,62 @@ def _validate_orchestrator_paths():
 _validate_orchestrator_paths()
 
 
+async def create_workflow_impl(
+    workflow_type: str,
+    params: str,
+    priority: str = "normal"
+) -> str:
+    """Core workflow creation logic, usable without MCP context."""
+    try:
+        workflow_id = f"WF-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:8]}"
+
+        workflow_params = json.loads(params) if params else {}
+        if not isinstance(workflow_params, dict):
+            return json.dumps({"error": "params must be a JSON object, not array or scalar"})
+
+        workflow = {
+            "id": workflow_id,
+            "type": workflow_type,
+            "params": workflow_params,
+            "priority": priority,
+            "status": "PENDING",
+            "created_at": datetime.now().isoformat(),
+            "updated_at": datetime.now().isoformat(),
+            "tasks": [],
+            "progress": {
+                "total": 0,
+                "completed": 0,
+                "in_progress": 0,
+                "failed": 0
+            }
+        }
+
+        # Save workflow state
+        workflows_dir = STATE_PATH / "workflows"
+        workflows_dir.mkdir(parents=True, exist_ok=True)
+
+        workflow_path = workflows_dir / f"{workflow_id}.json"
+        atomic_write_json(workflow_path, workflow)
+
+        # Update GENERATION_PROGRESS.md
+        _get_tracker().update_progress_md()
+
+        return json.dumps({
+            "success": True,
+            "workflow_id": workflow_id,
+            "status": "PENDING",
+            "workflow_path": str(workflow_path)
+        })
+
+    except Exception as e:
+        logger.exception("Orchestrator tool error")
+        return json.dumps({"error": str(e)})
+
+
+# Convenience alias for direct import
+create_workflow = create_workflow_impl
+
+
 def register_orchestrator_tools(mcp):
     """Register orchestrator tools with the MCP server."""
 
@@ -74,50 +130,7 @@ def register_orchestrator_tools(mcp):
         Returns:
             Workflow ID and initial status
         """
-        try:
-            workflow_id = f"WF-{datetime.now().strftime('%Y%m%d')}-{str(uuid.uuid4())[:8]}"
-
-            workflow_params = json.loads(params) if params else {}
-            if not isinstance(workflow_params, dict):
-                return json.dumps({"error": "params must be a JSON object, not array or scalar"})
-
-            workflow = {
-                "id": workflow_id,
-                "type": workflow_type,
-                "params": workflow_params,
-                "priority": priority,
-                "status": "PENDING",
-                "created_at": datetime.now().isoformat(),
-                "updated_at": datetime.now().isoformat(),
-                "tasks": [],
-                "progress": {
-                    "total": 0,
-                    "completed": 0,
-                    "in_progress": 0,
-                    "failed": 0
-                }
-            }
-
-            # Save workflow state
-            workflows_dir = STATE_PATH / "workflows"
-            workflows_dir.mkdir(parents=True, exist_ok=True)
-
-            workflow_path = workflows_dir / f"{workflow_id}.json"
-            atomic_write_json(workflow_path, workflow)
-
-            # Update GENERATION_PROGRESS.md
-            _get_tracker().update_progress_md()
-
-            return json.dumps({
-                "success": True,
-                "workflow_id": workflow_id,
-                "status": "PENDING",
-                "workflow_path": str(workflow_path)
-            })
-
-        except Exception as e:
-            logger.exception("Orchestrator tool error")
-            return json.dumps({"error": str(e)})
+        return await create_workflow_impl(workflow_type, params, priority)
 
     @mcp.tool()
     async def get_workflow_status(workflow_id: str) -> str:
