@@ -26,13 +26,6 @@ from lib.secure_paths import (  # noqa: E402
     validate_path_within_root,
 )
 
-# Import new telemetry system
-try:
-    from LibV2.telemetry import ArtifactRef, CaptureSession  # noqa: F401
-    HAS_TELEMETRY = True
-except ImportError:
-    HAS_TELEMETRY = False
-
 logger = logging.getLogger(__name__)
 
 # Derived paths
@@ -56,19 +49,6 @@ _validate_courseforge_paths()
 
 def _create_capture(course_code: str, phase: str):
     """Create a capture session for Courseforge operations."""
-    if HAS_TELEMETRY:
-        try:
-            return CaptureSession.start_run(
-                tool_id="courseforge",
-                component=phase,
-                meta={"course_code": course_code},
-                course_code=course_code,
-                phase=phase,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to create telemetry session: {e}")
-            return None
-    # Fallback to legacy capture
     try:
         from lib.decision_capture import DecisionCapture
         return DecisionCapture(course_code, phase, "courseforge")
@@ -77,32 +57,11 @@ def _create_capture(course_code: str, phase: str):
 
 
 def _log_decision(capture, decision_type: str, decision: str, rationale: str, **kwargs):
-    """Log a decision using telemetry emit() or legacy log_decision()."""
+    """Log a decision using legacy log_decision()."""
     if capture is None:
         return
 
-    # Check if this is a CaptureSession (new telemetry)
-    if HAS_TELEMETRY and isinstance(capture, CaptureSession):
-        # Map decision types to event types
-        event_type = "generation.completed"
-        if "error" in decision_type.lower():
-            event_type = "error.raised"
-        elif "validation" in decision_type.lower():
-            event_type = "validation.result"
-
-        capture.emit(
-            event_type,
-            payload={
-                "decision_type": decision_type,
-                "decision": decision,
-                "rationale": rationale,
-                **kwargs
-            },
-            severity="info" if "error" not in decision_type.lower() else "error"
-        )
-    else:
-        # Legacy capture
-        capture.log_decision(decision_type, decision, rationale, **kwargs)
+    capture.log_decision(decision_type, decision, rationale, **kwargs)
 
 
 def _finalize_capture(capture):
@@ -110,9 +69,7 @@ def _finalize_capture(capture):
     if capture is None:
         return
 
-    if HAS_TELEMETRY and isinstance(capture, CaptureSession):
-        capture.finish_run("success")
-    elif hasattr(capture, 'save'):
+    if hasattr(capture, 'save'):
         capture.save()
 
 

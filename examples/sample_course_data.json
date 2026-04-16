@@ -1,0 +1,289 @@
+{
+  "course_code": "EXAMPLE_101",
+  "course_title": "Introduction to Web Accessibility",
+  "description": "A 2-week introductory course on web accessibility covering WCAG principles, alt text best practices, and media accessibility. Designed as a minimal example for the Ed4All pipeline.",
+  "duration_weeks": 2,
+  "credit_hours": 1,
+  "weeks": [
+    {
+      "week_number": 1,
+      "title": "Foundations of Web Accessibility: POUR Principles",
+      "estimated_hours": "3-4",
+      "objectives": [
+        {
+          "id": "W01-CO-01",
+          "statement": "Explain the four POUR principles (Perceivable, Operable, Understandable, Robust) and how each addresses different categories of access barriers",
+          "bloom_level": "understand",
+          "bloom_verb": "explain",
+          "key_concepts": ["perceivable", "operable", "understandable", "robust", "access barriers"]
+        },
+        {
+          "id": "W01-CO-02",
+          "statement": "Describe the structure of WCAG 2.2 including its principles, guidelines, success criteria, and conformance levels (A, AA, AAA)",
+          "bloom_level": "understand",
+          "bloom_verb": "describe",
+          "key_concepts": ["WCAG 2.2", "conformance levels", "success criteria", "guidelines"]
+        }
+      ],
+      "overview_text": [
+        "Welcome to Introduction to Web Accessibility. This week you will build a foundational understanding of why web accessibility matters, who it serves, and how the Web Content Accessibility Guidelines (WCAG) organize accessibility requirements into a coherent framework.",
+        "We begin with the POUR principles — Perceivable, Operable, Understandable, and Robust — which form the conceptual backbone of WCAG 2.2. By the end of this week you will be able to navigate the specification confidently and articulate the rationale for building accessible web experiences."
+      ],
+      "readings": [
+        "W3C WAI - Introduction to Web Accessibility (https://www.w3.org/WAI/fundamentals/accessibility-intro/)",
+        "WCAG 2.2 Quick Reference (https://www.w3.org/WAI/WCAG22/quickref/)"
+      ],
+      "content_modules": [
+        {
+          "title": "The POUR Principles",
+          "misconceptions": [
+            {
+              "misconception": "Accessibility only means adding alt text to images and is primarily a visual concern.",
+              "correction": "Accessibility encompasses all four POUR principles and addresses barriers across visual, auditory, motor, cognitive, and neurological dimensions."
+            }
+          ],
+          "sections": [
+            {
+              "heading": "What is Web Accessibility?",
+              "level": 2,
+              "content_type": "explanation",
+              "paragraphs": [
+                "Web accessibility means that websites, tools, and technologies are designed and developed so that people with disabilities can use them effectively. The concept extends beyond permanent disabilities to include temporary conditions like a broken arm and situational limitations like bright sunlight on a screen. When we design for accessibility, we frequently improve the experience for all users — a phenomenon known as the curb-cut effect.",
+                "The World Wide Web Consortium (W3C) develops international standards through its Web Accessibility Initiative (WAI). The primary standard is the Web Content Accessibility Guidelines (WCAG), currently at version 2.2, published as a W3C Recommendation in October 2023. Understanding accessibility requires recognizing that it is not a binary state; it exists on a spectrum, and WCAG provides measurable success criteria to evaluate progress."
+              ],
+              "key_terms": ["web accessibility", "WCAG", "W3C", "curb-cut effect"],
+              "flip_cards": [
+                {
+                  "term": "Web Accessibility",
+                  "definition": "The inclusive practice of ensuring websites, tools, and technologies are designed so people with disabilities can perceive, understand, navigate, and interact with the Web effectively."
+                },
+                {
+                  "term": "WCAG 2.2",
+                  "definition": "Web Content Accessibility Guidelines version 2.2, a W3C Recommendation providing testable success criteria organized under four principles: Perceivable, Operable, Understandable, and Robust."
+                },
+                {
+                  "term": "Curb-Cut Effect",
+                  "definition": "The phenomenon where accessibility features designed for people with disabilities end up benefiting a much wider population."
+                }
+              ]
+            },
+            {
+              "heading": "The Four POUR Principles Explained",
+              "level": 2,
+              "content_type": "explanation",
+              "paragraphs": [
+                "Perceivable requires that information and user interface components be presentable in ways users can perceive. Content cannot rely on a single sensory channel — if information is visual, a text alternative must exist. Operable requires that all user interface components and navigation be operable regardless of input method, with keyboard accessibility as the most fundamental requirement.",
+                "Understandable means that information and the operation of the user interface must be understandable, covering readable text, predictable behavior, and input assistance. Robust requires that content be interpreted reliably by a wide variety of user agents, including assistive technologies. Together, these four principles ensure content is available across the full spectrum of human abilities."
+              ],
+              "key_terms": ["perceivable", "operable", "understandable", "robust", "keyboard accessibility"],
+              "flip_cards": [
+                {
+                  "term": "Perceivable",
+                  "definition": "WCAG Principle 1: Information and user interface components must be presentable to users in ways they can perceive."
+                },
+                {
+                  "term": "Operable",
+                  "definition": "WCAG Principle 2: User interface components and navigation must be operable by all users regardless of input method."
+                },
+                {
+                  "term": "Understandable",
+                  "definition": "WCAG Principle 3: Information and the operation of the user interface must be understandable."
+                },
+                {
+                  "term": "Robust",
+                  "definition": "WCAG Principle 4: Content must be robust enough to be interpreted reliably by a wide variety of user agents including assistive technologies."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "activities": [
+        {
+          "title": "Screen Reader Navigation Exercise",
+          "description": "Enable VoiceOver (macOS) or NVDA (Windows) and navigate two websites using only the keyboard. Document which POUR principles are met or violated and identify at least two specific barriers. Write a 200-word summary of your findings.",
+          "bloom_level": "apply",
+          "objective_ref": "W01-CO-01"
+        }
+      ],
+      "self_check_questions": [
+        {
+          "question": "Which POUR principle is primarily concerned with ensuring all functionality is available via keyboard?",
+          "bloom_level": "remember",
+          "objective_ref": "W01-CO-01",
+          "options": [
+            {"text": "Operable", "correct": true, "feedback": "Correct! The Operable principle (Principle 2) requires that user interface components and navigation be operable by all users. Guideline 2.1 specifically addresses keyboard accessibility."},
+            {"text": "Perceivable", "correct": false, "feedback": "Perceivable (Principle 1) relates to ensuring information can be presented in ways users can perceive. Keyboard accessibility falls under Operable."},
+            {"text": "Understandable", "correct": false, "feedback": "Understandable (Principle 3) relates to readable text and predictable behavior. Keyboard navigation is addressed under Operable."},
+            {"text": "Robust", "correct": false, "feedback": "Robust (Principle 4) relates to content being reliably interpreted by assistive technologies. Keyboard operability is covered under Operable."}
+          ]
+        },
+        {
+          "question": "What is the correct hierarchical structure of WCAG 2.2, from broadest to most specific?",
+          "bloom_level": "remember",
+          "objective_ref": "W01-CO-02",
+          "options": [
+            {"text": "Principles > Guidelines > Success Criteria > Techniques", "correct": true, "feedback": "Correct! WCAG 2.2 is organized from broad to specific: 4 Principles (POUR) contain 13 Guidelines, which contain 87 Success Criteria, supported by Sufficient and Advisory Techniques."},
+            {"text": "Guidelines > Principles > Success Criteria > Techniques", "correct": false, "feedback": "Principles sit at the top level. The four POUR Principles are the broadest organizational layer."},
+            {"text": "Principles > Success Criteria > Guidelines > Techniques", "correct": false, "feedback": "Guidelines sit between Principles and Success Criteria in the hierarchy."},
+            {"text": "Standards > Principles > Guidelines > Success Criteria", "correct": false, "feedback": "There is no 'Standards' layer. The four layers are Principles, Guidelines, Success Criteria, and Techniques."}
+          ]
+        }
+      ],
+      "key_takeaways": [
+        "The POUR principles (Perceivable, Operable, Understandable, Robust) organize all WCAG success criteria and provide a mental model for identifying access barriers.",
+        "WCAG 2.2 contains 87 success criteria across three conformance levels (A, AA, AAA), with Level AA being the standard target for legal compliance.",
+        "Accessible design benefits far more people than those with permanent disabilities, thanks to the curb-cut effect."
+      ],
+      "reflection_questions": [
+        "Think about a website you use frequently. Can you identify at least one barrier for each POUR principle?",
+        "How does understanding the disability spectrum change your perspective on who benefits from accessible design?"
+      ],
+      "next_week_preview": "Next week we focus on the Perceivable principle — specifically text alternatives and media accessibility. You will learn to write effective alt text and understand caption and audio description requirements.",
+      "discussion": {
+        "prompt": "Visit a government website and an e-commerce site. For each, evaluate whether it meets the four POUR principles. Identify at least two accessibility barriers per site and classify each by the POUR principle it violates.",
+        "initial_post": "200 words minimum",
+        "replies": "Respond to at least 1 classmate (100 words)",
+        "due": "Initial post by Wednesday; replies by Sunday"
+      }
+    },
+    {
+      "week_number": 2,
+      "title": "Perceivable: Text Alternatives & Media Accessibility",
+      "estimated_hours": "3-4",
+      "objectives": [
+        {
+          "id": "W02-CO-01",
+          "statement": "Apply best practices for writing effective alt text that distinguishes between decorative, informative, functional, and complex images",
+          "bloom_level": "apply",
+          "bloom_verb": "apply",
+          "key_concepts": ["alt text", "decorative images", "informative images", "functional images"]
+        },
+        {
+          "id": "W02-CO-02",
+          "statement": "Evaluate video content for compliance with WCAG Success Criteria 1.2.1 through 1.2.5 covering captions, audio descriptions, and media alternatives",
+          "bloom_level": "evaluate",
+          "bloom_verb": "evaluate",
+          "key_concepts": ["captions", "audio descriptions", "transcripts", "time-based media"]
+        }
+      ],
+      "overview_text": [
+        "This week we focus on the Perceivable principle, specifically on ensuring non-text content is accessible. WCAG Success Criterion 1.1.1 (Non-text Content) is one of the most frequently violated criteria on the web. Understanding how to write effective alt text is a foundational skill for every web developer.",
+        "Beyond static images, we examine requirements for time-based media including video and audio. You will learn the differences between captions, subtitles, audio descriptions, and transcripts. By the end of this week, you will be able to audit any web page for text alternative compliance."
+      ],
+      "readings": [
+        "W3C WAI - Images Tutorial (https://www.w3.org/WAI/tutorials/images/decision-tree/)",
+        "WebAIM - Alternative Text (https://webaim.org/techniques/alttext/)"
+      ],
+      "content_modules": [
+        {
+          "title": "Alt Text Best Practices",
+          "misconceptions": [
+            {
+              "misconception": "Every image needs descriptive alt text, including decorative images.",
+              "correction": "Decorative images should have an empty alt attribute (alt=\"\") so screen readers skip them. Adding descriptions to decorative images creates noise for screen reader users."
+            }
+          ],
+          "sections": [
+            {
+              "heading": "Understanding Image Categories for Alt Text",
+              "level": 2,
+              "content_type": "explanation",
+              "paragraphs": [
+                "The W3C WAI Images Tutorial classifies images into seven categories. Informative images convey simple information expressible in a short phrase. Decorative images serve purely aesthetic purposes and should be skipped by screen readers. Functional images serve as interactive controls — their alt text must describe the function, not the appearance. A printer icon used as a print button should have alt text 'Print this page', not 'printer icon'.",
+                "Complex images such as graphs, charts, and infographics contain substantial information that cannot be conveyed in a brief alt attribute. These require both a short alt text plus a longer accessible description. The most important principle: consider the context and purpose of the image rather than simply describing what it looks like. The same photograph might need different alt text depending on where it appears."
+              ],
+              "key_terms": ["informative image", "decorative image", "functional image", "complex image", "alt attribute"],
+              "flip_cards": [
+                {
+                  "term": "Informative Image",
+                  "definition": "An image that conveys information expressible in a short phrase. Requires concise, descriptive alt text."
+                },
+                {
+                  "term": "Decorative Image",
+                  "definition": "An image serving purely aesthetic purposes. Must have an empty alt attribute (alt=\"\") so screen readers ignore it."
+                },
+                {
+                  "term": "Functional Image",
+                  "definition": "An image used as an interactive control. Alt text must describe the function or action, not the visual appearance."
+                },
+                {
+                  "term": "Complex Image",
+                  "definition": "An image containing substantial data (chart, diagram) that requires both a short alt text summary and a longer accessible description."
+                }
+              ]
+            },
+            {
+              "heading": "Writing Effective Alt Text: Examples",
+              "level": 2,
+              "content_type": "example",
+              "paragraphs": [
+                "Consider a bar chart showing quarterly revenue. Poor alt text: 'chart'. Better: 'Bar chart showing quarterly revenue'. Best: a short alt text identifying the chart plus a long description with the full data table. The HTML pattern uses figure, img with alt, and a details element inside figcaption for the full data.",
+                "For functional images, describe the action, not the appearance. A magnifying glass search icon should have alt='Search', not alt='magnifying glass'. For decorative images, use an empty alt attribute: alt=\"\". The test: if you removed the image entirely, would any information be lost? If not, it is decorative."
+              ],
+              "key_terms": ["alt text", "figure element", "figcaption"],
+              "flip_cards": [
+                {
+                  "term": "Empty Alt Attribute",
+                  "definition": "An alt attribute with an empty string (alt=\"\") that tells screen readers to skip the image. Used for decorative images. Different from omitting alt entirely, which is an error."
+                },
+                {
+                  "term": "Long Description",
+                  "definition": "An extended text alternative for complex images, often implemented via details/summary elements or data tables."
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "activities": [
+        {
+          "title": "Alt Text Audit",
+          "description": "Choose a content-rich web page (news article, product page, or educational resource). Identify every image on the page, classify it as decorative, informative, functional, or complex, and write appropriate alt text for each. Document your reasoning in a short table.",
+          "bloom_level": "apply",
+          "objective_ref": "W02-CO-01"
+        }
+      ],
+      "self_check_questions": [
+        {
+          "question": "A magnifying glass icon is used as a search button. What is the most appropriate alt text?",
+          "bloom_level": "apply",
+          "objective_ref": "W02-CO-01",
+          "options": [
+            {"text": "\"Search\"", "correct": true, "feedback": "Correct! Functional images should describe the action, not the visual appearance. The user needs to know what happens when they activate the control."},
+            {"text": "\"Magnifying glass icon\"", "correct": false, "feedback": "This describes the image's appearance, not its function. For functional images, alt text should describe what the control does."},
+            {"text": "\"Image of magnifying glass\"", "correct": false, "feedback": "Screen readers already announce 'image' — and for functional images, the alt text should describe the action, not the visual."},
+            {"text": "\"Click here to search\"", "correct": false, "feedback": "Avoid 'click here' phrasing as it is not input-method neutral. 'Search' is more concise and inclusive of all interaction methods."}
+          ]
+        },
+        {
+          "question": "Which WCAG success criterion requires captions for prerecorded video with audio?",
+          "bloom_level": "remember",
+          "objective_ref": "W02-CO-02",
+          "options": [
+            {"text": "SC 1.2.2 (Captions for Prerecorded Media)", "correct": true, "feedback": "Correct! SC 1.2.2 is a Level A requirement that mandates synchronized captions for all prerecorded audio content in synchronized media."},
+            {"text": "SC 1.1.1 (Non-text Content)", "correct": false, "feedback": "SC 1.1.1 covers text alternatives for non-text content like images. Time-based media captions are covered under Guideline 1.2."},
+            {"text": "SC 1.2.5 (Audio Description)", "correct": false, "feedback": "SC 1.2.5 requires audio descriptions for visual content in video. Captions for audio are covered by SC 1.2.2."},
+            {"text": "SC 1.4.3 (Contrast Minimum)", "correct": false, "feedback": "SC 1.4.3 addresses color contrast ratios for text. Captions for video are covered under SC 1.2.2."}
+          ]
+        }
+      ],
+      "key_takeaways": [
+        "Images fall into distinct categories (decorative, informative, functional, complex) and each requires a different alt text approach.",
+        "Alt text should describe purpose and context, not just visual appearance. Functional images describe the action; decorative images get empty alt.",
+        "WCAG Guideline 1.2 requires captions for audio content and audio descriptions for visual content in video — these serve different access needs."
+      ],
+      "reflection_questions": [
+        "How would you explain the difference between captions and audio descriptions to a colleague who has never considered media accessibility?",
+        "Think of a complex image you have encountered recently. How would you provide an accessible alternative?"
+      ],
+      "next_week_preview": "In a full course, Week 3 would cover color contrast, text resizing, and the remaining Perceivable success criteria. This example course concludes here.",
+      "discussion": {
+        "prompt": "Find a web page with at least five images. Classify each image (decorative, informative, functional, complex), evaluate the existing alt text (if any), and write improved alt text where needed. Share your before/after comparison and explain your reasoning.",
+        "initial_post": "200 words minimum",
+        "replies": "Respond to at least 1 classmate (100 words)",
+        "due": "Initial post by Wednesday; replies by Sunday"
+      }
+    }
+  ]
+}

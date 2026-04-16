@@ -1,0 +1,58 @@
+{
+  "course_code": "EXAMPLE_101",
+  "course_title": "Introduction to Web Accessibility",
+  "terminal_objectives": [
+    {
+      "id": "TO-01",
+      "statement": "Apply the WCAG 2.2 POUR principles to evaluate and improve the accessibility of web content",
+      "bloom_level": "apply",
+      "bloom_verb": "apply",
+      "chapter_objectives": ["W01-CO-01", "W01-CO-02"]
+    },
+    {
+      "id": "TO-02",
+      "statement": "Create accessible text alternatives and media content that comply with WCAG Perceivable requirements",
+      "bloom_level": "create",
+      "bloom_verb": "create",
+      "chapter_objectives": ["W02-CO-01", "W02-CO-02"]
+    }
+  ],
+  "chapter_objectives": [
+    {
+      "id": "W01-CO-01",
+      "week": 1,
+      "statement": "Explain the four POUR principles (Perceivable, Operable, Understandable, Robust) and how each addresses different categories of access barriers",
+      "bloom_level": "understand",
+      "bloom_verb": "explain",
+      "key_concepts": ["perceivable", "operable", "understandable", "robust", "access barriers"],
+      "terminal_objective": "TO-01"
+    },
+    {
+      "id": "W01-CO-02",
+      "week": 1,
+      "statement": "Describe the structure of WCAG 2.2 including its principles, guidelines, success criteria, and conformance levels (A, AA, AAA)",
+      "bloom_level": "understand",
+      "bloom_verb": "describe",
+      "key_concepts": ["WCAG 2.2", "conformance levels", "success criteria", "guidelines"],
+      "terminal_objective": "TO-01"
+    },
+    {
+      "id": "W02-CO-01",
+      "week": 2,
+      "statement": "Apply best practices for writing effective alt text that distinguishes between decorative, informative, functional, and complex images",
+      "bloom_level": "apply",
+      "bloom_verb": "apply",
+      "key_concepts": ["alt text", "decorative images", "informative images", "functional images"],
+      "terminal_objective": "TO-02"
+    },
+    {
+      "id": "W02-CO-02",
+      "week": 2,
+      "statement": "Evaluate video content for compliance with WCAG Success Criteria 1.2.1 through 1.2.5 covering captions, audio descriptions, and media alternatives",
+      "bloom_level": "evaluate",
+      "bloom_verb": "evaluate",
+      "key_concepts": ["captions", "audio descriptions", "transcripts", "time-based media"],
+      "terminal_objective": "TO-02"
+    }
+  ]
+}

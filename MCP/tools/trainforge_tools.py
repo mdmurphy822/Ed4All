@@ -44,30 +44,11 @@ try:
 except ImportError:
     HAS_LEGACY_CAPTURE = False
 
-# Import new telemetry system
-try:
-    from LibV2.telemetry import ArtifactRef, CaptureSession, InputRef  # noqa: F401
-    HAS_TELEMETRY = True
-except ImportError:
-    HAS_TELEMETRY = False
-
 logger = logging.getLogger(__name__)
 
 
 def _create_trainforge_session(course_code: str, imscc_source: str, phase: str):
     """Create a capture session for Trainforge operations."""
-    if HAS_TELEMETRY:
-        try:
-            return CaptureSession.start_run(
-                tool_id="trainforge",
-                component=phase,
-                meta={"course_code": course_code, "imscc_source": imscc_source},
-                course_code=course_code,
-                phase=phase,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to create telemetry session: {e}")
-    # Fallback to legacy capture
     if HAS_LEGACY_CAPTURE:
         try:
             capture = create_trainforge_capture(
@@ -87,22 +68,7 @@ def _log_chunk_retrieval(capture, query: str, chunks_retrieved: list, chunks_use
     if capture is None:
         return
 
-    if HAS_TELEMETRY and isinstance(capture, CaptureSession):
-        capture.emit(
-            "retrieval.selected_chunks",
-            payload={
-                "query": query,
-                "chunks_retrieved": chunks_retrieved,
-                "chunks_used": chunks_used,
-            },
-            metrics={
-                "rag_k": len(chunks_retrieved),
-                "chunks_selected": len(chunks_used),
-                "latency_ms": latency_ms
-            },
-            phase="retrieve"
-        )
-    elif hasattr(capture, 'log_chunk_retrieval'):
+    if hasattr(capture, 'log_chunk_retrieval'):
         capture.log_chunk_retrieval(query, chunks_retrieved, chunks_used, latency_ms)
 
 
@@ -111,26 +77,7 @@ def _log_question_generation(capture, question_data, source_chunks: list, ration
     if capture is None:
         return
 
-    if HAS_TELEMETRY and isinstance(capture, CaptureSession):
-        # Convert question data to dict if needed
-        q_dict = question_data if isinstance(question_data, dict) else {
-            "question_id": getattr(question_data, 'question_id', ''),
-            "question_type": getattr(question_data, 'question_type', ''),
-            "bloom_level": getattr(question_data, 'bloom_level', ''),
-            "difficulty": getattr(question_data, 'difficulty', ''),
-        }
-        capture.emit(
-            "generation.completed",
-            payload={
-                "task": "mcq",
-                "question": q_dict,
-                "source_chunks": source_chunks,
-                "rationale": rationale,
-            },
-            metrics={"latency_ms": latency_ms},
-            phase="generate"
-        )
-    elif hasattr(capture, 'log_question_generation'):
+    if hasattr(capture, 'log_question_generation'):
         capture.log_question_generation(question_data, source_chunks, rationale, latency_ms)
 
 
@@ -140,19 +87,7 @@ def _log_assessment_assembly(capture, assessment_id: str, question_ids: list, to
     if capture is None:
         return
 
-    if HAS_TELEMETRY and isinstance(capture, CaptureSession):
-        capture.emit(
-            "export.completed",
-            payload={
-                "assessment_id": assessment_id,
-                "question_ids": question_ids,
-                "total_points": total_points,
-                "time_limit_minutes": time_limit,
-                "rationale": rationale,
-            },
-            phase="export"
-        )
-    elif hasattr(capture, 'log_assessment_assembly'):
+    if hasattr(capture, 'log_assessment_assembly'):
         capture.log_assessment_assembly(assessment_id, question_ids, total_points, time_limit, rationale)
 
 
@@ -162,9 +97,7 @@ def _finalize_capture(capture, status: str = "success"):
         return {}
 
     summary = {}
-    if HAS_TELEMETRY and isinstance(capture, CaptureSession):
-        capture.finish_run(status)
-    elif hasattr(capture, '__exit__'):
+    if hasattr(capture, '__exit__'):
         capture.__exit__(None, None, None)
         if hasattr(capture, 'get_session_summary'):
             summary = capture.get_session_summary()

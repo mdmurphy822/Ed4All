@@ -1,0 +1,26 @@
+# Ed4All Requirements
+# Install all: pip install -r requirements.txt
+# Or use: pip install -e ".[full]"
+
+# Core
+beautifulsoup4>=4.12.0,<5.0.0
+lxml>=4.9.0,<6.0.0
+pyyaml>=6.0.0,<7.0.0
+click>=8.0.0,<9.0.0
+rich>=13.0.0,<14.0.0
+jsonschema>=4.17.0,<5.0.0
+
+# DART (PDF processing - optional)
+pdf2image>=1.16.0,<2.0.0
+pytesseract>=0.3.10,<1.0.0
+Pillow>=10.0.0,<12.0.0
+pdfplumber>=0.10.0,<1.0.0
+PyMuPDF>=1.23.0,<2.0.0
+anthropic>=0.18.0,<1.0.0
+
+# Development
+pytest>=7.0.0,<9.0.0
+pytest-cov>=4.0.0,<6.0.0
+pytest-asyncio>=0.21.0,<1.0.0
+black>=23.0.0,<25.0.0
+ruff>=0.1.0,<1.0.0
