@@ -14,7 +14,7 @@ Referenced by: config/workflows.yaml (course_generation validation phase)
 
 from typing import Any, Dict
 
-from orchestrator.core.validation_gates import GateIssue, GateResult
+from MCP.hardening.validation_gates import GateIssue, GateResult
 
 
 class OSCQRValidator:

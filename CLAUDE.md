@@ -37,8 +37,10 @@ Ed4All/
 ├── MCP/
 │   ├── server.py            # FastMCP server (core file tools)
 │   ├── tools/               # Domain tool modules
-│   └── tests/               # MCP tool tests
-├── orchestrator/            # Workflow execution & coordination
+│   ├── core/                # Orchestrator config, executor, workflow runner
+│   ├── hardening/           # Error classifier, validation gates, checkpointing
+│   ├── ipc/                 # Inter-process status tracking
+│   └── tests/               # MCP tool & orchestrator tests
 ├── cli/                     # CLI commands (ed4all entry point)
 ├── lib/                     # Shared libraries & validators
 ├── config/                  # Workflow & agent configs
@@ -277,7 +279,7 @@ Central progress tracking file:
 
 Use `StatusTracker` for multi-terminal coordination:
 ```python
-from orchestrator.ipc.status_tracker import StatusTracker
+from MCP.ipc.status_tracker import StatusTracker
 
 tracker = StatusTracker("state/status")
 tracker.set_status("W001", "content_generator", "Module_3.html", "IN_PROGRESS")

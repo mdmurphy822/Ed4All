@@ -185,7 +185,7 @@ def workflow_state_file(tmp_path, sample_workflow_state):
 def checkpoint_manager(tmp_path):
     """CheckpointManager with temp state directory."""
     try:
-        from orchestrator.core.checkpoint import CheckpointManager
+        from MCP.hardening.checkpoint import CheckpointManager
         run_path = tmp_path / "runs" / "RUN_001"
         run_path.mkdir(parents=True)
         return CheckpointManager(run_path)
@@ -218,7 +218,7 @@ def sample_checkpoint_data():
 def error_classifier():
     """ErrorClassifier instance."""
     try:
-        from orchestrator.core.error_classifier import ErrorClassifier
+        from MCP.hardening.error_classifier import ErrorClassifier
         return ErrorClassifier()
     except ImportError:
         pytest.skip("error_classifier module not available")
@@ -228,7 +228,7 @@ def error_classifier():
 def poison_pill_detector():
     """PoisonPillDetector instance."""
     try:
-        from orchestrator.core.error_classifier import PoisonPillDetector
+        from MCP.hardening.error_classifier import PoisonPillDetector
         return PoisonPillDetector(threshold=3, time_window_seconds=60)
     except ImportError:
         pytest.skip("error_classifier module not available")

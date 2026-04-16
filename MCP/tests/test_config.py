@@ -9,7 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
-    from orchestrator.core.config import (
+    from MCP.core.config import (
         AgentConfig,
         OrchestratorConfig,
         WorkflowConfig,

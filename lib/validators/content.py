@@ -14,7 +14,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
-from orchestrator.core.validation_gates import GateIssue, GateResult
+from MCP.hardening.validation_gates import GateIssue, GateResult
 
 # Minimum word count for substantive content
 MIN_CONTENT_WORDS = 50

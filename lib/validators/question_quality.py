@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
-from orchestrator.core.validation_gates import GateIssue, GateResult
+from MCP.hardening.validation_gates import GateIssue, GateResult
 
 from lib.validators.bloom import detect_bloom_level
 

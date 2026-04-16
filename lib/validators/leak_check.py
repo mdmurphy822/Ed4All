@@ -11,7 +11,7 @@ import re
 import time
 from typing import Any, Dict, List
 
-from orchestrator.core.validation_gates import GateIssue, GateResult
+from MCP.hardening.validation_gates import GateIssue, GateResult
 
 from lib.leak_checker import LeakChecker, LeakSeverity
 

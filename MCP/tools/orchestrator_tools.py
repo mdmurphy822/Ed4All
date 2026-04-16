@@ -20,7 +20,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from lib.paths import STATE_LOCKS, STATE_PATH  # noqa: E402
 from lib.state_manager import atomic_write_json  # noqa: E402
-from orchestrator.ipc import StatusTracker  # noqa: E402
+from MCP.ipc import StatusTracker  # noqa: E402
 
 # Shared StatusTracker instance
 _status_tracker = None
@@ -179,8 +179,8 @@ def register_orchestrator_tools(mcp):
         """
         try:
             # Import here to avoid circular imports
-            from orchestrator.core.config import OrchestratorConfig
-            from orchestrator.core.executor import AGENT_TOOL_MAPPING
+            from MCP.core.config import OrchestratorConfig
+            from MCP.core.executor import AGENT_TOOL_MAPPING
 
             # Validate agent type exists in config
             try:
@@ -467,7 +467,7 @@ def register_orchestrator_tools(mcp):
             Execution result with status and output
         """
         try:
-            from orchestrator.core.executor import AGENT_TOOL_MAPPING
+            from MCP.core.executor import AGENT_TOOL_MAPPING
 
             # Load task from workflow state
             workflow_path = STATE_PATH / "workflows" / f"{workflow_id}.json"

@@ -5,7 +5,7 @@ Provides strongly-typed models for task definitions and results
 with validation at construction time.
 
 Usage:
-    from orchestrator.core.schemas import Task, TaskResult, TaskStatus
+    from MCP.core.schemas import Task, TaskResult, TaskStatus
 
     task = Task(
         id="task_001",

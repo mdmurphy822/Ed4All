@@ -23,7 +23,7 @@ import zipfile
 from pathlib import Path
 from typing import Any, Dict, List
 
-from orchestrator.core.validation_gates import GateIssue, GateResult
+from MCP.hardening.validation_gates import GateIssue, GateResult
 
 
 class IMSCCValidator:

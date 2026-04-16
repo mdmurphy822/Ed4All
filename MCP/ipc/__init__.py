@@ -1,4 +1,4 @@
-"""Orchestrator IPC (Inter-Process Communication) components."""
+"""MCP IPC (Inter-Process Communication) components."""
 
 from .status_tracker import StatusTracker
 

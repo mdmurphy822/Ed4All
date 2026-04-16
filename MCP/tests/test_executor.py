@@ -11,7 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
-    from orchestrator.core.executor import (
+    from MCP.core.executor import (
         AGENT_TOOL_MAPPING,
         ExecutionResult,
         TaskExecutor,
@@ -365,7 +365,7 @@ class TestWorkflowExecution:
     @pytest.mark.asyncio
     async def test_execute_workflow_missing_file(self, mock_executor, tmp_path):
         """Should return empty for missing workflow."""
-        with patch('orchestrator.core.executor.STATE_PATH', tmp_path / "state"):
+        with patch('MCP.core.executor.STATE_PATH', tmp_path / "state"):
             results = await mock_executor.execute_workflow("MISSING_W")
 
         assert results == {}
@@ -386,7 +386,7 @@ class TestWorkflowExecution:
         }
         (state_path / "W001.json").write_text(json.dumps(workflow))
 
-        with patch('orchestrator.core.executor.STATE_PATH', tmp_path / "state"):
+        with patch('MCP.core.executor.STATE_PATH', tmp_path / "state"):
             with patch.object(mock_executor, 'execute_task') as mock_exec:
                 mock_exec.return_value = ExecutionResult(task_id="T001", status="COMPLETE")
                 await mock_executor.execute_workflow("W001", parallel=True)
@@ -409,7 +409,7 @@ class TestWorkflowExecution:
         }
         (state_path / "W001.json").write_text(json.dumps(workflow))
 
-        with patch('orchestrator.core.executor.STATE_PATH', tmp_path / "state"):
+        with patch('MCP.core.executor.STATE_PATH', tmp_path / "state"):
             with patch.object(mock_executor, 'execute_task') as mock_exec:
                 mock_exec.return_value = ExecutionResult(task_id="T001", status="COMPLETE")
                 await mock_executor.execute_workflow("W001", parallel=False)
@@ -431,7 +431,7 @@ class TestWorkflowExecution:
         }
         (state_path / "W001.json").write_text(json.dumps(workflow))
 
-        with patch('orchestrator.core.executor.STATE_PATH', tmp_path / "state"):
+        with patch('MCP.core.executor.STATE_PATH', tmp_path / "state"):
             with patch.object(mock_executor, 'execute_task') as mock_exec:
                 mock_exec.return_value = ExecutionResult(task_id="T001", status="COMPLETE")
                 await mock_executor.execute_workflow("W001", max_concurrent=3)

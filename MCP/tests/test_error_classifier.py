@@ -10,7 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
-    from orchestrator.core.error_classifier import (
+    from MCP.hardening.error_classifier import (
         ClassifiedError,
         ErrorClass,
         ErrorClassifier,
@@ -356,7 +356,7 @@ class TestRetryPolicy:
     def test_exponential_backoff(self):
         """Retry delays should use exponential backoff."""
         try:
-            from orchestrator.core.error_classifier import RetryPolicy
+            from MCP.hardening.error_classifier import RetryPolicy
             policy = RetryPolicy(base_delay_seconds=1.0, max_delay_seconds=60.0, exponential_base=2.0)
 
             # Each retry should have longer delay
@@ -374,7 +374,7 @@ class TestRetryPolicy:
     def test_should_retry_transient(self):
         """Should recommend retry for transient errors."""
         try:
-            from orchestrator.core.error_classifier import RetryPolicy
+            from MCP.hardening.error_classifier import RetryPolicy
             policy = RetryPolicy(max_retries=3)
 
             error = ClassifiedError(
@@ -397,7 +397,7 @@ class TestRetryPolicy:
     def test_should_not_retry_permanent(self):
         """Should not recommend retry for permanent errors."""
         try:
-            from orchestrator.core.error_classifier import RetryPolicy
+            from MCP.hardening.error_classifier import RetryPolicy
             policy = RetryPolicy(max_retries=3)
 
             error = ClassifiedError(
