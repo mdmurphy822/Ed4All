@@ -582,7 +582,7 @@ class AssessmentGenerator:
             elif statements and len(statements) >= 4:
                 # Use a factual statement: ask which is true
                 correct_stmt = statements[0]
-                stem = f"<p>Which of the following statements is correct?</p>"
+                stem = "<p>Which of the following statements is correct?</p>"
 
                 choices = [
                     {"text": f"<p>{correct_stmt.statement}</p>", "is_correct": True},
@@ -823,7 +823,7 @@ class AssessmentGenerator:
                     bloom_level=bloom_level,
                     objective_id=objective_id,
                     points=10.0,
-                    feedback=f"<p>A complete response should identify the underlying principles illustrated by this example and propose a novel application.</p>",
+                    feedback="<p>A complete response should identify the underlying principles illustrated by this example and propose a novel application.</p>",
                     source_chunks=[ex.source_chunk_id],
                     generation_rationale=(
                         f"Essay at {bloom_level} level; based on example from content"

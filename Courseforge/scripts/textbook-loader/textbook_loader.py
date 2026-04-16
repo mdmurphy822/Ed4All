@@ -269,7 +269,7 @@ class TextbookLoader:
             logger.error("BeautifulSoup not available for basic parsing")
             return None
 
-        with open(html_file, 'r', encoding='utf-8') as f:
+        with open(html_file, encoding='utf-8') as f:
             soup = BeautifulSoup(f.read(), 'html.parser')
 
         # Extract title
@@ -295,7 +295,7 @@ class TextbookLoader:
         # Extract learning objectives (common patterns)
         objectives = []
         for pattern in ['learning objective', 'by the end of', 'you will be able to']:
-            for elem in soup.find_all(string=lambda s: s and pattern.lower() in s.lower()):
+            for elem in soup.find_all(string=lambda s: s and pattern.lower() in s.lower()):  # noqa: B023
                 parent = elem.parent
                 if parent:
                     for li in parent.find_all('li'):

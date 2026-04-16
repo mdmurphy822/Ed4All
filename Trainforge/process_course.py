@@ -26,8 +26,8 @@ import argparse
 import json
 import re
 import sys
-import zipfile
 import xml.etree.ElementTree as ET
+import zipfile
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -37,9 +37,8 @@ from typing import Any, Dict, List, Optional, Tuple
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.parsers.html_content_parser import HTMLContentParser, HTMLTextExtractor
 from lib.decision_capture import DecisionCapture
-
+from Trainforge.parsers.html_content_parser import HTMLContentParser, HTMLTextExtractor
 
 # ---------------------------------------------------------------------------
 # Bloom's → difficulty mapping
@@ -1297,8 +1296,8 @@ class CourseProcessor:
             "",
             "## Corpus Statistics",
             "",
-            f"| Metric | Value |",
-            f"|--------|-------|",
+            "| Metric | Value |",
+            "|--------|-------|",
             f"| Total Chunks | {stats['total_chunks']} |",
             f"| Total Words | {stats['total_words']:,} |",
             f"| Total Tokens (est) | {stats['total_tokens_estimate']:,} |",
@@ -1395,10 +1394,10 @@ def main():
     print(f"Chunks: {result['stats']['total_chunks']}")
     print(f"Words:  {result['stats']['total_words']:,}")
     print(f"Tokens: {result['stats']['total_tokens_estimate']:,}")
-    print(f"\nChunk types:")
+    print("\nChunk types:")
     for ct, count in result["stats"]["chunk_types"].items():
         print(f"  {ct}: {count}")
-    print(f"\nDifficulty:")
+    print("\nDifficulty:")
     for d, count in result["stats"]["difficulty_distribution"].items():
         print(f"  {d}: {count}")
 

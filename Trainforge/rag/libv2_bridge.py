@@ -491,7 +491,7 @@ class TrainforgeRAG:
         difficulties = {}
         total_tokens = 0
 
-        with open(self.chunks_path, 'r') as f:
+        with open(self.chunks_path) as f:
             for line in f:
                 line = line.strip()
                 if not line:

@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 class HTMLGenerator:
     """
     Generates HTML pages from structured course content JSON.
-    
+
     Implements atomic operations with comprehensive validation to create
     professional Bootstrap-based HTML pages for IMSCC generation.
     """
@@ -30,7 +30,7 @@ class HTMLGenerator:
     def __init__(self, config_path: Optional[str] = None):
         """
         Initialize HTML generator with configuration and logging.
-        
+
         Args:
             config_path (str, optional): Path to configuration file
         """
@@ -54,10 +54,10 @@ class HTMLGenerator:
     def load_config(self, config_path: Optional[str]) -> Dict[str, Any]:
         """
         Load HTML generator configuration with defaults.
-        
+
         Args:
             config_path (str, optional): Path to config file
-            
+
         Returns:
             dict: Configuration parameters
         """
@@ -87,7 +87,7 @@ class HTMLGenerator:
         }
 
         if config_path and Path(config_path).exists():
-            with open(config_path, 'r') as f:
+            with open(config_path) as f:
                 user_config = json.load(f)
                 default_config.update(user_config)
 
@@ -96,11 +96,11 @@ class HTMLGenerator:
     def validate_execution_environment(self, input_path: str, output_dir: str):
         """
         Comprehensive pre-flight validation before HTML generation.
-        
+
         Args:
             input_path (str): Path to structured JSON file
             output_dir (str): Output directory for HTML files
-            
+
         Raises:
             SystemExit: If validation fails
         """
@@ -116,7 +116,7 @@ class HTMLGenerator:
 
         # Validate JSON structure
         try:
-            with open(input_file, 'r', encoding='utf-8') as f:
+            with open(input_file, encoding='utf-8') as f:
                 data = json.load(f)
                 self.validate_input_structure(data)
         except json.JSONDecodeError as e:
@@ -143,10 +143,10 @@ class HTMLGenerator:
     def validate_input_structure(self, data: Dict[str, Any]):
         """
         Validate structured JSON input meets requirements.
-        
+
         Args:
             data (dict): Structured course data
-            
+
         Raises:
             SystemExit: If structure validation fails
         """
@@ -169,12 +169,12 @@ class HTMLGenerator:
     def generate_html_template(self, title: str, content: str, page_type: str = "standard") -> str:
         """
         Generate complete HTML page with Bootstrap framework.
-        
+
         Args:
             title (str): Page title
             content (str): Main page content
             page_type (str): Type of page for specific styling
-            
+
         Returns:
             str: Complete HTML document
         """
@@ -245,23 +245,23 @@ class HTMLGenerator:
                         }
                     }, 50);
                 });
-                
+
                 // Expand/Collapse all functionality for accordions
                 if ($('.accordion').length > 0) {
                     var expandAllBtn = '<div class="mb-3"><button class="btn btn-outline-primary btn-sm" id="expandAll">Expand All</button> <button class="btn btn-outline-secondary btn-sm" id="collapseAll">Collapse All</button></div>';
                     $('.accordion').before(expandAllBtn);
-                    
+
                     $('#expandAll').on('click', function() {
                         $('.accordion .collapse').collapse('show');
                         $('.rotate-icon').addClass('rotated');
                     });
-                    
+
                     $('#collapseAll').on('click', function() {
                         $('.accordion .collapse').collapse('hide');
                         $('.rotate-icon').removeClass('rotated');
                     });
                 }
-                
+
                 // Keyboard navigation for accordion
                 $('.accordion .btn-link').on('keydown', function(e) {
                     if (e.key === 'Enter' || e.key === ' ') {
@@ -280,14 +280,14 @@ class HTMLGenerator:
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Linear Algebra Course - {title}">
     <title>{title}</title>
-    
+
     <!-- Bootstrap CSS -->
-    <link rel="stylesheet" href="{self.config['css_framework']['cdn_primary']}" 
+    <link rel="stylesheet" href="{self.config['css_framework']['cdn_primary']}"
           onerror="this.onerror=null;this.href='{self.config['css_framework']['cdn_fallback']}';">
-    
+
     <!-- Font Awesome -->
     <link rel="stylesheet" href="{self.config['javascript_framework']['font_awesome']}">
-    
+
     {custom_css}
 </head>
 <body>
@@ -295,24 +295,24 @@ class HTMLGenerator:
         <header>
             <h1 class="mb-4">{title}</h1>
         </header>
-        
+
         <main role="main">
             {content}
         </main>
-        
+
         <footer class="mt-5 pt-4 border-top">
             <p class="text-muted text-center">
                 <small>Linear Algebra: Foundations and Applications - Course Content</small>
             </p>
         </footer>
     </div>
-    
+
     <!-- JavaScript Dependencies -->
-    <script src="{self.config['javascript_framework']['jquery']}" 
+    <script src="{self.config['javascript_framework']['jquery']}"
             onerror="console.warn('jQuery failed to load from CDN')"></script>
-    <script src="{self.config['javascript_framework']['bootstrap_js']}" 
+    <script src="{self.config['javascript_framework']['bootstrap_js']}"
             onerror="console.warn('Bootstrap JS failed to load from CDN')"></script>
-    
+
     {custom_js}
 </body>
 </html>"""
@@ -322,10 +322,10 @@ class HTMLGenerator:
     def format_content_paragraphs(self, content: str) -> str:
         """
         Format content text into properly structured paragraphs.
-        
+
         Args:
             content (str): Raw content text
-            
+
         Returns:
             str: HTML formatted content with proper paragraph structure
         """
@@ -374,11 +374,11 @@ class HTMLGenerator:
     def generate_overview_html(self, sub_module: Dict[str, Any], week_number: int) -> str:
         """
         Generate HTML content for module overview pages.
-        
+
         Args:
             sub_module (dict): Sub-module data
             week_number (int): Week number
-            
+
         Returns:
             str: HTML content for overview page
         """
@@ -387,12 +387,12 @@ class HTMLGenerator:
             <h2>Learning Objectives</h2>
             {self.format_learning_objectives(sub_module.get('learning_objectives', []))}
         </div>
-        
+
         <div class="content-section">
             <h2>Module Introduction</h2>
             {self.format_content_paragraphs(sub_module.get('content', ''))}
         </div>
-        
+
         <div class="content-section">
             <h2>What You'll Learn This Week</h2>
             <div class="alert alert-info" role="alert">
@@ -407,11 +407,11 @@ class HTMLGenerator:
     def generate_concept_summary_html(self, sub_module: Dict[str, Any], week_number: int) -> str:
         """
         Generate HTML content for concept summary pages.
-        
+
         Args:
             sub_module (dict): Sub-module data
             week_number (int): Week number
-            
+
         Returns:
             str: HTML content for concept summary page
         """
@@ -423,9 +423,9 @@ class HTMLGenerator:
                 </div>
             </div>
         </div>
-        
+
         {self.format_key_concepts_inline(sub_module.get('key_concepts', []))}
-        
+
         <div class="content-section">
             <div class="alert alert-success" role="alert">
                 <i class="fas fa-lightbulb" aria-hidden="true"></i>
@@ -439,11 +439,11 @@ class HTMLGenerator:
     def generate_key_concepts_html(self, sub_module: Dict[str, Any], week_number: int) -> str:
         """
         Generate HTML content for interactive key concepts accordion.
-        
+
         Args:
             sub_module (dict): Sub-module data
             week_number (int): Week number
-            
+
         Returns:
             str: HTML content for key concepts accordion
         """
@@ -470,15 +470,15 @@ class HTMLGenerator:
             <div class="card">
                 <div class="card-header" id="heading{concept_id}">
                     <h2 class="mb-0">
-                        <button class="btn btn-link btn-block text-left" type="button" 
-                                data-toggle="collapse" data-target="#collapse{concept_id}" 
+                        <button class="btn btn-link btn-block text-left" type="button"
+                                data-toggle="collapse" data-target="#collapse{concept_id}"
                                 aria-expanded="false" aria-controls="collapse{concept_id}">
                             <i class="fas fa-chevron-right rotate-icon" aria-hidden="true"></i>
                             <span class="ml-2">{term}</span>
                         </button>
                     </h2>
                 </div>
-                <div id="collapse{concept_id}" class="collapse" 
+                <div id="collapse{concept_id}" class="collapse"
                      aria-labelledby="heading{concept_id}" data-parent="#keyConceptsAccordion">
                     <div class="card-body">
                         <p class="key-concept-definition">{definition}</p>
@@ -492,11 +492,11 @@ class HTMLGenerator:
         <div class="content-section">
             <p class="lead">Explore the key concepts for this module. Click on each term to reveal its definition and explanation.</p>
         </div>
-        
+
         <div class="accordion" id="keyConceptsAccordion" role="tablist" aria-label="Key Concepts">
             {''.join(accordion_items)}
         </div>
-        
+
         <div class="content-section mt-4">
             <div class="alert alert-primary" role="alert">
                 <i class="fas fa-graduation-cap" aria-hidden="true"></i>
@@ -510,11 +510,11 @@ class HTMLGenerator:
     def generate_visual_content_html(self, sub_module: Dict[str, Any], week_number: int) -> str:
         """
         Generate HTML content for visual/graphical/math display pages.
-        
+
         Args:
             sub_module (dict): Sub-module data
             week_number (int): Week number
-            
+
         Returns:
             str: HTML content for visual content page
         """
@@ -526,7 +526,7 @@ class HTMLGenerator:
                 </div>
             </div>
         </div>
-        
+
         <div class="content-section">
             <h2>Visual Learning Elements</h2>
             <div class="row">
@@ -548,7 +548,7 @@ class HTMLGenerator:
                 </div>
             </div>
         </div>
-        
+
         <div class="content-section">
             <div class="alert alert-info" role="alert">
                 <i class="fas fa-eye" aria-hidden="true"></i>
@@ -562,11 +562,11 @@ class HTMLGenerator:
     def generate_application_examples_html(self, sub_module: Dict[str, Any], week_number: int) -> str:
         """
         Generate HTML content for application examples pages.
-        
+
         Args:
             sub_module (dict): Sub-module data
             week_number (int): Week number
-            
+
         Returns:
             str: HTML content for application examples page
         """
@@ -575,7 +575,7 @@ class HTMLGenerator:
             <h2>Learning Concepts in Practice</h2>
             {self.format_content_paragraphs(sub_module.get('content', ''))}
         </div>
-        
+
         <div class="content-section">
             <h2>Step-by-Step Examples</h2>
             <div class="card-deck">
@@ -597,7 +597,7 @@ class HTMLGenerator:
                 </div>
             </div>
         </div>
-        
+
         <div class="content-section">
             <div class="alert alert-warning" role="alert">
                 <i class="fas fa-tools" aria-hidden="true"></i>
@@ -611,11 +611,11 @@ class HTMLGenerator:
     def generate_real_world_html(self, sub_module: Dict[str, Any], week_number: int) -> str:
         """
         Generate HTML content for real world applications pages.
-        
+
         Args:
             sub_module (dict): Sub-module data
             week_number (int): Week number
-            
+
         Returns:
             str: HTML content for real world applications page
         """
@@ -624,7 +624,7 @@ class HTMLGenerator:
             <h2>Real-World Applications</h2>
             {self.format_content_paragraphs(sub_module.get('content', ''))}
         </div>
-        
+
         <div class="content-section">
             <h2>Industry Connections</h2>
             <div class="row">
@@ -654,7 +654,7 @@ class HTMLGenerator:
                 </div>
             </div>
         </div>
-        
+
         <div class="content-section">
             <div class="alert alert-success" role="alert">
                 <i class="fas fa-briefcase" aria-hidden="true"></i>
@@ -668,11 +668,11 @@ class HTMLGenerator:
     def generate_study_questions_html(self, sub_module: Dict[str, Any], week_number: int) -> str:
         """
         Generate HTML content for study questions pages.
-        
+
         Args:
             sub_module (dict): Sub-module data
             week_number (int): Week number
-            
+
         Returns:
             str: HTML content for study questions page
         """
@@ -681,7 +681,7 @@ class HTMLGenerator:
             <h2>Reflection and Review</h2>
             {self.format_content_paragraphs(sub_module.get('content', ''))}
         </div>
-        
+
         <div class="content-section">
             <h2>Study Questions</h2>
             <div class="list-group">
@@ -702,7 +702,7 @@ class HTMLGenerator:
                 </div>
             </div>
         </div>
-        
+
         <div class="content-section">
             <div class="alert alert-primary" role="alert">
                 <i class="fas fa-pencil-alt" aria-hidden="true"></i>
@@ -716,10 +716,10 @@ class HTMLGenerator:
     def format_learning_objectives(self, objectives: List[str]) -> str:
         """
         Format learning objectives into HTML list.
-        
+
         Args:
             objectives (list): List of learning objectives
-            
+
         Returns:
             str: HTML formatted objectives list
         """
@@ -727,7 +727,7 @@ class HTMLGenerator:
             return '<p class="content-paragraph">Learning objectives will be provided.</p>'
 
         objectives_html = '<ul class="list-group list-group-flush">'
-        for i, objective in enumerate(objectives):
+        for _i, objective in enumerate(objectives):
             objectives_html += f'''
             <li class="list-group-item d-flex align-items-start">
                 <i class="fas fa-check-circle text-success mt-1 mr-3" aria-hidden="true"></i>
@@ -741,10 +741,10 @@ class HTMLGenerator:
     def format_key_concepts_inline(self, key_concepts: List[Any]) -> str:
         """
         Format key concepts inline with content.
-        
+
         Args:
             key_concepts (list): List of key concepts
-            
+
         Returns:
             str: HTML formatted key concepts
         """
@@ -786,10 +786,10 @@ class HTMLGenerator:
     def extract_concepts_from_content(self, content: str) -> List[Dict[str, str]]:
         """
         Extract key concepts from content when not explicitly provided.
-        
+
         Args:
             content (str): Content text to extract concepts from
-            
+
         Returns:
             list: List of extracted concept dictionaries
         """
@@ -823,11 +823,11 @@ class HTMLGenerator:
     def generate_html_files(self, input_path: str, output_dir: str) -> Dict[str, Any]:
         """
         Generate all HTML files with atomic execution.
-        
+
         Args:
             input_path (str): Path to structured JSON file
             output_dir (str): Output directory for HTML files
-            
+
         Returns:
             dict: Generation results summary
         """
@@ -836,7 +836,7 @@ class HTMLGenerator:
             self.validate_execution_environment(input_path, output_dir)
 
             # Load structured data
-            with open(input_path, 'r', encoding='utf-8') as f:
+            with open(input_path, encoding='utf-8') as f:
                 course_data = json.load(f)
 
             output_path = Path(output_dir)
@@ -916,11 +916,11 @@ class HTMLGenerator:
     def validate_html_output(self, output_path: Path, generated_files: List[str]):
         """
         Validate generated HTML files meet requirements.
-        
+
         Args:
             output_path (Path): Output directory path
             generated_files (list): List of generated filenames
-            
+
         Raises:
             SystemExit: If validation fails
         """
@@ -935,7 +935,7 @@ class HTMLGenerator:
         # Basic HTML validation
         for filename in generated_files[:3]:  # Sample validation
             file_path = output_path / filename
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(file_path, encoding='utf-8') as f:
                 content = f.read()
 
             # Check for required HTML structure

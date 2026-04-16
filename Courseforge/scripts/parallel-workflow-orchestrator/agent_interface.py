@@ -2,7 +2,7 @@
 """
 Agent Interface for Parallel Course Generation
 
-This module provides the interface between the parallel orchestrator 
+This module provides the interface between the parallel orchestrator
 and Claude Code's agent system using the Task tool.
 """
 
@@ -39,7 +39,7 @@ CRITICAL REQUIREMENTS:
 Required Output Files:
 - week_{week_number:02d}_overview.html (600+ words course overview)
 - week_{week_number:02d}_concept1.html (800+ words primary concept)
-- week_{week_number:02d}_concept2.html (800+ words secondary concept) 
+- week_{week_number:02d}_concept2.html (800+ words secondary concept)
 - week_{week_number:02d}_key_concepts.html (accordion format, 5-10 definitions)
 - week_{week_number:02d}_visual_display.html (mathematical displays/graphics)
 - week_{week_number:02d}_applications.html (real-world applications)
@@ -110,7 +110,7 @@ IMSCC Packaging Requirements:
 
 Output Directory: {export_dir}/week_{week_number:02d}/
 
-IMPORTANT: 
+IMPORTANT:
 - Do NOT create imsmanifest.xml (handled separately after all weeks complete)
 - Focus on content conversion and validation
 - Ensure all files are IMSCC-ready but not zipped
@@ -118,7 +118,7 @@ IMPORTANT:
 
 Validation:
 - Verify all content files converted successfully
-- Test D2L XML compliance 
+- Test D2L XML compliance
 - Validate QTI 1.2 format compliance
 - Check resource type consistency
         """
@@ -173,7 +173,7 @@ Output File: {export_dir}/imsmanifest.xml
 
 Validation Requirements:
 - Verify all resources have corresponding organization items
-- Check schema namespace consistency (Pattern 20 prevention)  
+- Check schema namespace consistency (Pattern 20 prevention)
 - Ensure resource types match file formats (Pattern 14 prevention)
 - Validate hierarchical organization structure
         """

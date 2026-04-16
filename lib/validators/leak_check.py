@@ -11,9 +11,8 @@ import re
 import time
 from typing import Any, Dict, List
 
-from MCP.hardening.validation_gates import GateIssue, GateResult
-
 from lib.leak_checker import LeakChecker, LeakSeverity
+from MCP.hardening.validation_gates import GateIssue, GateResult
 
 
 class LeakCheckValidator:

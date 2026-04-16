@@ -162,8 +162,8 @@ async def run_textbook_pipeline(workflow_id: str) -> str:
     """
     try:
         from MCP.core.config import OrchestratorConfig
-        from MCP.core.workflow_runner import WorkflowRunner
         from MCP.core.executor import TaskExecutor
+        from MCP.core.workflow_runner import WorkflowRunner
 
         # Load orchestrator config
         config = OrchestratorConfig.load()
@@ -588,8 +588,8 @@ def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
     - Wraps content paragraphs in <p> tags
     - Adds WCAG 2.2 AA landmarks (main, skip link, dark mode)
     """
-    import re as _re
     import html as _html
+    import re as _re
 
     lines = raw_text.split("\n")
 
@@ -978,7 +978,6 @@ def _build_tool_registry() -> dict:
         # These are registered as MCP tools but we need direct callables
 
         async def _create_course_project(**kwargs):
-            from MCP.tools import courseforge_tools as ct
             logger.info(f"_create_course_project called with kwargs: {list(kwargs.keys())}")
             logger.info(f"  objectives_path raw: {repr(kwargs.get('objectives_path'))}")
             course_name = kwargs.get("course_name", "")
@@ -1046,8 +1045,8 @@ def _build_tool_registry() -> dict:
             Reads staged DART HTML content and objectives, then produces
             one HTML module per week with structured educational content.
             """
-            import re as _re
             import html as _html
+            import re as _re
 
             project_id = kwargs.get("project_id", "")
             project_path = _PROJECT_ROOT / "Courseforge" / "exports" / project_id
@@ -1515,7 +1514,6 @@ def _build_tool_registry() -> dict:
     # LibV2 archival tool
     async def _archive_to_libv2(**kwargs):
         """Wrapper for archive_to_libv2."""
-        import hashlib
 
         course_name = kwargs.get("course_name", "")
         domain = kwargs.get("domain", "")

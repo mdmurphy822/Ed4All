@@ -277,7 +277,7 @@ class RemediationValidator:
         result = FileValidationResult(file_path=str(file_path.relative_to(self.course_dir)))
 
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(file_path, encoding='utf-8') as f:
                 content = f.read()
 
             # Run all checks

@@ -2,7 +2,7 @@
 """
 Brightspace Package Generator - Enhanced IMSCC Package Creation Agent
 
-This agent transforms structured markdown course content into production-ready 
+This agent transforms structured markdown course content into production-ready
 IMS Common Cartridge packages with full Brightspace integration, native assessment
 tools, and interactive Bootstrap accordion components.
 
@@ -81,7 +81,7 @@ class BrightspacePackager:
     def create_export_directory(self) -> str:
         """
         Create timestamped export directory structure with folder multiplication prevention
-        
+
         Returns:
             str: Path to created export directory
         """
@@ -122,10 +122,10 @@ class BrightspacePackager:
     def parse_course_structure(self, firstdraft_path: str) -> Dict:
         """
         Parse course structure from first draft directory
-        
+
         Args:
             firstdraft_path: Path to YYYYMMDD_HHMMSS_firstdraft directory
-            
+
         Returns:
             Dict: Parsed course structure and metadata
         """
@@ -161,14 +161,14 @@ class BrightspacePackager:
         # Parse settings.json
         settings_path = course_path / "settings.json"
         if settings_path.exists():
-            with open(settings_path, 'r') as f:
+            with open(settings_path) as f:
                 course_structure["settings"] = json.load(f)
 
         return course_structure
 
     def _parse_course_info(self, course_info_path: Path) -> Dict:
         """Parse course_info.md file"""
-        with open(course_info_path, 'r', encoding='utf-8') as f:
+        with open(course_info_path, encoding='utf-8') as f:
             content = f.read()
 
         info = {
@@ -212,7 +212,7 @@ class BrightspacePackager:
 
     def _parse_single_module(self, module_path: Path) -> Dict:
         """Parse individual module markdown file"""
-        with open(module_path, 'r', encoding='utf-8') as f:
+        with open(module_path, encoding='utf-8') as f:
             content = f.read()
 
         module_number = re.search(r"module_(\d+)", module_path.name)
@@ -390,7 +390,7 @@ class BrightspacePackager:
 
     def _parse_assessment_file(self, assessment_path: Path, assessment_type: str) -> Dict:
         """Parse individual assessment file"""
-        with open(assessment_path, 'r', encoding='utf-8') as f:
+        with open(assessment_path, encoding='utf-8') as f:
             content = f.read()
 
         assessment = {
@@ -421,7 +421,7 @@ class BrightspacePackager:
     def generate_html_objects(self, course_structure: Dict) -> Dict[str, str]:
         """
         Generate individual HTML objects for each learning objective with accordion functionality
-        
+
         Returns:
             Dict[str, str]: Mapping of object IDs to HTML content
         """
@@ -488,18 +488,18 @@ class BrightspacePackager:
             <h1>{module['title']}</h1>
             <p class="lead content-paragraph">Welcome to {module['title']}. This module will introduce you to key concepts and provide hands-on learning experiences.</p>
         </div>
-        
+
         <div class="row">
             <div class="col-12">
                 <h2>Module Overview</h2>
                 <p class="content-paragraph">In this module, you will explore important topics and develop practical skills through interactive activities and assessments.</p>
-                
+
                 <h3>What You'll Learn</h3>
                 <p class="content-paragraph">By the end of this module, you will have gained valuable knowledge and skills that build upon previous learning and prepare you for upcoming challenges.</p>
             </div>
         </div>
     </div>
-    
+
     <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
     <script src="https://stackpath.bootstrapcdn.com/bootstrap/{self.bootstrap_version}/js/bootstrap.bundle.min.js"></script>
 </body>
@@ -514,7 +514,7 @@ class BrightspacePackager:
             <div class="card">
                 <div class="card-header" id="heading{i}">
                     <h3 class="mb-0">
-                        <button class="btn btn-link btn-block text-left" type="button" data-toggle="collapse" 
+                        <button class="btn btn-link btn-block text-left" type="button" data-toggle="collapse"
                                 data-target="#collapse{i}" aria-expanded="false" aria-controls="collapse{i}">
                             <i class="fas fa-chevron-right accordion-icon"></i>
                             Learning Objective {i+1}
@@ -547,7 +547,7 @@ class BrightspacePackager:
 <body>
     <div class="container-fluid">
         <h1>{module['title']}: Learning Objectives</h1>
-        
+
         <div class="expand-all-btn">
             <button class="btn btn-outline-primary" id="expandAll">
                 <i class="fas fa-expand-arrows-alt"></i> Expand All
@@ -556,12 +556,12 @@ class BrightspacePackager:
                 <i class="fas fa-compress-arrows-alt"></i> Collapse All
             </button>
         </div>
-        
+
         <div class="accordion" id="objectivesAccordion">
             {accordion_items}
         </div>
     </div>
-    
+
     <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
     <script src="https://stackpath.bootstrapcdn.com/bootstrap/{self.bootstrap_version}/js/bootstrap.bundle.min.js"></script>
     <script>
@@ -569,15 +569,15 @@ class BrightspacePackager:
             $('#expandAll').click(function() {{
                 $('.collapse').collapse('show');
             }});
-            
+
             $('#collapseAll').click(function() {{
                 $('.collapse').collapse('hide');
             }});
-            
+
             $('.collapse').on('show.bs.collapse', function() {{
                 $(this).prev().find('.accordion-icon').removeClass('fa-chevron-right').addClass('fa-chevron-down');
             }});
-            
+
             $('.collapse').on('hide.bs.collapse', function() {{
                 $(this).prev().find('.accordion-icon').removeClass('fa-chevron-down').addClass('fa-chevron-right');
             }});
@@ -652,15 +652,15 @@ class BrightspacePackager:
 <body>
     <div class="container-fluid summary-section">
         <h1>{module['title']}: Summary</h1>
-        
+
         <h2>Key Takeaways</h2>
         <p class="content-paragraph">In this module, you explored important concepts and developed practical skills. The learning objectives were designed to build your understanding progressively.</p>
-        
+
         <h2>What You've Learned</h2>
         <ul>
             {"".join(f'<li class="content-paragraph">{obj["text"]}</li>' for obj in module["objectives"])}
         </ul>
-        
+
         <h2>Next Steps</h2>
         <p class="content-paragraph">Continue to the next module where you'll build upon these concepts and explore more advanced topics. Review the self-check activities to reinforce your learning.</p>
     </div>
@@ -685,7 +685,7 @@ class BrightspacePackager:
 <body>
     <div class="container-fluid self-check-section">
         <h1>{module['title']}: Self-Check Activities</h1>
-        
+
         <div class="card activity-card">
             <div class="card-body">
                 <h3 class="card-title">Reflection Questions</h3>
@@ -697,7 +697,7 @@ class BrightspacePackager:
                 </ul>
             </div>
         </div>
-        
+
         <div class="card activity-card">
             <div class="card-body">
                 <h3 class="card-title">Knowledge Check</h3>
@@ -712,7 +712,7 @@ class BrightspacePackager:
     def generate_assessment_xml(self, assessments: Dict) -> Dict[str, str]:
         """
         Enhanced assessment XML generation for native Brightspace integration (Debug Pattern 6 Fix)
-        
+
         Returns:
             Dict[str, str]: Mapping of assessment IDs to XML content
         """
@@ -985,7 +985,7 @@ class BrightspacePackager:
         resources = ET.SubElement(manifest, "resources")
 
         # Add HTML content resources (with _R suffix for Brightspace compatibility)
-        for obj_id, html_content in html_objects.items():
+        for obj_id, _html_content in html_objects.items():
             resource = ET.SubElement(resources, "resource")
             resource.set("identifier", f"{obj_id}_R")
             resource.set("type", "webcontent")
@@ -995,7 +995,7 @@ class BrightspacePackager:
             file_elem.set("href", f"{obj_id}.html")
 
         # Add assessment resources with correct IMSCC resource types (with _R suffix)
-        for assessment_id, xml_content in assessment_xml.items():
+        for assessment_id, _xml_content in assessment_xml.items():
             resource = ET.SubElement(resources, "resource")
             resource.set("identifier", f"{assessment_id}_R")
 
@@ -1072,7 +1072,7 @@ class BrightspacePackager:
         """
         Compile all objects, resources, and dependencies into IMSCC and D2L export formats
         in /exports/YYYYMMDD_HHMMSS/ directory with atomic generation to prevent folder multiplication
-        
+
         Returns:
             Tuple[str, str]: Paths to IMSCC and D2L export packages
         """
@@ -1230,17 +1230,17 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     });
-    
+
     // Expand/Collapse all functionality
     const expandAll = document.getElementById('expandAll');
     const collapseAll = document.getElementById('collapseAll');
-    
+
     if (expandAll) {
         expandAll.addEventListener('click', function() {
             document.querySelectorAll('.collapse').forEach(el => el.classList.add('show'));
         });
     }
-    
+
     if (collapseAll) {
         collapseAll.addEventListener('click', function() {
             document.querySelectorAll('.collapse').forEach(el => el.classList.remove('show'));
@@ -1295,11 +1295,11 @@ This package was generated using the enhanced Brightspace Package Generator with
     def validate_template_variables(self, content: str, file_path: str = "") -> bool:
         """
         Enhanced template variable validation with comprehensive pre-flight checks (Debug Pattern 4 Fix)
-        
+
         Args:
             content: Content to check for unresolved variables
             file_path: File path for error reporting
-            
+
         Returns:
             bool: True if no unresolved variables found
         """
@@ -1334,11 +1334,11 @@ This package was generated using the enhanced Brightspace Package Generator with
     def comprehensive_pre_flight_validation(self, course_structure: Dict, html_objects: Dict) -> bool:
         """
         Comprehensive validation before package creation (Debug Patterns 3 & 4 Fix)
-        
+
         Args:
             course_structure: Parsed course structure
             html_objects: Generated HTML objects
-            
+
         Returns:
             bool: True if all critical validations pass
         """
@@ -1398,11 +1398,11 @@ This package was generated using the enhanced Brightspace Package Generator with
     def validate_content_accuracy(self, html_content: str, source_content: str) -> bool:
         """
         Enhanced content accuracy validation with comprehensive analysis (Debug Pattern 5 Fix)
-        
+
         Args:
             html_content: Generated HTML content
             source_content: Original markdown source content
-            
+
         Returns:
             bool: True if content accurately transferred
         """
@@ -1477,10 +1477,10 @@ This package was generated using the enhanced Brightspace Package Generator with
     def validate_schema_compliance(self, manifest_xml: str) -> bool:
         """
         Validate XML schema compliance (Debug Pattern 1 Fix)
-        
+
         Args:
             manifest_xml: Generated manifest XML content
-            
+
         Returns:
             bool: True if schema compliant
         """
@@ -1628,10 +1628,10 @@ This package was generated using the enhanced Brightspace Package Generator with
     def remove_hardcoded_references(self, content: str) -> str:
         """
         Remove hardcoded textbook references (Debug Pattern 5 Fix)
-        
+
         Args:
             content: Content with potential hardcoded references
-            
+
         Returns:
             str: Content with hardcoded references removed
         """
@@ -1654,10 +1654,10 @@ This package was generated using the enhanced Brightspace Package Generator with
     def pre_flight_validation(self, course_structure: Dict) -> bool:
         """
         Comprehensive pre-flight validation (Debug Analysis Implementation)
-        
+
         Args:
             course_structure: Parsed course structure
-            
+
         Returns:
             bool: True if all validations pass
         """
@@ -1703,11 +1703,11 @@ This package was generated using the enhanced Brightspace Package Generator with
     def generate_package(self, firstdraft_path: str, course_name: str = None) -> Dict[str, str]:
         """
         Main entry point for package generation with SINGLE EXECUTION enforcement
-        
+
         Args:
             firstdraft_path: Path to YYYYMMDD_HHMMSS_firstdraft directory
             course_name: Optional course name override
-            
+
         Returns:
             Dict[str, str]: Package generation results with file paths
         """

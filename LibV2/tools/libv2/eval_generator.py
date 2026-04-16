@@ -176,7 +176,7 @@ def stratified_sample(
     remaining = num_samples
 
     # Allocate proportionally
-    for t, cs in sorted(by_type.items(), key=lambda x: -len(x[1])):
+    for _t, cs in sorted(by_type.items(), key=lambda x: -len(x[1])):
         allocation = max(1, int(num_samples * len(cs) / total))
         allocation = min(allocation, remaining, len(cs))
 

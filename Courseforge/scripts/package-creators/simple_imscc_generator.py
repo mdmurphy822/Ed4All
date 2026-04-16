@@ -75,7 +75,7 @@ def create_imscc_package(input_path=None, output_file=None):
 
         # Parse course info
         course_info_path = Path(input_path) / "course_info.md"
-        with open(course_info_path, 'r', encoding='utf-8') as f:
+        with open(course_info_path, encoding='utf-8') as f:
             course_content = f.read()
 
         # Extract course title
@@ -222,7 +222,7 @@ def create_imscc_package(input_path=None, output_file=None):
                 resource_id = f"resource_{html_file.replace('.html', '').replace('_', '')}"
                 title = html_file.replace('.html', '').replace('week_', 'Week ').replace('_', ' ').title()
                 week_items.append(f"""
-                <item identifier="item_{html_file.replace('.html', '').replace('_', '')}" 
+                <item identifier="item_{html_file.replace('.html', '').replace('_', '')}"
                       identifierref="{resource_id}">
                     <title>{title}</title>
                 </item>""")
@@ -231,7 +231,7 @@ def create_imscc_package(input_path=None, output_file=None):
             assignment_file = f"assignment_week_{week_num:02d}.xml"
             resource_id = f"resource_{assignment_file.replace('.xml', '').replace('_', '')}"
             week_items.append(f"""
-                <item identifier="item_{assignment_file.replace('.xml', '').replace('_', '')}" 
+                <item identifier="item_{assignment_file.replace('.xml', '').replace('_', '')}"
                       identifierref="{resource_id}">
                     <title>Week {week_num} Assignment</title>
                 </item>""")
@@ -249,7 +249,7 @@ def create_imscc_package(input_path=None, output_file=None):
     xmlns:lom="http://ltsc.ieee.org/xsd/imsccv1p2/LOM/resource"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:schemaLocation="http://www.imsglobal.org/xsd/imsccv1p2/imscp_v1p1 http://www.imsglobal.org/xsd/imscc/imscp_v1p1.xsd">
-    
+
     <metadata>
         <schema>IMS Common Cartridge</schema>
         <schemaversion>1.2.0</schemaversion>
@@ -264,14 +264,14 @@ def create_imscc_package(input_path=None, output_file=None):
             </lom:general>
         </lom:lom>
     </metadata>
-    
+
     <organizations default="organization_1">
         <organization identifier="organization_1" structure="rooted-hierarchy">
             <title>{course_title}</title>
             {''.join(items)}
         </organization>
     </organizations>
-    
+
     <resources>
         {''.join(resources)}
     </resources>

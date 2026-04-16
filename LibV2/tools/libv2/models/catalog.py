@@ -55,7 +55,7 @@ class CatalogEntry:
         )
 
     @classmethod
-    def from_manifest(cls, manifest: "CourseManifest") -> "CatalogEntry":
+    def from_manifest(cls, manifest: "CourseManifest") -> "CatalogEntry":  # noqa: F821
         """Create catalog entry from a course manifest."""
 
         # Determine primary difficulty
