@@ -3,18 +3,85 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
-**Unified orchestration for accessible educational content generation.**
+**Transform source materials into accessible content, structured courses, and knowledge-domain language graphs.**
 
-## Components
+Ed4All is an end-to-end pipeline that takes human-readable inputs (PDFs, textbooks, web content) and produces three outputs:
 
-| Component | Purpose |
-|-----------|---------|
-| **DART** | PDF to accessible HTML (WCAG 2.2 AA) |
-| **Courseforge** | Course generation & IMSCC packaging |
-| **Trainforge** | Assessment-based RAG training |
-| **LibV2** | Educational content repository |
-| **MCP Server** | Unified tool orchestration |
-| **CLI** | Run management, pipelines, and validation |
+1. **Accessible HTML** -- WCAG 2.2 AA compliant versions of the original materials, with semantic structure, alt text, proper heading hierarchy, keyboard navigation, and dark mode support
+2. **Digital Course Packages** -- LMS-ready IMSCC course packages with weekly modules, learning objectives aligned to Bloom's taxonomy, interactive components, self-check assessments, and machine-readable instructional design metadata
+3. **Knowledge-Domain Language Graphs** -- RAG-optimized corpus with concept graphs, pedagogical metadata, Bloom's-aligned chunks, and structured training data for language model fine-tuning
+
+---
+
+## Architecture
+
+```
+                         Source Materials
+                    (PDFs, textbooks, web content)
+                               |
+                               v
+                    +---------------------+
+                    |        DART         |
+                    |  Document Accessibility  |
+                    |   Remediation Tool  |
+                    +---------------------+
+                               |
+                     Accessible HTML (WCAG 2.2 AA)
+                               |
+                               v
+                    +---------------------+
+                    |     Courseforge      |
+                    |  Course Generation  |
+                    |   & IMSCC Packaging |
+                    +---------------------+
+                               |
+              IMSCC Package + JSON-LD Metadata
+                               |
+                               v
+                    +---------------------+
+                    |     Trainforge      |
+                    |  Content Extraction |
+                    |  & RAG Processing   |
+                    +---------------------+
+                               |
+              Chunked Corpus + Concept Graph
+                               |
+                               v
+                    +---------------------+
+                    |       LibV2         |
+                    | Knowledge Repository|
+                    |  & Language Graphs  |
+                    +---------------------+
+```
+
+### What Each Stage Produces
+
+**DART** converts source PDFs into semantic, accessible HTML:
+- Multi-source synthesis (pdftotext + pdfplumber + OCR) for maximum fidelity
+- WCAG 2.2 AA compliance: skip links, ARIA landmarks, heading hierarchy, alt text, table scopes
+- Dark mode and reduced-motion support
+- Quality reports with confidence scores
+
+**Courseforge** generates structured course content:
+- Multi-file weekly modules (overview, content pages, activities, self-check quizzes, summaries, discussions)
+- Learning objectives with Bloom's taxonomy alignment (remember through create)
+- Machine-readable metadata: `data-cf-*` HTML attributes and JSON-LD blocks per page
+- IMSCC packaging compatible with Brightspace, Canvas, Blackboard, and Moodle
+
+**Trainforge** processes course content into a RAG-optimized corpus:
+- Pedagogical chunking (500-word target units preserving section boundaries)
+- Metadata extraction: Bloom's levels, content types, key terms with definitions, misconceptions
+- Chunk alignment: prerequisite concepts, teaching roles, learning outcome references
+- Assessment generation grounded in source content with decision capture
+
+**LibV2** stores and indexes the final knowledge artifacts:
+- Flat-storage repository with semantic classification (division, domain, subdomain, topic)
+- BM25 retrieval with character n-gram boosting
+- Concept co-occurrence graphs
+- Source artifact archival with SHA-256 checksums
+- Quality metrics and validation reports
+
+---
 
 ## Quick Start
 
@@ -27,48 +94,103 @@
 ### Installation
 
 ```bash
-# Clone the repository
 git clone https://github.com/mdmurphy822/Ed4All.git
 cd Ed4All
-
-# Create virtual environment
 python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
-
-# Install dependencies
+source venv/bin/activate
 pip install -e ".[full]"
 ```
 
-### Start MCP Server
+### Full Pipeline (PDF to LibV2)
+
+```bash
+# One command: convert PDF, generate course, process corpus, import to LibV2
+ed4all textbook-to-course textbook.pdf -n COURSE_101 --weeks 12
+```
+
+### Stage by Stage
+
+```bash
+# 1. Convert PDF to accessible HTML
+python DART/convert.py textbook.pdf -o DART/output/
+
+# 2. Generate course from structured data
+python Courseforge/scripts/generate_course.py course_data.json output_dir/
+
+# 3. Package as IMSCC
+python Courseforge/scripts/package_multifile_imscc.py output_dir/ course.imscc
+
+# 4. Process through Trainforge
+python -m Trainforge.process_course \
+  --imscc course.imscc --course-code COURSE_101 \
+  --division STEM --domain physics \
+  --output Trainforge/output/course_101 \
+  --align --import-to-libv2
+
+# 5. Query the knowledge graph
+python -m LibV2.tools.libv2.cli retrieve "your query" --limit 10
+```
+
+### MCP Server
 
 ```bash
 cd MCP && python server.py
 ```
 
+---
+
+## Components
+
+| Component | Purpose | Input | Output |
+|-----------|---------|-------|--------|
+| **DART** | Document accessibility remediation | PDFs, combined JSON | WCAG 2.2 AA HTML |
+| **Courseforge** | Course generation & packaging | Objectives, content data | IMSCC packages with metadata |
+| **Trainforge** | Content extraction & RAG processing | IMSCC packages | Chunked corpus, concept graphs |
+| **LibV2** | Knowledge repository & retrieval | Trainforge output | Indexed, searchable corpus |
+| **MCP Server** | Unified tool orchestration | Tool calls | Coordinated pipeline execution |
+| **CLI** | Pipeline management | Commands | Run reports, exports |
+
 ## Workflows
 
 | Workflow | Description |
 |----------|-------------|
-| `textbook_to_course` | Full pipeline: PDF -> Course -> Assessments |
-| `course_generation` | Generate course from objectives |
-| `intake_remediation` | Import and fix existing IMSCC |
-| `batch_dart` | Batch PDF conversion |
+| `textbook_to_course` | Full pipeline: PDF -> Accessible HTML -> Course -> Corpus -> LibV2 |
+| `course_generation` | Generate course from objectives and content data |
+| `intake_remediation` | Import and remediate existing IMSCC packages |
+| `batch_dart` | Batch PDF to accessible HTML conversion |
 | `rag_training` | Assessment-based training data generation |
 
 ## CLI
 
-The `ed4all` CLI provides run management and pipeline orchestration:
-
 ```bash
-ed4all textbook-to-course textbook.pdf -n COURSE_101  # Full PDF-to-course pipeline
+ed4all textbook-to-course textbook.pdf -n COURSE_101  # Full pipeline
 ed4all validate-run <run_id>                           # Validate run integrity
 ed4all summarize-run <run_id>                          # Generate run report
 ed4all diff-runs <run_a> <run_b>                       # Compare two runs
 ed4all export-training <run_id> --format dpo           # Export training data
 ed4all fsck                                            # LibV2 storage integrity check
 ed4all list-runs                                       # List recent runs
-ed4all verify-chain <chain_file>                       # Verify hash-chained event logs
 ```
+
+---
+
+## Metadata Flow
+
+A key design principle is that instructional design metadata flows through the entire pipeline without loss:
+
+```
+Courseforge                    Trainforge                   LibV2
+-----------                    ----------                   -----
+Bloom's level on objectives -> JSON-LD extraction ->        bloom_level on chunks
+Content type on sections    -> data-cf-* parsing ->         content_type_label
+Key terms with definitions  -> Structured extraction ->     key_terms array
+Misconceptions per topic    -> Page-level propagation ->    misconceptions array
+Learning objective IDs      -> Priority chain matching ->   learning_outcome_refs
+```
+
+Trainforge uses a three-tier extraction priority: **JSON-LD** (authoritative, from Courseforge) > **data-cf-* attributes** (inline HTML) > **regex heuristics** (fallback for non-Courseforge content).
+
+---
 
 ## Project Structure
 
@@ -76,12 +198,20 @@ ed4all verify-chain <chain_file>                       # Verify hash-chained eve
 Ed4All/
 ├── DART/                    # PDF to accessible HTML conversion
 ├── Courseforge/             # Course content generation & packaging
-├── Trainforge/              # Assessment-based RAG training
-├── LibV2/                   # Course content repository
+│   └── scripts/            # generate_course.py, package_multifile_imscc.py
+├── Trainforge/              # Content extraction & RAG processing
+│   ├── process_course.py   # IMSCC -> corpus pipeline
+│   ├── align_chunks.py     # Pedagogical metadata alignment
+│   ├── parsers/            # IMSCC, HTML, QTI parsers
+│   └── generators/         # Assessment & content extraction
+├── LibV2/                   # Knowledge repository
+│   ├── courses/            # Flat-storage course data
+│   ├── catalog/            # Derived indexes
+│   └── tools/              # CLI & retrieval engine
 ├── MCP/                     # FastMCP server and tools
-├── orchestrator/            # Multi-terminal coordination
+├── orchestrator/            # Workflow execution & coordination
 ├── cli/                     # CLI commands and run management
-├── lib/                     # Shared libraries
+├── lib/                     # Shared libraries & validators
 ├── config/                  # Workflow & agent configs
 ├── schemas/                 # JSON schemas for validation
 ├── state/                   # Shared state & progress tracking
@@ -93,30 +223,21 @@ Ed4All/
 ## Running Tests
 
 ```bash
-# Run all tests
-pytest
-
-# Run with coverage
-pytest --cov --cov-report=html
-
-# Run unit tests only
-pytest -m unit
-
-# Run specific component tests
-pytest Courseforge/scripts/tests/
+pytest                              # Run all tests
+pytest --cov --cov-report=html      # With coverage
+pytest Trainforge/tests/ -v         # Trainforge tests (75 tests)
+pytest Courseforge/scripts/tests/   # Courseforge script tests
 ```
 
 ## Documentation
 
-- [DART](DART/CLAUDE.md) - PDF conversion
-- [Courseforge](Courseforge/CLAUDE.md) - Course generation
-- [Trainforge](Trainforge/CLAUDE.md) - Assessment training
-- [LibV2](LibV2/CLAUDE.md) - Content repository
-- [Orchestrator Protocol](CLAUDE.md) - Main orchestration guide
+Each component has its own guide:
 
-## Contributing
-
-See [CLAUDE.md](CLAUDE.md) for the orchestration protocol and development guidelines.
+- [Orchestrator Protocol](CLAUDE.md) -- Main orchestration, workflows, and decision capture
+- [DART](DART/CLAUDE.md) -- PDF conversion and multi-source synthesis
+- [Courseforge](Courseforge/CLAUDE.md) -- Course generation, metadata output, templates
+- [Trainforge](Trainforge/CLAUDE.md) -- Assessment generation, metadata extraction, RAG processing
+- [LibV2](LibV2/CLAUDE.md) -- Repository structure, retrieval API, import/export
 
 ## License
 
