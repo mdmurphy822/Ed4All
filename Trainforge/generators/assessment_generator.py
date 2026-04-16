@@ -503,6 +503,13 @@ class AssessmentGenerator:
             terms = self._content_extractor.extract_key_terms(source_chunks)
             statements = self._content_extractor.extract_factual_statements(source_chunks)
 
+            # Collect misconceptions from chunk metadata for distractor generation
+            misconception_texts = []
+            for chunk in source_chunks:
+                for mc in chunk.get("misconceptions", []):
+                    if isinstance(mc, dict) and mc.get("misconception"):
+                        misconception_texts.append(mc["misconception"])
+
             if terms:
                 # Use a key term: ask for its definition
                 target = terms[0]
@@ -513,16 +520,28 @@ class AssessmentGenerator:
                 if len(correct_text) > 200:
                     correct_text = correct_text[:197] + "..."
 
-                # Build distractors from other terms' definitions
+                # Build distractors: prefer misconceptions, then other terms
                 distractors = []
+
+                # Strategy 1: Use actual misconceptions as distractors
+                for mc_text in misconception_texts:
+                    if len(distractors) >= 3:
+                        break
+                    if len(mc_text) > 200:
+                        mc_text = mc_text[:197] + "..."
+                    distractors.append(mc_text)
+
+                # Strategy 2: Other terms' definitions
                 for other in terms[1:4]:
+                    if len(distractors) >= 3:
+                        break
                     if other.definition != target.definition:
                         d_text = other.definition
                         if len(d_text) > 200:
                             d_text = d_text[:197] + "..."
                         distractors.append(d_text)
 
-                # Fill remaining distractors from factual statements
+                # Strategy 3: Factual statements
                 for stmt in statements:
                     if len(distractors) >= 3:
                         break

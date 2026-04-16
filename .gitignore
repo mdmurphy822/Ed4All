@@ -44,19 +44,24 @@ LibV2/catalog/*
 # Ed4All - Input/Output Directories
 # =============================================================================
 
-# Courseforge inputs
+# Courseforge inputs (all subdirectories)
 Courseforge/inputs/exam-objectives/*
 !Courseforge/inputs/exam-objectives/.gitkeep
 Courseforge/inputs/textbooks/*
 !Courseforge/inputs/textbooks/.gitkeep
 Courseforge/inputs/existing-packages/*
 !Courseforge/inputs/existing-packages/.gitkeep
+Courseforge/inputs/course-data/*
+!Courseforge/inputs/course-data/.gitkeep
 
 # Courseforge outputs
 Courseforge/exports/*
 !Courseforge/exports/.gitkeep
 Courseforge/runtime/*
 !Courseforge/runtime/.gitkeep
+
+# Courseforge generated data files in scripts/
+Courseforge/scripts/*.json
 
 # DART inputs/outputs
 DART/batch_output/*

@@ -1,0 +1,766 @@
+"""
+Alignment stage for Trainforge corpus pipeline.
+
+Read-modify-write pass that enriches chunks with relational metadata:
+- prereq_concepts: prerequisite concepts derived from concept graph + chunk ordering
+- teaching_role: pedagogical function (introduce/elaborate/reinforce/assess/transfer/synthesize)
+- learning_outcome_refs: semantic matching of chunks to learning outcomes via TF-IDF
+
+Usage:
+    python -m Trainforge.align_chunks \
+        --corpus Trainforge/output/digped_101 \
+        --objectives Courseforge/inputs/exam-objectives/DIGPED_101_objectives.json \
+        --llm-provider mock
+"""
+
+import argparse
+import json
+import math
+import re
+import sys
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+PROCEDURAL_TAGS = {"initial-post", "replies", "due"}
+MAX_PREREQS_PER_CHUNK = 5
+MAX_OUTCOMES_PER_CHUNK = 3
+TFIDF_SIMILARITY_THRESHOLD = 0.15
+VALID_ROLES = {"introduce", "elaborate", "reinforce", "assess", "transfer", "synthesize"}
+WEEK_RE = re.compile(r"Week\s+(\d+)", re.IGNORECASE)
+
+
+# ---------------------------------------------------------------------------
+# Data classes
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Outcome:
+    id: str
+    statement: str
+    bloom_level: str
+    week_range: Tuple[int, int]  # (start_week, end_week)
+
+
+# ---------------------------------------------------------------------------
+# TF-IDF (reimplemented from LibV2/tools/libv2/outcome_linker.py)
+# ---------------------------------------------------------------------------
+
+def tokenize(text: str) -> List[str]:
+    """Tokenize text into lowercase words, stripping HTML."""
+    text = re.sub(r"<[^>]+>", " ", text)
+    return re.findall(r"\b[a-z][a-z0-9]+\b", text.lower())
+
+
+class SimpleTFIDF:
+    """Lightweight TF-IDF for outcome matching."""
+
+    def __init__(self, documents: List[str]):
+        self.doc_count = len(documents)
+        self.df: Counter = Counter()
+        self.doc_tfidf: List[Dict[str, float]] = []
+
+        doc_tokens_list = []
+        for doc in documents:
+            tokens = tokenize(doc)
+            doc_tokens_list.append(tokens)
+            self.df.update(set(tokens))
+
+        for tokens in doc_tokens_list:
+            tf = Counter(tokens)
+            total = len(tokens) or 1
+            tfidf = {}
+            for term, count in tf.items():
+                tf_val = count / total
+                idf_val = math.log((self.doc_count + 1) / (self.df[term] + 1)) + 1
+                tfidf[term] = tf_val * idf_val
+            self.doc_tfidf.append(tfidf)
+
+    def search(self, query: str, limit: int = 5) -> List[Tuple[int, float]]:
+        """Return (doc_index, similarity) sorted descending."""
+        query_tokens = tokenize(query)
+        if not query_tokens:
+            return []
+
+        query_tf = Counter(query_tokens)
+        total = len(query_tokens)
+        query_tfidf = {}
+        for term, count in query_tf.items():
+            tf_val = count / total
+            idf_val = math.log((self.doc_count + 1) / (self.df.get(term, 0) + 1)) + 1
+            query_tfidf[term] = tf_val * idf_val
+
+        query_norm = math.sqrt(sum(v * v for v in query_tfidf.values()))
+        scores = []
+        for idx, doc_tfidf in enumerate(self.doc_tfidf):
+            if not doc_tfidf:
+                continue
+            dot = sum(query_tfidf.get(t, 0) * w for t, w in doc_tfidf.items())
+            doc_norm = math.sqrt(sum(v * v for v in doc_tfidf.values()))
+            sim = dot / (query_norm * doc_norm) if query_norm and doc_norm else 0.0
+            scores.append((idx, sim))
+
+        scores.sort(key=lambda x: -x[1])
+        return scores[:limit]
+
+
+# ---------------------------------------------------------------------------
+# I/O helpers
+# ---------------------------------------------------------------------------
+
+def load_corpus(corpus_dir: Path) -> Tuple[List[Dict], Dict]:
+    """Load chunks.jsonl and concept_graph.json from a Trainforge output dir."""
+    chunks_path = corpus_dir / "corpus" / "chunks.jsonl"
+    graph_path = corpus_dir / "graph" / "concept_graph.json"
+
+    if not chunks_path.exists():
+        raise FileNotFoundError(f"chunks.jsonl not found: {chunks_path}")
+    if not graph_path.exists():
+        raise FileNotFoundError(f"concept_graph.json not found: {graph_path}")
+
+    chunks = []
+    with open(chunks_path) as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                chunks.append(json.loads(line))
+
+    with open(graph_path) as f:
+        concept_graph = json.load(f)
+
+    return chunks, concept_graph
+
+
+def write_corpus(corpus_dir: Path, chunks: List[Dict]) -> None:
+    """Write enriched chunks back to chunks.jsonl and chunks.json."""
+    jsonl_path = corpus_dir / "corpus" / "chunks.jsonl"
+    json_path = corpus_dir / "corpus" / "chunks.json"
+
+    with open(jsonl_path, "w") as f:
+        for chunk in chunks:
+            f.write(json.dumps(chunk) + "\n")
+
+    with open(json_path, "w") as f:
+        json.dump(chunks, f, indent=2)
+
+
+def load_objectives(objectives_path: Path) -> List[Outcome]:
+    """Load outcomes from Trainforge-format objectives JSON."""
+    with open(objectives_path) as f:
+        doc = json.load(f)
+
+    outcomes = []
+
+    # Terminal objectives (course-level, all weeks)
+    for to in doc.get("terminal_objectives", []):
+        outcomes.append(Outcome(
+            id=to["id"].lower(),
+            statement=to["statement"],
+            bloom_level=to.get("bloomLevel", "understand"),
+            week_range=(1, 99),  # TOs apply to all weeks
+        ))
+
+    # Chapter objectives (week-scoped)
+    for ch in doc.get("chapter_objectives", []):
+        title = ch.get("chapter", "")
+        # Extract week range: "Week 1-2: ..." → (1, 2)
+        match = re.search(r"Week\s+(\d+)(?:\s*[-–]\s*(\d+))?", title)
+        if match:
+            start = int(match.group(1))
+            end = int(match.group(2)) if match.group(2) else start
+        else:
+            start, end = 1, 99
+
+        for obj in ch.get("objectives", []):
+            outcomes.append(Outcome(
+                id=obj["id"].lower(),
+                statement=obj["statement"],
+                bloom_level=obj.get("bloomLevel", "understand"),
+                week_range=(start, end),
+            ))
+
+    return outcomes
+
+
+# ---------------------------------------------------------------------------
+# Build chunk sequence
+# ---------------------------------------------------------------------------
+
+def build_chunk_sequence(chunks: List[Dict]) -> List[Dict]:
+    """
+    Order chunks by follows_chunk chain, assigning a 'position' key to each.
+    Returns chunks in sequence order.
+    """
+    by_id = {c["id"]: c for c in chunks}
+
+    # Find root(s) — chunks with no follows_chunk
+    roots = [c for c in chunks if not c.get("follows_chunk")]
+    visited = set()
+    ordered = []
+
+    # Walk chains from each root
+    for root in roots:
+        current = root
+        while current and current["id"] not in visited:
+            visited.add(current["id"])
+            ordered.append(current)
+            # Find the chunk that follows this one
+            next_chunk = None
+            for c in chunks:
+                if c.get("follows_chunk") == current["id"] and c["id"] not in visited:
+                    next_chunk = c
+                    break
+            current = next_chunk
+
+    # Append any orphans (not reached via chain) by ID order
+    for c in chunks:
+        if c["id"] not in visited:
+            ordered.append(c)
+
+    # Assign positions
+    for i, chunk in enumerate(ordered):
+        chunk["_position"] = i
+
+    return ordered
+
+
+# ---------------------------------------------------------------------------
+# Field 1: prereq_concepts
+# ---------------------------------------------------------------------------
+
+def compute_prereq_concepts(
+    chunks: List[Dict], concept_graph: Dict, verbose: bool = False
+) -> None:
+    """
+    Mutate chunks in-place to add prereq_concepts field.
+
+    Algorithm: For each chunk's concept_tags, find graph-adjacent concepts
+    that first appeared in earlier chunks. Rank by relevance, take top 5.
+    """
+    # Build node frequency map
+    node_freq = {n["id"]: n["frequency"] for n in concept_graph.get("nodes", [])}
+
+    # Build adjacency with edge weights
+    # adjacency[a] = {b: weight, ...}
+    adjacency: Dict[str, Dict[str, int]] = {}
+    for edge in concept_graph.get("edges", []):
+        s, t, w = edge["source"], edge["target"], edge["weight"]
+        adjacency.setdefault(s, {})[t] = w
+        adjacency.setdefault(t, {})[s] = w
+
+    # Build concept_first_seen: {tag: earliest_position}
+    concept_first_seen: Dict[str, int] = {}
+    for chunk in chunks:
+        pos = chunk["_position"]
+        for tag in chunk.get("concept_tags", []):
+            if tag not in concept_first_seen:
+                concept_first_seen[tag] = pos
+
+    # Compute prereqs for each chunk
+    for chunk in chunks:
+        pos = chunk["_position"]
+        own_tags = set(chunk.get("concept_tags", []))
+
+        # Collect candidates: (tag, relevance_score)
+        candidates: Dict[str, float] = {}
+        for tag in own_tags:
+            if tag in PROCEDURAL_TAGS:
+                continue
+            neighbors = adjacency.get(tag, {})
+            for neighbor, weight in neighbors.items():
+                if neighbor in PROCEDURAL_TAGS:
+                    continue
+                if neighbor in own_tags:
+                    continue
+                first_seen = concept_first_seen.get(neighbor)
+                if first_seen is None or first_seen >= pos:
+                    continue
+                # Relevance: edge weight / sqrt(node frequency)
+                freq = node_freq.get(neighbor, 1)
+                score = weight / math.sqrt(freq)
+                if neighbor in candidates:
+                    candidates[neighbor] = max(candidates[neighbor], score)
+                else:
+                    candidates[neighbor] = score
+
+        # Sort by score descending, take top N
+        ranked = sorted(candidates.items(), key=lambda x: -x[1])
+        prereqs = [tag for tag, _ in ranked[:MAX_PREREQS_PER_CHUNK]]
+
+        # Fallback: if graph traversal found nothing but chunk isn't first,
+        # use the previous chunk's top concept_tags as sequence-based prereqs.
+        # This handles chunks whose tags are all rare (not in top-50 graph).
+        if not prereqs and pos > 0:
+            prev_chunk = chunks[pos - 1] if pos < len(chunks) else None
+            if prev_chunk:
+                prev_tags = [
+                    t for t in prev_chunk.get("concept_tags", [])
+                    if t not in PROCEDURAL_TAGS and t not in own_tags
+                ]
+                prereqs = prev_tags[:MAX_PREREQS_PER_CHUNK]
+
+        chunk["prereq_concepts"] = prereqs
+
+        if verbose and prereqs:
+            print(f"  {chunk['id']}: prereqs={prereqs}")
+
+
+# ---------------------------------------------------------------------------
+# Field 2: teaching_role
+# ---------------------------------------------------------------------------
+
+def _heuristic_role(chunk: Dict) -> Optional[str]:
+    """Try to classify teaching role by deterministic rules. Returns None if ambiguous."""
+    chunk_type = chunk.get("chunk_type", "")
+    source = chunk.get("source", {})
+    resource_type = source.get("resource_type", "")
+
+    # Only actual assessment items get "assess" — explanatory preambles within
+    # quiz pages (chunk_type=explanation, resource_type=quiz) should be
+    # classified by content, not by their container.
+    if chunk_type == "assessment_item":
+        return "assess"
+
+    if resource_type == "overview" and source.get("position_in_module", 0) == 0:
+        return "introduce"
+
+    if resource_type == "summary":
+        return "synthesize"
+
+    if resource_type == "application" or (
+        chunk_type == "exercise" and resource_type != "quiz"
+    ):
+        return "transfer"
+
+    return None
+
+
+def _mock_role(chunk: Dict, concept_first_seen: Dict[str, int]) -> str:
+    """Fallback classification for mock provider (no LLM)."""
+    pos = chunk["_position"]
+    tags = chunk.get("concept_tags", [])
+
+    if not tags:
+        return "introduce"
+
+    # What fraction of this chunk's concepts appeared earlier?
+    earlier_count = sum(
+        1 for t in tags
+        if concept_first_seen.get(t, pos) < pos
+    )
+    ratio = earlier_count / len(tags) if tags else 0
+
+    # Check if concepts are from much earlier (3+ "weeks" back, ~14 chunks)
+    if ratio > 0.5:
+        earliest_prereq = min(
+            (concept_first_seen.get(t, pos) for t in tags if concept_first_seen.get(t, pos) < pos),
+            default=pos,
+        )
+        if pos - earliest_prereq > 14:
+            return "reinforce"
+        return "elaborate"
+
+    return "introduce"
+
+
+def classify_teaching_roles(
+    chunks: List[Dict],
+    llm_provider: str = "mock",
+    llm_model: str = "claude-haiku-4-5-20251001",
+    verbose: bool = False,
+) -> None:
+    """Mutate chunks in-place to add teaching_role field."""
+    # Build concept_first_seen for mock/heuristic fallback
+    concept_first_seen: Dict[str, int] = {}
+    for chunk in chunks:
+        pos = chunk["_position"]
+        for tag in chunk.get("concept_tags", []):
+            if tag not in concept_first_seen:
+                concept_first_seen[tag] = pos
+
+    heuristic_count = 0
+    llm_count = 0
+    ambiguous_chunks = []
+
+    for chunk in chunks:
+        role = _heuristic_role(chunk)
+        if role:
+            chunk["teaching_role"] = role
+            heuristic_count += 1
+            if verbose:
+                print(f"  {chunk['id']}: role={role} (heuristic)")
+        else:
+            ambiguous_chunks.append(chunk)
+
+    # Handle ambiguous chunks
+    if llm_provider == "anthropic" and ambiguous_chunks:
+        _classify_with_llm(ambiguous_chunks, concept_first_seen, llm_model, verbose)
+        llm_count = len(ambiguous_chunks)
+    else:
+        # Mock: use heuristic fallback
+        for chunk in ambiguous_chunks:
+            role = _mock_role(chunk, concept_first_seen)
+            chunk["teaching_role"] = role
+            if verbose:
+                print(f"  {chunk['id']}: role={role} (mock)")
+
+    print(f"  Teaching roles: {heuristic_count} heuristic, "
+          f"{llm_count or len(ambiguous_chunks)} {'LLM' if llm_provider == 'anthropic' else 'mock'}")
+
+
+def _classify_with_llm(
+    chunks: List[Dict],
+    concept_first_seen: Dict[str, int],
+    model: str,
+    verbose: bool,
+) -> None:
+    """Classify ambiguous chunks using Claude API in batches."""
+    try:
+        import anthropic
+    except ImportError:
+        print("  WARNING: anthropic package not installed, falling back to mock")
+        for chunk in chunks:
+            chunk["teaching_role"] = _mock_role(chunk, concept_first_seen)
+        return
+
+    client = anthropic.Anthropic()
+    batch_size = 12
+
+    for batch_start in range(0, len(chunks), batch_size):
+        batch = chunks[batch_start:batch_start + batch_size]
+
+        # Build batch prompt
+        chunk_descriptions = []
+        for chunk in batch:
+            words = chunk.get("text", "").split()[:200]
+            excerpt = " ".join(words)
+            chunk_descriptions.append(
+                f"Chunk {chunk['id']} (position {chunk['_position']}):\n"
+                f"  type: {chunk.get('chunk_type')}, resource: {chunk['source'].get('resource_type')}\n"
+                f"  concept_tags: {chunk.get('concept_tags', [])}\n"
+                f"  prereq_concepts: {chunk.get('prereq_concepts', [])}\n"
+                f"  text excerpt: {excerpt}"
+            )
+
+        prompt = (
+            "Classify the teaching role of each chunk below. "
+            "Return ONLY a JSON array of objects with 'id' and 'role' fields.\n\n"
+            "Roles:\n"
+            "- introduce: First exposure to concepts in the course sequence\n"
+            "- elaborate: Adds depth to previously introduced concepts\n"
+            "- reinforce: Revisits concepts from earlier weeks in a new context\n"
+            "- synthesize: Connects multiple concepts or summarizes\n\n"
+            "Chunks:\n" + "\n\n".join(chunk_descriptions)
+        )
+
+        try:
+            response = client.messages.create(
+                model=model,
+                max_tokens=1024,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            text = response.content[0].text
+
+            # Extract JSON array from response
+            match = re.search(r"\[.*\]", text, re.DOTALL)
+            if match:
+                results = json.loads(match.group())
+                result_map = {r["id"]: r["role"] for r in results}
+                for chunk in batch:
+                    role = result_map.get(chunk["id"], "elaborate")
+                    if role not in VALID_ROLES:
+                        role = "elaborate"
+                    chunk["teaching_role"] = role
+                    if verbose:
+                        print(f"  {chunk['id']}: role={role} (LLM)")
+            else:
+                # Fallback
+                for chunk in batch:
+                    chunk["teaching_role"] = _mock_role(chunk, concept_first_seen)
+        except Exception as e:
+            print(f"  WARNING: LLM batch failed ({e}), falling back to mock")
+            for chunk in batch:
+                chunk["teaching_role"] = _mock_role(chunk, concept_first_seen)
+
+
+# ---------------------------------------------------------------------------
+# Field 3: learning_outcome_refs
+# ---------------------------------------------------------------------------
+
+def match_learning_outcomes(
+    chunks: List[Dict],
+    objectives_path: Path,
+    verbose: bool = False,
+) -> None:
+    """Mutate chunks in-place to enrich learning_outcome_refs via TF-IDF.
+
+    Note: the existing chunk field is 'learning_outcome_refs' (set by the
+    chunker from literal CO-XX matches). This pass enriches that same field
+    with semantic TF-IDF matches, merging with any existing literal refs.
+    """
+    outcomes = load_objectives(objectives_path)
+    if not outcomes:
+        print("  WARNING: No outcomes loaded, skipping learning_outcome_refs")
+        return
+
+    # Build TF-IDF index over outcome statements
+    outcome_texts = [o.statement for o in outcomes]
+    index = SimpleTFIDF(outcome_texts)
+
+    linked_count = 0
+    for chunk in chunks:
+        text = chunk.get("text", "")
+        if not text:
+            chunk.setdefault("learning_outcome_refs", [])
+            continue
+
+        # Determine chunk's week from lesson_title
+        lesson_title = chunk.get("source", {}).get("lesson_title", "")
+        week_match = WEEK_RE.search(lesson_title)
+        chunk_week = int(week_match.group(1)) if week_match else None
+
+        # Filter outcomes by week range
+        if chunk_week is not None:
+            candidate_indices = [
+                i for i, o in enumerate(outcomes)
+                if o.week_range[0] <= chunk_week <= o.week_range[1]
+            ]
+        else:
+            candidate_indices = list(range(len(outcomes)))
+
+        # Score chunk against all outcomes (TF-IDF), then filter by candidates
+        all_matches = index.search(text, limit=len(outcomes))
+
+        # Filter to candidates and apply threshold
+        new_refs = []
+        for outcome_idx, score in all_matches:
+            if outcome_idx not in candidate_indices:
+                continue
+            if score < TFIDF_SIMILARITY_THRESHOLD:
+                continue
+            new_refs.append(outcomes[outcome_idx].id)
+            if len(new_refs) >= MAX_OUTCOMES_PER_CHUNK:
+                break
+
+        # Merge with existing literal refs (preserve what's already there)
+        existing = set(chunk.get("learning_outcome_refs", []))
+        merged = list(existing)
+        for ref in new_refs:
+            if ref not in existing:
+                merged.append(ref)
+                existing.add(ref)
+
+        # Fallback: if TF-IDF found nothing but we know the week, assign
+        # the first CO from that week. Every chunk belongs to *some* outcome.
+        if not merged and chunk_week is not None:
+            week_cos = [
+                outcomes[i].id for i in candidate_indices
+                if outcomes[i].id.startswith("co-")
+            ]
+            if week_cos:
+                merged = [week_cos[0]]
+
+        # Cap at max
+        chunk["learning_outcome_refs"] = merged[:MAX_OUTCOMES_PER_CHUNK]
+
+        if chunk["learning_outcome_refs"]:
+            linked_count += 1
+
+        if verbose and chunk["learning_outcome_refs"]:
+            print(f"  {chunk['id']}: outcomes={chunk['learning_outcome_refs']}")
+
+    print(f"  Outcome linking: {linked_count}/{len(chunks)} chunks linked")
+
+
+# ---------------------------------------------------------------------------
+# Quality report update
+# ---------------------------------------------------------------------------
+
+def update_quality_report(corpus_dir: Path, chunks: List[Dict]) -> None:
+    """Update quality_report.json with alignment field coverage metrics."""
+    report_path = corpus_dir / "quality" / "quality_report.json"
+    if not report_path.exists():
+        return
+
+    with open(report_path) as f:
+        report = json.load(f)
+
+    total = len(chunks) or 1
+
+    # Alignment-specific metrics
+    prereq_coverage = sum(1 for c in chunks if c.get("prereq_concepts")) / total
+    role_coverage = sum(1 for c in chunks if c.get("teaching_role")) / total
+    outcome_coverage = sum(1 for c in chunks if c.get("learning_outcome_refs")) / total
+
+    # Role consistency: check for type/role mismatches
+    role_mismatches = 0
+    for c in chunks:
+        ct = c.get("chunk_type", "")
+        role = c.get("teaching_role", "")
+        if ct == "explanation" and role == "assess":
+            role_mismatches += 1
+        if ct == "assessment_item" and role != "assess":
+            role_mismatches += 1
+    role_consistency = 1.0 - (role_mismatches / total)
+
+    role_dist = Counter(c.get("teaching_role", "none") for c in chunks)
+
+    report["alignment"] = {
+        "prereq_concepts_coverage": round(prereq_coverage, 3),
+        "teaching_role_coverage": round(role_coverage, 3),
+        "learning_outcome_refs_coverage": round(outcome_coverage, 3),
+        "teaching_role_consistency": round(role_consistency, 3),
+        "teaching_role_distribution": dict(role_dist),
+    }
+
+    # Recompute overall score including alignment
+    base_score = report.get("overall_quality_score", 0.0)
+    alignment_score = (prereq_coverage + role_coverage + outcome_coverage + role_consistency) / 4
+    # Weighted blend: 60% base corpus quality, 40% alignment quality
+    report["overall_quality_score"] = round(base_score * 0.6 + alignment_score * 0.4, 3)
+
+    with open(report_path, "w") as f:
+        json.dump(report, f, indent=2)
+
+
+# ---------------------------------------------------------------------------
+# Stats reporting
+# ---------------------------------------------------------------------------
+
+def print_stats(chunks: List[Dict], fields: List[str]) -> None:
+    """Print alignment statistics."""
+    total = len(chunks)
+
+    if "prereq_concepts" in fields:
+        with_prereqs = sum(1 for c in chunks if c.get("prereq_concepts"))
+        avg_prereqs = (
+            sum(len(c.get("prereq_concepts", [])) for c in chunks) / total
+            if total else 0
+        )
+        print(f"\n  prereq_concepts: {with_prereqs}/{total} chunks populated "
+              f"(avg {avg_prereqs:.1f} per chunk)")
+
+    if "teaching_role" in fields:
+        with_role = sum(1 for c in chunks if c.get("teaching_role"))
+        role_dist = Counter(c.get("teaching_role", "none") for c in chunks)
+        print(f"  teaching_role: {with_role}/{total} chunks classified")
+        for role, count in sorted(role_dist.items()):
+            print(f"    {role}: {count}")
+
+    if "learning_outcome_refs" in fields:
+        with_refs = sum(1 for c in chunks if c.get("learning_outcome_refs"))
+        outcome_dist = Counter()
+        for c in chunks:
+            for ref in c.get("learning_outcome_refs", []):
+                outcome_dist[ref] += 1
+        print(f"  learning_outcome_refs: {with_refs}/{total} chunks linked")
+        if outcome_dist:
+            top_5 = outcome_dist.most_common(5)
+            print(f"    top outcomes: {', '.join(f'{oid}({cnt})' for oid, cnt in top_5)}")
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        description="Alignment stage: enrich Trainforge chunks with relational metadata",
+    )
+    p.add_argument("--corpus", required=True,
+                   help="Path to Trainforge output directory")
+    p.add_argument("--objectives",
+                   help="Path to objectives JSON (required for learning_outcome_refs)")
+    p.add_argument("--fields", default="prereq_concepts,teaching_role,learning_outcome_refs",
+                   help="Comma-separated fields to compute (default: all)")
+    p.add_argument("--llm-provider", default="mock", choices=["mock", "anthropic"],
+                   help="LLM provider for teaching_role classification (default: mock)")
+    p.add_argument("--llm-model", default="claude-haiku-4-5-20251001",
+                   help="Model for LLM calls")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Print stats without writing files")
+    p.add_argument("--verbose", action="store_true",
+                   help="Print per-chunk decisions")
+    return p
+
+
+def main(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
+    if args is None:
+        args = build_parser().parse_args()
+
+    corpus_dir = Path(args.corpus)
+    fields = [f.strip() for f in args.fields.split(",")]
+
+    print(f"[Alignment] Loading corpus from {corpus_dir}")
+    chunks, concept_graph = load_corpus(corpus_dir)
+    print(f"  Loaded {len(chunks)} chunks, "
+          f"{len(concept_graph.get('nodes', []))} graph nodes, "
+          f"{len(concept_graph.get('edges', []))} graph edges")
+
+    # Build sequence (adds _position to each chunk)
+    chunks = build_chunk_sequence(chunks)
+    print(f"  Sequence built: positions 0..{len(chunks) - 1}")
+
+    # --- Field 1: prereq_concepts ---
+    if "prereq_concepts" in fields:
+        print("\n[1/3] Computing prereq_concepts...")
+        compute_prereq_concepts(chunks, concept_graph, verbose=args.verbose)
+
+    # --- Field 2: teaching_role ---
+    if "teaching_role" in fields:
+        print("\n[2/3] Classifying teaching_role...")
+        classify_teaching_roles(
+            chunks,
+            llm_provider=args.llm_provider,
+            llm_model=args.llm_model,
+            verbose=args.verbose,
+        )
+
+    # --- Field 3: learning_outcome_refs ---
+    if "learning_outcome_refs" in fields:
+        if not args.objectives:
+            print("\n[3/3] Skipping learning_outcome_refs (no --objectives provided)")
+        else:
+            print("\n[3/3] Matching learning_outcome_refs...")
+            match_learning_outcomes(
+                chunks, Path(args.objectives), verbose=args.verbose,
+            )
+
+    # --- Stats ---
+    print("\n" + "=" * 50)
+    print("ALIGNMENT SUMMARY")
+    print("=" * 50)
+    print_stats(chunks, fields)
+
+    # --- Write ---
+    if not args.dry_run:
+        # Remove internal _position field before writing
+        for chunk in chunks:
+            chunk.pop("_position", None)
+
+        write_corpus(corpus_dir, chunks)
+        update_quality_report(corpus_dir, chunks)
+        print(f"\n  Written to {corpus_dir / 'corpus'}")
+    else:
+        print("\n  [DRY RUN] No files written")
+        # Still clean up _position
+        for chunk in chunks:
+            chunk.pop("_position", None)
+
+    # Return stats for programmatic use
+    return {
+        "total_chunks": len(chunks),
+        "prereq_populated": sum(1 for c in chunks if c.get("prereq_concepts")),
+        "roles_populated": sum(1 for c in chunks if c.get("teaching_role")),
+        "outcomes_populated": sum(1 for c in chunks if c.get("learning_outcome_refs")),
+    }
+
+
+if __name__ == "__main__":
+    main()

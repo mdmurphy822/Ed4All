@@ -146,7 +146,7 @@ Task(content-generator, "Create all Week 1 content")  # NEVER DO THIS
 │   ├── exam-objectives/         # Certification exam PDFs/docs
 │   ├── textbooks/               # DART-processed HTML textbooks
 │   ├── existing-packages/       # IMSCC packages for intake (NEW)
-│   └── design-books/            # Design reference materials
+│   └── existing-packages/       # IMSCC packages for intake
 ├── templates/                   # HTML templates and components
 ├── schemas/                     # IMSCC and content schemas
 ├── imscc-standards/             # Brightspace/IMSCC technical specs
@@ -157,7 +157,7 @@ Task(content-generator, "Create all Week 1 content")  # NEVER DO THIS
 │   └── remediation-validator/   # Final quality validation (NEW)
 ├── exports/                     # Generated course packages
 │   └── YYYYMMDD_HHMMSS_name/    # Timestamped project folders
-└── runtime/                     # Agent workspaces
+└── runtime/                     # Agent workspaces (auto-created)
 ```
 
 ### Export Project Structure
@@ -217,7 +217,7 @@ Automatic quality assessment after course outline completion:
 | Troubleshooting | `docs/troubleshooting.md` | Error patterns and solutions |
 | Workflow Reference | `docs/workflow-reference.md` | Detailed execution protocols |
 | Getting Started | `docs/getting-started.md` | Quick start guide |
-| Pattern Prevention | `docs/PATTERN_PREVENTION_GUIDE.md` | Comprehensive pattern catalog |
+| Pattern Prevention | `docs/troubleshooting.md` | Error patterns and prevention |
 | Agent Specs | `agents/*.md` | Individual agent protocols |
 
 ---
@@ -232,6 +232,36 @@ Danger Red: #dc3545
 Light Gray: #f8f9fa
 Border Gray: #e0e0e0
 ```
+
+---
+
+## Metadata Output
+
+Courseforge HTML pages embed machine-readable instructional design metadata for downstream consumption by Trainforge.
+
+### HTML Data Attributes (`data-cf-*`)
+
+| Attribute | Element | Purpose |
+|-----------|---------|---------|
+| `data-cf-objective-id` | `<li>` (objectives) | Learning objective identifier |
+| `data-cf-bloom-level` | `<li>`, `.self-check`, `.activity-card` | Bloom's taxonomy level |
+| `data-cf-bloom-verb` | `<li>` (objectives) | Detected Bloom's verb |
+| `data-cf-cognitive-domain` | `<li>` (objectives) | Knowledge domain (factual/conceptual/procedural/metacognitive) |
+| `data-cf-content-type` | `<h2>`, `<h3>`, `.callout` | Section content classification |
+| `data-cf-key-terms` | `<h2>`, `<h3>` | Comma-separated term slugs |
+| `data-cf-component` | `.flip-card`, `.self-check`, `.activity-card` | Interactive component type |
+| `data-cf-purpose` | `.flip-card`, `.self-check`, `.activity-card` | Pedagogical purpose |
+| `data-cf-objective-ref` | `.self-check`, `.activity-card` | Associated learning objective |
+
+### JSON-LD Structured Metadata
+
+Each page includes a `<script type="application/ld+json">` block in `<head>` with:
+- `learningObjectives`: ID, statement, Bloom's level/verb, cognitive domain, assessment suggestions
+- `sections`: Heading, content type, Bloom's range, key terms with definitions
+- `misconceptions`: Common misconceptions with corrections
+- `suggestedAssessmentTypes`: Recommended question formats
+
+Context namespace: `https://ed4all.dev/ns/courseforge/v1`
 
 ---
 
@@ -307,6 +337,12 @@ Courseforge can import and remediate IMSCC packages from:
 | Keyboard Navigation | Full accessibility |
 | Component Styling | AI-selected interactive elements |
 | Quality Enhancement | Learning objectives, summaries, checks |
+
+### Scripts for Course Generation
+| Script | Location | Purpose |
+|--------|----------|---------|
+| `generate_course.py` | `scripts/` | Multi-file weekly course generation with metadata enrichment |
+| `package_multifile_imscc.py` | `scripts/` | Package multi-file course output into IMSCC |
 
 ### Scripts for Intake
 | Script | Location | Purpose |

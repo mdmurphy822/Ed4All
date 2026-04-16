@@ -207,6 +207,14 @@ for i in range(50):
 | `remediate_course_content` | Fix content issues |
 | `get_courseforge_status` | Get project status |
 
+### Courseforge Metadata Output
+
+Courseforge HTML pages include machine-readable metadata for downstream Trainforge consumption:
+- **`data-cf-*` attributes**: Inline metadata on HTML elements (objective IDs, Bloom's levels, content types, key terms)
+- **JSON-LD blocks**: Structured `<script type="application/ld+json">` per page with learning objectives, section metadata, misconceptions, and assessment suggestions
+
+This metadata follows priority extraction in Trainforge: JSON-LD > data-cf-* attributes > regex heuristics.
+
 ### Orchestrator Tools
 
 | Tool | Description |
@@ -235,11 +243,12 @@ for i in range(50):
 
 | Tool | Description |
 |------|-------------|
-| `create_textbook_pipeline` | Initialize textbook-to-course pipeline |
+| `create_textbook_pipeline_tool` | Initialize textbook-to-course pipeline |
 | `stage_dart_outputs` | Stage DART outputs for Courseforge |
 | `get_pipeline_status` | Check pipeline progress |
 | `validate_dart_markers` | Validate DART output markers |
-| `run_textbook_pipeline` | Execute full textbook pipeline |
+| `run_textbook_pipeline_tool` | Execute full textbook pipeline |
+| `archive_to_libv2` | Archive course artifacts to LibV2 |
 
 ### Analysis Tools
 
@@ -365,7 +374,10 @@ tracker.set_status("W001", "content_generator", "Module_3.html", "IN_PROGRESS")
 7. trainforge_assessment (optional)
    └── Generate assessments from IMSCC package
 
-8. finalization
+8. libv2_archival
+   └── Archive course artifacts to LibV2
+
+9. finalization
    └── Final validation and training data export
 ```
 
