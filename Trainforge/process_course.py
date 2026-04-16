@@ -785,8 +785,10 @@ class CourseProcessor:
             tag = normalize_tag(concept)
             if not tag or len(tag) < 3 or tag in tags:
                 continue
-            # Skip objective codes and non-concept tags
-            if self.OBJECTIVE_CODE_RE.match(tag) or tag in self.NON_CONCEPT_TAGS:
+            # Skip objective codes (co-01, to-01, w01-co-01) and non-concept tags
+            if (self.OBJECTIVE_CODE_RE.match(tag)
+                    or self.WEEK_PREFIX_RE.match(tag)
+                    or tag in self.NON_CONCEPT_TAGS):
                 continue
             tags.append(tag)
 
@@ -1124,18 +1126,20 @@ class CourseProcessor:
                     key = tuple(sorted([a, b]))
                     co_occurrence[key] += 1
 
-        # Build nodes (top 50 by frequency)
-        sorted_tags = sorted(tag_frequency.items(), key=lambda x: -x[1])[:50]
+        # Build nodes: include all concepts appearing 2+ times
+        # (single-occurrence tags are likely noise or overly specific)
+        sorted_tags = sorted(tag_frequency.items(), key=lambda x: -x[1])
         nodes = [
             {"id": tag, "label": tag.replace("-", " ").title(), "frequency": freq}
             for tag, freq in sorted_tags
+            if freq >= 2
         ]
         node_ids = {n["id"] for n in nodes}
 
-        # Build edges (only between top nodes, min co-occurrence 2)
+        # Build edges (between nodes with any co-occurrence)
         edges = []
         for (a, b), weight in co_occurrence.items():
-            if weight >= 2 and a in node_ids and b in node_ids:
+            if a in node_ids and b in node_ids:
                 edges.append({"source": a, "target": b, "weight": weight})
 
         return {
