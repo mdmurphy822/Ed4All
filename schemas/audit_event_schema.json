@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://ed4all.org/schemas/audit_event_schema.json",
+  "$id": "urn:ed4all:schemas:audit_event_schema",
   "title": "Unified Audit Event",
   "description": "Schema for unified audit logging across all Ed4All components",
   "type": "object",
