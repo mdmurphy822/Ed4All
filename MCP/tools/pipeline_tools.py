@@ -161,9 +161,9 @@ async def run_textbook_pipeline(workflow_id: str) -> str:
         JSON with final status, phase results, and output paths
     """
     try:
-        from orchestrator.core.config import OrchestratorConfig
-        from orchestrator.core.workflow_runner import WorkflowRunner
-        from orchestrator.core.executor import TaskExecutor
+        from MCP.core.config import OrchestratorConfig
+        from MCP.core.workflow_runner import WorkflowRunner
+        from MCP.core.executor import TaskExecutor
 
         # Load orchestrator config
         config = OrchestratorConfig.load()

@@ -10,7 +10,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 try:
-    from orchestrator.core.checkpoint import (
+    from MCP.hardening.checkpoint import (
         CheckpointManager,
         PhaseCheckpoint,
     )

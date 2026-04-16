@@ -15,7 +15,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from orchestrator.core.validation_gates import GateIssue, GateResult
+from MCP.hardening.validation_gates import GateIssue, GateResult
 
 # Bloom's taxonomy verb indicators per level
 BLOOM_VERBS: Dict[str, Set[str]] = {

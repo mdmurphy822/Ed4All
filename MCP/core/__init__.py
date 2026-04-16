@@ -1,4 +1,4 @@
-"""Orchestrator core components."""
+"""MCP orchestrator core components."""
 
 from .config import OrchestratorConfig
 from .executor import (

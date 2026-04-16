@@ -208,8 +208,10 @@ Ed4All/
 │   ├── courses/            # Flat-storage course data
 │   ├── catalog/            # Derived indexes
 │   └── tools/              # CLI & retrieval engine
-├── MCP/                     # FastMCP server and tools
-├── orchestrator/            # Workflow execution & coordination
+├── MCP/                     # FastMCP server, orchestrator, and tools
+│   ├── core/               # Orchestrator config, executor, workflow runner
+│   ├── hardening/          # Error classifier, validation gates, checkpointing
+│   └── ipc/                # Inter-process status tracking
 ├── cli/                     # CLI commands and run management
 ├── lib/                     # Shared libraries & validators
 ├── config/                  # Workflow & agent configs

@@ -43,10 +43,10 @@ ed4all = "cli.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["lib*", "orchestrator*", "MCP*", "cli*"]
+include = ["lib*", "MCP*", "cli*"]
 
 [tool.coverage.run]
-source = ["lib", "orchestrator", "MCP", "cli"]
+source = ["lib", "MCP", "cli"]
 branch = true
 omit = ["*/tests/*", "*/__pycache__/*"]
 
