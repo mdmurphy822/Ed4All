@@ -104,29 +104,36 @@ Trainforge/
 ├── __init__.py
 ├── CLAUDE.md                    # This file
 ├── README.md
+├── process_course.py            # IMSCC → RAG corpus pipeline
+├── align_chunks.py              # Chunk alignment with pedagogical metadata
 ├── parsers/
 │   ├── imscc_parser.py          # IMSCC package extraction
 │   ├── qti_parser.py            # QTI 1.2 assessment parsing
-│   └── html_content_parser.py   # HTML content extraction
+│   └── html_content_parser.py   # HTML content + metadata extraction
 ├── rag/
 │   └── libv2_bridge.py          # LibV2 RAG integration (retrieval, cross-course)
 ├── generators/
 │   ├── assessment_generator.py  # Main generation orchestrator
+│   ├── content_extractor.py     # Extract key terms, statements, relationships
 │   └── question_factory.py      # Question type factory
 ├── decision_capture/
 │   └── decision_logger.py       # Central capture (wraps lib.trainforge_capture)
-├── validation/
-│   └── __init__.py              # Placeholder for validators
 ├── agents/
 │   ├── CLAUDE.md                # Agent coordination protocols
 │   ├── content-analyzer.md      # Content analysis agent
+│   ├── assessment-extractor.md  # Content extraction agent
 │   ├── assessment-generator.md  # Question generation agent
-│   └── validator.md             # Quality validation agent
+│   ├── assessment-validator.md  # Quality validation agent
+│   ├── rag-indexer.md           # RAG indexing agent
+│   └── validator.md             # General validation agent
 ├── examples/
 │   └── sample_assessment.json   # Example assessment output
 ├── output/                      # Generated output directory
 └── tests/
-    └── test_parsers.py          # Parser smoke tests
+    ├── test_parsers.py          # Parser smoke tests
+    ├── test_metadata_extraction.py      # Metadata pipeline tests
+    ├── test_content_grounded_generation.py  # Content grounding tests
+    └── test_retrieval_improvements.py   # BM25 retrieval tests
 ```
 
 ---
@@ -139,7 +146,7 @@ Trainforge/
 | True/False | Remember | Fact verification |
 | Short Answer | Apply, Analyze | Demonstrate understanding |
 | Essay | Evaluate, Create | Deep analysis |
-| Matching | Understand | Relationship identification |
+| Matching | Understand | Relationship identification (planned) |
 | Fill-in-Blank | Remember, Understand | Term recognition |
 
 ---
@@ -156,6 +163,25 @@ Questions MUST target specific Bloom's levels:
 | Analyze | Analyze, Compare, Contrast | "Compare and contrast...", "What are the differences..." |
 | Evaluate | Evaluate, Judge, Justify | "Evaluate the effectiveness...", "Justify your answer..." |
 | Create | Create, Design, Develop | "Design a...", "Develop a plan for..." |
+
+---
+
+## Metadata Extraction
+
+Trainforge extracts structured metadata from Courseforge HTML output using a priority chain:
+
+1. **JSON-LD** (highest fidelity): `<script type="application/ld+json">` blocks with objectives, sections, misconceptions
+2. **`data-cf-*` attributes**: Inline metadata on HTML elements (objective IDs, Bloom's levels, content types)
+3. **Regex heuristics** (fallback): Pattern matching for non-Courseforge IMSCC packages
+
+### Enriched Chunk Fields
+
+| Field | Source | Description |
+|-------|--------|-------------|
+| `bloom_level` | JSON-LD / data-cf-* / verb inference | Cognitive taxonomy level |
+| `content_type_label` | JSON-LD / data-cf-content-type | Section classification (explanation, example, procedure, etc.) |
+| `key_terms` | JSON-LD keyTerms | Structured term/definition pairs |
+| `misconceptions` | JSON-LD misconceptions | Common errors with corrections |
 
 ---
 
@@ -189,7 +215,7 @@ Questions MUST target specific Bloom's levels:
 All decisions are written to:
 ```
 training-captures/trainforge/{COURSE_CODE}/
-├── phase_content-analysis/
+├── phase_content-extraction/
 │   └── decisions_YYYYMMDD_HHMMSS.jsonl
 ├── phase_question-generation/
 │   └── decisions_YYYYMMDD_HHMMSS.jsonl

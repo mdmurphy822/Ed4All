@@ -160,14 +160,68 @@ class ContentExtractor:
         re.IGNORECASE,
     )
 
+    def extract_from_metadata(
+        self, chunks: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Extract structured content directly from chunk metadata.
+
+        When chunks carry Courseforge metadata (key_terms, misconceptions,
+        bloom_level, content_type_label), this method returns pre-structured
+        data without regex parsing.
+
+        Returns dict with keys: key_terms, misconceptions, bloom_levels.
+        Empty lists for fields not present in metadata.
+        """
+        key_terms: List[KeyTerm] = []
+        misconceptions: List[Dict[str, str]] = []
+        bloom_levels: List[str] = []
+        seen_terms: set = set()
+
+        for chunk in chunks:
+            chunk_id = chunk.get("id", chunk.get("chunk_id", ""))
+
+            # Key terms from Courseforge metadata
+            for kt in (chunk.get("key_terms") or []):
+                if isinstance(kt, dict) and kt.get("term"):
+                    term_key = kt["term"].lower()
+                    if term_key not in seen_terms:
+                        seen_terms.add(term_key)
+                        key_terms.append(KeyTerm(
+                            term=kt["term"],
+                            definition=kt.get("definition", ""),
+                            source_chunk_id=chunk_id,
+                            context_sentence=f'{kt["term"]}: {kt.get("definition", "")}',
+                        ))
+
+            # Misconceptions
+            for mc in (chunk.get("misconceptions") or []):
+                if isinstance(mc, dict) and mc.get("misconception"):
+                    misconceptions.append(mc)
+
+            # Bloom's level
+            bl = chunk.get("bloom_level")
+            if bl and bl not in bloom_levels:
+                bloom_levels.append(bl)
+
+        return {
+            "key_terms": key_terms,
+            "misconceptions": misconceptions,
+            "bloom_levels": bloom_levels,
+        }
+
     def extract_key_terms(
         self, chunks: List[Dict[str, Any]]
     ) -> List[KeyTerm]:
         """Extract defined terms from chunk content.
 
-        Looks for definition patterns, bold/emphasized terms,
-        and terms matching chunk concept_tags.
+        Prefers structured key_terms from chunk metadata when available,
+        falls back to regex pattern matching.
         """
+        # Check if any chunks have structured key_terms metadata
+        metadata_result = self.extract_from_metadata(chunks)
+        if metadata_result["key_terms"]:
+            return metadata_result["key_terms"]
+
         terms: List[KeyTerm] = []
         seen_terms: set = set()
 

@@ -325,13 +325,13 @@ def register_pipeline_tools(mcp):
             JSON with current phase, progress, and phase outputs
         """
         try:
-            from MCP.tools.orchestrator_tools import get_workflow_status
-
-            result = await get_workflow_status(workflow_id)
-            workflow = json.loads(result)
-
-            if "error" in workflow:
-                return result
+            # Read workflow state directly (get_workflow_status is a closure
+            # inside register_orchestrator_tools, not importable at module level)
+            workflow_path = PROJECT_ROOT / "state" / "workflows" / f"{workflow_id}.json"
+            if not workflow_path.exists():
+                return json.dumps({"error": f"Workflow not found: {workflow_id}"})
+            with open(workflow_path) as f:
+                workflow = json.load(f)
 
             # Enhance with pipeline-specific information
             params = workflow.get("params", {})
