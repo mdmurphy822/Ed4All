@@ -27,7 +27,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Lint
-        run: ruff check lib/ MCP/ cli/
+        run: ruff check lib/ MCP/ cli/ Trainforge/ LibV2/tools/ Courseforge/scripts/
 
       - name: Test
         run: pytest --cov --cov-report=xml

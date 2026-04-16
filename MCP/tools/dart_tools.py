@@ -25,13 +25,6 @@ if str(_PROJECT_ROOT) not in sys.path:
 from lib.paths import DART_PATH  # noqa: E402
 from lib.secure_paths import PathTraversalError, validate_path_within_root  # noqa: E402
 
-# Import new telemetry system
-try:
-    from LibV2.telemetry import ArtifactRef, CaptureSession, InputRef  # noqa: F401
-    HAS_TELEMETRY = True
-except ImportError:
-    HAS_TELEMETRY = False
-
 logger = logging.getLogger(__name__)
 
 # Allowed root for DART operations
@@ -53,19 +46,6 @@ _validate_dart_paths()
 
 def _create_capture(course_code: str = "UNKNOWN", pdf_name: str = "unknown"):
     """Create a capture session for DART operations."""
-    if HAS_TELEMETRY:
-        try:
-            return CaptureSession.start_run(
-                tool_id="dart",
-                component="converter",
-                meta={"course_code": course_code, "pdf_name": pdf_name},
-                course_code=course_code,
-                phase="conversion",
-            )
-        except Exception as e:
-            logger.warning(f"Failed to create telemetry session: {e}")
-            return None
-    # Fallback to legacy capture
     try:
         from lib.decision_capture import DARTDecisionCapture
         return DARTDecisionCapture(course_code, pdf_name)
@@ -74,35 +54,11 @@ def _create_capture(course_code: str = "UNKNOWN", pdf_name: str = "unknown"):
 
 
 def _log_tool_decision(capture, decision_type: str, decision: str, rationale: str, **kwargs):
-    """Log a decision using telemetry emit() or legacy log_decision()."""
+    """Log a decision using legacy log_decision()."""
     if capture is None:
         return
 
-    # Check if this is a CaptureSession (new telemetry)
-    if HAS_TELEMETRY and isinstance(capture, CaptureSession):
-        # Map decision types to event types
-        event_type = "generation.completed"
-        if "error" in decision_type.lower():
-            event_type = "error.raised"
-        elif "validation" in decision_type.lower():
-            event_type = "validation.result"
-        elif "approach" in decision_type.lower():
-            event_type = "prompt.built"
-
-        capture.emit(
-            event_type,
-            payload={
-                "decision_type": decision_type,
-                "decision": decision,
-                "rationale": rationale,
-                **{k: v for k, v in kwargs.items() if k not in ("context",)}
-            },
-            metrics={"confidence": kwargs.get("confidence", 1.0)} if "confidence" in kwargs else {},
-            severity="info" if "error" not in decision_type.lower() else "error"
-        )
-    else:
-        # Legacy capture
-        capture.log_decision(decision_type, decision, rationale, **kwargs)
+    capture.log_decision(decision_type, decision, rationale, **kwargs)
 
 
 def _log_conversion_start(capture, source_path: str, options: dict):
@@ -110,13 +66,7 @@ def _log_conversion_start(capture, source_path: str, options: dict):
     if capture is None:
         return
 
-    if HAS_TELEMETRY and isinstance(capture, CaptureSession):
-        capture.emit(
-            "input.loaded",
-            payload={"source": source_path, "method": "multi_source_synthesis", **options},
-            phase="ingest"
-        )
-    elif hasattr(capture, 'log_conversion_start'):
+    if hasattr(capture, 'log_conversion_start'):
         capture.log_conversion_start(source_path, options)
 
 
@@ -125,14 +75,7 @@ def _log_conversion_complete(capture, output_path: str, pages: int, wcag: bool, 
     if capture is None:
         return
 
-    if HAS_TELEMETRY and isinstance(capture, CaptureSession):
-        capture.emit(
-            "export.completed",
-            payload={"output_path": output_path, "wcag_compliant": wcag, "status": "success"},
-            metrics={"pages_processed": pages, "latency_ms": time_sec * 1000},
-            phase="export"
-        )
-    elif hasattr(capture, 'log_conversion_complete'):
+    if hasattr(capture, 'log_conversion_complete'):
         capture.log_conversion_complete(output_path, pages, wcag, time_sec)
 
 
@@ -141,9 +84,7 @@ def _finalize_capture(capture):
     if capture is None:
         return
 
-    if HAS_TELEMETRY and isinstance(capture, CaptureSession):
-        capture.finish_run("success")
-    elif hasattr(capture, 'save'):
+    if hasattr(capture, 'save'):
         capture.save()
 
 

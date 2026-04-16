@@ -523,47 +523,66 @@ def get_file_content(path: str) -> str:
 # REGISTER TOOL MODULES (Ed4All: DART + Courseforge + Trainforge only)
 # =============================================================================
 
+_loaded_modules = []
+_failed_modules = []
+
 try:
     from tools.dart_tools import register_dart_tools
     register_dart_tools(mcp)
     logger.info("DART tools registered")
+    _loaded_modules.append("DART")
 except ImportError as e:
     logger.warning(f"Could not register DART tools: {e}")
+    _failed_modules.append("DART")
 
 try:
     from tools.courseforge_tools import register_courseforge_tools
     register_courseforge_tools(mcp)
     logger.info("Courseforge tools registered")
+    _loaded_modules.append("Courseforge")
 except ImportError as e:
     logger.warning(f"Could not register Courseforge tools: {e}")
+    _failed_modules.append("Courseforge")
 
 try:
     from tools.orchestrator_tools import register_orchestrator_tools
     register_orchestrator_tools(mcp)
     logger.info("Orchestrator tools registered")
+    _loaded_modules.append("Orchestrator")
 except ImportError as e:
     logger.warning(f"Could not register Orchestrator tools: {e}")
+    _failed_modules.append("Orchestrator")
 
 try:
     from tools.trainforge_tools import register_trainforge_tools
     register_trainforge_tools(mcp)
     logger.info("Trainforge tools registered")
+    _loaded_modules.append("Trainforge")
 except ImportError as e:
     logger.warning(f"Could not register Trainforge tools: {e}")
+    _failed_modules.append("Trainforge")
 
 try:
     from tools.analysis_tools import register_analysis_tools
     register_analysis_tools(mcp)
     logger.info("Analysis tools registered")
+    _loaded_modules.append("Analysis")
 except ImportError as e:
     logger.warning(f"Could not register Analysis tools: {e}")
+    _failed_modules.append("Analysis")
 
 try:
     from tools.pipeline_tools import register_pipeline_tools
     register_pipeline_tools(mcp)
     logger.info("Pipeline tools registered")
+    _loaded_modules.append("Pipeline")
 except ImportError as e:
     logger.warning(f"Could not register Pipeline tools: {e}")
+    _failed_modules.append("Pipeline")
+
+logger.info(f"MCP tool modules loaded: {', '.join(_loaded_modules) or 'none'}")
+if _failed_modules:
+    logger.warning(f"MCP tool modules failed: {', '.join(_failed_modules)}")
 
 # =============================================================================
 # SERVER STARTUP
