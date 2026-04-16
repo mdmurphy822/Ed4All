@@ -118,12 +118,6 @@ Example: Bioinformatics
 }
 ```
 
-## Documentation
-
-- [Structure Guide](docs/structure_guide.md)
-- [Importing Courses](docs/importing_courses.md)
-- [Taxonomy Guide](docs/taxonomy_guide.md)
-
 ## License
 
 MIT License - See LICENSE file for details.

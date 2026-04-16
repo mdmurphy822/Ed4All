@@ -200,7 +200,7 @@ Task(
 Task(
     subagent_type="brightspace-packager",
     description="IMSCC packaging",
-    prompt="Create IMS CC 1.1 compliant package with D2L-specific optimizations and complete manifest structure."
+    prompt="Create IMS CC 1.3 compliant package with D2L-specific optimizations and complete manifest structure."
 )
 ```
 
@@ -382,15 +382,14 @@ def track_progress():
 
 ### If You Get Stuck
 1. **Check Troubleshooting Guide**: [troubleshooting.md](troubleshooting.md)
-2. **Review Pattern Documentation**: [PATTERN_PREVENTION_GUIDE.md](PATTERN_PREVENTION_GUIDE.md)
+2. **Review Pattern Documentation**: [troubleshooting.md](troubleshooting.md)
 3. **Validate Against Schemas**: [schemas/README.md](schemas/README.md)
 4. **Test with Minimal Example**: Create simple 2-week course first
 
 ### Resources
 - 📖 [Agent Specifications](../agents/)
-- 🔧 [Scripts and Tools](../scripts/README.md)
 - 🎨 [Template Library](../templates/)
-- 📊 [Pattern Prevention Guide](PATTERN_PREVENTION_GUIDE.md)
+- 📊 [Pattern Prevention](troubleshooting.md)
 
 ---
 

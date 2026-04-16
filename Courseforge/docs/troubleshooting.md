@@ -568,4 +568,4 @@ A properly generated IMSCC package will:
 
 ---
 
-*For complete pattern documentation, see [PATTERN_PREVENTION_GUIDE.md](PATTERN_PREVENTION_GUIDE.md)*
+*For pattern quick reference, see the [Pattern Quick Reference](#pattern-quick-reference) table above.*

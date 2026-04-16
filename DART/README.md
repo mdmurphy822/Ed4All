@@ -119,13 +119,6 @@ report = validator.validate_file('document.html')
 print(report.to_json())
 ```
 
-## Examples
-
-See the `examples/` directory for conversion examples:
-
-- **NASA NESC 2024** (`examples/nasa_nesc_2024/`) - Flagship example with a 76-page multi-column NASA publication. Includes detailed workflow documentation.
-- **Small Samples** (`examples/small_samples/`) - Quick reference examples including math textbooks, academic papers, and image-only documents.
-
 ## Gold Standard Template
 
 The `templates/gold_standard.html` file demonstrates the target output format with:
@@ -191,7 +184,7 @@ Options:
 
 The generated HTML meets WCAG 2.2 AA success criteria:
 
-### Core WCAG 2.1 Criteria
+### Core WCAG 2.2 Criteria
 
 | Criterion | Description | Implementation |
 |-----------|-------------|----------------|

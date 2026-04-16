@@ -110,18 +110,19 @@ Every decision event MUST include:
 from lib.decision_capture import DecisionCapture
 
 capture = DecisionCapture(
-    run_id="RUN_20250101_143022",
-    course_id="INT_101",
-    operation="course_generation"
+    course_code="INT_101",
+    phase="content-generator",
+    tool="courseforge",
+    streaming=True
 )
 
 capture.log_decision(
-    decision_type="content_outline",
+    decision_type="content_structure",
     decision="Use 6-week modular structure",
     rationale="Aligns with competency-based approach and allows flexible pacing for diverse learners",
     alternatives_considered=[
-        {"option": "8-week linear", "rejected_because": "Too rigid for self-paced learning"},
-        {"option": "4-week intensive", "rejected_because": "Insufficient depth for foundational content"}
+        "8-week linear: Too rigid for self-paced learning",
+        "4-week intensive: Insufficient depth for foundational content"
     ]
 )
 ```
@@ -257,16 +258,6 @@ This metadata follows priority extraction in Trainforge: JSON-LD > data-cf-* att
 | `analyze_training_data` | Analyze training capture data |
 | `get_quality_distribution` | Get quality score distribution |
 | `preview_export_filter` | Preview export filter results |
-
-### Learning Science Tools
-
-| Tool | Description |
-|------|-------------|
-| `learning_science_query` | Query learning science knowledge base |
-| `get_pedagogical_strategy` | Get strategy for pedagogical context |
-| `validate_with_research` | Validate content against research |
-| `list_learning_science_domains` | List available knowledge domains |
-| `invalidate_learning_science_cache` | Clear learning science cache |
 
 ---
 
@@ -415,6 +406,7 @@ tracker.set_status("W001", "content_generator", "Module_3.html", "IN_PROGRESS")
 |-------|---------|
 | `textbook-stager` | Stage DART outputs for Courseforge |
 | `textbook-ingestor` | Parse DART HTML & extract objectives |
+| `libv2-archivist` | Archive course artifacts to LibV2 |
 
 ### Trainforge Agents
 

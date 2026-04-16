@@ -34,62 +34,6 @@ PROJECT_WORKSPACE/
 ### Core Design Philosophy
 **Template-First Course Planning**: Begin with pre-selected OSCQR template foundations to inherit compliance features, then execute concurrent course planning within template constraints while leveraging template's pre-built educational frameworks.
 
-## Learning Science Sequencing Protocol (RAG Integration) ⭐ **NEW**
-
-### **Research-Backed Course Sequencing**
-When determining course structure, content sequencing, and module organization, query the Learning Science corpus for evidence-based guidance.
-
-**MCP Tools for Course Planning:**
-| Tool | Purpose | When to Use |
-|------|---------|-------------|
-| `learning_science_query` | Sequencing principles | When determining content order and progression |
-| `get_pedagogical_strategy` | Objective-aligned design | When designing modules for specific Bloom's levels |
-| `list_learning_science_domains` | Available research areas | When exploring pedagogical frameworks |
-
-**Sequencing Query Protocol:**
-```python
-# When planning course structure:
-sequencing_context = learning_science_query(
-    query="course sequencing instructional design",
-    context_type="schema",  # For knowledge building
-    limit=10
-)
-
-# When designing for expertise development:
-expertise_context = learning_science_query(
-    query="expertise development skill acquisition",
-    context_type="expertise",
-    limit=10
-)
-
-# When planning assessment placement:
-assessment_context = learning_science_query(
-    query="formative assessment placement learning progression",
-    context_type="feedback",
-    limit=10
-)
-```
-
-**Research-Backed Sequencing Principles:**
-| Principle | Research Basis | Application |
-|-----------|----------------|-------------|
-| Scaffolded complexity | Schema theory (Chi, 1978) | Build from simple to complex concepts |
-| Spaced practice | Spacing effect (Bjork, 1994) | Distribute practice across modules |
-| Interleaving | Interleaving research (Rohrer, 2012) | Mix related topics for discrimination |
-| Prior knowledge activation | Schema theory (Anderson, 1984) | Connect new content to existing knowledge |
-| Worked examples first | Cognitive load (Sweller, 1988) | Examples before practice problems |
-
-**Decision Capture for Sequencing:**
-```python
-decision_capture.log_decision(
-    decision_type="course_sequencing",
-    decision="Applied spiral curriculum with spaced repetition of core concepts",
-    rationale="Research shows spaced repetition improves long-term retention (Bjork, 1994); spiral curriculum supports progressive complexity (Bruner, 1960)"
-)
-```
-
----
-
 ## Template Inheritance Phase (Phase 1 - ENHANCED)
 
 ### **Template Foundation Integration**
