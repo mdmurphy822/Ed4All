@@ -138,7 +138,22 @@ Division (STEM/ARTS)
 | `schema/` | JSON Schema for validation |
 | `tools/` | Python CLI for management |
 
+Each course directory (`courses/[slug]/`) contains:
+- `corpus/` — Chunked content (chunks.jsonl) for RAG retrieval
+- `manifest.json` — Course metadata and classification
+- `graph/` — Concept co-occurrence graph
+- `pedagogy/` — Pedagogical model metadata
+- `quality/` — Quality metrics and assessment reports
+- `sources/` — Source artifacts (IMSCC, PDF, HTML)
+
 ## Common Tasks
+
+### CLI Alias (Optional)
+For convenience, add to your shell profile:
+```bash
+alias libv2='python -m LibV2.tools.libv2.cli'
+```
+Examples below use the full module path; substitute `libv2` if aliased.
 
 ### Adding a New Course
 ```bash
