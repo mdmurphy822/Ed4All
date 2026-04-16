@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://ed4all.org/schemas/run_manifest_schema.json",
+  "$id": "urn:ed4all:schemas:run_manifest_schema",
   "title": "Run Manifest",
   "description": "Immutable manifest capturing run initialization state for Phase 0 Hardening",
   "type": "object",

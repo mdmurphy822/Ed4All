@@ -20,7 +20,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from lib.paths import PROJECT_ROOT  # noqa: E402
-from MCP.tools.path_validation import validate_path_within_root  # noqa: E402
+from lib.secure_paths import validate_path_within_root  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -39,11 +39,161 @@ def _ensure_directories():
 _ensure_directories()
 
 
+async def create_textbook_pipeline(
+    pdf_paths: str,
+    course_name: str,
+    objectives_path: Optional[str] = None,
+    duration_weeks: int = 12,
+    generate_assessments: bool = True,
+    assessment_count: int = 50,
+    bloom_levels: str = "remember,understand,apply,analyze",
+    priority: str = "normal"
+) -> str:
+    """
+    Create and orchestrate a textbook-to-course pipeline.
+
+    Chains: DART (PDF->HTML) -> Courseforge (course generation) -> Trainforge (assessments)
+
+    This is a standalone function importable by both the MCP server and CLI.
+
+    Args:
+        pdf_paths: Comma-separated PDF paths OR directory containing PDFs
+        course_name: Course identifier (e.g., "PHYS_101")
+        objectives_path: Optional external objectives file to merge
+        duration_weeks: Course duration in weeks (default: 12)
+        generate_assessments: Run Trainforge phase (default: True)
+        assessment_count: Questions to generate (default: 50)
+        bloom_levels: Target Bloom levels (default: remember,understand,apply,analyze)
+        priority: Workflow priority (low/normal/high)
+
+    Returns:
+        JSON with workflow_id, run_id, and status
+    """
+    try:
+        from MCP.tools.orchestrator_tools import create_workflow_impl
+
+        # Parse PDF paths
+        pdf_path = Path(pdf_paths)
+        if pdf_path.is_dir():
+            pdfs = list(pdf_path.glob("*.pdf"))
+            if not pdfs:
+                return json.dumps({"error": f"No PDF files found in directory: {pdf_paths}"})
+        else:
+            pdfs = [Path(p.strip()) for p in pdf_paths.split(",")]
+
+        # Validate PDF paths are within project root
+        for pdf in pdfs:
+            try:
+                validate_path_within_root(pdf.resolve(), PROJECT_ROOT)
+            except ValueError as e:
+                return json.dumps({"error": f"PDF path validation failed: {e}"})
+
+        # Validate inputs
+        missing_pdfs = [str(p) for p in pdfs if not p.exists()]
+        if missing_pdfs:
+            return json.dumps({"error": f"PDF files not found: {missing_pdfs}"})
+
+        if objectives_path and not Path(objectives_path).exists():
+            return json.dumps({"error": f"Objectives file not found: {objectives_path}"})
+
+        # Validate course name format
+        if not course_name or len(course_name) < 2:
+            return json.dumps({"error": "Course name must be at least 2 characters"})
+
+        # Generate run_id
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_id = f"TTC_{course_name}_{timestamp}"
+
+        # Build workflow parameters
+        params = {
+            "pdf_paths": [str(p.resolve()) for p in pdfs],
+            "course_name": course_name,
+            "objectives_path": str(Path(objectives_path).resolve()) if objectives_path else None,
+            "duration_weeks": duration_weeks,
+            "generate_assessments": generate_assessments,
+            "assessment_count": assessment_count,
+            "bloom_levels": [level.strip() for level in bloom_levels.split(",")],
+            "run_id": run_id
+        }
+
+        # Create workflow via orchestrator
+        result = await create_workflow_impl(
+            workflow_type="textbook_to_course",
+            params=json.dumps(params),
+            priority=priority
+        )
+
+        result_data = json.loads(result)
+
+        if result_data.get("success"):
+            # Add run_id to response
+            result_data["run_id"] = run_id
+            result_data["params"] = params
+
+            # Create training captures directory for this run
+            captures_dir = TRAINING_CAPTURES / "textbook-pipeline" / course_name
+            captures_dir.mkdir(parents=True, exist_ok=True)
+
+            logger.info(f"Created textbook_to_course pipeline: {result_data.get('workflow_id')}")
+
+        return json.dumps(result_data)
+
+    except Exception as e:
+        logger.error(f"Failed to create textbook pipeline: {e}")
+        return json.dumps({"error": str(e)})
+
+
+async def run_textbook_pipeline(workflow_id: str) -> str:
+    """
+    Execute a textbook-to-course pipeline that was previously created.
+
+    Standalone function importable by both MCP server and CLI.
+
+    Runs all phases in dependency order:
+    DART conversion -> Staging -> Objective extraction -> Course planning ->
+    Content generation -> IMSCC packaging -> Trainforge assessment ->
+    LibV2 archival -> Finalization
+
+    Args:
+        workflow_id: The workflow ID returned by create_textbook_pipeline
+
+    Returns:
+        JSON with final status, phase results, and output paths
+    """
+    try:
+        from orchestrator.core.config import OrchestratorConfig
+        from orchestrator.core.workflow_runner import WorkflowRunner
+        from orchestrator.core.executor import TaskExecutor
+
+        # Load orchestrator config
+        config = OrchestratorConfig.load()
+
+        # Create executor with tool registry
+        tool_registry = _build_tool_registry()
+
+        executor = TaskExecutor(tool_registry=tool_registry)
+
+        # Create and run the workflow runner
+        runner = WorkflowRunner(executor, config)
+        result = await runner.run_workflow(workflow_id)
+
+        return json.dumps(result, default=str)
+
+    except Exception as e:
+        logger.error(f"Pipeline execution failed: {e}")
+        import traceback
+        return json.dumps({
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "workflow_id": workflow_id,
+        })
+
+
 def register_pipeline_tools(mcp):
     """Register pipeline tools with the MCP server."""
 
     @mcp.tool()
-    async def create_textbook_pipeline(
+    async def create_textbook_pipeline_tool(
         pdf_paths: str,
         course_name: str,
         objectives_path: Optional[str] = None,
@@ -53,97 +203,11 @@ def register_pipeline_tools(mcp):
         bloom_levels: str = "remember,understand,apply,analyze",
         priority: str = "normal"
     ) -> str:
-        """
-        Create and orchestrate a textbook-to-course pipeline.
-
-        Chains: DART (PDF->HTML) -> Courseforge (course generation) -> Trainforge (assessments)
-
-        Args:
-            pdf_paths: Comma-separated PDF paths OR directory containing PDFs
-            course_name: Course identifier (e.g., "PHYS_101")
-            objectives_path: Optional external objectives file to merge
-            duration_weeks: Course duration in weeks (default: 12)
-            generate_assessments: Run Trainforge phase (default: True)
-            assessment_count: Questions to generate (default: 50)
-            bloom_levels: Target Bloom levels (default: remember,understand,apply,analyze)
-            priority: Workflow priority (low/normal/high)
-
-        Returns:
-            JSON with workflow_id, run_id, and status
-        """
-        try:
-            # Import orchestrator tools
-            from MCP.tools.orchestrator_tools import create_workflow
-
-            # Parse PDF paths
-            pdf_path = Path(pdf_paths)
-            if pdf_path.is_dir():
-                pdfs = list(pdf_path.glob("*.pdf"))
-                if not pdfs:
-                    return json.dumps({"error": f"No PDF files found in directory: {pdf_paths}"})
-            else:
-                pdfs = [Path(p.strip()) for p in pdf_paths.split(",")]
-
-            # Validate PDF paths are within project root
-            for pdf in pdfs:
-                try:
-                    validate_path_within_root(pdf.resolve(), PROJECT_ROOT)
-                except ValueError as e:
-                    return json.dumps({"error": f"PDF path validation failed: {e}"})
-
-            # Validate inputs
-            missing_pdfs = [str(p) for p in pdfs if not p.exists()]
-            if missing_pdfs:
-                return json.dumps({"error": f"PDF files not found: {missing_pdfs}"})
-
-            if objectives_path and not Path(objectives_path).exists():
-                return json.dumps({"error": f"Objectives file not found: {objectives_path}"})
-
-            # Validate course name format
-            if not course_name or len(course_name) < 2:
-                return json.dumps({"error": "Course name must be at least 2 characters"})
-
-            # Generate run_id
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            run_id = f"TTC_{course_name}_{timestamp}"
-
-            # Build workflow parameters
-            params = {
-                "pdf_paths": [str(p.resolve()) for p in pdfs],
-                "course_name": course_name,
-                "objectives_path": str(Path(objectives_path).resolve()) if objectives_path else None,
-                "duration_weeks": duration_weeks,
-                "generate_assessments": generate_assessments,
-                "assessment_count": assessment_count,
-                "bloom_levels": [level.strip() for level in bloom_levels.split(",")],
-                "run_id": run_id
-            }
-
-            # Create workflow via orchestrator
-            result = await create_workflow(
-                workflow_type="textbook_to_course",
-                params=json.dumps(params),
-                priority=priority
-            )
-
-            result_data = json.loads(result)
-
-            if result_data.get("success"):
-                # Add run_id to response
-                result_data["run_id"] = run_id
-                result_data["params"] = params
-
-                # Create training captures directory for this run
-                captures_dir = TRAINING_CAPTURES / "textbook-pipeline" / course_name
-                captures_dir.mkdir(parents=True, exist_ok=True)
-
-                logger.info(f"Created textbook_to_course pipeline: {result_data.get('workflow_id')}")
-
-            return json.dumps(result_data)
-
-        except Exception as e:
-            logger.error(f"Failed to create textbook pipeline: {e}")
-            return json.dumps({"error": str(e)})
+        """Create and orchestrate a textbook-to-course pipeline."""
+        return await create_textbook_pipeline(
+            pdf_paths, course_name, objectives_path, duration_weeks,
+            generate_assessments, assessment_count, bloom_levels, priority
+        )
 
     @mcp.tool()
     async def stage_dart_outputs(
@@ -506,51 +570,264 @@ def register_pipeline_tools(mcp):
             return json.dumps({"error": str(e)})
 
     @mcp.tool()
-    async def run_textbook_pipeline(workflow_id: str) -> str:
-        """
-        Execute a textbook-to-course pipeline that was previously created.
+    async def run_textbook_pipeline_tool(workflow_id: str) -> str:
+        """Execute a textbook-to-course pipeline that was previously created."""
+        return await run_textbook_pipeline(workflow_id)
 
-        Runs all phases in dependency order:
-        DART conversion -> Staging -> Objective extraction -> Course planning ->
-        Content generation -> IMSCC packaging -> Trainforge assessment ->
-        LibV2 archival -> Finalization
 
-        Each phase's outputs are automatically routed to the next phase's inputs.
+def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
+    """Convert raw pdftotext output to clean, semantic, WCAG 2.2 AA HTML.
 
-        Args:
-            workflow_id: The workflow ID returned by create_textbook_pipeline
+    Performs thorough cleaning:
+    - Strips standalone page numbers, TOC entries, headers/footers
+    - Removes repeated book title footers (e.g. "K-12 Blended Teaching")
+    - Removes EdTech Books boilerplate and URL footers
+    - Skips author biography sections (detects bio patterns)
+    - Detects real chapter/section headings from text structure
+    - Builds heading hierarchy (h1 → h2 → h3)
+    - Wraps content paragraphs in <p> tags
+    - Adds WCAG 2.2 AA landmarks (main, skip link, dark mode)
+    """
+    import re as _re
+    import html as _html
 
-        Returns:
-            JSON with final status, phase results, and output paths
-        """
-        try:
-            from orchestrator.core.config import OrchestratorConfig
-            from orchestrator.core.workflow_runner import WorkflowRunner
-            from orchestrator.core.executor import TaskExecutor
+    lines = raw_text.split("\n")
 
-            # Load orchestrator config
-            config = OrchestratorConfig.load()
+    # ---- Pass 1: Identify the book title for footer stripping ----
+    # The first non-empty line(s) are usually the book title
+    book_title_words = []
+    for line in lines[:10]:
+        s = line.strip()
+        if s and len(s) > 3:
+            book_title_words.append(s)
+        if len(book_title_words) >= 2:
+            break
+    book_title_line = " ".join(book_title_words[:2]) if book_title_words else ""
 
-            # Create executor with tool registry
-            # Collect all registered MCP tool functions
-            tool_registry = _build_tool_registry()
+    # ---- Compiled patterns ----
+    page_num = _re.compile(r"^\s*\d{1,4}\s*$")
+    toc_entry = _re.compile(r"^.{5,60}\s{3,}\d{1,4}\s*$")
+    chapter_heading = _re.compile(
+        r"^(?:"
+        r"(?:Chapter|Part|Section|Unit)\s+\d+[.:]\s*|"
+        r"(?:I{1,3}V?|VI{0,3}|IX|X{1,3})\.\s+|"
+        r"\d{1,2}\.\s+"
+        r")(.+)",
+    )
+    sub_heading = _re.compile(r"^[A-Z][A-Za-z\s,&:'\-]{5,80}$")
 
-            executor = TaskExecutor(tool_registry=tool_registry)
+    boilerplate = _re.compile(
+        r"(?:"
+        r"This content is provided to you freely|"
+        r"Access it online or download it at|"
+        r"edtechbooks\.org|pressbooks\.pub|"
+        r"Like this\? Endorse it|"
+        r"Endorse$|"
+        r"^CC BY|^ISBN:|"
+        r"Watch on YouTube|"
+        r"What to Look For:"
+        r")",
+        _re.IGNORECASE,
+    )
 
-            # Create and run the workflow runner
-            runner = WorkflowRunner(executor, config)
-            result = await runner.run_workflow(workflow_id)
+    # Bio detection: lines like "University of X" or "Dr. X is a Professor"
+    bio_start = _re.compile(
+        r"^(?:[A-Z][a-z]+ [A-Z]\. [A-Z][a-z]+|"  # "Cecil R. Short"
+        r"Dr\. [A-Z]|"
+        r"[A-Z][a-z]+ [A-Z][a-z]+)\s*$"  # "Jered Borup" (name-only line)
+    )
+    university_line = _re.compile(
+        r"^(?:University|Brigham Young|Arizona State|George Mason|"
+        r"Emporia State|Weber State|[A-Z][a-z]+ (?:University|College|Institute))",
+        _re.IGNORECASE,
+    )
 
-            return json.dumps(result, default=str)
+    # ---- Pass 2: Clean lines ----
+    cleaned_lines = []
+    in_toc = False
+    in_bio = False
+    bio_line_count = 0
+    prev_was_empty = True
 
-        except Exception as e:
-            logger.error(f"Pipeline execution failed: {e}")
-            import traceback
-            return json.dumps({
-                "error": str(e),
-                "traceback": traceback.format_exc(),
-                "workflow_id": workflow_id,
-            })
+    for line in lines:
+        stripped = line.strip()
+
+        # Empty line
+        if not stripped:
+            if in_bio:
+                bio_line_count += 1
+                if bio_line_count > 2:
+                    in_bio = False  # Bios end after a gap
+            cleaned_lines.append("")
+            prev_was_empty = True
+            continue
+
+        # Skip standalone page numbers
+        if page_num.match(stripped):
+            continue
+
+        # Skip repeated book title footer
+        if book_title_line and stripped == book_title_line.split("\n")[0].strip():
+            continue
+        # Also match partial book title (just the short title)
+        if book_title_words and stripped == book_title_words[0]:
+            continue
+
+        # Skip boilerplate
+        if boilerplate.search(stripped):
+            continue
+
+        # Skip TOC entries (title followed by large whitespace then page number)
+        if toc_entry.match(stripped):
+            in_toc = True
+            continue
+        if in_toc:
+            if len(stripped) > 40 and not toc_entry.match(stripped):
+                in_toc = False
+            else:
+                continue
+
+        # Detect and skip author bio blocks
+        if prev_was_empty and (bio_start.match(stripped) or university_line.match(stripped)):
+            in_bio = True
+            bio_line_count = 0
+            continue
+        if in_bio:
+            bio_line_count = 0  # Reset counter on non-empty bio line
+            # Stay in bio mode for lines that look like bio content
+            if (
+                len(stripped) < 200
+                and (
+                    university_line.match(stripped)
+                    or "http" in stripped
+                    or "@" in stripped
+                    or stripped.startswith("Dr.")
+                    or "Professor" in stripped
+                    or "research" in stripped.lower()
+                    or "publications" in stripped.lower()
+                )
+            ):
+                continue
+            # If line is long enough to be real content, exit bio mode
+            if len(stripped) > 100:
+                in_bio = False
+            else:
+                continue
+
+        cleaned_lines.append(stripped)
+        prev_was_empty = False
+
+    # ---- Pass 3: Detect structure and build sections ----
+    sections = []
+    current_section = {"heading": title, "level": 1, "paragraphs": []}
+    current_para = []
+
+    def _flush_para():
+        text = " ".join(current_para).strip()
+        if text and len(text) > 20:
+            current_section["paragraphs"].append(text)
+        current_para.clear()
+
+    for stripped in cleaned_lines:
+        if not stripped:
+            _flush_para()
+            continue
+
+        # Detect chapter headings (numbered: "11. Behaviorism..." or "I. Definitions")
+        ch_match = chapter_heading.match(stripped)
+        if ch_match:
+            _flush_para()
+            if current_section["paragraphs"] or current_section["heading"] != title:
+                sections.append(current_section)
+            heading_text = ch_match.group(1).strip() if ch_match.group(1) else stripped
+            current_section = {"heading": heading_text, "level": 2, "paragraphs": []}
+            continue
+
+        # Detect sub-headings (Title Case, short, standalone after blank)
+        if (
+            sub_heading.match(stripped)
+            and len(stripped.split()) <= 10
+            and not current_para  # Must be after a blank line
+            and stripped[0].isupper()
+            and not stripped.endswith(".")
+            and not stripped.endswith(",")
+        ):
+            _flush_para()
+            if current_section["paragraphs"]:
+                sections.append(current_section)
+                current_section = {"heading": stripped, "level": 3, "paragraphs": []}
+            elif current_section["heading"] == title:
+                current_section["heading"] = stripped
+                current_section["level"] = 2
+            else:
+                current_section["heading"] = stripped
+                current_section["level"] = 3
+            continue
+
+        current_para.append(stripped)
+
+    _flush_para()
+    if current_section["paragraphs"]:
+        sections.append(current_section)
+
+    # Build HTML
+    safe_title = _html.escape(title.replace("-", " ").replace("_", " ").title())
+    body_parts = []
+
+    for section in sections:
+        h_level = min(section["level"], 6)
+        h_tag = f"h{h_level}"
+        heading = _html.escape(section["heading"])
+        section_id = _re.sub(r"[^a-z0-9]+", "-", section["heading"].lower()).strip("-")[:60]
+
+        body_parts.append(
+            f'<section id="{section_id}" aria-labelledby="{section_id}-heading">'
+        )
+        body_parts.append(f'  <{h_tag} id="{section_id}-heading">{heading}</{h_tag}>')
+
+        for para in section["paragraphs"]:
+            safe_para = _html.escape(para)
+            body_parts.append(f"  <p>{safe_para}</p>")
+
+        body_parts.append("</section>")
+
+    body_html = "\n".join(body_parts)
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{safe_title}</title>
+  <style>
+    body {{ font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; max-width: 50em; margin: 0 auto; padding: 1em; color: #1a1a1a; }}
+    .skip-link {{ position: absolute; left: -9999px; top: auto; width: 1px; height: 1px; overflow: hidden; }}
+    .skip-link:focus {{ position: static; width: auto; height: auto; }}
+    h1 {{ font-size: 2em; border-bottom: 2px solid #333; padding-bottom: 0.3em; }}
+    h2 {{ font-size: 1.5em; margin-top: 2em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }}
+    h3 {{ font-size: 1.25em; margin-top: 1.5em; }}
+    section {{ margin-bottom: 1.5em; }}
+    p {{ margin: 0.8em 0; }}
+    @media (prefers-color-scheme: dark) {{
+      body {{ background: #1a1a1a; color: #e0e0e0; }}
+      h1, h2 {{ border-color: #555; }}
+    }}
+    @media (prefers-reduced-motion: reduce) {{ * {{ transition: none !important; }} }}
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <header role="banner">
+    <h1>{safe_title}</h1>
+  </header>
+  <main id="main-content" role="main">
+{body_html}
+  </main>
+  <footer role="contentinfo">
+    <p>Converted by DART (Document Accessibility Remediation Tool)</p>
+  </footer>
+</body>
+</html>"""
 
 
 def _build_tool_registry() -> dict:
@@ -564,7 +841,14 @@ def _build_tool_registry() -> dict:
 
     # DART tools
     async def _extract_and_convert_pdf(**kwargs):
-        """Wrapper for DART PDF extraction and conversion."""
+        """Extract text from PDF and convert to clean, accessible HTML.
+
+        Strategy:
+        1. Try multi-source synthesis if combined JSON exists
+        2. Extract text via pdftotext
+        3. Build clean semantic HTML from the extracted text
+           (strips page numbers, TOC artifacts, headers/footers)
+        """
         from lib.paths import DART_PATH
 
         pdf_path = kwargs.get("pdf_path", "")
@@ -593,22 +877,49 @@ def _build_tool_registry() -> dict:
                     "method": "multi_source_synthesis",
                 })
             except ImportError:
-                pass  # Fall through to Strategy 2
+                pass
 
-        # Strategy 2: Use pdf_converter for direct PDF-to-HTML
+        # Strategy 2: Extract text via pdftotext, then build accessible HTML
+        import re as _re
+        import subprocess
+
         try:
-            from pdf_converter.converter import PDFToAccessibleHTML
-            converter = PDFToAccessibleHTML()
-            result = converter.convert(str(pdf), str(out_dir))
-            return json.dumps({
-                "success": result.success,
-                "output_path": result.html_path,
-                "method": "pdf_converter",
-            })
-        except ImportError:
-            return json.dumps({"error": "DART modules not available"})
-        except Exception as e:
-            return json.dumps({"error": f"DART conversion failed: {e}"})
+            result = subprocess.run(
+                ["pdftotext", "-layout", str(pdf), "-"],
+                capture_output=True, text=True, timeout=120,
+            )
+            raw_text = result.stdout
+        except (subprocess.SubprocessError, FileNotFoundError):
+            # Fallback: try pdf_converter
+            try:
+                from pdf_converter.converter import PDFToAccessibleHTML
+                converter = PDFToAccessibleHTML()
+                conv_result = converter.convert(str(pdf), str(out_dir))
+                return json.dumps({
+                    "success": conv_result.success,
+                    "output_path": conv_result.html_path,
+                    "method": "pdf_converter",
+                })
+            except Exception as e2:
+                return json.dumps({"error": f"DART conversion failed: {e2}"})
+
+        if len(raw_text.strip()) < 100:
+            return json.dumps({"error": "No meaningful text extracted from PDF"})
+
+        # Build accessible HTML from raw extracted text
+        html_output = out_dir / f"{code}_accessible.html"
+        html_content = _raw_text_to_accessible_html(raw_text, code)
+        html_output.write_text(html_content, encoding="utf-8")
+
+        word_count = len(_re.findall(r"\b\w+\b", html_content))
+
+        return json.dumps({
+            "success": True,
+            "output_path": str(html_output),
+            "method": "pdftotext_to_html",
+            "word_count": word_count,
+            "html_length": len(html_content),
+        })
 
     registry["extract_and_convert_pdf"] = _extract_and_convert_pdf
 
@@ -668,9 +979,10 @@ def _build_tool_registry() -> dict:
 
         async def _create_course_project(**kwargs):
             from MCP.tools import courseforge_tools as ct
-            # Find the registered tool function
+            logger.info(f"_create_course_project called with kwargs: {list(kwargs.keys())}")
+            logger.info(f"  objectives_path raw: {repr(kwargs.get('objectives_path'))}")
             course_name = kwargs.get("course_name", "")
-            objectives_path = kwargs.get("objectives_path", "")
+            objectives_path = kwargs.get("objectives_path") or ""
             duration_weeks = kwargs.get("duration_weeks", 12)
             credit_hours = kwargs.get("credit_hours", 3)
 
@@ -685,17 +997,30 @@ def _build_tool_registry() -> dict:
                            "agent_workspaces"]:
                 (project_path / subdir).mkdir(exist_ok=True)
 
-            config_data = {
-                "project_id": project_id,
-                "course_name": course_name,
-                "objectives_path": str(objectives_path) if objectives_path else None,
-                "duration_weeks": duration_weeks,
-                "credit_hours": credit_hours,
-                "created_at": datetime.now().isoformat(),
-                "status": "initialized",
-            }
-
             config_path = project_path / "project_config.json"
+
+            # If config already exists (from a prior phase), update rather than overwrite
+            if config_path.exists():
+                with open(config_path) as f:
+                    config_data = json.load(f)
+                # Only update fields that have real values
+                if course_name:
+                    config_data["course_name"] = course_name
+                if objectives_path:
+                    config_data["objectives_path"] = str(objectives_path)
+                if duration_weeks:
+                    config_data["duration_weeks"] = duration_weeks
+            else:
+                config_data = {
+                    "project_id": project_id,
+                    "course_name": course_name,
+                    "objectives_path": str(objectives_path) if objectives_path else None,
+                    "duration_weeks": duration_weeks,
+                    "credit_hours": credit_hours,
+                    "created_at": datetime.now().isoformat(),
+                    "status": "initialized",
+                }
+
             with open(config_path, "w") as f:
                 json.dump(config_data, f, indent=2)
 
@@ -716,28 +1041,245 @@ def _build_tool_registry() -> dict:
         registry["create_course_project"] = _create_course_project
 
         async def _generate_course_content(**kwargs):
+            """Generate real course content modules from DART outputs + objectives.
+
+            Reads staged DART HTML content and objectives, then produces
+            one HTML module per week with structured educational content.
+            """
+            import re as _re
+            import html as _html
+
             project_id = kwargs.get("project_id", "")
-            week_range = kwargs.get("week_range")
             project_path = _PROJECT_ROOT / "Courseforge" / "exports" / project_id
             content_dir = project_path / "03_content_development"
             content_dir.mkdir(parents=True, exist_ok=True)
 
+            # Load project config to get objectives and duration
+            config_path = project_path / "project_config.json"
+            if not config_path.exists():
+                return json.dumps({"error": f"Project config not found: {config_path}"})
+
+            with open(config_path) as f:
+                config = json.load(f)
+
+            duration_weeks = config.get("duration_weeks", 12)
+            objectives_path = config.get("objectives_path")
+
+            # Load objectives
+            objectives_data = {}
+            if objectives_path and Path(objectives_path).exists():
+                with open(objectives_path) as f:
+                    objectives_data = json.load(f)
+
+            chapter_objectives = objectives_data.get("chapter_objectives", [])
+            terminal_objectives = objectives_data.get("terminal_objectives", [])
+
+            # Collect staged DART content from staging directory
+            source_content = ""
+            staging_dir = COURSEFORGE_INPUTS
+            for staging_run in sorted(staging_dir.iterdir()):
+                if not staging_run.is_dir():
+                    continue
+                for src_file in staging_run.iterdir():
+                    if src_file.suffix in (".html", ".htm", ".txt"):
+                        try:
+                            source_content += src_file.read_text(
+                                encoding="utf-8", errors="ignore"
+                            )
+                        except OSError:
+                            pass
+
+            # Parse source HTML into sections for topic-based selection
+            # Split on </section> or <h2 or <h3 boundaries
+            section_blocks = _re.split(r"(?=<section |<h[23])", source_content)
+            source_sections = []
+            for block in section_blocks:
+                text = _re.sub(r"<[^>]+>", " ", block)
+                text = _re.sub(r"\s+", " ", text).strip()
+                if len(text) > 50:
+                    source_sections.append(text)
+
+            def _find_relevant_sections(objectives, all_sections, max_words=4000):
+                """Find sections matching objective keywords."""
+                # Extract keywords from objectives
+                keywords = set()
+                for obj in objectives:
+                    stmt = obj.get("statement", "").lower()
+                    # Extract significant words (skip common ones)
+                    for word in _re.findall(r"\b[a-z]{4,}\b", stmt):
+                        if word not in {"that", "this", "with", "from", "have", "will",
+                                       "should", "able", "their", "which", "these",
+                                       "more", "between", "both", "each", "such",
+                                       "including", "based", "using", "through"}:
+                            keywords.add(word)
+
+                # Score each section by keyword overlap
+                scored = []
+                for section in all_sections:
+                    section_lower = section.lower()
+                    score = sum(1 for kw in keywords if kw in section_lower)
+                    if score > 0:
+                        scored.append((score, section))
+
+                scored.sort(key=lambda x: -x[0])
+
+                # Collect top sections up to word limit
+                result = []
+                total_words = 0
+                for _, section in scored:
+                    words_in_section = len(section.split())
+                    if total_words + words_in_section > max_words:
+                        if result:  # Already have some content
+                            break
+                    result.append(section)
+                    total_words += words_in_section
+
+                return result
+
+            generated_files = []
+            # Map weeks to chapter_objectives (6 entries cover 12 weeks in pairs)
+            for week_num in range(1, duration_weeks + 1):
+                week_dir = content_dir / f"week_{week_num:02d}"
+                week_dir.mkdir(parents=True, exist_ok=True)
+
+                # Map week number to objectives index (weeks come in pairs from 6 chapter groups)
+                obj_idx = (week_num - 1) // 2
+                week_objectives = []
+                if obj_idx < len(chapter_objectives):
+                    ch = chapter_objectives[obj_idx]
+                    week_objectives = ch.get("objectives", [])
+                    base_title = ch.get("chapter", f"Week {week_num}")
+                    # Add "(Part 1)" or "(Part 2)" for paired weeks
+                    part = "Part 1" if week_num % 2 == 1 else "Part 2"
+                    week_title = f"{base_title} ({part})"
+                else:
+                    week_title = f"Week {week_num}: Course Integration"
+                    # Use terminal objectives for overflow weeks
+                    week_objectives = [
+                        {"statement": to.get("statement", ""), "bloomLevel": to.get("bloomLevel", "")}
+                        for to in terminal_objectives[-(duration_weeks - week_num + 1):][:3]
+                    ]
+
+                # Find topic-relevant source content
+                relevant_sections = _find_relevant_sections(
+                    week_objectives, source_sections, max_words=3000
+                )
+
+                # Build paragraphs from relevant sections
+                paragraphs = []
+                for section_text in relevant_sections:
+                    # Split section into natural paragraphs (~150 words)
+                    section_words = section_text.split()
+                    for i in range(0, len(section_words), 150):
+                        para = " ".join(section_words[i:i + 150])
+                        if para.strip() and len(para) > 30:
+                            paragraphs.append(_html.escape(para))
+
+                # Build objectives HTML
+                obj_html = ""
+                if week_objectives:
+                    obj_items = "\n".join(
+                        f'      <li>{_html.escape(o.get("statement", ""))}'
+                        f' <em>({o.get("bloomLevel", "")})</em></li>'
+                        for o in week_objectives
+                    )
+                    obj_html = f"""
+    <section id="objectives" aria-labelledby="objectives-heading">
+      <h2 id="objectives-heading">Learning Objectives</h2>
+      <p>By the end of this module, you should be able to:</p>
+      <ul>
+{obj_items}
+      </ul>
+    </section>"""
+
+                # Build content sections from paragraphs
+                content_sections = []
+                section_size = max(1, len(paragraphs) // 3)
+                section_titles = ["Key Concepts", "Discussion & Analysis", "Application"]
+
+                for s_idx, s_title in enumerate(section_titles):
+                    s_paras = paragraphs[s_idx * section_size:(s_idx + 1) * section_size]
+                    if not s_paras:
+                        continue
+                    s_id = _re.sub(r"[^a-z0-9]+", "-", s_title.lower())
+                    para_html = "\n".join(f"      <p>{p}</p>" for p in s_paras)
+                    content_sections.append(f"""
+    <section id="{s_id}" aria-labelledby="{s_id}-heading">
+      <h2 id="{s_id}-heading">{_html.escape(s_title)}</h2>
+{para_html}
+    </section>""")
+
+                sections_html = "\n".join(content_sections)
+
+                # Build reflection/activity section
+                activity_html = """
+    <section id="activities" aria-labelledby="activities-heading">
+      <h2 id="activities-heading">Reflection &amp; Activities</h2>
+      <p>Consider the following questions as you review this week's material:</p>
+      <ol>
+        <li>How do the concepts presented this week connect to your own teaching or learning experience?</li>
+        <li>Which ideas challenge your current understanding of instructional design?</li>
+        <li>How might you apply these principles in designing a digital learning experience?</li>
+      </ol>
+    </section>"""
+
+                safe_title = _html.escape(week_title)
+                module_html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DIGPED 101 - {safe_title}</title>
+  <style>
+    body {{ font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; max-width: 50em; margin: 0 auto; padding: 1em; color: #1a1a1a; }}
+    .skip-link {{ position: absolute; left: -9999px; }} .skip-link:focus {{ position: static; }}
+    h1 {{ font-size: 1.8em; border-bottom: 2px solid #333; padding-bottom: 0.3em; }}
+    h2 {{ font-size: 1.4em; margin-top: 1.5em; color: #2c5282; }}
+    ul, ol {{ margin: 0.8em 0; padding-left: 1.5em; }} li {{ margin: 0.4em 0; }}
+    section {{ margin-bottom: 1.5em; }}
+    @media (prefers-color-scheme: dark) {{ body {{ background: #1a1a1a; color: #e0e0e0; }} h2 {{ color: #90cdf4; }} }}
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <main id="main-content" role="main">
+    <h1>{safe_title}</h1>
+{obj_html}
+{sections_html}
+{activity_html}
+  </main>
+</body>
+</html>"""
+
+                module_path = week_dir / "module.html"
+                module_path.write_text(module_html, encoding="utf-8")
+                generated_files.append(str(module_path))
+
             return json.dumps({
                 "success": True,
                 "project_id": project_id,
-                "weeks_prepared": 12,
-                "content_paths": [str(content_dir)],
+                "weeks_prepared": duration_weeks,
+                "content_paths": generated_files,
+                "source_sections": len(source_sections),
+                "content_selection": "topic-aligned",
             })
 
         registry["generate_course_content"] = _generate_course_content
 
         async def _package_imscc(**kwargs):
+            """Build a real IMS Common Cartridge package from generated content.
+
+            Creates a valid IMSCC ZIP with imsmanifest.xml and all HTML modules.
+            Parseable by Trainforge's IMSCCParser.
+            """
+            import zipfile
+
             project_id = kwargs.get("project_id", "")
             project_path = _PROJECT_ROOT / "Courseforge" / "exports" / project_id
+            content_dir = project_path / "03_content_development"
             final_dir = project_path / "05_final_package"
             final_dir.mkdir(parents=True, exist_ok=True)
 
-            # Extract course name from project config
             config_path = project_path / "project_config.json"
             course_name = project_id
             if config_path.exists():
@@ -745,15 +1287,82 @@ def _build_tool_registry() -> dict:
                     cfg = json.load(f)
                     course_name = cfg.get("course_name", project_id)
 
+            # Collect HTML module files
+            html_files = sorted(content_dir.rglob("*.html"))
+            if not html_files:
+                return json.dumps({
+                    "error": "No HTML modules found in content directory",
+                    "content_dir": str(content_dir),
+                })
+
+            # Build imsmanifest.xml
+            resource_items = []
+            resource_defs = []
+            for idx, html_file in enumerate(html_files, 1):
+                rel_path = html_file.relative_to(content_dir)
+                res_id = f"RES_{idx:03d}"
+                item_id = f"ITEM_{idx:03d}"
+                title_text = html_file.parent.name.replace("_", " ").title()
+
+                resource_items.append(
+                    f'      <item identifier="{item_id}" identifierref="{res_id}">'
+                    f'\n        <title>{title_text}</title>'
+                    f'\n      </item>'
+                )
+                resource_defs.append(
+                    f'    <resource identifier="{res_id}" type="webcontent" '
+                    f'href="{rel_path}">'
+                    f'\n      <file href="{rel_path}"/>'
+                    f'\n    </resource>'
+                )
+
+            items_xml = "\n".join(resource_items)
+            resources_xml = "\n".join(resource_defs)
+
+            manifest_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<manifest identifier="{course_name}_manifest"
+  xmlns="http://www.imsglobal.org/xsd/imsccv1p2/imscp_v1p1"
+  xmlns:lom="http://ltsc.ieee.org/xsd/imsccv1p2/LOM/resource"
+  xmlns:lomimscc="http://ltsc.ieee.org/xsd/imsccv1p2/LOM/manifest">
+  <metadata>
+    <schema>IMS Common Cartridge</schema>
+    <schemaversion>1.2.0</schemaversion>
+    <lomimscc:lom>
+      <lomimscc:general>
+        <lomimscc:title>
+          <lomimscc:string language="en">{course_name}</lomimscc:string>
+        </lomimscc:title>
+      </lomimscc:general>
+    </lomimscc:lom>
+  </metadata>
+  <organizations>
+    <organization identifier="ORG_1" structure="rooted-hierarchy">
+      <item identifier="ROOT">
+        <title>{course_name}</title>
+{items_xml}
+      </item>
+    </organization>
+  </organizations>
+  <resources>
+{resources_xml}
+  </resources>
+</manifest>"""
+
+            # Create IMSCC ZIP package
             package_path = final_dir / f"{course_name}.imscc"
-            # Create a placeholder IMSCC (the actual packager builds the real one)
-            if not package_path.exists():
-                package_path.touch()
+            with zipfile.ZipFile(package_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("imsmanifest.xml", manifest_xml)
+                for html_file in html_files:
+                    rel_path = html_file.relative_to(content_dir)
+                    zf.write(html_file, str(rel_path))
 
             return json.dumps({
                 "success": True,
                 "project_id": project_id,
                 "package_path": str(package_path),
+                "libv2_package_path": str(package_path),
+                "html_modules": len(html_files),
+                "package_size_bytes": package_path.stat().st_size,
             })
 
         registry["package_imscc"] = _package_imscc
@@ -776,25 +1385,128 @@ def _build_tool_registry() -> dict:
         registry["analyze_imscc_content"] = _analyze_imscc_content
 
         async def _generate_assessments(**kwargs):
+            """Generate real content-grounded assessments using AssessmentGenerator.
+
+            Reads course HTML modules (from IMSCC or content dir), builds
+            source chunks, and generates actual questions with the
+            content-grounded generator.
+            """
+            import re as _re
+
             course_id = kwargs.get("course_id", "")
+            question_count = int(kwargs.get("question_count", 10))
+            bloom_levels_str = kwargs.get("bloom_levels", "remember,understand,apply")
+            objective_ids_str = kwargs.get("objective_ids", "")
+            imscc_path = kwargs.get("imscc_path", "")
+
             output_dir = TRAINING_CAPTURES / "trainforge" / course_id
             output_dir.mkdir(parents=True, exist_ok=True)
 
-            assessment_id = f"ASSESS-{course_id}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
-            output_path = output_dir / f"{assessment_id}.json"
+            # Parse bloom levels and objectives
+            if isinstance(bloom_levels_str, list):
+                bloom_levels = bloom_levels_str
+            else:
+                bloom_levels = [b.strip() for b in bloom_levels_str.split(",") if b.strip()]
 
-            result = {
-                "success": True,
-                "assessment_id": assessment_id,
-                "question_count": int(kwargs.get("question_count", 10)),
-                "output_path": str(output_path),
-                "rag_enabled": False,
-            }
+            if isinstance(objective_ids_str, list):
+                objective_ids = objective_ids_str
+            else:
+                objective_ids = [o.strip() for o in objective_ids_str.split(",") if o.strip()]
 
+            if not objective_ids:
+                objective_ids = [f"{course_id}_OBJ_{i}" for i in range(1, 13)]
+
+            # Build source chunks from IMSCC or HTML content
+            source_chunks = []
+            chunk_id_counter = 0
+
+            # Try to read HTML modules from IMSCC
+            if imscc_path and Path(imscc_path).exists() and Path(imscc_path).stat().st_size > 0:
+                import zipfile
+                try:
+                    with zipfile.ZipFile(imscc_path, "r") as zf:
+                        for name in zf.namelist():
+                            if name.endswith(".html") or name.endswith(".htm"):
+                                html_content = zf.read(name).decode("utf-8", errors="ignore")
+                                # Strip HTML tags for text content
+                                text = _re.sub(r"<[^>]+>", " ", html_content)
+                                text = _re.sub(r"\s+", " ", text).strip()
+                                if len(text) > 50:
+                                    chunk_id_counter += 1
+                                    source_chunks.append({
+                                        "id": f"chunk_{chunk_id_counter:04d}",
+                                        "text": html_content,  # Keep HTML for ContentExtractor
+                                        "chunk_type": "explanation",
+                                        "concept_tags": [],
+                                        "source": {"file": name},
+                                    })
+                except zipfile.BadZipFile:
+                    logger.warning(f"Invalid IMSCC ZIP: {imscc_path}")
+
+            # Fallback: read from Courseforge content directories
+            if not source_chunks:
+                exports_dir = _PROJECT_ROOT / "Courseforge" / "exports"
+                for project_dir in sorted(exports_dir.iterdir()):
+                    content_dir = project_dir / "03_content_development"
+                    if not content_dir.exists():
+                        continue
+                    for html_file in sorted(content_dir.rglob("*.html")):
+                        try:
+                            html_content = html_file.read_text(encoding="utf-8", errors="ignore")
+                            text = _re.sub(r"<[^>]+>", " ", html_content)
+                            text = _re.sub(r"\s+", " ", text).strip()
+                            if len(text) > 50:
+                                chunk_id_counter += 1
+                                source_chunks.append({
+                                    "id": f"chunk_{chunk_id_counter:04d}",
+                                    "text": html_content,
+                                    "chunk_type": "explanation",
+                                    "concept_tags": [],
+                                    "source": {"file": str(html_file.name)},
+                                })
+                        except OSError:
+                            continue
+
+            if not source_chunks:
+                return json.dumps({
+                    "error": "No source content found for assessment generation",
+                    "imscc_path": imscc_path,
+                })
+
+            # Use the real AssessmentGenerator
+            from Trainforge.generators.assessment_generator import AssessmentGenerator
+
+            generator = AssessmentGenerator(capture=None, check_leaks=True)
+            assessment = generator.generate(
+                course_code=course_id,
+                objective_ids=objective_ids,
+                bloom_levels=bloom_levels,
+                question_count=question_count,
+                source_chunks=source_chunks,
+            )
+
+            # Write full assessment data
+            assessment_dict = assessment.to_dict()
+            output_path = output_dir / f"{assessment.assessment_id}.json"
             with open(output_path, "w") as f:
-                json.dump(result, f, indent=2)
+                json.dump(assessment_dict, f, indent=2)
 
-            return json.dumps(result)
+            # Count content-grounded vs fallback
+            grounded = sum(
+                1 for q in assessment.questions
+                if q.generation_rationale and "TEMPLATE_FALLBACK" not in q.generation_rationale
+            )
+
+            return json.dumps({
+                "success": True,
+                "assessment_id": assessment.assessment_id,
+                "question_count": len(assessment.questions),
+                "output_path": str(output_path),
+                "rag_enabled": True,
+                "source_chunks_used": len(source_chunks),
+                "content_grounded": grounded,
+                "template_fallback": len(assessment.questions) - grounded,
+            })
 
         registry["generate_assessments"] = _generate_assessments
     except Exception:

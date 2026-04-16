@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://ed4all.org/schemas/hash_chained_event_schema.json",
+  "$id": "urn:ed4all:schemas:hash_chained_event_schema",
   "title": "Hash-Chained Event",
   "description": "Schema for tamper-evident hash-chained events",
   "type": "object",
