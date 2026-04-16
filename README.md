@@ -3,13 +3,28 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 
-**Transform source materials into accessible content, structured courses, and knowledge-domain language graphs.**
+**Automate the creation of high-quality knowledge domain packages — accessible content, structured courses, and concept graphs — from any source material.**
 
-Ed4All is an end-to-end pipeline that takes human-readable inputs (PDFs, textbooks, web content) and produces three outputs:
+Building a knowledge corpus for AI tutoring, RAG retrieval, or LLM fine-tuning currently requires weeks of manual curation: extracting content, structuring it pedagogically, tagging it with learning science metadata, and validating quality. Ed4All reduces that to a single pipeline run.
 
-1. **Accessible HTML** -- WCAG 2.2 AA compliant versions of the original materials, with semantic structure, alt text, proper heading hierarchy, keyboard navigation, and dark mode support
-2. **Digital Course Packages** -- LMS-ready IMSCC course packages with weekly modules, learning objectives aligned to Bloom's taxonomy, interactive components, self-check assessments, and machine-readable instructional design metadata
-3. **Knowledge-Domain Language Graphs** -- RAG-optimized corpus with concept graphs, pedagogical metadata, Bloom's-aligned chunks, and structured training data for language model fine-tuning
+Give it source materials and a knowledge domain. It produces three outputs:
+
+1. **Accessible HTML** -- WCAG 2.2 AA compliant versions of the original materials, with semantic structure, proper heading hierarchy, and full assistive technology support
+2. **Digital Course Packages** -- LMS-ready IMSCC packages with weekly modules, Bloom's-aligned learning objectives, interactive assessments, and machine-readable instructional design metadata
+3. **Knowledge-Domain Language Graphs** -- RAG-optimized corpus with concept co-occurrence graphs, pedagogical metadata on every chunk, and structured training data ready for retrieval or fine-tuning
+
+### Why this matters
+
+Every chunk in the output carries Bloom's taxonomy level, content type classification, key terms with definitions, misconceptions, and learning outcome references. This isn't a text dump — it's a pedagogically structured knowledge representation that LLMs can use for grounded generation, tutoring, and domain-specific reasoning.
+
+The concept graph connects domain knowledge semantically, not just by keyword co-occurrence. A physics corpus produces physics concepts. An accessibility corpus produces accessibility concepts. No manual ontology work required.
+
+### Who this is for
+
+- **EdTech developers** building AI tutors that need domain-specific, pedagogically structured training data
+- **Universities and instructional designers** creating accessible online courses at scale
+- **AI researchers** working on educational applications, RAG systems, or domain-adapted language models
+- **Accessibility teams** remediating document libraries to meet WCAG 2.2 AA compliance
 
 ---
 
