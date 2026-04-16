@@ -5,8 +5,6 @@ Tests for retrieval improvements (BM25, n-gram boosting, configurable threshold)
 import sys
 from pathlib import Path
 
-import pytest
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -84,7 +82,7 @@ class TestCharTrigramBoosting:
 
 class TestConfigurableThreshold:
     def test_default_threshold_filters(self):
-        from libv2.retriever import LazyBM25, DEFAULT_MIN_RELEVANCE
+        from libv2.retriever import DEFAULT_MIN_RELEVANCE, LazyBM25
 
         bm25 = LazyBM25(SAMPLE_CHUNKS)
         results = bm25.search("cognitive load", limit=10)
@@ -106,14 +104,14 @@ class TestBloomChunkStrategy:
         strategy = TrainforgeRAG.BLOOM_CHUNK_STRATEGY
         assert "remember" in strategy
         assert "create" in strategy
-        for level, (primary, secondary) in strategy.items():
+        for _level, (primary, secondary) in strategy.items():
             # secondary should always have a value
             assert secondary is not None or primary is None
 
 
 class TestMergeChunkLists:
     def test_deduplicates_by_id(self):
-        from Trainforge.rag.libv2_bridge import TrainforgeRAG, RAGChunk
+        from Trainforge.rag.libv2_bridge import RAGChunk, TrainforgeRAG
 
         c1 = RAGChunk(chunk_id="a", text="t1", score=0.9, course_slug="s", chunk_type="explanation")
         c2 = RAGChunk(chunk_id="b", text="t2", score=0.8, course_slug="s", chunk_type="example")
@@ -124,7 +122,7 @@ class TestMergeChunkLists:
         assert ids == ["a", "b"]  # c3 deduplicated
 
     def test_respects_limit(self):
-        from Trainforge.rag.libv2_bridge import TrainforgeRAG, RAGChunk
+        from Trainforge.rag.libv2_bridge import RAGChunk, TrainforgeRAG
 
         chunks = [
             RAGChunk(chunk_id=f"c{i}", text=f"text {i}", score=0.5, course_slug="s", chunk_type="explanation")

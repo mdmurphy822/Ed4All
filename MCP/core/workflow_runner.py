@@ -10,7 +10,6 @@ Usage:
     result = await runner.run_workflow(workflow_id)
 """
 
-import asyncio
 import json
 import logging
 from datetime import datetime

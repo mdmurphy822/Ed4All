@@ -183,12 +183,12 @@ class AccessibilityValidator:
         logger.info(f"Validating: {file_path}")
 
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
+            with open(file_path, encoding='utf-8') as f:
                 content = f.read()
         except FileNotFoundError:
             logger.error(f"File not found: {file_path}")
             raise
-        except IOError as e:
+        except OSError as e:
             logger.error(f"Error reading file: {e}")
             raise
 

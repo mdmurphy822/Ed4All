@@ -7,7 +7,7 @@ IMSCC package from course materials. Implements atomic operations and comprehens
 validation to ensure reliable package generation.
 
 Author: Claude Code Assistant
-Version: 1.0.0  
+Version: 1.0.0
 Created: 2025-08-05
 """
 
@@ -25,7 +25,7 @@ from typing import Any, Dict, List
 class IMSCCMasterGenerator:
     """
     Master IMSCC generator that orchestrates all components.
-    
+
     Coordinates course parsing, HTML generation, assessment creation,
     manifest generation, and final package assembly.
     """
@@ -51,11 +51,11 @@ class IMSCCMasterGenerator:
     def validate_execution_environment(self, input_path: str, output_path: str):
         """
         Comprehensive pre-flight validation before package generation.
-        
+
         Args:
             input_path (str): Path to course directory
             output_path (str): Path for output IMSCC file
-            
+
         Raises:
             SystemExit: If validation fails
         """
@@ -98,10 +98,10 @@ class IMSCCMasterGenerator:
     def parse_course_content(self, input_dir: Path) -> Dict[str, Any]:
         """
         Parse course content from markdown files.
-        
+
         Args:
             input_dir (Path): Course directory path
-            
+
         Returns:
             dict: Structured course data
         """
@@ -143,7 +143,7 @@ class IMSCCMasterGenerator:
 
     def parse_course_info(self, course_info_path: Path) -> Dict[str, Any]:
         """Parse course_info.md file for basic course metadata."""
-        with open(course_info_path, 'r', encoding='utf-8') as f:
+        with open(course_info_path, encoding='utf-8') as f:
             content = f.read()
 
         # Extract course title
@@ -175,7 +175,7 @@ class IMSCCMasterGenerator:
 
     def parse_syllabus(self, syllabus_path: Path) -> Dict[str, Any]:
         """Parse syllabus.md file for course policies."""
-        with open(syllabus_path, 'r', encoding='utf-8') as f:
+        with open(syllabus_path, encoding='utf-8') as f:
             content = f.read()
 
         return {
@@ -189,7 +189,7 @@ class IMSCCMasterGenerator:
         """Parse individual week markdown file."""
         week_number = self.extract_week_number(week_file.name)
 
-        with open(week_file, 'r', encoding='utf-8') as f:
+        with open(week_file, encoding='utf-8') as f:
             content = f.read()
 
         # Extract week title
@@ -307,7 +307,7 @@ class IMSCCMasterGenerator:
 
     def parse_assessments(self, assessment_path: Path) -> List[Dict[str, Any]]:
         """Parse assessment guide for assignment details."""
-        with open(assessment_path, 'r', encoding='utf-8') as f:
+        with open(assessment_path, encoding='utf-8') as f:
             content = f.read()
 
         assessments = []
@@ -430,7 +430,7 @@ class IMSCCMasterGenerator:
             <div class="card">
                 <div class="card-header" id="heading{i}">
                     <h2 class="mb-0">
-                        <button class="btn btn-link" type="button" data-toggle="collapse" 
+                        <button class="btn btn-link" type="button" data-toggle="collapse"
                                 data-target="#collapse{i}" aria-expanded="false" aria-controls="collapse{i}">
                             <i class="fas fa-chevron-right rotate-icon"></i> {term}
                         </button>
@@ -556,7 +556,7 @@ class IMSCCMasterGenerator:
                 resource_id = f"resource_{html_file.replace('.html', '').replace('_', '')}"
                 title = html_file.replace('.html', '').replace('_', ' ').title()
                 week_items.append(f'''
-                <item identifier="item_{html_file.replace('.html', '').replace('_', '')}" 
+                <item identifier="item_{html_file.replace('.html', '').replace('_', '')}"
                       identifierref="{resource_id}">
                     <title>{title}</title>
                 </item>''')
@@ -566,7 +566,7 @@ class IMSCCMasterGenerator:
             for assignment_file in week_assignments:
                 resource_id = f"resource_{assignment_file.replace('.xml', '').replace('_', '')}"
                 week_items.append(f'''
-                <item identifier="item_{assignment_file.replace('.xml', '').replace('_', '')}" 
+                <item identifier="item_{assignment_file.replace('.xml', '').replace('_', '')}"
                       identifierref="{resource_id}">
                     <title>Week {week_number} Assignment</title>
                 </item>''')
@@ -583,7 +583,7 @@ class IMSCCMasterGenerator:
     xmlns:lom="http://ltsc.ieee.org/xsd/imsccv1p2/LOM/resource"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:schemaLocation="http://www.imsglobal.org/xsd/imsccv1p2/imscp_v1p1 http://www.imsglobal.org/xsd/imscc/imscp_v1p1.xsd">
-    
+
     <metadata>
         <schema>IMS Common Cartridge</schema>
         <schemaversion>1.2.0</schemaversion>
@@ -598,14 +598,14 @@ class IMSCCMasterGenerator:
             </lom:general>
         </lom:lom>
     </metadata>
-    
+
     <organizations default="organization_1">
         <organization identifier="organization_1" structure="rooted-hierarchy">
             <title>{course_title}</title>
             {''.join(items)}
         </organization>
     </organizations>
-    
+
     <resources>
         {''.join(resources)}
     </resources>

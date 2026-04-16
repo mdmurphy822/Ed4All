@@ -11,8 +11,8 @@ Usage:
 
 import re
 import sys
-import zipfile
 import xml.etree.ElementTree as ET
+import zipfile
 from pathlib import Path
 
 
@@ -81,7 +81,7 @@ def build_manifest(content_dir: Path, course_code: str, course_title: str) -> st
 
         def sort_key(f):
             name = f.stem
-            for key, val in order.items():
+            for key, val in order.items():  # noqa: B023
                 if key in name:
                     return (val, name)
             return (99, name)

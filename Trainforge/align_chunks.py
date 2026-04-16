@@ -17,12 +17,10 @@ import argparse
 import json
 import math
 import re
-import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -197,7 +195,7 @@ def build_chunk_sequence(chunks: List[Dict]) -> List[Dict]:
     Order chunks by follows_chunk chain, assigning a 'position' key to each.
     Returns chunks in sequence order.
     """
-    by_id = {c["id"]: c for c in chunks}
+    {c["id"]: c for c in chunks}
 
     # Find root(s) — chunks with no follows_chunk
     roots = [c for c in chunks if not c.get("follows_chunk")]

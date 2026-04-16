@@ -30,7 +30,7 @@ from typing import Any, Dict
 class BulletproofIMSCCGenerator:
     """
     Bulletproof IMSCC generator with absolute Pattern 7 prevention.
-    
+
     This generator implements zero-tolerance enforcement for single-file creation.
     Any detection of folder multiplication triggers immediate termination.
     """
@@ -57,7 +57,7 @@ class BulletproofIMSCCGenerator:
     def validate_zero_pattern7_violations(self, output_path: str) -> bool:
         """
         ZERO TOLERANCE validation for Pattern 7 violations.
-        
+
         Returns True only if EXACTLY ONE file exists and NO directories.
         Any other state triggers immediate termination.
         """
@@ -110,7 +110,7 @@ class BulletproofIMSCCGenerator:
     def create_bulletproof_imscc(self, course_data: Dict[str, Any], output_path: str) -> Dict[str, Any]:
         """
         Create IMSCC with bulletproof single-file enforcement.
-        
+
         This method implements absolute zero-tolerance Pattern 7 prevention.
         """
         print(f"🛡️  Starting bulletproof IMSCC generation: {output_path}")
@@ -196,7 +196,7 @@ class BulletproofIMSCCGenerator:
     xmlns:lom="http://ltsc.ieee.org/xsd/imsccv1p2/LOM/resource"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:schemaLocation="http://www.imsglobal.org/xsd/imsccv1p2/imscp_v1p1 http://www.imsglobal.org/xsd/imscc/imscp_v1p1.xsd">
-    
+
     <metadata>
         <schema>IMS Common Cartridge</schema>
         <schemaversion>1.2.0</schemaversion>
@@ -211,13 +211,13 @@ class BulletproofIMSCCGenerator:
             </lom:general>
         </lom:lom>
     </metadata>
-    
+
     <organizations default="organization_1">
         <organization identifier="organization_1" structure="rooted-hierarchy">
             <title>{course_title}</title>
         </organization>
     </organizations>
-    
+
     <resources>
         <!-- Bulletproof manifest - no additional resources to prevent complications -->
     </resources>

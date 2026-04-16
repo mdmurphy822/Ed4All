@@ -53,24 +53,24 @@ class ParallelCourseOrchestrator:
         # Agent prompt for week-specific content generation
         agent_prompt = f"""
         Generate comprehensive Linear Algebra course content for Week {week_number} of {self.course_duration}.
-        
+
         Requirements:
         - Create exactly 7 HTML sub-modules following Pattern 19 prevention
         - Implement authentic mathematical examples with comprehensive theoretical context
         - Generate 1 weekly assignment with proper D2L XML formatting
         - Ensure content depth meets Pattern 22 comprehensive educational standards
         - Output files to: {week_dir}
-        
+
         Required files for Week {week_number}:
         1. week_{week_number:02d}_overview.html
-        2. week_{week_number:02d}_concept1.html  
+        2. week_{week_number:02d}_concept1.html
         3. week_{week_number:02d}_concept2.html
         4. week_{week_number:02d}_key_concepts.html
         5. week_{week_number:02d}_visual_display.html
         6. week_{week_number:02d}_applications.html
         7. week_{week_number:02d}_study_questions.html
         8. week_{week_number:02d}_assignment.xml (D2L format)
-        
+
         Validation requirements:
         - Each HTML file must contain 600+ words of substantial educational content
         - Mathematical notation must be properly formatted
@@ -117,22 +117,22 @@ class ParallelCourseOrchestrator:
 
         agent_prompt = f"""
         Create IMSCC-compatible files for Week {week_number} content using brightspace-packager agent.
-        
+
         Input files: {week_files}
-        
+
         Tasks:
         1. Convert HTML content files to IMSCC-compatible format
         2. Generate proper resource entries for manifest (DO NOT create manifest yet)
         3. Create QTI 1.2 compliant quiz files
         4. Generate D2L XML assessment files
         5. Ensure all files follow IMS Common Cartridge 1.2.0 standards
-        
+
         Output requirements:
         - All files must be IMSCC-ready but not zipped
         - Generate resource metadata for later manifest compilation
         - Validate QTI and D2L XML compliance
         - Prepare organization items for hierarchical structure
-        
+
         IMPORTANT: Do not generate imsmanifest.xml - this will be created after all weeks are complete.
         """
 
@@ -343,12 +343,12 @@ class ParallelCourseOrchestrator:
         """Create complete imsmanifest.xml content"""
 
         manifest_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
-<manifest xmlns="http://www.imsglobal.org/xsd/imsccv1p2/imscp_v1p1" 
-          xmlns:lomimscc="http://ltsc.ieee.org/xsd/imsccv1p2/LOM/manifest" 
-          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
-          identifier="manifest_{self.timestamp}" 
+<manifest xmlns="http://www.imsglobal.org/xsd/imsccv1p2/imscp_v1p1"
+          xmlns:lomimscc="http://ltsc.ieee.org/xsd/imsccv1p2/LOM/manifest"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          identifier="manifest_{self.timestamp}"
           xsi:schemaLocation="http://www.imsglobal.org/xsd/imsccv1p2/imscp_v1p1 http://www.imsglobal.org/xsd/imsccv1p2/imscp_v1p1.xsd http://ltsc.ieee.org/xsd/imsccv1p2/LOM/manifest http://ltsc.ieee.org/xsd/imsccv1p2/LOM/manifest.xsd">
-  
+
   <metadata>
     <schema>IMS Common Cartridge</schema>
     <schemaversion>1.2.0</schemaversion>
@@ -360,7 +360,7 @@ class ParallelCourseOrchestrator:
       </lomimscc:general>
     </lomimscc:lom>
   </metadata>
-  
+
   <organizations default="org_1">
     <organization identifier="org_1">
       <title>Linear Algebra Course Structure</title>
@@ -375,7 +375,7 @@ class ParallelCourseOrchestrator:
 
         manifest_xml += '''    </organization>
   </organizations>
-  
+
   <resources>
 '''
 

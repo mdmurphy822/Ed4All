@@ -686,7 +686,7 @@ class IMSCCExtractor:
                         return True, "HTML contains images without alt attributes"
                     if not re.search(r'<h[1-6]', content):
                         return True, "HTML lacks proper heading structure"
-                except (OSError, IOError, UnicodeDecodeError) as e:
+                except (OSError, UnicodeDecodeError) as e:
                     logger.debug(f"Failed to read HTML content for analysis: {e}")
 
         return False, ""

@@ -34,7 +34,7 @@ from typing import Any, Dict, List
 class ProductionIMSCCGenerator:
     """
     Production-ready IMSCC generator with complete course processing.
-    
+
     Implements zero-tolerance Pattern 7 prevention while generating full course packages
     with HTML sub-modules, assessment integration, and accessibility compliance.
     """
@@ -68,7 +68,7 @@ class ProductionIMSCCGenerator:
     def validate_single_file_output(self, output_path: str) -> bool:
         """
         ZERO TOLERANCE validation for single file output.
-        
+
         Returns True only if EXACTLY ONE .imscc file exists and NO directories.
         """
         output_file = Path(output_path)
@@ -113,7 +113,7 @@ class ProductionIMSCCGenerator:
         # Load course info
         course_info_path = draft_folder / "course_info.md"
         if course_info_path.exists():
-            with open(course_info_path, 'r', encoding='utf-8') as f:
+            with open(course_info_path, encoding='utf-8') as f:
                 course_info_content = f.read()
                 self.course_data['title'] = self.extract_course_title(course_info_content)
                 self.course_data['description'] = self.extract_course_description(course_info_content)
@@ -121,7 +121,7 @@ class ProductionIMSCCGenerator:
         # Load assessment guide
         assessment_path = draft_folder / "assessment_guide.md"
         if assessment_path.exists():
-            with open(assessment_path, 'r', encoding='utf-8') as f:
+            with open(assessment_path, encoding='utf-8') as f:
                 assessment_content = f.read()
                 self.assessments = self.parse_assessments(assessment_content)
 
@@ -129,7 +129,7 @@ class ProductionIMSCCGenerator:
         modules_folder = draft_folder / "modules"
         if modules_folder.exists():
             for week_file in sorted(modules_folder.glob("week_*.md")):
-                with open(week_file, 'r', encoding='utf-8') as f:
+                with open(week_file, encoding='utf-8') as f:
                     week_content = f.read()
                     week_data = self.parse_weekly_module(week_content, week_file.stem)
                     self.weekly_modules.append(week_data)
@@ -345,22 +345,22 @@ class ProductionIMSCCGenerator:
                 </ol>
             </nav>
         </header>
-        
+
         <main>
             {html_content}
         </main>
-        
+
         <footer class="mt-5 pt-3 border-top">
             <div class="text-center text-muted">
                 <p><small>Linear Algebra: Foundations and Applications | Week {week_num}</small></p>
             </div>
         </footer>
     </div>
-    
+
     <script src="https://code.jquery.com/jquery-3.3.1.slim.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js"></script>
     <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"></script>
-    
+
     <span class="sr-only" aria-live="polite" id="screen-reader-status"></span>
 </body>
 </html>'''
@@ -411,7 +411,7 @@ class ProductionIMSCCGenerator:
                 <i class="fas fa-compress-arrows-alt"></i> Collapse All
             </button>
         </div>
-        
+
         <div class="accordion" id="keyConceptsAccordion{week_num}">
         '''
 
@@ -421,15 +421,15 @@ class ProductionIMSCCGenerator:
             <div class="card">
                 <div class="card-header" id="heading{concept_id}">
                     <h3 class="mb-0">
-                        <button class="btn btn-link w-100 text-left" type="button" 
-                                data-toggle="collapse" data-target="#collapse{concept_id}" 
+                        <button class="btn btn-link w-100 text-left" type="button"
+                                data-toggle="collapse" data-target="#collapse{concept_id}"
                                 aria-expanded="false" aria-controls="collapse{concept_id}">
                             <i class="fas fa-chevron-right mr-2"></i>
                             <strong>{concept}</strong>
                         </button>
                     </h3>
                 </div>
-                <div id="collapse{concept_id}" class="collapse" 
+                <div id="collapse{concept_id}" class="collapse"
                      aria-labelledby="heading{concept_id}" data-parent="#keyConceptsAccordion{week_num}">
                     <div class="card-body">
                         <p class="content-paragraph">{definition.strip()}</p>
@@ -440,20 +440,20 @@ class ProductionIMSCCGenerator:
 
         accordion_html += '''
         </div>
-        
+
         <script>
         document.addEventListener('DOMContentLoaded', function() {
             const expandBtn = document.getElementById('expandAll''' + str(week_num) + '''');
             const collapseBtn = document.getElementById('collapseAll''' + str(week_num) + '''');
-            
+
             expandBtn.addEventListener('click', function() {
                 $('.collapse').collapse('show');
             });
-            
+
             collapseBtn.addEventListener('click', function() {
                 $('.collapse').collapse('hide');
             });
-            
+
             // Icon rotation on accordion toggle
             $('[data-toggle="collapse"]').on('click', function() {
                 const icon = $(this).find('i');
@@ -480,8 +480,8 @@ class ProductionIMSCCGenerator:
         points = assessment.get('points', 100)
 
         xml_content = f'''<?xml version="1.0" encoding="UTF-8"?>
-<assignment identifier="{assignment_id}" 
-           xmlns="http://www.d2l.com/xsd/d2l_assignment" 
+<assignment identifier="{assignment_id}"
+           xmlns="http://www.d2l.com/xsd/d2l_assignment"
            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <title>{title}</title>
     <description>
@@ -546,7 +546,7 @@ class ProductionIMSCCGenerator:
     xmlns:lom="http://ltsc.ieee.org/xsd/imsccv1p2/LOM/resource"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
     xsi:schemaLocation="http://www.imsglobal.org/xsd/imsccv1p2/imscp_v1p1 http://www.imsglobal.org/xsd/imscc/imscp_v1p1.xsd">
-    
+
     <metadata>
         <schema>IMS Common Cartridge</schema>
         <schemaversion>1.2.0</schemaversion>
@@ -561,7 +561,7 @@ class ProductionIMSCCGenerator:
             </lom:general>
         </lom:lom>
     </metadata>
-    
+
     <organizations default="organization_1">
         <organization identifier="organization_1" structure="rooted-hierarchy">
             <title>{course_title}</title>
@@ -591,7 +591,7 @@ class ProductionIMSCCGenerator:
         manifest += '''
         </organization>
     </organizations>
-    
+
     <resources>
         '''
 
@@ -623,7 +623,7 @@ class ProductionIMSCCGenerator:
     def create_production_imscc(self, first_draft_path: str, output_path: str) -> Dict[str, Any]:
         """
         Create production-ready IMSCC with complete course processing.
-        
+
         Implements zero-tolerance Pattern 7 prevention while generating comprehensive
         course package with HTML sub-modules and native assessments.
         """

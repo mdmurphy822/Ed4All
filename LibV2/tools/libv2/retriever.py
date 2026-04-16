@@ -303,7 +303,7 @@ def stream_chunks_from_course(
         return
 
     count = 0
-    with open(chunks_path, "r") as f:
+    with open(chunks_path) as f:
         for line in f:
             if limit and count >= limit:
                 break

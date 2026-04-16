@@ -15,13 +15,12 @@ Usage:
     python generate_course.py DIGPED_101_course_data.json output_dir/
 """
 
-import json
 import html as html_mod
+import json
 import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
 
 # ---------------------------------------------------------------------------
 # Bloom's taxonomy detection
@@ -230,7 +229,7 @@ def _render_objectives(objectives: List[Dict]) -> str:
 def _render_flip_cards(terms: List[Dict]) -> str:
     """Render a grid of flip cards for key terms with data-cf-* metadata."""
     cards = []
-    for i, t in enumerate(terms):
+    for _i, t in enumerate(terms):
         front = html_mod.escape(t["term"])
         back = html_mod.escape(t["definition"])
         term_slug = _slugify(t["term"])
@@ -251,7 +250,7 @@ def _render_self_check(questions: List[Dict]) -> str:
     blocks = []
     for i, q in enumerate(questions, 1):
         opts = []
-        for j, opt in enumerate(q["options"]):
+        for _j, opt in enumerate(q["options"]):
             correct = "true" if opt.get("correct") else "false"
             fb = html_mod.escape(opt.get("feedback", ""))
             opts.append(

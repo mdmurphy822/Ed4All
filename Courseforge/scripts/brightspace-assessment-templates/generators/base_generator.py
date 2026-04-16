@@ -143,7 +143,7 @@ class BaseGenerator:
         if not template_path.exists():
             raise FileNotFoundError(f"Template not found: {template_path}")
 
-        with open(template_path, 'r', encoding='utf-8') as f:
+        with open(template_path, encoding='utf-8') as f:
             content = f.read()
 
         self._template_cache[template_name] = content

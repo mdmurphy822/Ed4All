@@ -312,12 +312,12 @@ class ParallelWorkflowOrchestrator:
         """Create basic manifest content (placeholder for agent-generated content)"""
 
         manifest_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
-<manifest xmlns="http://www.imsglobal.org/xsd/imsccv1p2/imscp_v1p1" 
-          xmlns:lomimscc="http://ltsc.ieee.org/xsd/imsccv1p2/LOM/manifest" 
-          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
-          identifier="manifest_{self.timestamp}" 
+<manifest xmlns="http://www.imsglobal.org/xsd/imsccv1p2/imscp_v1p1"
+          xmlns:lomimscc="http://ltsc.ieee.org/xsd/imsccv1p2/LOM/manifest"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          identifier="manifest_{self.timestamp}"
           xsi:schemaLocation="http://www.imsglobal.org/xsd/imsccv1p2/imscp_v1p1 http://www.imsglobal.org/xsd/imsccv1p2/imscp_v1p1.xsd">
-  
+
   <metadata>
     <schema>IMS Common Cartridge</schema>
     <schemaversion>1.2.0</schemaversion>
@@ -329,7 +329,7 @@ class ParallelWorkflowOrchestrator:
       </lomimscc:general>
     </lomimscc:lom>
   </metadata>
-  
+
   <organizations default="org_1">
     <organization identifier="org_1">
       <title>Course Structure</title>
@@ -354,7 +354,7 @@ class ParallelWorkflowOrchestrator:
 
         manifest_xml += '''    </organization>
   </organizations>
-  
+
   <resources>
 '''
 
@@ -432,7 +432,7 @@ async def main():
 
     if requirements_file.exists():
         try:
-            with open(requirements_file, 'r') as f:
+            with open(requirements_file) as f:
                 course_requirements = json.load(f)
             print(f"Loaded requirements from: {requirements_file}")
         except Exception as e:

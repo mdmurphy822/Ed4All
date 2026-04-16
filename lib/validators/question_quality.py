@@ -12,15 +12,12 @@ rather than structural checks alone. Assesses:
 Referenced by: config/workflows.yaml (rag_training question_quality gate)
 """
 
-import json
 import re
 import time
-from pathlib import Path
 from typing import Any, Dict, List, Set
 
-from MCP.hardening.validation_gates import GateIssue, GateResult
-
 from lib.validators.bloom import detect_bloom_level
+from MCP.hardening.validation_gates import GateIssue, GateResult
 
 
 def _strip_html(text: str) -> str:

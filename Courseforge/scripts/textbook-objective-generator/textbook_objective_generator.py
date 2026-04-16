@@ -159,7 +159,7 @@ class TextbookObjectiveGenerator:
         Returns:
             Learning objectives document
         """
-        with open(structure_file, 'r', encoding='utf-8') as f:
+        with open(structure_file, encoding='utf-8') as f:
             structure = json.load(f)
         return self.generate(structure)
 

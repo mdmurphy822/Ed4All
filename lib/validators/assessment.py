@@ -27,7 +27,6 @@ from typing import Any, Dict, List, Set
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
 
-
 ASSESSMENT_PLACEHOLDER_PATTERNS = [
     re.compile(r"Correct answer based on content", re.IGNORECASE),
     re.compile(r"Plausible distractor [A-C]", re.IGNORECASE),

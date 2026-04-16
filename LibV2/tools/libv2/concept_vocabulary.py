@@ -97,7 +97,7 @@ class ConceptVocabulary:
 
         divisions = taxonomy.get("divisions", {})
 
-        for division_name, division_data in divisions.items():
+        for _division_name, division_data in divisions.items():
             domains = division_data.get("domains", {})
 
             for domain_key, domain_data in domains.items():

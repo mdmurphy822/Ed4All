@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 class CourseContentParser:
     """
     Parses markdown course materials into structured JSON format.
-    
+
     Implements atomic operations with comprehensive validation to ensure
     reliable content extraction meeting IMSCC generation requirements.
     """
@@ -67,10 +67,10 @@ class CourseContentParser:
     def load_config(self, config_path: Optional[str]) -> Dict[str, Any]:
         """
         Load parser configuration with defaults.
-        
+
         Args:
             config_path (str, optional): Path to config file
-            
+
         Returns:
             dict: Configuration parameters
         """
@@ -88,7 +88,7 @@ class CourseContentParser:
         }
 
         if config_path and Path(config_path).exists():
-            with open(config_path, 'r') as f:
+            with open(config_path) as f:
                 user_config = json.load(f)
                 default_config.update(user_config)
 
@@ -97,11 +97,11 @@ class CourseContentParser:
     def validate_execution_environment(self, input_path: str, output_path: str):
         """
         Comprehensive pre-flight validation before any processing.
-        
+
         Args:
             input_path (str): Input course directory path
             output_path (str): Output JSON file path
-            
+
         Raises:
             SystemExit: If validation fails
         """
@@ -147,16 +147,16 @@ class CourseContentParser:
     def parse_course_info(self, course_info_path: Path) -> Dict[str, Any]:
         """
         Parse course_info.md file for basic course metadata.
-        
+
         Args:
             course_info_path (Path): Path to course_info.md file
-            
+
         Returns:
             dict: Course information structure
         """
         self.logger.info(f"Parsing course info from: {course_info_path}")
 
-        with open(course_info_path, 'r', encoding='utf-8') as f:
+        with open(course_info_path, encoding='utf-8') as f:
             content = f.read()
 
         # Extract course title (first heading)
@@ -197,16 +197,16 @@ class CourseContentParser:
     def parse_syllabus(self, syllabus_path: Path) -> Dict[str, Any]:
         """
         Parse syllabus.md file for course policies and schedule.
-        
+
         Args:
             syllabus_path (Path): Path to syllabus.md file
-            
+
         Returns:
             dict: Syllabus information structure
         """
         self.logger.info(f"Parsing syllabus from: {syllabus_path}")
 
-        with open(syllabus_path, 'r', encoding='utf-8') as f:
+        with open(syllabus_path, encoding='utf-8') as f:
             content = f.read()
 
         # Extract major sections
@@ -242,7 +242,7 @@ class CourseContentParser:
         week_number = self.extract_week_number(week_file.name)
         self.logger.info(f"Parsing week {week_number} content from: {week_file}")
 
-        with open(week_file, 'r', encoding='utf-8') as f:
+        with open(week_file, encoding='utf-8') as f:
             content = f.read()
 
         # Validate template variables are resolved
@@ -320,12 +320,12 @@ class CourseContentParser:
     def extract_sub_module(self, content: str, module_type: str, header_pattern: str) -> Optional[Dict[str, Any]]:
         """
         Extract a specific sub-module from week content.
-        
+
         Args:
             content (str): Full week content
             module_type (str): Type of sub-module
             header_pattern (str): Regex pattern for section headers
-            
+
         Returns:
             dict: Sub-module structure or None if not found
         """
@@ -371,10 +371,10 @@ class CourseContentParser:
     def extract_concept_summaries(self, content: str) -> List[Dict[str, Any]]:
         """
         Extract 2-3 concept summary pages from week content.
-        
+
         Args:
             content (str): Full week content
-            
+
         Returns:
             list: List of concept summary sub-modules
         """
@@ -389,7 +389,7 @@ class CourseContentParser:
 
         for pattern in concept_patterns:
             matches = re.findall(pattern, content, re.IGNORECASE | re.DOTALL | re.MULTILINE)
-            for i, (title, module_content) in enumerate(matches[:3]):  # Max 3 concept summaries
+            for _i, (title, module_content) in enumerate(matches[:3]):  # Max 3 concept summaries
                 word_count = len(module_content.split())
                 min_words = self.config['min_word_counts'].get('concept_summary', 300)
 
@@ -418,11 +418,11 @@ class CourseContentParser:
     def create_concept_summaries_from_content(self, content: str, existing_summaries: List[Dict]) -> List[Dict]:
         """
         Create concept summaries from general content when not explicitly found.
-        
+
         Args:
             content (str): Full week content
             existing_summaries (list): Already found summaries
-            
+
         Returns:
             list: Updated list with created summaries
         """
@@ -457,10 +457,10 @@ class CourseContentParser:
     def extract_key_concept_definitions(self, content: str) -> List[Dict[str, str]]:
         """
         Extract key concepts and their definitions for accordion display.
-        
+
         Args:
             content (str): Key concepts section content
-            
+
         Returns:
             list: List of key concept dictionaries with term and definition
         """
@@ -536,12 +536,12 @@ class CourseContentParser:
     def create_placeholder_module(self, module_type: str, content: str, week_number: int) -> Dict[str, Any]:
         """
         Create a placeholder module when content is not explicitly found.
-        
+
         Args:
             module_type (str): Type of module to create
             content (str): Source content to extract from
             week_number (int): Week number for reference
-            
+
         Returns:
             dict: Placeholder module structure
         """
@@ -574,16 +574,16 @@ class CourseContentParser:
     def parse_assessments(self, assessment_guide_path: Path) -> List[Dict[str, Any]]:
         """
         Parse assessment_guide.md file for assignment details.
-        
+
         Args:
             assessment_guide_path (Path): Path to assessment_guide.md file
-            
+
         Returns:
             list: List of assessment structures
         """
         self.logger.info(f"Parsing assessments from: {assessment_guide_path}")
 
-        with open(assessment_guide_path, 'r', encoding='utf-8') as f:
+        with open(assessment_guide_path, encoding='utf-8') as f:
             content = f.read()
 
         assessments = []
@@ -628,10 +628,10 @@ class CourseContentParser:
     def clean_text(self, text: str) -> str:
         """
         Clean and normalize text content.
-        
+
         Args:
             text (str): Raw text to clean
-            
+
         Returns:
             str: Cleaned text
         """
@@ -655,10 +655,10 @@ class CourseContentParser:
     def extract_week_number(self, filename: str) -> int:
         """
         Extract week number from filename.
-        
+
         Args:
             filename (str): Week file name
-            
+
         Returns:
             int: Week number
         """
@@ -668,11 +668,11 @@ class CourseContentParser:
     def atomic_execution(self, input_path: str, output_path: str) -> Dict[str, Any]:
         """
         Execute complete parsing operation with atomic behavior.
-        
+
         Args:
             input_path (str): Path to course directory
             output_path (str): Path for output JSON file
-            
+
         Returns:
             dict: Complete structured course data
         """
@@ -734,10 +734,10 @@ class CourseContentParser:
     def validate_structured_data(self, data: Dict[str, Any]):
         """
         Validate the complete structured data meets requirements.
-        
+
         Args:
             data (dict): Complete structured course data
-            
+
         Raises:
             SystemExit: If validation fails
         """
@@ -778,7 +778,7 @@ class CourseContentParser:
     def save_structured_content(self, data: Dict[str, Any], output_path: str):
         """
         Save structured content to JSON file.
-        
+
         Args:
             data (dict): Structured course data
             output_path (str): Output file path

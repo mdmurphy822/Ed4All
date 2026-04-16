@@ -10,17 +10,11 @@ Verifies:
   - ContentExtractor metadata-first extraction
 """
 
-import json
-import pytest
 
-from Trainforge.parsers.html_content_parser import (
-    ContentSection,
-    HTMLContentParser,
-    LearningObjective,
-    ParsedHTMLModule,
-)
 from Trainforge.generators.content_extractor import ContentExtractor
-
+from Trainforge.parsers.html_content_parser import (
+    HTMLContentParser,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures: HTML samples
