@@ -71,19 +71,24 @@ def concept_graph_overlap_boost(
 
 
 def extract_query_concepts(query: str, graph_node_ids: Set[str]) -> Set[str]:
-    """Find the subset of query tokens (and hyphenated sub-slugs) that appear
-    as node ids in ``graph_node_ids``.
+    """Find the subset of query tokens (plus adjacent-bigram slugs) that
+    appear as node ids in ``graph_node_ids``.
 
-    Handles the common case where the graph node is ``aria-labelledby`` and
-    the query contains the literal phrase.  Each hyphenated slug is tested
-    whole, and each hyphen-split substring is also tried so that a query
-    like "focus management" still matches a ``focus-indicator`` node when
-    the shared sub-token ``focus`` is a node id (some courses carry short
-    node ids; this is a recall optimization, not an exact-match guarantee).
+    A query like ``"color contrast body text"`` won't match the node
+    ``color-contrast`` via single-token lookup, so we also try the
+    2-gram ``color-contrast`` and ``contrast-body`` forms.  Bigrams are
+    cheap and dramatically lift recall against chunks whose concept_tags
+    are hyphenated compounds.
     """
     if not graph_node_ids:
         return set()
-    q_tokens = _lower_tokens(query)
+    # Word-level tokens for bigram synthesis (ordered list, not a set)
+    words = [w for w in re.findall(r"[a-z0-9]+", (query or "").lower()) if w]
+    q_tokens: Set[str] = set(words)
+    # Also keep any hyphenated tokens the user typed whole
+    q_tokens |= set(_WORD_RE.findall((query or "").lower()))
+    for i in range(len(words) - 1):
+        q_tokens.add(f"{words[i]}-{words[i + 1]}")
     return q_tokens & graph_node_ids
 
 
