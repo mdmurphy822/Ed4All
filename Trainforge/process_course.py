@@ -39,6 +39,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.decision_capture import DecisionCapture
+from Trainforge.generators import summary_factory
 from Trainforge.parsers.html_content_parser import HTMLContentParser, HTMLTextExtractor
 from Trainforge.rag.boilerplate_detector import (
     BoilerplateConfig,
@@ -60,6 +61,17 @@ from Trainforge.rag.wcag_canonical_names import canonicalize_sc_references
 #     key_terms_with_definitions_rate, misconceptions_present_rate,
 #     interactive_components_rate. See docs/metrics/flow-metrics.md. (Worker B)
 METRICS_SEMANTIC_VERSION = 4
+
+# Chunk schema version. Bumped by the first of Workers B / D / E to touch
+# chunk shape (ADR-001 Contract 1). v4 adds:
+#   - `summary` (Worker D): 2–3 sentence extractive summary per chunk.
+#   - `retrieval_text` (Worker D, optional): summary + " " + key_terms_joined.
+#   - `schema_version` (all workers): stamped on every chunk.
+#   - `xpath_provenance` (Worker E, when that PR lands).
+# The string also lands on manifest.json as `chunk_schema_version`. One bump
+# per release train; see ADR-001 Contract 1 and docs/contributing/workers.md
+# for the rebase protocol.
+CHUNK_SCHEMA_VERSION = "v4"
 
 
 class PipelineIntegrityError(RuntimeError):
@@ -1031,6 +1043,41 @@ class CourseProcessor:
                 normalized_mis.append(m)
             chunk["misconceptions"] = normalized_mis
 
+        # Per-chunk summary for dense-retrieval recall augmentation (v4).
+        # Deterministic extractive summary — see Trainforge/generators/summary_factory.py.
+        chunk["summary"] = summary_factory.generate(
+            chunk["text"],
+            key_terms=chunk.get("key_terms"),
+            learning_outcome_refs=chunk.get("learning_outcome_refs"),
+        )
+
+        # Optional retrieval_text: summary + " " + key_terms_joined. Emitted
+        # only when key_terms exist, since otherwise the field would just
+        # duplicate `summary`. Benchmarked in
+        # Trainforge/rag/retrieval_benchmark.py — on WCAG_201 at commit time,
+        # retrieval_text lifted recall@5 from 0.0369 (text) to 0.0399
+        # (retrieval_text); small but positive, so we ship it.
+        kt = chunk.get("key_terms")
+        if kt:
+            kt_parts: List[str] = []
+            for k in kt:
+                if isinstance(k, dict):
+                    term_s = k.get("term")
+                    def_s = k.get("definition")
+                    if term_s:
+                        kt_parts.append(str(term_s))
+                    if def_s:
+                        kt_parts.append(str(def_s))
+                elif isinstance(k, str):
+                    kt_parts.append(k)
+            kt_joined = " ".join(p for p in kt_parts if p).strip()
+            if kt_joined:
+                chunk["retrieval_text"] = f"{chunk['summary']} {kt_joined}".strip()
+
+        # Stamp the chunk schema version on every chunk so downstream
+        # readers can gate on capabilities without re-reading manifest.json.
+        chunk["schema_version"] = CHUNK_SCHEMA_VERSION
+
         self.stats["total_words"] += word_count
         self.stats["total_tokens_estimate"] += tokens_estimate
         self.stats["chunk_types"][chunk_type] += 1
@@ -1469,6 +1516,7 @@ class CourseProcessor:
             "description": description,
             "course_title": title,
             "sourceforge_version": "1.0",
+            "chunk_schema_version": CHUNK_SCHEMA_VERSION,
             "export_timestamp": datetime.now().isoformat(),
             "source": {
                 "type": "imscc",
@@ -2387,6 +2435,15 @@ def build_parser() -> argparse.ArgumentParser:
             "deterministic and byte-identical across runs (Worker F spec)."
         ),
     )
+    p.add_argument(
+        "--benchmark-retrieval",
+        action="store_true",
+        help=(
+            "After processing, run the recall@k retrieval benchmark "
+            "(BM25 over text vs summary vs retrieval_text) and write "
+            "quality/retrieval_benchmark.json."
+        ),
+    )
     return p
 
 
@@ -2479,6 +2536,24 @@ def main():
             print(f"[LibV2] Import failed: {e}")
             print("[LibV2] You can import manually later with:")
             print(f"  python -m LibV2.tools.libv2.cli import {args.output} --domain {args.domain} --division {args.division}")
+
+    # Optional: retrieval benchmark over the freshly regenerated corpus.
+    # Measures whether the per-chunk summary improves BM25 recall@k over
+    # the raw text baseline. Written to quality/retrieval_benchmark.json.
+    if args.benchmark_retrieval:
+        print("\n[Benchmark] Running retrieval benchmark...")
+        try:
+            from Trainforge.rag.retrieval_benchmark import write_benchmark
+
+            out_path, bench = write_benchmark(Path(args.output))
+            print(f"[Benchmark] Wrote {out_path}")
+            for variant, scores in bench.get("variants", {}).items():
+                summary_line = ", ".join(
+                    f"{k}={v:.3f}" for k, v in sorted(scores.items())
+                )
+                print(f"[Benchmark]   {variant}: {summary_line}")
+        except Exception as e:
+            print(f"[Benchmark] Failed: {e}")
 
     print("\nDone!")
     return result
