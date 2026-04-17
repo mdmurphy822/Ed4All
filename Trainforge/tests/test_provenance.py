@@ -104,9 +104,9 @@ def test_char_span_end_greater_than_start():
     """Every chunk's char_span[1] must be strictly greater than char_span[0].
     A zero-length span is a provenance bug (empty chunk should not exist).
     """
-    chunks = _load_wcag_chunks_if_available()
+    chunks = _load_local_corpus_chunks_if_available()
     if chunks is None:
-        pytest.skip("WCAG_201 corpus not regenerated on this branch yet")
+        pytest.skip("No local regenerated corpus available (see TRAINFORGE_PROVENANCE_CORPUS env var)")
     provenance_chunks = [c for c in chunks if "char_span" in c.get("source", {})]
     assert provenance_chunks, "no chunks carry char_span"
     for chunk in provenance_chunks:
@@ -159,7 +159,8 @@ def test_xpath_is_absolute():
 
 
 # ---------------------------------------------------------------------------
-# Test 5: coverage — 100% of chunks in the WCAG_201 corpus carry both fields
+# Test 5: coverage — 100% of chunks in a local regenerated corpus carry both
+# fields. Opt-in via TRAINFORGE_PROVENANCE_CORPUS (see helper below).
 # ---------------------------------------------------------------------------
 
 
@@ -167,9 +168,9 @@ def test_every_chunk_has_provenance_fields():
     """After regeneration, every chunk in the corpus must carry both
     ``source.html_xpath`` and ``source.char_span``. Zero coverage gap.
     """
-    chunks = _load_wcag_chunks_if_available()
+    chunks = _load_local_corpus_chunks_if_available()
     if chunks is None:
-        pytest.skip("WCAG_201 corpus not regenerated on this branch yet")
+        pytest.skip("No local regenerated corpus available (see TRAINFORGE_PROVENANCE_CORPUS env var)")
     missing_xpath = [c["id"] for c in chunks if "html_xpath" not in c.get("source", {})]
     missing_span = [c["id"] for c in chunks if "char_span" not in c.get("source", {})]
     assert not missing_xpath, f"chunks missing html_xpath: {missing_xpath[:5]}"
@@ -187,9 +188,9 @@ def test_multipart_spans_are_disjoint_and_contiguous():
     gaps beyond the single space ``_split_by_sentences`` inserts between
     sub-texts).
     """
-    chunks = _load_wcag_chunks_if_available()
+    chunks = _load_local_corpus_chunks_if_available()
     if chunks is None:
-        pytest.skip("WCAG_201 corpus not regenerated on this branch yet")
+        pytest.skip("No local regenerated corpus available (see TRAINFORGE_PROVENANCE_CORPUS env var)")
 
     # Group by (lesson_id, section_heading stripped of "(part N)") so we
     # can inspect multi-part siblings together.
@@ -284,15 +285,25 @@ def test_multipart_spans_are_disjoint_and_contiguous():
 # ---------------------------------------------------------------------------
 
 
-def _load_wcag_chunks_if_available() -> List[dict] | None:
-    """Load regenerated WCAG_201 chunks.jsonl if present; else return None.
+def _load_local_corpus_chunks_if_available() -> List[dict] | None:
+    """Load a locally regenerated ``chunks.jsonl`` if one is available.
 
-    This lets the test file run green before regeneration (pytest reports
-    the coverage-dependent tests as skipped) and then lock the coverage
-    invariants after regeneration without editing the test file.
+    The path is resolved from the ``TRAINFORGE_PROVENANCE_CORPUS`` environment
+    variable (absolute path to a ``chunks.jsonl`` file) so these tests can be
+    exercised against any course a developer has regenerated locally without
+    leaking a specific course slug into the tracked test file.
+
+    Returns ``None`` (and the dependent tests call ``pytest.skip``) when the
+    env var is unset, points at a missing file, or points at a pre-Worker-E
+    corpus where chunks don't yet carry ``source.html_xpath``.
     """
-    path = PROJECT_ROOT / "Trainforge" / "output" / "wcag_201" / "corpus" / "chunks.jsonl"
-    if not path.exists():
+    import os
+
+    env_path = os.environ.get("TRAINFORGE_PROVENANCE_CORPUS")
+    if not env_path:
+        return None
+    path = Path(env_path)
+    if not path.is_file():
         return None
     chunks: List[dict] = []
     with open(path, encoding="utf-8") as f:
