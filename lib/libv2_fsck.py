@@ -10,6 +10,7 @@ Phase 0 Hardening - Requirement 6: LibV2 Storage Invariants
 import json
 import logging
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -127,6 +128,15 @@ class LibV2Fsck:
 
         # Check for orphaned files
         self._check_orphans(result, fix)
+
+        # Check cross-package concept index freshness (Worker G).
+        # The check infers a repo root from ``libv2_root.parent`` — this is the
+        # same layout every other LibV2 path assumes (repo_root/LibV2/*).
+        repo_root_for_index = self.libv2_root.parent
+        stale_issue = check_cross_package_index_freshness(repo_root_for_index)
+        if stale_issue is not None:
+            result.checked_files += 1
+            result.issues.append(stale_issue)
 
         result.passed = result.error_count == 0
 
@@ -413,6 +423,88 @@ class LibV2Fsck:
                         break
 
         return True
+
+
+def check_cross_package_index_freshness(repo_root: Path) -> Optional[FsckIssue]:
+    """Check whether ``LibV2/catalog/cross_package_concepts.json`` is stale.
+
+    The catalog is considered stale when any course-level
+    ``graph/concept_graph.json`` has a modification time newer than the catalog
+    (comparing against the catalog's ``generated_at`` timestamp when parseable,
+    else the file's own mtime).
+
+    Returns ``None`` when the catalog does not exist (not every repo has built
+    one) or when the catalog is up to date. Returns a warning-severity
+    ``FsckIssue`` with category ``stale_catalog`` otherwise.
+
+    Worker G added this check; see ``docs/libv2/cross-package-index.md``.
+    """
+    repo_root = Path(repo_root)
+    catalog_path = repo_root / "LibV2" / "catalog" / "cross_package_concepts.json"
+    if not catalog_path.exists():
+        return None
+
+    # Prefer the catalog's own ``generated_at`` (authoritative) and fall back
+    # to its mtime if the field is missing or unparseable. This keeps the
+    # check robust against filesystems that normalise or lose mtimes (e.g.
+    # checkouts where git restores files with the current wall-clock mtime).
+    catalog_ts: Optional[float] = None
+    try:
+        with catalog_path.open(encoding="utf-8") as f:
+            data = json.load(f)
+        generated_at = data.get("generated_at")
+        if isinstance(generated_at, str):
+            try:
+                catalog_ts = datetime.fromisoformat(
+                    generated_at.replace("Z", "+00:00")
+                ).timestamp()
+            except ValueError:
+                catalog_ts = None
+    except (OSError, json.JSONDecodeError):
+        catalog_ts = None
+    if catalog_ts is None:
+        try:
+            catalog_ts = catalog_path.stat().st_mtime
+        except OSError:
+            return None
+
+    courses_root = repo_root / "LibV2" / "courses"
+    if not courses_root.is_dir():
+        return None
+
+    newest_graph_ts: float = 0.0
+    newest_graph_path: Optional[Path] = None
+    for course_dir in sorted(courses_root.iterdir()):
+        if not course_dir.is_dir():
+            continue
+        graph_file = course_dir / "graph" / "concept_graph.json"
+        if not graph_file.is_file():
+            continue
+        try:
+            ts = graph_file.stat().st_mtime
+        except OSError:
+            continue
+        if ts > newest_graph_ts:
+            newest_graph_ts = ts
+            newest_graph_path = graph_file
+
+    if newest_graph_path is None:
+        return None
+
+    if newest_graph_ts > catalog_ts:
+        return FsckIssue(
+            severity="warning",
+            category="stale_catalog",
+            path=str(catalog_path),
+            message=(
+                "cross_package_concepts.json is stale: "
+                f"{newest_graph_path} is newer than the catalog. "
+                "Regenerate with `libv2 cross-index`."
+            ),
+            fixable=True,
+            fix_action="regenerate_cross_package_index",
+        )
+    return None
 
 
 def run_fsck(
