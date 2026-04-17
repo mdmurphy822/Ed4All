@@ -14,7 +14,10 @@ If you are writing a new worker and your change touches any of ADR-001's Contrac
 | D | `worker-d/chunk-summaries-and-recall` | `worker-d` | blocked on A | Add per-chunk summary and `retrieval_text` fields; extend recall metrics. | `Trainforge/process_course.py`, `Trainforge/tests/fixtures/mini_course_summaries/` | A; `chunk-schema-v4` rebase point |
 | E | `worker-e/html-xpath-provenance` | `worker-e` | blocked on A | Carry HTML XPath provenance through the chunker. | `Trainforge/process_course.py` | A; `chunk-schema-v4` rebase point |
 | F | `worker-f/typed-edge-graph` | `worker-f` | blocked on A | Typed-edge concept extractor producing `concept_graph_semantic.json`. | `Trainforge/graph/*`, `lib/decision_capture.py`, `Trainforge/tests/fixtures/mini_course_typed_graph/` | A |
-| G | `worker-g/cross-package-index` | `worker-g` | blocked on A and F | Cross-package index that consumes typed edges. | `LibV2/tools/*`, `LibV2/catalog/*` | A, F |
+| G | `worker-g/cross-package-index` | `worker-g` | done | Cross-package concept index + staleness check. | `LibV2/tools/*`, `LibV2/catalog/*` | A, F |
+| H | `worker-h/courseforge-lo-specificity` | `worker-h` | done | Courseforge per-week learningObjectives specificity — fixes LO-fanout defect. | `Courseforge/scripts/generate_course.py`, `Courseforge/scripts/validate_page_objectives.py` | A |
+| I | `worker-i/packager-validation-gate` | `worker-i` | in review (PR #5) | Wire `validate_page_objectives.py` into `package_multifile_imscc.py` as a pre-package gate. | `Courseforge/scripts/package_multifile_imscc.py` | H |
+| J | `worker-j/libv2-reference-retrieval` | `worker-j` | in review | Reference retrieval: rationale payload, metadata-aware scoring, hand-curated gold queries, ADR-002 scope line. | `LibV2/tools/libv2/retriever.py`, `LibV2/tools/libv2/retrieval_scoring.py`, `LibV2/tools/libv2/cli.py`, `LibV2/tools/libv2/eval_harness.py`, `LibV2/courses/*/retrieval/`, `docs/architecture/ADR-002-retrieval-scope.md`, `docs/libv2/reference-retrieval.md` | A |
 
 ## Coordination protocol
 
