@@ -1097,7 +1097,7 @@ def retrieval_eval(ctx, course: str, gold_queries: Optional[str], report: Option
 
     \b
     Example:
-        libv2 retrieval-eval --course best-practices-in-digital-web-design-for-accessibi
+        libv2 retrieval-eval --course <your-course-slug>
     """
     from .eval_harness import evaluate_retrieval
 

@@ -80,7 +80,7 @@ When none of the included courses carry a semantic graph (the case for any cours
 
 ## Example use case
 
-> Given a retrieval query against `foundations-of-digital-pedagogy` that returned the concept `accessibility`, identify which other LibV2 courses also cover that concept and what typed relationships connect it to sibling concepts.
+> Given a retrieval query against `<your-course-slug>` that returned the concept `accessibility`, identify which other LibV2 courses also cover that concept and what typed relationships connect it to sibling concepts.
 
 ```python
 import json
@@ -93,7 +93,7 @@ if entry is None:
     neighbours = []
 else:
     neighbours = [c["slug"] for c in entry["courses"]
-                  if c["slug"] != "foundations-of-digital-pedagogy"]
+                  if c["slug"] != "<your-course-slug>"]
 
 # neighbours -> list of other course slugs to consider for a widened retrieval.
 ```

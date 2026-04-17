@@ -42,7 +42,7 @@ See ADR-001 Contract 2 for the ownership story (base pass owns `metrics_semantic
 - **Threading caveat.** Interactive components are not yet threaded onto chunks as a first-class field. The parser produces `parsed_items[i]["interactive_components"]`, but `_create_chunk` does not copy that list onto the chunk. This metric therefore uses a regex fallback against each chunk's own HTML.
 - **Why it matters.** Interactive components are a distinct content type for downstream training-pair synthesis (they often signal `apply`-level Bloom). A corpus with zero detected interactive components in `quality_report.json` on a Courseforge course is a signal that the parser-to-chunk join never carried them through.
 - **Follow-up.** Promoting interactive components to a first-class chunk field belongs to Worker E's HTML-provenance track, not Worker B. Tracked as `FOLLOWUP-WORKER-B-1`.
-- **Threshold reading.** Corpus-dependent. A heavily interactive Courseforge course like WCAG_201 should land above 0.5; a text-dense course may legitimately sit below 0.2. What the metric catches is "expected pattern matches are simply absent" — the silent drop — not "this course doesn't use interactive components."
+- **Threshold reading.** Corpus-dependent. A heavily interactive Courseforge course should land above 0.5; a text-dense course may legitimately sit below 0.2. What the metric catches is "expected pattern matches are simply absent" — the silent drop — not "this course doesn't use interactive components."
 
 ## Integrity fields summary
 

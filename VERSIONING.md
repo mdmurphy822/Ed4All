@@ -2,7 +2,9 @@
 
 This document is the honest characterisation of what Ed4All delivers today, what it does not, and what v1.0 is expected to deliver. It exists because the first real end-to-end knowledge package the pipeline produced (an accessibility-domain corpus, held locally and not shipped in this repo) surfaced nine concrete issues that are best understood as *diagnostic signal from v0.1.0*, not as product failures.
 
-The branch that shipped this file (`claude/fix-package-quality-FyMue`) moves Ed4All out of "v0.1.0 prototype" mode and into "v0.1.x with honest self-evaluation." The follow-up branch flips strict mode on and promotes two workflow gates from warning to critical (see §Severity flip trigger below).
+The branch that shipped this file (`claude/fix-package-quality-FyMue`) moved Ed4All out of "v0.1.0 prototype" mode and into "v0.1.x with honest self-evaluation." The follow-up branch flips strict mode on and promotes two workflow gates from warning to critical (see §Severity flip trigger below).
+
+**v0.2.0 status (development branch `dev-v0.2.0`):** the workers-A-through-K cohort on `dev-v0.2.0` delivers a substantial chunk of the v1.0 roadmap ahead of the formal v1.0 release. See §5a below for the mapping from v1.0 promises to the v0.2.0 artifacts that fulfilled them. v1.0 itself remains defined by the §6 exit criteria, all of which must hold before the version number moves.
 
 ---
 
@@ -29,7 +31,7 @@ These are artifacts the v0.1.0 real-domain assessment surfaced. Each is framed a
 
 3. **Mis-scoped `follows_chunk` (~68% of chain links cross lesson boundaries).** Now reset at every lesson and module boundary; violations are reported as `integrity.follows_chunk_boundary_violations`. (§4.3.)
 
-4. **Concept graph is a tag co-occurrence graph, not a semantic knowledge graph.** The README previously overclaimed. Fixed in this branch: edges carry `relation_type: "co-occurs"` (forward-compatible for v1.0's typed extractor), pedagogy / logistics tags are partitioned into a separate `pedagogy_graph.json`, and a `concept_graph_semantic.json` filename is reserved for the v1.0 extractor. (§2.2, §3.1.)
+4. **Concept graph is a tag co-occurrence graph, not a semantic knowledge graph.** The README previously overclaimed. Fixed in v0.1.x: edges carry `relation_type: "co-occurs"` (forward-compatible for the typed extractor), pedagogy / logistics tags are partitioned into a separate `pedagogy_graph.json`, and a `concept_graph_semantic.json` filename was reserved for a later typed extractor. The typed extractor itself shipped in v0.2.0 (Worker F); the reserved filename is now populated with typed edges carrying `relation_type` ∈ {`prerequisite`, `is-a`, `related-to`, `co-occurs`}, `confidence`, and `provenance`. (§2.2, §3.1, §5a.)
 
 5. **Quality report dishonesty.** `html_preservation_rate: 1.0` while 62% of chunks had unclosed `<div>` tags; `learning_outcome_refs_coverage: 1.0` while 60% of refs were unresolvable. Both measured field presence, not correctness. Metrics rewritten to measure real structure and resolution; new `methodology` block in the report documents semantics; `metrics_semantic_version: 2` constant tells downstream consumers to re-baseline. (§1.1–1.4.)
 
@@ -105,17 +107,52 @@ The "real-domain floor" requirement in §3 (Severity flip trigger) cannot be sat
 
 ---
 
+## §5a v0.2.0 — what shipped on `dev-v0.2.0`
+
+The `dev-v0.2.0` branch is the consolidation point for Workers A through K plus two post-merge follow-ups (Worker L anonymization, the dev-branch README rewrite). The v0.2.0 bump is an *intermediate* release that fulfils a sizeable subset of the §5 v1.0 roadmap without yet satisfying all the §6 v1.0 exit criteria; the version number moves from v0.1.x to v0.2.0 because the pipeline now carries capabilities that go meaningfully beyond the v0.1.x self-trust scaffolding.
+
+Concrete shape on `dev-v0.2.0`:
+
+- **Cross-worker contracts documented** — `docs/architecture/ADR-001-pipeline-shape.md` (Worker A) names the chunk-schema, metrics-semantic-version, and fixture-naming contracts every concurrent worker shares, so the B/D/E `v4` schema bump and the B-owned `METRICS_SEMANTIC_VERSION` bump happen once per release train instead of racing.
+- **Flow metrics in `quality_report.json`** (Worker B, `METRICS_SEMANTIC_VERSION` 3→4). Five new observability metrics surface silent parser→chunk metadata drops: `content_type_label_coverage`, `key_terms_coverage`, `key_terms_with_definitions_rate`, `misconceptions_present_rate`, `interactive_components_rate`. Two attach `integrity.*` chunk-ID lists for targeted follow-up. See `docs/metrics/flow-metrics.md`.
+- **Training-pair synthesis (SFT + DPO)** (Worker C). `Trainforge/synthesize_training.py` emits instruction pairs per chunk with a schema committed at `schemas/instruction_pair.schema.json`, a deterministic-template path for the mock provider, and full decision-capture trails.
+- **Per-chunk summaries + retrieval benchmark** (Worker D). `CHUNK_SCHEMA_VERSION` goes to `v4`. Every chunk carries a 40-400 char extractive `summary`; chunks with key-terms also carry a `retrieval_text` field (summary + key terms). `Trainforge/rag/retrieval_benchmark.py` exercises recall@k across the `text`, `summary`, and `retrieval_text` variants on the `mini_course_summaries` fixture.
+- **Chunk provenance (audit trail)** (Worker E). Every chunk carries `source.html_xpath` and `source.char_span` so Section 508 / ADA Title II buyers can round-trip `chunk.text` to its source IMSCC HTML. Invariants (span non-overflow, multi-part disjointness/contiguity) are locked in `Trainforge/tests/test_provenance.py`; opt-in end-to-end tests run against any locally regenerated corpus via `TRAINFORGE_PROVENANCE_CORPUS`.
+- **Typed-edge concept graph** (Worker F). The `concept_graph_semantic.json` filename that v0.1.x *reserved* is now populated: rule-based inference from co-occurrence, typed-LO proximity, and optional LLM extraction produces typed edges (`prerequisite`, `is-a`, `related-to`, `co-occurs`) with `confidence` and `provenance`. The existing `concept_graph.json` remains the authoritative untyped graph.
+- **Cross-package concept index** (Worker G). `libv2 cross-index` aggregates every course's `graph/concept_graph.json` (and, when present, the typed semantic graph) into `LibV2/catalog/cross_package_concepts.json` — a navigation layer that answers "given concept X, which other courses in this repo cover it?" Freshness checked by `lib/libv2_fsck.py`. The catalog file is intentionally not tracked in git (see §5b on anonymization); users regenerate it locally on demand.
+- **Per-week `learningObjectives` specificity** (Worker H). `Courseforge/scripts/generate_course.py` takes `--objectives <canonical-registry.json>`; each week's emitted JSON-LD now references only canonical CO/TO IDs declared for that week's chapter range. Closes the LO-fanout defect where `outcome_reverse_coverage` collapsed to 0.143. `validate_page_objectives.py` locks the invariant.
+- **Packager pre-build LO-validation gate** (Worker I). IMSCC packaging now validates the full LO JSON-LD contract before tarring, so a course that regressed on Worker H's fix cannot ship an IMSCC package silently.
+- **LibV2 reference retrieval** (Worker J). ADR-002 names the scope line: `libv2 retrieve` / `libv2 retrieval-eval`, rationale payload, three metadata-aware boost functions (concept-graph overlap, LO match, prereq coverage), `ChunkFilter` with eleven v4 metadata fields, and structured tokenization that preserves `sc-1.4.3`/`aria-labelledby`-style slugs. Opt-in rationale payload is back-compat-pinned (`TestWorkerJBackCompat`). See `docs/libv2/reference-retrieval.md`.
+- **Anonymization policy enforced** (Workers K + L). The repository no longer ships example-course slugs, course-specific codes, or per-course retrieval data. Verified by a repo-wide grep: zero tracked occurrences of the example-course strings the real-domain v0.1.0 corpus used. `.gitignore` is tightened so course subtrees stay under the user's control. The retrieval-eval contract is exercised by a three-chunk synthetic fixture in-test (`LibV2/tools/libv2/tests/test_eval_harness_retrieval.py`); users curate their own gold queries against their own loaded courses using the workflow in `docs/libv2/reference-retrieval.md`.
+
+**What v0.2.0 still does NOT include (see §5 and §6):**
+
+- Strict mode is not default-on. The Courseforge template-chrome separation (§4b) is still deferred; the defensive n-gram boilerplate stripper in Trainforge remains load-bearing.
+- Severity flip for `outcome_ref_integrity` and `content_fact_check` is still pending both the synthetic floor and the real-domain floor (§3 Severity flip trigger).
+- The §4.4a enrichment-coverage investigation has not concluded; the fallback helpers in `Trainforge/process_course.py` remain unwired.
+- Domain-agnostic validation (§6(b)) — "run against ≥3 distinct domain corpora with no new defect classes" — has not been completed.
+- SC canonicalisation still covers the variant table, not every WCAG 2.2 SC (§5 item 8).
+
+## §5b Anonymization policy (v0.2.0)
+
+As of v0.2.0, the repository's public tree is course-agnostic. All example-course references in docs, scripts, schemas, and tests use generic placeholders (`SAMPLE_101`, `sample-course`, `<your-course-slug>`, `sample_course_chunk_00042`). The following artifacts are intentionally **not** tracked in git and live only in the user's local checkout:
+
+- `LibV2/courses/<slug>/` course subtrees (`corpus/chunks.jsonl`, `graph/`, `retrieval/gold_queries.jsonl`, `retrieval/README.md`, `quality/`, ...).
+- `LibV2/catalog/cross_package_concepts.json` (regenerated on demand via `libv2 cross-index`).
+
+The reference-retrieval contract is still fully exercisable — `LibV2/tools/libv2/tests/test_eval_harness_retrieval.py` builds a three-chunk synthetic course with a two-query gold set inside `tmp_path`, so `evaluate_retrieval` is regression-tested end-to-end without any tracked per-course data. `docs/libv2/reference-retrieval.md` documents how users curate their own per-course gold queries.
+
 ## §5 v1.0 roadmap
 
-Ordered by what the work currently on the v1.0 branch list looks like:
+Ordered by what the work currently on the v1.0 branch list looks like. Items marked "(shipped in v0.2.0)" are implemented on `dev-v0.2.0`; they remain on this list because the §6 exit criteria have not all been met, i.e., the pipeline as a whole has not yet passed the domain-agnostic + self-trust bar that makes v1.0 stand behind the roadmap.
 
 1. **§4.4a investigation complete** — this is the next concrete blocking item.
-2. **Typed-edge concept extractor** → writes `concept_graph_semantic.json` alongside the existing co-occurrence graph. Edges carry `relation_type` ∈ {`prerequisite`, `is-a`, `related-to`, `co-occurs`}.
-3. **Strict mode on by default.** See §Severity flip trigger.
-4. **`outcome_ref_integrity` and `content_fact_check` promoted to `critical`.**
-5. **Dual outcome-ID contract shipped.** Courseforge emits both flat and week-scoped IDs with explicit parent links; Trainforge consumes both fields.
-6. **Template-chrome footer separation.** Courseforge stops emitting copyright in the page body.
-7. **Enrichment coverage resolved.** Per §4.4a outcome.
+2. **Typed-edge concept extractor** (shipped in v0.2.0, Worker F). `concept_graph_semantic.json` is populated; edges carry `relation_type` ∈ {`prerequisite`, `is-a`, `related-to`, `co-occurs`} plus `confidence` and `provenance`. Remaining on the v1.0 path because v1.0 expects this to be the default retrieval surface; in v0.2.0 it is additive to the untyped graph.
+3. **Strict mode on by default.** See §Severity flip trigger. Not yet default in v0.2.0.
+4. **`outcome_ref_integrity` and `content_fact_check` promoted to `critical`.** Not yet promoted in v0.2.0.
+5. **Dual outcome-ID contract shipped.** Courseforge emits both flat and week-scoped IDs with explicit parent links; Trainforge consumes both fields. Courseforge side not yet shipped in v0.2.0 (partial — the Worker-H per-week specificity work is a different defect on the same code path and does ship).
+6. **Template-chrome footer separation.** Courseforge stops emitting copyright in the page body. Not yet shipped in v0.2.0; n-gram defensive layer remains load-bearing.
+7. **Enrichment coverage resolved.** Per §4.4a outcome. Investigation not yet complete in v0.2.0.
 8. **SC canonicalisation extended** to every SC mentioned in WCAG 2.2, not just the handful currently in the variant table.
 9. **`ContentFactValidator` regex table broadened** with domain-specific content-fact rules on contact with real curricula.
 
