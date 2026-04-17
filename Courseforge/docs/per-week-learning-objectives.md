@@ -8,7 +8,7 @@
 Every generated HTML page has a `<script type="application/ld+json">` block
 with a `learningObjectives` array. Each entry must reference a canonical
 objective ID (a `CO-##` or `TO-##` declared in the course's exam-objectives
-JSON, e.g. `inputs/exam-objectives/WCAG_201_objectives.json`) and the list
+JSON, e.g. `inputs/exam-objectives/SAMPLE_101_objectives.json`) and the list
 must be the subset of canonical objectives that apply to that page's week.
 
 If a page lists objectives that belong to a different week (or invents
@@ -29,7 +29,7 @@ For a page generated under `week_<N>/`:
    `Trainforge.process_course.load_objectives`, so emit and resolve stay in
    lockstep.
 
-Concretely for WCAG_201:
+Concretely for a sample 12-week course (`SAMPLE_101`):
 
 | Week(s) | Chapter CO IDs emitted on each page |
 |---------|-------------------------------------|
@@ -51,9 +51,9 @@ terminal objectives.
 
 ```
 python Courseforge/scripts/generate_course.py \
-    inputs/course-data/WCAG_201_course_data.json \
-    exports/WCAG_201_COURSE/03_content_development \
-    --objectives inputs/exam-objectives/WCAG_201_objectives.json
+    inputs/course-data/SAMPLE_101_course_data.json \
+    exports/SAMPLE_101_COURSE/03_content_development \
+    --objectives inputs/exam-objectives/SAMPLE_101_objectives.json
 ```
 
 When the flag is present, each week's `objectives` list in the course data
@@ -74,8 +74,8 @@ are declared for that page's week:
 
 ```
 python Courseforge/scripts/validate_page_objectives.py \
-    --objectives inputs/exam-objectives/WCAG_201_objectives.json \
-    --pages exports/WCAG_201_COURSE/03_content_development
+    --objectives inputs/exam-objectives/SAMPLE_101_objectives.json \
+    --pages exports/SAMPLE_101_COURSE/03_content_development
 ```
 
 Exit code `0` on success, `1` if any page leaks another week's IDs. The
@@ -91,18 +91,20 @@ same check runs as unit tests in
 
 ## Why this mattered
 
-Before the fix, `WCAG_201_course_data.json` declared week-local IDs like
-`W01-CO-01..W12-CO-04` on each week's `objectives`. Each week independently
-numbered its COs `01..04`. Trainforge normalizes by stripping the `W0N-`
-prefix (see `Trainforge.process_course._extract_objective_refs`), so every
-week's chunks reduced to `co-01..co-04`. Result against `course.json`
-(which declares `CO-01..CO-24` plus `TO-01..TO-04`):
+Before the fix, a typical `<COURSE>_course_data.json` declared week-local
+IDs like `W01-CO-01..W12-CO-04` on each week's `objectives`. Each week
+independently numbered its COs `01..04`. Trainforge normalizes by
+stripping the `W0N-` prefix (see
+`Trainforge.process_course._extract_objective_refs`), so every week's
+chunks reduced to `co-01..co-04`. On a twelve-week course whose
+`course.json` declares `CO-01..CO-24` plus `TO-01..TO-04` (28 outcomes
+total), that meant:
 
 - `outcome_reverse_coverage = 0.143` (4 of 28 outcomes had any chunk).
 - 24 outcomes uncovered.
 - Training-pair synthesis, retrieval benchmarks, and prerequisite-edge
   inference all capped by this convergent ceiling.
 
-After the fix, regenerating WCAG_201 with `--objectives` and re-running
+After the fix, regenerating the course with `--objectives` and re-running
 Trainforge yields `outcome_reverse_coverage = 1.0`, zero uncovered
 outcomes, and 28 distinct LO refs distributed across the corpus.
