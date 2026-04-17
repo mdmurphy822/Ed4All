@@ -41,6 +41,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from lib.decision_capture import DecisionCapture
 from Trainforge.generators import summary_factory
 from Trainforge.parsers.html_content_parser import HTMLContentParser, HTMLTextExtractor
+from Trainforge.parsers.xpath_walker import (
+    find_body_xpath,
+    find_section_container_xpath,
+    resolve_xpath,
+)
 from Trainforge.rag.boilerplate_detector import (
     BoilerplateConfig,
     contamination_rate,
@@ -67,7 +72,8 @@ METRICS_SEMANTIC_VERSION = 4
 #   - `summary` (Worker D): 2–3 sentence extractive summary per chunk.
 #   - `retrieval_text` (Worker D, optional): summary + " " + key_terms_joined.
 #   - `schema_version` (all workers): stamped on every chunk.
-#   - `xpath_provenance` (Worker E, when that PR lands).
+#   - `source.html_xpath` and `source.char_span` (Worker E): audit-trail
+#     provenance stamped on every chunk.
 # The string also lands on manifest.json as `chunk_schema_version`. One bump
 # per release train; see ADR-001 Contract 1 and docs/contributing/workers.md
 # for the rebase protocol.
@@ -887,31 +893,102 @@ class CourseProcessor:
         follows_chunk_id: Optional[str] = None,
         position_in_module: int = 0,
     ) -> List[Dict[str, Any]]:
-        """Split a text block into chunks of appropriate size."""
+        """Split a text block into chunks of appropriate size.
+
+        Each chunk carries provenance:
+          - ``source.html_xpath``: absolute xpath to the container element
+            whose descendant plain-text includes this chunk's text. For
+            sectioned items this is the heading's parent (typically
+            ``<main>``, ``<article>``, ``<section>``, or ``<body>``); for
+            no-section items it is ``<body>`` itself.
+          - ``source.char_span: [start, end]``: character offsets into the
+            container's plain-text (the result of ``resolve_xpath``) where
+            ``chunk.text`` begins and ends. Offsets are computed by
+            ``str.find`` into the container text — the same path an
+            auditor walks during round-trip recovery. For sentence-split
+            blocks, sibling spans are disjoint and (modulo the single-
+            space sentence joiner) contiguous, so the section is
+            recoverable by concatenating slices in chunk-id order.
+
+        See docs/compliance/audit-trail.md for the round-trip contract.
+        """
         word_count = len(text.split())
-        chunks = []
+        chunks: List[Dict[str, Any]] = []
+
+        # Resolve the container xpath once per call. Heading's parent for
+        # sectioned items (so descendant text includes the section body);
+        # <body> for whole-page items.
+        raw_html_for_xpath = item.get("raw_html", "") or html
+        container_xpath: Optional[str] = None
+        if heading and heading != item.get("title"):
+            container_xpath = find_section_container_xpath(raw_html_for_xpath, heading)
+        if not container_xpath:
+            container_xpath = find_body_xpath(raw_html_for_xpath)
+
+        # Resolve the container's plaintext once so we can compute char_span
+        # by string search (the auditor's round-trip path).
+        container_text = resolve_xpath(raw_html_for_xpath, container_xpath) or ""
+
+        def _locate(needle: str, search_from: int = 0) -> List[int]:
+            """Return [start, end] of ``needle`` in the container text.
+
+            Falls back to a whitespace-normalised prefix search when the
+            exact find fails (typical drift: SC canonicalisation, feedback
+            strip). Never silently drops the provenance — if no anchor can
+            be located at all, emit ``[search_from, search_from + len]``
+            relative to the container text so sibling spans stay
+            non-decreasing.
+            """
+            if container_text and needle:
+                idx = container_text.find(needle, search_from)
+                if idx >= 0:
+                    return [idx, idx + len(needle)]
+                # Whitespace-normalised prefix fallback: find the first
+                # 8-word window of the needle in the collapsed container.
+                collapsed_container = " ".join(container_text.split())
+                collapsed_needle = " ".join(needle.split())
+                prefix = " ".join(collapsed_needle.split()[:8])
+                if prefix:
+                    idx = collapsed_container.find(prefix, search_from)
+                    if idx >= 0:
+                        return [idx, idx + len(collapsed_needle)]
+            return [search_from, search_from + len(needle)]
 
         if word_count <= self.MAX_CHUNK_SIZE:
-            # Fits in one chunk
+            # Fits in one chunk.
+            char_span = _locate(text, search_from=0)
             chunks.append(self._create_chunk(
                 chunk_id=f"{prefix}{start_id:05d}",
                 text=text, html=html, item=item,
                 section_heading=heading, chunk_type=chunk_type,
                 follows_chunk_id=follows_chunk_id,
                 position_in_module=position_in_module,
+                html_xpath=container_xpath,
+                char_span=char_span,
             ))
         else:
-            # Split by sentences
+            # Split by sentences. Locate each sub_text independently,
+            # anchored after the previous sibling's end so spans stay
+            # disjoint and contiguous.
             sub_texts = self._split_by_sentences(text, self.TARGET_CHUNK_SIZE)
+            prev_end = 0
             for i, sub_text in enumerate(sub_texts):
                 part_heading = f"{heading} (part {i + 1})" if len(sub_texts) > 1 else heading
                 prev_id = follows_chunk_id if i == 0 else f"{prefix}{start_id + i - 1:05d}"
+                char_span = _locate(sub_text, search_from=prev_end)
+                # Keep spans non-decreasing even if the locator fallback
+                # collided with an earlier part's text.
+                if char_span[0] < prev_end:
+                    char_span = [prev_end, prev_end + (char_span[1] - char_span[0])]
+                prev_end = char_span[1]
                 chunks.append(self._create_chunk(
                     chunk_id=f"{prefix}{start_id + i:05d}",
                     text=sub_text, html="" if i > 0 else html, item=item,
                     section_heading=part_heading, chunk_type=chunk_type,
                     follows_chunk_id=prev_id,
                     position_in_module=position_in_module + i,
+                    html_xpath=container_xpath,
+                    char_span=char_span,
                 ))
 
         return chunks
@@ -921,6 +998,8 @@ class CourseProcessor:
         section_heading: str, chunk_type: str,
         follows_chunk_id: Optional[str] = None,
         position_in_module: int = 0,
+        html_xpath: Optional[str] = None,
+        char_span: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
         words = text.split()
         word_count = len(words)
@@ -933,22 +1012,36 @@ class CourseProcessor:
         concept_tags = self._extract_concept_tags(text, item)
         difficulty = self._determine_difficulty(text, item)
 
+        source: Dict[str, Any] = {
+            "course_id": self.course_code,
+            "module_id": item["module_id"],
+            "module_title": item["module_title"],
+            "lesson_id": item["item_id"],
+            "lesson_title": item["title"],
+            "resource_type": item["resource_type"],
+            "section_heading": section_heading,
+            "position_in_module": position_in_module,
+        }
+        # Audit-trail provenance (Section 508 / ADA Title II). Every chunk
+        # ties back to the source IMSCC HTML element it was derived from.
+        # See docs/compliance/audit-trail.md for the round-trip contract.
+        if html_xpath:
+            source["html_xpath"] = html_xpath
+        if char_span is not None:
+            source["char_span"] = list(char_span)
+        # Carry the IMSCC-relative path so auditors can open the source
+        # file without walking imsmanifest.xml.
+        if item.get("item_path"):
+            source["item_path"] = item["item_path"]
+
         chunk: Dict[str, Any] = {
             "id": chunk_id,
+            "schema_version": CHUNK_SCHEMA_VERSION,
             "chunk_type": chunk_type,
             "text": text,
             "html": html,
             "follows_chunk": follows_chunk_id,
-            "source": {
-                "course_id": self.course_code,
-                "module_id": item["module_id"],
-                "module_title": item["module_title"],
-                "lesson_id": item["item_id"],
-                "lesson_title": item["title"],
-                "resource_type": item["resource_type"],
-                "section_heading": section_heading,
-                "position_in_module": position_in_module,
-            },
+            "source": source,
             "concept_tags": concept_tags,
             "learning_outcome_refs": self._extract_objective_refs(item),
             "difficulty": difficulty,
@@ -1009,16 +1102,21 @@ class CourseProcessor:
         # authoritative chunks stay schema-identical to pre-fallback output.
         if bloom_source in ("verbs", "default"):
             chunk["bloom_level_source"] = bloom_source
-            self.capture.log_decision(
-                decision_type="bloom_level_assignment",
-                decision=f"Assigned bloom_level={bloom_level} via {bloom_source}",
-                rationale=(
-                    "No JSON-LD, data-cf-*, or parsed learning objective "
-                    "supplied a bloom_level for this chunk; fell back to the "
-                    "text verb heuristic (or the understand-level default) "
-                    "so every chunk carries a level for downstream filters."
-                ),
-            )
+            # Capture may be absent in unit tests that bypass ``__init__``
+            # (e.g. test_provenance.py). Only log when it's present so this
+            # non-test-facing observability doesn't turn into a hard failure.
+            capture = getattr(self, "capture", None)
+            if capture is not None:
+                capture.log_decision(
+                    decision_type="bloom_level_assignment",
+                    decision=f"Assigned bloom_level={bloom_level} via {bloom_source}",
+                    rationale=(
+                        "No JSON-LD, data-cf-*, or parsed learning objective "
+                        "supplied a bloom_level for this chunk; fell back to the "
+                        "text verb heuristic (or the understand-level default) "
+                        "so every chunk carries a level for downstream filters."
+                    ),
+                )
         if content_type_label:
             chunk["content_type_label"] = content_type_label
         if key_terms:
@@ -1546,6 +1644,7 @@ class CourseProcessor:
                 "processed_date": datetime.now().isoformat(),
                 "chunk_strategy": "pedagogical-units",
                 "target_chunk_size": self.TARGET_CHUNK_SIZE,
+                "chunk_schema_version": CHUNK_SCHEMA_VERSION,
             },
             "statistics": {
                 "chunks": self.stats["total_chunks"],
