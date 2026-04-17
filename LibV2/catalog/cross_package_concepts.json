@@ -1,0 +1,1153 @@
+{
+  "catalog_version": 1,
+  "generated_at": "2026-04-17T14:37:09.515522+00:00",
+  "repo_root": "/home/mdmur/Projects/Ed4All",
+  "course_count": 2,
+  "concept_count": 92,
+  "concepts": {
+    "accessibility": {
+      "label": "Accessibility",
+      "total_courses": 2,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 103,
+          "label": "Accessibility"
+        },
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 12,
+          "label": "Accessibility"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "assessment": {
+      "label": "Assessment",
+      "total_courses": 2,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 4,
+          "label": "Assessment"
+        },
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 39,
+          "label": "Assessment"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "cognitive-load": {
+      "label": "Cognitive Load",
+      "total_courses": 2,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 4,
+          "label": "Cognitive Load"
+        },
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 20,
+          "label": "Cognitive Load"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "design": {
+      "label": "Design",
+      "total_courses": 2,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 5,
+          "label": "Design"
+        },
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 7,
+          "label": "Design"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "due": {
+      "label": "Due",
+      "total_courses": 2,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 12,
+          "label": "Due"
+        },
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 12,
+          "label": "Due"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "feedback": {
+      "label": "Feedback",
+      "total_courses": 2,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 19,
+          "label": "Feedback"
+        },
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 30,
+          "label": "Feedback"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "initial-post": {
+      "label": "Initial Post",
+      "total_courses": 2,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 12,
+          "label": "Initial Post"
+        },
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 12,
+          "label": "Initial Post"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "replies": {
+      "label": "Replies",
+      "total_courses": 2,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 12,
+          "label": "Replies"
+        },
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 12,
+          "label": "Replies"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "academic-integrity": {
+      "label": "Academic Integrity",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 2,
+          "label": "Academic Integrity"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "accessible-name": {
+      "label": "Accessible Name",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 6,
+          "label": "Accessible Name"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "accommodation": {
+      "label": "Accommodation",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 1,
+          "label": "Accommodation"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "addie": {
+      "label": "Addie",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 14,
+          "label": "Addie"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "advance-organizers": {
+      "label": "Advance Organizers",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 1,
+          "label": "Advance Organizers"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "alignment": {
+      "label": "Alignment",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 20,
+          "label": "Alignment"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "alt-attribute": {
+      "label": "Alt Attribute",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Alt Attribute"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "alt-text": {
+      "label": "Alt Text",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Alt Text"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "analyze": {
+      "label": "Analyze",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 4,
+          "label": "Analyze"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "apply": {
+      "label": "Apply",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 41,
+          "label": "Apply"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "aria-expanded": {
+      "label": "Aria Expanded",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 6,
+          "label": "Aria Expanded"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "aria-labelledby": {
+      "label": "Aria Labelledby",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Aria Labelledby"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "aria-modal": {
+      "label": "Aria Modal",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 5,
+          "label": "Aria Modal"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "assimilation": {
+      "label": "Assimilation",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 1,
+          "label": "Assimilation"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "asynchronous": {
+      "label": "Asynchronous",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 6,
+          "label": "Asynchronous"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "audio-descriptions": {
+      "label": "Audio Descriptions",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Audio Descriptions"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "axe-core": {
+      "label": "Axe Core",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Axe Core"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "backward-design": {
+      "label": "Backward Design",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 6,
+          "label": "Backward Design"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "behaviorism": {
+      "label": "Behaviorism",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 14,
+          "label": "Behaviorism"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "blended-learning": {
+      "label": "Blended Learning",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 6,
+          "label": "Blended Learning"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "blooms-taxonomy": {
+      "label": "Blooms Taxonomy",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 10,
+          "label": "Blooms Taxonomy"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "captions": {
+      "label": "Captions",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Captions"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "cart": {
+      "label": "Cart",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Cart"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "case-based-learning": {
+      "label": "Case Based Learning",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 1,
+          "label": "Case Based Learning"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "classify": {
+      "label": "Classify",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 5,
+          "label": "Classify"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "cognitivism": {
+      "label": "Cognitivism",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 14,
+          "label": "Cognitivism"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "community-of-inquiry": {
+      "label": "Community Of Inquiry",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 9,
+          "label": "Community Of Inquiry"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "compare": {
+      "label": "Compare",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 5,
+          "label": "Compare"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "competency-based": {
+      "label": "Competency Based",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 1,
+          "label": "Competency Based"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "conformance-level": {
+      "label": "Conformance Level",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 5,
+          "label": "Conformance Level"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "connectivism": {
+      "label": "Connectivism",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 10,
+          "label": "Connectivism"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "constructivism": {
+      "label": "Constructivism",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 13,
+          "label": "Constructivism"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "contrast-ratio": {
+      "label": "Contrast Ratio",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Contrast Ratio"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "create": {
+      "label": "Create",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 16,
+          "label": "Create"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "describe": {
+      "label": "Describe",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Describe"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "digital-age": {
+      "label": "Digital Age",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 1,
+          "label": "Digital Age"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "elaboration": {
+      "label": "Elaboration",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 1,
+          "label": "Elaboration"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "evaluate": {
+      "label": "Evaluate",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 38,
+          "label": "Evaluate"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "explain": {
+      "label": "Explain",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 10,
+          "label": "Explain"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "figcaption": {
+      "label": "Figcaption",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Figcaption"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "figure": {
+      "label": "Figure",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Figure"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "focus-indicator": {
+      "label": "Focus Indicator",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 5,
+          "label": "Focus Indicator"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "focus-trapping": {
+      "label": "Focus Trapping",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 5,
+          "label": "Focus Trapping"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "gamification": {
+      "label": "Gamification",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 1,
+          "label": "Gamification"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "identify": {
+      "label": "Identify",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 8,
+          "label": "Identify"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "images-of-text": {
+      "label": "Images Of Text",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Images Of Text"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "implement": {
+      "label": "Implement",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 9,
+          "label": "Implement"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "information-processing": {
+      "label": "Information Processing",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 1,
+          "label": "Information Processing"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "inquiry-based-learning": {
+      "label": "Inquiry Based Learning",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 1,
+          "label": "Inquiry Based Learning"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "instructional-design": {
+      "label": "Instructional Design",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 31,
+          "label": "Instructional Design"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "keyboard-accessibility": {
+      "label": "Keyboard Accessibility",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 4,
+          "label": "Keyboard Accessibility"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "large-text": {
+      "label": "Large Text",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Large Text"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "learning-theory": {
+      "label": "Learning Theory",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 14,
+          "label": "Learning Theory"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "long-term-memory": {
+      "label": "Long Term Memory",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 1,
+          "label": "Long Term Memory"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "multimedia-learning": {
+      "label": "Multimedia Learning",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 11,
+          "label": "Multimedia Learning"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "nine-events-of-instruction": {
+      "label": "Nine Events Of Instruction",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 2,
+          "label": "Nine Events Of Instruction"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "non-speech-sounds": {
+      "label": "Non Speech Sounds",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Non Speech Sounds"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "normal-text": {
+      "label": "Normal Text",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Normal Text"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "online-learning": {
+      "label": "Online Learning",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 11,
+          "label": "Online Learning"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "operant-conditioning": {
+      "label": "Operant Conditioning",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 1,
+          "label": "Operant Conditioning"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "oscqr": {
+      "label": "Oscqr",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 13,
+          "label": "Oscqr"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "peer-review": {
+      "label": "Peer Review",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 2,
+          "label": "Peer Review"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "prefers-reduced-motion": {
+      "label": "Prefers Reduced Motion",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 5,
+          "label": "Prefers Reduced Motion"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "problem-based-learning": {
+      "label": "Problem Based Learning",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 1,
+          "label": "Problem Based Learning"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "programmatically-determined": {
+      "label": "Programmatically Determined",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 8,
+          "label": "Programmatically Determined"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "programmed-instruction": {
+      "label": "Programmed Instruction",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 1,
+          "label": "Programmed Instruction"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "reinforcement": {
+      "label": "Reinforcement",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 1,
+          "label": "Reinforcement"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "rubric": {
+      "label": "Rubric",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 15,
+          "label": "Rubric"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "scaffolding": {
+      "label": "Scaffolding",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 10,
+          "label": "Scaffolding"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "schema-activation": {
+      "label": "Schema Activation",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 1,
+          "label": "Schema Activation"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "section-508": {
+      "label": "Section 508",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 5,
+          "label": "Section 508"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "sequencing": {
+      "label": "Sequencing",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 2,
+          "label": "Sequencing"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "speaker-identification": {
+      "label": "Speaker Identification",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Speaker Identification"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "synchronized-media": {
+      "label": "Synchronized Media",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Synchronized Media"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "synchronous": {
+      "label": "Synchronous",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 8,
+          "label": "Synchronous"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "time-based-media": {
+      "label": "Time Based Media",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Time Based Media"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "track-element": {
+      "label": "Track Element",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Track Element"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "transcript": {
+      "label": "Transcript",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Transcript"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "udl": {
+      "label": "Udl",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 6,
+          "label": "Udl"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "use": {
+      "label": "Use",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 4,
+          "label": "Use"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "wave": {
+      "label": "Wave",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Wave"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "webvtt": {
+      "label": "Webvtt",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Webvtt"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "working-memory": {
+      "label": "Working Memory",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 2,
+          "label": "Working Memory"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "zone-of-proximal-development": {
+      "label": "Zone Of Proximal Development",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "foundations-of-digital-pedagogy",
+          "frequency": 1,
+          "label": "Zone Of Proximal Development"
+        }
+      ],
+      "cross_package_edges": []
+    }
+  }
+}
