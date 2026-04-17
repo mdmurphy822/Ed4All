@@ -88,6 +88,8 @@ ALLOWED_DECISION_TYPES: tuple = (
     # Worker C (training-pair synthesis, landed in worker-c/training-pairs):
     "instruction_pair_synthesis",
     "preference_pair_generation",
+    # Worker F (typed-edge concept graph, landed in worker-f/typed-edge-graph):
+    "typed_edge_inference",
 )
 
 
