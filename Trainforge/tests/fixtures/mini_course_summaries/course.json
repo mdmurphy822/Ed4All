@@ -1,0 +1,18 @@
+{
+  "course_code": "MINI_SUM_101",
+  "title": "Mini Summaries Fixture Course",
+  "learning_outcomes": [
+    {
+      "id": "lo-01",
+      "statement": "Explain how cognitive load theory limits working memory during learning.",
+      "bloom_level": "understand",
+      "hierarchy_level": "terminal"
+    },
+    {
+      "id": "lo-02",
+      "statement": "Differentiate intrinsic, extraneous, and germane cognitive load in instructional design.",
+      "bloom_level": "analyze",
+      "hierarchy_level": "terminal"
+    }
+  ]
+}
