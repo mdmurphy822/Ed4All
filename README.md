@@ -91,8 +91,11 @@ The v0.1.0 concept graph captures tag co-occurrence with pedagogical metadata (B
 
 **LibV2** stores and indexes the final knowledge artifacts:
 - Flat-storage repository with semantic classification (division, domain, subdomain, topic)
-- BM25 retrieval with character n-gram boosting
-- Concept co-occurrence graphs
+- **Reference retrieval**: hand-rolled Okapi BM25 with character n-gram boosting, metadata filters (concept tags, LOs, Bloom's, teaching role, content type, week), and optional metadata-aware scoring (concept-graph overlap, LO match, prereq coverage). Intentionally bounded — a *reference implementation*, not a production retrieval system. See [ADR-002](docs/architecture/ADR-002-retrieval-scope.md) for the scope line and [`docs/libv2/reference-retrieval.md`](docs/libv2/reference-retrieval.md) for usage.
+- **Retrieval rationale**: every result can carry a structured `rationale` payload (bm25/ngram/boost breakdown, matched concept tags, matched LOs, applied filters) so downstream consumers can reason about *why* a chunk was retrieved.
+- **Gold-standard queries** per course at `LibV2/courses/<slug>/retrieval/gold_queries.jsonl`, hand-curated (not LO-derived), driving `libv2 retrieval-eval` recall@k + MRR.
+- Concept co-occurrence graphs + typed-edge `concept_graph_semantic.json`
+- Cross-package concept index at `LibV2/catalog/cross_package_concepts.json`
 - Source artifact archival with SHA-256 checksums
 - Quality metrics and validation reports
 
