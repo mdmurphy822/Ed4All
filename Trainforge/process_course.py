@@ -463,12 +463,18 @@ class CourseProcessor:
         topics: Optional[List[str]] = None,
         objectives_path: Optional[str] = None,
         strict_mode: bool = False,
+        typed_edges_llm: bool = False,
     ):
         # When strict_mode is True the pipeline refuses to write a final
         # artifact whose quality_report shows any broken_refs, any cross-lesson
         # follows_chunk link, or html_balance_violations above 5%. See §1.5 of
         # VERSIONING.md.
         self.strict_mode = strict_mode
+        # When typed_edges_llm is True, the typed-edge concept-graph builder
+        # calls an LLM escalation callable for edges no rule covered. Off by
+        # default — the default deterministic path is byte-identical across
+        # runs (Worker F spec, ADR-001 Contract 3).
+        self.typed_edges_llm = typed_edges_llm
         self.imscc_path = Path(imscc_path)
         self.output_dir = Path(output_dir)
         self.course_code = course_code
@@ -562,11 +568,21 @@ class CourseProcessor:
         manifest = self._generate_manifest(title, concept_graph=concept_graph)
         corpus_stats = self._generate_corpus_stats()
         quality_report = self._generate_quality_report(chunks)
+        # Typed-edge concept graph (additive to concept_graph). Rule-based
+        # by default; LLM escalation opt-in via self.typed_edges_llm.
+        course_data_for_semantic = (
+            self._build_course_json(manifest) if self.objectives else None
+        )
+        semantic_graph = self._generate_semantic_concept_graph(
+            chunks, course_data_for_semantic, concept_graph,
+        )
 
         # Stage 6
         print("[6/6] Writing metadata files...")
         self._write_metadata(manifest, corpus_stats, concept_graph, quality_report,
-                             pedagogy_graph=pedagogy_graph, chunks=chunks)
+                             pedagogy_graph=pedagogy_graph,
+                             semantic_graph=semantic_graph,
+                             chunks=chunks)
 
         summary = {
             "status": "success",
@@ -1503,6 +1519,48 @@ class CourseProcessor:
             graph_kind="concept",
         )
 
+    def _generate_semantic_concept_graph(
+        self,
+        chunks: List[Dict[str, Any]],
+        course: Optional[Dict[str, Any]],
+        concept_graph: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Build the typed-edge concept graph alongside ``concept_graph.json``.
+
+        See ``Trainforge.rag.typed_edge_inference`` for rule details and
+        precedence. The LLM path is opt-in via ``self.typed_edges_llm`` and
+        has a deterministic fallback (no callable wired → rules only).
+        """
+        from Trainforge.rag.typed_edge_inference import build_semantic_graph
+
+        llm_callable = None
+        if self.typed_edges_llm:
+            # Placeholder hook — a future Trainforge LLM provider plugs in
+            # here. Current behavior: log a non-decision and fall back to
+            # rule-only output, keeping the flag semantically valid without
+            # shipping a live LLM call path.
+            try:
+                self.capture.log_non_decision(
+                    decision_type="typed_edge_inference",
+                    default_value="rule_based_only",
+                    rationale=(
+                        "typed_edges_llm flag is on but no LLM callable is "
+                        "wired into the Trainforge runtime yet; deterministic "
+                        "rule-based output used."
+                    ),
+                )
+            except Exception:  # pragma: no cover — capture is best-effort
+                pass
+
+        return build_semantic_graph(
+            chunks=chunks,
+            course=course,
+            concept_graph=concept_graph,
+            llm_enabled=self.typed_edges_llm and llm_callable is not None,
+            llm_callable=llm_callable,
+            decision_capture=self.capture,
+        )
+
     def _generate_pedagogy_graph(self, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Mirror graph of pedagogical and logistics tags.
 
@@ -2000,6 +2058,7 @@ class CourseProcessor:
         concept_graph: Dict[str, Any],
         quality_report: Dict[str, Any],
         pedagogy_graph: Optional[Dict[str, Any]] = None,
+        semantic_graph: Optional[Dict[str, Any]] = None,
         chunks: Optional[List[Dict[str, Any]]] = None,
     ):
         # Strict-mode gate: refuse to write an artifact whose quality report
@@ -2022,6 +2081,8 @@ class CourseProcessor:
         _write(self.graph_dir / "concept_graph.json", concept_graph)
         if pedagogy_graph is not None:
             _write(self.graph_dir / "pedagogy_graph.json", pedagogy_graph)
+        if semantic_graph is not None:
+            _write(self.graph_dir / "concept_graph_semantic.json", semantic_graph)
         _write(self.quality_dir / "quality_report.json", quality_report)
 
         # Pedagogy model (full: module sequence, bloom progression, prereq chain)
@@ -2132,6 +2193,15 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Provider for training-pair synthesis (default: mock).")
     p.add_argument("--synthesis-seed", type=int, default=17,
                    help="Base deterministic seed for training-pair synthesis (default: 17).")
+    p.add_argument(
+        "--typed-edges-llm",
+        action="store_true",
+        help=(
+            "Enable the optional LLM escalation pass for the typed-edge "
+            "concept graph. OFF by default — the rule-based path is "
+            "deterministic and byte-identical across runs (Worker F spec)."
+        ),
+    )
     return p
 
 
@@ -2148,6 +2218,7 @@ def main():
         secondary_domains=args.secondary_domain,
         topics=args.topic,
         objectives_path=args.objectives,
+        typed_edges_llm=getattr(args, "typed_edges_llm", False),
     )
 
     result = processor.process()
