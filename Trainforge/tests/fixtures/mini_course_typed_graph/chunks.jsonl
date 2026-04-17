@@ -1,0 +1,4 @@
+{"id": "c1", "concept_tags": ["wcag", "accessibility-attribute"], "learning_outcome_refs": ["co-01"], "key_terms": [{"term": "wcag", "definition": "WCAG is the Web Content Accessibility Guidelines specification published by W3C."}]}
+{"id": "c2", "concept_tags": ["wcag", "accessibility-attribute", "aria-role"], "learning_outcome_refs": ["co-01"], "key_terms": [{"term": "aria-role", "definition": "An ARIA role is a type of accessibility-attribute that conveys the purpose of an element."}]}
+{"id": "c3", "concept_tags": ["wcag", "pour", "accessibility-attribute"], "learning_outcome_refs": ["co-02"], "key_terms": [{"term": "pour", "definition": "POUR refers to the four principles of accessibility."}]}
+{"id": "c4", "concept_tags": ["pour", "aria-role"], "learning_outcome_refs": ["co-03"], "key_terms": []}
