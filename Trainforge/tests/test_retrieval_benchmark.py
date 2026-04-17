@@ -18,6 +18,7 @@ if str(LIBV2_TOOLS) not in sys.path:
 
 from Trainforge.rag.retrieval_benchmark import (
     build_question_set,
+    load_gold_questions,
     recall_at_k,
     run_benchmark,
     write_benchmark,
@@ -171,3 +172,86 @@ def test_question_set_excludes_degenerate_queries():
     by_id = {q["lo_id"]: q for q in qs}
     assert by_id["lo-x"]["relevant_chunk_ids"] == ["c1"]
     assert by_id["lo-y"]["relevant_chunk_ids"] == []
+
+
+# ---------------------------------------------------------------------------
+# Worker O: gold-queries path
+# ---------------------------------------------------------------------------
+
+
+class TestGoldQueriesPath:
+    """Worker O added a `gold_queries_path` param to run_benchmark so
+    consumers can feed hand-curated retrieval queries instead of LO-derived
+    ones (which conflate retrieval quality with LO-tagging quality)."""
+
+    def test_load_gold_questions_parses_jsonl(self, tmp_path):
+        p = tmp_path / "gold.jsonl"
+        p.write_text(
+            '{"id": "q1", "query": "color contrast", "relevant_chunk_ids": ["c1"], "kind": "hand-curated"}\n'
+            '{"id": "q2", "query": "keyboard focus", "relevant_chunk_ids": ["c2", "c3"]}\n',
+            encoding="utf-8",
+        )
+        out = load_gold_questions(p)
+        assert len(out) == 2
+        assert out[0]["id"] == "q1"
+        assert out[0]["query"] == "color contrast"
+        assert out[0]["relevant_chunk_ids"] == ["c1"]
+        assert out[0]["kind"] == "hand-curated"
+        assert out[1]["relevant_chunk_ids"] == ["c2", "c3"]
+
+    def test_load_gold_questions_skips_malformed_lines(self, tmp_path):
+        p = tmp_path / "gold.jsonl"
+        p.write_text(
+            '# comment — skipped\n'
+            '{"id": "q1", "query": "ok", "relevant_chunk_ids": ["c1"]}\n'
+            '{invalid json\n'
+            '{"id": "q2"}\n'  # missing query + relevant_chunk_ids
+            '{"query": "q", "relevant_chunk_ids": ["c1"]}\n'  # missing id
+            '\n',  # blank line
+            encoding="utf-8",
+        )
+        out = load_gold_questions(p)
+        # Only the one well-formed line survives
+        assert len(out) == 1
+        assert out[0]["id"] == "q1"
+
+    def test_load_gold_questions_missing_file_raises(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            load_gold_questions(tmp_path / "nonexistent.jsonl")
+
+    def test_run_benchmark_with_gold_queries_labels_source(self, tmp_path):
+        """gold-query path tags the report with question_source='gold_queries'."""
+        chunks_path = tmp_path / "chunks.jsonl"
+        chunks_path.write_text(
+            '{"id": "c1", "text": "color contrast body text", "summary": "contrast sum"}\n'
+            '{"id": "c2", "text": "keyboard focus indicator", "summary": "focus sum"}\n',
+            encoding="utf-8",
+        )
+        course_path = tmp_path / "course.json"
+        course_path.write_text('{"learning_outcomes": []}', encoding="utf-8")
+        gold_path = tmp_path / "gold.jsonl"
+        gold_path.write_text(
+            '{"id": "q1", "query": "color contrast", "relevant_chunk_ids": ["c1"]}\n'
+            '{"id": "q2", "query": "keyboard focus", "relevant_chunk_ids": ["c2"]}\n',
+            encoding="utf-8",
+        )
+        r = run_benchmark(chunks_path, course_path, gold_queries_path=gold_path)
+        assert r["question_source"] == "gold_queries"
+        assert r["question_count"] == 2
+        # Both queries should nail their chunk at rank 1 on this trivial fixture
+        assert r["variants"]["text"]["recall@1"] == pytest.approx(1.0)
+
+    def test_run_benchmark_default_remains_lo_derived(self, tmp_path):
+        """Without gold_queries_path, behaviour is unchanged — LO-derived."""
+        chunks_path = tmp_path / "chunks.jsonl"
+        chunks_path.write_text(
+            '{"id": "c1", "text": "x", "learning_outcome_refs": ["lo-x"]}\n',
+            encoding="utf-8",
+        )
+        course_path = tmp_path / "course.json"
+        course_path.write_text(
+            '{"learning_outcomes": [{"id": "lo-x", "statement": "x statement"}]}',
+            encoding="utf-8",
+        )
+        r = run_benchmark(chunks_path, course_path)
+        assert r["question_source"] == "lo_derived"
