@@ -223,10 +223,48 @@ def _run_variant(
     return {f"recall@{k}": recall_sums[k] / q_count for k in k_values}
 
 
+def load_gold_questions(gold_path: Path) -> List[Dict[str, Any]]:
+    """Load hand-curated gold queries from a JSONL file.
+
+    Each record shape:
+        {"id": str, "query": str, "relevant_chunk_ids": [str], ...}
+
+    Returns a list normalised to the same shape as ``build_question_set``
+    produces (``{"lo_id"|"id", "query", "relevant_chunk_ids"}``). Lines
+    that fail to parse or that are missing the three required keys are
+    skipped silently (returns a shorter list, not a crash).
+    """
+    if not gold_path or not gold_path.exists():
+        raise FileNotFoundError(f"Gold queries file not found: {gold_path}")
+    out: List[Dict[str, Any]] = []
+    with open(gold_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            query = rec.get("query") or rec.get("query_text")
+            relevant = rec.get("relevant_chunk_ids") or []
+            qid = rec.get("id") or rec.get("query_id")
+            if not query or not relevant or not qid:
+                continue
+            out.append({
+                "id": qid,
+                "query": query,
+                "relevant_chunk_ids": list(relevant),
+                "kind": rec.get("kind", "hand-curated"),
+            })
+    return out
+
+
 def run_benchmark(
     chunks_path: Path,
     course_path: Path,
     k_values: Sequence[int] = (1, 5, 10),
+    gold_queries_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Run the recall@k benchmark.
 
@@ -234,6 +272,12 @@ def run_benchmark(
         chunks_path: Path to a chunks.jsonl file.
         course_path: Path to the matching course.json (for learning_outcomes).
         k_values: K values to compute recall for.
+        gold_queries_path: Optional path to a hand-curated gold-queries JSONL.
+            When provided, these queries are used instead of the LO-derived
+            default set. Worker O added this to compare text/summary/
+            retrieval_text against queries designed for retrieval evaluation
+            (rather than LO statements, which conflate retrieval quality
+            with LO-tagging quality).
 
     Returns:
         A dict with:
@@ -242,12 +286,18 @@ def run_benchmark(
           - ``variants``: {variant_name: {recall@k: float}}
           - ``k_values``: list of ints
           - ``fields_compared``: list of variant names
+          - ``question_source``: "lo_derived" | "gold_queries"
     """
     LazyBM25 = _import_lazybm25()
 
     chunks = _load_chunks(chunks_path)
     course = _load_course(course_path)
-    questions = build_question_set(chunks, course)
+    if gold_queries_path is not None:
+        questions = load_gold_questions(gold_queries_path)
+        question_source = "gold_queries"
+    else:
+        questions = build_question_set(chunks, course)
+        question_source = "lo_derived"
 
     # Decide which variants we can run. "summary" and "retrieval_text"
     # require the v4 fields; fall back gracefully when regenerating against
@@ -267,6 +317,7 @@ def run_benchmark(
         "total_questions": len(questions),
         "k_values": list(k_values),
         "fields_compared": variants,
+        "question_source": question_source,
         "variants": {},
     }
 
