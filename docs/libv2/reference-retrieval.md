@@ -24,7 +24,7 @@ See [ADR-002](../architecture/ADR-002-retrieval-scope.md) for the scope line and
 
 ```
 libv2 retrieve "color contrast body text" \
-    --course best-practices-in-digital-web-design-for-accessibi \
+    --course sample-course \
     --limit 5
 ```
 
@@ -32,7 +32,7 @@ libv2 retrieve "color contrast body text" \
 
 ```
 libv2 retrieve "color contrast body text" \
-    --course best-practices-in-digital-web-design-for-accessibi \
+    --course sample-course \
     --limit 3 --include-rationale
 ```
 
@@ -46,7 +46,7 @@ concept-tags: color-contrast
 
 ```
 libv2 retrieve "modal dialogs" \
-    --course best-practices-... \
+    --course sample-course \
     --week 10 \
     --teaching-role transfer \
     --content-type example
@@ -71,7 +71,7 @@ All of these are independent:
 ### Evaluation
 
 ```
-libv2 retrieval-eval --course best-practices-in-digital-web-design-for-accessibi
+libv2 retrieval-eval --course sample-course
 ```
 
 Reads `LibV2/courses/<slug>/retrieval/gold_queries.jsonl`, writes `evaluation_results.json` alongside, prints aggregate MRR + recall@1/5/10.
@@ -85,7 +85,7 @@ from LibV2.tools.libv2.retriever import retrieve_chunks
 results = retrieve_chunks(
     repo_root=Path("."),
     query="color contrast body text",
-    course_slug="best-practices-in-digital-web-design-for-accessibi",
+    course_slug="sample-course",
     limit=5,
     include_rationale=True,
 )
@@ -122,7 +122,7 @@ When `include_rationale=True`:
   "matched_concept_tags": ["color-contrast"],
   "matched_lo_refs": [],
   "matched_key_terms": [{"term": "contrast ratio", "definition": "..."}],
-  "applied_filters": {"course_slug": "best-practices-..."},
+  "applied_filters": {"course_slug": "sample-course"},
   "boost_contributions": {
     "concept_graph_overlap": 0.25,
     "lo_match": 0.0,
@@ -158,9 +158,8 @@ The reference implementation makes building your own easier, not redundant: the 
 
 ## Pre-existing artifacts
 
-- `LibV2/courses/best-practices-in-digital-web-design-for-accessibi/retrieval/gold_queries.jsonl` — 20 hand-curated WCAG queries.
-- `LibV2/courses/foundations-of-digital-pedagogy/retrieval/gold_queries.jsonl` — 15 hand-curated DIGPED queries.
 - `LibV2/tools/libv2/retriever.py` — BM25 + metadata filters + rationale.
 - `LibV2/tools/libv2/retrieval_scoring.py` — three metadata-aware boost functions.
 - `LibV2/tools/libv2/eval_harness.py` — `evaluate_retrieval()` + the pre-existing `RetrievalEvaluator`.
 - `LibV2/tools/libv2/cli.py` — `retrieve` and `retrieval-eval` subcommands.
+- `LibV2/tools/libv2/tests/test_eval_harness_retrieval.py` — a three-chunk synthetic fixture (see `_write_fixture`) shows the expected `gold_queries.jsonl` shape end-to-end. Users curate their own per-course queries locally; no course-specific query file ships in this repo.

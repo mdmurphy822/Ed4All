@@ -35,21 +35,20 @@ coverage.xml
 # =============================================================================
 # Ed4All - LibV2 Content (preserve structure, exclude data)
 # =============================================================================
+# Course directories under LibV2/courses/ contain user-specific content
+# (chunks.jsonl, graph/, quality/, retrieval/gold_queries.jsonl, ...). These
+# are intentionally not tracked so this repository stays course-agnostic.
+# Reference-retrieval fixtures live in
+# LibV2/tools/libv2/tests/test_eval_harness_retrieval.py; users curate their
+# own per-course gold queries locally (see docs/libv2/reference-retrieval.md
+# "Adding gold queries to your own corpus").
 LibV2/courses/*
 !LibV2/courses/.gitkeep
-# Per-course reference-retrieval artifacts (Worker J).  Un-ignore the course
-# dirs and the retrieval/ subdir just enough that the hand-curated gold
-# queries + README ride in git; re-ignore everything else inside the
-# course (chunks.jsonl, graph/, quality/, evaluation_results.json, ...).
-!LibV2/courses/*/
-LibV2/courses/*/*
-!LibV2/courses/*/retrieval/
-LibV2/courses/*/retrieval/*
-!LibV2/courses/*/retrieval/gold_queries.jsonl
-!LibV2/courses/*/retrieval/README.md
+# LibV2/catalog/cross_package_concepts.json is regenerated on demand via
+# ``libv2 cross-index`` against whatever courses a user has loaded locally;
+# we do not ship a course-specific snapshot.
 LibV2/catalog/*
 !LibV2/catalog/.gitkeep
-!LibV2/catalog/cross_package_concepts.json
 
 # =============================================================================
 # Ed4All - Input/Output Directories

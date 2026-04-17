@@ -21,4 +21,6 @@ CI assertions running against this fixture:
 
 This fixture is intentionally small (six chunks) so tests run fast. It
 is NOT a replacement for end-to-end regeneration against a real IMSCC —
-see `Trainforge/output/wcag_201/` for the full-course regression surface.
+for full-course regression, regenerate any real course into
+`Trainforge/output/<course-slug>/` locally and point the opt-in provenance
+tests at it via `TRAINFORGE_PROVENANCE_CORPUS=<path-to-chunks.jsonl>`.
