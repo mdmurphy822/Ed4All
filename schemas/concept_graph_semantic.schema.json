@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ed4all.dev/schemas/concept_graph_semantic.schema.json",
+  "title": "Concept Graph (Semantic)",
+  "description": "Typed-edge concept graph emitted alongside concept_graph.json. Edges carry a type (prerequisite | is-a | related-to) and per-edge provenance. See docs/concept-graph/typed-edges.md for rule descriptions and precedence.",
+  "type": "object",
+  "required": ["kind", "generated_at", "nodes", "edges"],
+  "additionalProperties": true,
+  "properties": {
+    "kind": {
+      "type": "string",
+      "const": "concept_semantic"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "rule_versions": {
+      "type": "object",
+      "description": "Map of rule name -> version integer for the rules that fired in this run.",
+      "additionalProperties": {"type": "integer", "minimum": 1}
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "additionalProperties": true,
+        "properties": {
+          "id": {"type": "string"},
+          "label": {"type": "string"},
+          "frequency": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "target", "type", "provenance"],
+        "additionalProperties": true,
+        "properties": {
+          "source": {"type": "string"},
+          "target": {"type": "string"},
+          "type": {
+            "type": "string",
+            "enum": ["prerequisite", "is-a", "related-to"]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "weight": {
+            "type": "number"
+          },
+          "provenance": {
+            "type": "object",
+            "required": ["rule", "rule_version"],
+            "additionalProperties": true,
+            "properties": {
+              "rule": {"type": "string"},
+              "rule_version": {"type": "integer", "minimum": 1},
+              "evidence": {"type": "object", "additionalProperties": true}
+            }
+          }
+        }
+      }
+    }
+  }
+}

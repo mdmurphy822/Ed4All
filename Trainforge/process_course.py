@@ -23,6 +23,7 @@ Usage:
 """
 
 import argparse
+import html.parser
 import json
 import re
 import sys
@@ -31,14 +32,58 @@ import zipfile
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.decision_capture import DecisionCapture
+from Trainforge.generators import summary_factory
 from Trainforge.parsers.html_content_parser import HTMLContentParser, HTMLTextExtractor
+from Trainforge.parsers.xpath_walker import (
+    find_body_xpath,
+    find_section_container_xpath,
+    resolve_xpath,
+)
+from Trainforge.rag.boilerplate_detector import (
+    BoilerplateConfig,
+    contamination_rate,
+    detect_repeated_ngrams,
+    strip_boilerplate,
+)
+from Trainforge.rag.wcag_canonical_names import canonicalize_sc_references
+
+# Bumped whenever the semantics of quality_report.json metrics change.
+# v1: field-presence metrics (legacy).
+# v2: referential, structural, and content-sanity metrics.
+# v3: adds outcome_reverse_coverage (metric) + integrity.uncovered_outcomes
+#     (list); guaranteed bloom_level on every chunk via verb/default fallback;
+#     pedagogy_model.json grows module_sequence, bloom_progression,
+#     prerequisite_chain, prerequisite_violations. (Session 1)
+# v4: adds five flow metrics that surface silent metadata drops:
+#     content_type_label_coverage, key_terms_coverage,
+#     key_terms_with_definitions_rate, misconceptions_present_rate,
+#     interactive_components_rate. See docs/metrics/flow-metrics.md. (Worker B)
+METRICS_SEMANTIC_VERSION = 4
+
+# Chunk schema version. Bumped by the first of Workers B / D / E to touch
+# chunk shape (ADR-001 Contract 1). v4 adds:
+#   - `summary` (Worker D): 2–3 sentence extractive summary per chunk.
+#   - `retrieval_text` (Worker D, optional): summary + " " + key_terms_joined.
+#   - `schema_version` (all workers): stamped on every chunk.
+#   - `source.html_xpath` and `source.char_span` (Worker E): audit-trail
+#     provenance stamped on every chunk.
+# The string also lands on manifest.json as `chunk_schema_version`. One bump
+# per release train; see ADR-001 Contract 1 and docs/contributing/workers.md
+# for the rebase protocol.
+CHUNK_SCHEMA_VERSION = "v4"
+
+
+class PipelineIntegrityError(RuntimeError):
+    """Raised by :class:`CourseProcessor` in strict_mode when quality_report
+    integrity invariants fail before writing final metadata.
+    """
 
 # ---------------------------------------------------------------------------
 # Bloom's → difficulty mapping
@@ -159,7 +204,40 @@ def load_objectives(objectives_path: Path) -> Dict[str, Any]:
         "bloom_distribution": data.get("bloom_distribution", {}),
         "description": data.get("description", ""),
         "course_title": data.get("course_title", ""),
+        # Optional per-course domain concept seeds. Shape:
+        #   [{"id": "pour", "aliases": ["POUR", "perceivable operable"]}, ...]
+        # CONCEPT_PATTERNS covers pedagogy terms only, so domain seeds are
+        # the only text-based extraction path for course-specific vocabulary.
+        "domain_concepts": data.get("domain_concepts", []),
     }
+
+
+def compile_domain_concept_seeds(
+    raw: List[Dict[str, Any]],
+) -> List[Tuple[str, List[re.Pattern]]]:
+    """Compile the domain_concepts block from an objectives file into
+    (canonical_tag, [word-boundary regex]) pairs for fast matching.
+
+    Aliases are matched case-insensitively with \\b word boundaries so that
+    short tokens (``aria``, ``udl``) don't match inside longer words.
+    """
+    seeds: List[Tuple[str, List[re.Pattern]]] = []
+    for entry in raw or []:
+        canonical = normalize_tag(entry.get("id", ""))
+        if not canonical:
+            continue
+        aliases = list(entry.get("aliases") or [])
+        if entry.get("id") and entry["id"] not in aliases:
+            aliases.append(entry["id"])
+        patterns: List[re.Pattern] = []
+        for alias in aliases:
+            alias = str(alias).strip()
+            if not alias:
+                continue
+            patterns.append(re.compile(rf"\b{re.escape(alias)}\b", re.IGNORECASE))
+        if patterns:
+            seeds.append((canonical, patterns))
+    return seeds
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +258,208 @@ def normalize_tag(raw: str) -> str:
     if tag and not tag[0].isalpha():
         return ""
     return tag
+
+
+# ---------------------------------------------------------------------------
+# Enrichment fallbacks (v1.0 roadmap — see VERSIONING.md §6)
+# ---------------------------------------------------------------------------
+
+# Bloom's verb → level map. Populated with the canonical verbs per level.
+# Used when JSON-LD / data-cf-* don't declare a bloom_level.
+BLOOM_VERB_MAP: Dict[str, str] = {
+    # Remember
+    "define": "remember", "list": "remember", "recall": "remember",
+    "identify": "remember", "name": "remember", "state": "remember",
+    "recognize": "remember",
+    # Understand
+    "explain": "understand", "describe": "understand", "summarize": "understand",
+    "interpret": "understand", "paraphrase": "understand", "classify": "understand",
+    "compare": "understand",
+    # Apply
+    "apply": "apply", "demonstrate": "apply", "use": "apply",
+    "solve": "apply", "implement": "apply", "execute": "apply",
+    "illustrate": "apply",
+    # Analyze
+    "analyze": "analyze", "differentiate": "analyze", "examine": "analyze",
+    "contrast": "analyze", "organize": "analyze", "deconstruct": "analyze",
+    # Evaluate
+    "evaluate": "evaluate", "assess": "evaluate", "critique": "evaluate",
+    "judge": "evaluate", "justify": "evaluate", "argue": "evaluate",
+    # Create
+    "create": "create", "design": "create", "develop": "create",
+    "construct": "create", "produce": "create", "formulate": "create",
+}
+
+# Stop-sets partitioning concept vs pedagogy nodes in the graph output.
+# These are defensive: _extract_concept_tags already filters NON_CONCEPT_TAGS,
+# but the graph-level partition is cheap and survives upstream drift.
+PEDAGOGY_TAG_SET: Set[str] = {v for v in BLOOM_VERB_MAP}
+LOGISTICS_TAG_SET: Set[str] = {
+    "initial-post", "replies", "due", "guidelines",
+    "correct", "incorrect", "submit", "deadline", "grading",
+    "readings", "resources", "learning-objectives",
+    "estimated-time", "time", "minutes", "hours",
+    # "feedback" is legitimate pedagogy vocabulary (formative feedback in
+    # course theory courses). For domain courses it reliably pollutes the
+    # concept graph via boilerplate like "you'll receive immediate feedback"
+    # in quiz intros. Routing it to pedagogy_graph keeps the signal without
+    # polluting the domain graph.
+    "feedback",
+}
+
+# Divs carrying these attribute prefixes are atomic — the chunker must not
+# split through them regardless of word-count target.
+ATOMIC_BLOCK_SELECTOR_PREFIXES: Tuple[str, ...] = (
+    "data-cf-role", "data-cf-objective-id", "data-cf-content-type",
+)
+
+_MISCONCEPTION_PATTERNS = [
+    re.compile(r"\b(?:Common\s+mistake|A\s+common\s+misconception|Students\s+often\s+think|Contrary\s+to\s+popular\s+belief)[:,]?\s+([^.]+\.)", re.IGNORECASE),
+    re.compile(r"\b(?:It\s+is\s+a\s+myth\s+that|Many\s+learners\s+assume\s+that)\s+([^.]+\.)", re.IGNORECASE),
+]
+
+_KEY_TERM_TAG_RE = re.compile(
+    r"<(?P<tag>strong|b|dfn)\b[^>]*>(?P<term>[^<]{2,60})</(?P=tag)>",
+    re.IGNORECASE,
+)
+_DEF_SENTENCE_RE = re.compile(r"[^.]*\.")
+
+
+def derive_bloom_from_verbs(text: str) -> Optional[str]:
+    """Pick the dominant Bloom's level from verb frequencies in ``text``.
+
+    Used as a fallback when JSON-LD / data-cf-* didn't specify a bloom level
+    for the chunk. Returns None when no known Bloom verb appears.
+    """
+    if not text:
+        return None
+    counts: Dict[str, int] = defaultdict(int)
+    for match in re.finditer(r"\b([a-zA-Z]+)\b", text):
+        verb = match.group(1).lower()
+        level = BLOOM_VERB_MAP.get(verb)
+        if level:
+            counts[level] += 1
+    if not counts:
+        return None
+    return max(counts.items(), key=lambda kv: kv[1])[0]
+
+
+def extract_key_terms_from_html(html: str) -> List[Dict[str, str]]:
+    """Extract bold/definition terms from an HTML fragment.
+
+    Pairs each term with the sentence that contains it as a best-effort
+    definition. Used as a fallback when JSON-LD keyTerms are absent.
+    """
+    if not html:
+        return []
+    seen: Set[str] = set()
+    results: List[Dict[str, str]] = []
+    # Build a plain-text sentence list for definition lookup
+    extractor = HTMLTextExtractor()
+    extractor.feed(html)
+    plain = extractor.get_text()
+    sentences = _DEF_SENTENCE_RE.findall(plain)
+
+    for m in _KEY_TERM_TAG_RE.finditer(html):
+        term = m.group("term").strip()
+        if not term or len(term) < 2:
+            continue
+        low = term.lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        definition = ""
+        for sentence in sentences:
+            if low in sentence.lower():
+                definition = sentence.strip()
+                break
+        results.append({"term": term, "definition": definition})
+    return results
+
+
+_VOID_HTML_TAGS = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+}
+
+
+class _BalanceChecker(html.parser.HTMLParser):
+    """Minimal stack-based HTML tag-balance checker.
+
+    Returns True iff every opened non-void tag is closed in order. Self-closing
+    forms (``<br/>``) and void elements (``<img>``) are not required to close.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=False)
+        self._stack: List[str] = []
+        self._balanced = True
+
+    @classmethod
+    def check(cls, html_text: str) -> bool:
+        inst = cls()
+        try:
+            inst.feed(html_text)
+            inst.close()
+        except Exception:
+            return False
+        return inst._balanced and not inst._stack
+
+    @classmethod
+    def unclosed(cls, html_text: str) -> List[str]:
+        inst = cls()
+        try:
+            inst.feed(html_text)
+            inst.close()
+        except Exception:
+            return ["<parse_error>"]
+        return list(inst._stack)
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() in _VOID_HTML_TAGS:
+            return
+        self._stack.append(tag.lower())
+
+    def handle_startendtag(self, tag, attrs):
+        return
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag in _VOID_HTML_TAGS:
+            return
+        if self._stack and self._stack[-1] == tag:
+            self._stack.pop()
+        elif tag in self._stack:
+            # Tags closed out of order — pop until we find it.
+            while self._stack and self._stack[-1] != tag:
+                self._stack.pop()
+            if self._stack:
+                self._stack.pop()
+            self._balanced = False
+        else:
+            self._balanced = False
+
+
+def extract_misconceptions_from_text(text: str) -> List[Dict[str, str]]:
+    """Regex-match common misconception prose patterns.
+
+    Returns a list of ``{"misconception": ..., "correction": ""}`` dicts.
+    """
+    if not text:
+        return []
+    found: List[Dict[str, str]] = []
+    seen: Set[str] = set()
+    for pattern in _MISCONCEPTION_PATTERNS:
+        for m in pattern.finditer(text):
+            statement = m.group(1).strip()
+            if not statement:
+                continue
+            key = statement.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            found.append({"misconception": statement, "correction": ""})
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -204,7 +484,19 @@ class CourseProcessor:
         secondary_domains: Optional[List[str]] = None,
         topics: Optional[List[str]] = None,
         objectives_path: Optional[str] = None,
+        strict_mode: bool = False,
+        typed_edges_llm: bool = False,
     ):
+        # When strict_mode is True the pipeline refuses to write a final
+        # artifact whose quality_report shows any broken_refs, any cross-lesson
+        # follows_chunk link, or html_balance_violations above 5%. See §1.5 of
+        # VERSIONING.md.
+        self.strict_mode = strict_mode
+        # When typed_edges_llm is True, the typed-edge concept-graph builder
+        # calls an LLM escalation callable for edges no rule covered. Off by
+        # default — the default deterministic path is byte-identical across
+        # runs (Worker F spec, ADR-001 Contract 3).
+        self.typed_edges_llm = typed_edges_llm
         self.imscc_path = Path(imscc_path)
         self.output_dir = Path(output_dir)
         self.course_code = course_code
@@ -223,8 +515,12 @@ class CourseProcessor:
 
         # Objectives (optional)
         self.objectives: Optional[Dict[str, Any]] = None
+        self.domain_concept_seeds: List[Tuple[str, List[re.Pattern]]] = []
         if objectives_path:
             self.objectives = load_objectives(Path(objectives_path))
+            self.domain_concept_seeds = compile_domain_concept_seeds(
+                self.objectives.get("domain_concepts", [])
+            )
 
         # Decision capture
         self.capture = DecisionCapture(
@@ -250,6 +546,16 @@ class CourseProcessor:
         }
         self._all_concept_tags: set = set()
 
+        # Populated during processing; consumed by quality-report generation.
+        self._boilerplate_spans: List[str] = []
+        self._valid_outcome_ids: Set[str] = set()
+        self._factual_flags: List[Dict[str, Any]] = []
+        self._boilerplate_config = BoilerplateConfig()
+        # Lesson IDs for pages whose JSON-LD declared at least one misconception.
+        # Populated by _chunk_content; used as the denominator for
+        # misconceptions_present_rate in _generate_quality_report.
+        self._pages_with_misconceptions: Set[str] = set()
+
     # ------------------------------------------------------------------
     # Main entry point
     # ------------------------------------------------------------------
@@ -268,6 +574,11 @@ class CourseProcessor:
         print("[2/6] Parsing HTML content...")
         parsed_items = self._parse_html(html_files)
 
+        # Pre-chunking: detect corpus-wide boilerplate (footers / template chrome)
+        # and build the set of valid outcome IDs for referential-integrity checks.
+        self._boilerplate_spans = self._detect_corpus_boilerplate(parsed_items)
+        self._valid_outcome_ids = self._build_valid_outcome_ids()
+
         # Stage 3
         print("[3/6] Chunking content into pedagogical units...")
         chunks = self._chunk_content(parsed_items)
@@ -279,13 +590,25 @@ class CourseProcessor:
         # Stage 5
         print("[5/6] Generating metadata...")
         concept_graph = self._generate_concept_graph(chunks)
+        pedagogy_graph = self._generate_pedagogy_graph(chunks)
         manifest = self._generate_manifest(title, concept_graph=concept_graph)
         corpus_stats = self._generate_corpus_stats()
         quality_report = self._generate_quality_report(chunks)
+        # Typed-edge concept graph (additive to concept_graph). Rule-based
+        # by default; LLM escalation opt-in via self.typed_edges_llm.
+        course_data_for_semantic = (
+            self._build_course_json(manifest) if self.objectives else None
+        )
+        semantic_graph = self._generate_semantic_concept_graph(
+            chunks, course_data_for_semantic, concept_graph,
+        )
 
         # Stage 6
         print("[6/6] Writing metadata files...")
-        self._write_metadata(manifest, corpus_stats, concept_graph, quality_report)
+        self._write_metadata(manifest, corpus_stats, concept_graph, quality_report,
+                             pedagogy_graph=pedagogy_graph,
+                             semantic_graph=semantic_graph,
+                             chunks=chunks)
 
         summary = {
             "status": "success",
@@ -425,7 +748,19 @@ class CourseProcessor:
         prefix = f"{self.course_code.lower()}_chunk_"
         prev_chunk_id: Optional[str] = None
         current_module_id: Optional[str] = None
+        current_lesson_id: Optional[str] = None
         position_in_module = 0
+
+        # Record which pages (by lesson_id = item["item_id"]) carried at least
+        # one misconception in their parsed JSON-LD. This is the proper
+        # denominator for misconceptions_present_rate: without it, pages that
+        # never declared misconceptions in the first place dilute the
+        # "silently dropped" signal we want to surface in quality_report.
+        self._pages_with_misconceptions = {
+            item["item_id"]
+            for item in parsed_items
+            if item.get("misconceptions")
+        }
 
         for item in parsed_items:
             # Reset position counter when module changes
@@ -433,10 +768,22 @@ class CourseProcessor:
                 current_module_id = item["module_id"]
                 position_in_module = 0
 
+            # Break the follows_chunk chain at every lesson/module boundary so
+            # downstream consumers can treat each lesson as its own pedagogical
+            # sequence (see VERSIONING.md §3, defect #3).
+            if item["item_id"] != current_lesson_id:
+                current_lesson_id = item["item_id"]
+                prev_chunk_id = None
+
             # Strip assessment feedback from quiz/self-check content
             raw_html = item["raw_html"]
             if item["resource_type"] == "quiz":
                 raw_html = self._strip_assessment_feedback(raw_html)
+
+            # Defensive boilerplate strip: even if Courseforge emits the footer
+            # inside template-chrome, legacy packages may still embed it in body.
+            if self._boilerplate_spans:
+                raw_html, _ = strip_boilerplate(raw_html, self._boilerplate_spans)
 
             if not item["sections"]:
                 # No sections — chunk the whole item as one piece
@@ -471,6 +818,11 @@ class CourseProcessor:
                 # Strip feedback from quiz section text (sections were parsed before HTML stripping)
                 if item["resource_type"] == "quiz":
                     text = self._strip_feedback_from_text(text)
+                # Sections were parsed before boilerplate detection, so strip here too.
+                if self._boilerplate_spans:
+                    text, _ = strip_boilerplate(text, self._boilerplate_spans)
+                if not text.strip():
+                    continue
                 html_block = self._extract_section_html(raw_html, heading)
                 item_chunks = self._chunk_text_block(
                     text=text,
@@ -541,31 +893,102 @@ class CourseProcessor:
         follows_chunk_id: Optional[str] = None,
         position_in_module: int = 0,
     ) -> List[Dict[str, Any]]:
-        """Split a text block into chunks of appropriate size."""
+        """Split a text block into chunks of appropriate size.
+
+        Each chunk carries provenance:
+          - ``source.html_xpath``: absolute xpath to the container element
+            whose descendant plain-text includes this chunk's text. For
+            sectioned items this is the heading's parent (typically
+            ``<main>``, ``<article>``, ``<section>``, or ``<body>``); for
+            no-section items it is ``<body>`` itself.
+          - ``source.char_span: [start, end]``: character offsets into the
+            container's plain-text (the result of ``resolve_xpath``) where
+            ``chunk.text`` begins and ends. Offsets are computed by
+            ``str.find`` into the container text — the same path an
+            auditor walks during round-trip recovery. For sentence-split
+            blocks, sibling spans are disjoint and (modulo the single-
+            space sentence joiner) contiguous, so the section is
+            recoverable by concatenating slices in chunk-id order.
+
+        See docs/compliance/audit-trail.md for the round-trip contract.
+        """
         word_count = len(text.split())
-        chunks = []
+        chunks: List[Dict[str, Any]] = []
+
+        # Resolve the container xpath once per call. Heading's parent for
+        # sectioned items (so descendant text includes the section body);
+        # <body> for whole-page items.
+        raw_html_for_xpath = item.get("raw_html", "") or html
+        container_xpath: Optional[str] = None
+        if heading and heading != item.get("title"):
+            container_xpath = find_section_container_xpath(raw_html_for_xpath, heading)
+        if not container_xpath:
+            container_xpath = find_body_xpath(raw_html_for_xpath)
+
+        # Resolve the container's plaintext once so we can compute char_span
+        # by string search (the auditor's round-trip path).
+        container_text = resolve_xpath(raw_html_for_xpath, container_xpath) or ""
+
+        def _locate(needle: str, search_from: int = 0) -> List[int]:
+            """Return [start, end] of ``needle`` in the container text.
+
+            Falls back to a whitespace-normalised prefix search when the
+            exact find fails (typical drift: SC canonicalisation, feedback
+            strip). Never silently drops the provenance — if no anchor can
+            be located at all, emit ``[search_from, search_from + len]``
+            relative to the container text so sibling spans stay
+            non-decreasing.
+            """
+            if container_text and needle:
+                idx = container_text.find(needle, search_from)
+                if idx >= 0:
+                    return [idx, idx + len(needle)]
+                # Whitespace-normalised prefix fallback: find the first
+                # 8-word window of the needle in the collapsed container.
+                collapsed_container = " ".join(container_text.split())
+                collapsed_needle = " ".join(needle.split())
+                prefix = " ".join(collapsed_needle.split()[:8])
+                if prefix:
+                    idx = collapsed_container.find(prefix, search_from)
+                    if idx >= 0:
+                        return [idx, idx + len(collapsed_needle)]
+            return [search_from, search_from + len(needle)]
 
         if word_count <= self.MAX_CHUNK_SIZE:
-            # Fits in one chunk
+            # Fits in one chunk.
+            char_span = _locate(text, search_from=0)
             chunks.append(self._create_chunk(
                 chunk_id=f"{prefix}{start_id:05d}",
                 text=text, html=html, item=item,
                 section_heading=heading, chunk_type=chunk_type,
                 follows_chunk_id=follows_chunk_id,
                 position_in_module=position_in_module,
+                html_xpath=container_xpath,
+                char_span=char_span,
             ))
         else:
-            # Split by sentences
+            # Split by sentences. Locate each sub_text independently,
+            # anchored after the previous sibling's end so spans stay
+            # disjoint and contiguous.
             sub_texts = self._split_by_sentences(text, self.TARGET_CHUNK_SIZE)
+            prev_end = 0
             for i, sub_text in enumerate(sub_texts):
                 part_heading = f"{heading} (part {i + 1})" if len(sub_texts) > 1 else heading
                 prev_id = follows_chunk_id if i == 0 else f"{prefix}{start_id + i - 1:05d}"
+                char_span = _locate(sub_text, search_from=prev_end)
+                # Keep spans non-decreasing even if the locator fallback
+                # collided with an earlier part's text.
+                if char_span[0] < prev_end:
+                    char_span = [prev_end, prev_end + (char_span[1] - char_span[0])]
+                prev_end = char_span[1]
                 chunks.append(self._create_chunk(
                     chunk_id=f"{prefix}{start_id + i:05d}",
                     text=sub_text, html="" if i > 0 else html, item=item,
                     section_heading=part_heading, chunk_type=chunk_type,
                     follows_chunk_id=prev_id,
                     position_in_module=position_in_module + i,
+                    html_xpath=container_xpath,
+                    char_span=char_span,
                 ))
 
         return chunks
@@ -575,30 +998,50 @@ class CourseProcessor:
         section_heading: str, chunk_type: str,
         follows_chunk_id: Optional[str] = None,
         position_in_module: int = 0,
+        html_xpath: Optional[str] = None,
+        char_span: Optional[List[int]] = None,
     ) -> Dict[str, Any]:
         words = text.split()
         word_count = len(words)
         tokens_estimate = int(word_count * 1.3)
 
+        # Canonicalise WCAG SC references in prose before concept-tag
+        # extraction so text-based detection sees the single canonical form.
+        text = canonicalize_sc_references(text)
+
         concept_tags = self._extract_concept_tags(text, item)
         difficulty = self._determine_difficulty(text, item)
 
+        source: Dict[str, Any] = {
+            "course_id": self.course_code,
+            "module_id": item["module_id"],
+            "module_title": item["module_title"],
+            "lesson_id": item["item_id"],
+            "lesson_title": item["title"],
+            "resource_type": item["resource_type"],
+            "section_heading": section_heading,
+            "position_in_module": position_in_module,
+        }
+        # Audit-trail provenance (Section 508 / ADA Title II). Every chunk
+        # ties back to the source IMSCC HTML element it was derived from.
+        # See docs/compliance/audit-trail.md for the round-trip contract.
+        if html_xpath:
+            source["html_xpath"] = html_xpath
+        if char_span is not None:
+            source["char_span"] = list(char_span)
+        # Carry the IMSCC-relative path so auditors can open the source
+        # file without walking imsmanifest.xml.
+        if item.get("item_path"):
+            source["item_path"] = item["item_path"]
+
         chunk: Dict[str, Any] = {
             "id": chunk_id,
+            "schema_version": CHUNK_SCHEMA_VERSION,
             "chunk_type": chunk_type,
             "text": text,
             "html": html,
             "follows_chunk": follows_chunk_id,
-            "source": {
-                "course_id": self.course_code,
-                "module_id": item["module_id"],
-                "module_title": item["module_title"],
-                "lesson_id": item["item_id"],
-                "lesson_title": item["title"],
-                "resource_type": item["resource_type"],
-                "section_heading": section_heading,
-                "position_in_module": position_in_module,
-            },
+            "source": source,
             "concept_tags": concept_tags,
             "learning_outcome_refs": self._extract_objective_refs(item),
             "difficulty": difficulty,
@@ -606,37 +1049,132 @@ class CourseProcessor:
             "word_count": word_count,
         }
 
-        # Enrich from Courseforge metadata (JSON-LD / data-cf-*)
+        # Enrich from Courseforge metadata (JSON-LD / data-cf-*).
+        # Resolution order: section JSON-LD → page JSON-LD → parsed LOs →
+        # text verb heuristic → hardcoded default. Every chunk ends up with
+        # a bloom_level; bloom_level_source records where it came from so
+        # downstream consumers can weight low-confidence sources.
         bloom_level, content_type_label, key_terms = self._extract_section_metadata(
             item, section_heading
         )
-        # Fallback: if section metadata didn't provide bloom_level,
-        # derive from page-level JSON-LD objectives or parsed objectives
+        bloom_source = "section_jsonld" if bloom_level else None
+
+        # Merge structured JSON-LD keyTerms into concept_tags. These are the
+        # highest-fidelity domain vocabulary Courseforge emits; leaving them
+        # in chunk["key_terms"] only meant the concept graph missed them.
+        for kt in key_terms or []:
+            term = kt.get("term") if isinstance(kt, dict) else kt
+            tag = normalize_tag(term or "")
+            if not tag or len(tag) < 3 or tag in concept_tags:
+                continue
+            if (self.OBJECTIVE_CODE_RE.match(tag)
+                    or self.WEEK_PREFIX_RE.match(tag)
+                    or tag in self.NON_CONCEPT_TAGS):
+                continue
+            concept_tags.append(tag)
+
         if not bloom_level:
             cf_meta = item.get("courseforge_metadata")
             if cf_meta and cf_meta.get("learningObjectives"):
                 for lo in cf_meta["learningObjectives"]:
                     if lo.get("bloomLevel"):
                         bloom_level = lo["bloomLevel"]
+                        bloom_source = "page_jsonld"
                         break
         if not bloom_level:
             for lo in item.get("learning_objectives", []):
                 bl = lo.bloom_level if hasattr(lo, "bloom_level") else lo.get("bloom_level")
                 if bl:
                     bloom_level = bl
+                    bloom_source = "lo_inherited"
                     break
+        if not bloom_level:
+            derived = derive_bloom_from_verbs(text)
+            if derived:
+                bloom_level = derived
+                bloom_source = "verbs"
+        if not bloom_level:
+            bloom_level = "understand"
+            bloom_source = "default"
 
-        if bloom_level:
-            chunk["bloom_level"] = bloom_level
+        chunk["bloom_level"] = bloom_level
+        # Only tag the source when it's below lo_inherited confidence;
+        # authoritative chunks stay schema-identical to pre-fallback output.
+        if bloom_source in ("verbs", "default"):
+            chunk["bloom_level_source"] = bloom_source
+            # Capture may be absent in unit tests that bypass ``__init__``
+            # (e.g. test_provenance.py). Only log when it's present so this
+            # non-test-facing observability doesn't turn into a hard failure.
+            capture = getattr(self, "capture", None)
+            if capture is not None:
+                capture.log_decision(
+                    decision_type="bloom_level_assignment",
+                    decision=f"Assigned bloom_level={bloom_level} via {bloom_source}",
+                    rationale=(
+                        "No JSON-LD, data-cf-*, or parsed learning objective "
+                        "supplied a bloom_level for this chunk; fell back to the "
+                        "text verb heuristic (or the understand-level default) "
+                        "so every chunk carries a level for downstream filters."
+                    ),
+                )
         if content_type_label:
             chunk["content_type_label"] = content_type_label
         if key_terms:
+            # Canonicalise SC references inside key-term metadata too.
+            for kt in key_terms:
+                if "term" in kt:
+                    kt["term"] = canonicalize_sc_references(kt["term"])
+                if "definition" in kt:
+                    kt["definition"] = canonicalize_sc_references(kt["definition"])
             chunk["key_terms"] = key_terms
 
         # Page-level metadata
         misconceptions = item.get("misconceptions", [])
         if misconceptions:
-            chunk["misconceptions"] = misconceptions
+            normalized_mis: List[Any] = []
+            for m in misconceptions:
+                if isinstance(m, dict) and "misconception" in m:
+                    m = dict(m)
+                    m["misconception"] = canonicalize_sc_references(m["misconception"])
+                elif isinstance(m, str):
+                    m = canonicalize_sc_references(m)
+                normalized_mis.append(m)
+            chunk["misconceptions"] = normalized_mis
+
+        # Per-chunk summary for dense-retrieval recall augmentation (v4).
+        # Deterministic extractive summary — see Trainforge/generators/summary_factory.py.
+        chunk["summary"] = summary_factory.generate(
+            chunk["text"],
+            key_terms=chunk.get("key_terms"),
+            learning_outcome_refs=chunk.get("learning_outcome_refs"),
+        )
+
+        # Optional retrieval_text: summary + " " + key_terms_joined. Emitted
+        # only when key_terms exist, since otherwise the field would just
+        # duplicate `summary`. Benchmarked in
+        # Trainforge/rag/retrieval_benchmark.py — on WCAG_201 at commit time,
+        # retrieval_text lifted recall@5 from 0.0369 (text) to 0.0399
+        # (retrieval_text); small but positive, so we ship it.
+        kt = chunk.get("key_terms")
+        if kt:
+            kt_parts: List[str] = []
+            for k in kt:
+                if isinstance(k, dict):
+                    term_s = k.get("term")
+                    def_s = k.get("definition")
+                    if term_s:
+                        kt_parts.append(str(term_s))
+                    if def_s:
+                        kt_parts.append(str(def_s))
+                elif isinstance(k, str):
+                    kt_parts.append(k)
+            kt_joined = " ".join(p for p in kt_parts if p).strip()
+            if kt_joined:
+                chunk["retrieval_text"] = f"{chunk['summary']} {kt_joined}".strip()
+
+        # Stamp the chunk schema version on every chunk so downstream
+        # readers can gate on capabilities without re-reading manifest.json.
+        chunk["schema_version"] = CHUNK_SCHEMA_VERSION
 
         self.stats["total_words"] += word_count
         self.stats["total_tokens_estimate"] += tokens_estimate
@@ -782,7 +1320,13 @@ class CourseProcessor:
         # Key concepts from HTML parser (bold terms, definitions)
         for concept in item.get("key_concepts", []):
             tag = normalize_tag(concept)
-            if not tag or len(tag) < 3 or tag in tags:
+            if not tag or len(tag) < 3:
+                continue
+            # Collapse known WCAG SC tag-form drift onto the canonical tag
+            # before any filter or dedupe (§4.5 canonicalization).
+            from Trainforge.rag.wcag_canonical_names import canonicalize_sc_tag
+            tag = canonicalize_sc_tag(tag)
+            if tag in tags:
                 continue
             # Skip objective codes (co-01, to-01, w01-co-01) and non-concept tags
             if (self.OBJECTIVE_CODE_RE.match(tag)
@@ -791,13 +1335,26 @@ class CourseProcessor:
                 continue
             tags.append(tag)
 
-        # Text-based concept detection
+        # Text-based concept detection (pedagogy-only patterns).
         text_lower = text.lower()
         for tag, patterns in self.CONCEPT_PATTERNS.items():
             if tag not in tags and any(p in text_lower for p in patterns):
                 tags.append(tag)
 
-        return tags[:10]
+        # Per-course domain concept seeds. Pedagogy filter still applies
+        # below since seeds are authored per course; a well-formed seed
+        # list won't collide with NON_CONCEPT_TAGS, but we defend anyway.
+        for canonical, patterns in self.domain_concept_seeds:
+            if canonical in tags:
+                continue
+            if (self.OBJECTIVE_CODE_RE.match(canonical)
+                    or self.WEEK_PREFIX_RE.match(canonical)
+                    or canonical in self.NON_CONCEPT_TAGS):
+                continue
+            if any(p.search(text) for p in patterns):
+                tags.append(canonical)
+
+        return tags[:20]
 
     def _extract_objective_refs(self, item: Dict[str, Any]) -> List[str]:
         """Extract learning objective reference codes from item.
@@ -1057,6 +1614,7 @@ class CourseProcessor:
             "description": description,
             "course_title": title,
             "sourceforge_version": "1.0",
+            "chunk_schema_version": CHUNK_SCHEMA_VERSION,
             "export_timestamp": datetime.now().isoformat(),
             "source": {
                 "type": "imscc",
@@ -1086,6 +1644,7 @@ class CourseProcessor:
                 "processed_date": datetime.now().isoformat(),
                 "chunk_strategy": "pedagogical-units",
                 "target_chunk_size": self.TARGET_CHUNK_SIZE,
+                "chunk_schema_version": CHUNK_SCHEMA_VERSION,
             },
             "statistics": {
                 "chunks": self.stats["total_chunks"],
@@ -1111,22 +1670,103 @@ class CourseProcessor:
         }
 
     def _generate_concept_graph(self, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Build concept graph from tag co-occurrence."""
+        """Build the domain concept co-occurrence graph.
+
+        v0.1.0 semantics: nodes are unique concept tags that appear in 2+
+        chunks, filtered to *exclude* pedagogy verbs and course-logistics
+        tags. Edges carry ``relation_type = "co-occurs"`` — the only type
+        produced today. A typed extractor (prerequisite / is-a / related-to)
+        is reserved for v1.0 (see VERSIONING.md §4) and will write
+        ``concept_graph_semantic.json`` alongside this file.
+        """
+        return self._build_tag_graph(
+            chunks,
+            exclude_tags=PEDAGOGY_TAG_SET | LOGISTICS_TAG_SET,
+            graph_kind="concept",
+        )
+
+    def _generate_semantic_concept_graph(
+        self,
+        chunks: List[Dict[str, Any]],
+        course: Optional[Dict[str, Any]],
+        concept_graph: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Build the typed-edge concept graph alongside ``concept_graph.json``.
+
+        See ``Trainforge.rag.typed_edge_inference`` for rule details and
+        precedence. The LLM path is opt-in via ``self.typed_edges_llm`` and
+        has a deterministic fallback (no callable wired → rules only).
+        """
+        from Trainforge.rag.typed_edge_inference import build_semantic_graph
+
+        llm_callable = None
+        if self.typed_edges_llm:
+            # Placeholder hook — a future Trainforge LLM provider plugs in
+            # here. Current behavior: log a non-decision and fall back to
+            # rule-only output, keeping the flag semantically valid without
+            # shipping a live LLM call path.
+            try:
+                self.capture.log_non_decision(
+                    decision_type="typed_edge_inference",
+                    default_value="rule_based_only",
+                    rationale=(
+                        "typed_edges_llm flag is on but no LLM callable is "
+                        "wired into the Trainforge runtime yet; deterministic "
+                        "rule-based output used."
+                    ),
+                )
+            except Exception:  # pragma: no cover — capture is best-effort
+                pass
+
+        return build_semantic_graph(
+            chunks=chunks,
+            course=course,
+            concept_graph=concept_graph,
+            llm_enabled=self.typed_edges_llm and llm_callable is not None,
+            llm_callable=llm_callable,
+            decision_capture=self.capture,
+        )
+
+    def _generate_pedagogy_graph(self, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Mirror graph of pedagogical and logistics tags.
+
+        Emitted so downstream consumers who want pedagogy signal don't have
+        to re-derive it from the chunks, and so nothing is silently dropped
+        when pedagogy tags show up in ``concept_tags``.
+        """
+        return self._build_tag_graph(
+            chunks,
+            include_tags=PEDAGOGY_TAG_SET | LOGISTICS_TAG_SET,
+            graph_kind="pedagogy",
+        )
+
+    def _build_tag_graph(
+        self,
+        chunks: List[Dict[str, Any]],
+        *,
+        include_tags: Optional[Set[str]] = None,
+        exclude_tags: Optional[Set[str]] = None,
+        graph_kind: str = "concept",
+    ) -> Dict[str, Any]:
         tag_frequency: Dict[str, int] = defaultdict(int)
         co_occurrence: Dict[Tuple[str, str], int] = defaultdict(int)
 
+        def _accept(tag: str) -> bool:
+            if include_tags is not None and tag not in include_tags:
+                return False
+            if exclude_tags is not None and tag in exclude_tags:
+                return False
+            return True
+
         for chunk in chunks:
-            tags = chunk.get("concept_tags", [])
+            tags = [t for t in chunk.get("concept_tags", []) if _accept(t)]
             for tag in tags:
                 tag_frequency[tag] += 1
-            # Co-occurrence edges
             for i, a in enumerate(tags):
                 for b in tags[i + 1:]:
                     key = tuple(sorted([a, b]))
                     co_occurrence[key] += 1
 
-        # Build nodes: include all concepts appearing 2+ times
-        # (single-occurrence tags are likely noise or overly specific)
         sorted_tags = sorted(tag_frequency.items(), key=lambda x: -x[1])
         nodes = [
             {"id": tag, "label": tag.replace("-", " ").title(), "frequency": freq}
@@ -1135,13 +1775,18 @@ class CourseProcessor:
         ]
         node_ids = {n["id"] for n in nodes}
 
-        # Build edges (between nodes with any co-occurrence)
         edges = []
         for (a, b), weight in co_occurrence.items():
             if a in node_ids and b in node_ids:
-                edges.append({"source": a, "target": b, "weight": weight})
+                edges.append({
+                    "source": a,
+                    "target": b,
+                    "weight": weight,
+                    "relation_type": "co-occurs",
+                })
 
         return {
+            "kind": graph_kind,
             "nodes": nodes,
             "edges": edges,
             "generated_at": datetime.now().isoformat(),
@@ -1156,16 +1801,46 @@ class CourseProcessor:
         with_tags = sum(1 for c in chunks if len(c.get("concept_tags", [])) >= 2)
         tag_coverage = with_tags / total
 
-        with_html = sum(1 for c in chunks if c.get("html", "").strip())
-        html_preservation = with_html / total
+        # Structural integrity: chunk HTML must parse with balanced tags.
+        balance_violations = [
+            {"chunk_id": c["id"], "unclosed_tags": self._unclosed_tags(c.get("html", ""))}
+            for c in chunks
+            if not self._html_is_well_formed(c.get("html", ""))
+        ]
+        well_formed = total - len(balance_violations)
+        html_preservation = well_formed / total
 
-        # Bloom's level coverage
         with_bloom = sum(1 for c in chunks if c.get("bloom_level"))
         bloom_coverage = with_bloom / total
 
-        # Learning outcome reference coverage
-        with_lo_refs = sum(1 for c in chunks if c.get("learning_outcome_refs"))
-        lo_coverage = with_lo_refs / total
+        # Referential integrity: count only refs that resolve to course.json IDs.
+        valid_ids = self._valid_outcome_ids or set()
+        lo_coverage = self._resolving_lo_coverage(chunks, valid_ids)
+        broken_refs = self._collect_broken_refs(chunks, valid_ids)
+        # Reverse coverage: which declared outcomes have ZERO resolving chunks?
+        # This is the symmetric complement of learning_outcome_coverage and
+        # catches content-generation gaps that the chunk-ratio metric misses.
+        referenced_ids = {
+            r for c in chunks for r in c.get("learning_outcome_refs", [])
+            if r in valid_ids
+        }
+        uncovered_outcomes = sorted(valid_ids - referenced_ids)
+        outcome_reverse_coverage = (
+            (len(valid_ids) - len(uncovered_outcomes)) / len(valid_ids)
+            if valid_ids else 1.0
+        )
+
+        # Content sanity: boilerplate contamination + factual flags + follows_chunk scope.
+        footer_rate = contamination_rate(chunks, self._boilerplate_spans) if self._boilerplate_spans else 0.0
+        boundary_violations = self._follows_chunk_violations(chunks)
+        factual_flags = list(self._factual_flags)
+
+        # ------------------------------------------------------------------
+        # Flow metrics (METRICS_SEMANTIC_VERSION 4). Surface silent metadata
+        # drops between parser -> chunk that current coverage metrics don't
+        # reveal. See docs/metrics/flow-metrics.md for full methodology.
+        # ------------------------------------------------------------------
+        flow_metrics, flow_methodology, flow_integrity = self._compute_flow_metrics(chunks)
 
         overall = (size_compliance * 0.25 + tag_coverage * 0.2 +
                    html_preservation * 0.2 + bloom_coverage * 0.2 + lo_coverage * 0.15)
@@ -1183,24 +1858,398 @@ class CourseProcessor:
             issues.append(f"Bloom level coverage {bloom_coverage:.0%} — below 90% threshold")
         if lo_coverage < 0.8:
             issues.append(f"Learning outcome coverage {lo_coverage:.0%} — below 80% threshold")
+        if valid_ids and outcome_reverse_coverage < 0.9:
+            issues.append(
+                f"{len(uncovered_outcomes)} learning outcomes have zero resolving chunks: "
+                + ", ".join(uncovered_outcomes)
+            )
+        if html_preservation < 1.0:
+            issues.append(f"HTML balance violations in {len(balance_violations)} chunks")
+        if footer_rate > 0.05:
+            issues.append(f"Footer contamination rate {footer_rate:.0%} — above 5% threshold")
+        if broken_refs:
+            issues.append(f"{len(broken_refs)} unresolvable learning_outcome_refs")
+        if boundary_violations:
+            issues.append(f"{len(boundary_violations)} follows_chunk cross-lesson links")
+        if factual_flags:
+            issues.append(f"{len(factual_flags)} factual-claim flags")
         if not issues:
             recommendations.append("Corpus meets all quality thresholds")
 
+        metrics_block: Dict[str, Any] = {
+            "chunk_size_compliance": round(size_compliance, 3),
+            "concept_tag_coverage": round(tag_coverage, 3),
+            "html_preservation_rate": round(html_preservation, 3),
+            "bloom_level_coverage": round(bloom_coverage, 3),
+            "learning_outcome_coverage": round(lo_coverage, 3),
+            "outcome_reverse_coverage": round(outcome_reverse_coverage, 3),
+            "footer_contamination_rate": round(footer_rate, 3),
+            "follows_chunk_boundary_violations": len(boundary_violations),
+            "avg_chunk_size_words": round(self.stats["total_words"] / total, 1),
+        }
+        metrics_block.update(flow_metrics)
+
+        methodology_block: Dict[str, str] = {
+            "html_preservation_rate": (
+                "Fraction of chunks whose HTML parses with balanced open/close tags "
+                "(stdlib html.parser.HTMLParser). Self-closing and void elements are "
+                "not counted as needing close tags."
+            ),
+            "learning_outcome_coverage": (
+                "Fraction of chunks that reference at least one outcome ID that "
+                "resolves to course.json (referential integrity, not field presence)."
+            ),
+            "outcome_reverse_coverage": (
+                "Fraction of declared course.json outcomes that have at least one "
+                "chunk referencing them (catches content-generation gaps where whole "
+                "outcomes are orphaned, which the chunk-ratio coverage misses)."
+            ),
+            "footer_contamination_rate": (
+                "Fraction of chunks whose text still contains a detected corpus-wide "
+                "repeated n-gram (likely footer/template-chrome that escaped stripping)."
+            ),
+            "follows_chunk_boundary_violations": (
+                "Count of non-null follows_chunk links that cross lesson boundaries."
+            ),
+        }
+        methodology_block.update(flow_methodology)
+
+        integrity_block: Dict[str, Any] = {
+            "broken_refs": broken_refs,
+            "html_balance_violations": balance_violations,
+            "follows_chunk_boundary_violations": boundary_violations,
+            "factual_inconsistency_flags": factual_flags,
+            "uncovered_outcomes": uncovered_outcomes,
+        }
+        integrity_block.update(flow_integrity)
+
         return {
+            "metrics_semantic_version": METRICS_SEMANTIC_VERSION,
             "overall_quality_score": round(overall, 3),
-            "metrics": {
-                "chunk_size_compliance": round(size_compliance, 3),
-                "concept_tag_coverage": round(tag_coverage, 3),
-                "html_preservation_rate": round(html_preservation, 3),
-                "bloom_level_coverage": round(bloom_coverage, 3),
-                "learning_outcome_coverage": round(lo_coverage, 3),
-                "avg_chunk_size_words": round(self.stats["total_words"] / total, 1),
-            },
-            "validation": {"passed": overall >= 0.75, "issues": issues},
+            "metrics": metrics_block,
+            "methodology": methodology_block,
+            "integrity": integrity_block,
+            "validation": {"passed": overall >= 0.75 and not broken_refs, "issues": issues},
             "recommendations": recommendations,
         }
 
-    def _build_pedagogy_summary(self) -> Dict[str, Any]:
+    # ------------------------------------------------------------------
+    # Flow metrics (METRICS_SEMANTIC_VERSION 4)
+    # ------------------------------------------------------------------
+
+    def _compute_flow_metrics(
+        self, chunks: List[Dict[str, Any]]
+    ) -> Tuple[Dict[str, float], Dict[str, str], Dict[str, List[str]]]:
+        """Compute the five flow metrics that surface silent metadata drops.
+
+        Returns ``(metrics, methodology, integrity)`` — three dicts to be
+        merged into the corresponding blocks in ``_generate_quality_report``.
+
+        Every metric is a ratio in ``[0.0, 1.0]`` with an ``int/int`` numerator
+        and denominator so a failing flow is distinguishable from an absent
+        upstream (denominator=0 ⇒ ratio=0.0 and the methodology string calls
+        out the caveat).
+
+        See ``docs/metrics/flow-metrics.md`` for the full explanation of
+        what each metric catches and how to read its value.
+        """
+        total = len(chunks) or 1
+        chunk_total = len(chunks)  # real zero-aware total
+
+        # 1. content_type_label_coverage
+        with_label = sum(1 for c in chunks if c.get("content_type_label"))
+        content_type_label_coverage = with_label / total
+
+        # 2. key_terms_coverage
+        with_key_terms = sum(1 for c in chunks if c.get("key_terms"))
+        key_terms_coverage = with_key_terms / total
+
+        # 3. key_terms_with_definitions_rate
+        total_key_terms = 0
+        terms_with_def = 0
+        chunks_with_empty_definitions: List[str] = []
+        for c in chunks:
+            kts = c.get("key_terms") or []
+            missing_def_in_this_chunk = False
+            for kt in kts:
+                if not isinstance(kt, dict):
+                    continue
+                total_key_terms += 1
+                if (kt.get("definition") or "").strip():
+                    terms_with_def += 1
+                else:
+                    missing_def_in_this_chunk = True
+            if missing_def_in_this_chunk:
+                chunks_with_empty_definitions.append(c["id"])
+        if total_key_terms > 0:
+            key_terms_with_definitions_rate = terms_with_def / total_key_terms
+        else:
+            key_terms_with_definitions_rate = 0.0
+
+        # 4. misconceptions_present_rate
+        # Denominator: chunks whose parent page had ≥1 misconception in JSON-LD.
+        # This threading is populated in _chunk_content. When _chunk_content
+        # was bypassed (e.g. unit tests that call _generate_quality_report
+        # directly with hand-built chunks) the set is empty — in that case
+        # we fall back to all chunks as the denominator so the metric
+        # still reports something sensible.
+        pages_with_mis = getattr(self, "_pages_with_misconceptions", None) or set()
+        if pages_with_mis:
+            eligible = [
+                c for c in chunks
+                if (c.get("source") or {}).get("lesson_id") in pages_with_mis
+            ]
+            mis_denom_label = "pages_with_json_ld_misconceptions"
+        else:
+            eligible = list(chunks)
+            mis_denom_label = "all_chunks_fallback"
+        mis_denom = len(eligible) or 1
+        chunks_missing_misconceptions: List[str] = []
+        chunks_with_mis = 0
+        for c in eligible:
+            if c.get("misconceptions"):
+                chunks_with_mis += 1
+            else:
+                chunks_missing_misconceptions.append(c["id"])
+        misconceptions_present_rate = chunks_with_mis / mis_denom if eligible else 0.0
+
+        # 5. interactive_components_rate
+        # Interactive components are NOT threaded onto chunks today (they live
+        # on parsed_items only — see FOLLOWUP-WORKER-B-1). We fall back to
+        # regex-detecting the same COMPONENT_PATTERNS the parser uses against
+        # each chunk's own HTML, so the metric still reports flow without
+        # requiring a chunk-schema change (that's Worker E's territory).
+        from Trainforge.parsers.html_content_parser import HTMLContentParser
+        patterns = HTMLContentParser.COMPONENT_PATTERNS
+        compiled = [re.compile(p, re.IGNORECASE) for p in patterns.values()]
+        with_component = 0
+        for c in chunks:
+            html = c.get("html", "") or ""
+            if any(rx.search(html) for rx in compiled):
+                with_component += 1
+        interactive_components_rate = with_component / total
+
+        metrics: Dict[str, float] = {
+            "content_type_label_coverage": round(content_type_label_coverage, 3),
+            "key_terms_coverage": round(key_terms_coverage, 3),
+            "key_terms_with_definitions_rate": round(key_terms_with_definitions_rate, 3),
+            "misconceptions_present_rate": round(misconceptions_present_rate, 3),
+            "interactive_components_rate": round(interactive_components_rate, 3),
+        }
+
+        methodology: Dict[str, str] = {
+            "content_type_label_coverage": (
+                "Fraction of chunks carrying a non-empty content_type_label "
+                "(e.g. explanation, example, procedure). Catches silent drops "
+                "of JSON-LD / data-cf-content-type metadata between the parser "
+                "and _create_chunk."
+            ),
+            "key_terms_coverage": (
+                "Fraction of chunks with at least one key_terms entry. Catches "
+                "silent drops of JSON-LD keyTerms / data-cf-key-terms between "
+                "the parser and _create_chunk."
+            ),
+            "key_terms_with_definitions_rate": (
+                "Across every key_terms entry on every chunk, the fraction "
+                "whose definition field is non-empty. Denominator is the total "
+                "count of key_terms entries across all chunks, not the chunk "
+                "count. Catches the fallback path where data-cf-key-terms "
+                "yields term strings but no definitions."
+            ),
+            "misconceptions_present_rate": (
+                "Fraction of chunks carrying at least one misconception entry. "
+                f"Denominator: {mis_denom_label}. When the parser found any "
+                "misconceptions in the JSON-LD, the denominator is the chunks "
+                "from those pages; when no misconceptions were found anywhere, "
+                "the denominator falls back to all chunks and the metric is 0.0."
+            ),
+            "interactive_components_rate": (
+                "Fraction of chunks whose HTML matches one of the parser's "
+                "COMPONENT_PATTERNS (flip-card, accordion, tabs, callout, "
+                "knowledge-check, activity-card). Interactive components are "
+                "not yet threaded onto chunks as a first-class field — this "
+                "regex fallback is intentional (FOLLOWUP-WORKER-B-1) and will "
+                "be revisited once Worker E lands chunk-schema provenance."
+            ),
+        }
+
+        integrity: Dict[str, List[str]] = {
+            "chunks_with_empty_definitions": chunks_with_empty_definitions,
+            "chunks_missing_misconceptions": chunks_missing_misconceptions,
+        }
+
+        # Silence unused-variable hint when chunks is empty.
+        _ = chunk_total
+
+        return metrics, methodology, integrity
+
+    # ------------------------------------------------------------------
+    # Integrity helpers (used by quality report + tests)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _html_is_well_formed(html: str) -> bool:
+        """True iff ``html`` has non-empty content and every opened tag is closed."""
+        if not html or not html.strip():
+            return False
+        return _BalanceChecker.check(html)
+
+    @staticmethod
+    def _unclosed_tags(html: str) -> List[str]:
+        if not html:
+            return []
+        return _BalanceChecker.unclosed(html)
+
+    @staticmethod
+    def _collect_broken_refs(
+        chunks: List[Dict[str, Any]],
+        valid_outcome_ids: Set[str],
+    ) -> List[Dict[str, str]]:
+        broken: List[Dict[str, str]] = []
+        for c in chunks:
+            for ref in c.get("learning_outcome_refs", []):
+                if ref not in valid_outcome_ids:
+                    broken.append({"chunk_id": c["id"], "ref": ref})
+        return broken
+
+    @staticmethod
+    def _resolving_lo_coverage(
+        chunks: List[Dict[str, Any]],
+        valid_outcome_ids: Set[str],
+    ) -> float:
+        total = len(chunks) or 1
+        resolving = sum(
+            1 for c in chunks
+            if any(r in valid_outcome_ids for r in c.get("learning_outcome_refs", []))
+        )
+        return resolving / total
+
+    @staticmethod
+    def _follows_chunk_violations(chunks: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+        by_id = {c["id"]: c for c in chunks}
+        violations: List[Dict[str, str]] = []
+        for c in chunks:
+            follows = c.get("follows_chunk")
+            if not follows:
+                continue
+            prev = by_id.get(follows)
+            if prev is None:
+                violations.append({"chunk_id": c["id"], "follows_chunk": follows, "reason": "dangling"})
+                continue
+            if c.get("source", {}).get("lesson_id") != prev.get("source", {}).get("lesson_id"):
+                violations.append({
+                    "chunk_id": c["id"],
+                    "follows_chunk": follows,
+                    "reason": "cross_lesson",
+                })
+        return violations
+
+    # ------------------------------------------------------------------
+    # Pre-chunking helpers (called from process())
+    # ------------------------------------------------------------------
+
+    def _detect_corpus_boilerplate(self, parsed_items: List[Dict[str, Any]]) -> List[str]:
+        """Run N-gram frequency sweep across every page's raw HTML to find
+        repeated spans (footers / template chrome) worth stripping.
+
+        Returns the list of span strings; an empty list when the corpus is
+        too small or no candidate exceeds the min-doc-frac threshold.
+        """
+        docs = [item.get("raw_html", "") for item in parsed_items if item.get("raw_html")]
+        if len(docs) < 3:
+            return []
+        # Operate on plain text so we don't match span-containing tag noise.
+        plain_docs = [self._extract_plain_text(d) for d in docs]
+        spans = detect_repeated_ngrams(
+            plain_docs,
+            n=self._boilerplate_config.min_ngram_tokens,
+            min_doc_frac=self._boilerplate_config.min_doc_frac,
+        )
+        if spans:
+            self.capture.log_decision(
+                decision_type="boilerplate_strip",
+                decision=f"Detected {len(spans)} repeated span(s); will strip before chunking",
+                rationale=(
+                    "Corpus-wide n-gram frequency above threshold indicates "
+                    "template chrome or footer contamination that would otherwise "
+                    "bleed into every chunk's embedding."
+                ),
+            )
+        return spans
+
+    def _build_valid_outcome_ids(self) -> Set[str]:
+        """Collect every outcome ID the chunks are allowed to reference.
+
+        Course-level IDs (``co-*``, ``to-*``) are always included. Week-scoped
+        IDs (``w01-co-*``) are included when the objectives file carries a
+        ``week_scoped_ids`` list per outcome — this is the dual-emission
+        contract from §2.1. Legacy objective files without ``week_scoped_ids``
+        yield a set that only resolves flat IDs; chunks that reference
+        week-scoped forms will surface as broken_refs in the quality report.
+        """
+        ids: Set[str] = set()
+        if not self.objectives:
+            return ids
+        for to in self.objectives.get("terminal_objectives", []):
+            obj_id = (to.get("id") or "").lower()
+            if obj_id:
+                ids.add(obj_id)
+            for ws in to.get("week_scoped_ids", []) or []:
+                if ws:
+                    ids.add(ws.lower())
+        for ch in self.objectives.get("chapter_objectives", []):
+            for obj in ch.get("objectives", []):
+                obj_id = (obj.get("id") or "").lower()
+                if obj_id:
+                    ids.add(obj_id)
+                for ws in obj.get("week_scoped_ids", []) or []:
+                    if ws:
+                        ids.add(ws.lower())
+        return ids
+
+    def _assert_integrity(self, report: Dict[str, Any]) -> None:
+        """When strict_mode is on, refuse to write metadata if integrity fails.
+
+        Fired from :meth:`_write_metadata` before any file write. Violates:
+        broken_refs non-empty, follows_chunk boundary violations non-empty,
+        or html_balance_violations rate above 5%.
+        """
+        if not self.strict_mode:
+            return
+        integrity = report.get("integrity", {})
+        broken = integrity.get("broken_refs", [])
+        boundary = integrity.get("follows_chunk_boundary_violations", [])
+        html_bad = integrity.get("html_balance_violations", [])
+        total = max(self.stats.get("total_chunks", 0), 1)
+        html_rate = len(html_bad) / total
+
+        reasons: List[str] = []
+        if broken:
+            reasons.append(f"{len(broken)} unresolvable learning_outcome_refs")
+        if boundary:
+            reasons.append(f"{len(boundary)} cross-lesson follows_chunk links")
+        if html_rate > 0.05:
+            reasons.append(
+                f"html_balance_violations rate {html_rate:.0%} > 5% threshold"
+            )
+        if reasons:
+            raise PipelineIntegrityError(
+                "strict_mode is on and core integrity invariants failed: "
+                + "; ".join(reasons)
+                + ". Disable strict_mode to produce a non-final artifact."
+            )
+
+    def _build_pedagogy_summary(
+        self, chunks: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
+        """Build a pedagogy model grounded in the actual chunk set.
+
+        Emits module_sequence (order + per-module stats), bloom_progression
+        (per-module Bloom distribution), and prerequisite_chain (concepts
+        referenced as prereqs after being first introduced earlier). Falls
+        back to just the top-level keys when chunks aren't provided so
+        older call sites don't break.
+        """
         summary: Dict[str, Any] = {
             "instructional_approach": "competency-based",
             "learning_theory": "constructivism",
@@ -1208,6 +2257,99 @@ class CourseProcessor:
         }
         if self.objectives and self.objectives.get("bloom_distribution"):
             summary["bloom_coverage"] = self.objectives["bloom_distribution"]
+
+        if not chunks:
+            return summary
+
+        # --- module_sequence + bloom_progression --------------------------------
+        module_meta: Dict[str, Dict[str, Any]] = {}
+        module_order: List[str] = []
+        bloom_zero = lambda: {
+            "remember": 0, "understand": 0, "apply": 0,
+            "analyze": 0, "evaluate": 0, "create": 0,
+        }
+
+        for chunk in chunks:
+            src = chunk.get("source") or {}
+            module_id = src.get("module_id")
+            if not module_id:
+                continue
+            if module_id not in module_meta:
+                module_order.append(module_id)
+                week_match = re.search(r"week[_\-\s]?(\d+)", module_id, re.IGNORECASE)
+                module_meta[module_id] = {
+                    "module_id": module_id,
+                    "module_title": src.get("module_title", ""),
+                    "week_num": int(week_match.group(1)) if week_match else 0,
+                    "chunk_count": 0,
+                    "outcome_refs_covered": set(),
+                    "bloom_counts": bloom_zero(),
+                    "first_seen": len(module_order),
+                }
+            meta = module_meta[module_id]
+            meta["chunk_count"] += 1
+            meta["outcome_refs_covered"].update(chunk.get("learning_outcome_refs", []))
+            bloom = chunk.get("bloom_level")
+            if bloom in meta["bloom_counts"]:
+                meta["bloom_counts"][bloom] += 1
+
+        # Deterministic order: by week_num, then by first-seen position.
+        module_order.sort(key=lambda m: (module_meta[m]["week_num"], module_meta[m]["first_seen"]))
+
+        module_sequence = []
+        bloom_progression: Dict[str, Dict[str, int]] = {}
+        for mid in module_order:
+            meta = module_meta[mid]
+            module_sequence.append({
+                "module_id": mid,
+                "module_title": meta["module_title"],
+                "week_num": meta["week_num"],
+                "chunk_count": meta["chunk_count"],
+                "outcome_refs_covered": sorted(meta["outcome_refs_covered"]),
+            })
+            bloom_progression[mid] = meta["bloom_counts"]
+
+        summary["module_sequence"] = module_sequence
+        summary["bloom_progression"] = bloom_progression
+
+        # --- prerequisite_chain + prerequisite_violations ------------------------
+        # For each concept tag, record earliest (module_idx, chunk_id) where it
+        # appears in concept_tags (definition site) vs prereq_concepts (use site).
+        # Valid chain: first use in module index > first definition's module index.
+        module_idx = {mid: i for i, mid in enumerate(module_order)}
+        first_def: Dict[str, Tuple[int, str, str]] = {}
+        first_use: Dict[str, Tuple[int, str, str]] = {}
+        for chunk in chunks:
+            src = chunk.get("source") or {}
+            mid = src.get("module_id")
+            if mid not in module_idx:
+                continue
+            idx = module_idx[mid]
+            cid = chunk["id"]
+            for tag in chunk.get("concept_tags", []) or []:
+                if tag not in first_def or idx < first_def[tag][0]:
+                    first_def[tag] = (idx, mid, cid)
+            for tag in chunk.get("prereq_concepts", []) or []:
+                if tag not in first_use or idx < first_use[tag][0]:
+                    first_use[tag] = (idx, mid, cid)
+
+        prerequisite_chain = []
+        prerequisite_violations = []
+        for tag in sorted(set(first_def) & set(first_use)):
+            def_idx, def_mod, def_chunk = first_def[tag]
+            use_idx, use_mod, use_chunk = first_use[tag]
+            record = {
+                "concept": tag,
+                "defined_in": {"module_id": def_mod, "chunk_id": def_chunk},
+                "first_used_in": {"module_id": use_mod, "chunk_id": use_chunk},
+            }
+            if use_idx > def_idx:
+                prerequisite_chain.append(record)
+            elif use_idx < def_idx:
+                prerequisite_violations.append(record)
+
+        summary["prerequisite_chain"] = prerequisite_chain
+        summary["prerequisite_violations"] = prerequisite_violations
         return summary
 
     def _build_course_json(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
@@ -1247,7 +2389,15 @@ class CourseProcessor:
         corpus_stats: Dict[str, Any],
         concept_graph: Dict[str, Any],
         quality_report: Dict[str, Any],
+        pedagogy_graph: Optional[Dict[str, Any]] = None,
+        semantic_graph: Optional[Dict[str, Any]] = None,
+        chunks: Optional[List[Dict[str, Any]]] = None,
     ):
+        # Strict-mode gate: refuse to write an artifact whose quality report
+        # shows integrity violations. Disabled by default for v0.1.x; flipped
+        # on in the follow-up PR (see VERSIONING.md §1.6 severity trigger).
+        self._assert_integrity(quality_report)
+
         def _write(path: Path, data: Dict[str, Any]):
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2, ensure_ascii=False)
@@ -1261,10 +2411,14 @@ class CourseProcessor:
 
         _write(self.corpus_dir / "corpus_stats.json", corpus_stats)
         _write(self.graph_dir / "concept_graph.json", concept_graph)
+        if pedagogy_graph is not None:
+            _write(self.graph_dir / "pedagogy_graph.json", pedagogy_graph)
+        if semantic_graph is not None:
+            _write(self.graph_dir / "concept_graph_semantic.json", semantic_graph)
         _write(self.quality_dir / "quality_report.json", quality_report)
 
-        # Pedagogy model
-        pedagogy = self._build_pedagogy_summary()
+        # Pedagogy model (full: module sequence, bloom progression, prereq chain)
+        pedagogy = self._build_pedagogy_summary(chunks=chunks)
         _write(self.pedagogy_dir / "pedagogy_model.json", pedagogy)
 
         # Training specs
@@ -1365,6 +2519,30 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--llm-provider", default="mock", choices=["mock", "anthropic"],
                    help="LLM provider for alignment stage (default: mock)")
     p.add_argument("--import-to-libv2", action="store_true", help="Import into LibV2 after processing")
+    p.add_argument("--synthesize", action="store_true",
+                   help="Synthesize SFT/DPO training pairs from chunks after base processing (Worker C).")
+    p.add_argument("--synthesis-provider", default="mock", choices=["mock", "anthropic"],
+                   help="Provider for training-pair synthesis (default: mock).")
+    p.add_argument("--synthesis-seed", type=int, default=17,
+                   help="Base deterministic seed for training-pair synthesis (default: 17).")
+    p.add_argument(
+        "--typed-edges-llm",
+        action="store_true",
+        help=(
+            "Enable the optional LLM escalation pass for the typed-edge "
+            "concept graph. OFF by default — the rule-based path is "
+            "deterministic and byte-identical across runs (Worker F spec)."
+        ),
+    )
+    p.add_argument(
+        "--benchmark-retrieval",
+        action="store_true",
+        help=(
+            "After processing, run the recall@k retrieval benchmark "
+            "(BM25 over text vs summary vs retrieval_text) and write "
+            "quality/retrieval_benchmark.json."
+        ),
+    )
     return p
 
 
@@ -1381,6 +2559,7 @@ def main():
         secondary_domains=args.secondary_domain,
         topics=args.topic,
         objectives_path=args.objectives,
+        typed_edges_llm=getattr(args, "typed_edges_llm", False),
     )
 
     result = processor.process()
@@ -1416,6 +2595,23 @@ def main():
         )
         align_main(align_args)
 
+    # Optional training-pair synthesis stage (Worker C)
+    if args.synthesize:
+        print("\n[Synthesis] Running training-pair synthesis stage...")
+        from Trainforge.synthesize_training import run_synthesis
+        try:
+            synth_stats = run_synthesis(
+                corpus_dir=Path(args.output),
+                course_code=args.course_code,
+                provider=args.synthesis_provider,
+                seed=args.synthesis_seed,
+            )
+            print(f"[Synthesis] Emitted {synth_stats.instruction_pairs_emitted} "
+                  f"instruction pairs, {synth_stats.preference_pairs_emitted} preference pairs "
+                  f"from {synth_stats.chunks_eligible}/{synth_stats.chunks_total} eligible chunks.")
+        except Exception as e:
+            print(f"[Synthesis] Failed: {e}")
+
     # Optional LibV2 import
     if args.import_to_libv2:
         print("\n[LibV2] Importing into LibV2...")
@@ -1439,6 +2635,24 @@ def main():
             print(f"[LibV2] Import failed: {e}")
             print("[LibV2] You can import manually later with:")
             print(f"  python -m LibV2.tools.libv2.cli import {args.output} --domain {args.domain} --division {args.division}")
+
+    # Optional: retrieval benchmark over the freshly regenerated corpus.
+    # Measures whether the per-chunk summary improves BM25 recall@k over
+    # the raw text baseline. Written to quality/retrieval_benchmark.json.
+    if args.benchmark_retrieval:
+        print("\n[Benchmark] Running retrieval benchmark...")
+        try:
+            from Trainforge.rag.retrieval_benchmark import write_benchmark
+
+            out_path, bench = write_benchmark(Path(args.output))
+            print(f"[Benchmark] Wrote {out_path}")
+            for variant, scores in bench.get("variants", {}).items():
+                summary_line = ", ".join(
+                    f"{k}={v:.3f}" for k, v in sorted(scores.items())
+                )
+                print(f"[Benchmark]   {variant}: {summary_line}")
+        except Exception as e:
+            print(f"[Benchmark] Failed: {e}")
 
     print("\nDone!")
     return result

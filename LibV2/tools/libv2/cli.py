@@ -997,5 +997,58 @@ def eval_compare(ctx, baseline: str, comparison: str):
         sys.exit(1)
 
 
+@main.command("cross-index")
+@click.option("--repo-root", type=click.Path(exists=True, file_okay=False),
+              help="Repository root (auto-detected if omitted)")
+@click.option("--output", "-o", type=click.Path(),
+              help="Output path (default: <repo-root>/LibV2/catalog/cross_package_concepts.json)")
+@click.pass_context
+def cross_index(ctx, repo_root: Optional[str], output: Optional[str]):
+    """Build the cross-package concept index.
+
+    Scans every ``LibV2/courses/*/graph/concept_graph.json`` (and the
+    optional Worker-F ``concept_graph_semantic.json``) and emits a catalog
+    of which concepts appear across which courses.
+
+    Examples:
+
+        libv2 cross-index
+
+        libv2 cross-index --repo-root /path/to/Ed4All --output catalog.json
+    """
+    from .cross_package_indexer import write_cross_package_index
+
+    # Precedence: explicit --repo-root wins; otherwise fall back to whatever
+    # the top-level ``libv2 --repo`` option (auto-detected by default) resolved.
+    if repo_root is not None:
+        root = Path(repo_root).resolve()
+    else:
+        root = Path(ctx.obj["repo_root"]).resolve()
+
+    if output is not None:
+        output_path = Path(output)
+    else:
+        output_path = root / "LibV2" / "catalog" / "cross_package_concepts.json"
+
+    try:
+        artifact = write_cross_package_index(root, output_path)
+    except Exception as e:  # noqa: BLE001 - surface as CLI error
+        print_error(f"Failed to build cross-package index: {e}")
+        sys.exit(1)
+
+    print_success(f"Wrote cross-package index: {output_path}")
+    print(f"  Courses scanned: {artifact['course_count']}")
+    print(f"  Unique concepts: {artifact['concept_count']}")
+
+    # Surface the top concepts so the reviewer can sanity-check without
+    # opening the JSON.
+    top = list(artifact["concepts"].items())[:5]
+    if top:
+        print("\nTop concepts by total_courses:")
+        for cid, entry in top:
+            slugs = ", ".join(c["slug"] for c in entry["courses"])
+            print(f"  {cid} ({entry['total_courses']} courses): {slugs}")
+
+
 if __name__ == "__main__":
     main()

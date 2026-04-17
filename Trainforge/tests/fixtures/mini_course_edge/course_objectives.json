@@ -1,0 +1,34 @@
+{
+  "course_code": "MINI_EDGE_101",
+  "course_title": "Mini Edge-Case Course",
+  "description": "Fixture covering orthogonal edge cases (orphan refs, tag drift).",
+  "terminal_objectives": [],
+  "chapter_objectives": [
+    {
+      "chapter": "Week 4-4: Empty key-terms",
+      "week_range": [4, 4],
+      "objectives": [
+        {
+          "id": "co-04",
+          "statement": "Distinguish structure from presentation in HTML.",
+          "bloomLevel": "understand",
+          "week_scoped_ids": ["w04-co-04"],
+          "hierarchy_level": "course"
+        }
+      ]
+    },
+    {
+      "chapter": "Week 5-5: Tag drift",
+      "week_range": [5, 5],
+      "objectives": [
+        {
+          "id": "co-05",
+          "statement": "Apply contrast and keyboard-trap criteria to a component audit.",
+          "bloomLevel": "apply",
+          "week_scoped_ids": ["w05-co-05"],
+          "hierarchy_level": "course"
+        }
+      ]
+    }
+  ]
+}
