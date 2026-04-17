@@ -1,6 +1,6 @@
-# Flow metrics — `quality_report.json` (METRICS_SEMANTIC_VERSION 4)
+# Flow metrics — `quality_report.json` (METRICS_SEMANTIC_VERSION 5)
 
-Worker B added five flow metrics to the base-pass quality report. Each one surfaces a **silent metadata drop** between the HTML parser and the chunk writer that the previous `metrics` block couldn't see, because the previous metrics all looked at a single property in isolation (bloom coverage, LO coverage, etc.) and not at the flow from parser output to chunk output.
+Worker B added five flow metrics to the base-pass quality report. Worker P added a single top-level aggregate (`package_completeness`) that rolls those five into one honest number so consumers can read package metadata health at a glance. Each individual metric still surfaces a **silent metadata drop** between the HTML parser and the chunk writer that the previous `metrics` block couldn't see, because the previous metrics all looked at a single property in isolation (bloom coverage, LO coverage, etc.) and not at the flow from parser output to chunk output.
 
 The theme: these metrics don't raise quality; they raise **visibility**. When one drops below expectation, the bug is upstream (usually in `_extract_section_metadata` or in `_create_chunk`), and the right fix is Worker C's backfill, not a weighting tweak here.
 
@@ -53,8 +53,50 @@ See ADR-001 Contract 2 for the ownership story (base pass owns `metrics_semantic
 
 `content_type_label_coverage`, `key_terms_coverage`, and `interactive_components_rate` do not attach integrity lists — their dip signals a corpus-wide upstream issue rather than per-chunk join failures, and dumping every affected chunk ID would obscure the signal.
 
+## `package_completeness` aggregate (v5, Worker P)
+
+- **What it measures.** A single flat mean of the five enrichment coverage fractions:
+  - `bloom_level_coverage`
+  - `content_type_label_coverage`
+  - `key_terms_coverage`
+  - `misconceptions_present_rate`
+  - `interactive_components_rate`
+- **Where it lives.** Top level of `quality_report.json`, sibling of `overall_quality_score` — **not inside `metrics`**.
+- **What it answers.** "Of the metadata this package claims to provide, how much actually landed."
+- **What it is NOT.**
+  - Not a weighted quality score. Equal weight per component, rounded to 3 decimals.
+  - Not feeding `overall_quality_score`. That formula is unchanged (25% size + 20% tags + 20% html + 20% bloom + 15% LO).
+  - Not gating `validation.passed`. A package can ship with low completeness; what matters to the validation gate is referential integrity and the existing thresholds.
+- **Threshold reading.**
+  - `≥ 0.9` — package enrichment is fully populated; downstream filters get an unbiased sample.
+  - `0.5 – 0.9` — partial enrichment; consumers who filter by flow-metric fields (content type, key terms, misconceptions) get a biased subset. Open the individual `metrics.*` values to see which field is dropping.
+  - `< 0.5` — enrichment pipeline is broken or source data lacks most metadata. Investigation territory (see VERSIONING.md §4.4a).
+
+### Example (excerpt)
+
+```json
+{
+  "metrics_semantic_version": 5,
+  "overall_quality_score": 0.834,
+  "package_completeness": 0.741,
+  "metrics": {
+    "bloom_level_coverage": 1.0,
+    "content_type_label_coverage": 0.527,
+    "key_terms_coverage": 0.527,
+    "misconceptions_present_rate": 0.542,
+    "interactive_components_rate": 0.618
+  },
+  "methodology": {
+    "package_completeness": "Flat mean of bloom_level_coverage, content_type_label_coverage, key_terms_coverage, misconceptions_present_rate, and interactive_components_rate. …"
+  }
+}
+```
+
+A consumer reading `package_completeness: 0.741` knows about 26% of enrichment is missing at a glance; opening the individual metrics tells them which fields.
+
 ## Versioning
 
 - Base pass only. Alignment pass must not bump `METRICS_SEMANTIC_VERSION` and must not write under `metrics` (ADR-001 Contract 2).
-- Bump is logged in the ADR-001 decision log.
-- Scoring impact: **none**. The five metrics are observability-only; they do not feed `overall_quality_score`. Bumping them into the weighted score belongs to a later PR and a later ADR.
+- Bumps are logged in the ADR-001 decision log.
+- v4 (Worker B): five flow metrics added.
+- v5 (Worker P): `package_completeness` top-level aggregate added. Scoring impact: **none**. The aggregate is observability-only; it does not feed `overall_quality_score` or gate `validation.passed`.
