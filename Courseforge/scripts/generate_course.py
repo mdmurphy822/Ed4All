@@ -12,7 +12,7 @@ and Courseforge HTML templates. Each week produces:
   - discussion.html (forum prompt with guidelines)
 
 Usage:
-    python generate_course.py DIGPED_101_course_data.json output_dir/
+    python generate_course.py SAMPLE_101_course_data.json output_dir/
 """
 
 import html as html_mod
@@ -155,14 +155,18 @@ document.querySelectorAll('.self-check').forEach(sc => {
 
 def _wrap_page(title: str, course_code: str, week_num: int, body_html: str,
                extra_js: str = "",
-               page_metadata: Optional[Dict[str, Any]] = None) -> str:
+               page_metadata: Optional[Dict[str, Any]] = None,
+               course_title: Optional[str] = None) -> str:
     """Wrap body content in a full HTML page with Courseforge styling.
 
     Args:
         page_metadata: Optional structured metadata dict rendered as JSON-LD
                        in <head> for downstream Trainforge extraction.
+        course_title: Human-readable course title used in the header/footer.
+                      Falls back to ``course_code`` if not supplied.
     """
     safe_title = html_mod.escape(title)
+    header_label = html_mod.escape(course_title) if course_title else course_code
     json_ld = ""
     if page_metadata:
         json_ld = (
@@ -181,14 +185,14 @@ def _wrap_page(title: str, course_code: str, week_num: int, body_html: str,
 <body>
   <a href="#main-content" class="skip-link">Skip to main content</a>
   <header role="banner">
-    <p>{course_code}: Foundations of Digital Pedagogy &mdash; Week {week_num}</p>
+    <p>{course_code}: {header_label} &mdash; Week {week_num}</p>
   </header>
   <main id="main-content" role="main">
     <h1>{safe_title}</h1>
 {body_html}
   </main>
   <footer role="contentinfo">
-    <p>&copy; 2026 {course_code}: Foundations of Digital Pedagogy. All rights reserved.</p>
+    <p>&copy; 2026 {course_code}: {header_label}. All rights reserved.</p>
   </footer>
 {extra_js}
 </body>
@@ -488,7 +492,8 @@ def _build_page_metadata(
     return meta
 
 
-def generate_week(week_data: Dict, output_dir: Path, course_code: str):
+def generate_week(week_data: Dict, output_dir: Path, course_code: str,
+                  course_title: Optional[str] = None):
     """Generate all files for a single week."""
     week_num = week_data["week_number"]
     week_dir = output_dir / f"week_{week_num:02d}"
@@ -523,6 +528,7 @@ def generate_week(week_data: Dict, output_dir: Path, course_code: str):
         f"Week {week_num} Overview: {week_data['title']}",
         course_code, week_num, overview_body,
         page_metadata=overview_meta,
+        course_title=course_title,
     )
     (week_dir / f"week_{week_num:02d}_overview.html").write_text(overview_html, encoding="utf-8")
 
@@ -544,6 +550,7 @@ def generate_week(week_data: Dict, output_dir: Path, course_code: str):
             f"Week {week_num}: {content['title']}",
             course_code, week_num, content_body, extra_js,
             page_metadata=content_meta,
+            course_title=course_title,
         )
         filename = f"{page_id}.html"
         (week_dir / filename).write_text(content_html, encoding="utf-8")
@@ -562,6 +569,7 @@ def generate_week(week_data: Dict, output_dir: Path, course_code: str):
             f"Week {week_num}: Application &amp; Activities",
             course_code, week_num, app_body,
             page_metadata=app_meta,
+            course_title=course_title,
         )
         (week_dir / f"week_{week_num:02d}_application.html").write_text(app_html, encoding="utf-8")
 
@@ -580,6 +588,7 @@ def generate_week(week_data: Dict, output_dir: Path, course_code: str):
             f"Week {week_num}: Self-Check Quiz",
             course_code, week_num, sc_body, SELF_CHECK_JS,
             page_metadata=sc_meta,
+            course_title=course_title,
         )
         (week_dir / f"week_{week_num:02d}_self_check.html").write_text(sc_html, encoding="utf-8")
 
@@ -604,6 +613,7 @@ def generate_week(week_data: Dict, output_dir: Path, course_code: str):
         f"Week {week_num}: Summary &amp; Reflection",
         course_code, week_num, summary_body,
         page_metadata=summary_meta,
+        course_title=course_title,
     )
     (week_dir / f"week_{week_num:02d}_summary.html").write_text(summary_html, encoding="utf-8")
 
@@ -630,6 +640,7 @@ def generate_week(week_data: Dict, output_dir: Path, course_code: str):
             f"Week {week_num}: Discussion",
             course_code, week_num, disc_body,
             page_metadata=disc_meta,
+            course_title=course_title,
         )
         (week_dir / f"week_{week_num:02d}_discussion.html").write_text(disc_html, encoding="utf-8")
 
@@ -643,10 +654,11 @@ def generate_course(course_data_path: str, output_dir: str):
     data = json.loads(Path(course_data_path).read_text())
     out = Path(output_dir)
     course_code = data.get("course_code", "COURSE_101")
+    course_title = data.get("course_title")
 
     total_files = 0
     for week in data["weeks"]:
-        count, files = generate_week(week, out, course_code)
+        count, files = generate_week(week, out, course_code, course_title)
         total_files += count
         print(f"  Week {week['week_number']:2d}: {count} files - {', '.join(files)}")
 
