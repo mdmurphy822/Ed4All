@@ -366,11 +366,26 @@ def catalog_stats(ctx):
 @click.option("--limit", "-n", type=int, default=10, help="Maximum results (default: 10)")
 @click.option("--sample-per-course", type=int, help="Max chunks per course for cross-course search")
 @click.option("--output", "-o", type=click.Choice(["text", "json"]), default="text", help="Output format")
+# Worker J: reference-retrieval flags
+@click.option("--include-rationale", is_flag=True, help="Emit per-result rationale (matched tags/LOs, boost contributions)")
+@click.option("--no-metadata-scoring", is_flag=True, help="Disable concept/LO/prereq boosts (pure BM25)")
+@click.option("--no-concept-graph-boost", is_flag=True, help="Disable only the concept-graph-overlap boost")
+@click.option("--no-lo-boost", is_flag=True, help="Disable only the LO-match boost")
+@click.option("--prefer-self-contained", is_flag=True, help="Enable the prereq-coverage boost (off by default)")
+@click.option("--lo-filter", multiple=True, help="LO id to boost (repeatable, e.g. --lo-filter co-03)")
+@click.option("--week", "week_num", type=int, help="Filter by week number (parses source.module_id)")
+@click.option("--teaching-role", help="Filter by teaching_role (transfer, assess, synthesize, ...)")
+@click.option("--content-type", "content_type_label", help="Filter by content_type_label")
 @click.pass_context
 def retrieve(ctx, query: str, domain: Optional[str], division: Optional[str],
              subdomain: Optional[str], course: Optional[str], chunk_type: Optional[str],
              difficulty: Optional[str], concept: tuple, limit: int,
-             sample_per_course: Optional[int], output: str):
+             sample_per_course: Optional[int], output: str,
+             include_rationale: bool, no_metadata_scoring: bool,
+             no_concept_graph_boost: bool, no_lo_boost: bool,
+             prefer_self_contained: bool, lo_filter: tuple,
+             week_num: Optional[int], teaching_role: Optional[str],
+             content_type_label: Optional[str]):
     """Search chunks by keyword with metadata filters.
 
     Streams chunks without loading entire corpus. Uses TF-IDF ranking.
@@ -398,8 +413,17 @@ def retrieve(ctx, query: str, domain: Optional[str], division: Optional[str],
         chunk_type=chunk_type,
         difficulty=difficulty,
         concept_tags=concept_tags,
+        teaching_role=teaching_role,
+        content_type_label=content_type_label,
+        week_num=week_num,
         limit=limit,
         sample_per_course=sample_per_course,
+        include_rationale=include_rationale,
+        metadata_scoring=not no_metadata_scoring,
+        use_concept_graph_boost=not no_concept_graph_boost,
+        use_lo_match_boost=not no_lo_boost,
+        prefer_self_contained=prefer_self_contained,
+        lo_filter=list(lo_filter) if lo_filter else None,
     )
 
     if not results:
@@ -417,11 +441,17 @@ def retrieve(ctx, query: str, domain: Optional[str], division: Optional[str],
             if result.source:
                 print(f"Module: {result.source.get('module_title', 'N/A')}")
                 print(f"Lesson: {result.source.get('lesson_title', 'N/A')}")
-            # Show first 300 chars of text
             preview = result.text[:300].replace('\n', ' ')
             if len(result.text) > 300:
                 preview += "..."
             print(f"Text: {preview}")
+            if include_rationale and result.rationale:
+                r = result.rationale
+                print(f"  bm25={r['bm25_score']:.3f} ngram={r['ngram_score']:.3f} boost={r['metadata_boost']:+.3f}")
+                if r["matched_concept_tags"]:
+                    print(f"  concept-tags: {', '.join(r['matched_concept_tags'][:6])}")
+                if r["matched_lo_refs"]:
+                    print(f"  matched LOs: {', '.join(r['matched_lo_refs'])}")
 
         print(f"\n{len(results)} result(s) found.")
 
@@ -1048,6 +1078,58 @@ def cross_index(ctx, repo_root: Optional[str], output: Optional[str]):
         for cid, entry in top:
             slugs = ", ".join(c["slug"] for c in entry["courses"])
             print(f"  {cid} ({entry['total_courses']} courses): {slugs}")
+
+
+@main.command("retrieval-eval")
+@click.option("--course", "-c", required=True, help="Course slug to evaluate")
+@click.option("--gold-queries", type=click.Path(exists=True), help="Path to gold queries JSONL")
+@click.option("--report", type=click.Path(), help="Path to write the evaluation report JSON")
+@click.option("--limit", type=int, default=10, help="Retrieval limit per query (default: 10)")
+@click.option("--no-rationale", is_flag=True, help="Skip rationale payload in the report")
+@click.option("--no-metadata-scoring", is_flag=True, help="Disable concept/LO/prereq boosts")
+@click.pass_context
+def retrieval_eval(ctx, course: str, gold_queries: Optional[str], report: Optional[str],
+                   limit: int, no_rationale: bool, no_metadata_scoring: bool):
+    """Run hand-curated gold queries against retrieve_chunks and write a report.
+
+    Reads LibV2/courses/<slug>/retrieval/gold_queries.jsonl by default.
+    Writes LibV2/courses/<slug>/retrieval/evaluation_results.json by default.
+
+    \b
+    Example:
+        libv2 retrieval-eval --course best-practices-in-digital-web-design-for-accessibi
+    """
+    from .eval_harness import evaluate_retrieval
+
+    repo_root = ctx.obj["repo_root"]
+    gold_path = Path(gold_queries) if gold_queries else None
+    output_path = Path(report) if report else None
+
+    try:
+        rpt = evaluate_retrieval(
+            course_slug=course,
+            repo_root=repo_root,
+            gold_queries_path=gold_path,
+            include_rationale=not no_rationale,
+            metadata_scoring=not no_metadata_scoring,
+            retrieval_limit=limit,
+            output_path=output_path,
+        )
+    except FileNotFoundError as e:
+        print_error(str(e))
+        sys.exit(1)
+    except ValueError as e:
+        print_error(str(e))
+        sys.exit(1)
+
+    agg = rpt["aggregate"]
+    print_success(f"Evaluated {agg['total_queries']} gold queries for {course}")
+    print(f"  MRR:       {agg['mrr']:.4f}")
+    print(f"  recall@1:  {agg['recall_at_1']:.4f}")
+    print(f"  recall@5:  {agg['recall_at_5']:.4f}")
+    print(f"  recall@10: {agg['recall_at_10']:.4f}")
+    print(f"  avg latency: {agg['avg_latency_ms']:.1f}ms")
+    print(f"\n  report: {rpt.get('gold_queries_path')} → evaluation_results.json")
 
 
 if __name__ == "__main__":
