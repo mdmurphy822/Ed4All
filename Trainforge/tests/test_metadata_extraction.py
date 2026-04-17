@@ -24,12 +24,12 @@ COURSEFORGE_HTML_WITH_JSONLD = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Week 2: Constructivism &mdash; DIGPED_101</title>
+  <title>Week 2: Constructivism &mdash; SAMPLE_101</title>
   <script type="application/ld+json">
   {
     "@context": "https://ed4all.dev/ns/courseforge/v1",
     "@type": "CourseModule",
-    "courseCode": "DIGPED_101",
+    "courseCode": "SAMPLE_101",
     "weekNumber": 2,
     "moduleType": "content",
     "pageId": "week_02_content_01_constructivism",
@@ -145,7 +145,7 @@ class TestJSONLDExtraction:
         result = self.parser.parse(COURSEFORGE_HTML_WITH_JSONLD)
         assert "courseforge" in result.metadata
         cf = result.metadata["courseforge"]
-        assert cf["courseCode"] == "DIGPED_101"
+        assert cf["courseCode"] == "SAMPLE_101"
         assert cf["weekNumber"] == 2
         assert cf["moduleType"] == "content"
         assert cf["pageId"] == "week_02_content_01_constructivism"

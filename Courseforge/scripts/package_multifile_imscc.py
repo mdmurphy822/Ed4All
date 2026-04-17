@@ -137,8 +137,8 @@ if __name__ == "__main__":
 
     content_dir = Path(sys.argv[1])
     output_path = Path(sys.argv[2])
-    course_code = sys.argv[3] if len(sys.argv) > 3 else "DIGPED_101"
-    course_title = sys.argv[4] if len(sys.argv) > 4 else "Foundations of Digital Pedagogy"
+    course_code = sys.argv[3] if len(sys.argv) > 3 else "SAMPLE_101"
+    course_title = sys.argv[4] if len(sys.argv) > 4 else "Sample Course"
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     package_imscc(content_dir, output_path, course_code, course_title)

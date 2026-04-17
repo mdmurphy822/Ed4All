@@ -8,8 +8,8 @@ Read-modify-write pass that enriches chunks with relational metadata:
 
 Usage:
     python -m Trainforge.align_chunks \
-        --corpus Trainforge/output/digped_101 \
-        --objectives Courseforge/inputs/exam-objectives/DIGPED_101_objectives.json \
+        --corpus Trainforge/output/sample_101 \
+        --objectives Courseforge/inputs/exam-objectives/SAMPLE_101_objectives.json \
         --llm-provider mock
 """
 
