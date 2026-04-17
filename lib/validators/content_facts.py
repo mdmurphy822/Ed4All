@@ -41,8 +41,11 @@ _CLAIM_TABLE: List[Tuple[re.Pattern, str, int, str]] = [
         "W3C WCAG 2.2 Recommendation lists 86 success criteria.",
     ),
     (
+        # Allow short version-number runs (e.g. "WCAG 2.0") inside the gap
+        # by accepting any non-newline character, capped at 60 chars and
+        # made non-greedy so it stops at the first Section 508 mention.
         re.compile(
-            r"\b(\d+)\s+applicable\s+WCAG[^.]{0,40}Section\s*508\b",
+            r"\b(\d+)\s+applicable\s+WCAG[^\n]{0,60}?Section\s*508\b",
             re.IGNORECASE,
         ),
         "section_508_sc_count",
@@ -58,6 +61,55 @@ _CLAIM_ANCHOR_RE = re.compile(
 )
 
 _INTEGERS_RE = re.compile(r"\b\d+\b")
+
+
+# Negative-context suppressors. When a claim sentence contains any of these
+# tokens it's referring to a historical, prior-version, or counterfactual
+# count and is not making a present-tense factual claim about WCAG 2.2.
+# Without this, sentences like "WCAG 2.0 historically had 61 success
+# criteria" would flag (61 != 86) once severity flips from warning to
+# critical (see VERSIONING.md §3 Severity flip trigger).
+_NEGATIVE_CONTEXT_PATTERNS = [
+    re.compile(r"\bWCAG\s*2\.0\b", re.IGNORECASE),
+    re.compile(r"\bWCAG\s*2\.1\b", re.IGNORECASE),
+    re.compile(r"\bhistorically\b", re.IGNORECASE),
+    re.compile(r"\bpreviously\b", re.IGNORECASE),
+    re.compile(r"\bformerly\b", re.IGNORECASE),
+    re.compile(r"\bused\s+to\b", re.IGNORECASE),
+    re.compile(r"\bsection\s*508\b", re.IGNORECASE),  # Section 508 has its own SC count
+    # Hypothetical / counterfactual framings.
+    re.compile(r"\bif\s+(?:there\s+were|we\s+had|the\s+spec)\b", re.IGNORECASE),
+    re.compile(r"\bsuppose\b", re.IGNORECASE),
+    re.compile(r"\bimagine\b", re.IGNORECASE),
+    # Quoted-string framing (the text is naming an inaccurate claim, not
+    # making one). Caller is responsible for stripping HTML tags first.
+    re.compile(r"\"[^\"]{0,80}\d+\s+success\s+criteria[^\"]{0,80}\"", re.IGNORECASE),
+]
+
+
+def _surrounding_sentence(text: str, span: tuple[int, int]) -> str:
+    """Extract the sentence enclosing the matched span — used by the
+    negative-context check. Sentence boundaries are `.`, `!`, `?`, or
+    chunk boundary; deliberately loose because real prose is messy.
+    """
+    start, end = span
+    left = text.rfind(".", 0, start)
+    if left == -1:
+        left = max(0, start - 200)
+    else:
+        left += 1
+    right = end
+    for char in ".!?":
+        idx = text.find(char, end)
+        if idx != -1 and (right == end or idx < right):
+            right = idx
+    if right == end:
+        right = min(len(text), end + 200)
+    return text[left:right].strip()
+
+
+def _is_suppressed_by_context(sentence: str) -> bool:
+    return any(p.search(sentence) for p in _NEGATIVE_CONTEXT_PATTERNS)
 
 
 @dataclass
@@ -106,14 +158,25 @@ class ContentFactValidator:
                     observed = int(m.group(1))
                 except (ValueError, IndexError):
                     continue
-                if observed != expected:
-                    flags.append(FactFlag(
-                        claim=claim_id,
-                        observed=observed,
-                        expected=expected,
-                        location=location,
-                        description=description,
-                    ))
+                if observed == expected:
+                    continue
+                # The Section 508 claim has its own pattern and its own
+                # expected value, so suppression should not skip it just
+                # because "Section 508" appears in the sentence. Suppression
+                # only applies to the WCAG 2.2 SC count claim today, where a
+                # historical or counterfactual mention of an older spec
+                # version is the principal false-positive risk.
+                if claim_id == "wcag_2_2_sc_count":
+                    sentence = _surrounding_sentence(text, m.span())
+                    if _is_suppressed_by_context(sentence):
+                        continue
+                flags.append(FactFlag(
+                    claim=claim_id,
+                    observed=observed,
+                    expected=expected,
+                    location=location,
+                    description=description,
+                ))
 
         # Internal arithmetic: "N success criteria: 29, 29, 17, 4" where
         # the summed list disagrees with N. Look ≤180 chars after the anchor
@@ -136,6 +199,13 @@ class ContentFactValidator:
                 continue
             actual_sum = sum(numbers)
             if actual_sum != claimed:
+                # The arithmetic check is also subject to the negative-context
+                # suppressor: a sentence about "WCAG 2.0 had 25 success
+                # criteria across 4 principles (12, 8, 4, 1)" should not
+                # flag — the sum is wrong but the claim is historical.
+                sentence = _surrounding_sentence(text, m.span())
+                if _is_suppressed_by_context(sentence):
+                    continue
                 flags.append(FactFlag(
                     claim="wcag_2_2_sc_arithmetic",
                     observed=actual_sum,
