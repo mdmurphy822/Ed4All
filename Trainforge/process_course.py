@@ -54,8 +54,12 @@ from Trainforge.rag.wcag_canonical_names import canonicalize_sc_references
 # v3: adds outcome_reverse_coverage (metric) + integrity.uncovered_outcomes
 #     (list); guaranteed bloom_level on every chunk via verb/default fallback;
 #     pedagogy_model.json grows module_sequence, bloom_progression,
-#     prerequisite_chain, prerequisite_violations.
-METRICS_SEMANTIC_VERSION = 3
+#     prerequisite_chain, prerequisite_violations. (Session 1)
+# v4: adds five flow metrics that surface silent metadata drops:
+#     content_type_label_coverage, key_terms_coverage,
+#     key_terms_with_definitions_rate, misconceptions_present_rate,
+#     interactive_components_rate. See docs/metrics/flow-metrics.md. (Worker B)
+METRICS_SEMANTIC_VERSION = 4
 
 
 class PipelineIntegrityError(RuntimeError):
@@ -529,6 +533,10 @@ class CourseProcessor:
         self._valid_outcome_ids: Set[str] = set()
         self._factual_flags: List[Dict[str, Any]] = []
         self._boilerplate_config = BoilerplateConfig()
+        # Lesson IDs for pages whose JSON-LD declared at least one misconception.
+        # Populated by _chunk_content; used as the denominator for
+        # misconceptions_present_rate in _generate_quality_report.
+        self._pages_with_misconceptions: Set[str] = set()
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -724,6 +732,17 @@ class CourseProcessor:
         current_module_id: Optional[str] = None
         current_lesson_id: Optional[str] = None
         position_in_module = 0
+
+        # Record which pages (by lesson_id = item["item_id"]) carried at least
+        # one misconception in their parsed JSON-LD. This is the proper
+        # denominator for misconceptions_present_rate: without it, pages that
+        # never declared misconceptions in the first place dilute the
+        # "silently dropped" signal we want to surface in quality_report.
+        self._pages_with_misconceptions = {
+            item["item_id"]
+            for item in parsed_items
+            if item.get("misconceptions")
+        }
 
         for item in parsed_items:
             # Reset position counter when module changes
@@ -1669,6 +1688,13 @@ class CourseProcessor:
         boundary_violations = self._follows_chunk_violations(chunks)
         factual_flags = list(self._factual_flags)
 
+        # ------------------------------------------------------------------
+        # Flow metrics (METRICS_SEMANTIC_VERSION 4). Surface silent metadata
+        # drops between parser -> chunk that current coverage metrics don't
+        # reveal. See docs/metrics/flow-metrics.md for full methodology.
+        # ------------------------------------------------------------------
+        flow_metrics, flow_methodology, flow_integrity = self._compute_flow_metrics(chunks)
+
         overall = (size_compliance * 0.25 + tag_coverage * 0.2 +
                    html_preservation * 0.2 + bloom_coverage * 0.2 + lo_coverage * 0.15)
 
@@ -1703,53 +1729,212 @@ class CourseProcessor:
         if not issues:
             recommendations.append("Corpus meets all quality thresholds")
 
+        metrics_block: Dict[str, Any] = {
+            "chunk_size_compliance": round(size_compliance, 3),
+            "concept_tag_coverage": round(tag_coverage, 3),
+            "html_preservation_rate": round(html_preservation, 3),
+            "bloom_level_coverage": round(bloom_coverage, 3),
+            "learning_outcome_coverage": round(lo_coverage, 3),
+            "outcome_reverse_coverage": round(outcome_reverse_coverage, 3),
+            "footer_contamination_rate": round(footer_rate, 3),
+            "follows_chunk_boundary_violations": len(boundary_violations),
+            "avg_chunk_size_words": round(self.stats["total_words"] / total, 1),
+        }
+        metrics_block.update(flow_metrics)
+
+        methodology_block: Dict[str, str] = {
+            "html_preservation_rate": (
+                "Fraction of chunks whose HTML parses with balanced open/close tags "
+                "(stdlib html.parser.HTMLParser). Self-closing and void elements are "
+                "not counted as needing close tags."
+            ),
+            "learning_outcome_coverage": (
+                "Fraction of chunks that reference at least one outcome ID that "
+                "resolves to course.json (referential integrity, not field presence)."
+            ),
+            "outcome_reverse_coverage": (
+                "Fraction of declared course.json outcomes that have at least one "
+                "chunk referencing them (catches content-generation gaps where whole "
+                "outcomes are orphaned, which the chunk-ratio coverage misses)."
+            ),
+            "footer_contamination_rate": (
+                "Fraction of chunks whose text still contains a detected corpus-wide "
+                "repeated n-gram (likely footer/template-chrome that escaped stripping)."
+            ),
+            "follows_chunk_boundary_violations": (
+                "Count of non-null follows_chunk links that cross lesson boundaries."
+            ),
+        }
+        methodology_block.update(flow_methodology)
+
+        integrity_block: Dict[str, Any] = {
+            "broken_refs": broken_refs,
+            "html_balance_violations": balance_violations,
+            "follows_chunk_boundary_violations": boundary_violations,
+            "factual_inconsistency_flags": factual_flags,
+            "uncovered_outcomes": uncovered_outcomes,
+        }
+        integrity_block.update(flow_integrity)
+
         return {
             "metrics_semantic_version": METRICS_SEMANTIC_VERSION,
             "overall_quality_score": round(overall, 3),
-            "metrics": {
-                "chunk_size_compliance": round(size_compliance, 3),
-                "concept_tag_coverage": round(tag_coverage, 3),
-                "html_preservation_rate": round(html_preservation, 3),
-                "bloom_level_coverage": round(bloom_coverage, 3),
-                "learning_outcome_coverage": round(lo_coverage, 3),
-                "outcome_reverse_coverage": round(outcome_reverse_coverage, 3),
-                "footer_contamination_rate": round(footer_rate, 3),
-                "follows_chunk_boundary_violations": len(boundary_violations),
-                "avg_chunk_size_words": round(self.stats["total_words"] / total, 1),
-            },
-            "methodology": {
-                "html_preservation_rate": (
-                    "Fraction of chunks whose HTML parses with balanced open/close tags "
-                    "(stdlib html.parser.HTMLParser). Self-closing and void elements are "
-                    "not counted as needing close tags."
-                ),
-                "learning_outcome_coverage": (
-                    "Fraction of chunks that reference at least one outcome ID that "
-                    "resolves to course.json (referential integrity, not field presence)."
-                ),
-                "outcome_reverse_coverage": (
-                    "Fraction of declared course.json outcomes that have at least one "
-                    "chunk referencing them (catches content-generation gaps where whole "
-                    "outcomes are orphaned, which the chunk-ratio coverage misses)."
-                ),
-                "footer_contamination_rate": (
-                    "Fraction of chunks whose text still contains a detected corpus-wide "
-                    "repeated n-gram (likely footer/template-chrome that escaped stripping)."
-                ),
-                "follows_chunk_boundary_violations": (
-                    "Count of non-null follows_chunk links that cross lesson boundaries."
-                ),
-            },
-            "integrity": {
-                "broken_refs": broken_refs,
-                "html_balance_violations": balance_violations,
-                "follows_chunk_boundary_violations": boundary_violations,
-                "factual_inconsistency_flags": factual_flags,
-                "uncovered_outcomes": uncovered_outcomes,
-            },
+            "metrics": metrics_block,
+            "methodology": methodology_block,
+            "integrity": integrity_block,
             "validation": {"passed": overall >= 0.75 and not broken_refs, "issues": issues},
             "recommendations": recommendations,
         }
+
+    # ------------------------------------------------------------------
+    # Flow metrics (METRICS_SEMANTIC_VERSION 4)
+    # ------------------------------------------------------------------
+
+    def _compute_flow_metrics(
+        self, chunks: List[Dict[str, Any]]
+    ) -> Tuple[Dict[str, float], Dict[str, str], Dict[str, List[str]]]:
+        """Compute the five flow metrics that surface silent metadata drops.
+
+        Returns ``(metrics, methodology, integrity)`` — three dicts to be
+        merged into the corresponding blocks in ``_generate_quality_report``.
+
+        Every metric is a ratio in ``[0.0, 1.0]`` with an ``int/int`` numerator
+        and denominator so a failing flow is distinguishable from an absent
+        upstream (denominator=0 ⇒ ratio=0.0 and the methodology string calls
+        out the caveat).
+
+        See ``docs/metrics/flow-metrics.md`` for the full explanation of
+        what each metric catches and how to read its value.
+        """
+        total = len(chunks) or 1
+        chunk_total = len(chunks)  # real zero-aware total
+
+        # 1. content_type_label_coverage
+        with_label = sum(1 for c in chunks if c.get("content_type_label"))
+        content_type_label_coverage = with_label / total
+
+        # 2. key_terms_coverage
+        with_key_terms = sum(1 for c in chunks if c.get("key_terms"))
+        key_terms_coverage = with_key_terms / total
+
+        # 3. key_terms_with_definitions_rate
+        total_key_terms = 0
+        terms_with_def = 0
+        chunks_with_empty_definitions: List[str] = []
+        for c in chunks:
+            kts = c.get("key_terms") or []
+            missing_def_in_this_chunk = False
+            for kt in kts:
+                if not isinstance(kt, dict):
+                    continue
+                total_key_terms += 1
+                if (kt.get("definition") or "").strip():
+                    terms_with_def += 1
+                else:
+                    missing_def_in_this_chunk = True
+            if missing_def_in_this_chunk:
+                chunks_with_empty_definitions.append(c["id"])
+        if total_key_terms > 0:
+            key_terms_with_definitions_rate = terms_with_def / total_key_terms
+        else:
+            key_terms_with_definitions_rate = 0.0
+
+        # 4. misconceptions_present_rate
+        # Denominator: chunks whose parent page had ≥1 misconception in JSON-LD.
+        # This threading is populated in _chunk_content. When _chunk_content
+        # was bypassed (e.g. unit tests that call _generate_quality_report
+        # directly with hand-built chunks) the set is empty — in that case
+        # we fall back to all chunks as the denominator so the metric
+        # still reports something sensible.
+        pages_with_mis = getattr(self, "_pages_with_misconceptions", None) or set()
+        if pages_with_mis:
+            eligible = [
+                c for c in chunks
+                if (c.get("source") or {}).get("lesson_id") in pages_with_mis
+            ]
+            mis_denom_label = "pages_with_json_ld_misconceptions"
+        else:
+            eligible = list(chunks)
+            mis_denom_label = "all_chunks_fallback"
+        mis_denom = len(eligible) or 1
+        chunks_missing_misconceptions: List[str] = []
+        chunks_with_mis = 0
+        for c in eligible:
+            if c.get("misconceptions"):
+                chunks_with_mis += 1
+            else:
+                chunks_missing_misconceptions.append(c["id"])
+        misconceptions_present_rate = chunks_with_mis / mis_denom if eligible else 0.0
+
+        # 5. interactive_components_rate
+        # Interactive components are NOT threaded onto chunks today (they live
+        # on parsed_items only — see FOLLOWUP-WORKER-B-1). We fall back to
+        # regex-detecting the same COMPONENT_PATTERNS the parser uses against
+        # each chunk's own HTML, so the metric still reports flow without
+        # requiring a chunk-schema change (that's Worker E's territory).
+        from Trainforge.parsers.html_content_parser import HTMLContentParser
+        patterns = HTMLContentParser.COMPONENT_PATTERNS
+        compiled = [re.compile(p, re.IGNORECASE) for p in patterns.values()]
+        with_component = 0
+        for c in chunks:
+            html = c.get("html", "") or ""
+            if any(rx.search(html) for rx in compiled):
+                with_component += 1
+        interactive_components_rate = with_component / total
+
+        metrics: Dict[str, float] = {
+            "content_type_label_coverage": round(content_type_label_coverage, 3),
+            "key_terms_coverage": round(key_terms_coverage, 3),
+            "key_terms_with_definitions_rate": round(key_terms_with_definitions_rate, 3),
+            "misconceptions_present_rate": round(misconceptions_present_rate, 3),
+            "interactive_components_rate": round(interactive_components_rate, 3),
+        }
+
+        methodology: Dict[str, str] = {
+            "content_type_label_coverage": (
+                "Fraction of chunks carrying a non-empty content_type_label "
+                "(e.g. explanation, example, procedure). Catches silent drops "
+                "of JSON-LD / data-cf-content-type metadata between the parser "
+                "and _create_chunk."
+            ),
+            "key_terms_coverage": (
+                "Fraction of chunks with at least one key_terms entry. Catches "
+                "silent drops of JSON-LD keyTerms / data-cf-key-terms between "
+                "the parser and _create_chunk."
+            ),
+            "key_terms_with_definitions_rate": (
+                "Across every key_terms entry on every chunk, the fraction "
+                "whose definition field is non-empty. Denominator is the total "
+                "count of key_terms entries across all chunks, not the chunk "
+                "count. Catches the fallback path where data-cf-key-terms "
+                "yields term strings but no definitions."
+            ),
+            "misconceptions_present_rate": (
+                "Fraction of chunks carrying at least one misconception entry. "
+                f"Denominator: {mis_denom_label}. When the parser found any "
+                "misconceptions in the JSON-LD, the denominator is the chunks "
+                "from those pages; when no misconceptions were found anywhere, "
+                "the denominator falls back to all chunks and the metric is 0.0."
+            ),
+            "interactive_components_rate": (
+                "Fraction of chunks whose HTML matches one of the parser's "
+                "COMPONENT_PATTERNS (flip-card, accordion, tabs, callout, "
+                "knowledge-check, activity-card). Interactive components are "
+                "not yet threaded onto chunks as a first-class field — this "
+                "regex fallback is intentional (FOLLOWUP-WORKER-B-1) and will "
+                "be revisited once Worker E lands chunk-schema provenance."
+            ),
+        }
+
+        integrity: Dict[str, List[str]] = {
+            "chunks_with_empty_definitions": chunks_with_empty_definitions,
+            "chunks_missing_misconceptions": chunks_missing_misconceptions,
+        }
+
+        # Silence unused-variable hint when chunks is empty.
+        _ = chunk_total
+
+        return metrics, methodology, integrity
 
     # ------------------------------------------------------------------
     # Integrity helpers (used by quality report + tests)

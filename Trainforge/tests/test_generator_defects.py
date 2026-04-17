@@ -274,6 +274,181 @@ class TestQualityReportHonesty:
         assert report["integrity"]["broken_refs"] == []
 
 
+# ---------------------------------------------------------------------------
+# Flow metrics (METRICS_SEMANTIC_VERSION 4) — Worker B
+# See docs/metrics/flow-metrics.md for the methodology these tests pin.
+# ---------------------------------------------------------------------------
+
+
+def _bare_processor(*, pages_with_misconceptions=None):
+    """Build a ``CourseProcessor`` with just enough state for
+    ``_generate_quality_report`` / ``_compute_flow_metrics`` to run.
+
+    Bypasses ``__init__`` so tests don't need an IMSCC on disk. Mirrors the
+    pattern used by TestQualityReportHonesty.test_metrics_semantic_version_is_written.
+
+    Unified helper (merge of Worker B's flow-metric helper and Session 1's
+    richer helper): supplies all attributes either test group reads.
+    """
+    from collections import defaultdict
+    from Trainforge.process_course import CourseProcessor
+
+    proc = CourseProcessor.__new__(CourseProcessor)
+    proc.course_code = "MINI_101"
+    proc.capture = _NullCapture()
+    proc.stats = {
+        "total_words": 100,
+        "total_chunks": 0,
+        "total_tokens_estimate": 0,
+        "chunk_types": defaultdict(int),
+        "difficulty_distribution": defaultdict(int),
+    }
+    proc._all_concept_tags = set()
+    proc.domain_concept_seeds = []
+    proc.objectives = None
+    proc._boilerplate_spans = []
+    proc._valid_outcome_ids = set()
+    proc._factual_flags = []
+    proc._pages_with_misconceptions = set(pages_with_misconceptions or [])
+    proc.MIN_CHUNK_SIZE = 100
+    proc.MAX_CHUNK_SIZE = 800
+    return proc
+
+
+class TestFlowMetrics:
+    def test_content_type_label_coverage_full_and_half(self):
+        proc = _bare_processor()
+        chunks_full = [
+            _chunk(id="c1", content_type_label="explanation"),
+            _chunk(id="c2", content_type_label="example"),
+        ]
+        report = proc._generate_quality_report(chunks_full)
+        assert report["metrics"]["content_type_label_coverage"] == pytest.approx(1.0)
+
+        chunks_half = [
+            _chunk(id="c1", content_type_label="explanation"),
+            _chunk(id="c2"),  # no label
+        ]
+        report = proc._generate_quality_report(chunks_half)
+        assert report["metrics"]["content_type_label_coverage"] == pytest.approx(0.5)
+
+    def test_key_terms_coverage_full(self):
+        proc = _bare_processor()
+        chunks = [
+            _chunk(id="c1", key_terms=[{"term": "POUR", "definition": "WCAG principles"}]),
+            _chunk(id="c2", key_terms=[{"term": "ARIA", "definition": "Accessible Rich Internet Applications"}]),
+        ]
+        report = proc._generate_quality_report(chunks)
+        assert report["metrics"]["key_terms_coverage"] == pytest.approx(1.0)
+
+    def test_key_terms_with_definitions_rate_two_of_three(self):
+        proc = _bare_processor()
+        chunks = [
+            _chunk(
+                id="c1",
+                key_terms=[
+                    {"term": "alpha", "definition": "A"},
+                    {"term": "beta", "definition": "B"},
+                    {"term": "gamma", "definition": ""},  # missing
+                ],
+            ),
+        ]
+        report = proc._generate_quality_report(chunks)
+        assert report["metrics"]["key_terms_with_definitions_rate"] == pytest.approx(2 / 3, abs=1e-3)
+
+    def test_chunks_with_empty_definitions_lists_chunk_id(self):
+        proc = _bare_processor()
+        chunks = [
+            _chunk(
+                id="c1",
+                key_terms=[
+                    {"term": "alpha", "definition": "A"},
+                    {"term": "gamma", "definition": ""},
+                ],
+            ),
+            _chunk(
+                id="c2",
+                key_terms=[{"term": "delta", "definition": "D"}],
+            ),
+        ]
+        report = proc._generate_quality_report(chunks)
+        assert report["integrity"]["chunks_with_empty_definitions"] == ["c1"]
+
+    def test_misconceptions_present_rate_with_threading(self):
+        # Denominator = chunks whose parent page had misconceptions in JSON-LD.
+        proc = _bare_processor(pages_with_misconceptions=["w01"])
+        chunks = [
+            _chunk(
+                id="c1",
+                source={**_chunk()["source"], "lesson_id": "w01"},
+                misconceptions=[{"misconception": "mis A", "correction": "corr A"}],
+            ),
+            _chunk(
+                id="c2",
+                source={**_chunk()["source"], "lesson_id": "w01"},
+                # page had misconceptions, but this chunk got none — counted in denom, not numer
+            ),
+            _chunk(
+                id="c3",
+                source={**_chunk()["source"], "lesson_id": "w02"},
+                # page never had misconceptions — excluded from denom entirely
+            ),
+        ]
+        report = proc._generate_quality_report(chunks)
+        assert report["metrics"]["misconceptions_present_rate"] == pytest.approx(0.5)
+        # Integrity list should name only the eligible-but-missing chunk.
+        assert report["integrity"]["chunks_missing_misconceptions"] == ["c2"]
+
+    def test_misconceptions_present_rate_empty_case_fallback(self):
+        # No pages declared misconceptions anywhere → fall-through denominator.
+        proc = _bare_processor()
+        chunks = [
+            _chunk(id="c1"),
+            _chunk(id="c2"),
+        ]
+        report = proc._generate_quality_report(chunks)
+        assert report["metrics"]["misconceptions_present_rate"] == pytest.approx(0.0)
+
+    def test_interactive_components_rate_present_and_absent(self):
+        proc = _bare_processor()
+        chunks_present = [
+            _chunk(id="c1", html='<div class="accordion">deets</div>'),
+            _chunk(id="c2", html='<section class="flip-card">side</section>'),
+        ]
+        report = proc._generate_quality_report(chunks_present)
+        assert report["metrics"]["interactive_components_rate"] == pytest.approx(1.0)
+
+        chunks_absent = [
+            _chunk(id="c1", html="<p>plain text</p>"),
+            _chunk(id="c2", html="<p>more plain text</p>"),
+        ]
+        report = proc._generate_quality_report(chunks_absent)
+        assert report["metrics"]["interactive_components_rate"] == pytest.approx(0.0)
+
+    def test_metrics_semantic_version_is_four(self):
+        from Trainforge.process_course import METRICS_SEMANTIC_VERSION
+
+        assert METRICS_SEMANTIC_VERSION == 4
+
+        proc = _bare_processor()
+        report = proc._generate_quality_report([_chunk(id="c1")])
+        assert report["metrics_semantic_version"] == 4
+
+    def test_methodology_strings_cover_every_new_metric(self):
+        proc = _bare_processor()
+        report = proc._generate_quality_report([_chunk(id="c1")])
+        methodology = report["methodology"]
+        for key in (
+            "content_type_label_coverage",
+            "key_terms_coverage",
+            "key_terms_with_definitions_rate",
+            "misconceptions_present_rate",
+            "interactive_components_rate",
+        ):
+            assert key in methodology, f"missing methodology entry for {key}"
+            assert len(methodology[key]) >= 40, f"methodology for {key} is too short"
+
+
 class TestStrictMode:
     def _build_processor(self, *, strict_mode: bool):
         from Trainforge.process_course import CourseProcessor
@@ -478,32 +653,9 @@ class _NullCapture:
         self.calls.append(kwargs)
 
 
-def _bare_processor():
-    """A CourseProcessor skipped through __init__, hydrated with only the
-    attributes the methods-under-test read. Keeps these unit tests free of
-    IMSCC fixtures, filesystem, and DecisionCapture side-effects.
-    """
-    from collections import defaultdict
-    from Trainforge.process_course import CourseProcessor
-
-    proc = CourseProcessor.__new__(CourseProcessor)
-    proc.course_code = "MINI_101"
-    proc.capture = _NullCapture()
-    proc.stats = {
-        "total_words": 0,
-        "total_tokens_estimate": 0,
-        "chunk_types": defaultdict(int),
-        "difficulty_distribution": defaultdict(int),
-    }
-    proc._all_concept_tags = set()
-    proc.domain_concept_seeds = []
-    proc.objectives = None
-    proc._valid_outcome_ids = set()
-    proc._boilerplate_spans = []
-    proc._factual_flags = []
-    proc.MIN_CHUNK_SIZE = 50
-    proc.MAX_CHUNK_SIZE = 800
-    return proc
+# Note: the canonical _bare_processor helper is defined earlier in this module
+# (unified across Worker B's flow-metrics tests and Session 1's Bloom/outcome
+# tests). The helper is a superset of both sides' state hydration.
 
 
 # ---------------------------------------------------------------------------
