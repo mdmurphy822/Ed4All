@@ -41,7 +41,7 @@ LibV2's reference retrieval is intentionally bounded. Anything more sophisticate
 - **`retrieval_text`-aware indexing.** When a chunk carries v4's `retrieval_text` (summary + key terms), the index uses it instead of the full chunk body.
 - **Rationale payload.** With `include_rationale=True`, every result carries `{bm25_score, ngram_score, metadata_boost, final_score, matched_concept_tags, matched_lo_refs, matched_key_terms, applied_filters, boost_contributions}`.
 - **Metadata-aware score boosts.** Three pure functions in `retrieval_scoring.py`: concept-graph overlap, LO match (explicit + implicit), prereq coverage. Multiplicative blend capped at `MAX_TOTAL_BOOST = 0.5`.
-- **Gold-standard query sets.** Hand-curated per-course queries at `LibV2/courses/<slug>/retrieval/gold_queries.jsonl` (20 for WCAG_201, 15 for DIGPED_101 at time of writing).
+- **Gold-standard query sets.** Hand-curated per-course queries at `LibV2/courses/<slug>/retrieval/gold_queries.jsonl` (users curate their own against the courses they load locally; this repo's tree does not ship populated query files for any specific course). See `docs/libv2/reference-retrieval.md` for the per-record shape and the "Adding gold queries to your own corpus" workflow.
 - **Evaluation harness.** `evaluate_retrieval()` computes MRR + recall@1/5/10 + per-query rationale. `libv2 retrieval-eval` CLI.
 - **Multi-query decomposition** (pre-existing, `multi_retriever.py`) — kept, documented as advanced API.
 
@@ -49,7 +49,7 @@ LibV2's reference retrieval is intentionally bounded. Anything more sophisticate
 
 - **Dense embeddings.** No embedding model, no vector index, no hybrid (dense+sparse) fusion. A downstream consumer adding these picks the model, handles the cache, owns the upgrade cadence.
 - **Cross-encoder rerankers.** The inference cost, model-version churn, and hyperparameter surface (how many candidates to rerank) belong downstream.
-- **Full eval infrastructure.** No ablation testing, no index-version regression harness, no MRR/NDCG beyond the recall@k + MRR shipped. The 35 gold queries are reference data for consumers' own eval, not a benchmark LibV2 optimizes against.
+- **Full eval infrastructure.** No ablation testing, no index-version regression harness, no MRR/NDCG beyond the recall@k + MRR shipped. Gold queries are a reference *shape* for consumers' own eval (users curate them locally against their own courses), not a benchmark LibV2 optimizes against.
 - **Online query APIs.** No HTTP server, no auth, no rate-limiting, no multi-tenant concerns. LibV2 is a library + CLI; online-retrieval-as-a-service belongs downstream.
 - **Domain-specific scoring beyond the three metadata boosts.** Custom reranking by user profile, recency, author authority, etc., are all out of scope.
 
@@ -57,14 +57,14 @@ LibV2's reference retrieval is intentionally bounded. Anything more sophisticate
 
 1. **Back-compat for `retrieve_chunks` callers.** When `include_rationale=False` (the default), `RetrievalResult.to_dict()` output is byte-identical to the pre-Worker-J schema. Production callers in `Trainforge/rag/libv2_bridge.py` are unaffected. Pinned by `Trainforge/tests/test_retrieval_improvements.py::TestWorkerJBackCompat`.
 2. **Metadata-aware scoring default on, escape hatch per boost.** Pure BM25 is one flag away: `--no-metadata-scoring`, or any of `--no-concept-graph-boost` / `--no-lo-boost`. Callers who need determinism against changing per-course graphs can switch it off.
-3. **Gold queries are hand-curated, not LO-derived.** Each `relevant_chunk_ids` entry must be a chunk whose text a human read. `kind: "lo-derived"` is reserved for explicit, tagged LO-expansion — retrieved numbers against LO-derived queries are NOT comparable to hand-curated numbers. This is written into both courses' `retrieval/README.md`.
-4. **Evaluation numbers are diagnostic, not gates.** MRR 0.67 on WCAG_201 is today's baseline; it may move with corpus changes. Downstream consumers build their own gates on their own retrieval; ours are for sanity-checking.
+3. **Gold queries are hand-curated, not LO-derived.** Each `relevant_chunk_ids` entry must be a chunk whose text a human read. `kind: "lo-derived"` is reserved for explicit, tagged LO-expansion — retrieved numbers against LO-derived queries are NOT comparable to hand-curated numbers. The "Adding gold queries to your own corpus" section of `docs/libv2/reference-retrieval.md` documents the curation rule for per-course gold query files users build locally.
+4. **Evaluation numbers are diagnostic, not gates.** Absolute MRR/recall@k numbers depend on the corpus they're computed against and on any corpus-specific curation; they are meant for sanity-checking a local pipeline, not for cross-package comparisons. Downstream consumers build their own gates on their own retrieval.
 
 ## Decision log (append-only)
 
 | Date | PR | What | Owner |
 |---|---|---|---|
-| 2026-04-17 | Worker J PR | Reference retrieval scope established. Rationale payload, metadata-aware scoring, 35 hand-curated gold queries across 2 courses, `retrieval-eval` CLI. | Worker J |
+| 2026-04-17 | Worker J PR | Reference retrieval scope established. Rationale payload, metadata-aware scoring, `retrieval-eval` CLI. Per-course `gold_queries.jsonl` is a user-curated artifact that stays local to the user's checkout (not shipped in this repo). | Worker J |
 
 ## Open questions / known issues not addressed
 
