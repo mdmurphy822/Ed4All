@@ -159,3 +159,33 @@ Before the pipeline moves past v0.1.x, the maintainer must populate the scaffold
 The v1.0 regeneration and delta table follow once v1.0 ships and are tracked on that branch.
 
 The reason this can't be deferred to "the v1.0 branch will produce both": once the chunker, the metrics, the canonicalisation, the orphan rule, and the pedagogy graph split are all on `main` (which they are after this PR merges), regenerating the v0.1.0 artifact byte-for-byte becomes structurally impossible. Either the maintainer holds a copy outside this checkout and commits it, or the `archive/v0.1.0-baseline/ARCHIVE_README.md` fallback (rebuild from commit `18c6613`) is invoked, with the divergence documented.
+
+---
+
+## §8 Cross-worker coordination (schema, metrics, branch policy)
+
+§1–§7 above describe v0.1.0 shape and the v0.1.x → v1.0 path. §8 describes how multiple concurrent workers (the `worker-*` branch family) keep shared constants and shared files from racing. The operational detail lives in [`docs/architecture/ADR-001-pipeline-shape.md`](docs/architecture/ADR-001-pipeline-shape.md) and [`docs/contributing/workers.md`](docs/contributing/workers.md); this section is the canonical top-level pointer.
+
+### §8.1 Chunk-schema-version policy
+
+The chunk object carries a `schema_version` string; `manifest.json` carries a matching `chunk_schema_version`. The current implied value is `"v3"`. Workers B, D, and E each add chunk fields and therefore all require the same bump to `"v4"`.
+
+- The bump is **batched** across B/D/E on a shared rebase branch `chunk-schema-v4`.
+- No worker bumps `CHUNK_SCHEMA_VERSION` independently. One bump per release train.
+- Full protocol: see ADR-001 Contract 1.
+
+### §8.2 `METRICS_SEMANTIC_VERSION` ownership
+
+`METRICS_SEMANTIC_VERSION` lives at `Trainforge/process_course.py:58`. It is owned by the **base pass** and governs the `metrics` block in `quality_report.json`.
+
+- Worker B owns the v3 → v4 bump (adds five flow metrics).
+- Subsequent bumps are coordinated through the append-only decision log at the bottom of ADR-001.
+- The alignment pass does NOT bump this constant. Alignment declares which base version it was computed against via `alignment.base_metrics_semantic_version`; downstream readers compare that integer against `metrics_semantic_version` to detect a stale re-run.
+- Full protocol: see ADR-001 Contract 2.
+
+### §8.3 Worker-coordination branch protocol
+
+- Branch names: `worker-<letter>/<slug>`. PR label: `worker-<letter>`.
+- Workers never share branches except the `chunk-schema-v4` rebase point for B/D/E.
+- Shared test fixtures under `Trainforge/tests/fixtures/` follow the `mini_course_<purpose-slug>` naming lock. Every new fixture ships a `README.md`.
+- Full protocol: see ADR-001 Contracts 4 and 5.
