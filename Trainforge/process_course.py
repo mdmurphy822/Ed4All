@@ -2126,6 +2126,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--llm-provider", default="mock", choices=["mock", "anthropic"],
                    help="LLM provider for alignment stage (default: mock)")
     p.add_argument("--import-to-libv2", action="store_true", help="Import into LibV2 after processing")
+    p.add_argument("--synthesize", action="store_true",
+                   help="Synthesize SFT/DPO training pairs from chunks after base processing (Worker C).")
+    p.add_argument("--synthesis-provider", default="mock", choices=["mock", "anthropic"],
+                   help="Provider for training-pair synthesis (default: mock).")
+    p.add_argument("--synthesis-seed", type=int, default=17,
+                   help="Base deterministic seed for training-pair synthesis (default: 17).")
     return p
 
 
@@ -2176,6 +2182,23 @@ def main():
             verbose=False,
         )
         align_main(align_args)
+
+    # Optional training-pair synthesis stage (Worker C)
+    if args.synthesize:
+        print("\n[Synthesis] Running training-pair synthesis stage...")
+        from Trainforge.synthesize_training import run_synthesis
+        try:
+            synth_stats = run_synthesis(
+                corpus_dir=Path(args.output),
+                course_code=args.course_code,
+                provider=args.synthesis_provider,
+                seed=args.synthesis_seed,
+            )
+            print(f"[Synthesis] Emitted {synth_stats.instruction_pairs_emitted} "
+                  f"instruction pairs, {synth_stats.preference_pairs_emitted} preference pairs "
+                  f"from {synth_stats.chunks_eligible}/{synth_stats.chunks_total} eligible chunks.")
+        except Exception as e:
+            print(f"[Synthesis] Failed: {e}")
 
     # Optional LibV2 import
     if args.import_to_libv2:
