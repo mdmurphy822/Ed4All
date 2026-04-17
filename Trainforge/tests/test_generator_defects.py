@@ -425,14 +425,14 @@ class TestFlowMetrics:
         report = proc._generate_quality_report(chunks_absent)
         assert report["metrics"]["interactive_components_rate"] == pytest.approx(0.0)
 
-    def test_metrics_semantic_version_is_four(self):
+    def test_metrics_semantic_version_is_five(self):
         from Trainforge.process_course import METRICS_SEMANTIC_VERSION
 
-        assert METRICS_SEMANTIC_VERSION == 4
+        assert METRICS_SEMANTIC_VERSION == 5
 
         proc = _bare_processor()
         report = proc._generate_quality_report([_chunk(id="c1")])
-        assert report["metrics_semantic_version"] == 4
+        assert report["metrics_semantic_version"] == 5
 
     def test_methodology_strings_cover_every_new_metric(self):
         proc = _bare_processor()
@@ -981,3 +981,105 @@ class TestFixtures:
             for obj in ch["objectives"]:
                 assert "week_scoped_ids" in obj
                 assert any(ws.startswith("w") for ws in obj["week_scoped_ids"])
+
+
+# ---------------------------------------------------------------------------
+# Worker P — package_completeness aggregate (METRICS_SEMANTIC_VERSION 5)
+# ---------------------------------------------------------------------------
+
+class TestPackageCompleteness:
+    """Worker P: top-level `package_completeness` aggregate. Flat mean of
+    the five enrichment coverage fractions (bloom / content_type_label /
+    key_terms / misconceptions / interactive_components). NOT inside
+    `metrics`. NOT weighted into `overall_quality_score`."""
+
+    def _full_chunk(self, **overrides):
+        """A chunk that populates every flow-metric field at 100%."""
+        c = _chunk(
+            id="c-full",
+            word_count=120, html="<p>content</p>",
+            bloom_level="apply",
+            learning_outcome_refs=["co-01"],
+            concept_tags=["alpha", "beta"],
+        )
+        c.update({
+            "content_type_label": "explanation",
+            "key_terms": [{"term": "alpha", "definition": "first"}],
+            "misconceptions": [{"misconception": "foo", "correction": "bar"}],
+        })
+        c["html"] = '<div class="flip-card">term</div>'  # matches COMPONENT_PATTERNS
+        c.update(overrides)
+        return c
+
+    def _bare_chunk(self, **overrides):
+        """A chunk with zero flow-metric coverage."""
+        c = _chunk(id="c-bare", word_count=120, html="<p>plain</p>",
+                   bloom_level="apply", learning_outcome_refs=["co-01"],
+                   concept_tags=["alpha", "beta"])
+        # Strip any potential component markers from the HTML so
+        # interactive_components_rate = 0.
+        c["html"] = "<p>plain text only</p>"
+        c.update(overrides)
+        return c
+
+    def test_top_level_not_inside_metrics(self):
+        proc = _bare_processor(pages_with_misconceptions=["w01"])
+        proc._valid_outcome_ids = {"co-01"}
+        report = proc._generate_quality_report([self._full_chunk()])
+        assert "package_completeness" in report
+        assert "package_completeness" not in report["metrics"]
+
+    def test_all_five_components_full(self):
+        proc = _bare_processor(pages_with_misconceptions=["w01"])
+        proc._valid_outcome_ids = {"co-01"}
+        report = proc._generate_quality_report([self._full_chunk()])
+        # Every component should be 1.0 on a fully-populated chunk
+        assert report["package_completeness"] == pytest.approx(1.0)
+
+    def test_bare_chunk_gives_partial_score(self):
+        """A chunk that carries bloom_level but none of the other four
+        enrichment fields aggregates to 0.2 (only bloom_level_coverage = 1.0)."""
+        proc = _bare_processor()  # no misconceptions pages declared
+        proc._valid_outcome_ids = {"co-01"}
+        # Misconceptions denom falls back to len(chunks) when no page
+        # declared them, so bare chunks with no misconceptions give 0.
+        report = proc._generate_quality_report([self._bare_chunk()])
+        assert report["package_completeness"] == pytest.approx(0.2, abs=0.001)
+
+    def test_overall_quality_score_unchanged_by_new_aggregate(self):
+        """Adding package_completeness must NOT alter overall_quality_score
+        for the same input chunks. The aggregate is top-level only."""
+        proc = _bare_processor(pages_with_misconceptions=["w01"])
+        proc._valid_outcome_ids = {"co-01"}
+        chunks = [self._full_chunk()]
+        report = proc._generate_quality_report(chunks)
+        # Existing overall-score formula (pre-Worker-P):
+        #   0.25*size + 0.20*tags + 0.20*html + 0.20*bloom + 0.15*lo
+        # With a single chunk that meets all thresholds, all terms are 1.0
+        # → overall = 1.0 (rounded).
+        assert report["overall_quality_score"] == pytest.approx(1.0, abs=0.001)
+
+    def test_methodology_entry_present(self):
+        proc = _bare_processor(pages_with_misconceptions=["w01"])
+        proc._valid_outcome_ids = {"co-01"}
+        report = proc._generate_quality_report([self._full_chunk()])
+        assert "package_completeness" in report["methodology"]
+        msg = report["methodology"]["package_completeness"]
+        # Methodology must call out the non-inclusion in overall_quality_score
+        assert "overall_quality_score" in msg.lower() or "weighted" in msg.lower()
+
+    def test_aggregate_is_flat_mean_of_declared_components(self):
+        """Assert the aggregate is exactly the mean of the five declared
+        components — not a subset, not weighted."""
+        proc = _bare_processor(pages_with_misconceptions=["w01"])
+        proc._valid_outcome_ids = {"co-01"}
+        # Make two chunks, one fully populated, one bare. That gives:
+        #   bloom_coverage = 1.0 (both have bloom_level)
+        #   content_type_label_coverage = 0.5 (1 of 2)
+        #   key_terms_coverage = 0.5
+        #   misconceptions_present_rate = 0.5 on denom=2 (1 of 2 has misc)
+        #   interactive_components_rate = 0.5 (1 of 2)
+        # mean = (1.0 + 0.5 + 0.5 + 0.5 + 0.5) / 5 = 0.6
+        chunks = [self._full_chunk(id="c1"), self._bare_chunk(id="c2")]
+        report = proc._generate_quality_report(chunks)
+        assert report["package_completeness"] == pytest.approx(0.6, abs=0.01)
