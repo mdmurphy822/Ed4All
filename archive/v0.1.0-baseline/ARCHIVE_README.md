@@ -4,9 +4,11 @@
 
 The pipeline state shipped on commit **`7403cf2`** (the parent of whatever
 commit you read this from) is the v0.1.x cutover. Before any further
-pipeline change ships, the **v0.1.0 WCAG_201 artifact** — the package the
-nine-finding defect analysis was performed against — must be snapshotted
-here, verbatim, with no re-scoring, no re-chunking, no re-anything.
+pipeline change ships, the **v0.1.0 real-domain artifact** — the first
+real knowledge package the pipeline produced (held locally by the
+maintainer, not shipped in this repo) and the package the nine-finding
+defect analysis was performed against — must be snapshotted here,
+verbatim, with no re-scoring, no re-chunking, no re-anything.
 
 This is the single immutable evidence the NSF TechAccess "before / after"
 narrative depends on. Once the v1.0 branch starts moving, regenerating the
@@ -45,8 +47,8 @@ generations.
 
 ## Status as of this commit
 
-**EMPTY.** The WCAG_201 artifact is not present in this checkout. Possible
-reasons:
+**EMPTY.** The v0.1.0 real-domain artifact is not present in this checkout.
+Possible reasons:
 
 1. The package lives outside this repo (a separate output directory the
    maintainer holds locally).
@@ -58,15 +60,19 @@ reasons:
 
 The repository owner (`mdmurphy822`) must either:
 
-- (a) Copy the WCAG_201 v0.1.0 outputs they assessed into this directory,
+- (a) Copy the v0.1.0 real-domain outputs they assessed into this directory,
   matching the layout above, and commit them with a message of the form
-  `archive: v0.1.0 WCAG_201 baseline (frozen as of <date>)`. **OR**
+  `archive: v0.1.0 real-domain baseline (frozen as of <date>)`. Note that
+  the real-domain corpus itself is deliberately held outside this public
+  repo; only the committed snapshot of the pipeline output structure
+  belongs here. **OR**
 - (b) If the artifact is genuinely lost, regenerate it by checking out
   commit `18c6613` (the last commit on `main` before the self-trust work
-  shipped), running the pipeline against the WCAG 2.1 source PDF, and
-  committing the outputs here. This is the lossy fallback — the regenerated
-  package will not be byte-identical to the originally-assessed one. Note
-  the regeneration in a sub-section here so the divergence is documented.
+  shipped), running the pipeline against the original source document,
+  and committing the outputs here. This is the lossy fallback — the
+  regenerated package will not be byte-identical to the originally-assessed
+  one. Note the regeneration in a sub-section here so the divergence is
+  documented.
 
 Until either (a) or (b) lands, the v1.0 severity flip described in
 `VERSIONING.md` §3 is contingent on a proxy (the synthetic clean fixture)
