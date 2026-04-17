@@ -984,6 +984,191 @@ class TestFixtures:
 
 
 # ---------------------------------------------------------------------------
+# Worker M1 — §4.4a enrichment-trace diagnostic
+# ---------------------------------------------------------------------------
+
+class TestMetadataTraceDiagnostic:
+    """Worker M1 instrumentation: ``_extract_section_metadata`` now returns a
+    4-tuple ending in a ``trace`` dict that names the source path for each
+    enrichment field. Tests cover the four primary trace values for
+    ``content_type_label`` plus the H3-signature trace value for
+    ``key_terms``."""
+
+    def _item(self, **overrides):
+        """Minimal parsed-item fixture matching what ``_parse_html`` emits."""
+        base = {
+            "title": "Some Page Title",
+            "sections": [],  # data-cf-* parsed sections
+            "learning_objectives": [],
+            "courseforge_metadata": None,
+            "_jsonld_tag_present": False,
+            "_jsonld_parse_failed": False,
+        }
+        base.update(overrides)
+        return base
+
+    def test_jsonld_section_match_populates_and_traces(self):
+        from Trainforge.process_course import CourseProcessor
+
+        proc = CourseProcessor.__new__(CourseProcessor)
+        item = self._item(
+            courseforge_metadata={
+                "sections": [{
+                    "heading": "Color Contrast",
+                    "contentType": "explanation",
+                    "bloomRange": ["understand"],
+                    "keyTerms": [{"term": "contrast ratio", "definition": "ratio of luminance"}],
+                }],
+            },
+        )
+        bloom, ctl, kt, trace = proc._extract_section_metadata(item, "Color Contrast")
+        assert ctl == "explanation"
+        assert len(kt) == 1
+        assert trace["content_type_label"] == "jsonld_section_match"
+        assert trace["key_terms"] == "jsonld_section_match"
+
+    def test_h2_no_jsonld_sections(self):
+        """Pages where JSON-LD has no `sections` array trace as H2."""
+        from Trainforge.process_course import CourseProcessor
+
+        proc = CourseProcessor.__new__(CourseProcessor)
+        item = self._item(courseforge_metadata={"sections": []})
+        _, ctl, kt, trace = proc._extract_section_metadata(item, "Any Heading")
+        assert ctl is None
+        assert kt == []
+        assert trace["content_type_label"] == "none_no_jsonld_sections"
+        assert trace["key_terms"] == "none_no_jsonld_sections"
+
+    def test_h1_heading_mismatch(self):
+        """JSON-LD sections present but heading drift causes no match."""
+        from Trainforge.process_course import CourseProcessor
+
+        proc = CourseProcessor.__new__(CourseProcessor)
+        item = self._item(
+            title="Page Title",
+            courseforge_metadata={
+                "sections": [{"heading": "Color Contrast", "contentType": "explanation"}],
+            },
+        )
+        _, ctl, _, trace = proc._extract_section_metadata(item, "Color—Contrast")  # em-dash drift
+        assert ctl is None
+        assert trace["content_type_label"] == "none_heading_mismatch"
+
+    def test_h4_no_sections_path(self):
+        """When chunk heading equals page title and no JSON-LD section has
+        that heading, the trace attributes to the no-sections code path (H4)."""
+        from Trainforge.process_course import CourseProcessor
+
+        proc = CourseProcessor.__new__(CourseProcessor)
+        item = self._item(
+            title="My Page Title",
+            courseforge_metadata={
+                "sections": [{"heading": "Different Section Heading", "contentType": "explanation"}],
+            },
+        )
+        _, ctl, _, trace = proc._extract_section_metadata(item, "My Page Title")
+        assert ctl is None
+        assert trace["content_type_label"] == "none_no_sections_path"
+
+    def test_h5_jsonld_parse_failed(self):
+        """When the parser flagged a JSON-LD parse failure, trace wins over H2."""
+        from Trainforge.process_course import CourseProcessor
+
+        proc = CourseProcessor.__new__(CourseProcessor)
+        item = self._item(
+            courseforge_metadata=None,  # parse failed → cf_meta is None
+            _jsonld_tag_present=True,
+            _jsonld_parse_failed=True,
+        )
+        _, ctl, _, trace = proc._extract_section_metadata(item, "Any Heading")
+        assert ctl is None
+        assert trace["content_type_label"] == "none_jsonld_parse_failed"
+
+    def test_h3_short_circuit_signature(self):
+        """Section matched, contentType set, but keyTerms empty — H3 signature
+        on key_terms (the short-circuit at ``if not content_type_label:`` means
+        the data-cf-* fallback that could have filled key_terms never runs)."""
+        from Trainforge.process_course import CourseProcessor
+
+        proc = CourseProcessor.__new__(CourseProcessor)
+        item = self._item(
+            courseforge_metadata={
+                "sections": [{
+                    "heading": "X", "contentType": "explanation",
+                    "keyTerms": [],  # explicitly empty
+                }],
+            },
+        )
+        _, ctl, kt, trace = proc._extract_section_metadata(item, "X")
+        assert ctl == "explanation"
+        assert kt == []
+        assert trace["content_type_label"] == "jsonld_section_match"
+        assert trace["key_terms"] == "jsonld_section_match_empty"
+
+    def test_data_cf_fallback_populates_and_traces(self):
+        """When JSON-LD sections have no match but data-cf-* sections do,
+        the fallback populates + traces as ``data_cf_fallback``."""
+        from Trainforge.process_course import CourseProcessor
+        from Trainforge.parsers.html_content_parser import ContentSection
+
+        proc = CourseProcessor.__new__(CourseProcessor)
+        item = self._item(
+            courseforge_metadata={"sections": []},
+            sections=[ContentSection(
+                heading="Some Section",
+                level=2,
+                content="",
+                word_count=0,
+                content_type="example",
+                key_terms=["alpha", "beta"],
+            )],
+        )
+        _, ctl, kt, trace = proc._extract_section_metadata(item, "Some Section")
+        assert ctl == "example"
+        assert [k["term"] for k in kt] == ["alpha", "beta"]
+        assert trace["content_type_label"] == "data_cf_fallback"
+        assert trace["key_terms"] == "data_cf_fallback"
+
+    def test_generate_enrichment_trace_report_shape(self):
+        """The report groups chunks by _metadata_trace values per field."""
+        from collections import defaultdict
+        from Trainforge.process_course import CourseProcessor
+
+        proc = CourseProcessor.__new__(CourseProcessor)
+        proc.course_code = "MINI_101"
+        proc.stats = {"total_chunks": 3}
+        chunks = [
+            {"id": "c1", "_metadata_trace": {"content_type_label": "jsonld_section_match",
+                                              "key_terms": "jsonld_section_match",
+                                              "bloom_level": "section_jsonld",
+                                              "misconceptions": "none"}},
+            {"id": "c2", "_metadata_trace": {"content_type_label": "none_no_jsonld_sections",
+                                              "key_terms": "none_no_jsonld_sections",
+                                              "bloom_level": "verbs",
+                                              "misconceptions": "none"}},
+            {"id": "c3", "_metadata_trace": {"content_type_label": "none_no_jsonld_sections",
+                                              "key_terms": "none_no_jsonld_sections",
+                                              "bloom_level": "verbs",
+                                              "misconceptions": "jsonld_page_misconceptions"}},
+        ]
+        r = proc._generate_enrichment_trace_report(chunks)
+        assert r["total_chunks"] == 3
+        assert r["fields"]["content_type_label"]["populated_count"] == 1  # only c1
+        assert r["fields"]["content_type_label"]["populated_pct"] == pytest.approx(0.333, abs=0.001)
+        # H2 row should show count 2
+        h2_row = next(
+            row for row in r["fields"]["content_type_label"]["by_trace"]
+            if row["trace"] == "none_no_jsonld_sections"
+        )
+        assert h2_row["count"] == 2
+        assert h2_row["hypothesis"] == "H2"
+        # Misconceptions
+        assert r["fields"]["misconceptions"]["populated_count"] == 1  # only c3
+        # H map reference present
+        assert "H1" in r["hypotheses_reference"]
+
+
+# ---------------------------------------------------------------------------
 # Worker P — package_completeness aggregate (METRICS_SEMANTIC_VERSION 5)
 # ---------------------------------------------------------------------------
 
