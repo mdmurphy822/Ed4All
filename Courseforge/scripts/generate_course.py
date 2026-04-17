@@ -12,7 +12,7 @@ and Courseforge HTML templates. Each week produces:
   - discussion.html (forum prompt with guidelines)
 
 Usage:
-    python generate_course.py DIGPED_101_course_data.json output_dir/
+    python generate_course.py SAMPLE_101_course_data.json output_dir/
 """
 
 import argparse
@@ -74,7 +74,7 @@ def _co_to_generator_format(co: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def load_canonical_objectives(objectives_path: Path) -> Dict[str, Any]:
-    """Load the canonical objectives JSON (e.g. ``WCAG_201_objectives.json``)
+    """Load the canonical objectives JSON (e.g. ``SAMPLE_101_objectives.json``)
     and return a structure keyed for per-week LO resolution.
 
     Returns a dict with keys:
@@ -780,7 +780,7 @@ def generate_course(
             activities, self-checks, etc.).
         output_dir: Directory to write the generated ``week_XX/`` folders.
         objectives_path: Optional path to the canonical objectives JSON
-            (e.g. ``Courseforge/inputs/exam-objectives/WCAG_201_objectives.json``).
+            (e.g. ``Courseforge/inputs/exam-objectives/SAMPLE_101_objectives.json``).
             When provided, each page's ``learningObjectives`` JSON-LD is
             emitted using canonical CO / TO IDs resolved from the week
             mapping declared in the objectives JSON. Pass ``None`` to

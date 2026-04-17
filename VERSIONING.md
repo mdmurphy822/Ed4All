@@ -1,6 +1,6 @@
 # Ed4All Versioning and Roadmap
 
-This document is the honest characterisation of what Ed4All delivers today, what it does not, and what v1.0 is expected to deliver. It exists because the WCAG_201 knowledge package — the first real end-to-end artifact the pipeline produced — surfaced nine concrete issues that are best understood as *diagnostic signal from v0.1.0*, not as product failures.
+This document is the honest characterisation of what Ed4All delivers today, what it does not, and what v1.0 is expected to deliver. It exists because the first real end-to-end knowledge package the pipeline produced (an accessibility-domain corpus, held locally and not shipped in this repo) surfaced nine concrete issues that are best understood as *diagnostic signal from v0.1.0*, not as product failures.
 
 The branch that shipped this file (`claude/fix-package-quality-FyMue`) moves Ed4All out of "v0.1.0 prototype" mode and into "v0.1.x with honest self-evaluation." The follow-up branch flips strict mode on and promotes two workflow gates from warning to critical (see §Severity flip trigger below).
 
@@ -21,7 +21,7 @@ This is enough to pitch the pipeline. It is *not* enough to ship AI-ready traini
 
 ## §2 Known v0.1.0 limitations — the nine diagnostic signals
 
-These are artifacts the WCAG_201 assessment surfaced. Each is framed as what v0.1.0 is designed to expose, not a bug that slipped through:
+These are artifacts the v0.1.0 real-domain assessment surfaced. Each is framed as what v0.1.0 is designed to expose, not a bug that slipped through:
 
 1. **Footer contamination in ~69% of chunks.** Courseforge emits the copyright notice in the page body rather than a template region. Trainforge's extractor consumes everything inside `<body>`. The fix is ownership: Courseforge moves the notice into a `data-cf-role="template-chrome"` region and Trainforge skips that role. (§2.3 of the implementation plan; see `Trainforge/rag/boilerplate_detector.py` for the defensive layer shipped in this branch.)
 
@@ -37,7 +37,7 @@ These are artifacts the WCAG_201 assessment surfaced. Each is framed as what v0.
 
 7. **SC name drift.** Sixteen WCAG success criteria appeared under inconsistent names (`Contrast Minimum`, `Contrast Minimum, Level AA`, `Contrast (Minimum)` …). Canonicalisation now applied to chunk text, key-terms metadata, misconceptions, and **concept tags** — the last is where retrieval sharpness actually lives, because the graph fragments otherwise. (§4.5.)
 
-8. **Factual inaccuracies.** The WCAG_201 content claimed "87 success criteria" (W3C says 86) and enumerated "29+29+17+4" (sums to 79). A new `ContentFactValidator` (§4.6) flags both numeric-claim mismatches and internal-arithmetic contradictions. Warning-only today.
+8. **Factual inaccuracies.** The v0.1.0 real-domain content made a domain-specific numeric claim that conflicted with authoritative sources and contained an internal arithmetic contradiction. A new `ContentFactValidator` (§4.6) flags both numeric-claim mismatches and internal-arithmetic contradictions. Warning-only today.
 
 9. **`leak_check` only inspected Q/A leakage.** Extended to detect corpus-wide boilerplate repetition (§4.7).
 
@@ -60,7 +60,7 @@ The gates `outcome_ref_integrity` and `content_fact_check` ship in `config/workf
 
 > 1. **Synthetic floor.** `Trainforge/tests/fixtures/mini_course_clean/` runs green in CI with `metrics.footer_contamination_rate == 0`, `integrity.broken_refs == []`, and `integrity.factual_inconsistency_flags == []`.
 >
-> 2. **Real-domain floor.** A clean v1.0 regeneration of WCAG_201 (or another real domain corpus, see §6(b)) produces a `quality_report.json` with the same three integrity invariants holding. The `archive/v0.1.0-baseline/` snapshot exists so this regeneration has a comparator.
+> 2. **Real-domain floor.** A clean v1.0 regeneration of the v0.1.0 baseline corpus (or another real domain corpus, see §6(b)) produces a `quality_report.json` with the same three integrity invariants holding. The `archive/v0.1.0-baseline/` snapshot exists so this regeneration has a comparator.
 
 The synthetic floor proves the code paths work; the real-domain floor proves the architecture handles the messiness fixtures can't simulate. Either alone is a weaker bar than the NSF narrative implies — both must hold. The follow-up PR cannot cite "CI green" alone as justification for the flip.
 
@@ -101,7 +101,7 @@ This branch ships **only the Trainforge half of both decisions.** The Courseforg
 
 ### What this means for the severity flip
 
-The "real-domain floor" requirement in §3 (Severity flip trigger) cannot be satisfied until the Courseforge-side work is done. A v1.0 WCAG_201 regeneration with Courseforge still emitting body-embedded copyright will keep the n-gram detector load-bearing, and the strict-mode integrity gate would be operating on top of a defensive layer rather than a clean source. The severity flip is therefore implicitly blocked on the Courseforge follow-up — that should be made explicit in the follow-up PR description.
+The "real-domain floor" requirement in §3 (Severity flip trigger) cannot be satisfied until the Courseforge-side work is done. A v1.0 real-domain regeneration with Courseforge still emitting body-embedded copyright will keep the n-gram detector load-bearing, and the strict-mode integrity gate would be operating on top of a defensive layer rather than a clean source. The severity flip is therefore implicitly blocked on the Courseforge follow-up — that should be made explicit in the follow-up PR description.
 
 ---
 
@@ -126,7 +126,7 @@ Ordered by what the work currently on the v1.0 branch list looks like:
 v1.0 is not a marketing milestone. It is a concrete set of conditions all of which must hold:
 
 - **(a) Self-trust.** `mini_course_clean/` runs green with `strict_mode=True` and zero integrity violations.
-- **(b) Domain-agnostic validation.** The pipeline has been run against **≥3 distinct domain corpora** with no new defect classes surfaced. One is WCAG_201; the other two must be outside accessibility (for example: a STEM textbook and a humanities textbook). The author should deliberately pick domains they are *less* expert in, to stress-test whether the defects surfaced in v0.1.0 are universal pipeline issues or WCAG-specific artifacts. This is the single test that tells us whether Ed4All generalises.
+- **(b) Domain-agnostic validation.** The pipeline has been run against **≥3 distinct domain corpora** with no new defect classes surfaced. One is the original v0.1.0 real-domain corpus (accessibility); the other two must be outside that domain (for example: a STEM textbook and a humanities textbook). The author should deliberately pick domains they are *less* expert in, to stress-test whether the defects surfaced in v0.1.0 are universal pipeline issues or domain-specific artifacts. This is the single test that tells us whether Ed4All generalises.
 - **(c) Severity flip completed.** Both `outcome_ref_integrity` and `content_fact_check` at `critical`. `strict_mode=True` default.
 - **(d) README matches reality.** No paragraph overclaims what the graph or the metrics deliver. The reverse is fine — selling short is always safer than the claim/reality gap a sophisticated reviewer will immediately notice.
 
@@ -134,14 +134,14 @@ v1.0 is not a marketing milestone. It is a concrete set of conditions all of whi
 
 ## §7 Grant-narrative framing (NSF TechAccess "AI-Ready America")
 
-Ed4All is the strongest portfolio piece under the NSF TechAccess framing. DART is one stage of it; the other three stages (Courseforge, Trainforge, LibV2) are the differentiator. The WCAG_201 package is a genuine demonstration of the pipeline working end-to-end on a domain that sits directly inside Ed4All's accessibility mission.
+Ed4All is the strongest portfolio piece under the NSF TechAccess framing. DART is one stage of it; the other three stages (Courseforge, Trainforge, LibV2) are the differentiator. The v0.1.0 real-domain corpus (an accessibility-mission course, held locally, not shipped in this repo) is a genuine demonstration of the pipeline working end-to-end on a domain that sits directly inside Ed4All's mission.
 
 For a proposal, the claim structure is:
 
-- **Here is v0.1.0 output** (the WCAG_201 package and its defects).
+- **Here is v0.1.0 output** (the real-domain package and its defects).
 - **Here is the defect analysis** (the nine signals documented in §2).
 - **Here is the v0.1.0 → v1.0 roadmap** (this document).
-- **Here is v1.0 output on the same domain** (the regenerated WCAG_201 package once v1.0 is shipped).
+- **Here is v1.0 output on the same domain** (the regenerated package once v1.0 is shipped).
 - **Here are the measured deltas** (footer contamination, outcome ref integrity, graph fragmentation, quality-report trustworthiness).
 
 That structure is stronger than any "here's a pipeline we built" narrative because it demonstrates a *method*: measure, characterise, remediate, re-measure. Funded proposals reward method.
@@ -152,7 +152,7 @@ This branch ships an empty `archive/v0.1.0-baseline/` scaffold with an `ARCHIVE_
 
 Before the pipeline moves past v0.1.x, the maintainer must populate the scaffold with:
 
-1. The v0.1.0 WCAG_201 artifact as shipped (full Trainforge output dir tree — manifest.json, course.json, corpus/, graph/, pedagogy/, quality/, training_specs/).
+1. The v0.1.0 real-domain artifact as shipped (full Trainforge output dir tree — manifest.json, course.json, corpus/, graph/, pedagogy/, quality/, training_specs/).
 2. The original v0.1.0 `quality_report.json` exactly as it was emitted (the dishonest scores).
 3. Optional: a `quality_report_rescored_v2.json` produced by re-running the v0.1.x self-trust metrics against the same unchanged chunks. Same input, two metric generations, side-by-side comparator.
 
