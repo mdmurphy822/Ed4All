@@ -306,9 +306,33 @@ workflows:
             severity: critical
             threshold:
               max_leaks: 0
+              # §4.7 corpus-wide boilerplate sub-check. Warning-only today;
+              # flips to blocking in the v1.0 severity pass (VERSIONING.md §3).
+              max_boilerplate_chunk_fraction: 0.10
+              boilerplate_ngram_tokens: 15
             behavior:
               on_fail: block
               on_error: fail_closed
+
+          - gate_id: outcome_ref_integrity
+            validator: lib.validators.leak_check.LeakCheckValidator
+            # Warning in v0.1.x — flips to `critical` in the follow-up PR
+            # once mini_course_clean/ runs green per VERSIONING.md §3.
+            severity: warning
+            threshold:
+              max_broken_refs: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+
+          - gate_id: content_fact_check
+            validator: lib.validators.content_facts.ContentFactValidator
+            severity: warning
+            threshold:
+              max_fact_flags: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
 
           - gate_id: question_quality
             validator: lib.validators.question_quality.QuestionQualityValidator
