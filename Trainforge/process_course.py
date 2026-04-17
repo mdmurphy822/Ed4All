@@ -86,6 +86,26 @@ METRICS_SEMANTIC_VERSION = 5
 CHUNK_SCHEMA_VERSION = "v4"
 
 
+# Worker M1 (§4.4a diagnostic): maps each _metadata_trace value to the
+# VERSIONING.md §4.4a hypothesis it implicates. Removed by Worker M2.
+_HYPOTHESIS_BY_TRACE: Dict[str, str] = {
+    "jsonld_section_match": "-",
+    "jsonld_section_match_empty": "H3",  # short-circuit signature on key_terms
+    "data_cf_fallback": "-",
+    "none_no_jsonld_sections": "H2",
+    "none_jsonld_parse_failed": "H5",
+    "none_heading_mismatch": "H1",
+    "none_no_sections_path": "H4",
+    "section_jsonld": "-",
+    "page_jsonld": "-",
+    "lo_inherited": "-",
+    "verbs": "-",
+    "default": "-",
+    "jsonld_page_misconceptions": "-",
+    "none": "?",
+}
+
+
 class PipelineIntegrityError(RuntimeError):
     """Raised by :class:`CourseProcessor` in strict_mode when quality_report
     integrity invariants fail before writing final metadata.
@@ -713,6 +733,19 @@ class CourseProcessor:
             parsed = self.html_parser.parse(content)
             week_num = extract_week_number(item["path"])
 
+            # Worker M1 diagnostic (§4.4a H5 detection): if a JSON-LD
+            # <script type="application/ld+json"> tag is present in the raw
+            # HTML but the parser returned no courseforge metadata, the
+            # block either failed to parse (H5 signature) or parsed to a
+            # non-dict payload. Distinguished here from H2 (tag genuinely
+            # absent).
+            jsonld_tag_present = bool(
+                re.search(r'<script\s+type=["\']application/ld\+json["\']', content, re.IGNORECASE)
+            )
+            jsonld_parse_failed = (
+                jsonld_tag_present and parsed.metadata.get("courseforge") is None
+            )
+
             parsed_items.append({
                 "item_id": item["id"],
                 "item_path": item["path"],
@@ -732,6 +765,9 @@ class CourseProcessor:
                 "misconceptions": parsed.misconceptions,
                 "suggested_assessment_types": parsed.suggested_assessment_types,
                 "courseforge_metadata": parsed.metadata.get("courseforge"),
+                # Worker M1 diagnostic flags (§4.4a H5 detection)
+                "_jsonld_tag_present": jsonld_tag_present,
+                "_jsonld_parse_failed": jsonld_parse_failed,
             })
 
         self.stats["modules_processed"] = len([p for p in parsed_items if p["resource_type"] == "page"])
@@ -1060,7 +1096,7 @@ class CourseProcessor:
         # text verb heuristic → hardcoded default. Every chunk ends up with
         # a bloom_level; bloom_level_source records where it came from so
         # downstream consumers can weight low-confidence sources.
-        bloom_level, content_type_label, key_terms = self._extract_section_metadata(
+        bloom_level, content_type_label, key_terms, section_trace = self._extract_section_metadata(
             item, section_heading
         )
         bloom_source = "section_jsonld" if bloom_level else None
@@ -1178,6 +1214,19 @@ class CourseProcessor:
             if kt_joined:
                 chunk["retrieval_text"] = f"{chunk['summary']} {kt_joined}".strip()
 
+        # Worker M1 (§4.4a diagnostic): temporary trace recording where each
+        # enrichment field came from. Removed by the Worker M2 fix PR.
+        chunk["_metadata_trace"] = {
+            "content_type_label": section_trace.get("content_type_label", "none"),
+            "key_terms": section_trace.get("key_terms", "none"),
+            "bloom_level": bloom_source or (
+                "section_jsonld" if bloom_level and section_trace.get("content_type_label") == "jsonld_section_match" else "none"
+            ),
+            "misconceptions": "jsonld_page_misconceptions" if chunk.get("misconceptions") else (
+                "none_jsonld_parse_failed" if item.get("_jsonld_parse_failed") else "none"
+            ),
+        }
+
         # Stamp the chunk schema version on every chunk so downstream
         # readers can gate on capabilities without re-reading manifest.json.
         chunk["schema_version"] = CHUNK_SCHEMA_VERSION
@@ -1192,42 +1241,119 @@ class CourseProcessor:
 
     def _extract_section_metadata(
         self, item: Dict[str, Any], section_heading: str
-    ) -> Tuple[Optional[str], Optional[str], List[Dict[str, str]]]:
+    ) -> Tuple[Optional[str], Optional[str], List[Dict[str, str]], Dict[str, str]]:
         """Extract bloom_level, content_type_label, and key_terms for a section.
 
         Checks JSON-LD sections metadata first, then falls back to
         ContentSection data-cf-* attributes.
+
+        Returns a 4-tuple: (bloom_level, content_type_label, key_terms, trace).
+        ``trace`` is a Worker M1 diagnostic (VERSIONING.md §4.4a) naming the
+        source path for each field. Values:
+
+          - ``jsonld_section_match``        — JSON-LD section matched + populated
+          - ``jsonld_section_match_empty``  — JSON-LD section matched but that
+                                              specific field was empty on it
+                                              (the H3 short-circuit signature
+                                              for key_terms when contentType
+                                              is present but keyTerms is not)
+          - ``data_cf_fallback``            — data-cf-* section path populated
+          - ``none_no_jsonld_sections``     — `cf_meta.sections` absent (H2)
+          - ``none_jsonld_parse_failed``    — JSON-LD `<script>` present in
+                                              raw HTML but parse failed (H5)
+          - ``none_heading_mismatch``       — sections exist but no heading
+                                              matched the chunk heading (H1)
+          - ``none_no_sections_path``       — this chunk came via the
+                                              `item["sections"] is empty`
+                                              code path in `_chunk_content`
+                                              (H4 signature — `section_heading`
+                                              equals the page title, and no
+                                              section with that heading exists
+                                              in the JSON-LD `sections` list)
+          - ``none``                        — residual missing
         """
         bloom_level: Optional[str] = None
         content_type_label: Optional[str] = None
         key_terms: List[Dict[str, str]] = []
+        trace: Dict[str, str] = {
+            "content_type_label": "none",
+            "key_terms": "none",
+        }
 
         # Normalize heading: strip "(part N)" suffix added by _chunk_text_block
         # so multi-part chunks still match their JSON-LD / data-cf-* metadata.
         chunk_heading = re.sub(r'\s*\(part\s+\d+\)\s*$', '', section_heading).lower()
 
-        # Try JSON-LD sections metadata
+        # Signals for hypothesis discrimination (Worker M1 instrumentation).
         cf_meta = item.get("courseforge_metadata")
-        if cf_meta and cf_meta.get("sections"):
+        jsonld_has_sections = bool(cf_meta and cf_meta.get("sections"))
+        jsonld_parse_failed = bool(item.get("_jsonld_parse_failed"))
+        section_match_found = False
+
+        # Try JSON-LD sections metadata
+        if jsonld_has_sections:
             for sec in cf_meta["sections"]:
                 if sec.get("heading", "").lower() == chunk_heading:
-                    content_type_label = sec.get("contentType")
+                    section_match_found = True
+                    sec_content_type = sec.get("contentType")
+                    if sec_content_type:
+                        content_type_label = sec_content_type
+                        trace["content_type_label"] = "jsonld_section_match"
                     bloom_range = sec.get("bloomRange", [])
                     if bloom_range:
                         bloom_level = bloom_range[0] if isinstance(bloom_range, list) else bloom_range
                     for kt in sec.get("keyTerms", []):
                         if isinstance(kt, dict) and kt.get("term"):
                             key_terms.append({"term": kt["term"], "definition": kt.get("definition", "")})
+                    if key_terms:
+                        trace["key_terms"] = "jsonld_section_match"
+                    elif content_type_label:
+                        # H3 signature: section matched, contentType set,
+                        # but keyTerms empty on the section. The data-cf-*
+                        # fallback below is gated by `if not content_type_label`
+                        # so it never runs — key_terms stays empty.
+                        trace["key_terms"] = "jsonld_section_match_empty"
                     break
 
-        # Fallback: data-cf-* attributes from parsed sections
+        # Fallback: data-cf-* attributes from parsed sections.
+        # NOTE: the original gate is ``if not content_type_label`` which is
+        # exactly the H3 short-circuit — if JSON-LD provided contentType but
+        # not keyTerms, the data-cf-* path never fills key_terms. Preserved
+        # here verbatim so the diagnostic sees the current (un-fixed) behaviour.
         if not content_type_label:
             for section in item.get("sections", []):
                 if section.heading.lower() == chunk_heading:
-                    content_type_label = section.content_type
+                    if section.content_type:
+                        content_type_label = section.content_type
+                        trace["content_type_label"] = "data_cf_fallback"
                     if section.key_terms:
                         key_terms = [{"term": t, "definition": ""} for t in section.key_terms]
+                        trace["key_terms"] = "data_cf_fallback"
                     break
+
+        # Categorize remaining `none` values by hypothesis so the trace report
+        # can attribute each failure to H1/H2/H4/H5.
+        if trace["content_type_label"] == "none":
+            if jsonld_parse_failed:
+                trace["content_type_label"] = "none_jsonld_parse_failed"
+            elif not jsonld_has_sections:
+                # H2 — JSON-LD for the page either absent or has an empty
+                # `sections` array. No section metadata to match against.
+                trace["content_type_label"] = "none_no_jsonld_sections"
+            elif section_heading == item.get("title", ""):
+                # H4 — chunk heading is the page title; JSON-LD sections
+                # are keyed by section headings, so structurally no match
+                # is possible on this path.
+                trace["content_type_label"] = "none_no_sections_path"
+            else:
+                # H1 — JSON-LD sections populated but the heading drifted
+                # (entity / whitespace / punctuation / case mismatch).
+                trace["content_type_label"] = "none_heading_mismatch"
+        if trace["key_terms"] == "none":
+            # key_terms failure mirrors the content_type outcome for the
+            # non-H3 cases, plus the H3-signature case handled above.
+            if trace["content_type_label"].startswith("none_"):
+                trace["key_terms"] = trace["content_type_label"]
 
         # Fallback: derive bloom_level from learning objectives
         if not bloom_level and item.get("learning_objectives"):
@@ -1236,7 +1362,7 @@ class CourseProcessor:
                     bloom_level = lo.bloom_level
                     break
 
-        return bloom_level, content_type_label, key_terms
+        return bloom_level, content_type_label, key_terms, trace
 
     # ------------------------------------------------------------------
     # Chunk helpers
@@ -2271,6 +2397,61 @@ class CourseProcessor:
                 + ". Disable strict_mode to produce a non-final artifact."
             )
 
+    def _generate_enrichment_trace_report(
+        self, chunks: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Worker M1 (§4.4a diagnostic): group chunks by ``_metadata_trace``
+        value per enrichment field and compute counts + percentages.
+
+        Emitted alongside ``quality_report.json`` as ``metadata_trace_report.json``.
+        Deleted by the Worker M2 fix PR once the root cause is addressed.
+
+        Each section of the output answers "of chunks where this field landed
+        / didn't land, which code path / hypothesis produced that outcome?"
+        """
+        from collections import Counter as _Counter
+
+        fields = ("content_type_label", "key_terms", "bloom_level", "misconceptions")
+        total = len(chunks) or 1
+        per_field: Dict[str, Dict[str, Any]] = {}
+
+        for field in fields:
+            counter: _Counter = _Counter()
+            for c in chunks:
+                trace = c.get("_metadata_trace") or {}
+                counter[trace.get(field, "none")] += 1
+            rows = []
+            for trace_value, count in sorted(counter.items(), key=lambda kv: -kv[1]):
+                rows.append({
+                    "trace": trace_value,
+                    "count": count,
+                    "pct": round(count / total, 3),
+                    "hypothesis": _HYPOTHESIS_BY_TRACE.get(trace_value, "n/a"),
+                })
+            # Aggregate: how many chunks got this field populated?
+            populated = sum(
+                cnt for tv, cnt in counter.items() if not tv.startswith("none")
+            )
+            per_field[field] = {
+                "populated_count": populated,
+                "populated_pct": round(populated / total, 3),
+                "by_trace": rows,
+            }
+
+        return {
+            "course_code": self.course_code,
+            "total_chunks": len(chunks),
+            "generated_at": datetime.now().isoformat(),
+            "fields": per_field,
+            "hypotheses_reference": {
+                "H1": "heading-normalisation drift between Courseforge emit + Trainforge consume",
+                "H2": "JSON-LD sections genuinely absent on the page",
+                "H3": "content_type_label short-circuit at _extract_section_metadata gate — JSON-LD supplies contentType but not keyTerms, so data-cf-* fallback never runs",
+                "H4": "no-sections code path — chunk heading equals page title, JSON-LD sections keyed by section heading → no match",
+                "H5": "JSON-LD script tag present but JSON parse failed; chunker treats as absent",
+            },
+        }
+
     def _build_pedagogy_summary(
         self, chunks: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
@@ -2452,6 +2633,12 @@ class CourseProcessor:
         # Pedagogy model (full: module sequence, bloom progression, prereq chain)
         pedagogy = self._build_pedagogy_summary(chunks=chunks)
         _write(self.pedagogy_dir / "pedagogy_model.json", pedagogy)
+
+        # Worker M1 (§4.4a diagnostic): enrichment-trace report alongside
+        # quality_report.json. Removed by the Worker M2 fix PR.
+        if chunks:
+            trace_report = self._generate_enrichment_trace_report(chunks)
+            _write(self.quality_dir / "metadata_trace_report.json", trace_report)
 
         # Training specs
         training_specs = {
