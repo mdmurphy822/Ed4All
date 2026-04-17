@@ -65,7 +65,13 @@ from Trainforge.rag.wcag_canonical_names import canonicalize_sc_references
 #     content_type_label_coverage, key_terms_coverage,
 #     key_terms_with_definitions_rate, misconceptions_present_rate,
 #     interactive_components_rate. See docs/metrics/flow-metrics.md. (Worker B)
-METRICS_SEMANTIC_VERSION = 4
+# v5: adds top-level `package_completeness` aggregate — a flat mean of the
+#     five enrichment coverage fractions. Answers "of the metadata this
+#     package claims to provide, how much actually landed." NOT inside
+#     `metrics`; NOT weighted into `overall_quality_score`. Separate
+#     top-level key so consumers can read one honest number without
+#     cross-referencing five metrics. (Worker P)
+METRICS_SEMANTIC_VERSION = 5
 
 # Chunk schema version. Bumped by the first of Workers B / D / E to touch
 # chunk shape (ADR-001 Contract 1). v4 adds:
@@ -2015,6 +2021,22 @@ class CourseProcessor:
         }
         metrics_block.update(flow_metrics)
 
+        # Worker P (v5): package_completeness — flat mean of the five
+        # enrichment coverage fractions. Surfaced as its own top-level key
+        # (NOT inside `metrics`, NOT weighted into `overall_quality_score`)
+        # so a consumer can read one number without cross-referencing five.
+        package_completeness_components = (
+            round(bloom_coverage, 3),
+            flow_metrics.get("content_type_label_coverage", 0.0),
+            flow_metrics.get("key_terms_coverage", 0.0),
+            flow_metrics.get("misconceptions_present_rate", 0.0),
+            flow_metrics.get("interactive_components_rate", 0.0),
+        )
+        package_completeness = round(
+            sum(package_completeness_components) / len(package_completeness_components),
+            3,
+        )
+
         methodology_block: Dict[str, str] = {
             "html_preservation_rate": (
                 "Fraction of chunks whose HTML parses with balanced open/close tags "
@@ -2037,6 +2059,15 @@ class CourseProcessor:
             "follows_chunk_boundary_violations": (
                 "Count of non-null follows_chunk links that cross lesson boundaries."
             ),
+            "package_completeness": (
+                "Flat mean of bloom_level_coverage, content_type_label_coverage, "
+                "key_terms_coverage, misconceptions_present_rate, and "
+                "interactive_components_rate. Answers: of the metadata this "
+                "package claims to provide, how much actually landed. Not a "
+                "weighted quality score — a flat completeness indicator. "
+                "Emitted at top level (sibling of overall_quality_score), NOT "
+                "inside `metrics`, and NOT weighted into overall_quality_score."
+            ),
         }
         methodology_block.update(flow_methodology)
 
@@ -2052,6 +2083,7 @@ class CourseProcessor:
         return {
             "metrics_semantic_version": METRICS_SEMANTIC_VERSION,
             "overall_quality_score": round(overall, 3),
+            "package_completeness": package_completeness,
             "metrics": metrics_block,
             "methodology": methodology_block,
             "integrity": integrity_block,

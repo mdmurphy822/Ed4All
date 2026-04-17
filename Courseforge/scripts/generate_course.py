@@ -286,15 +286,15 @@ def _wrap_page(title: str, course_code: str, week_num: int, body_html: str,
   <style>{COURSEFORGE_CSS}</style>{json_ld}
 </head>
 <body>
-  <a href="#main-content" class="skip-link">Skip to main content</a>
-  <header role="banner">
+  <a href="#main-content" class="skip-link" data-cf-role="template-chrome">Skip to main content</a>
+  <header role="banner" data-cf-role="template-chrome">
     <p>{course_code} &mdash; Week {week_num}</p>
   </header>
   <main id="main-content" role="main">
     <h1>{safe_title}</h1>
 {body_html}
   </main>
-  <footer role="contentinfo">
+  <footer role="contentinfo" data-cf-role="template-chrome">
     <p>&copy; 2026 {course_code}. All rights reserved.</p>
   </footer>
 {extra_js}
