@@ -8,17 +8,17 @@ RAG corpus for LibV2 import.
 Usage:
     python -m Trainforge.process_course \
         --imscc path/to/course.imscc \
-        --course-code DIGPED_101 \
+        --course-code SAMPLE_101 \
         --division ARTS --domain education --subdomain instructional-design \
-        --output Trainforge/output/digped_101
+        --output Trainforge/output/sample_101
 
     # With objectives file for Bloom's-based difficulty mapping:
     python -m Trainforge.process_course \
         --imscc path/to/course.imscc \
         --objectives path/to/objectives.json \
-        --course-code DIGPED_101 \
+        --course-code SAMPLE_101 \
         --division ARTS --domain education \
-        --output Trainforge/output/digped_101 \
+        --output Trainforge/output/sample_101 \
         --import-to-libv2
 """
 
@@ -2506,7 +2506,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Process a Courseforge IMSCC into a Trainforge RAG corpus",
     )
     p.add_argument("--imscc", required=True, help="Path to .imscc file")
-    p.add_argument("--course-code", required=True, help="Course code (e.g. DIGPED_101)")
+    p.add_argument("--course-code", required=True, help="Course code (e.g. SAMPLE_101)")
     p.add_argument("--output", required=True, help="Output directory")
     p.add_argument("--objectives", help="Path to objectives JSON (optional)")
     p.add_argument("--division", default="STEM", choices=["STEM", "ARTS"], help="Division")
