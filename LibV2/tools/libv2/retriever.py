@@ -16,11 +16,40 @@ from typing import Iterator, Optional
 
 from .catalog import load_master_catalog, search_catalog
 from .models.catalog import CatalogEntry
+from .retrieval_scoring import (
+    BoostContributions,
+    DEFAULT_BOOST_WEIGHTS,
+    MAX_TOTAL_BOOST,
+    combine_bm25_with_boosts,
+    concept_graph_overlap_boost,
+    extract_query_concepts,
+    load_concept_graph_node_ids,
+    load_course_outcomes,
+    load_pedagogy_model,
+    lo_match_boost,
+    prereq_coverage_boost,
+)
+
+_WEEK_NUM_RE = re.compile(r"week[_\-\s]?(\d+)", re.IGNORECASE)
+
+
+def _parse_week_num(module_id: Optional[str]) -> Optional[int]:
+    """Pull the integer week number out of a ``week_NN_*`` style module id."""
+    if not module_id:
+        return None
+    match = _WEEK_NUM_RE.search(module_id)
+    return int(match.group(1)) if match else None
 
 
 @dataclass
 class ChunkFilter:
-    """Filter criteria for chunks."""
+    """Filter criteria for chunks.
+
+    Fields up through ``bloom_level`` are the pre-v4 schema and preserved as-is
+    for back-compat with existing callers.  The ``teaching_role`` /
+    ``content_type_label`` / ``module_id`` / ``week_num`` fields were added in
+    Worker J to expose v4 chunk metadata as filter axes.
+    """
     chunk_type: Optional[str] = None
     difficulty: Optional[str] = None
     concept_tags: Optional[list[str]] = None
@@ -28,11 +57,33 @@ class ChunkFilter:
     max_tokens: Optional[int] = None
     learning_outcome_refs: Optional[list[str]] = None
     bloom_level: Optional[str] = None
+    # v4 additions (Worker J)
+    teaching_role: Optional[str] = None
+    content_type_label: Optional[str] = None
+    module_id: Optional[str] = None
+    week_num: Optional[int] = None
+
+    def as_applied_dict(self) -> dict:
+        """Return only the fields that are actively constraining results.
+        Used by the rationale payload so readers see which filters fired."""
+        out: dict = {}
+        for name, value in self.__dict__.items():
+            if value is None:
+                continue
+            if isinstance(value, (list, tuple)) and not value:
+                continue
+            out[name] = value
+        return out
 
 
 @dataclass
 class RetrievalResult:
-    """A single retrieval result with score and metadata."""
+    """A single retrieval result with score and metadata.
+
+    The ``rationale`` field is populated only when ``retrieve_chunks`` was
+    called with ``include_rationale=True``.  All existing fields are preserved
+    for back-compat with production callers in Trainforge/rag/libv2_bridge.py.
+    """
     chunk_id: str
     text: str
     score: float
@@ -45,9 +96,10 @@ class RetrievalResult:
     tokens_estimate: int = 0
     learning_outcome_refs: list[str] = field(default_factory=list)
     bloom_level: Optional[str] = None
+    rationale: Optional[dict] = None  # Worker J — None when include_rationale=False
 
     def to_dict(self) -> dict:
-        return {
+        base = {
             "chunk_id": self.chunk_id,
             "text": self.text,
             "score": self.score,
@@ -61,6 +113,11 @@ class RetrievalResult:
             "learning_outcome_refs": self.learning_outcome_refs,
             "bloom_level": self.bloom_level,
         }
+        # Back-compat: only emit `rationale` key when populated.  Legacy
+        # consumers serialising results to JSON get byte-identical output.
+        if self.rationale is not None:
+            base["rationale"] = self.rationale
+        return base
 
 
 # Retrieval scoring utilities
@@ -90,11 +147,64 @@ STOP_WORDS = {
 MIN_RELEVANCE_THRESHOLD = DEFAULT_MIN_RELEVANCE
 
 
-def tokenize(text: str) -> list[str]:
-    """Simple tokenization for search."""
+# ``structured_tokens=True`` preserves hyphenated slugs (aria-labelledby,
+# skip-link, focus-indicator) and WCAG SC references (sc-1.4.3, wcag-2.2)
+# as single tokens instead of splitting them into their alphanumeric parts.
+# Ordering matters: SC refs are matched first (more specific), then hyphenated
+# slugs, then bare alphanumeric tokens pick up the remainder.
+_STRUCTURED_TOKEN_RE = re.compile(
+    r"sc-\d+(?:\.\d+){1,2}"              # SC refs: sc-1.4.3, sc-2.4.7
+    r"|wcag-\d+(?:\.\d+)?"                # WCAG version tokens: wcag-2.2
+    r"|[a-z][a-z0-9]*(?:-[a-z0-9]+)+"     # hyphenated slugs: aria-labelledby
+    r"|[a-z0-9]+"                         # bare alphanumeric fallback
+)
+
+
+def tokenize(text: str, *, structured_tokens: bool = True) -> list[str]:
+    """Tokenize ``text`` for BM25 indexing and query matching.
+
+    When ``structured_tokens`` is True (default), hyphenated slugs and SC refs
+    are preserved as single tokens so querying ``"aria-labelledby"`` matches
+    a chunk tagged with the same slug instead of leaking into generic ``aria``
+    and ``labelledby`` tokens.  Set False to reproduce the pre-Worker-J
+    tokenization (used by back-compat regression tests).
+    """
     text = text.lower()
-    tokens = re.findall(r'\b[a-z0-9]+\b', text)
+    if structured_tokens:
+        tokens = _STRUCTURED_TOKEN_RE.findall(text)
+    else:
+        tokens = re.findall(r'\b[a-z0-9]+\b', text)
     return [t for t in tokens if t not in STOP_WORDS and len(t) > 1]
+
+
+# Rewrites "SC 1.4.3" and "WCAG 2.2" (common query forms) into hyphenated
+# slugs that align with concept_tags emitted by Trainforge.  Applied before
+# tokenization so the structured-token regex picks them up as single tokens.
+_SC_QUERY_NORMALIZE_RE = re.compile(r"\b(sc|wcag)\s+(\d+(?:\.\d+){0,2})\b", re.IGNORECASE)
+
+
+def _normalize_structured_refs(query: str) -> str:
+    """Fold space-separated SC/WCAG references into hyphenated form."""
+    if not query:
+        return query
+    return _SC_QUERY_NORMALIZE_RE.sub(lambda m: f"{m.group(1).lower()}-{m.group(2)}", query)
+
+
+def _canonicalize_query(query: str) -> str:
+    """Apply WCAG SC canonicalization so query tokens match the same
+    normalized form that Trainforge used when tagging chunk metadata.
+    Silently no-ops when the Trainforge helper isn't importable (keeps
+    retriever usable in repos that don't ship Trainforge)."""
+    # Always normalize "SC 1.4.3" → "sc-1.4.3" first so structured tokens fire.
+    normalized = _normalize_structured_refs(query or "")
+    try:
+        from Trainforge.rag.wcag_canonical_names import canonicalize_sc_references
+    except Exception:
+        return normalized
+    try:
+        return canonicalize_sc_references(normalized)
+    except Exception:
+        return normalized
 
 
 def _char_trigrams(text: str) -> set[str]:
@@ -130,24 +240,42 @@ class LazyBM25:
         k1: float = 1.5,
         b: float = 0.75,
         ngram_weight: float = 0.15,
+        use_retrieval_text: bool = True,
+        structured_tokens: bool = True,
     ):
         self.chunks = chunks
         self.k1 = k1
         self.b = b
         self.ngram_weight = ngram_weight
+        # When use_retrieval_text is True, chunks that carry a non-empty
+        # `retrieval_text` (v4 schema addition, = summary + key_terms) are
+        # indexed against that shorter, higher-signal string instead of
+        # the full chunk text.  v3 chunks without retrieval_text fall back
+        # to chunk.text and behave identically to pre-Worker-J.
+        self.use_retrieval_text = use_retrieval_text
+        self.structured_tokens = structured_tokens
         self.doc_freq: dict[str, int] = defaultdict(int)
         self.doc_tokens: list[list[str]] = []
         self.doc_lengths: list[int] = []
         self.avgdl: float = 0.0
         self._build_index()
 
+    def _doc_text_for_indexing(self, chunk: dict) -> str:
+        """Return the string to index for a chunk.  Prefers retrieval_text
+        when the chunk carries one and ``use_retrieval_text`` is on."""
+        if self.use_retrieval_text:
+            rt = chunk.get("retrieval_text")
+            if rt:
+                return str(rt)
+        return chunk.get("text", "")
+
     def _build_index(self):
         """Build BM25 index from chunks."""
         total_length = 0
 
         for chunk in self.chunks:
-            text = chunk.get("text", "")
-            tokens = tokenize(text)
+            text = self._doc_text_for_indexing(chunk)
+            tokens = tokenize(text, structured_tokens=self.structured_tokens)
             self.doc_tokens.append(tokens)
             self.doc_lengths.append(len(tokens))
             total_length += len(tokens)
@@ -171,26 +299,36 @@ class LazyBM25:
         query: str,
         limit: int = 10,
         min_relevance: Optional[float] = None,
-    ) -> list[tuple[dict, float]]:
+        return_components: bool = False,
+    ) -> list[tuple]:
         """Search using BM25 scoring with optional n-gram boosting.
 
         Args:
             query: Search query string.
             limit: Maximum results to return.
             min_relevance: Minimum score threshold (default: DEFAULT_MIN_RELEVANCE).
+            return_components: When True, return 4-tuples
+                ``(chunk, blended_score, bm25_score, ngram_score)`` for each
+                result so callers (retrieve_chunks rationale) can separate
+                the BM25 contribution from the n-gram contribution.  Default
+                False keeps the pre-Worker-J 2-tuple shape for back-compat.
 
         Returns:
-            List of (chunk, score) tuples sorted by descending score.
+            List of (chunk, score) tuples sorted by descending score, or 4-tuples
+            when return_components=True.
         """
         if min_relevance is None:
             min_relevance = DEFAULT_MIN_RELEVANCE
 
-        query_tokens = tokenize(query)
+        # Canonicalise SC refs so "Contrast Minimum" and "Contrast (Minimum)"
+        # tokenize identically to the chunk side (Worker J).
+        query_canonical = _canonicalize_query(query)
+        query_tokens = tokenize(query_canonical, structured_tokens=self.structured_tokens)
         if not query_tokens:
             return []
 
         # BM25 scoring
-        results: list[tuple[dict, float]] = []
+        scored: list[tuple[dict, float]] = []
         for i, chunk in enumerate(self.chunks):
             doc_len = self.doc_lengths[i]
             tf_counts = Counter(self.doc_tokens[i])
@@ -201,47 +339,56 @@ class LazyBM25:
                     continue
                 tf = tf_counts[term]
                 idf = self._idf(term)
-                # BM25 formula
                 numerator = tf * (self.k1 + 1)
                 denominator = tf + self.k1 * (1 - self.b + self.b * doc_len / self.avgdl)
                 bm25_score += idf * (numerator / denominator)
 
             if bm25_score > 0:
-                results.append((chunk, bm25_score))
+                scored.append((chunk, bm25_score))
 
-        if not results:
+        if not scored:
             return []
 
         # Character trigram boosting for fuzzy matching
+        with_components: list[tuple[dict, float, float, float]] = []
         if self.ngram_weight > 0:
-            query_trigrams = _char_trigrams(query)
+            query_trigrams = _char_trigrams(query_canonical)
+        else:
+            query_trigrams = set()
+
+        for chunk, bm25_score in scored:
+            jaccard = 0.0
             if query_trigrams:
-                for idx, (chunk, bm25_score) in enumerate(results):
-                    chunk_text = chunk.get("text", "")
-                    # Only compute trigrams on first 500 chars for efficiency
-                    chunk_trigrams = _char_trigrams(chunk_text[:500])
-                    if chunk_trigrams:
-                        intersection = len(query_trigrams & chunk_trigrams)
-                        union = len(query_trigrams | chunk_trigrams)
-                        jaccard = intersection / union if union > 0 else 0.0
-                    else:
-                        jaccard = 0.0
+                # Use the same indexed text for trigram matching so summary-
+                # indexed chunks are compared fairly.
+                chunk_text = self._doc_text_for_indexing(chunk)
+                chunk_trigrams = _char_trigrams(chunk_text[:500])
+                if chunk_trigrams:
+                    intersection = len(query_trigrams & chunk_trigrams)
+                    union = len(query_trigrams | chunk_trigrams)
+                    jaccard = intersection / union if union > 0 else 0.0
 
-                    blended = (
-                        (1 - self.ngram_weight) * bm25_score
-                        + self.ngram_weight * jaccard * bm25_score
-                    )
-                    results[idx] = (chunk, blended)
+            if self.ngram_weight > 0 and query_trigrams:
+                blended = (
+                    (1 - self.ngram_weight) * bm25_score
+                    + self.ngram_weight * jaccard * bm25_score
+                )
+            else:
+                blended = bm25_score
 
-        results.sort(key=lambda x: x[1], reverse=True)
+            ngram_component = self.ngram_weight * jaccard * bm25_score
+            with_components.append((chunk, blended, bm25_score, ngram_component))
+
+        with_components.sort(key=lambda x: x[1], reverse=True)
 
         # Apply relevance threshold — no fallback.
-        # Returning low-relevance chunks degrades downstream quality.
         above_threshold = [
-            (chunk, score) for chunk, score in results
-            if score >= min_relevance
-        ]
-        return above_threshold[:limit]
+            t for t in with_components if t[1] >= min_relevance
+        ][:limit]
+
+        if return_components:
+            return above_threshold
+        return [(c, s) for c, s, _, _ in above_threshold]
 
 
 # Backward compatibility alias
@@ -282,6 +429,26 @@ def _matches_filter(chunk: dict, chunk_filter: ChunkFilter) -> bool:
         # Match bloom level from linked outcomes or chunk metadata
         chunk_bloom = chunk.get("bloom_level")
         if chunk_bloom != chunk_filter.bloom_level:
+            return False
+
+    # v4 additions (Worker J)
+    if chunk_filter.teaching_role:
+        if chunk.get("teaching_role") != chunk_filter.teaching_role:
+            return False
+
+    if chunk_filter.content_type_label:
+        if chunk.get("content_type_label") != chunk_filter.content_type_label:
+            return False
+
+    if chunk_filter.module_id:
+        chunk_module = (chunk.get("source") or {}).get("module_id")
+        if chunk_module != chunk_filter.module_id:
+            return False
+
+    if chunk_filter.week_num is not None:
+        chunk_module = (chunk.get("source") or {}).get("module_id")
+        chunk_week = _parse_week_num(chunk_module)
+        if chunk_week != chunk_filter.week_num:
             return False
 
     return True
@@ -393,44 +560,38 @@ def retrieve_chunks(
     concept_tags: Optional[list[str]] = None,
     learning_outcome_refs: Optional[list[str]] = None,
     bloom_level: Optional[str] = None,
+    # v4 filters (Worker J)
+    teaching_role: Optional[str] = None,
+    content_type_label: Optional[str] = None,
+    module_id: Optional[str] = None,
+    week_num: Optional[int] = None,
+    # Worker J additions — back-compat by default
+    include_rationale: bool = False,
+    metadata_scoring: bool = True,
+    use_concept_graph_boost: bool = True,
+    use_lo_match_boost: bool = True,
+    prefer_self_contained: bool = False,  # prereq boost, off by default (niche)
+    lo_filter: Optional[list[str]] = None,
+    boost_weights: Optional[dict] = None,
+    use_retrieval_text: bool = True,
+    structured_tokens: bool = True,
     limit: int = 10,
     sample_per_course: Optional[int] = None,
     min_relevance: Optional[float] = None,
 ) -> list[RetrievalResult]:
     """Retrieve chunks matching query and filters.
 
-    Two-phase retrieval:
-    1. Filter courses by metadata (no chunk loading)
-    2. Stream chunks from filtered courses, apply chunk filters
-    3. Rank with TF-IDF on filtered candidates only
-
-    Args:
-        repo_root: Path to LibV2 repository root
-        query: Search query string
-        domain: Filter by domain
-        division: Filter by division (STEM/ARTS)
-        subdomain: Filter by subdomain
-        course_slug: Limit to specific course
-        chunk_type: Filter by chunk type (explanation, example, etc.)
-        difficulty: Filter by difficulty
-        concept_tags: Filter by concept tags (any match)
-        learning_outcome_refs: Filter by learning outcome refs (any match)
-        bloom_level: Filter by Bloom's taxonomy level
-        limit: Maximum results to return
-        sample_per_course: Max chunks per course for cross-course search
-        min_relevance: Minimum relevance score (default: DEFAULT_MIN_RELEVANCE)
-
-    Returns:
-        List of RetrievalResult sorted by relevance score
+    Back-compat contract:  when ``include_rationale=False`` (the default) the
+    returned ``RetrievalResult.to_dict()`` output is byte-identical to the
+    pre-Worker-J shape — production callers (Trainforge/rag/libv2_bridge.py)
+    are unaffected.  Opt into the rationale payload and metadata-aware
+    scoring explicitly.
     """
     # Phase 1: Filter courses by metadata
     if course_slug:
-        # Single course mode
         course_dir = repo_root / "courses" / course_slug
         if not course_dir.exists():
             return []
-
-        # Load manifest for domain info
         manifest_path = course_dir / "manifest.json"
         if manifest_path.exists():
             with open(manifest_path) as f:
@@ -438,26 +599,16 @@ def retrieve_chunks(
             domain_info = manifest.get("classification", {}).get("primary_domain", "unknown")
         else:
             domain_info = "unknown"
-
         courses = [CatalogEntry(
-            slug=course_slug,
-            title="",
-            division="",
-            primary_domain=domain_info,
+            slug=course_slug, title="", division="", primary_domain=domain_info,
         )]
     else:
-        # Cross-course mode - use catalog
         catalog = load_master_catalog(repo_root)
         if catalog is None:
             return []
-
         courses = search_catalog(
-            catalog,
-            division=division,
-            domain=domain,
-            subdomain=subdomain,
+            catalog, division=division, domain=domain, subdomain=subdomain,
         )
-
         if not courses:
             return []
 
@@ -468,12 +619,13 @@ def retrieve_chunks(
         concept_tags=concept_tags,
         learning_outcome_refs=learning_outcome_refs,
         bloom_level=bloom_level,
+        teaching_role=teaching_role,
+        content_type_label=content_type_label,
+        module_id=module_id,
+        week_num=week_num,
     )
 
-    # Collect enough candidates for ranking
-    # We want more candidates than limit to rank well
     candidate_budget = max(limit * 10, 100)
-
     candidates = _collect_filtered_chunks(
         courses=courses,
         repo_root=repo_root,
@@ -481,22 +633,61 @@ def retrieve_chunks(
         budget=candidate_budget,
         per_course_budget=sample_per_course,
     )
-
     if not candidates:
         return []
 
-    # Phase 3: Rank with BM25 + n-gram boosting
-    index = LazyBM25(candidates)
-    scored = index.search(query, limit=limit, min_relevance=min_relevance)
+    # Phase 3: Rank with BM25 + n-gram boosting (+ optional metadata boosts)
+    index = LazyBM25(
+        candidates,
+        use_retrieval_text=use_retrieval_text,
+        structured_tokens=structured_tokens,
+    )
+    scored_with_components = index.search(
+        query, limit=candidate_budget, min_relevance=min_relevance, return_components=True,
+    )
 
-    # Convert to RetrievalResult
-    results = []
-    for chunk, score in scored:
+    # Per-course metadata (loaded once per unique slug seen in candidates)
+    graph_nodes_by_slug: dict[str, set[str]] = {}
+    outcomes_by_slug: dict[str, list[dict]] = {}
+    pedagogy_by_slug: dict[str, dict] = {}
+
+    def _metadata_for(slug: str):
+        if slug not in graph_nodes_by_slug:
+            cd = repo_root / "courses" / slug
+            graph_nodes_by_slug[slug] = load_concept_graph_node_ids(cd)
+            outcomes_by_slug[slug] = load_course_outcomes(cd)
+            pedagogy_by_slug[slug] = load_pedagogy_model(cd)
+        return graph_nodes_by_slug[slug], outcomes_by_slug[slug], pedagogy_by_slug[slug]
+
+    # Assemble results.  Apply metadata boosts AFTER BM25 so their effect is
+    # multiplicative, bounded by MAX_TOTAL_BOOST, and attributable per-boost
+    # in the rationale payload.
+    q_tokens_lower = _lower_tokens_for_rationale(query)
+    results: list[tuple[RetrievalResult, float]] = []
+    for chunk, blended, bm25_score, ngram_score in scored_with_components:
+        slug = chunk.get("_course_slug", "")
+        graph_nodes, course_outcomes, pedagogy_model = _metadata_for(slug)
+
+        contributions = BoostContributions()
+        if metadata_scoring and use_concept_graph_boost:
+            q_concepts = extract_query_concepts(_canonicalize_query(query), graph_nodes)
+            contributions.concept_graph_overlap = concept_graph_overlap_boost(chunk, q_concepts)
+        if metadata_scoring and use_lo_match_boost:
+            contributions.lo_match = lo_match_boost(
+                chunk, query, course_outcomes, explicit_lo_filter=lo_filter,
+            )
+        if metadata_scoring and prefer_self_contained:
+            contributions.prereq_coverage = prereq_coverage_boost(chunk, pedagogy_model)
+
+        final_score, capped_boost = combine_bm25_with_boosts(
+            blended, contributions, weights=boost_weights,
+        )
+
         result = RetrievalResult(
             chunk_id=chunk.get("id", ""),
             text=chunk.get("text", ""),
-            score=score,
-            course_slug=chunk.get("_course_slug", ""),
+            score=final_score,
+            course_slug=slug,
             domain=chunk.get("_domain", ""),
             chunk_type=chunk.get("chunk_type", ""),
             difficulty=chunk.get("difficulty"),
@@ -506,6 +697,95 @@ def retrieve_chunks(
             learning_outcome_refs=chunk.get("learning_outcome_refs", []),
             bloom_level=chunk.get("bloom_level"),
         )
-        results.append(result)
 
-    return results
+        if include_rationale:
+            chunk_tags_lower = {str(t).lower() for t in chunk.get("concept_tags", [])}
+            # Include bigram-matched graph concepts, not just whole-token matches
+            # (so ``color-contrast`` surfaces when the query is "color contrast").
+            q_concepts_for_rationale = extract_query_concepts(
+                _canonicalize_query(query), graph_nodes or set(),
+            ) if graph_nodes else set()
+            matched_concept_tags = sorted(
+                (chunk_tags_lower & q_tokens_lower) | (chunk_tags_lower & q_concepts_for_rationale)
+            )
+            matched_lo_refs = _rationale_matched_lo_refs(
+                chunk, query, course_outcomes, lo_filter,
+            )
+            matched_key_terms = _rationale_matched_key_terms(chunk, q_tokens_lower)
+            result.rationale = {
+                "bm25_score": round(bm25_score, 4),
+                "ngram_score": round(ngram_score, 4),
+                "metadata_boost": round(capped_boost, 4),
+                "final_score": round(final_score, 4),
+                "matched_concept_tags": matched_concept_tags,
+                "matched_lo_refs": matched_lo_refs,
+                "matched_key_terms": matched_key_terms,
+                "applied_filters": chunk_filter.as_applied_dict(),
+                "boost_contributions": contributions.to_dict(),
+            }
+
+        results.append((result, final_score))
+
+    # Re-sort by the final (boost-adjusted) score.
+    results.sort(key=lambda t: t[1], reverse=True)
+
+    # Re-apply the min-relevance floor against the final score so boosts can
+    # rescue a borderline chunk or, in the prereq-violation case, correctly
+    # push one below the floor.
+    threshold = DEFAULT_MIN_RELEVANCE if min_relevance is None else min_relevance
+    filtered = [r for r, s in results if s >= threshold][:limit]
+    return filtered
+
+
+def _lower_tokens_for_rationale(text: str) -> set:
+    """Lowercase, structured-token set of query words for rationale matching."""
+    canonical = _canonicalize_query(text)
+    return set(tokenize(canonical, structured_tokens=True))
+
+
+def _rationale_matched_lo_refs(
+    chunk: dict,
+    query: str,
+    course_outcomes: list,
+    lo_filter: Optional[list[str]],
+) -> list[str]:
+    """Which of the chunk's LO refs were implicated by the query?  Matches
+    either an explicit LO filter or by fuzzy statement overlap."""
+    chunk_refs = [str(r).lower() for r in chunk.get("learning_outcome_refs", []) if r]
+    if not chunk_refs:
+        return []
+    matched: set[str] = set()
+    if lo_filter:
+        matched |= {str(x).lower() for x in lo_filter if x} & set(chunk_refs)
+    # Explicit id tokens in query (co-03, to-01)
+    for ref in chunk_refs:
+        if ref in query.lower():
+            matched.add(ref)
+    # Statement fuzzy overlap
+    q_tokens = _lower_tokens_for_rationale(query)
+    if q_tokens:
+        for outcome in course_outcomes:
+            oid = str(outcome.get("id", "")).lower()
+            if oid not in chunk_refs:
+                continue
+            stmt_tokens = set(tokenize(str(outcome.get("statement") or outcome.get("text") or ""),
+                                        structured_tokens=True))
+            if stmt_tokens and len(q_tokens & stmt_tokens) / max(1, len(q_tokens | stmt_tokens)) >= 0.4:
+                matched.add(oid)
+    return sorted(matched)
+
+
+def _rationale_matched_key_terms(chunk: dict, q_tokens_lower: set) -> list[dict]:
+    """Return key_terms whose ``term`` slug-form appears in the query tokens.
+    Keeps the payload small — only the matches, not the whole key_terms list."""
+    matches: list[dict] = []
+    for kt in chunk.get("key_terms") or []:
+        if not isinstance(kt, dict):
+            continue
+        term = str(kt.get("term") or "").strip()
+        if not term:
+            continue
+        slug = re.sub(r"[^a-z0-9]+", "-", term.lower()).strip("-")
+        if slug in q_tokens_lower or term.lower() in q_tokens_lower:
+            matches.append({"term": term, "definition": str(kt.get("definition") or "")})
+    return matches
