@@ -72,6 +72,27 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+# ADR-001 Contract 3: decision-type registry.
+#
+# Prior to Worker C this was a free-string field; the enum is established here
+# (Worker C's first landing decision type is ``instruction_pair_synthesis``).
+#
+# Convention: add a new type in the same PR that first uses it in production.
+# New types are ``snake_case`` and tool-prefixed when ambiguous. The registry
+# is advisory rather than enforced — :func:`DecisionCapture.log_decision` does
+# NOT raise on unknown types, because legacy callers across the tree emit many
+# free-string types that have not yet been catalogued here. The list is the
+# durable coordination artefact; enforcement can land in a follow-up PR once
+# the legacy types are catalogued (tracked as FOLLOWUP-ADR001-5).
+ALLOWED_DECISION_TYPES: tuple = (
+    # Worker C (training-pair synthesis, landed in worker-c/training-pairs):
+    "instruction_pair_synthesis",
+    "preference_pair_generation",
+    # Worker F (typed-edge concept graph, landed in worker-f/typed-edge-graph):
+    "typed_edge_inference",
+)
+
+
 @dataclass
 class MLFeatures:
     """Categorical fields for ML training."""

@@ -1,0 +1,18 @@
+{
+  "kind": "concept",
+  "generated_at": "2026-01-01T00:00:00+00:00",
+  "nodes": [
+    {"id": "wcag", "label": "Wcag", "frequency": 3},
+    {"id": "accessibility-attribute", "label": "Accessibility Attribute", "frequency": 3},
+    {"id": "aria-role", "label": "Aria Role", "frequency": 2},
+    {"id": "pour", "label": "Pour", "frequency": 2}
+  ],
+  "edges": [
+    {"source": "wcag", "target": "accessibility-attribute", "weight": 3, "relation_type": "co-occurs"},
+    {"source": "wcag", "target": "aria-role", "weight": 1, "relation_type": "co-occurs"},
+    {"source": "wcag", "target": "pour", "weight": 1, "relation_type": "co-occurs"},
+    {"source": "accessibility-attribute", "target": "aria-role", "weight": 1, "relation_type": "co-occurs"},
+    {"source": "accessibility-attribute", "target": "pour", "weight": 1, "relation_type": "co-occurs"},
+    {"source": "pour", "target": "aria-role", "weight": 1, "relation_type": "co-occurs"}
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "course_code": "MINI_TYPED_101",
+  "title": "Mini Typed-Graph Fixture",
+  "learning_outcomes": [
+    {
+      "id": "co-01",
+      "statement": "Define the WCAG framework and its four principles.",
+      "bloom_level": "remember",
+      "hierarchy_level": "chapter"
+    },
+    {
+      "id": "co-02",
+      "statement": "Explain how POUR principles decompose into testable success criteria.",
+      "bloom_level": "understand",
+      "hierarchy_level": "chapter"
+    },
+    {
+      "id": "co-03",
+      "statement": "Apply ARIA roles to make dynamic content accessible.",
+      "bloom_level": "apply",
+      "hierarchy_level": "chapter"
+    }
+  ]
+}
