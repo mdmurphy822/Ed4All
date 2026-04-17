@@ -5,15 +5,29 @@ Package multi-file weekly course content into an IMS Common Cartridge (IMSCC) fi
 Walks 03_content_development/week_*/ directories and creates an IMSCC with a proper
 imsmanifest.xml reflecting the week -> module hierarchy.
 
+When ``--objectives`` is provided, every ``week_*/*.html`` page with JSON-LD is
+validated against the canonical objectives registry before packaging; the
+packager refuses to build when any page's ``learningObjectives`` lists an ID
+outside its week's allowed set. This guards against the LO-fanout defect that
+shipped in pre-Worker-H packages and capped Trainforge quality metrics.
+
 Usage:
     python package_multifile_imscc.py <content_dir> <output_imscc>
+    python package_multifile_imscc.py <content_dir> <output_imscc> \
+        --objectives inputs/exam-objectives/WCAG_201_objectives.json
 """
 
+import argparse
 import re
 import sys
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
+from typing import List, Optional, Tuple
+
+_HERE = Path(__file__).resolve().parent
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
 
 
 def build_manifest(content_dir: Path, course_code: str, course_title: str) -> str:
@@ -110,8 +124,60 @@ def build_manifest(content_dir: Path, course_code: str, course_title: str) -> st
     return ET.tostring(manifest, encoding="unicode", xml_declaration=True)
 
 
-def package_imscc(content_dir: Path, output_path: Path, course_code: str, course_title: str):
-    """Create the IMSCC zip package."""
+def validate_content_objectives(
+    content_dir: Path, objectives_path: Path
+) -> Tuple[bool, List[str]]:
+    """Run `validate_page_objectives.validate_page` on every week_*/*.html page.
+
+    Returns ``(ok, failure_messages)``. On success the failure list is empty.
+    Pages without a JSON-LD block are passed over silently (validator's own
+    rule). Imported lazily so packaging without --objectives incurs no cost.
+    """
+    from validate_page_objectives import (
+        discover_html_pages,
+        load_canonical_objectives,
+        validate_page,
+    )
+
+    canonical = load_canonical_objectives(objectives_path)
+    pages = discover_html_pages(content_dir)
+    failures: List[str] = []
+    for page in pages:
+        # Only validate week_* pages; project docs and non-week HTML aren't
+        # expected to carry LO metadata.
+        if not any(part.startswith("week_") for part in page.parts):
+            continue
+        ok, msg = validate_page(page, canonical)
+        if not ok:
+            failures.append(msg)
+    return (not failures, failures)
+
+
+def package_imscc(
+    content_dir: Path,
+    output_path: Path,
+    course_code: str,
+    course_title: str,
+    *,
+    objectives_path: Optional[Path] = None,
+    skip_validation: bool = False,
+):
+    """Create the IMSCC zip package. Refuses to build when per-week LO
+    validation fails (unless skip_validation is explicitly set)."""
+    if objectives_path and not skip_validation:
+        print(f"[validate] Checking per-week learningObjectives against {objectives_path.name}...")
+        ok, failures = validate_content_objectives(content_dir, objectives_path)
+        if not ok:
+            print(f"[validate] REFUSING TO PACKAGE — {len(failures)} page(s) violate per-week LO contract:")
+            for msg in failures:
+                print(f"  - {msg}")
+            print("Fix the offending pages (or re-run generate_course.py with --objectives) then retry.")
+            print("Override with --skip-validation if you really know what you're doing.")
+            raise SystemExit(2)
+        print(f"[validate] All week pages pass per-week LO contract.")
+    elif skip_validation:
+        print("[validate] SKIPPED (per --skip-validation) — build will not be gated on LO correctness.")
+
     manifest_xml = build_manifest(content_dir, course_code, course_title)
 
     with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -130,15 +196,26 @@ def package_imscc(content_dir: Path, output_path: Path, course_code: str, course
     print(f"  Size: {output_path.stat().st_size / 1024:.1f} KB")
 
 
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("content_dir", type=Path, help="Course content dir containing week_* subdirs")
+    p.add_argument("output_imscc", type=Path, help="Output .imscc file path")
+    p.add_argument("course_code", nargs="?", default="DIGPED_101", help="Course code (default: DIGPED_101)")
+    p.add_argument("course_title", nargs="?", default="Foundations of Digital Pedagogy",
+                   help="Course title (default: Foundations of Digital Pedagogy)")
+    p.add_argument("--objectives", type=Path, default=None,
+                   help="Canonical objectives JSON to validate per-week LO specificity before packaging")
+    p.add_argument("--skip-validation", action="store_true",
+                   help="Bypass objectives validation even when --objectives is given (escape hatch)")
+    return p
+
+
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: python package_multifile_imscc.py <content_dir> <output_imscc> [course_code] [course_title]")
-        sys.exit(1)
-
-    content_dir = Path(sys.argv[1])
-    output_path = Path(sys.argv[2])
-    course_code = sys.argv[3] if len(sys.argv) > 3 else "DIGPED_101"
-    course_title = sys.argv[4] if len(sys.argv) > 4 else "Foundations of Digital Pedagogy"
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    package_imscc(content_dir, output_path, course_code, course_title)
+    args = build_parser().parse_args()
+    args.output_imscc.parent.mkdir(parents=True, exist_ok=True)
+    package_imscc(
+        args.content_dir, args.output_imscc,
+        args.course_code, args.course_title,
+        objectives_path=args.objectives,
+        skip_validation=args.skip_validation,
+    )
