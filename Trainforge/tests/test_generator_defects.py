@@ -468,6 +468,340 @@ class TestLeakCheckerBoilerplate:
 # Shared fixture sanity checks
 # ---------------------------------------------------------------------------
 
+class _NullCapture:
+    """Stub DecisionCapture — records calls so tests can assert on them."""
+
+    def __init__(self):
+        self.calls = []
+
+    def log_decision(self, **kwargs):
+        self.calls.append(kwargs)
+
+
+def _bare_processor():
+    """A CourseProcessor skipped through __init__, hydrated with only the
+    attributes the methods-under-test read. Keeps these unit tests free of
+    IMSCC fixtures, filesystem, and DecisionCapture side-effects.
+    """
+    from collections import defaultdict
+    from Trainforge.process_course import CourseProcessor
+
+    proc = CourseProcessor.__new__(CourseProcessor)
+    proc.course_code = "MINI_101"
+    proc.capture = _NullCapture()
+    proc.stats = {
+        "total_words": 0,
+        "total_tokens_estimate": 0,
+        "chunk_types": defaultdict(int),
+        "difficulty_distribution": defaultdict(int),
+    }
+    proc._all_concept_tags = set()
+    proc.domain_concept_seeds = []
+    proc.objectives = None
+    proc._valid_outcome_ids = set()
+    proc._boilerplate_spans = []
+    proc._factual_flags = []
+    proc.MIN_CHUNK_SIZE = 50
+    proc.MAX_CHUNK_SIZE = 800
+    return proc
+
+
+# ---------------------------------------------------------------------------
+# Bloom-level fallback (every chunk gets a level)
+# ---------------------------------------------------------------------------
+
+class TestBloomLevelFallback:
+    def _item(self, **kw):
+        base = {
+            "module_id": "m1",
+            "module_title": "Module 1",
+            "item_id": "l1",
+            "title": "Lesson 1",
+            "resource_type": "page",
+            "key_concepts": [],
+            "learning_objectives": [],
+        }
+        base.update(kw)
+        return base
+
+    def test_verb_heuristic_fallback(self):
+        proc = _bare_processor()
+        text = "Evaluate the design, critique the rationale, and justify your reasoning."
+        chunk = proc._create_chunk(
+            chunk_id="c1", text=text, html="<p>" + text + "</p>",
+            item=self._item(), section_heading="H", chunk_type="explanation",
+        )
+        assert chunk["bloom_level"] == "evaluate"
+        assert chunk["bloom_level_source"] == "verbs"
+
+    def test_default_when_no_signal(self):
+        proc = _bare_processor()
+        chunk = proc._create_chunk(
+            chunk_id="c1", text="A quiet paragraph with no taxonomy verbs.",
+            html="<p>A quiet paragraph with no taxonomy verbs.</p>",
+            item=self._item(), section_heading="H", chunk_type="explanation",
+        )
+        assert chunk["bloom_level"] == "understand"
+        assert chunk["bloom_level_source"] == "default"
+
+    def test_authoritative_source_does_not_get_source_tag(self):
+        """When JSON-LD supplies a level, schema stays back-compat
+        (no bloom_level_source field)."""
+        proc = _bare_processor()
+        item = self._item(
+            courseforge_metadata={
+                "learningObjectives": [{"id": "co-01", "bloomLevel": "analyze"}],
+                "sections": [],
+            }
+        )
+        chunk = proc._create_chunk(
+            chunk_id="c1", text="Plain text.", html="<p>Plain text.</p>",
+            item=item, section_heading="Missing", chunk_type="explanation",
+        )
+        assert chunk["bloom_level"] == "analyze"
+        assert "bloom_level_source" not in chunk
+
+
+# ---------------------------------------------------------------------------
+# Concept tag pollution filter (Bloom verbs never leak through)
+# ---------------------------------------------------------------------------
+
+class TestConceptTagPollutionFilter:
+    def test_bloom_verbs_dropped_from_key_concepts(self):
+        proc = _bare_processor()
+        item = {"key_concepts": ["apply", "aria-labelledby", "create", "landmark"]}
+        tags = proc._extract_concept_tags("Plain body text.", item)
+        assert "aria-labelledby" in tags
+        assert "landmark" in tags
+        assert "apply" not in tags
+        assert "create" not in tags
+
+    def test_objective_codes_dropped(self):
+        proc = _bare_processor()
+        item = {"key_concepts": ["co-01", "to-03", "w04-co-02", "accessibility"]}
+        tags = proc._extract_concept_tags("Sample.", item)
+        assert tags == ["accessibility"]
+
+    def test_logistics_scaffolding_dropped(self):
+        proc = _bare_processor()
+        item = {"key_concepts": ["initial-post", "replies", "due", "skip-link"]}
+        tags = proc._extract_concept_tags("Sample.", item)
+        assert tags == ["skip-link"]
+
+
+# ---------------------------------------------------------------------------
+# Domain concept seeds (text-based extraction of per-course vocabulary)
+# ---------------------------------------------------------------------------
+
+class TestDomainConceptSeeds:
+    def test_compile_builds_word_boundary_patterns(self):
+        from Trainforge.process_course import compile_domain_concept_seeds
+
+        seeds = compile_domain_concept_seeds([
+            {"id": "pour", "aliases": ["POUR", "perceivable operable"]},
+        ])
+        assert len(seeds) == 1
+        tag, patterns = seeds[0]
+        assert tag == "pour"
+        assert any(p.search("POUR principles apply everywhere") for p in patterns)
+        # Must not match substring inside longer word.
+        assert not any(p.search("downpour") for p in patterns)
+
+    def test_seed_matched_in_text(self):
+        from Trainforge.process_course import compile_domain_concept_seeds
+
+        proc = _bare_processor()
+        proc.domain_concept_seeds = compile_domain_concept_seeds([
+            {"id": "aria", "aliases": ["ARIA", "WAI-ARIA"]},
+            {"id": "pour", "aliases": ["POUR"]},
+        ])
+        tags = proc._extract_concept_tags(
+            "ARIA roles complement the POUR principles.", {"key_concepts": []}
+        )
+        assert "aria" in tags
+        assert "pour" in tags
+
+    def test_seed_ignored_when_not_present(self):
+        from Trainforge.process_course import compile_domain_concept_seeds
+
+        proc = _bare_processor()
+        proc.domain_concept_seeds = compile_domain_concept_seeds([
+            {"id": "aria", "aliases": ["ARIA"]},
+        ])
+        tags = proc._extract_concept_tags("No special vocabulary here.", {"key_concepts": []})
+        assert "aria" not in tags
+
+
+# ---------------------------------------------------------------------------
+# JSON-LD keyTerms merged into concept_tags
+# ---------------------------------------------------------------------------
+
+class TestKeyTermsMergedIntoConceptTags:
+    def test_key_terms_surface_as_tags(self):
+        proc = _bare_processor()
+        item = {
+            "module_id": "m1", "module_title": "Module 1",
+            "item_id": "l1", "title": "Lesson 1", "resource_type": "page",
+            "key_concepts": [], "learning_objectives": [],
+            "courseforge_metadata": {
+                "sections": [{
+                    "heading": "Focus Management",
+                    "contentType": "explanation",
+                    "bloomRange": ["apply"],
+                    "keyTerms": [
+                        {"term": "Focus Indicator", "definition": "Visible outline."},
+                        {"term": "Skip Link", "definition": "Bypass to main."},
+                    ],
+                }],
+                "learningObjectives": [],
+            },
+        }
+        chunk = proc._create_chunk(
+            chunk_id="c1",
+            text="Content about focus management.",
+            html="<p>Content about focus management.</p>",
+            item=item, section_heading="Focus Management", chunk_type="explanation",
+        )
+        assert "focus-indicator" in chunk["concept_tags"]
+        assert "skip-link" in chunk["concept_tags"]
+
+    def test_key_terms_still_filtered_against_non_concepts(self):
+        proc = _bare_processor()
+        item = {
+            "module_id": "m1", "module_title": "Module 1",
+            "item_id": "l1", "title": "Lesson 1", "resource_type": "page",
+            "key_concepts": [], "learning_objectives": [],
+            "courseforge_metadata": {
+                "sections": [{
+                    "heading": "Intro",
+                    "contentType": "explanation",
+                    "bloomRange": ["apply"],
+                    "keyTerms": [
+                        {"term": "Apply"},  # Bloom verb
+                        {"term": "ARIA role"},
+                    ],
+                }],
+                "learningObjectives": [],
+            },
+        }
+        chunk = proc._create_chunk(
+            chunk_id="c1", text="Body.", html="<p>Body.</p>",
+            item=item, section_heading="Intro", chunk_type="explanation",
+        )
+        assert "aria-role" in chunk["concept_tags"]
+        assert "apply" not in chunk["concept_tags"]
+
+
+# ---------------------------------------------------------------------------
+# Uncovered outcomes surfaced in quality_report
+# ---------------------------------------------------------------------------
+
+class TestUncoveredOutcomesInQualityReport:
+    def test_uncovered_ids_listed_and_issue_emitted(self):
+        proc = _bare_processor()
+        proc.stats["total_words"] = 300
+        proc._valid_outcome_ids = {"co-01", "co-02", "co-03", "co-04"}
+        chunks = [
+            _chunk(id="c1", word_count=120, html="<p>a</p>",
+                   learning_outcome_refs=["co-01"], concept_tags=["aria", "pour"]),
+            _chunk(id="c2", word_count=120, html="<p>b</p>",
+                   learning_outcome_refs=["co-02"], concept_tags=["landmark", "aria"]),
+        ]
+        report = proc._generate_quality_report(chunks)
+        assert report["integrity"]["uncovered_outcomes"] == ["co-03", "co-04"]
+        assert report["metrics"]["outcome_reverse_coverage"] == 0.5
+        assert any("have zero resolving chunks" in i for i in report["validation"]["issues"])
+
+    def test_full_reverse_coverage_passes(self):
+        proc = _bare_processor()
+        proc.stats["total_words"] = 120
+        proc._valid_outcome_ids = {"co-01"}
+        chunks = [
+            _chunk(id="c1", word_count=120, html="<p>a</p>",
+                   learning_outcome_refs=["co-01"], concept_tags=["aria", "pour"]),
+        ]
+        report = proc._generate_quality_report(chunks)
+        assert report["integrity"]["uncovered_outcomes"] == []
+        assert report["metrics"]["outcome_reverse_coverage"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Pedagogy model (module sequence, Bloom progression, prereq chain)
+# ---------------------------------------------------------------------------
+
+class TestPedagogyModelRichness:
+    def _mk(self, chunk_id, module_id, module_title, bloom, tags, prereqs,
+            los=(), position=0):
+        return _chunk(
+            id=chunk_id, bloom_level=bloom, concept_tags=list(tags),
+            prereq_concepts=list(prereqs), learning_outcome_refs=list(los),
+            source={
+                "course_id": "MINI_101",
+                "module_id": module_id,
+                "module_title": module_title,
+                "lesson_id": module_id,
+                "lesson_title": module_title,
+                "resource_type": "page",
+                "section_heading": "H",
+                "position_in_module": position,
+            },
+        )
+
+    def test_thin_summary_when_no_chunks(self):
+        proc = _bare_processor()
+        summary = proc._build_pedagogy_summary()
+        assert summary["instructional_approach"] == "competency-based"
+        assert "module_sequence" not in summary
+
+    def test_module_sequence_ordered_by_week(self):
+        proc = _bare_processor()
+        chunks = [
+            self._mk("a", "week_02_foo", "Week 2", "apply", ["aria"], []),
+            self._mk("b", "week_01_foo", "Week 1", "understand", ["pour"], []),
+            self._mk("c", "week_03_foo", "Week 3", "evaluate", ["landmark"], []),
+        ]
+        summary = proc._build_pedagogy_summary(chunks)
+        weeks = [m["week_num"] for m in summary["module_sequence"]]
+        assert weeks == [1, 2, 3]
+
+    def test_bloom_progression_counts_per_module(self):
+        proc = _bare_processor()
+        chunks = [
+            self._mk("a", "week_01_foo", "Week 1", "understand", ["pour"], []),
+            self._mk("b", "week_01_foo", "Week 1", "apply", ["pour"], []),
+            self._mk("c", "week_02_foo", "Week 2", "evaluate", ["aria"], []),
+        ]
+        summary = proc._build_pedagogy_summary(chunks)
+        assert summary["bloom_progression"]["week_01_foo"]["understand"] == 1
+        assert summary["bloom_progression"]["week_01_foo"]["apply"] == 1
+        assert summary["bloom_progression"]["week_02_foo"]["evaluate"] == 1
+
+    def test_prerequisite_chain_valid_order(self):
+        proc = _bare_processor()
+        chunks = [
+            # Week 1 defines 'pour'
+            self._mk("a", "week_01_foo", "Week 1", "understand", ["pour"], []),
+            # Week 2 uses 'pour' as prereq → valid chain
+            self._mk("b", "week_02_foo", "Week 2", "apply", ["aria"], ["pour"]),
+        ]
+        summary = proc._build_pedagogy_summary(chunks)
+        chain_concepts = {e["concept"] for e in summary["prerequisite_chain"]}
+        assert "pour" in chain_concepts
+        assert summary["prerequisite_violations"] == []
+
+    def test_prerequisite_violation_detected(self):
+        proc = _bare_processor()
+        chunks = [
+            # Week 1 uses 'aria' as prereq BEFORE it is defined anywhere visible
+            self._mk("a", "week_01_foo", "Week 1", "understand", [], ["aria"]),
+            # Week 2 finally defines 'aria'
+            self._mk("b", "week_02_foo", "Week 2", "apply", ["aria"], []),
+        ]
+        summary = proc._build_pedagogy_summary(chunks)
+        violations = {v["concept"] for v in summary["prerequisite_violations"]}
+        assert "aria" in violations
+
+
 class TestFixtures:
     def test_clean_fixture_present(self):
         assert (CLEAN_DIR / "course_objectives.json").exists()

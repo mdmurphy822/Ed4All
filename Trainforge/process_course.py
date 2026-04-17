@@ -51,7 +51,11 @@ from Trainforge.rag.wcag_canonical_names import canonicalize_sc_references
 # Bumped whenever the semantics of quality_report.json metrics change.
 # v1: field-presence metrics (legacy).
 # v2: referential, structural, and content-sanity metrics.
-METRICS_SEMANTIC_VERSION = 2
+# v3: adds outcome_reverse_coverage (metric) + integrity.uncovered_outcomes
+#     (list); guaranteed bloom_level on every chunk via verb/default fallback;
+#     pedagogy_model.json grows module_sequence, bloom_progression,
+#     prerequisite_chain, prerequisite_violations.
+METRICS_SEMANTIC_VERSION = 3
 
 
 class PipelineIntegrityError(RuntimeError):
@@ -178,7 +182,40 @@ def load_objectives(objectives_path: Path) -> Dict[str, Any]:
         "bloom_distribution": data.get("bloom_distribution", {}),
         "description": data.get("description", ""),
         "course_title": data.get("course_title", ""),
+        # Optional per-course domain concept seeds. Shape:
+        #   [{"id": "pour", "aliases": ["POUR", "perceivable operable"]}, ...]
+        # CONCEPT_PATTERNS covers pedagogy terms only, so domain seeds are
+        # the only text-based extraction path for course-specific vocabulary.
+        "domain_concepts": data.get("domain_concepts", []),
     }
+
+
+def compile_domain_concept_seeds(
+    raw: List[Dict[str, Any]],
+) -> List[Tuple[str, List[re.Pattern]]]:
+    """Compile the domain_concepts block from an objectives file into
+    (canonical_tag, [word-boundary regex]) pairs for fast matching.
+
+    Aliases are matched case-insensitively with \\b word boundaries so that
+    short tokens (``aria``, ``udl``) don't match inside longer words.
+    """
+    seeds: List[Tuple[str, List[re.Pattern]]] = []
+    for entry in raw or []:
+        canonical = normalize_tag(entry.get("id", ""))
+        if not canonical:
+            continue
+        aliases = list(entry.get("aliases") or [])
+        if entry.get("id") and entry["id"] not in aliases:
+            aliases.append(entry["id"])
+        patterns: List[re.Pattern] = []
+        for alias in aliases:
+            alias = str(alias).strip()
+            if not alias:
+                continue
+            patterns.append(re.compile(rf"\b{re.escape(alias)}\b", re.IGNORECASE))
+        if patterns:
+            seeds.append((canonical, patterns))
+    return seeds
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +277,12 @@ LOGISTICS_TAG_SET: Set[str] = {
     "correct", "incorrect", "submit", "deadline", "grading",
     "readings", "resources", "learning-objectives",
     "estimated-time", "time", "minutes", "hours",
+    # "feedback" is legitimate pedagogy vocabulary (formative feedback in
+    # course theory courses). For domain courses it reliably pollutes the
+    # concept graph via boilerplate like "you'll receive immediate feedback"
+    # in quiz intros. Routing it to pedagogy_graph keeps the signal without
+    # polluting the domain graph.
+    "feedback",
 }
 
 # Divs carrying these attribute prefixes are atomic — the chunker must not
@@ -444,8 +487,12 @@ class CourseProcessor:
 
         # Objectives (optional)
         self.objectives: Optional[Dict[str, Any]] = None
+        self.domain_concept_seeds: List[Tuple[str, List[re.Pattern]]] = []
         if objectives_path:
             self.objectives = load_objectives(Path(objectives_path))
+            self.domain_concept_seeds = compile_domain_concept_seeds(
+                self.objectives.get("domain_concepts", [])
+            )
 
         # Decision capture
         self.capture = DecisionCapture(
@@ -519,7 +566,7 @@ class CourseProcessor:
         # Stage 6
         print("[6/6] Writing metadata files...")
         self._write_metadata(manifest, corpus_stats, concept_graph, quality_report,
-                             pedagogy_graph=pedagogy_graph)
+                             pedagogy_graph=pedagogy_graph, chunks=chunks)
 
         summary = {
             "status": "success",
@@ -862,28 +909,69 @@ class CourseProcessor:
             "word_count": word_count,
         }
 
-        # Enrich from Courseforge metadata (JSON-LD / data-cf-*)
+        # Enrich from Courseforge metadata (JSON-LD / data-cf-*).
+        # Resolution order: section JSON-LD → page JSON-LD → parsed LOs →
+        # text verb heuristic → hardcoded default. Every chunk ends up with
+        # a bloom_level; bloom_level_source records where it came from so
+        # downstream consumers can weight low-confidence sources.
         bloom_level, content_type_label, key_terms = self._extract_section_metadata(
             item, section_heading
         )
-        # Fallback: if section metadata didn't provide bloom_level,
-        # derive from page-level JSON-LD objectives or parsed objectives
+        bloom_source = "section_jsonld" if bloom_level else None
+
+        # Merge structured JSON-LD keyTerms into concept_tags. These are the
+        # highest-fidelity domain vocabulary Courseforge emits; leaving them
+        # in chunk["key_terms"] only meant the concept graph missed them.
+        for kt in key_terms or []:
+            term = kt.get("term") if isinstance(kt, dict) else kt
+            tag = normalize_tag(term or "")
+            if not tag or len(tag) < 3 or tag in concept_tags:
+                continue
+            if (self.OBJECTIVE_CODE_RE.match(tag)
+                    or self.WEEK_PREFIX_RE.match(tag)
+                    or tag in self.NON_CONCEPT_TAGS):
+                continue
+            concept_tags.append(tag)
+
         if not bloom_level:
             cf_meta = item.get("courseforge_metadata")
             if cf_meta and cf_meta.get("learningObjectives"):
                 for lo in cf_meta["learningObjectives"]:
                     if lo.get("bloomLevel"):
                         bloom_level = lo["bloomLevel"]
+                        bloom_source = "page_jsonld"
                         break
         if not bloom_level:
             for lo in item.get("learning_objectives", []):
                 bl = lo.bloom_level if hasattr(lo, "bloom_level") else lo.get("bloom_level")
                 if bl:
                     bloom_level = bl
+                    bloom_source = "lo_inherited"
                     break
+        if not bloom_level:
+            derived = derive_bloom_from_verbs(text)
+            if derived:
+                bloom_level = derived
+                bloom_source = "verbs"
+        if not bloom_level:
+            bloom_level = "understand"
+            bloom_source = "default"
 
-        if bloom_level:
-            chunk["bloom_level"] = bloom_level
+        chunk["bloom_level"] = bloom_level
+        # Only tag the source when it's below lo_inherited confidence;
+        # authoritative chunks stay schema-identical to pre-fallback output.
+        if bloom_source in ("verbs", "default"):
+            chunk["bloom_level_source"] = bloom_source
+            self.capture.log_decision(
+                decision_type="bloom_level_assignment",
+                decision=f"Assigned bloom_level={bloom_level} via {bloom_source}",
+                rationale=(
+                    "No JSON-LD, data-cf-*, or parsed learning objective "
+                    "supplied a bloom_level for this chunk; fell back to the "
+                    "text verb heuristic (or the understand-level default) "
+                    "so every chunk carries a level for downstream filters."
+                ),
+            )
         if content_type_label:
             chunk["content_type_label"] = content_type_label
         if key_terms:
@@ -1067,13 +1155,26 @@ class CourseProcessor:
                 continue
             tags.append(tag)
 
-        # Text-based concept detection
+        # Text-based concept detection (pedagogy-only patterns).
         text_lower = text.lower()
         for tag, patterns in self.CONCEPT_PATTERNS.items():
             if tag not in tags and any(p in text_lower for p in patterns):
                 tags.append(tag)
 
-        return tags[:10]
+        # Per-course domain concept seeds. Pedagogy filter still applies
+        # below since seeds are authored per course; a well-formed seed
+        # list won't collide with NON_CONCEPT_TAGS, but we defend anyway.
+        for canonical, patterns in self.domain_concept_seeds:
+            if canonical in tags:
+                continue
+            if (self.OBJECTIVE_CODE_RE.match(canonical)
+                    or self.WEEK_PREFIX_RE.match(canonical)
+                    or canonical in self.NON_CONCEPT_TAGS):
+                continue
+            if any(p.search(text) for p in patterns):
+                tags.append(canonical)
+
+        return tags[:20]
 
     def _extract_objective_refs(self, item: Dict[str, Any]) -> List[str]:
         """Extract learning objective reference codes from item.
@@ -1492,6 +1593,18 @@ class CourseProcessor:
         valid_ids = self._valid_outcome_ids or set()
         lo_coverage = self._resolving_lo_coverage(chunks, valid_ids)
         broken_refs = self._collect_broken_refs(chunks, valid_ids)
+        # Reverse coverage: which declared outcomes have ZERO resolving chunks?
+        # This is the symmetric complement of learning_outcome_coverage and
+        # catches content-generation gaps that the chunk-ratio metric misses.
+        referenced_ids = {
+            r for c in chunks for r in c.get("learning_outcome_refs", [])
+            if r in valid_ids
+        }
+        uncovered_outcomes = sorted(valid_ids - referenced_ids)
+        outcome_reverse_coverage = (
+            (len(valid_ids) - len(uncovered_outcomes)) / len(valid_ids)
+            if valid_ids else 1.0
+        )
 
         # Content sanity: boilerplate contamination + factual flags + follows_chunk scope.
         footer_rate = contamination_rate(chunks, self._boilerplate_spans) if self._boilerplate_spans else 0.0
@@ -1514,6 +1627,11 @@ class CourseProcessor:
             issues.append(f"Bloom level coverage {bloom_coverage:.0%} — below 90% threshold")
         if lo_coverage < 0.8:
             issues.append(f"Learning outcome coverage {lo_coverage:.0%} — below 80% threshold")
+        if valid_ids and outcome_reverse_coverage < 0.9:
+            issues.append(
+                f"{len(uncovered_outcomes)} learning outcomes have zero resolving chunks: "
+                + ", ".join(uncovered_outcomes)
+            )
         if html_preservation < 1.0:
             issues.append(f"HTML balance violations in {len(balance_violations)} chunks")
         if footer_rate > 0.05:
@@ -1536,6 +1654,7 @@ class CourseProcessor:
                 "html_preservation_rate": round(html_preservation, 3),
                 "bloom_level_coverage": round(bloom_coverage, 3),
                 "learning_outcome_coverage": round(lo_coverage, 3),
+                "outcome_reverse_coverage": round(outcome_reverse_coverage, 3),
                 "footer_contamination_rate": round(footer_rate, 3),
                 "follows_chunk_boundary_violations": len(boundary_violations),
                 "avg_chunk_size_words": round(self.stats["total_words"] / total, 1),
@@ -1550,6 +1669,11 @@ class CourseProcessor:
                     "Fraction of chunks that reference at least one outcome ID that "
                     "resolves to course.json (referential integrity, not field presence)."
                 ),
+                "outcome_reverse_coverage": (
+                    "Fraction of declared course.json outcomes that have at least one "
+                    "chunk referencing them (catches content-generation gaps where whole "
+                    "outcomes are orphaned, which the chunk-ratio coverage misses)."
+                ),
                 "footer_contamination_rate": (
                     "Fraction of chunks whose text still contains a detected corpus-wide "
                     "repeated n-gram (likely footer/template-chrome that escaped stripping)."
@@ -1563,6 +1687,7 @@ class CourseProcessor:
                 "html_balance_violations": balance_violations,
                 "follows_chunk_boundary_violations": boundary_violations,
                 "factual_inconsistency_flags": factual_flags,
+                "uncovered_outcomes": uncovered_outcomes,
             },
             "validation": {"passed": overall >= 0.75 and not broken_refs, "issues": issues},
             "recommendations": recommendations,
@@ -1724,7 +1849,17 @@ class CourseProcessor:
                 + ". Disable strict_mode to produce a non-final artifact."
             )
 
-    def _build_pedagogy_summary(self) -> Dict[str, Any]:
+    def _build_pedagogy_summary(
+        self, chunks: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
+        """Build a pedagogy model grounded in the actual chunk set.
+
+        Emits module_sequence (order + per-module stats), bloom_progression
+        (per-module Bloom distribution), and prerequisite_chain (concepts
+        referenced as prereqs after being first introduced earlier). Falls
+        back to just the top-level keys when chunks aren't provided so
+        older call sites don't break.
+        """
         summary: Dict[str, Any] = {
             "instructional_approach": "competency-based",
             "learning_theory": "constructivism",
@@ -1732,6 +1867,99 @@ class CourseProcessor:
         }
         if self.objectives and self.objectives.get("bloom_distribution"):
             summary["bloom_coverage"] = self.objectives["bloom_distribution"]
+
+        if not chunks:
+            return summary
+
+        # --- module_sequence + bloom_progression --------------------------------
+        module_meta: Dict[str, Dict[str, Any]] = {}
+        module_order: List[str] = []
+        bloom_zero = lambda: {
+            "remember": 0, "understand": 0, "apply": 0,
+            "analyze": 0, "evaluate": 0, "create": 0,
+        }
+
+        for chunk in chunks:
+            src = chunk.get("source") or {}
+            module_id = src.get("module_id")
+            if not module_id:
+                continue
+            if module_id not in module_meta:
+                module_order.append(module_id)
+                week_match = re.search(r"week[_\-\s]?(\d+)", module_id, re.IGNORECASE)
+                module_meta[module_id] = {
+                    "module_id": module_id,
+                    "module_title": src.get("module_title", ""),
+                    "week_num": int(week_match.group(1)) if week_match else 0,
+                    "chunk_count": 0,
+                    "outcome_refs_covered": set(),
+                    "bloom_counts": bloom_zero(),
+                    "first_seen": len(module_order),
+                }
+            meta = module_meta[module_id]
+            meta["chunk_count"] += 1
+            meta["outcome_refs_covered"].update(chunk.get("learning_outcome_refs", []))
+            bloom = chunk.get("bloom_level")
+            if bloom in meta["bloom_counts"]:
+                meta["bloom_counts"][bloom] += 1
+
+        # Deterministic order: by week_num, then by first-seen position.
+        module_order.sort(key=lambda m: (module_meta[m]["week_num"], module_meta[m]["first_seen"]))
+
+        module_sequence = []
+        bloom_progression: Dict[str, Dict[str, int]] = {}
+        for mid in module_order:
+            meta = module_meta[mid]
+            module_sequence.append({
+                "module_id": mid,
+                "module_title": meta["module_title"],
+                "week_num": meta["week_num"],
+                "chunk_count": meta["chunk_count"],
+                "outcome_refs_covered": sorted(meta["outcome_refs_covered"]),
+            })
+            bloom_progression[mid] = meta["bloom_counts"]
+
+        summary["module_sequence"] = module_sequence
+        summary["bloom_progression"] = bloom_progression
+
+        # --- prerequisite_chain + prerequisite_violations ------------------------
+        # For each concept tag, record earliest (module_idx, chunk_id) where it
+        # appears in concept_tags (definition site) vs prereq_concepts (use site).
+        # Valid chain: first use in module index > first definition's module index.
+        module_idx = {mid: i for i, mid in enumerate(module_order)}
+        first_def: Dict[str, Tuple[int, str, str]] = {}
+        first_use: Dict[str, Tuple[int, str, str]] = {}
+        for chunk in chunks:
+            src = chunk.get("source") or {}
+            mid = src.get("module_id")
+            if mid not in module_idx:
+                continue
+            idx = module_idx[mid]
+            cid = chunk["id"]
+            for tag in chunk.get("concept_tags", []) or []:
+                if tag not in first_def or idx < first_def[tag][0]:
+                    first_def[tag] = (idx, mid, cid)
+            for tag in chunk.get("prereq_concepts", []) or []:
+                if tag not in first_use or idx < first_use[tag][0]:
+                    first_use[tag] = (idx, mid, cid)
+
+        prerequisite_chain = []
+        prerequisite_violations = []
+        for tag in sorted(set(first_def) & set(first_use)):
+            def_idx, def_mod, def_chunk = first_def[tag]
+            use_idx, use_mod, use_chunk = first_use[tag]
+            record = {
+                "concept": tag,
+                "defined_in": {"module_id": def_mod, "chunk_id": def_chunk},
+                "first_used_in": {"module_id": use_mod, "chunk_id": use_chunk},
+            }
+            if use_idx > def_idx:
+                prerequisite_chain.append(record)
+            elif use_idx < def_idx:
+                prerequisite_violations.append(record)
+
+        summary["prerequisite_chain"] = prerequisite_chain
+        summary["prerequisite_violations"] = prerequisite_violations
         return summary
 
     def _build_course_json(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
@@ -1772,6 +2000,7 @@ class CourseProcessor:
         concept_graph: Dict[str, Any],
         quality_report: Dict[str, Any],
         pedagogy_graph: Optional[Dict[str, Any]] = None,
+        chunks: Optional[List[Dict[str, Any]]] = None,
     ):
         # Strict-mode gate: refuse to write an artifact whose quality report
         # shows integrity violations. Disabled by default for v0.1.x; flipped
@@ -1795,8 +2024,8 @@ class CourseProcessor:
             _write(self.graph_dir / "pedagogy_graph.json", pedagogy_graph)
         _write(self.quality_dir / "quality_report.json", quality_report)
 
-        # Pedagogy model
-        pedagogy = self._build_pedagogy_summary()
+        # Pedagogy model (full: module sequence, bloom progression, prereq chain)
+        pedagogy = self._build_pedagogy_summary(chunks=chunks)
         _write(self.pedagogy_dir / "pedagogy_model.json", pedagogy)
 
         # Training specs
