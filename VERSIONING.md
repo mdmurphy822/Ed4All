@@ -56,11 +56,13 @@ Honest metrics are necessary but not sufficient. A pipeline that computes accura
 
 ### Severity flip trigger
 
-The gates `outcome_ref_integrity` and `content_fact_check` ship in `config/workflows.yaml` at `severity: warning`. The follow-up PR flips them to `critical` and turns on `strict_mode=True` by default. The flip is contingent on one event, not a calendar date:
+The gates `outcome_ref_integrity` and `content_fact_check` ship in `config/workflows.yaml` at `severity: warning`. The follow-up PR flips them to `critical` and turns on `strict_mode=True` by default. The flip is contingent on **two** events together, not a calendar date:
 
-> The synthetic `Trainforge/tests/fixtures/mini_course_clean/` fixture runs green in CI with `metrics.footer_contamination_rate == 0`, `integrity.broken_refs == []`, and `integrity.factual_inconsistency_flags == []`.
+> 1. **Synthetic floor.** `Trainforge/tests/fixtures/mini_course_clean/` runs green in CI with `metrics.footer_contamination_rate == 0`, `integrity.broken_refs == []`, and `integrity.factual_inconsistency_flags == []`.
+>
+> 2. **Real-domain floor.** A clean v1.0 regeneration of WCAG_201 (or another real domain corpus, see §6(b)) produces a `quality_report.json` with the same three integrity invariants holding. The `archive/v0.1.0-baseline/` snapshot exists so this regeneration has a comparator.
 
-No single run forces the decision unless this criterion is explicit. Name it. Ship it.
+The synthetic floor proves the code paths work; the real-domain floor proves the architecture handles the messiness fixtures can't simulate. Either alone is a weaker bar than the NSF narrative implies — both must hold. The follow-up PR cannot cite "CI green" alone as justification for the flip.
 
 ---
 
@@ -72,10 +74,34 @@ No single run forces the decision unless this criterion is explicit. Name it. Sh
 - **H2** JSON-LD `sections` is genuinely empty on many pages.
 - **H3** `content_type_label` short-circuit in `_extract_section_metadata` produces half-populated chunks.
 - **H4** The "no sections" code path in `_chunk_content` never invokes `_extract_section_metadata` at all.
+- **H5** The JSON-LD parser silently fails on edge cases (malformed JSON, unexpected schema variants, encoding quirks) and the chunker treats the parse failure as "metadata absent" rather than "metadata present but unreadable." Distinguished from H2 because the fix is in the parser, not the source.
 
-The investigation MUST complete before any fallback helper (`derive_bloom_from_verbs`, `extract_key_terms_from_html`, `extract_misconceptions_from_text`) is wired into `_create_chunk`. If the root cause is structural (H1/H3/H4), the fix is at the source, not in fallback regex. If the root cause is H2, fallbacks are appropriate.
+The investigation MUST complete before any fallback helper (`derive_bloom_from_verbs`, `extract_key_terms_from_html`, `extract_misconceptions_from_text`) is wired into `_create_chunk`. If the root cause is structural (H1/H3/H4/H5), the fix is at the source or in the parser, not in fallback regex. If the root cause is H2, fallbacks are appropriate.
 
 The helpers exist in `Trainforge/process_course.py` at module scope and are unit-tested. They will be deleted if unused after the investigation concludes — dead code masking a fixable bug is worse than a known gap.
+
+---
+
+## §4b Architectural decisions — explicit deferrals on this branch
+
+The v1 plan committed to "ownership: both" for footer contamination — Courseforge moves copyright into a `data-cf-role="template-chrome"` region, Trainforge skips that role *and* runs an n-gram defensive layer. Likewise, "Courseforge emits both" was the dual outcome-ID decision, requiring `course.json` to carry course-level + week-scoped IDs with parent links.
+
+This branch ships **only the Trainforge half of both decisions.** The Courseforge-side template change and dual-emission are not in this commit. That is a real drift from the plan, and the right move is to acknowledge it in writing rather than leave it as an unspoken gap.
+
+| Decision | Trainforge side (this PR) | Courseforge side (follow-up) |
+|---|---|---|
+| Footer ownership | n-gram detector strips repeated spans; metric reports contamination rate | Move copyright out of page body into `<footer data-cf-role="template-chrome">`; add a selector-based skip in Trainforge so role-tagged chrome is dropped before n-gram detection runs |
+| Outcome-ID contract | `learning_outcome_refs` holds course-level IDs; `pedagogical_scope_refs` holds week-scoped IDs with `parent_id` (orphans preserved with `parent_id: null`) | Emit both forms in `course.json` with explicit parent links so orphan counts stay zero on healthy content |
+
+**Follow-up branch:** the v1.0 work that completes both halves is owned by the same maintainer (`mdmurphy822`) and lives on a branch named `claude/courseforge-template-chrome-and-dual-ids` (to be created). Until that branch ships:
+
+- The "ownership: both" entry in the v0 plan's decision table is *partially fulfilled*, not retracted.
+- The Trainforge defensive layer is **load-bearing**: on a small corpus or against novel template chrome, the n-gram threshold may not fire and footer contamination will leak through. The metric will surface the leak; nothing will refuse to write it. This is acceptable for v0.1.x but is the principal reason `strict_mode=True` is not on by default.
+- Selector-based skip for `[data-cf-role="template-chrome"]` is **not present** in this PR. When Courseforge starts emitting the role attribute, this skip must land in `Trainforge/process_course.py` (in or alongside `_detect_corpus_boilerplate`) in the same PR as the Courseforge template change.
+
+### What this means for the severity flip
+
+The "real-domain floor" requirement in §3 (Severity flip trigger) cannot be satisfied until the Courseforge-side work is done. A v1.0 WCAG_201 regeneration with Courseforge still emitting body-embedded copyright will keep the n-gram detector load-bearing, and the strict-mode integrity gate would be operating on top of a defensive layer rather than a clean source. The severity flip is therefore implicitly blocked on the Courseforge follow-up — that should be made explicit in the follow-up PR description.
 
 ---
 
@@ -120,13 +146,16 @@ For a proposal, the claim structure is:
 
 That structure is stronger than any "here's a pipeline we built" narrative because it demonstrates a *method*: measure, characterise, remediate, re-measure. Funded proposals reward method.
 
-### Paired before/after artifacts — bound follow-up task
+### Paired before/after artifacts — archive scaffold shipped, population owed
 
-Before the pipeline moves past v0.1.x, snapshot:
+This branch ships an empty `archive/v0.1.0-baseline/` scaffold with an `ARCHIVE_README.md` that names what must go there. The scaffold exists in the tree so the obligation is structural, not a todo on someone's list. The artifact itself was not present in the environment this branch was developed in, so the scaffold is empty pending action by the repo owner (`mdmurphy822`).
 
-1. The v0.1.0 WCAG_201 artifact as shipped.
-2. The v0.1.0 WCAG_201 `quality_report.json` with both its original self-scores and the honest METRICS_SEMANTIC_VERSION=2 re-scoring for the same corpus.
-3. A v1.0 WCAG_201 regeneration once the v1.0 branch ships.
-4. A side-by-side delta table: per-metric change with honest math.
+Before the pipeline moves past v0.1.x, the maintainer must populate the scaffold with:
 
-This task is flagged explicitly because if it isn't captured *before* the pipeline advances, the v0.1.0 artifact becomes impossible to regenerate cleanly and the grant narrative loses its strongest evidence. Tracked on the v1.0 branch.
+1. The v0.1.0 WCAG_201 artifact as shipped (full Trainforge output dir tree — manifest.json, course.json, corpus/, graph/, pedagogy/, quality/, training_specs/).
+2. The original v0.1.0 `quality_report.json` exactly as it was emitted (the dishonest scores).
+3. Optional: a `quality_report_rescored_v2.json` produced by re-running the v0.1.x self-trust metrics against the same unchanged chunks. Same input, two metric generations, side-by-side comparator.
+
+The v1.0 regeneration and delta table follow once v1.0 ships and are tracked on that branch.
+
+The reason this can't be deferred to "the v1.0 branch will produce both": once the chunker, the metrics, the canonicalisation, the orphan rule, and the pedagogy graph split are all on `main` (which they are after this PR merges), regenerating the v0.1.0 artifact byte-for-byte becomes structurally impossible. Either the maintainer holds a copy outside this checkout and commits it, or the `archive/v0.1.0-baseline/ARCHIVE_README.md` fallback (rebuild from commit `18c6613`) is invoked, with the divergence documented.

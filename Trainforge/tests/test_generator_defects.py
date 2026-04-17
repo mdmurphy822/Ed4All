@@ -410,6 +410,38 @@ class TestContentFactValidator:
         flags = ContentFactValidator().check_text(text)
         assert any(f["claim"] == "wcag_2_2_sc_arithmetic" for f in flags)
 
+    def test_historical_wcag_20_claim_suppressed(self):
+        from lib.validators.content_facts import ContentFactValidator
+
+        # WCAG 2.0 historically shipped with 61 SC. Mentioning that here
+        # should not flag against the WCAG 2.2 expected value of 86.
+        text = "WCAG 2.0 historically had 61 success criteria across four principles."
+        flags = ContentFactValidator().check_text(text)
+        assert not any(f["claim"] == "wcag_2_2_sc_count" for f in flags)
+
+    def test_previously_keyword_suppresses(self):
+        from lib.validators.content_facts import ContentFactValidator
+
+        text = "The spec previously contained 50 success criteria; today it lists 86."
+        flags = ContentFactValidator().check_text(text)
+        # Neither the historical "50" nor the present-tense "86" should flag.
+        assert not any(f["claim"] == "wcag_2_2_sc_count" for f in flags)
+
+    def test_section_508_count_still_flags_when_wrong(self):
+        from lib.validators.content_facts import ContentFactValidator
+
+        text = "There are 99 applicable WCAG 2.0 A and AA SC under Section 508."
+        flags = ContentFactValidator().check_text(text)
+        # The Section 508 expected count is 38; suppressor must not blanket-skip it.
+        assert any(f["claim"] == "section_508_sc_count" for f in flags)
+
+    def test_arithmetic_suppressed_under_historical_framing(self):
+        from lib.validators.content_facts import ContentFactValidator
+
+        text = "WCAG 2.0 used to have 25 success criteria across 4 principles: 12, 8, 4, 1."
+        flags = ContentFactValidator().check_text(text)
+        assert not any(f["claim"] == "wcag_2_2_sc_arithmetic" for f in flags)
+
 
 # ---------------------------------------------------------------------------
 # Defect 9 — leak_check corpus-wide boilerplate
