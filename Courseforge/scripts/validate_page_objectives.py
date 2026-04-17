@@ -12,13 +12,13 @@ canonical IDs in Trainforge's chunker.
 
 Usage:
     python validate_page_objectives.py \
-        --objectives inputs/exam-objectives/WCAG_201_objectives.json \
-        --pages exports/WCAG_201_COURSE/03_content_development
+        --objectives inputs/exam-objectives/SAMPLE_101_objectives.json \
+        --pages exports/SAMPLE_101_COURSE/03_content_development
 
     # Validate a single page:
     python validate_page_objectives.py \
-        --objectives inputs/exam-objectives/WCAG_201_objectives.json \
-        --pages exports/WCAG_201_COURSE/03_content_development/week_03/week_03_overview.html
+        --objectives inputs/exam-objectives/SAMPLE_101_objectives.json \
+        --pages exports/SAMPLE_101_COURSE/03_content_development/week_03/week_03_overview.html
 
 Exit code 0 on success, 1 if any page violates the invariant.
 """

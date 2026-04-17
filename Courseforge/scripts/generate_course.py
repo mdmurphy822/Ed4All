@@ -288,14 +288,14 @@ def _wrap_page(title: str, course_code: str, week_num: int, body_html: str,
 <body>
   <a href="#main-content" class="skip-link">Skip to main content</a>
   <header role="banner">
-    <p>{course_code}: Foundations of Digital Pedagogy &mdash; Week {week_num}</p>
+    <p>{course_code} &mdash; Week {week_num}</p>
   </header>
   <main id="main-content" role="main">
     <h1>{safe_title}</h1>
 {body_html}
   </main>
   <footer role="contentinfo">
-    <p>&copy; 2026 {course_code}: Foundations of Digital Pedagogy. All rights reserved.</p>
+    <p>&copy; 2026 {course_code}. All rights reserved.</p>
   </footer>
 {extra_js}
 </body>

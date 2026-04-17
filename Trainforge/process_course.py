@@ -1152,9 +1152,9 @@ class CourseProcessor:
         # Optional retrieval_text: summary + " " + key_terms_joined. Emitted
         # only when key_terms exist, since otherwise the field would just
         # duplicate `summary`. Benchmarked in
-        # Trainforge/rag/retrieval_benchmark.py — on WCAG_201 at commit time,
-        # retrieval_text lifted recall@5 from 0.0369 (text) to 0.0399
-        # (retrieval_text); small but positive, so we ship it.
+        # Trainforge/rag/retrieval_benchmark.py — on a representative real
+        # course at commit time, retrieval_text lifted recall@5 from 0.0369
+        # (text) to 0.0399 (retrieval_text); small but positive, so we ship it.
         kt = chunk.get("key_terms")
         if kt:
             kt_parts: List[str] = []
