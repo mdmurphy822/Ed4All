@@ -37,11 +37,14 @@ coverage.xml
 # =============================================================================
 LibV2/courses/*
 !LibV2/courses/.gitkeep
-# Per-course reference-retrieval artifacts (Worker J).  Only the hand-curated
-# gold queries + their README ride in git; chunks.jsonl, evaluation_results.json,
-# and everything else under courses/*/ stays local.
+# Per-course reference-retrieval artifacts (Worker J).  Un-ignore the course
+# dirs and the retrieval/ subdir just enough that the hand-curated gold
+# queries + README ride in git; re-ignore everything else inside the
+# course (chunks.jsonl, graph/, quality/, evaluation_results.json, ...).
 !LibV2/courses/*/
+LibV2/courses/*/*
 !LibV2/courses/*/retrieval/
+LibV2/courses/*/retrieval/*
 !LibV2/courses/*/retrieval/gold_queries.jsonl
 !LibV2/courses/*/retrieval/README.md
 LibV2/catalog/*
