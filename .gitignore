@@ -37,6 +37,13 @@ coverage.xml
 # =============================================================================
 LibV2/courses/*
 !LibV2/courses/.gitkeep
+# Per-course reference-retrieval artifacts (Worker J).  Only the hand-curated
+# gold queries + their README ride in git; chunks.jsonl, evaluation_results.json,
+# and everything else under courses/*/ stays local.
+!LibV2/courses/*/
+!LibV2/courses/*/retrieval/
+!LibV2/courses/*/retrieval/gold_queries.jsonl
+!LibV2/courses/*/retrieval/README.md
 LibV2/catalog/*
 !LibV2/catalog/.gitkeep
 !LibV2/catalog/cross_package_concepts.json
