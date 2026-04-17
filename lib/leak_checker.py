@@ -572,6 +572,64 @@ class LeakChecker:
         return text[:max_len - 3] + "..."
 
 
+def check_corpus_boilerplate(
+    self,
+    chunks: List[Dict[str, Any]],
+    n: int = 15,
+    threshold: float = 0.10,
+) -> List[LeakDetection]:
+    """Detect corpus-wide repeated n-gram boilerplate across chunk text.
+
+    Flags when any repeated span appears in more than ``threshold`` of the
+    chunks — typically footers, copyright, or template chrome that escaped
+    stripping at the chunker stage. Returns one LeakDetection per span at
+    ``LOW`` severity so existing leak-dashboard plumbing can surface it
+    without blocking the pipeline.
+    """
+    try:
+        from Trainforge.rag.boilerplate_detector import (
+            contamination_rate,
+            detect_repeated_ngrams,
+        )
+    except Exception:
+        return []
+
+    if not chunks:
+        return []
+
+    texts = [c.get("text", "") or "" for c in chunks]
+    spans = detect_repeated_ngrams(texts, n=n, min_doc_frac=threshold)
+    if not spans:
+        return []
+
+    rate = contamination_rate(chunks, spans)
+    details: List[LeakDetection] = []
+    for span in spans:
+        details.append(LeakDetection(
+            leak_type=LeakType.PATTERN_MATCH,
+            severity=LeakSeverity.LOW,
+            question_id="corpus",
+            assessment_id="corpus",
+            location="corpus.boilerplate",
+            message=(
+                f"Corpus boilerplate above {threshold:.0%} threshold "
+                f"(contamination={rate:.0%})"
+            ),
+            matched_text=span[:200],
+            suggestion=(
+                "Strip at source (Courseforge template chrome) or defensively "
+                "via Trainforge boilerplate_detector. See VERSIONING.md §4.7."
+            ),
+        ))
+    return details
+
+
+# Attach to LeakChecker as a bound method. Defined at module scope to
+# keep the class body tight; the binding makes `LeakChecker.check_corpus_boilerplate`
+# available to callers that hold a checker instance.
+LeakChecker.check_corpus_boilerplate = check_corpus_boilerplate
+
+
 # Global checker instance
 _global_checker: Optional[LeakChecker] = None
 

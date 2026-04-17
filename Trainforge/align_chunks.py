@@ -186,6 +186,101 @@ def load_objectives(objectives_path: Path) -> List[Outcome]:
     return outcomes
 
 
+WEEK_SCOPED_ID_RE = re.compile(r"^w\d{2}-[a-z]{2}-\d{2,3}$", re.IGNORECASE)
+
+
+def build_outcome_hierarchy(objectives_path: Path) -> Tuple[Dict[str, str], set]:
+    """Return (parent_map, course_level_ids) from a dual-emission objectives file.
+
+    parent_map maps every week-scoped ID (``w01-co-02``) to its course-level
+    parent ID (``co-02``). When the objectives file pre-dates the dual-ID
+    contract and carries no ``week_scoped_ids`` entries, parent_map is empty;
+    week-scoped refs on chunks will then surface as orphans in the quality
+    report (§2.1 orphan rule).
+    """
+    with open(objectives_path) as f:
+        doc = json.load(f)
+
+    parent_map: Dict[str, str] = {}
+    course_level: set = set()
+
+    for to in doc.get("terminal_objectives", []):
+        parent_id = (to.get("id") or "").lower()
+        if parent_id:
+            course_level.add(parent_id)
+        for ws in to.get("week_scoped_ids", []) or []:
+            if ws and parent_id:
+                parent_map[ws.lower()] = parent_id
+
+    for ch in doc.get("chapter_objectives", []):
+        for obj in ch.get("objectives", []):
+            parent_id = (obj.get("id") or "").lower()
+            if parent_id:
+                course_level.add(parent_id)
+            for ws in obj.get("week_scoped_ids", []) or []:
+                if ws and parent_id:
+                    parent_map[ws.lower()] = parent_id
+
+    return parent_map, course_level
+
+
+def partition_outcome_refs(
+    chunks: List[Dict[str, Any]],
+    parent_map: Dict[str, str],
+    course_level_ids: set,
+) -> int:
+    """Split every chunk's learning_outcome_refs into course-level and pedagogical.
+
+    Week-scoped IDs (``w0X-co-YY``) move from ``learning_outcome_refs`` into
+    ``pedagogical_scope_refs``, each entry carrying its resolved parent or
+    ``parent_id: null`` when the parent link is missing. The function returns
+    the count of orphan refs encountered across the corpus — this is the
+    number written to ``integrity.orphan_week_scoped_refs`` in the quality
+    report (§2.1).
+
+    Design choice (Option 2 from the plan): preserve-and-surface. We never
+    silently drop week-scoped refs, never synthesise a parent ID, never raise.
+    """
+    orphan_count = 0
+    for chunk in chunks:
+        existing = chunk.get("learning_outcome_refs", []) or []
+        course_refs: List[str] = []
+        scope_refs: List[Dict[str, Any]] = []
+        seen_scope_ids: set = set()
+
+        for ref in existing:
+            ref_lc = ref.lower()
+            if WEEK_SCOPED_ID_RE.match(ref_lc):
+                if ref_lc in seen_scope_ids:
+                    continue
+                seen_scope_ids.add(ref_lc)
+                parent = parent_map.get(ref_lc)
+                if parent:
+                    scope_refs.append({
+                        "id": ref_lc,
+                        "parent_id": parent,
+                        "status": "resolved",
+                    })
+                    if parent not in course_refs:
+                        course_refs.append(parent)
+                else:
+                    scope_refs.append({
+                        "id": ref_lc,
+                        "parent_id": None,
+                        "status": "orphan",
+                    })
+                    orphan_count += 1
+            else:
+                if ref_lc not in course_refs:
+                    course_refs.append(ref_lc)
+
+        chunk["learning_outcome_refs"] = course_refs
+        if scope_refs:
+            chunk["pedagogical_scope_refs"] = scope_refs
+
+    return orphan_count
+
+
 # ---------------------------------------------------------------------------
 # Build chunk sequence
 # ---------------------------------------------------------------------------
@@ -580,8 +675,19 @@ def match_learning_outcomes(
 # Quality report update
 # ---------------------------------------------------------------------------
 
-def update_quality_report(corpus_dir: Path, chunks: List[Dict]) -> None:
-    """Update quality_report.json with alignment field coverage metrics."""
+def update_quality_report(
+    corpus_dir: Path,
+    chunks: List[Dict],
+    valid_outcome_ids: Optional[set] = None,
+    orphan_week_scoped_refs: int = 0,
+) -> None:
+    """Update quality_report.json with alignment field coverage metrics.
+
+    ``learning_outcome_refs_coverage`` measures *referential integrity* under
+    METRICS_SEMANTIC_VERSION=2: a chunk counts only if at least one of its
+    ``learning_outcome_refs`` resolves to ``valid_outcome_ids``. When the
+    caller doesn't pass a valid-ID set, the metric falls back to presence.
+    """
     report_path = corpus_dir / "quality" / "quality_report.json"
     if not report_path.exists():
         return
@@ -594,7 +700,21 @@ def update_quality_report(corpus_dir: Path, chunks: List[Dict]) -> None:
     # Alignment-specific metrics
     prereq_coverage = sum(1 for c in chunks if c.get("prereq_concepts")) / total
     role_coverage = sum(1 for c in chunks if c.get("teaching_role")) / total
-    outcome_coverage = sum(1 for c in chunks if c.get("learning_outcome_refs")) / total
+
+    if valid_outcome_ids is not None:
+        outcome_coverage = sum(
+            1 for c in chunks
+            if any(r in valid_outcome_ids for r in c.get("learning_outcome_refs", []))
+        ) / total
+        broken_refs = [
+            {"chunk_id": c["id"], "ref": r}
+            for c in chunks
+            for r in c.get("learning_outcome_refs", [])
+            if r not in valid_outcome_ids
+        ]
+    else:
+        outcome_coverage = sum(1 for c in chunks if c.get("learning_outcome_refs")) / total
+        broken_refs = []
 
     # Role consistency: check for type/role mismatches
     role_mismatches = 0
@@ -616,6 +736,13 @@ def update_quality_report(corpus_dir: Path, chunks: List[Dict]) -> None:
         "teaching_role_consistency": round(role_consistency, 3),
         "teaching_role_distribution": dict(role_dist),
     }
+
+    # Referential-integrity findings live under ``integrity`` alongside the
+    # base-pass integrity block (see process_course.py _generate_quality_report).
+    integrity = report.setdefault("integrity", {})
+    existing_broken = integrity.get("broken_refs", [])
+    integrity["broken_refs"] = existing_broken + broken_refs
+    integrity["orphan_week_scoped_refs"] = orphan_week_scoped_refs
 
     # Recompute overall score including alignment
     base_score = report.get("overall_quality_score", 0.0)
@@ -721,10 +848,19 @@ def main(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
         )
 
     # --- Field 3: learning_outcome_refs ---
+    orphan_count = 0
     if "learning_outcome_refs" in fields:
         if not args.objectives:
             print("\n[3/3] Skipping learning_outcome_refs (no --objectives provided)")
         else:
+            # Partition first: move any week-scoped IDs (w01-co-02) onto the
+            # chunk's pedagogical_scope_refs field with parent links. Orphans
+            # are preserved with parent_id: null per §2.1.
+            parent_map, course_level_ids = build_outcome_hierarchy(Path(args.objectives))
+            orphan_count = partition_outcome_refs(chunks, parent_map, course_level_ids)
+            if orphan_count:
+                print(f"  Orphan week-scoped refs surfaced: {orphan_count}")
+
             print("\n[3/3] Matching learning_outcome_refs...")
             match_learning_outcomes(
                 chunks, Path(args.objectives), verbose=args.verbose,
@@ -743,7 +879,18 @@ def main(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
             chunk.pop("_position", None)
 
         write_corpus(corpus_dir, chunks)
-        update_quality_report(corpus_dir, chunks)
+        # Pass the valid-ID set and orphan count through so the updated
+        # quality_report reflects referential integrity (§1.1) + §2.1 orphan
+        # surfacing.
+        valid_ids: Optional[set] = None
+        if args.objectives and "learning_outcome_refs" in fields:
+            parent_map, course_level_ids = build_outcome_hierarchy(Path(args.objectives))
+            valid_ids = set(course_level_ids) | set(parent_map.keys())
+        update_quality_report(
+            corpus_dir, chunks,
+            valid_outcome_ids=valid_ids,
+            orphan_week_scoped_refs=orphan_count,
+        )
         print(f"\n  Written to {corpus_dir / 'corpus'}")
     else:
         print("\n  [DRY RUN] No files written")

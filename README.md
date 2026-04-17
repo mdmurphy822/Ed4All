@@ -17,7 +17,7 @@ Give it source materials and a knowledge domain. It produces three outputs:
 
 Every chunk in the output carries Bloom's taxonomy level, content type classification, key terms with definitions, misconceptions, and learning outcome references. This isn't a text dump — it's a pedagogically structured knowledge representation that LLMs can use for grounded generation, tutoring, and domain-specific reasoning.
 
-The concept graph connects domain knowledge semantically, not just by keyword co-occurrence. A physics corpus produces physics concepts. An accessibility corpus produces accessibility concepts. No manual ontology work required.
+The v0.1.0 concept graph captures tag co-occurrence with pedagogical metadata (Bloom's levels, content types, key terms). A physics corpus produces physics concepts; an accessibility corpus produces accessibility concepts — no manual ontology work required. Typed semantic relationships (prerequisite, is-a, related-to) are targeted for v1.0 via a separate `concept_graph_semantic.json` output. See [VERSIONING.md](VERSIONING.md).
 
 ### Who this is for
 

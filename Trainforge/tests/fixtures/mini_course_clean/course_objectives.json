@@ -1,0 +1,42 @@
+{
+  "course_code": "MINI_CLEAN_101",
+  "course_title": "Mini Clean Baseline Course",
+  "description": "Clean baseline fixture for the self-trust layer.",
+  "terminal_objectives": [
+    {
+      "id": "to-01",
+      "statement": "Apply accessibility-first instructional design to a short digital lesson.",
+      "bloomLevel": "apply",
+      "week_scoped_ids": ["w02-to-01"],
+      "hierarchy_level": "course"
+    }
+  ],
+  "chapter_objectives": [
+    {
+      "chapter": "Week 1-1: Foundations",
+      "week_range": [1, 1],
+      "objectives": [
+        {
+          "id": "co-01",
+          "statement": "Define Bloom's taxonomy levels and their instructional implications.",
+          "bloomLevel": "remember",
+          "week_scoped_ids": ["w01-co-01"],
+          "hierarchy_level": "course"
+        }
+      ]
+    },
+    {
+      "chapter": "Week 2-2: Accessibility",
+      "week_range": [2, 2],
+      "objectives": [
+        {
+          "id": "co-02",
+          "statement": "Identify WCAG 2.2 success criteria relevant to a given pattern.",
+          "bloomLevel": "understand",
+          "week_scoped_ids": ["w02-co-02"],
+          "hierarchy_level": "course"
+        }
+      ]
+    }
+  ]
+}
