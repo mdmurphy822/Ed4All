@@ -57,7 +57,17 @@ class ParsedHTMLModule:
 
 
 class HTMLTextExtractor(HTMLParser):
-    """Extract text content from HTML."""
+    """Extract text content from HTML.
+
+    Skips:
+      - ``<script>`` and ``<style>`` subtrees (always).
+      - Any subtree rooted at an element carrying ``data-cf-role="template-chrome"``
+        (Worker Q). Courseforge marks repeated page chrome — header, footer,
+        skip link — with that attribute so the chunk text field doesn't
+        contain boilerplate that every page duplicates. The n-gram boilerplate
+        detector in ``Trainforge/rag/boilerplate_detector.py`` stays as
+        belt-and-suspenders for non-Courseforge IMSCC.
+    """
 
     def __init__(self):
         super().__init__()
@@ -65,6 +75,15 @@ class HTMLTextExtractor(HTMLParser):
         self.current_tag = None
         self.in_script = False
         self.in_style = False
+        # Worker Q: count of currently-open template-chrome ancestors. When
+        # nonzero, text data is discarded.
+        self._template_chrome_depth = 0
+
+    def _is_template_chrome(self, attrs) -> bool:
+        for name, value in attrs:
+            if name == "data-cf-role" and value == "template-chrome":
+                return True
+        return False
 
     def handle_starttag(self, tag, attrs):
         self.current_tag = tag
@@ -72,22 +91,53 @@ class HTMLTextExtractor(HTMLParser):
             self.in_script = True
         elif tag == 'style':
             self.in_style = True
+        if self._is_template_chrome(attrs):
+            self._template_chrome_depth += 1
 
     def handle_endtag(self, tag):
         if tag == 'script':
             self.in_script = False
         elif tag == 'style':
             self.in_style = False
+        # Close template-chrome scope when we see the matching end tag for
+        # a chrome-flagged element. html.parser doesn't give us the attrs on
+        # endtag, so we use a heuristic: template chrome is only emitted on
+        # a known small set of tags (`header`, `footer`, `a.skip-link`).
+        # The counter decrements on those tag names when we're inside a
+        # chrome region. For robustness this matches any end tag that
+        # corresponds to a currently-open chrome region.
+        if self._template_chrome_depth > 0 and tag in _CHROME_TAGS:
+            self._template_chrome_depth -= 1
         self.current_tag = None
 
+    def handle_startendtag(self, tag, attrs):
+        # Self-closing chrome elements (rare but possible, e.g., <br data-cf-role="template-chrome"/>)
+        # shouldn't leave the counter incremented.
+        if tag == 'script':
+            self.in_script = True
+            self.in_script = False
+        elif tag == 'style':
+            self.in_style = True
+            self.in_style = False
+        # Chrome self-closers are transient — no effect on depth.
+
     def handle_data(self, data):
-        if not self.in_script and not self.in_style:
-            text = data.strip()
-            if text:
-                self.text_parts.append(text)
+        if self.in_script or self.in_style:
+            return
+        if self._template_chrome_depth > 0:
+            return
+        text = data.strip()
+        if text:
+            self.text_parts.append(text)
 
     def get_text(self) -> str:
         return ' '.join(self.text_parts)
+
+
+# Tags that Courseforge's generate_course.py emits with
+# ``data-cf-role="template-chrome"``. Keeping this narrow avoids
+# under-counting end tags in complex nested chrome.
+_CHROME_TAGS = {"header", "footer", "a", "div", "nav", "aside"}
 
 
 class HTMLContentParser:
