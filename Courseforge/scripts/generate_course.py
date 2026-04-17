@@ -15,12 +15,119 @@ Usage:
     python generate_course.py DIGPED_101_course_data.json output_dir/
 """
 
+import argparse
 import html as html_mod
 import json
 import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+
+# ---------------------------------------------------------------------------
+# Canonical-objectives loading & per-week LO resolution
+# ---------------------------------------------------------------------------
+#
+# The content-generation input (``<course>_course_data.json``) historically
+# invented week-local objective IDs like ``W07-CO-01`` on each week's page,
+# and those IDs were independently numbered ``01..04`` per week. Trainforge
+# strips the ``W0N-`` prefix when normalizing ``learning_outcome_refs``, so
+# every week's chunks collapsed onto the same four canonical IDs
+# (``CO-01..CO-04``) and 24 of 28 declared outcomes ended up uncovered.
+#
+# The canonical source of truth is the ``inputs/exam-objectives/`` JSON
+# (Terminal Objectives ``TO-*`` plus per-chapter Chapter Objectives
+# ``CO-*`` grouped by ``chapter`` strings like ``"Week 3-4: Visual Design"``).
+# When a caller passes ``--objectives <path>`` to ``generate_course.py`` we
+# replace each week's objectives with the canonical subset for that week:
+# every Terminal Objective plus every Chapter Objective whose chapter-range
+# covers the week. The emitted JSON-LD then references globally-unique,
+# canonical IDs that Trainforge can resolve against ``course.json``.
+
+_WEEK_RANGE_RE = re.compile(r"[Ww]eek\s+(\d+)(?:\s*-\s*(\d+))?")
+
+
+def _co_to_generator_format(co: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a canonical objective dict (from the objectives JSON) to the
+    shape this script's renderers consume.
+
+    The objectives JSON uses ``bloomLevel`` (camelCase); the renderer expects
+    ``bloom_level`` (snake_case). ``key_concepts`` is left untouched.
+    """
+    out: Dict[str, Any] = {
+        "id": co["id"],
+        "statement": co["statement"],
+    }
+    bloom = co.get("bloomLevel") or co.get("bloom_level")
+    if bloom:
+        out["bloom_level"] = bloom
+    verb = co.get("bloomVerb") or co.get("bloom_verb")
+    if verb:
+        out["bloom_verb"] = verb
+    key_concepts = co.get("keyConcepts") or co.get("key_concepts")
+    if key_concepts:
+        out["key_concepts"] = key_concepts
+    prereqs = co.get("prerequisiteObjectives") or co.get("prerequisite_objectives")
+    if prereqs:
+        out["prerequisite_objectives"] = prereqs
+    return out
+
+
+def load_canonical_objectives(objectives_path: Path) -> Dict[str, Any]:
+    """Load the canonical objectives JSON (e.g. ``WCAG_201_objectives.json``)
+    and return a structure keyed for per-week LO resolution.
+
+    Returns a dict with keys:
+        ``terminal_objectives``: list of TO dicts in generator format.
+        ``week_to_chapter_objectives``: ``{int week_num: [CO dicts]}``.
+
+    Chapter mapping uses the same regex Trainforge uses in
+    ``Trainforge.process_course.load_objectives`` so the two stay in sync.
+    """
+    with open(objectives_path) as f:
+        data = json.load(f)
+
+    terminal = [_co_to_generator_format(o) for o in data.get("terminal_objectives", [])]
+
+    week_to_cos: Dict[int, List[Dict[str, Any]]] = {}
+    for chapter in data.get("chapter_objectives", []):
+        chapter_name = chapter.get("chapter", "")
+        m = _WEEK_RANGE_RE.search(chapter_name)
+        if not m:
+            continue
+        start = int(m.group(1))
+        end = int(m.group(2)) if m.group(2) else start
+        cos = [_co_to_generator_format(o) for o in chapter.get("objectives", [])]
+        for w in range(start, end + 1):
+            week_to_cos.setdefault(w, []).extend(cos)
+
+    return {
+        "terminal_objectives": terminal,
+        "week_to_chapter_objectives": week_to_cos,
+    }
+
+
+def resolve_week_objectives(
+    week_num: int, canonical: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """Return the canonical LO list (TOs plus week-specific COs) for a week.
+
+    If no chapter objectives cover ``week_num`` (e.g. course-overview pages
+    keyed at ``week_num=0`` or a gap between declared chapters) we return
+    only the terminal objectives, which always apply across the course.
+    """
+    terminal = canonical.get("terminal_objectives", []) or []
+    chapter_cos = canonical.get("week_to_chapter_objectives", {}).get(week_num, []) or []
+    # Preserve order (TOs first, then COs) and deduplicate by ID in case a
+    # CO appears in more than one chapter range.
+    seen: set = set()
+    result: List[Dict[str, Any]] = []
+    for o in list(terminal) + list(chapter_cos):
+        if o["id"] in seen:
+            continue
+        seen.add(o["id"])
+        result.append(o)
+    return result
 
 # ---------------------------------------------------------------------------
 # Bloom's taxonomy detection
@@ -488,11 +595,34 @@ def _build_page_metadata(
     return meta
 
 
-def generate_week(week_data: Dict, output_dir: Path, course_code: str):
-    """Generate all files for a single week."""
+def generate_week(
+    week_data: Dict,
+    output_dir: Path,
+    course_code: str,
+    canonical_objectives: Optional[Dict[str, Any]] = None,
+):
+    """Generate all files for a single week.
+
+    When ``canonical_objectives`` is provided (from
+    :func:`load_canonical_objectives`), the week's ``objectives`` are
+    overridden with the canonical TOs plus the Chapter Objectives declared
+    for that week. This ensures emitted ``learningObjectives`` JSON-LD
+    references globally-unique canonical IDs (e.g. ``CO-05``) instead of
+    invented week-local IDs (``W03-CO-01``) that all collapse to the same
+    four IDs after Trainforge's week-prefix normalization.
+    """
     week_num = week_data["week_number"]
     week_dir = output_dir / f"week_{week_num:02d}"
     week_dir.mkdir(parents=True, exist_ok=True)
+
+    # Override week objectives with canonical, week-specific LOs when a
+    # canonical objectives registry is supplied. Falls back to the week's
+    # declared objectives for backward compatibility with older callers.
+    if canonical_objectives is not None:
+        resolved = resolve_week_objectives(week_num, canonical_objectives)
+        if resolved:
+            week_data = dict(week_data)
+            week_data["objectives"] = resolved
 
     # Remove old monolithic module.html
     old = week_dir / "module.html"
@@ -638,15 +768,43 @@ def generate_week(week_data: Dict, output_dir: Path, course_code: str):
     return len(files), [f.name for f in sorted(files)]
 
 
-def generate_course(course_data_path: str, output_dir: str):
-    """Generate a full course from a JSON data file."""
+def generate_course(
+    course_data_path: str,
+    output_dir: str,
+    objectives_path: Optional[str] = None,
+):
+    """Generate a full course from a JSON data file.
+
+    Args:
+        course_data_path: Path to the course data JSON (per-week content,
+            activities, self-checks, etc.).
+        output_dir: Directory to write the generated ``week_XX/`` folders.
+        objectives_path: Optional path to the canonical objectives JSON
+            (e.g. ``Courseforge/inputs/exam-objectives/WCAG_201_objectives.json``).
+            When provided, each page's ``learningObjectives`` JSON-LD is
+            emitted using canonical CO / TO IDs resolved from the week
+            mapping declared in the objectives JSON. Pass ``None`` to
+            preserve the previous behaviour and use whatever ``objectives``
+            list the course data JSON provides for each week.
+    """
     data = json.loads(Path(course_data_path).read_text())
     out = Path(output_dir)
     course_code = data.get("course_code", "COURSE_101")
 
+    canonical = None
+    if objectives_path:
+        canonical = load_canonical_objectives(Path(objectives_path))
+        tos = len(canonical.get("terminal_objectives", []))
+        cos = sum(len(v) for v in canonical.get("week_to_chapter_objectives", {}).values())
+        print(
+            f"Loaded canonical objectives: {tos} terminal objective(s), "
+            f"{cos} chapter-objective week-slot assignment(s) across weeks "
+            f"{sorted(canonical['week_to_chapter_objectives'].keys())}"
+        )
+
     total_files = 0
     for week in data["weeks"]:
-        count, files = generate_week(week, out, course_code)
+        count, files = generate_week(week, out, course_code, canonical_objectives=canonical)
         total_files += count
         print(f"  Week {week['week_number']:2d}: {count} files - {', '.join(files)}")
 
@@ -654,8 +812,28 @@ def generate_course(course_data_path: str, output_dir: str):
     return total_files
 
 
+def _build_cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Generate Courseforge HTML pages from structured course data."
+    )
+    parser.add_argument("course_data", help="Path to <course>_course_data.json")
+    parser.add_argument("output_dir", help="Output directory for generated week folders")
+    parser.add_argument(
+        "--objectives",
+        default=None,
+        help=(
+            "Optional path to the canonical objectives JSON "
+            "(e.g. inputs/exam-objectives/<COURSE>_objectives.json). When "
+            "provided, emitted learningObjectives JSON-LD uses canonical CO/TO "
+            "IDs resolved per-week rather than the week-local IDs that the "
+            "course-data file may carry. This is the recommended mode; it "
+            "fixes the defect where every week's pages reference the same "
+            "four LOs after Trainforge's week-prefix normalization."
+        ),
+    )
+    return parser
+
+
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: python generate_course.py <course_data.json> <output_dir>")
-        sys.exit(1)
-    generate_course(sys.argv[1], sys.argv[2])
+    args = _build_cli_parser().parse_args()
+    generate_course(args.course_data, args.output_dir, objectives_path=args.objectives)
