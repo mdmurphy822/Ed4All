@@ -1,9 +1,9 @@
 {
   "catalog_version": 1,
-  "generated_at": "2026-04-17T14:37:09.515522+00:00",
+  "generated_at": "2026-04-17T15:14:02.743931+00:00",
   "repo_root": "/home/mdmur/Projects/Ed4All",
   "course_count": 2,
-  "concept_count": 92,
+  "concept_count": 282,
   "concepts": {
     "accessibility": {
       "label": "Accessibility",
@@ -11,16 +11,47 @@
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 103,
+          "frequency": 129,
           "label": "Accessibility"
         },
         {
           "slug": "foundations-of-digital-pedagogy",
-          "frequency": 12,
+          "frequency": 15,
           "label": "Accessibility"
         }
       ],
-      "cross_package_edges": []
+      "cross_package_edges": [
+        {
+          "source_concept": "accessibility",
+          "target_concept": "assessment",
+          "type": "prerequisite",
+          "course_slug": "foundations-of-digital-pedagogy",
+          "confidence": 0.6
+        },
+        {
+          "source_concept": "accessibility",
+          "target_concept": "assessment",
+          "type": "related-to",
+          "course_slug": "best-practices-in-digital-web-design-for-accessibi",
+          "confidence": 0.7000000000000001,
+          "weight": 6
+        },
+        {
+          "source_concept": "accessibility",
+          "target_concept": "cognitive-load",
+          "type": "prerequisite",
+          "course_slug": "foundations-of-digital-pedagogy",
+          "confidence": 0.6
+        },
+        {
+          "source_concept": "accessibility",
+          "target_concept": "cognitive-load",
+          "type": "related-to",
+          "course_slug": "best-practices-in-digital-web-design-for-accessibi",
+          "confidence": 0.6000000000000001,
+          "weight": 4
+        }
+      ]
     },
     "assessment": {
       "label": "Assessment",
@@ -28,12 +59,12 @@
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 4,
+          "frequency": 6,
           "label": "Assessment"
         },
         {
           "slug": "foundations-of-digital-pedagogy",
-          "frequency": 39,
+          "frequency": 41,
           "label": "Assessment"
         }
       ],
@@ -50,96 +81,19 @@
         },
         {
           "slug": "foundations-of-digital-pedagogy",
-          "frequency": 20,
+          "frequency": 22,
           "label": "Cognitive Load"
         }
       ],
-      "cross_package_edges": []
-    },
-    "design": {
-      "label": "Design",
-      "total_courses": 2,
-      "courses": [
+      "cross_package_edges": [
         {
-          "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 5,
-          "label": "Design"
-        },
-        {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 7,
-          "label": "Design"
+          "source_concept": "cognitive-load",
+          "target_concept": "assessment",
+          "type": "prerequisite",
+          "course_slug": "foundations-of-digital-pedagogy",
+          "confidence": 0.6
         }
-      ],
-      "cross_package_edges": []
-    },
-    "due": {
-      "label": "Due",
-      "total_courses": 2,
-      "courses": [
-        {
-          "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 12,
-          "label": "Due"
-        },
-        {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 12,
-          "label": "Due"
-        }
-      ],
-      "cross_package_edges": []
-    },
-    "feedback": {
-      "label": "Feedback",
-      "total_courses": 2,
-      "courses": [
-        {
-          "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 19,
-          "label": "Feedback"
-        },
-        {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 30,
-          "label": "Feedback"
-        }
-      ],
-      "cross_package_edges": []
-    },
-    "initial-post": {
-      "label": "Initial Post",
-      "total_courses": 2,
-      "courses": [
-        {
-          "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 12,
-          "label": "Initial Post"
-        },
-        {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 12,
-          "label": "Initial Post"
-        }
-      ],
-      "cross_package_edges": []
-    },
-    "replies": {
-      "label": "Replies",
-      "total_courses": 2,
-      "courses": [
-        {
-          "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 12,
-          "label": "Replies"
-        },
-        {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 12,
-          "label": "Replies"
-        }
-      ],
-      "cross_package_edges": []
+      ]
     },
     "academic-integrity": {
       "label": "Academic Integrity",
@@ -153,26 +107,98 @@
       ],
       "cross_package_edges": []
     },
+    "accessibility-by-architecture": {
+      "label": "Accessibility By Architecture",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Accessibility By Architecture"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "accessibility-conformance-report": {
+      "label": "Accessibility Conformance Report",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Accessibility Conformance Report"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "accessibility-policy": {
+      "label": "Accessibility Policy",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Accessibility Policy"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "accessibility-statement": {
+      "label": "Accessibility Statement",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 4,
+          "label": "Accessibility Statement"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "accessibility-tree": {
+      "label": "Accessibility Tree",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Accessibility Tree"
+        }
+      ],
+      "cross_package_edges": []
+    },
     "accessible-name": {
       "label": "Accessible Name",
       "total_courses": 1,
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 6,
+          "frequency": 10,
           "label": "Accessible Name"
         }
       ],
       "cross_package_edges": []
     },
-    "accommodation": {
-      "label": "Accommodation",
+    "accordion": {
+      "label": "Accordion",
       "total_courses": 1,
       "courses": [
         {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 1,
-          "label": "Accommodation"
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Accordion"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "ada": {
+      "label": "Ada",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 16,
+          "label": "Ada"
         }
       ],
       "cross_package_edges": []
@@ -183,20 +209,20 @@
       "courses": [
         {
           "slug": "foundations-of-digital-pedagogy",
-          "frequency": 14,
+          "frequency": 16,
           "label": "Addie"
         }
       ],
       "cross_package_edges": []
     },
-    "advance-organizers": {
-      "label": "Advance Organizers",
+    "advisory-techniques": {
+      "label": "Advisory Techniques",
       "total_courses": 1,
       "courses": [
         {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 1,
-          "label": "Advance Organizers"
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Advisory Techniques"
         }
       ],
       "cross_package_edges": []
@@ -207,7 +233,7 @@
       "courses": [
         {
           "slug": "foundations-of-digital-pedagogy",
-          "frequency": 20,
+          "frequency": 22,
           "label": "Alignment"
         }
       ],
@@ -231,32 +257,92 @@
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 3,
+          "frequency": 25,
           "label": "Alt Text"
         }
       ],
       "cross_package_edges": []
     },
-    "analyze": {
-      "label": "Analyze",
+    "application-menu": {
+      "label": "Application Menu",
       "total_courses": 1,
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 4,
-          "label": "Analyze"
+          "frequency": 3,
+          "label": "Application Menu"
         }
       ],
       "cross_package_edges": []
     },
-    "apply": {
-      "label": "Apply",
+    "aria": {
+      "label": "Aria",
       "total_courses": 1,
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 41,
-          "label": "Apply"
+          "frequency": 65,
+          "label": "Aria"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "aria-atomic": {
+      "label": "Aria Atomic",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Aria Atomic"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "aria-authoring-practices-guide": {
+      "label": "Aria Authoring Practices Guide",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Aria Authoring Practices Guide"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "aria-controls": {
+      "label": "Aria Controls",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Aria Controls"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "aria-describedby": {
+      "label": "Aria Describedby",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 9,
+          "label": "Aria Describedby"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "aria-errormessage": {
+      "label": "Aria Errormessage",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Aria Errormessage"
         }
       ],
       "cross_package_edges": []
@@ -267,8 +353,32 @@
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 6,
+          "frequency": 9,
           "label": "Aria Expanded"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "aria-invalid": {
+      "label": "Aria Invalid",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Aria Invalid"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "aria-label": {
+      "label": "Aria Label",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 17,
+          "label": "Aria Label"
         }
       ],
       "cross_package_edges": []
@@ -279,8 +389,32 @@
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 3,
+          "frequency": 16,
           "label": "Aria Labelledby"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "aria-live": {
+      "label": "Aria Live",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 14,
+          "label": "Aria Live"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "aria-live-region": {
+      "label": "Aria Live Region",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Aria Live Region"
         }
       ],
       "cross_package_edges": []
@@ -291,20 +425,44 @@
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 5,
+          "frequency": 7,
           "label": "Aria Modal"
         }
       ],
       "cross_package_edges": []
     },
-    "assimilation": {
-      "label": "Assimilation",
+    "aria-role": {
+      "label": "Aria Role",
       "total_courses": 1,
       "courses": [
         {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 1,
-          "label": "Assimilation"
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 18,
+          "label": "Aria Role"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "assertive": {
+      "label": "Assertive",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Assertive"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "assistive-technology": {
+      "label": "Assistive Technology",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 4,
+          "label": "Assistive Technology"
         }
       ],
       "cross_package_edges": []
@@ -321,6 +479,18 @@
       ],
       "cross_package_edges": []
     },
+    "audio-description": {
+      "label": "Audio Description",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 7,
+          "label": "Audio Description"
+        }
+      ],
+      "cross_package_edges": []
+    },
     "audio-descriptions": {
       "label": "Audio Descriptions",
       "total_courses": 1,
@@ -333,13 +503,49 @@
       ],
       "cross_package_edges": []
     },
+    "auto-updating": {
+      "label": "Auto Updating",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Auto Updating"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "autocomplete-attribute": {
+      "label": "Autocomplete Attribute",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Autocomplete Attribute"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "automatic-activation": {
+      "label": "Automatic Activation",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Automatic Activation"
+        }
+      ],
+      "cross_package_edges": []
+    },
     "axe-core": {
       "label": "Axe Core",
       "total_courses": 1,
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 3,
+          "frequency": 15,
           "label": "Axe Core"
         }
       ],
@@ -351,8 +557,32 @@
       "courses": [
         {
           "slug": "foundations-of-digital-pedagogy",
-          "frequency": 6,
+          "frequency": 7,
           "label": "Backward Design"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "banner": {
+      "label": "Banner",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Banner"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "bcp-47": {
+      "label": "Bcp 47",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Bcp 47"
         }
       ],
       "cross_package_edges": []
@@ -387,8 +617,32 @@
       "courses": [
         {
           "slug": "foundations-of-digital-pedagogy",
-          "frequency": 10,
+          "frequency": 12,
           "label": "Blooms Taxonomy"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "browser-zoom": {
+      "label": "Browser Zoom",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Browser Zoom"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "bypass-blocks": {
+      "label": "Bypass Blocks",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Bypass Blocks"
         }
       ],
       "cross_package_edges": []
@@ -399,7 +653,7 @@
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 3,
+          "frequency": 14,
           "label": "Captions"
         }
       ],
@@ -417,30 +671,6 @@
       ],
       "cross_package_edges": []
     },
-    "case-based-learning": {
-      "label": "Case Based Learning",
-      "total_courses": 1,
-      "courses": [
-        {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 1,
-          "label": "Case Based Learning"
-        }
-      ],
-      "cross_package_edges": []
-    },
-    "classify": {
-      "label": "Classify",
-      "total_courses": 1,
-      "courses": [
-        {
-          "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 5,
-          "label": "Classify"
-        }
-      ],
-      "cross_package_edges": []
-    },
     "cognitivism": {
       "label": "Cognitivism",
       "total_courses": 1,
@@ -449,6 +679,66 @@
           "slug": "foundations-of-digital-pedagogy",
           "frequency": 14,
           "label": "Cognitivism"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "color-contrast": {
+      "label": "Color Contrast",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 16,
+          "label": "Color Contrast"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "color-independence": {
+      "label": "Color Independence",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Color Independence"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "color-palette": {
+      "label": "Color Palette",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Color Palette"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "color-vision-deficiency": {
+      "label": "Color Vision Deficiency",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Color Vision Deficiency"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "colour-contrast-analyser": {
+      "label": "Colour Contrast Analyser",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Colour Contrast Analyser"
         }
       ],
       "cross_package_edges": []
@@ -465,26 +755,50 @@
       ],
       "cross_package_edges": []
     },
-    "compare": {
-      "label": "Compare",
+    "component-api": {
+      "label": "Component Api",
       "total_courses": 1,
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 5,
-          "label": "Compare"
+          "frequency": 2,
+          "label": "Component Api"
         }
       ],
       "cross_package_edges": []
     },
-    "competency-based": {
-      "label": "Competency Based",
+    "computed-styles": {
+      "label": "Computed Styles",
       "total_courses": 1,
       "courses": [
         {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 1,
-          "label": "Competency Based"
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Computed Styles"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "conformance": {
+      "label": "Conformance",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Conformance"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "conformance-evaluation": {
+      "label": "Conformance Evaluation",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Conformance Evaluation"
         }
       ],
       "cross_package_edges": []
@@ -495,8 +809,20 @@
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 5,
+          "frequency": 45,
           "label": "Conformance Level"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "conformance-levels": {
+      "label": "Conformance Levels",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Conformance Levels"
         }
       ],
       "cross_package_edges": []
@@ -513,6 +839,18 @@
       ],
       "cross_package_edges": []
     },
+    "consistent-identification": {
+      "label": "Consistent Identification",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Consistent Identification"
+        }
+      ],
+      "cross_package_edges": []
+    },
     "constructivism": {
       "label": "Constructivism",
       "total_courses": 1,
@@ -521,6 +859,54 @@
           "slug": "foundations-of-digital-pedagogy",
           "frequency": 13,
           "label": "Constructivism"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "contentinfo": {
+      "label": "Contentinfo",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Contentinfo"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "context-change": {
+      "label": "Context Change",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Context Change"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "context-dependent-criteria": {
+      "label": "Context Dependent Criteria",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Context Dependent Criteria"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "continuous-monitoring": {
+      "label": "Continuous Monitoring",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Continuous Monitoring"
         }
       ],
       "cross_package_edges": []
@@ -537,74 +923,362 @@
       ],
       "cross_package_edges": []
     },
-    "create": {
-      "label": "Create",
-      "total_courses": 1,
-      "courses": [
-        {
-          "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 16,
-          "label": "Create"
-        }
-      ],
-      "cross_package_edges": []
-    },
-    "describe": {
-      "label": "Describe",
+    "css-pixels": {
+      "label": "Css Pixels",
       "total_courses": 1,
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
           "frequency": 3,
-          "label": "Describe"
+          "label": "Css Pixels"
         }
       ],
       "cross_package_edges": []
     },
-    "digital-age": {
-      "label": "Digital Age",
-      "total_courses": 1,
-      "courses": [
-        {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 1,
-          "label": "Digital Age"
-        }
-      ],
-      "cross_package_edges": []
-    },
-    "elaboration": {
-      "label": "Elaboration",
-      "total_courses": 1,
-      "courses": [
-        {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 1,
-          "label": "Elaboration"
-        }
-      ],
-      "cross_package_edges": []
-    },
-    "evaluate": {
-      "label": "Evaluate",
+    "css-selector": {
+      "label": "Css Selector",
       "total_courses": 1,
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 38,
-          "label": "Evaluate"
+          "frequency": 2,
+          "label": "Css Selector"
         }
       ],
       "cross_package_edges": []
     },
-    "explain": {
-      "label": "Explain",
+    "curb-cut-effect": {
+      "label": "Curb Cut Effect",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Curb Cut Effect"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "custom-button": {
+      "label": "Custom Button",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Custom Button"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "dark-mode": {
+      "label": "Dark Mode",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Dark Mode"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "de-facto-standard": {
+      "label": "De Facto Standard",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "De Facto Standard"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "demand-letters": {
+      "label": "Demand Letters",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Demand Letters"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "design-system": {
+      "label": "Design System",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Design System"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "design-tokens": {
+      "label": "Design Tokens",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Design Tokens"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "dialog-element": {
+      "label": "Dialog Element",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Dialog Element"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "direct-labels": {
+      "label": "Direct Labels",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Direct Labels"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "disability-rights": {
+      "label": "Disability Rights",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Disability Rights"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "disclosure-pattern": {
+      "label": "Disclosure Pattern",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Disclosure Pattern"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "disclosure-widget": {
+      "label": "Disclosure Widget",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Disclosure Widget"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "document-outline": {
+      "label": "Document Outline",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Document Outline"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "dom-inspection": {
+      "label": "Dom Inspection",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Dom Inspection"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "dom-order": {
+      "label": "Dom Order",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Dom Order"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "duplicate-ids": {
+      "label": "Duplicate Ids",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Duplicate Ids"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "en-301-549": {
+      "label": "En 301 549",
       "total_courses": 1,
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
           "frequency": 10,
-          "label": "Explain"
+          "label": "En 301 549"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "error-identification": {
+      "label": "Error Identification",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 10,
+          "label": "Error Identification"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "error-prevention": {
+      "label": "Error Prevention",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Error Prevention"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "error-suggestion": {
+      "label": "Error Suggestion",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Error Suggestion"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "error-summary": {
+      "label": "Error Summary",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Error Summary"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "etsi": {
+      "label": "Etsi",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Etsi"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "european-accessibility-act": {
+      "label": "European Accessibility Act",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "European Accessibility Act"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "evaluation-scope": {
+      "label": "Evaluation Scope",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Evaluation Scope"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "false-negatives": {
+      "label": "False Negatives",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "False Negatives"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "false-positives": {
+      "label": "False Positives",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "False Positives"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "feedback-mechanism": {
+      "label": "Feedback Mechanism",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Feedback Mechanism"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "fieldset": {
+      "label": "Fieldset",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Fieldset"
         }
       ],
       "cross_package_edges": []
@@ -633,14 +1307,74 @@
       ],
       "cross_package_edges": []
     },
+    "flesch-kincaid": {
+      "label": "Flesch Kincaid",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Flesch Kincaid"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "flexbox": {
+      "label": "Flexbox",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Flexbox"
+        }
+      ],
+      "cross_package_edges": []
+    },
     "focus-indicator": {
       "label": "Focus Indicator",
       "total_courses": 1,
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 5,
+          "frequency": 14,
           "label": "Focus Indicator"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "focus-mode": {
+      "label": "Focus Mode",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Focus Mode"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "focus-order": {
+      "label": "Focus Order",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Focus Order"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "focus-restoration": {
+      "label": "Focus Restoration",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Focus Restoration"
         }
       ],
       "cross_package_edges": []
@@ -651,32 +1385,128 @@
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 5,
+          "frequency": 8,
           "label": "Focus Trapping"
         }
       ],
       "cross_package_edges": []
     },
-    "gamification": {
-      "label": "Gamification",
-      "total_courses": 1,
-      "courses": [
-        {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 1,
-          "label": "Gamification"
-        }
-      ],
-      "cross_package_edges": []
-    },
-    "identify": {
-      "label": "Identify",
+    "focus-visible": {
+      "label": "Focus Visible",
       "total_courses": 1,
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 8,
-          "label": "Identify"
+          "frequency": 2,
+          "label": "Focus Visible"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "font-selection": {
+      "label": "Font Selection",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Font Selection"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "for-attribute": {
+      "label": "For Attribute",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "For Attribute"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "form-label": {
+      "label": "Form Label",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Form Label"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "grayscale-testing": {
+      "label": "Grayscale Testing",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Grayscale Testing"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "harmonized-standard": {
+      "label": "Harmonized Standard",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Harmonized Standard"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "heading-hierarchy": {
+      "label": "Heading Hierarchy",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 5,
+          "label": "Heading Hierarchy"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "heading-structure": {
+      "label": "Heading Structure",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 10,
+          "label": "Heading Structure"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "html-validator": {
+      "label": "Html Validator",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Html Validator"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "ict-final-rule": {
+      "label": "Ict Final Rule",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Ict Final Rule"
         }
       ],
       "cross_package_edges": []
@@ -693,38 +1523,74 @@
       ],
       "cross_package_edges": []
     },
-    "implement": {
-      "label": "Implement",
+    "impact-effort-matrix": {
+      "label": "Impact Effort Matrix",
       "total_courses": 1,
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 9,
-          "label": "Implement"
+          "frequency": 3,
+          "label": "Impact Effort Matrix"
         }
       ],
       "cross_package_edges": []
     },
-    "information-processing": {
-      "label": "Information Processing",
+    "inclusive-design": {
+      "label": "Inclusive Design",
       "total_courses": 1,
       "courses": [
         {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 1,
-          "label": "Information Processing"
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 15,
+          "label": "Inclusive Design"
         }
       ],
       "cross_package_edges": []
     },
-    "inquiry-based-learning": {
-      "label": "Inquiry Based Learning",
+    "infinite-scroll": {
+      "label": "Infinite Scroll",
       "total_courses": 1,
       "courses": [
         {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 1,
-          "label": "Inquiry Based Learning"
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Infinite Scroll"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "injunctive-relief": {
+      "label": "Injunctive Relief",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Injunctive Relief"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "inline-validation": {
+      "label": "Inline Validation",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Inline Validation"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "input-purpose": {
+      "label": "Input Purpose",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Input Purpose"
         }
       ],
       "cross_package_edges": []
@@ -735,8 +1601,20 @@
       "courses": [
         {
           "slug": "foundations-of-digital-pedagogy",
-          "frequency": 31,
+          "frequency": 32,
           "label": "Instructional Design"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "justified-text": {
+      "label": "Justified Text",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Justified Text"
         }
       ],
       "cross_package_edges": []
@@ -749,6 +1627,138 @@
           "slug": "best-practices-in-digital-web-design-for-accessibi",
           "frequency": 4,
           "label": "Keyboard Accessibility"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "keyboard-event-handlers": {
+      "label": "Keyboard Event Handlers",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Keyboard Event Handlers"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "keyboard-navigation": {
+      "label": "Keyboard Navigation",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 24,
+          "label": "Keyboard Navigation"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "keyboard-testing": {
+      "label": "Keyboard Testing",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Keyboard Testing"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "keyboard-trap": {
+      "label": "Keyboard Trap",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Keyboard Trap"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "known-limitations": {
+      "label": "Known Limitations",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Known Limitations"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "label-element": {
+      "label": "Label Element",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Label Element"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "landmark": {
+      "label": "Landmark",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 14,
+          "label": "Landmark"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "landmark-roles": {
+      "label": "Landmark Roles",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 5,
+          "label": "Landmark Roles"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "lang-attribute": {
+      "label": "Lang Attribute",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 5,
+          "label": "Lang Attribute"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "language-of-parts": {
+      "label": "Language Of Parts",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Language Of Parts"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "language-subtag": {
+      "label": "Language Subtag",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Language Subtag"
         }
       ],
       "cross_package_edges": []
@@ -777,14 +1787,218 @@
       ],
       "cross_package_edges": []
     },
-    "long-term-memory": {
-      "label": "Long Term Memory",
+    "legend": {
+      "label": "Legend",
       "total_courses": 1,
       "courses": [
         {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 1,
-          "label": "Long Term Memory"
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Legend"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "letter-spacing": {
+      "label": "Letter Spacing",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Letter Spacing"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "level-a": {
+      "label": "Level A",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Level A"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "level-aa": {
+      "label": "Level Aa",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Level Aa"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "level-aaa": {
+      "label": "Level Aaa",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Level Aaa"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "line-height": {
+      "label": "Line Height",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Line Height"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "live-region": {
+      "label": "Live Region",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Live Region"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "long-description": {
+      "label": "Long Description",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 4,
+          "label": "Long Description"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "main": {
+      "label": "Main",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Main"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "manual-activation": {
+      "label": "Manual Activation",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Manual Activation"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "manual-keyboard-testing": {
+      "label": "Manual Keyboard Testing",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Manual Keyboard Testing"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "maturity-model": {
+      "label": "Maturity Model",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Maturity Model"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "medical-model": {
+      "label": "Medical Model",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Medical Model"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "menubar": {
+      "label": "Menubar",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Menubar"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "meta-refresh": {
+      "label": "Meta Refresh",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Meta Refresh"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "modal-dialog": {
+      "label": "Modal Dialog",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Modal Dialog"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "motion-tokens": {
+      "label": "Motion Tokens",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Motion Tokens"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "multi-channel-communication": {
+      "label": "Multi Channel Communication",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Multi Channel Communication"
         }
       ],
       "cross_package_edges": []
@@ -795,8 +2009,44 @@
       "courses": [
         {
           "slug": "foundations-of-digital-pedagogy",
-          "frequency": 11,
+          "frequency": 12,
           "label": "Multimedia Learning"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "name-computation": {
+      "label": "Name Computation",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Name Computation"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "native-html-elements": {
+      "label": "Native Html Elements",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Native Html Elements"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "navigation": {
+      "label": "Navigation",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Navigation"
         }
       ],
       "cross_package_edges": []
@@ -825,6 +2075,18 @@
       ],
       "cross_package_edges": []
     },
+    "non-text-contrast": {
+      "label": "Non Text Contrast",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Non Text Contrast"
+        }
+      ],
+      "cross_package_edges": []
+    },
     "normal-text": {
       "label": "Normal Text",
       "total_courses": 1,
@@ -833,6 +2095,42 @@
           "slug": "best-practices-in-digital-web-design-for-accessibi",
           "frequency": 3,
           "label": "Normal Text"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "nvda": {
+      "label": "Nvda",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Nvda"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "on-focus": {
+      "label": "On Focus",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "On Focus"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "on-input": {
+      "label": "On Input",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "On Input"
         }
       ],
       "cross_package_edges": []
@@ -849,14 +2147,14 @@
       ],
       "cross_package_edges": []
     },
-    "operant-conditioning": {
-      "label": "Operant Conditioning",
+    "operable": {
+      "label": "Operable",
       "total_courses": 1,
       "courses": [
         {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 1,
-          "label": "Operant Conditioning"
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 15,
+          "label": "Operable"
         }
       ],
       "cross_package_edges": []
@@ -873,6 +2171,42 @@
       ],
       "cross_package_edges": []
     },
+    "outline": {
+      "label": "Outline",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Outline"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "parsing": {
+      "label": "Parsing",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Parsing"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "pattern-fills": {
+      "label": "Pattern Fills",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Pattern Fills"
+        }
+      ],
+      "cross_package_edges": []
+    },
     "peer-review": {
       "label": "Peer Review",
       "total_courses": 1,
@@ -885,26 +2219,134 @@
       ],
       "cross_package_edges": []
     },
+    "perceivable": {
+      "label": "Perceivable",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 10,
+          "label": "Perceivable"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "persona-spectrum": {
+      "label": "Persona Spectrum",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Persona Spectrum"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "photosensitive-epilepsy": {
+      "label": "Photosensitive Epilepsy",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Photosensitive Epilepsy"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "pit-of-success": {
+      "label": "Pit Of Success",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Pit Of Success"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "plain-language": {
+      "label": "Plain Language",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Plain Language"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "pointer-gestures": {
+      "label": "Pointer Gestures",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Pointer Gestures"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "polite": {
+      "label": "Polite",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Polite"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "pour": {
+      "label": "Pour",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 19,
+          "label": "Pour"
+        }
+      ],
+      "cross_package_edges": []
+    },
     "prefers-reduced-motion": {
       "label": "Prefers Reduced Motion",
       "total_courses": 1,
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 5,
+          "frequency": 12,
           "label": "Prefers Reduced Motion"
         }
       ],
       "cross_package_edges": []
     },
-    "problem-based-learning": {
-      "label": "Problem Based Learning",
+    "process-integration": {
+      "label": "Process Integration",
       "total_courses": 1,
       "courses": [
         {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 1,
-          "label": "Problem Based Learning"
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Process Integration"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "procurement-leverage": {
+      "label": "Procurement Leverage",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Procurement Leverage"
         }
       ],
       "cross_package_edges": []
@@ -921,26 +2363,218 @@
       ],
       "cross_package_edges": []
     },
-    "programmed-instruction": {
-      "label": "Programmed Instruction",
+    "public-accommodation": {
+      "label": "Public Accommodation",
       "total_courses": 1,
       "courses": [
         {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 1,
-          "label": "Programmed Instruction"
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Public Accommodation"
         }
       ],
       "cross_package_edges": []
     },
-    "reinforcement": {
-      "label": "Reinforcement",
+    "quick-wins": {
+      "label": "Quick Wins",
       "total_courses": 1,
       "courses": [
         {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 1,
-          "label": "Reinforcement"
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Quick Wins"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "reading-level": {
+      "label": "Reading Level",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Reading Level"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "red-flash-threshold": {
+      "label": "Red Flash Threshold",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Red Flash Threshold"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "reflow": {
+      "label": "Reflow",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Reflow"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "rehabilitation-act": {
+      "label": "Rehabilitation Act",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Rehabilitation Act"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "relative-luminance": {
+      "label": "Relative Luminance",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Relative Luminance"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "relative-order": {
+      "label": "Relative Order",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Relative Order"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "relative-units": {
+      "label": "Relative Units",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Relative Units"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "rem-units": {
+      "label": "Rem Units",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Rem Units"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "remediation": {
+      "label": "Remediation",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 21,
+          "label": "Remediation"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "remediation-guidance": {
+      "label": "Remediation Guidance",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Remediation Guidance"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "remediation-roadmap": {
+      "label": "Remediation Roadmap",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Remediation Roadmap"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "representative-sample": {
+      "label": "Representative Sample",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Representative Sample"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "required-attribute": {
+      "label": "Required Attribute",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Required Attribute"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "responsive-design": {
+      "label": "Responsive Design",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Responsive Design"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "robust": {
+      "label": "Robust",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 8,
+          "label": "Robust"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "roving-tabindex": {
+      "label": "Roving Tabindex",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 6,
+          "label": "Roving Tabindex"
         }
       ],
       "cross_package_edges": []
@@ -951,8 +2585,68 @@
       "courses": [
         {
           "slug": "foundations-of-digital-pedagogy",
-          "frequency": 15,
+          "frequency": 16,
           "label": "Rubric"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "rule-coverage": {
+      "label": "Rule Coverage",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Rule Coverage"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "rule-set": {
+      "label": "Rule Set",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Rule Set"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "sc-1412": {
+      "label": "Sc 1412",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Sc 1412"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "sc-2411": {
+      "label": "Sc 2411",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Sc 2411"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "sc-2413": {
+      "label": "Sc 2413",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Sc 2413"
         }
       ],
       "cross_package_edges": []
@@ -969,14 +2663,26 @@
       ],
       "cross_package_edges": []
     },
-    "schema-activation": {
-      "label": "Schema Activation",
+    "scope-definition": {
+      "label": "Scope Definition",
       "total_courses": 1,
       "courses": [
         {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 1,
-          "label": "Schema Activation"
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Scope Definition"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "screen-reader": {
+      "label": "Screen Reader",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 65,
+          "label": "Screen Reader"
         }
       ],
       "cross_package_edges": []
@@ -987,8 +2693,44 @@
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 5,
+          "frequency": 14,
           "label": "Section 508"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "security-exception": {
+      "label": "Security Exception",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Security Exception"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "semantic-color-roles": {
+      "label": "Semantic Color Roles",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Semantic Color Roles"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "semantic-html": {
+      "label": "Semantic Html",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 24,
+          "label": "Semantic Html"
         }
       ],
       "cross_package_edges": []
@@ -1005,6 +2747,138 @@
       ],
       "cross_package_edges": []
     },
+    "serial-plaintiffs": {
+      "label": "Serial Plaintiffs",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Serial Plaintiffs"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "severity-classification": {
+      "label": "Severity Classification",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Severity Classification"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "showmodal": {
+      "label": "Showmodal",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Showmodal"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "single-pointer": {
+      "label": "Single Pointer",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Single Pointer"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "skip-link": {
+      "label": "Skip Link",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 4,
+          "label": "Skip Link"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "skip-navigation": {
+      "label": "Skip Navigation",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 4,
+          "label": "Skip Navigation"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "skip-navigation-link": {
+      "label": "Skip Navigation Link",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Skip Navigation Link"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "social-model": {
+      "label": "Social Model",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 7,
+          "label": "Social Model"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "sonification": {
+      "label": "Sonification",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Sonification"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "spacing-scale": {
+      "label": "Spacing Scale",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Spacing Scale"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "spatial-memory": {
+      "label": "Spatial Memory",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Spatial Memory"
+        }
+      ],
+      "cross_package_edges": []
+    },
     "speaker-identification": {
       "label": "Speaker Identification",
       "total_courses": 1,
@@ -1013,6 +2887,66 @@
           "slug": "best-practices-in-digital-web-design-for-accessibi",
           "frequency": 3,
           "label": "Speaker Identification"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "specific-guidance": {
+      "label": "Specific Guidance",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Specific Guidance"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "strategic-priorities": {
+      "label": "Strategic Priorities",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Strategic Priorities"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "success-criteria": {
+      "label": "Success Criteria",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Success Criteria"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "success-criterion": {
+      "label": "Success Criterion",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 57,
+          "label": "Success Criterion"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "sufficient-techniques": {
+      "label": "Sufficient Techniques",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Sufficient Techniques"
         }
       ],
       "cross_package_edges": []
@@ -1041,6 +2975,138 @@
       ],
       "cross_package_edges": []
     },
+    "tab": {
+      "label": "Tab",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Tab"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "tab-order": {
+      "label": "Tab Order",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 23,
+          "label": "Tab Order"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "tabindex": {
+      "label": "Tabindex",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Tabindex"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "tablist": {
+      "label": "Tablist",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Tablist"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "tabpanel": {
+      "label": "Tabpanel",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Tabpanel"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "target-size": {
+      "label": "Target Size",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 8,
+          "label": "Target Size"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "target-size-minimum": {
+      "label": "Target Size Minimum",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Target Size Minimum"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "test-plan": {
+      "label": "Test Plan",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Test Plan"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "testing-environment": {
+      "label": "Testing Environment",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Testing Environment"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "text-alternative": {
+      "label": "Text Alternative",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Text Alternative"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "text-spacing": {
+      "label": "Text Spacing",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Text Spacing"
+        }
+      ],
+      "cross_package_edges": []
+    },
     "time-based-media": {
       "label": "Time Based Media",
       "total_courses": 1,
@@ -1049,6 +3115,30 @@
           "slug": "best-practices-in-digital-web-design-for-accessibi",
           "frequency": 3,
           "label": "Time Based Media"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "timing-adjustable": {
+      "label": "Timing Adjustable",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Timing Adjustable"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "title-iii": {
+      "label": "Title Iii",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Title Iii"
         }
       ],
       "cross_package_edges": []
@@ -1071,8 +3161,44 @@
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 3,
+          "frequency": 5,
           "label": "Transcript"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "transparency": {
+      "label": "Transparency",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Transparency"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "typography": {
+      "label": "Typography",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Typography"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "typography-tokens": {
+      "label": "Typography Tokens",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Typography Tokens"
         }
       ],
       "cross_package_edges": []
@@ -1083,20 +3209,128 @@
       "courses": [
         {
           "slug": "foundations-of-digital-pedagogy",
-          "frequency": 6,
+          "frequency": 7,
           "label": "Udl"
         }
       ],
       "cross_package_edges": []
     },
-    "use": {
-      "label": "Use",
+    "understandable": {
+      "label": "Understandable",
       "total_courses": 1,
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 4,
-          "label": "Use"
+          "frequency": 11,
+          "label": "Understandable"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "universal-design": {
+      "label": "Universal Design",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Universal Design"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "unruh-civil-rights-act": {
+      "label": "Unruh Civil Rights Act",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Unruh Civil Rights Act"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "user-engagement": {
+      "label": "User Engagement",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "User Engagement"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "valid-markup": {
+      "label": "Valid Markup",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Valid Markup"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "vestibular-disorders": {
+      "label": "Vestibular Disorders",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Vestibular Disorders"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "voiceover": {
+      "label": "Voiceover",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Voiceover"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "vpat-25": {
+      "label": "Vpat 25",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Vpat 25"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "w3c": {
+      "label": "W3C",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "W3C"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "wai": {
+      "label": "Wai",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Wai"
         }
       ],
       "cross_package_edges": []
@@ -1107,8 +3341,68 @@
       "courses": [
         {
           "slug": "best-practices-in-digital-web-design-for-accessibi",
-          "frequency": 3,
+          "frequency": 12,
           "label": "Wave"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "wcag": {
+      "label": "Wcag",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 99,
+          "label": "Wcag"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "wcag-em": {
+      "label": "Wcag Em",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Wcag Em"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "web-accessibility": {
+      "label": "Web Accessibility",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 2,
+          "label": "Web Accessibility"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "web-accessibility-directive": {
+      "label": "Web Accessibility Directive",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Web Accessibility Directive"
+        }
+      ],
+      "cross_package_edges": []
+    },
+    "webaim-contrast-checker": {
+      "label": "Webaim Contrast Checker",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Webaim Contrast Checker"
         }
       ],
       "cross_package_edges": []
@@ -1125,6 +3419,18 @@
       ],
       "cross_package_edges": []
     },
+    "word-spacing": {
+      "label": "Word Spacing",
+      "total_courses": 1,
+      "courses": [
+        {
+          "slug": "best-practices-in-digital-web-design-for-accessibi",
+          "frequency": 3,
+          "label": "Word Spacing"
+        }
+      ],
+      "cross_package_edges": []
+    },
     "working-memory": {
       "label": "Working Memory",
       "total_courses": 1,
@@ -1133,18 +3439,6 @@
           "slug": "foundations-of-digital-pedagogy",
           "frequency": 2,
           "label": "Working Memory"
-        }
-      ],
-      "cross_package_edges": []
-    },
-    "zone-of-proximal-development": {
-      "label": "Zone Of Proximal Development",
-      "total_courses": 1,
-      "courses": [
-        {
-          "slug": "foundations-of-digital-pedagogy",
-          "frequency": 1,
-          "label": "Zone Of Proximal Development"
         }
       ],
       "cross_package_edges": []
