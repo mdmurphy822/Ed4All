@@ -30,6 +30,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from lib.ontology.bloom import get_verbs_list as _get_canonical_verbs_list  # noqa: E402
+from lib.ontology.taxonomy import validate_classification  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -577,8 +578,19 @@ def _build_page_metadata(
     sections: Optional[List[Dict]] = None,
     misconceptions: Optional[List[Dict]] = None,
     suggested_assessments: Optional[List[str]] = None,
+    classification: Optional[Dict] = None,
+    prerequisite_pages: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Build the JSON-LD metadata dict for a single page."""
+    """Build the JSON-LD metadata dict for a single page.
+
+    Wave 2 additions (REC-TAX-01 + REC-JSL-02):
+      * ``classification``: when non-empty, the course-level taxonomy
+        block is inherited on every page's JSON-LD (``classification``
+        key). Validated upstream in :func:`generate_course`.
+      * ``prerequisite_pages``: when non-empty, emits the
+        ``prerequisitePages`` array matching
+        ``schemas/knowledge/courseforge_jsonld_v1.schema.json`` §58-62.
+    """
     meta: Dict[str, Any] = {
         "@context": "https://ed4all.dev/ns/courseforge/v1",
         "@type": "CourseModule",
@@ -595,6 +607,10 @@ def _build_page_metadata(
         meta["misconceptions"] = misconceptions
     if suggested_assessments:
         meta["suggestedAssessmentTypes"] = suggested_assessments
+    if classification:
+        meta["classification"] = classification
+    if prerequisite_pages:
+        meta["prerequisitePages"] = list(prerequisite_pages)
     return meta
 
 
@@ -603,6 +619,8 @@ def generate_week(
     output_dir: Path,
     course_code: str,
     canonical_objectives: Optional[Dict[str, Any]] = None,
+    classification: Optional[Dict] = None,
+    prerequisite_map: Optional[Dict[str, List[str]]] = None,
 ):
     """Generate all files for a single week.
 
@@ -613,10 +631,18 @@ def generate_week(
     references globally-unique canonical IDs (e.g. ``CO-05``) instead of
     invented week-local IDs (``W03-CO-01``) that all collapse to the same
     four IDs after Trainforge's week-prefix normalization.
+
+    Wave 2 additions (REC-TAX-01 + REC-JSL-02):
+      * ``classification`` — course-level taxonomy block inherited on every
+        page's JSON-LD (no-op when ``None``).
+      * ``prerequisite_map`` — optional ``{page_id: [prereq_page_id, ...]}``
+        map; non-empty entries surface as ``prerequisitePages`` arrays on
+        the matching page's JSON-LD.
     """
     week_num = week_data["week_number"]
     week_dir = output_dir / f"week_{week_num:02d}"
     week_dir.mkdir(parents=True, exist_ok=True)
+    prereq_lookup = prerequisite_map or {}
 
     # Override week objectives with canonical, week-specific LOs when a
     # canonical objectives registry is supplied. Falls back to the week's
@@ -647,10 +673,13 @@ def generate_week(
         overview_body += "\n    </ul>"
     overview_body += f"\n    <p><strong>Estimated time:</strong> {week_data.get('estimated_hours', '3-4')} hours</p>"
 
+    overview_page_id = f"week_{week_num:02d}_overview"
     overview_meta = _build_page_metadata(
         course_code, week_num, "overview",
-        f"week_{week_num:02d}_overview",
+        overview_page_id,
         objectives=week_data["objectives"],
+        classification=classification,
+        prerequisite_pages=prereq_lookup.get(overview_page_id),
     )
     overview_html = _wrap_page(
         f"Week {week_num} Overview: {week_data['title']}",
@@ -672,6 +701,8 @@ def generate_week(
             objectives=week_data["objectives"],
             sections=content["sections"],
             misconceptions=content.get("misconceptions", week_misconceptions),
+            classification=classification,
+            prerequisite_pages=prereq_lookup.get(page_id),
         )
         content_html = _wrap_page(
             f"Week {week_num}: {content['title']}",
@@ -685,11 +716,14 @@ def generate_week(
     if week_data.get("activities"):
         app_body = "\n    <h2>Learning Activities</h2>"
         app_body += _render_activities(week_data["activities"])
+        app_page_id = f"week_{week_num:02d}_application"
         app_meta = _build_page_metadata(
             course_code, week_num, "application",
-            f"week_{week_num:02d}_application",
+            app_page_id,
             objectives=week_data["objectives"],
             suggested_assessments=["short_answer", "essay"],
+            classification=classification,
+            prerequisite_pages=prereq_lookup.get(app_page_id),
         )
         app_html = _wrap_page(
             f"Week {week_num}: Application &amp; Activities",
@@ -703,11 +737,14 @@ def generate_week(
         sc_body = "\n    <h2>Self-Check: Test Your Understanding</h2>"
         sc_body += "\n    <p>Select the best answer for each question. You will receive immediate feedback.</p>"
         sc_body += _render_self_check(week_data["self_check_questions"])
+        sc_page_id = f"week_{week_num:02d}_self_check"
         sc_meta = _build_page_metadata(
             course_code, week_num, "assessment",
-            f"week_{week_num:02d}_self_check",
+            sc_page_id,
             objectives=week_data["objectives"],
             suggested_assessments=["multiple_choice", "true_false"],
+            classification=classification,
+            prerequisite_pages=prereq_lookup.get(sc_page_id),
         )
         sc_html = _wrap_page(
             f"Week {week_num}: Self-Check Quiz",
@@ -728,10 +765,13 @@ def generate_week(
     if week_data.get("next_week_preview"):
         summary_body += f"\n    <h2>Looking Ahead</h2>\n    <p>{week_data['next_week_preview']}</p>"
 
+    summary_page_id = f"week_{week_num:02d}_summary"
     summary_meta = _build_page_metadata(
         course_code, week_num, "summary",
-        f"week_{week_num:02d}_summary",
+        summary_page_id,
         objectives=week_data["objectives"],
+        classification=classification,
+        prerequisite_pages=prereq_lookup.get(summary_page_id),
     )
     summary_html = _wrap_page(
         f"Week {week_num}: Summary &amp; Reflection",
@@ -754,10 +794,13 @@ def generate_week(
         <li><strong>Due:</strong> {disc.get("due", "Initial post by Wednesday; replies by Sunday")}</li>
       </ul>
     </div>"""
+        disc_page_id = f"week_{week_num:02d}_discussion"
         disc_meta = _build_page_metadata(
             course_code, week_num, "discussion",
-            f"week_{week_num:02d}_discussion",
+            disc_page_id,
             objectives=week_data["objectives"],
+            classification=classification,
+            prerequisite_pages=prereq_lookup.get(disc_page_id),
         )
         disc_html = _wrap_page(
             f"Week {week_num}: Discussion",
@@ -775,6 +818,7 @@ def generate_course(
     course_data_path: str,
     output_dir: str,
     objectives_path: Optional[str] = None,
+    classification: Optional[Dict] = None,
 ):
     """Generate a full course from a JSON data file.
 
@@ -789,10 +833,37 @@ def generate_course(
             mapping declared in the objectives JSON. Pass ``None`` to
             preserve the previous behaviour and use whatever ``objectives``
             list the course data JSON provides for each week.
+        classification: Optional course-level subject-taxonomy block
+            (Wave 2 REC-TAX-01). Overrides any ``classification`` key
+            declared in the course data JSON. When non-empty, the block
+            is validated against ``schemas/taxonomies/taxonomy.json``
+            BEFORE any files are written — fail-closed. Non-empty
+            classification triggers emission of:
+              * ``course_metadata.json`` at ``output_dir`` root, and
+              * a ``classification`` key on every page's JSON-LD.
     """
     data = json.loads(Path(course_data_path).read_text())
     out = Path(output_dir)
     course_code = data.get("course_code", "COURSE_101")
+
+    # Resolve effective classification: CLI/caller arg wins over course-data JSON.
+    effective_classification = classification
+    if effective_classification is None:
+        effective_classification = data.get("classification") or None
+
+    # Fail-closed validation: a non-empty classification block must match
+    # the authoritative taxonomy before ANY file is written.
+    if effective_classification:
+        errors = validate_classification(effective_classification)
+        if errors:
+            raise ValueError(
+                "Invalid classification for course "
+                f"{course_code}: {'; '.join(errors)}"
+            )
+
+    # Optional prerequisite map: {page_id: [prereq_page_id, ...]}.
+    # Sourced from course data; empty/missing → no prerequisitePages emitted.
+    prerequisite_map = data.get("prerequisite_map") or {}
 
     canonical = None
     if objectives_path:
@@ -807,9 +878,41 @@ def generate_course(
 
     total_files = 0
     for week in data["weeks"]:
-        count, files = generate_week(week, out, course_code, canonical_objectives=canonical)
+        count, files = generate_week(
+            week, out, course_code,
+            canonical_objectives=canonical,
+            classification=effective_classification,
+            prerequisite_map=prerequisite_map,
+        )
         total_files += count
         print(f"  Week {week['week_number']:2d}: {count} files - {', '.join(files)}")
+
+    # Emit course-level classification stub (REC-TAX-01). Only emitted when
+    # classification is populated — preserves backward compat for existing
+    # pipelines that never declared a taxonomy.
+    if effective_classification:
+        out.mkdir(parents=True, exist_ok=True)
+        stub = {
+            "course_code": course_code,
+            "course_title": data.get("course_title") or data.get("title") or course_code,
+            "classification": {
+                "division": effective_classification.get("division"),
+                "primary_domain": effective_classification.get("primary_domain"),
+                "subdomains": list(effective_classification.get("subdomains") or []),
+                "topics": list(effective_classification.get("topics") or []),
+            },
+            "ontology_mappings": {
+                "acm_ccs": list(
+                    (data.get("ontology_mappings") or {}).get("acm_ccs") or []
+                ),
+                "lcsh": list(
+                    (data.get("ontology_mappings") or {}).get("lcsh") or []
+                ),
+            },
+        }
+        stub_path = out / "course_metadata.json"
+        stub_path.write_text(json.dumps(stub, indent=2) + "\n", encoding="utf-8")
+        print(f"Wrote course classification stub: {stub_path}")
 
     print(f"\nTotal: {total_files} files generated")
     return total_files
@@ -834,9 +937,64 @@ def _build_cli_parser() -> argparse.ArgumentParser:
             "four LOs after Trainforge's week-prefix normalization."
         ),
     )
+    # ---------------------------------------------------------------- #
+    # Wave 2 REC-TAX-01 classification flags. When both --division and
+    # --primary-domain are provided, a course_metadata.json stub is
+    # written at the output_dir root and a ``classification`` block is
+    # inherited on every page's JSON-LD. The block is validated against
+    # schemas/taxonomies/taxonomy.json (fail-closed). CLI flags override
+    # any ``classification`` declared in the course-data JSON.
+    # ---------------------------------------------------------------- #
+    parser.add_argument(
+        "--division",
+        default=None,
+        choices=["STEM", "ARTS"],
+        help="Classification division (REC-TAX-01). Pair with --primary-domain.",
+    )
+    parser.add_argument(
+        "--primary-domain",
+        default=None,
+        help=(
+            "Classification primary domain slug (REC-TAX-01), e.g. "
+            "computer-science. Required when --division is set."
+        ),
+    )
+    parser.add_argument(
+        "--subdomains",
+        default="",
+        help=(
+            "Comma-separated subdomain slugs under the declared domain "
+            "(REC-TAX-01), e.g. software-engineering,algorithms."
+        ),
+    )
     return parser
+
+
+def _build_classification_from_args(args: argparse.Namespace) -> Optional[Dict]:
+    """Assemble a classification dict from CLI flags, or None when absent.
+
+    Returns ``None`` when neither ``--division`` nor ``--primary-domain`` is
+    set, leaving the course-data JSON's ``classification`` (if any) as the
+    source. Returns a populated dict when ``--division`` and ``--primary-domain``
+    are both provided.
+    """
+    if not (args.division and args.primary_domain):
+        return None
+    subs = [s.strip() for s in (args.subdomains or "").split(",") if s.strip()]
+    return {
+        "division": args.division,
+        "primary_domain": args.primary_domain,
+        "subdomains": subs,
+        "topics": [],
+    }
 
 
 if __name__ == "__main__":
     args = _build_cli_parser().parse_args()
-    generate_course(args.course_data, args.output_dir, objectives_path=args.objectives)
+    classification = _build_classification_from_args(args)
+    generate_course(
+        args.course_data,
+        args.output_dir,
+        objectives_path=args.objectives,
+        classification=classification,
+    )
