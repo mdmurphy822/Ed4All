@@ -537,3 +537,101 @@ class TestStreamingMode:
 
         assert capture_streaming.streaming_mode is True
         assert capture_batch.streaming_mode is False
+
+
+# =============================================================================
+# DECISION TYPE RECONCILIATION TESTS (REC-CTR-04 / Worker G, Wave 1.1)
+# =============================================================================
+
+class TestDecisionTypeReconciliation:
+    """Test decision_type enum reconciliation + opt-in fail-closed gate."""
+
+    @pytest.fixture
+    def capture(self, mock_libv2_storage, mock_legacy_dir):
+        return DecisionCapture(
+            course_code="TEST_101",
+            phase="content-generator",
+            streaming=False,
+        )
+
+    @pytest.mark.unit
+    def test_allowed_decision_types_loaded_from_schema(self):
+        """ALLOWED_DECISION_TYPES should be derived from the schema enum."""
+        from lib.decision_capture import ALLOWED_DECISION_TYPES
+
+        # REC-CTR-04 additions (3 in-code allowlist values + 2 historical
+        # training-captures values).
+        assert "instruction_pair_synthesis" in ALLOWED_DECISION_TYPES
+        assert "preference_pair_generation" in ALLOWED_DECISION_TYPES
+        assert "typed_edge_inference" in ALLOWED_DECISION_TYPES
+        assert "chunk_serialization" in ALLOWED_DECISION_TYPES
+        assert "imscc_extraction" in ALLOWED_DECISION_TYPES
+
+        # Long-standing values must still be present (no removal).
+        assert "content_structure" in ALLOWED_DECISION_TYPES
+        assert "bloom_level_assignment" in ALLOWED_DECISION_TYPES
+
+        # Expected total from schema (39 originals + 5 additions = 44).
+        assert len(ALLOWED_DECISION_TYPES) >= 44
+
+    @pytest.mark.unit
+    def test_all_schema_enum_values_accepted(self, capture, monkeypatch):
+        """Every value in the schema enum validates clean even under strict mode."""
+        from lib.decision_capture import ALLOWED_DECISION_TYPES
+
+        monkeypatch.setenv("DECISION_VALIDATION_STRICT", "true")
+        for dtype in ALLOWED_DECISION_TYPES:
+            capture.log_decision(
+                decision_type=dtype,
+                decision=f"Test decision for {dtype}",
+                rationale="A sufficiently long rationale covering the test case requirement.",
+            )
+        assert len(capture.decisions) == len(ALLOWED_DECISION_TYPES)
+
+    @pytest.mark.unit
+    def test_unknown_decision_type_warns_by_default(self, capture, monkeypatch):
+        """Unknown decision_type warns (does not raise) when strict flag unset."""
+        monkeypatch.delenv("DECISION_VALIDATION_STRICT", raising=False)
+
+        capture.log_decision(
+            decision_type="definitely_not_in_the_enum_9f2a",
+            decision="Test with unknown type",
+            rationale="Testing warn-only backward-compat path for unknown decision types.",
+        )
+
+        # Record was still written (warn-only contract).
+        assert len(capture.decisions) == 1
+        # validation_issues was populated on the record metadata.
+        issues = capture.decisions[0]["metadata"].get("validation_issues", [])
+        assert issues, "Expected validation_issues to be populated for unknown type"
+        assert any("definitely_not_in_the_enum_9f2a" in str(i) for i in issues)
+
+    @pytest.mark.unit
+    def test_unknown_decision_type_blocks_when_strict_true(self, capture, monkeypatch):
+        """Unknown decision_type raises ValueError under DECISION_VALIDATION_STRICT=true."""
+        monkeypatch.setenv("DECISION_VALIDATION_STRICT", "true")
+
+        with pytest.raises(ValueError, match="validation failed"):
+            capture.log_decision(
+                decision_type="definitely_not_in_the_enum_7b1c",
+                decision="Test with unknown type",
+                rationale="Strict mode should block records whose decision_type is unknown.",
+            )
+
+        # Record was NOT written (fail-closed contract).
+        assert len(capture.decisions) == 0
+
+    @pytest.mark.unit
+    def test_backward_compat_unchanged_when_flag_unset(self, capture, monkeypatch):
+        """Without DECISION_VALIDATION_STRICT, known-good records pass silently."""
+        monkeypatch.delenv("DECISION_VALIDATION_STRICT", raising=False)
+
+        capture.log_decision(
+            decision_type="content_structure",
+            decision="Valid decision with known type",
+            rationale="Known type should validate clean and land in the decisions list.",
+        )
+
+        assert len(capture.decisions) == 1
+        # Clean record: no validation_issues key pollution on metadata.
+        assert "validation_issues" not in capture.decisions[0]["metadata"]
