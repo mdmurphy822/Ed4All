@@ -35,6 +35,15 @@ class ContentSection:
     components: List[str] = field(default_factory=list)  # flip-card, accordion, etc.
     content_type: Optional[str] = None  # from data-cf-content-type
     key_terms: List[str] = field(default_factory=list)  # from data-cf-key-terms
+    # REC-VOC-02 (Wave 2, Worker K): deterministic teaching_role emitted by
+    # Courseforge on flip-card/self-check/activity elements. When a section
+    # contains exactly one distinct data-cf-teaching-role value among its
+    # tagged children, ``teaching_role`` surfaces it; if multiple distinct
+    # values appear the field stays None and the consumer should fall back
+    # to the JSON-LD ``teachingRole`` array or the LLM classifier.
+    # ``teaching_roles`` always lists every distinct value seen for audit.
+    teaching_role: Optional[str] = None
+    teaching_roles: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -301,6 +310,16 @@ class HTMLContentParser:
             if kt_match:
                 key_terms = [t.strip() for t in kt_match.group(1).split(",") if t.strip()]
 
+            # REC-VOC-02 (Wave 2, Worker K): scan section body for
+            # data-cf-teaching-role attributes on flip-card/self-check/
+            # activity components. Courseforge emits these deterministically
+            # from (component, purpose) pairs via lib.ontology.teaching_roles.
+            tr_matches = re.findall(
+                r'data-cf-teaching-role="([^"]*)"', section_html
+            )
+            distinct_roles = sorted({r for r in tr_matches if r})
+            teaching_role = distinct_roles[0] if len(distinct_roles) == 1 else None
+
             sections.append(ContentSection(
                 heading=heading_text,
                 level=level,
@@ -309,6 +328,8 @@ class HTMLContentParser:
                 components=components,
                 content_type=content_type,
                 key_terms=key_terms,
+                teaching_role=teaching_role,
+                teaching_roles=distinct_roles,
             ))
 
         return sections
