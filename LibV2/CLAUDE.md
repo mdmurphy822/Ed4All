@@ -134,9 +134,9 @@ Division (STEM/ARTS)
 |------|---------|
 | `courses/` | Course data (one subdir per course) |
 | `catalog/` | Derived indexes and search catalogs |
-| `ontology/` | Taxonomy definitions and mappings |
-| `schema/` | JSON Schema for validation |
 | `tools/` | Python CLI for management |
+| `../schemas/library/` | JSON Schemas (course_manifest, catalog_entry) — unified at project root |
+| `../schemas/taxonomies/` | Classification taxonomy + pedagogy framework — unified at project root |
 
 Each course directory (`courses/[slug]/`) contains:
 - `corpus/` — Chunked content (chunks.jsonl) for RAG retrieval
@@ -220,7 +220,7 @@ Two standard classification systems are supported:
 - **ACM CCS**: ACM Computing Classification System (for CS content)
 - **LCSH**: Library of Congress Subject Headings (general)
 
-These are stored in `/ontology/` and referenced in course manifests.
+These are stored in `<project-root>/schemas/taxonomies/` and referenced in course manifests.
 
 ## When Helping Users
 

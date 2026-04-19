@@ -151,13 +151,14 @@ is provided; the source HTML is authoritative and regeneration is cheap.
 
 ## Known follow-ups
 
-- **`FOLLOWUP-WORKER-E-1`**: `LibV2/schema/chunk.schema.json` does not
+- **`FOLLOWUP-WORKER-E-1`**: `schemas/library/chunk.schema.json` does not
   exist in this tree. The repo ships `catalog_entry.schema.json` and
-  `course_manifest.schema.json`, but there is no chunk schema today. When
-  someone lands a LibV2 chunk schema, add `source.html_xpath` (optional
-  string) and `source.char_span` (optional array of two integers) to it.
-  Until then, LibV2's importer accepts extra fields on chunks without
-  schema validation, so no migration is blocked.
+  `course_manifest.schema.json` under `schemas/library/`, but there is no
+  chunk schema today. When someone lands a LibV2 chunk schema, add
+  `source.html_xpath` (optional string) and `source.char_span` (optional
+  array of two integers) to it. Until then, LibV2's importer accepts
+  extra fields on chunks without schema validation, so no migration is
+  blocked.
 
 - **LibV2 importer copy-through.** `LibV2/tools/libv2/importer.py` copies
   chunks.jsonl verbatim into `LibV2/courses/<slug>/corpus/chunks.jsonl`.
