@@ -72,25 +72,41 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-# ADR-001 Contract 3: decision-type registry.
+# ADR-001 Contract 3 + REC-CTR-04 (Worker G wave 1.1): decision-type registry.
 #
-# Prior to Worker C this was a free-string field; the enum is established here
-# (Worker C's first landing decision type is ``instruction_pair_synthesis``).
+# Source of truth is ``schemas/events/decision_event.schema.json``. The
+# ``ALLOWED_DECISION_TYPES`` tuple is loaded at module-import time from the
+# schema's ``properties.decision_type.enum`` via :func:`lib.validation.load_schema`.
 #
-# Convention: add a new type in the same PR that first uses it in production.
-# New types are ``snake_case`` and tool-prefixed when ambiguous. The registry
-# is advisory rather than enforced — :func:`DecisionCapture.log_decision` does
-# NOT raise on unknown types, because legacy callers across the tree emit many
-# free-string types that have not yet been catalogued here. The list is the
-# durable coordination artefact; enforcement can land in a follow-up PR once
-# the legacy types are catalogued (tracked as FOLLOWUP-ADR001-5).
-ALLOWED_DECISION_TYPES: tuple = (
-    # Worker C (training-pair synthesis, landed in worker-c/training-pairs):
-    "instruction_pair_synthesis",
-    "preference_pair_generation",
-    # Worker F (typed-edge concept graph, landed in worker-f/typed-edge-graph):
-    "typed_edge_inference",
-)
+# Convention: add a new type to the schema in the same PR that first uses it
+# in production. New types are ``snake_case`` and tool-prefixed when ambiguous.
+#
+# The registry is advisory by default (warn-only on unknown types), preserving
+# backward compat for legacy callers across the tree that may still emit
+# free-string types not yet catalogued in the schema. Fail-closed enforcement
+# is opt-in via the ``DECISION_VALIDATION_STRICT=true`` environment variable
+# (see :meth:`DecisionCapture._validate_record`).
+#
+# On schema-load failure we fall back to a minimal tuple so this module still
+# imports cleanly in environments where the schema file is not reachable
+# (e.g., packaging edge cases, minimal test harnesses).
+try:
+    from .validation import load_schema as _load_schema
+    _decision_schema = _load_schema("decision_event")
+    ALLOWED_DECISION_TYPES: tuple = tuple(
+        _decision_schema["properties"]["decision_type"]["enum"]
+    )
+except Exception as _e:  # pragma: no cover - defensive fallback
+    logger.warning(
+        "Failed to load decision_event schema for ALLOWED_DECISION_TYPES: %s; "
+        "falling back to minimal tuple",
+        _e,
+    )
+    ALLOWED_DECISION_TYPES: tuple = (
+        "instruction_pair_synthesis",
+        "preference_pair_generation",
+        "typed_edge_inference",
+    )
 
 
 @dataclass
@@ -399,17 +415,43 @@ class DecisionCapture:
         return record
 
     def _validate_record(self, record: Dict[str, Any]) -> None:
-        """Validate a decision record, adding issues to metadata if found."""
+        """Validate a decision record (REC-CTR-04 Worker G).
+
+        Behavior matrix:
+
+        * ``VALIDATE_DECISIONS`` unset/false -> no-op. Preserves backward
+          compat for callers that explicitly opted out of validation entirely.
+        * ``VALIDATE_DECISIONS`` truthy + ``DECISION_VALIDATION_STRICT`` unset
+          -> warn-only. Validation issues are appended to
+          ``record["metadata"]["validation_issues"]`` and the record IS still
+          written by the caller. This is the historical default.
+        * ``VALIDATE_DECISIONS`` truthy + ``DECISION_VALIDATION_STRICT=true``
+          -> fail-closed. Validation failures raise ``ValueError`` and the
+          record is NOT written (the caller must handle the exception).
+
+        Opt-in strict mode is the reconciliation target for REC-CTR-04. The
+        env-var gate preserves backward compat: callers relying on loose
+        behavior do not break on this PR landing.
+        """
         if not VALIDATE_DECISIONS:
             return
+
+        strict = os.getenv("DECISION_VALIDATION_STRICT", "").lower() == "true"
+
         try:
             from .validation import validate_decision
             is_valid, issues = validate_decision(record, self.tool)
             if not is_valid:
+                if strict:
+                    raise ValueError(
+                        f"Decision validation failed (strict mode): {issues}"
+                    )
                 logger.warning("Decision validation issues: %s", issues)
                 record["metadata"]["validation_issues"] = issues
         except ImportError:
             pass  # Validation module not available
+        except ValueError:
+            raise  # Re-raise strict-mode failures
         except Exception as e:
             logger.warning("Decision validation error: %s", e)
 

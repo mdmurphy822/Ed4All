@@ -99,7 +99,12 @@
         "retrieval_ranking",
         "result_fusion",
         "chunk_deduplication",
-        "index_strategy"
+        "index_strategy",
+        "instruction_pair_synthesis",
+        "preference_pair_generation",
+        "typed_edge_inference",
+        "chunk_serialization",
+        "imscc_extraction"
       ],
       "description": "Category of decision from decision taxonomy"
     },
