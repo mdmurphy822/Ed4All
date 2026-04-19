@@ -35,6 +35,7 @@ FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "mini_course_typed_
 SCHEMA_PATH = (
     Path(__file__).resolve().parents[2]
     / "schemas"
+    / "knowledge"
     / "concept_graph_semantic.schema.json"
 )
 

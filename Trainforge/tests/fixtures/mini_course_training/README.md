@@ -67,7 +67,7 @@ The test module `Trainforge/tests/test_training_synthesis.py` asserts:
   call to prove ≥20 is attainable)
 - At least 5 preference pairs emitted (one per misconception-bearing chunk)
 - Every emitted pair validates against the JSON schemas in
-  `schemas/instruction_pair.schema.json` and `schemas/preference_pair.schema.json`
+  `schemas/knowledge/instruction_pair.schema.json` and `schemas/knowledge/preference_pair.schema.json`
 - No prompt contains a 50+-char verbatim span from its source chunk text
 - Stage idempotence: two runs with the same seed produce byte-identical
   `instruction_pairs.jsonl` and `preference_pairs.jsonl`

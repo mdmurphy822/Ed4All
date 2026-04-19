@@ -6,7 +6,7 @@ Consumes:
     - concept_graph (``concept_graph.json`` dict — the co-occurrence base)
 
 Emits:
-    - A dict matching ``schemas/concept_graph_semantic.schema.json``:
+    - A dict matching ``schemas/knowledge/concept_graph_semantic.schema.json``:
         {"kind": "concept_semantic", "nodes": [...], "edges": [...], ...}
 
 Precedence on (source, target) collisions: ``is-a`` > ``prerequisite`` > ``related-to``.
@@ -218,7 +218,7 @@ def build_semantic_graph(
             artifact byte-identical across runs.
 
     Returns:
-        Dict matching ``schemas/concept_graph_semantic.schema.json``.
+        Dict matching ``schemas/knowledge/concept_graph_semantic.schema.json``.
     """
     nodes = _build_nodes(concept_graph)
 
