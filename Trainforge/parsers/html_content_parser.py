@@ -44,6 +44,15 @@ class ContentSection:
     # ``teaching_roles`` always lists every distinct value seen for audit.
     teaching_role: Optional[str] = None
     teaching_roles: List[str] = field(default_factory=list)
+    # REC-JSL-03 (Wave 3, Worker M): learning-objective references harvested
+    # from ``data-cf-objective-ref`` attributes on ``.activity-card`` and
+    # ``.self-check`` elements within the section body. Courseforge emits
+    # these at generate_course.py:378,491. Multiple activities per section
+    # may cite different LOs; the list holds distinct values sorted
+    # deterministically. Downstream consumers (process_course._create_chunk)
+    # merge these into a chunk's ``learning_outcome_refs`` so the
+    # Activity→LO KG edge materializes.
+    objective_refs: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -73,6 +82,12 @@ class ParsedHTMLModule:
     misconceptions: List[Dict[str, str]] = field(default_factory=list)
     prerequisite_pages: List[str] = field(default_factory=list)
     suggested_assessment_types: List[str] = field(default_factory=list)
+    # REC-JSL-03 (Wave 3, Worker M): page-level union of every distinct
+    # ``data-cf-objective-ref`` value found anywhere in the HTML. Used as
+    # the fallback attachment set in process_course when a chunk cannot be
+    # mapped back to a specific section (the no-sections code path in
+    # _chunk_content). Populated even when ``sections`` is empty.
+    objective_refs: List[str] = field(default_factory=list)
 
 
 class HTMLTextExtractor(HTMLParser):
@@ -233,6 +248,16 @@ class HTMLContentParser:
         prerequisite_pages = json_ld.get("prerequisitePages", []) if json_ld else []
         suggested_assessments = json_ld.get("suggestedAssessmentTypes", []) if json_ld else []
 
+        # REC-JSL-03 (Wave 3, Worker M): page-level union of every distinct
+        # data-cf-objective-ref in the raw HTML. Covers activities/self-checks
+        # that live outside any section (e.g., pages without headings) so the
+        # no-sections chunk code path in process_course still materializes
+        # the Activity→LO KG edge.
+        page_obj_ref_matches = re.findall(
+            r'data-cf-objective-ref="([^"]*)"', html_content
+        )
+        page_obj_refs = sorted({r for r in page_obj_ref_matches if r})
+
         return ParsedHTMLModule(
             title=title,
             word_count=word_count,
@@ -245,6 +270,7 @@ class HTMLContentParser:
             misconceptions=misconceptions,
             prerequisite_pages=prerequisite_pages,
             suggested_assessment_types=suggested_assessments,
+            objective_refs=page_obj_refs,
         )
 
     def _extract_json_ld(self, html: str) -> Optional[Dict[str, Any]]:
@@ -320,6 +346,17 @@ class HTMLContentParser:
             distinct_roles = sorted({r for r in tr_matches if r})
             teaching_role = distinct_roles[0] if len(distinct_roles) == 1 else None
 
+            # REC-JSL-03 (Wave 3, Worker M): scan section body for
+            # data-cf-objective-ref attributes on .activity-card and
+            # .self-check elements. Courseforge emits these from
+            # generate_course.py:378,491 when a curriculum JSON entry
+            # includes an ``objective_ref``. Deduplicated, deterministic
+            # sort so downstream diffs stay stable across runs.
+            obj_ref_matches = re.findall(
+                r'data-cf-objective-ref="([^"]*)"', section_html
+            )
+            distinct_obj_refs = sorted({r for r in obj_ref_matches if r})
+
             sections.append(ContentSection(
                 heading=heading_text,
                 level=level,
@@ -330,6 +367,7 @@ class HTMLContentParser:
                 key_terms=key_terms,
                 teaching_role=teaching_role,
                 teaching_roles=distinct_roles,
+                objective_refs=distinct_obj_refs,
             ))
 
         return sections
