@@ -14,6 +14,7 @@ Validates that:
 
 import json
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -244,3 +245,106 @@ class TestPageObjectivesValidator:
         # Warning, not critical - orchestrator must not block on this.
         severities = {issue.severity for issue in result.issues}
         assert "critical" not in severities
+
+
+# ---------------------------------------------------------------------------
+# Wave 3 / Worker M — course_metadata.json stub inclusion in IMSCC zip
+# ---------------------------------------------------------------------------
+#
+# Closes the Wave 2 integration gap: Worker J's course_metadata.json
+# classification stub was emitted alongside the IMSCC but never bundled
+# inside it. Trainforge's consume already handled both zip-root and
+# sibling paths, so the gap was latent — but zip-root is the canonical
+# self-contained delivery. Behavior: additive, no env var, no-op when
+# the stub file is absent.
+# ---------------------------------------------------------------------------
+
+
+class TestPackagerStubInclusion:
+    """Wave 3 / Worker M: course_metadata.json bundled at zip root."""
+
+    def test_packager_includes_course_metadata_when_present(
+        self, content_dir_with_courseJson, tmp_path,
+    ):
+        """Stub file at content-dir root → bundled at zip root."""
+        # Valid pages so per-week LO validation passes.
+        (content_dir_with_courseJson / "week_01" / "week_01_overview.html").write_text(
+            _page_html(["TO-01", "CO-01", "CO-02"]), encoding="utf-8",
+        )
+        (content_dir_with_courseJson / "week_03" / "week_03_overview.html").write_text(
+            _page_html(["TO-01", "CO-03", "CO-04"]), encoding="utf-8",
+        )
+        # Stub body is arbitrary JSON; the packager does not parse it,
+        # only bundles it. Shape mirrors Worker J's emit contract.
+        stub_payload = {
+            "courseCode": "TEST_101",
+            "classification": {
+                "division": "STEM",
+                "primary_domain": "computer-science",
+                "subdomains": ["web-development"],
+                "topics": ["rest-apis"],
+            },
+        }
+        (content_dir_with_courseJson / "course_metadata.json").write_text(
+            json.dumps(stub_payload), encoding="utf-8",
+        )
+        output = tmp_path / "out.imscc"
+        package_imscc(
+            content_dir_with_courseJson, output, "TEST_101", "Test Course",
+        )
+        assert output.exists(), "package must be produced"
+
+        with zipfile.ZipFile(output) as zf:
+            names = zf.namelist()
+        assert "course_metadata.json" in names, (
+            f"expected course_metadata.json at zip root; got {names}"
+        )
+        # Sanity: manifest + html files still present.
+        assert "imsmanifest.xml" in names
+        assert any(n.endswith(".html") for n in names)
+
+    def test_packager_skips_stub_when_absent(
+        self, content_dir_with_courseJson, tmp_path,
+    ):
+        """No stub file → zip contains manifest + html only; no course_metadata.json."""
+        (content_dir_with_courseJson / "week_01" / "week_01_overview.html").write_text(
+            _page_html(["TO-01", "CO-01", "CO-02"]), encoding="utf-8",
+        )
+        (content_dir_with_courseJson / "week_03" / "week_03_overview.html").write_text(
+            _page_html(["TO-01", "CO-03", "CO-04"]), encoding="utf-8",
+        )
+        # Explicitly NO course_metadata.json (backward-compat path).
+        output = tmp_path / "out.imscc"
+        package_imscc(
+            content_dir_with_courseJson, output, "TEST_101", "Test Course",
+        )
+        assert output.exists(), "package must be produced without stub"
+
+        with zipfile.ZipFile(output) as zf:
+            names = zf.namelist()
+        assert "imsmanifest.xml" in names
+        assert "course_metadata.json" not in names, (
+            f"stub absent at source must NOT appear in zip; got {names}"
+        )
+
+    def test_packager_stub_inclusion_logs_in_summary(
+        self, content_dir_with_courseJson, tmp_path, capsys,
+    ):
+        """Summary print line reflects stub inclusion when it was bundled."""
+        (content_dir_with_courseJson / "week_01" / "week_01_overview.html").write_text(
+            _page_html(["TO-01", "CO-01", "CO-02"]), encoding="utf-8",
+        )
+        (content_dir_with_courseJson / "week_03" / "week_03_overview.html").write_text(
+            _page_html(["TO-01", "CO-03", "CO-04"]), encoding="utf-8",
+        )
+        (content_dir_with_courseJson / "course_metadata.json").write_text(
+            json.dumps({"courseCode": "TEST_101"}), encoding="utf-8",
+        )
+        output = tmp_path / "out.imscc"
+        package_imscc(
+            content_dir_with_courseJson, output, "TEST_101", "Test Course",
+        )
+        captured = capsys.readouterr().out
+        assert "course_metadata.json" in captured, (
+            f"summary must mention the stub when bundled; got:\n{captured}"
+        )

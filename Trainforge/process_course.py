@@ -950,6 +950,11 @@ class CourseProcessor:
                 "misconceptions": parsed.misconceptions,
                 "suggested_assessment_types": parsed.suggested_assessment_types,
                 "courseforge_metadata": parsed.metadata.get("courseforge"),
+                # REC-JSL-03 (Wave 3, Worker M): page-level union of every
+                # distinct data-cf-objective-ref on the page. Used as
+                # fallback attachment when a chunk can't be mapped to a
+                # specific section in _extract_objective_refs.
+                "objective_refs": parsed.objective_refs,
                 # Worker M1 diagnostic flags (§4.4a H5 detection)
                 "_jsonld_tag_present": jsonld_tag_present,
                 "_jsonld_parse_failed": jsonld_parse_failed,
@@ -1270,7 +1275,13 @@ class CourseProcessor:
             "follows_chunk": follows_chunk_id,
             "source": source,
             "concept_tags": concept_tags,
-            "learning_outcome_refs": self._extract_objective_refs(item),
+            # REC-JSL-03 (Wave 3, Worker M): pass section_heading through
+            # so the merge path can harvest section-scoped
+            # data-cf-objective-ref values from activities/self-checks in
+            # addition to the page-level learning_objectives list.
+            "learning_outcome_refs": self._extract_objective_refs(
+                item, section_heading=section_heading
+            ),
             "difficulty": difficulty,
             "tokens_estimate": tokens_estimate,
             "word_count": word_count,
@@ -1673,31 +1684,87 @@ class CourseProcessor:
 
         return tags[:20]
 
-    def _extract_objective_refs(self, item: Dict[str, Any]) -> List[str]:
-        """Extract learning objective reference codes from item.
+    def _extract_objective_refs(
+        self,
+        item: Dict[str, Any],
+        section_heading: Optional[str] = None,
+    ) -> List[str]:
+        """Extract learning objective reference codes for a chunk.
 
-        Prefers structured IDs from JSON-LD or parsed LearningObjective.id,
-        falls back to regex CO/TO code extraction from key_concepts.
+        Resolution order:
+          1. Structured IDs from JSON-LD / parsed ``LearningObjective.id``
+             on the page-level ``learning_objectives`` list.
+          2. Regex extraction of CO/TO codes from ``key_concepts`` as
+             fallback when no structured IDs were present.
+          3. REC-JSL-03 (Wave 3): ``data-cf-objective-ref`` on
+             ``.activity-card`` / ``.self-check`` elements. Preferred
+             section-scoped (matching the chunk's heading) with page-level
+             fallback when no section matches.
+
+        Case policy: controlled by ``TRAINFORGE_PRESERVE_LO_CASE``. Default
+        (unset / non-``true``) lowercases every ref for backward-compat
+        with existing LibV2 chunks. When ``TRAINFORGE_PRESERVE_LO_CASE=true``
+        refs pass through with their source casing (still stripped and
+        week-prefix-folded — ``WEEK_PREFIX_RE`` has ``re.IGNORECASE``).
+
+        Default will flip in Wave 4's structural migration; until then
+        enabling case preservation means downstream ``valid_outcome_ids``
+        sites (at L2561/2569/2783/2792) and ``align_chunks.py`` still
+        lowercase, so cross-artifact joins need case-folded comparison.
+        See ``plans/kg-quality-review-2026-04/worker-m-subplan.md`` §2.3.
         """
+        preserve_case = (
+            os.getenv("TRAINFORGE_PRESERVE_LO_CASE", "").lower() == "true"
+        )
+
+        def _normalize(raw: str) -> str:
+            """Apply case policy + week-prefix stripping to a single ref."""
+            base = raw.strip() if preserve_case else raw.lower().strip()
+            # Strip week prefix (w01-, W01-, w02-, ...) to align with
+            # course.json format. WEEK_PREFIX_RE is case-insensitive.
+            return self.WEEK_PREFIX_RE.sub('', base)
+
         refs: List[str] = []
 
-        # Prefer structured objective IDs from parser (JSON-LD or data-cf-*)
+        # (1) Structured objective IDs from parser (JSON-LD or data-cf-*).
         for lo in item.get("learning_objectives", []):
             obj_id = lo.id if hasattr(lo, "id") else lo.get("id")
             if obj_id:
-                normalized = obj_id.lower().strip()
-                # Strip week prefix (w01-, w02-) to align with course.json format
-                normalized = self.WEEK_PREFIX_RE.sub('', normalized)
+                normalized = _normalize(obj_id)
                 if normalized and normalized not in refs:
                     refs.append(normalized)
-        if refs:
-            return refs
 
-        # Fallback: regex extraction from key_concepts
-        for concept in item.get("key_concepts", []):
-            tag = normalize_tag(concept)
-            if tag and self.OBJECTIVE_CODE_RE.match(tag) and tag not in refs:
-                refs.append(tag)
+        # (2) Fallback: regex extraction from key_concepts when no
+        # structured IDs were available. Preserves prior behavior of
+        # returning-early when refs already populated from (1).
+        if not refs:
+            for concept in item.get("key_concepts", []):
+                tag = normalize_tag(concept)
+                if tag and self.OBJECTIVE_CODE_RE.match(tag) and tag not in refs:
+                    refs.append(tag)
+
+        # (3) REC-JSL-03: merge in activity/self-check objective refs.
+        # Prefer the section matching this chunk's heading; fall back to
+        # the page-level union when no section matches (no-sections code
+        # path in _chunk_content or heading drift).
+        activity_refs: List[str] = []
+        if section_heading:
+            chunk_heading = re.sub(
+                r'\s*\(part\s+\d+\)\s*$', '', section_heading
+            ).lower()
+            for section in item.get("sections", []):
+                if section.heading.lower() == chunk_heading:
+                    activity_refs = list(section.objective_refs)
+                    break
+        if not activity_refs:
+            # Fallback to page-level refs harvested by the parser.
+            activity_refs = list(item.get("objective_refs", []))
+
+        for raw_ref in activity_refs:
+            normalized = _normalize(raw_ref)
+            if normalized and normalized not in refs:
+                refs.append(normalized)
+
         return refs
 
     @staticmethod
