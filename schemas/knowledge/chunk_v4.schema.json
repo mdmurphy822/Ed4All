@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/knowledge/v4/chunk.schema.json",
+  "title": "Trainforge Chunk v4",
+  "description": "Schematizes the per-chunk record emitted by Trainforge's process_course.py pipeline (chunks.jsonl and chunks.json). Each chunk is a retrieval-layer node in the course knowledge graph, carrying text + HTML + source provenance + Bloom's level + content-type metadata. Per REC-CTR-01 this is the first time chunk_v4 is schematized; validation is opt-in via TRAINFORGE_VALIDATE_CHUNKS=true to preserve backward-compat during rollout.",
+  "$comment": "Shape lifted from Trainforge/process_course.py::_create_chunk at L1038-1240 and _write_chunks at L1667-1682. Verified live against 131 chunks in LibV2/courses/best-practices-in-digital-web-design-for-accessibi/corpus/chunks.jsonl (100% conformant). Root additionalProperties=true preserves Worker M1's _metadata_trace diagnostic (L1219-1228) and leaves room for forward-compat additions. source.additionalProperties=false keeps the structural core strict. Taxonomy $refs target Worker F's schemas (merged in PR #20).",
+  "type": "object",
+  "required": [
+    "id",
+    "schema_version",
+    "chunk_type",
+    "text",
+    "html",
+    "follows_chunk",
+    "source",
+    "concept_tags",
+    "learning_outcome_refs",
+    "difficulty",
+    "tokens_estimate",
+    "word_count",
+    "bloom_level"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*_chunk_\\d{5}$",
+      "description": "Globally unique chunk identifier: '<course_slug>_chunk_<5-digit sequence>'. Example: wcag_201_chunk_00001."
+    },
+    "schema_version": {
+      "const": "v4",
+      "description": "Chunk schema version literal. Downstream readers gate on this to dispatch parser versions without re-reading manifest.json."
+    },
+    "chunk_type": {
+      "$ref": "https://ed4all.dev/ns/taxonomies/v1/content_type.schema.json#/$defs/ChunkType",
+      "description": "Chunk content classification: assessment_item, overview, summary, exercise, explanation, or example. Lifted from Worker F's content_type taxonomy."
+    },
+    "text": {
+      "type": "string",
+      "description": "Plain-text extraction used for retrieval. Post-canonicalize_sc_references (WCAG SC references collapsed to canonical form)."
+    },
+    "html": {
+      "type": "string",
+      "description": "Original HTML fragment the chunk was derived from. Preserved for downstream rendering."
+    },
+    "follows_chunk": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "null" }
+      ],
+      "description": "ID of the immediately preceding chunk in the same module, or null for the first chunk."
+    },
+    "source": {
+      "$ref": "#/$defs/Source"
+    },
+    "concept_tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Normalized concept slugs extracted from text + key terms (see process_course.py::_extract_concept_tags)."
+    },
+    "learning_outcome_refs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 0,
+      "description": "IDs of learning outcomes this chunk supports. minItems:0 permits chunks without LO refs (common in non-Courseforge IMSCC imports); REC-CTR-01's 'at least 1' aspiration deferred to an LO-backfill wave."
+    },
+    "difficulty": {
+      "type": "string",
+      "enum": ["foundational", "intermediate", "advanced"],
+      "description": "Difficulty classification from process_course.py::_determine_difficulty."
+    },
+    "tokens_estimate": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Approximate token count (word_count * 1.3)."
+    },
+    "word_count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "bloom_level": {
+      "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel",
+      "description": "Always populated. Resolution cascade (process_course.py:1099-1140): section JSON-LD > page JSON-LD > parsed LO > text verb heuristic > 'understand' default."
+    },
+    "bloom_level_source": {
+      "type": "string",
+      "enum": ["section_jsonld", "page_jsonld", "lo_inherited", "verbs", "default"],
+      "description": "Provenance tag for bloom_level. Only emitted when source is 'verbs' or 'default' (low-confidence paths), per process_course.py:1145."
+    },
+    "content_type_label": {
+      "type": "string",
+      "description": "Section/content classification label from JSON-LD or data-cf-content-type. Freeform today; future enum reconciliation is Wave 2 scope."
+    },
+    "key_terms": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/KeyTerm" }
+    },
+    "misconceptions": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/Misconception" },
+          { "type": "string" }
+        ]
+      },
+      "description": "Per-chunk misconceptions normalized from page-level JSON-LD. Union permits dict (Courseforge-emitted) or plain string (non-Courseforge IMSCC passthrough); see process_course.py:1177-1184."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Deterministic extractive summary from Trainforge/generators/summary_factory.py for dense-retrieval recall augmentation."
+    },
+    "retrieval_text": {
+      "type": "string",
+      "description": "summary + ' ' + key_terms_joined. Emitted only when key_terms present (benchmarked in Trainforge/rag/retrieval_benchmark.py)."
+    },
+    "_metadata_trace": {
+      "type": "object",
+      "description": "Worker M1 (VERSIONING.md §4.4a) diagnostic — records the source path for each enrichment field. Removed by a later fix PR; schema permits its presence to keep diagnostic runs valid."
+    }
+  },
+  "$defs": {
+    "Source": {
+      "type": "object",
+      "required": ["course_id", "module_id", "lesson_id"],
+      "additionalProperties": false,
+      "description": "Chunk provenance block. Per REC-CTR-01 course_id/module_id/lesson_id are the structural core and strictly required; additionalProperties=false prevents silent drift. Audit-trail fields (html_xpath, char_span, item_path) support the Section 508 / ADA Title II round-trip contract documented at docs/compliance/audit-trail.md.",
+      "properties": {
+        "course_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Canonical course code (self.course_code)."
+        },
+        "module_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "module_title": {
+          "type": "string",
+          "description": "Human-readable module title. Optional for non-Courseforge IMSCC imports that lack module naming."
+        },
+        "lesson_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lesson_title": {
+          "type": "string"
+        },
+        "resource_type": {
+          "type": "string",
+          "description": "IMSCC resource type (e.g., 'webcontent', 'imsqti_xmlv1p2')."
+        },
+        "section_heading": {
+          "type": "string",
+          "description": "Heading of the section this chunk came from. May carry '(part N)' suffix for multi-part text blocks."
+        },
+        "position_in_module": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "html_xpath": {
+          "type": "string",
+          "description": "XPath into the source IMSCC HTML element (audit-trail; enables element_text = resolve_xpath(raw_html, html_xpath))."
+        },
+        "char_span": {
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0 },
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "[start, end] character offset range within the xpath-resolved element."
+        },
+        "item_path": {
+          "type": "string",
+          "description": "IMSCC-relative path to the source HTML file, for auditor navigation without imsmanifest.xml traversal."
+        }
+      }
+    },
+    "KeyTerm": {
+      "type": "object",
+      "required": ["term", "definition"],
+      "additionalProperties": false,
+      "properties": {
+        "term": { "type": "string", "minLength": 1 },
+        "definition": { "type": "string", "minLength": 1 }
+      }
+    },
+    "Misconception": {
+      "type": "object",
+      "required": ["misconception", "correction"],
+      "additionalProperties": false,
+      "properties": {
+        "misconception": { "type": "string", "minLength": 1 },
+        "correction": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
