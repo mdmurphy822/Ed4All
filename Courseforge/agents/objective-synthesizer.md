@@ -27,7 +27,7 @@ EQUAL TREATMENT REQUIREMENTS:
 ### Primary Input
 Textbook structure JSON from `textbook-ingestor` agent:
 - Location: `agent_workspaces/textbook_ingestor_workspace/structure_extraction/textbook_structure.json`
-- Schema: `schemas/learning-objectives/textbook_structure_schema.json`
+- Schema: `schemas/academic/textbook_structure.schema.json`
 
 ### Input Structure
 ```json
@@ -273,7 +273,7 @@ BLOOM_VERB_MAPPING = {
 ```python
 def generate_json_output(objectives: Dict) -> str:
     """
-    Generate JSON conforming to learning_objectives_schema.json
+    Generate JSON conforming to learning_objectives.schema.json
     """
     output = {
         "documentMetadata": {
