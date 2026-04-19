@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json",
+  "title": "Bloom's Taxonomy Verbs",
+  "description": "Canonical list of Bloom's Revised Taxonomy cognitive levels and their associated action verbs with usage contexts and objective templates. Source of truth for bloom-verb loading across Courseforge, Trainforge, and LibV2. The schema is dual-use: it both describes the shape (via $defs) and carries the data itself as the `default` array on each level property, so loaders can read the defaults directly.",
+  "$comment": "Values lifted from Courseforge/scripts/textbook-objective-generator/bloom_taxonomy_mapper.py:55 (BLOOM_VERBS dict). This is the richest canonical copy; future Worker H (Wave 1.2) migrates 6 call sites to load from this schema.",
+  "type": "object",
+  "required": ["remember", "understand", "apply", "analyze", "evaluate", "create"],
+  "additionalProperties": false,
+  "$defs": {
+    "BloomLevel": {
+      "type": "string",
+      "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create"]
+    },
+    "BloomVerb": {
+      "type": "object",
+      "required": ["verb", "usage_context", "example_template"],
+      "additionalProperties": false,
+      "properties": {
+        "verb": {
+          "type": "string",
+          "description": "The action verb itself, lowercase."
+        },
+        "usage_context": {
+          "type": "string",
+          "description": "Brief description of when to use this verb."
+        },
+        "example_template": {
+          "type": "string",
+          "description": "Template for generating an objective stem using this verb (curly-brace placeholders for content insertion)."
+        }
+      }
+    }
+  },
+  "properties": {
+    "remember": {
+      "type": "array",
+      "description": "Verbs for the Remember cognitive level (recall facts and basic concepts).",
+      "items": { "$ref": "#/$defs/BloomVerb" },
+      "default": [
+        { "verb": "define",     "usage_context": "terms and concepts",                "example_template": "Define {concept}" },
+        { "verb": "list",       "usage_context": "items, steps, or components",       "example_template": "List the {components} of {topic}" },
+        { "verb": "recall",     "usage_context": "facts or information",              "example_template": "Recall {fact} about {topic}" },
+        { "verb": "identify",   "usage_context": "elements or characteristics",       "example_template": "Identify {element} in {context}" },
+        { "verb": "name",       "usage_context": "specific items",                    "example_template": "Name the {items} associated with {topic}" },
+        { "verb": "state",      "usage_context": "rules or principles",               "example_template": "State the {rule} for {topic}" },
+        { "verb": "label",      "usage_context": "diagrams or parts",                 "example_template": "Label the {parts} of {diagram}" },
+        { "verb": "match",      "usage_context": "terms to definitions",              "example_template": "Match {terms} with their {definitions}" },
+        { "verb": "recognize",  "usage_context": "patterns or examples",              "example_template": "Recognize {pattern} in {context}" },
+        { "verb": "select",     "usage_context": "correct options",                   "example_template": "Select the correct {option} for {question}" }
+      ]
+    },
+    "understand": {
+      "type": "array",
+      "description": "Verbs for the Understand cognitive level (explain ideas or concepts).",
+      "items": { "$ref": "#/$defs/BloomVerb" },
+      "default": [
+        { "verb": "explain",      "usage_context": "concepts or processes",           "example_template": "Explain {concept} and its significance" },
+        { "verb": "describe",     "usage_context": "characteristics or features",     "example_template": "Describe the {features} of {topic}" },
+        { "verb": "summarize",    "usage_context": "main points",                     "example_template": "Summarize the key points of {topic}" },
+        { "verb": "classify",     "usage_context": "categories",                      "example_template": "Classify {items} according to {criteria}" },
+        { "verb": "compare",      "usage_context": "similarities and differences",    "example_template": "Compare {item1} and {item2}" },
+        { "verb": "interpret",    "usage_context": "meaning or data",                 "example_template": "Interpret the {data} from {source}" },
+        { "verb": "discuss",      "usage_context": "topics in depth",                 "example_template": "Discuss the implications of {topic}" },
+        { "verb": "paraphrase",   "usage_context": "in own words",                    "example_template": "Paraphrase {statement} in your own words" },
+        { "verb": "distinguish",  "usage_context": "between concepts",                "example_template": "Distinguish between {concept1} and {concept2}" },
+        { "verb": "illustrate",   "usage_context": "with examples",                   "example_template": "Illustrate {concept} with examples" }
+      ]
+    },
+    "apply": {
+      "type": "array",
+      "description": "Verbs for the Apply cognitive level (use information in new situations).",
+      "items": { "$ref": "#/$defs/BloomVerb" },
+      "default": [
+        { "verb": "apply",        "usage_context": "knowledge to situations",         "example_template": "Apply {concept} to {situation}" },
+        { "verb": "demonstrate",  "usage_context": "skills or techniques",            "example_template": "Demonstrate {skill} in {context}" },
+        { "verb": "implement",    "usage_context": "procedures or solutions",         "example_template": "Implement {procedure} for {goal}" },
+        { "verb": "solve",        "usage_context": "problems",                        "example_template": "Solve {problem} using {method}" },
+        { "verb": "use",          "usage_context": "tools or methods",                "example_template": "Use {tool} to accomplish {task}" },
+        { "verb": "execute",      "usage_context": "procedures",                      "example_template": "Execute {procedure} correctly" },
+        { "verb": "compute",      "usage_context": "calculations",                    "example_template": "Compute {value} given {inputs}" },
+        { "verb": "calculate",    "usage_context": "numerical results",               "example_template": "Calculate {result} for {scenario}" },
+        { "verb": "practice",     "usage_context": "skills",                          "example_template": "Practice {skill} in {context}" },
+        { "verb": "perform",      "usage_context": "tasks",                           "example_template": "Perform {task} according to {standards}" }
+      ]
+    },
+    "analyze": {
+      "type": "array",
+      "description": "Verbs for the Analyze cognitive level (draw connections among ideas).",
+      "items": { "$ref": "#/$defs/BloomVerb" },
+      "default": [
+        { "verb": "analyze",       "usage_context": "components or relationships",    "example_template": "Analyze {topic} to identify {components}" },
+        { "verb": "differentiate", "usage_context": "elements",                       "example_template": "Differentiate between {element1} and {element2}" },
+        { "verb": "examine",       "usage_context": "in detail",                      "example_template": "Examine {topic} to determine {aspect}" },
+        { "verb": "organize",      "usage_context": "information",                    "example_template": "Organize {information} by {criteria}" },
+        { "verb": "relate",        "usage_context": "connections",                    "example_template": "Relate {concept1} to {concept2}" },
+        { "verb": "categorize",    "usage_context": "into groups",                    "example_template": "Categorize {items} based on {features}" },
+        { "verb": "deconstruct",   "usage_context": "into parts",                     "example_template": "Deconstruct {system} into its components" },
+        { "verb": "investigate",   "usage_context": "thoroughly",                     "example_template": "Investigate {topic} to understand {aspect}" },
+        { "verb": "contrast",      "usage_context": "differences",                    "example_template": "Contrast {item1} with {item2}" },
+        { "verb": "attribute",     "usage_context": "causes or sources",              "example_template": "Attribute {outcome} to {cause}" }
+      ]
+    },
+    "evaluate": {
+      "type": "array",
+      "description": "Verbs for the Evaluate cognitive level (justify a stand or decision).",
+      "items": { "$ref": "#/$defs/BloomVerb" },
+      "default": [
+        { "verb": "evaluate",    "usage_context": "based on criteria",                "example_template": "Evaluate {item} against {criteria}" },
+        { "verb": "assess",      "usage_context": "quality or performance",           "example_template": "Assess the {quality} of {item}" },
+        { "verb": "critique",    "usage_context": "strengths and weaknesses",         "example_template": "Critique {work} identifying strengths and weaknesses" },
+        { "verb": "justify",     "usage_context": "decisions",                        "example_template": "Justify {decision} based on {evidence}" },
+        { "verb": "judge",       "usage_context": "merit",                            "example_template": "Judge the {merit} of {approach}" },
+        { "verb": "argue",       "usage_context": "positions",                        "example_template": "Argue for or against {position}" },
+        { "verb": "defend",      "usage_context": "choices",                          "example_template": "Defend {choice} with supporting evidence" },
+        { "verb": "support",     "usage_context": "claims",                           "example_template": "Support {claim} with {evidence}" },
+        { "verb": "recommend",   "usage_context": "best options",                     "example_template": "Recommend {option} based on {analysis}" },
+        { "verb": "prioritize",  "usage_context": "importance",                       "example_template": "Prioritize {items} by {criteria}" }
+      ]
+    },
+    "create": {
+      "type": "array",
+      "description": "Verbs for the Create cognitive level (produce new or original work).",
+      "items": { "$ref": "#/$defs/BloomVerb" },
+      "default": [
+        { "verb": "create",     "usage_context": "new products",                      "example_template": "Create {product} that demonstrates {concept}" },
+        { "verb": "design",     "usage_context": "systems or solutions",              "example_template": "Design {solution} for {problem}" },
+        { "verb": "construct",  "usage_context": "artifacts",                         "example_template": "Construct {artifact} using {method}" },
+        { "verb": "develop",    "usage_context": "plans or programs",                 "example_template": "Develop {plan} for {goal}" },
+        { "verb": "formulate",  "usage_context": "hypotheses or plans",               "example_template": "Formulate {hypothesis} about {topic}" },
+        { "verb": "compose",    "usage_context": "written works",                     "example_template": "Compose {work} addressing {topic}" },
+        { "verb": "plan",       "usage_context": "strategies",                        "example_template": "Plan {strategy} to achieve {objective}" },
+        { "verb": "invent",     "usage_context": "new solutions",                     "example_template": "Invent {solution} for {challenge}" },
+        { "verb": "produce",    "usage_context": "outputs",                           "example_template": "Produce {output} meeting {specifications}" },
+        { "verb": "generate",   "usage_context": "ideas or content",                  "example_template": "Generate {ideas} for {purpose}" }
+      ]
+    }
+  }
+}

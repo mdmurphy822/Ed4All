@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/module_type.schema.json",
+  "title": "Module Page Type",
+  "description": "Vocabulary for Courseforge weekly module page types. Also called 'page type' or 'module type' depending on emission site. Six values: five documented in agent specs plus 'discussion' which is emitted by generate_course.py but was previously undocumented (surfaced by Worker B's KG-quality review finding).",
+  "$comment": "Values lifted from Courseforge/scripts/generate_course.py:647-759 (six _build_page_metadata call sites: overview, content, application, assessment, summary, discussion). Includes undocumented 'discussion' per Worker B KG-quality review finding. The companion file schemas/academic/courseforge_page_types.schema.json intentionally duplicates this enum as the academic-schema-domain reference; both stay in sync.",
+  "$defs": {
+    "ModuleType": {
+      "type": "string",
+      "enum": [
+        "overview",
+        "content",
+        "application",
+        "assessment",
+        "summary",
+        "discussion"
+      ]
+    }
+  },
+  "$ref": "#/$defs/ModuleType"
+}

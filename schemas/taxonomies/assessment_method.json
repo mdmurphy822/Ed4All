@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/assessment_method.schema.json",
+  "title": "Assessment Methods",
+  "description": "Canonical enum of assessment method categories suggested per learning objective (exam, quiz, assignment, etc.). Distinct from question-item types in question_type.json — these are higher-level instrument categories.",
+  "$comment": "Values lifted verbatim from schemas/academic/learning_objectives.schema.json:223 (assessmentSuggestions.items.enum). Per REC-VOC-01.",
+  "$defs": {
+    "AssessmentMethod": {
+      "type": "string",
+      "enum": [
+        "exam",
+        "quiz",
+        "assignment",
+        "project",
+        "discussion",
+        "presentation",
+        "portfolio",
+        "demonstration",
+        "case_study"
+      ]
+    }
+  },
+  "$ref": "#/$defs/AssessmentMethod"
+}

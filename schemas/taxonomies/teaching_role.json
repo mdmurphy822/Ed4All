@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/teaching_role.schema.json",
+  "title": "Teaching Role",
+  "description": "Pedagogical function played by a chunk within a course: introduce, elaborate, reinforce, assess, transfer, synthesize. Emitted on Trainforge chunks after alignment (align_chunks.py), and intended to be emitted directly by Courseforge in Wave 2 via a deterministic mapping from data-cf-component + data-cf-purpose tuples.",
+  "$comment": "Values lifted from Trainforge/align_chunks.py:33 (VALID_ROLES set: introduce, elaborate, reinforce, assess, transfer, synthesize). The x-component-mapping array encodes the deterministic mapping from Courseforge data-cf-component + data-cf-purpose values (observed in Courseforge/scripts/generate_course.py:345, :374, :487) to teaching_role values. This mapping will be consumed by Worker H in Wave 2 when teaching_role emission is wired into the Courseforge generator.",
+  "$defs": {
+    "TeachingRole": {
+      "type": "string",
+      "enum": [
+        "introduce",
+        "elaborate",
+        "reinforce",
+        "assess",
+        "transfer",
+        "synthesize"
+      ]
+    },
+    "ComponentMappingEntry": {
+      "type": "object",
+      "required": ["component", "purpose", "teaching_role"],
+      "additionalProperties": false,
+      "properties": {
+        "component": {
+          "type": "string",
+          "description": "Value of the data-cf-component HTML attribute."
+        },
+        "purpose": {
+          "type": "string",
+          "description": "Value of the data-cf-purpose HTML attribute."
+        },
+        "teaching_role": {
+          "$ref": "#/$defs/TeachingRole"
+        },
+        "source": {
+          "type": "string",
+          "description": "Source citation (file:line) where the component+purpose pair is emitted."
+        }
+      }
+    }
+  },
+  "$ref": "#/$defs/TeachingRole",
+  "x-component-mapping": [
+    {
+      "component": "flip-card",
+      "purpose": "term-definition",
+      "teaching_role": "introduce",
+      "source": "Courseforge/scripts/generate_course.py:345"
+    },
+    {
+      "component": "self-check",
+      "purpose": "formative-assessment",
+      "teaching_role": "assess",
+      "source": "Courseforge/scripts/generate_course.py:374"
+    },
+    {
+      "component": "activity",
+      "purpose": "practice",
+      "teaching_role": "transfer",
+      "source": "Courseforge/scripts/generate_course.py:487"
+    }
+  ]
+}
