@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/cognitive_domain.schema.json",
+  "title": "Cognitive Knowledge Domain",
+  "description": "Revised Bloom's Taxonomy knowledge dimension — the four-category orthogonal axis to the cognitive process dimension (the six Bloom's levels). Used as data-cf-cognitive-domain on Courseforge objectives and referenced by downstream JSON-LD.",
+  "$comment": "Values lifted from Courseforge/scripts/generate_course.py:146-153 (BLOOM_TO_DOMAIN dict values: factual, conceptual, procedural, metacognitive). Also documented as data-cf-cognitive-domain in Courseforge/CLAUDE.md.",
+  "$defs": {
+    "CognitiveDomain": {
+      "type": "string",
+      "enum": [
+        "factual",
+        "conceptual",
+        "procedural",
+        "metacognitive"
+      ]
+    }
+  },
+  "$ref": "#/$defs/CognitiveDomain"
+}

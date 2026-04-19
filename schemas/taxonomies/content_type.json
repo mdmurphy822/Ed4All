@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/content_type.schema.json",
+  "title": "Content Type Union",
+  "description": "Union vocabulary for content-type labels emitted by Courseforge on sections, callouts, and by Trainforge on chunks. Union-only per REC-VOC-03 — NOT enforced as a single field anywhere yet; each subtype is scoped to its emission site.",
+  "$comment": "SectionContentType lifted from Courseforge/scripts/generate_course.py:388-405 (_infer_content_type return values: definition, example, procedure, comparison, exercise, overview, summary, explanation). CalloutContentType lifted from Courseforge/scripts/generate_course.py:448 (data-cf-content-type values on div.callout: application-note, note). ChunkType lifted from Trainforge/process_course.py:1372-1397 (_type_from_resource + _type_from_heading return values). Per REC-VOC-03 (union-only, not enforcement yet).",
+  "$defs": {
+    "SectionContentType": {
+      "type": "string",
+      "description": "Content-type labels emitted on Courseforge <h2>/<h3> via data-cf-content-type (_infer_content_type returns).",
+      "enum": [
+        "definition",
+        "example",
+        "procedure",
+        "comparison",
+        "exercise",
+        "overview",
+        "summary",
+        "explanation"
+      ]
+    },
+    "CalloutContentType": {
+      "type": "string",
+      "description": "Content-type labels emitted on Courseforge <div class=\"callout\"> via data-cf-content-type.",
+      "enum": [
+        "application-note",
+        "note"
+      ]
+    },
+    "ChunkType": {
+      "type": "string",
+      "description": "Content-type labels emitted on Trainforge chunks (chunk_type field), union of _type_from_resource and _type_from_heading return values.",
+      "enum": [
+        "assessment_item",
+        "overview",
+        "summary",
+        "exercise",
+        "explanation",
+        "example"
+      ]
+    },
+    "ContentType": {
+      "description": "Discriminated union of all content-type vocabularies. Consumers pick the specific subtype for their emission site.",
+      "oneOf": [
+        { "$ref": "#/$defs/SectionContentType" },
+        { "$ref": "#/$defs/CalloutContentType" },
+        { "$ref": "#/$defs/ChunkType" }
+      ]
+    }
+  }
+}
