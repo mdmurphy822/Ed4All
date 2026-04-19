@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/courseforge/v1/CourseModule.schema.json",
+  "title": "Courseforge JSON-LD Page Metadata v1",
+  "description": "Formalizes the JSON-LD contract emitted by Courseforge on every course-module HTML page inside <script type=\"application/ld+json\"> blocks. Top-level type is CourseModule. Consumed by Trainforge's html_content_parser and process_course pipeline as the authoritative metadata source (priority: JSON-LD > data-cf-* > regex heuristics). Per REC-JSL-01 this schema tightens the misconception shape (both keys required) and normalizes bloomRange to an array.",
+  "$comment": "Shape lifted from Courseforge/scripts/generate_course.py: _build_page_metadata (L571-595), _build_objectives_metadata (L512-546), _build_sections_metadata (L549-568). Taxonomy $refs target Worker F's schemas (merged in PR #20). Enum reconciliation: learningObjectives[].assessmentSuggestions and suggestedAssessmentTypes both reference question_type.json's 9-value QuestionType union; emit-side vocabulary at :534-539 and :689,707 is a subset. Per KG-quality review Wave 1.2 plan, Worker C outline at plans/kg-quality-review-2026-04/discovery/c-jsonld-contract.md.",
+  "type": "object",
+  "required": ["@context", "@type", "courseCode", "weekNumber", "moduleType", "pageId"],
+  "additionalProperties": false,
+  "properties": {
+    "@context": {
+      "const": "https://ed4all.dev/ns/courseforge/v1",
+      "description": "JSON-LD context namespace for Courseforge CourseModule emits."
+    },
+    "@type": {
+      "const": "CourseModule",
+      "description": "JSON-LD type constant."
+    },
+    "courseCode": {
+      "type": "string",
+      "pattern": "^[A-Z]{2,}_?\\d{3,}$",
+      "description": "Canonical course code (e.g., WCAG_201, SAMPLE_101)."
+    },
+    "weekNumber": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Week index for the page. Week 0 reserved for course-entry / syllabus pages."
+    },
+    "moduleType": {
+      "$ref": "https://ed4all.dev/ns/taxonomies/v1/module_type.schema.json#/$defs/ModuleType",
+      "description": "Weekly module page type: overview, content, application, assessment, summary, or discussion. References Worker F's module_type taxonomy."
+    },
+    "pageId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Page identifier unique within the course. Multiple templates exist (week_XX_overview, week_XX_content_NN_<slug>, etc.) so no single pattern is enforced."
+    },
+    "learningObjectives": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/LearningObjective" },
+      "description": "Structured learning objectives shown on the page. Elided when empty."
+    },
+    "sections": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Section" },
+      "description": "Page section metadata. Elided when empty."
+    },
+    "misconceptions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Misconception" },
+      "description": "Common misconceptions with corrections. Per REC-JSL-01 both misconception and correction keys are required."
+    },
+    "suggestedAssessmentTypes": {
+      "type": "array",
+      "items": { "$ref": "https://ed4all.dev/ns/taxonomies/v1/question_type.schema.json#/$defs/QuestionType" },
+      "description": "Page-level recommended question formats. References Worker F's question_type union."
+    },
+    "prerequisitePages": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "pageIds that are prerequisite to this page. Consume-only today (Trainforge reads at html_content_parser.py:219; no emit site yet). Reserved here for Wave 2 REC-JSL-02 emit."
+    }
+  },
+  "$defs": {
+    "LearningObjective": {
+      "type": "object",
+      "required": ["id", "statement", "cognitiveDomain", "bloomLevel"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Z]{2,}-\\d{2,}$",
+          "description": "Canonical LO ID (e.g., CO-05, TO-01)."
+        },
+        "statement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "bloomLevel": {
+          "oneOf": [
+            { "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel" },
+            { "type": "null" }
+          ],
+          "description": "Bloom's taxonomy level. May be null when detect_bloom_level fails; downstream chunks treat null as authoritative (see KG-quality review gap #14)."
+        },
+        "bloomVerb": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "null" }
+          ],
+          "description": "Detected Bloom's verb (free string)."
+        },
+        "cognitiveDomain": {
+          "$ref": "https://ed4all.dev/ns/taxonomies/v1/cognitive_domain.schema.json#/$defs/CognitiveDomain",
+          "description": "Revised Bloom's knowledge dimension. Defaults to 'conceptual' when unknown."
+        },
+        "keyConcepts": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Concept slugs associated with this objective."
+        },
+        "assessmentSuggestions": {
+          "type": "array",
+          "items": { "$ref": "https://ed4all.dev/ns/taxonomies/v1/question_type.schema.json#/$defs/QuestionType" },
+          "description": "Suggested question formats for this objective. References Worker F's question_type union (9 values; emitter uses a 5-value subset)."
+        },
+        "prerequisiteObjectives": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "LO IDs that are prerequisite to this objective. Emitted at generate_course.py:542-544; not currently consumed at chunk granularity (see KG-quality review gap #2)."
+        }
+      }
+    },
+    "Section": {
+      "type": "object",
+      "required": ["heading", "contentType"],
+      "additionalProperties": false,
+      "properties": {
+        "heading": {
+          "type": "string",
+          "minLength": 1
+        },
+        "contentType": {
+          "$ref": "https://ed4all.dev/ns/taxonomies/v1/content_type.schema.json#/$defs/SectionContentType",
+          "description": "Section content type (8-value enum from Worker F's content_type taxonomy: definition, example, procedure, comparison, exercise, overview, summary, explanation)."
+        },
+        "keyTerms": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/KeyTerm" }
+        },
+        "bloomRange": {
+          "type": "array",
+          "items": { "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel" },
+          "minItems": 1,
+          "maxItems": 2,
+          "description": "Bloom's level range for the section. Per REC-JSL-01 normalized to array (emitter at generate_course.py:566 wraps scalar strings). Legacy str|array drift handled defensively at consume side but emit is array-only."
+        }
+      }
+    },
+    "KeyTerm": {
+      "type": "object",
+      "required": ["term", "definition"],
+      "additionalProperties": false,
+      "properties": {
+        "term": { "type": "string", "minLength": 1 },
+        "definition": { "type": "string", "minLength": 1 }
+      }
+    },
+    "Misconception": {
+      "type": "object",
+      "required": ["misconception", "correction"],
+      "additionalProperties": false,
+      "description": "Per REC-JSL-01: both 'misconception' and 'correction' keys required. Prevents the silent correction-edge drop flagged in KG-quality review gap #2.",
+      "properties": {
+        "misconception": { "type": "string", "minLength": 1 },
+        "correction": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
