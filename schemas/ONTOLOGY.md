@@ -1,0 +1,1187 @@
+# Ed4All Ontology Map — Current State
+
+## § 0 Header & scope
+
+This document is a **descriptive snapshot** of the Ed4All ontology as it exists in branch `dev-v0.2.0` at or near commit `fea48f8` (post Workers R/S/T merges). It catalogs what classes, relations, taxonomies, provenance mechanisms, serialization surfaces, identifiers, constraints, and version counters exist in the code and schemas **today** — nothing more.
+
+There is no gap analysis, no target ontology, no improvement recommendation, and no implementation plan in this document. Those belong elsewhere.
+
+**Last generated:** 2026-04-19.
+**Regeneration:** re-run Worker U's sub-plan against the current tree (`~/.claude/plans/worker-u-schemas-ontology-map.md`); every `Definition:` path can be grep-verified against the filesystem.
+
+---
+
+## § 1 At-a-glance diagram
+
+Five layers, producer → consumer arrows (downward). Every arrow is grounded in code referenced in § 11.
+
+```
+   Academic layer               Objective layer        Knowledge layer
+   ┌──────────────────┐        ┌──────────────────┐   ┌──────────────────┐
+   │ Course           │        │ LearningObjective│   │ Chunk            │
+   │  └ Module        │  LOs   │  (TO-NN course / │   │  └ concept_tags  │
+   │     └ Page       │──────▶│   CO-NN chapter /│──▶│ Concept          │
+   │        └ Section │        │   WNN-CO-NN wk)  │   │ TypedEdge        │
+   │           └ CB   │        └──────────────────┘   │ KeyTerm          │
+   └──────────────────┘                               │ Misconception    │
+          │                                           └──────────────────┘
+          │ emit JSON-LD + data-cf-*                           │
+          ▼                                                    │
+   [ Courseforge HTML page ]  ──chunked by Trainforge──────────┘
+                                              │
+                                              ▼
+                                  Assessment layer
+                                  ┌──────────────────┐
+                                  │ Assessment       │
+                                  │  └ Question      │  misconception-backed
+                                  │     ├ Choice     │  distractors
+                                  │     └ Distractor │
+                                  │ InstructionPair  │
+                                  │ PreferencePair   │
+                                  └──────────────────┘
+
+   Library layer (terminal sink)
+   ┌──────────────────┐
+   │ CourseManifest   │ ← classifications from schemas/taxonomies/
+   │ CatalogEntry     │
+   └──────────────────┘
+
+   Provenance/event spine (cross-cutting, orthogonal to all layers)
+     DecisionEvent ─▶ TrainforgeDecisionEvent
+     AuditEvent  ·  HashChainedEvent  ·  SessionAnnotation  ·  RunManifest
+     InputRef    ·  OutputArtifact
+```
+
+---
+
+## § 2 Class catalog
+
+Per-class subsections follow a fixed template (definition path, production site, consumption site, required fields, optional fields, discriminators, example). Enum cardinalities and field lists come directly from the cited schema or dataclass.
+
+### Course
+
+**Definition:** `schemas/academic/course_metadata.schema.json`
+**Instance production:** Authored by course-outliner agent / Courseforge planning phase.
+**Instance consumption:** `Courseforge/scripts/generate_course.py` (page emit), brightspace-packager agent (IMSCC), LibV2 importer (manifest derivation).
+
+**Required fields (top-level):** `courseIdentification`, `courseDescription`, `instructionalTeam`, `courseStructure`, `assessmentFramework`, `accessibility`, `metadata`.
+
+**Key sub-field tables** (not a full nested listing — see schema for full tree):
+
+| Sub-object | Required members |
+| ---------- | ---------------- |
+| `courseIdentification` | `courseNumber` (pattern `^[A-Z]{2,4}[0-9]{3,4}[A-Z]?$`), `courseTitle` (5–100 chars), `department`, `courseLevel` |
+| `courseDescription` | `shortDescription` (≤300 chars), `learningOutcomes[]` (3–12 items) |
+| `instructionalTeam` | `primaryInstructor` {`name`, `title`} |
+| `courseStructure` | `duration`, `schedule`, `modules[]` |
+| `metadata` | `version` (semver), `lastUpdated` (date-time), `updatedBy` |
+
+**Optional fields:** `courseSubtitle`, `school`, `institution`, `credits`, `prerequisites`, `resources`, `accessibility.universalDesign`, etc. See schema for full list.
+
+**Discriminators:** `courseIdentification.courseNumber` pattern; `courseLevel` enum.
+
+### Module
+
+**Definition:** `schemas/academic/course_metadata.schema.json` (items of `courseStructure.modules`).
+**Instance production:** course-outliner / requirements-collector agents.
+**Instance consumption:** `Courseforge/scripts/generate_course.py::generate_week()` (lines 598-738).
+
+**Required fields:** `moduleNumber` (int ≥ 1), `title`, `learningObjectives[]` (strings).
+
+**Optional fields:** `description` (≤500 chars), `estimatedDuration` {`value`, `unit ∈ {hours,days,weeks}`}, `contentTypes[]` (enum), `assessments[]`.
+
+**Discriminators:** `moduleNumber` integer position; module pages use a separate `moduleType` discriminator (see Page).
+
+### Page
+
+**Definition:** Courseforge HTML output; structure encoded in JSON-LD emitted at `Courseforge/scripts/generate_course.py:571-595` (`_build_page_metadata`). No standalone schema file.
+**Instance production:** `Courseforge/scripts/generate_course.py::generate_week()` emits five pages per week: overview, content_XX, application, self_check, summary.
+**Instance consumption:** `Trainforge/process_course.py::_chunk_content()` (line 787) parses these pages during IMSCC ingestion.
+
+**Required fields** (JSON-LD emit):
+| field | type | notes |
+| ----- | ---- | ----- |
+| `@context` | const | `https://ed4all.dev/ns/courseforge/v1` |
+| `@type` | const | `CourseModule` |
+| `courseCode` | string | e.g. `WCAG_201` |
+| `weekNumber` | int | week position |
+| `moduleType` | enum | `{overview, content, application, assessment, summary}` |
+| `pageId` | string | slug, e.g. `week_01_content_02_accessibility_basics` |
+
+**Optional fields:** `learningObjectives[]` (see LearningObjective), `sections[]` (see Section), `misconceptions[]`, `suggestedAssessmentTypes[]`.
+
+**Discriminators:** `moduleType` enum value.
+
+**Instance example:**
+```json
+{"@context":"https://ed4all.dev/ns/courseforge/v1","@type":"CourseModule",
+ "courseCode":"WCAG_201","weekNumber":1,"moduleType":"content",
+ "pageId":"week_01_content_01_introduction",
+ "learningObjectives":[{"id":"TO-01","statement":"...","bloomLevel":"understand"}]}
+```
+
+### Section (textbook / page)
+
+**Definition:** `schemas/academic/textbook_structure.schema.json#/definitions/section` (also Page JSON-LD `sections[]`).
+**Instance production:** textbook-ingestor agent (textbook_structure); `Courseforge/scripts/generate_course.py:549-568` (`_build_sections_metadata`) for page emit.
+**Instance consumption:** `Trainforge/parsers/html_content_parser.py` for chunk alignment.
+
+**Required fields (textbook_structure):** `id`, `headingText`, `contentBlocks[]`.
+
+**Optional fields:** `headingLevel` (2–6), `headingId` (HTML id), `subsections[]` (recursive).
+
+**Page JSON-LD section shape** (emitted by Courseforge):
+
+| field | type | notes |
+| ----- | ---- | ----- |
+| `heading` | string | rendered h2/h3 text |
+| `contentType` | enum | see § 4 content-type list |
+| `keyTerms[]` | object | `{term, definition}` pairs from flip cards |
+| `bloomRange[]` | array | bloom-level spread in the section |
+
+### ContentBlock
+
+**Definition:** `schemas/academic/textbook_structure.schema.json#/definitions/contentBlock`.
+**Instance production:** textbook-ingestor parsing DART-produced HTML.
+**Instance consumption:** chapter-level section extractors in Courseforge objective synthesis.
+
+**Required fields:** `id`, `blockType`.
+
+**Optional fields:** `content` (str, may include inline HTML), `listItems[]`, `tableData` {`caption`, `headers[]`, `rows[][]`}, `figureData` {`src`, `alt`, `caption`}, `containsDefinitions` (bool), `containsKeyTerms` (bool), `wordCount` (int ≥ 0).
+
+**Discriminators:** `blockType` enum (see § 4, 14 values).
+
+### UI components: Accordion · ContentDisplay · EnhancedContentDisplay · CourseCard · EducationalTemplate
+
+These remain Courseforge-local (see `/schemas/README.md`).
+
+**Definition paths:**
+- `Courseforge/schemas/content-display/accordion-schema.json`
+- `Courseforge/schemas/content-display/content-display-schema.json`
+- `Courseforge/schemas/content-display/enhanced-content-display-schema.json`
+- `Courseforge/schemas/layouts/course_card_schema.json`
+- `Courseforge/schemas/template-integration/educational_template_schema.json`
+
+**Instance production:** Courseforge content-generator / intelligent-design-mapper agents.
+**Instance consumption:** brightspace-packager (HTML → IMSCC).
+
+Each describes an inline HTML component produced by Courseforge (accordions for FAQ/definitions, content-display wrappers for hero sections, course-card layouts for grids, educational template shells). They are UI-only — none leave the Courseforge HTML output.
+
+### FlipCard · SelfCheck · ActivityCard (code-only)
+
+**Definition:** No schema; emitted inline as HTML with `data-cf-component=*` by `Courseforge/scripts/generate_course.py`.
+
+- FlipCard: `_render_flip_cards()` (lines 336-352), `data-cf-component="flip-card"`, `data-cf-purpose="term-definition"`, `data-cf-term=<slug>`.
+- SelfCheck: `_render_self_check()` (lines 355-385), `data-cf-component="self-check"`, `data-cf-purpose="formative-assessment"`, carries `data-cf-bloom-level` and optional `data-cf-objective-ref`.
+- ActivityCard: `_render_activities()` (lines 480-497), `data-cf-component="activity"`, `data-cf-purpose="practice"`, carries `data-cf-bloom-level` and optional `data-cf-objective-ref`.
+
+**Instance consumption:** `Trainforge/parsers/html_content_parser.py` (component detection); `Trainforge/process_course.py` (interactive-components coverage metric).
+
+### LearningObjective
+
+**Definition:** `schemas/academic/learning_objectives.schema.json#/definitions/learningObjective`.
+**Instance production:** textbook-ingestor + objective-synthesizer agents (extracted from textbooks); course-outliner agent (new courses).
+**Instance consumption:** `Courseforge/scripts/generate_course.py:512-546` (`_build_objectives_metadata` → JSON-LD); Trainforge chunk alignment (`learning_outcome_refs` on chunk).
+
+**Required fields:**
+| field | type | notes |
+| ----- | ---- | ----- |
+| `objectiveId` | string | unique ID; prefix discriminates scope (see below) |
+| `statement` | string | ≥10 chars |
+| `bloomLevel` | enum | `{remember, understand, apply, analyze, evaluate, create}` |
+
+**Optional fields:** `bloomVerb`, `keyConcepts[]`, `sourceReference` (`{headingId, headingText, pageNumber, elementPath}`), `assessmentSuggestions[]` (9-value enum), `prerequisiteObjectives[]` (string IDs), `extractionSource` (7-value enum).
+
+**Discriminators / subtype signaling:** ID prefix:
+- `TO-NN` — Terminal Objective (course-level).
+- `CO-NN` — Chapter Objective.
+- `WNN-CO-NN` — Week-scoped Chapter Objective (legacy; week-prefix normalization described at `Courseforge/scripts/generate_course.py:605-613`).
+
+### Chunk
+
+**Definition:** No standalone JSON Schema; produced as a Python dict by `Trainforge/process_course.py::_create_chunk()` (line 1038). Schema-versioned via `CHUNK_SCHEMA_VERSION = "v4"` (line 86).
+**Instance production:** `_chunk_content` + `_chunk_text_block` + `_create_chunk` in `process_course.py`.
+**Instance consumption:** `Trainforge/rag/typed_edge_inference.py`, `Trainforge/generators/*.py`, instruction/preference pair synthesis, LibV2 corpus.
+
+**Required fields:**
+| field | type | notes |
+| ----- | ---- | ----- |
+| `id` | string | pattern `^<course>_chunk_\d{5}$` |
+| `schema_version` | const | `"v4"` |
+| `chunk_type` | string | e.g. `explanation`, `example`, `overview` |
+| `text` | string | stripped plain text |
+| `html` | string | raw HTML fragment |
+| `source` | object | see below |
+| `concept_tags` | string[] | normalized tags |
+| `learning_outcome_refs` | string[] | LO IDs (may be empty) |
+| `difficulty` | string | see § 4 |
+| `tokens_estimate` | int | `word_count * 1.3` |
+| `word_count` | int | |
+| `follows_chunk` | string \| null | prev chunk_id for boundary continuity |
+
+**`source` sub-object:** `course_id`, `module_id`, `module_title`, `lesson_id`, `lesson_title`, `resource_type`, `section_heading`, `position_in_module`, optional `html_xpath` + `char_span` (Section 508 audit trail, lines 1067-1077), optional `item_path` (IMSCC-relative path).
+
+**Enrichment fields (post-base chunk):** `bloom_level`, `bloom_level_source`, `content_type_label`, `key_terms`, `misconceptions`, `_metadata_trace` (Worker M1 diagnostic, `process_course.py:1219`).
+
+**Discriminators:** `chunk_type` string; `schema_version` version stamp.
+
+### Concept
+
+**Definition:** `schemas/knowledge/concept_graph_semantic.schema.json#/properties/nodes/items`.
+**Instance production:** Trainforge concept-graph builder (co-occurrence pass + key-term promotion).
+**Instance consumption:** `Trainforge/rag/typed_edge_inference.py` (node lookup); LibV2 concept indexes.
+
+**Required fields:** `id` (string).
+**Optional fields:** `label` (string), `frequency` (int ≥ 0), plus arbitrary `additionalProperties`.
+
+**Discriminators:** `id` is a normalized kebab-case slug (e.g. `cognitive-load-theory`).
+
+### TypedEdge
+
+**Definition:** `schemas/knowledge/concept_graph_semantic.schema.json#/properties/edges/items`.
+**Instance production:** `Trainforge/rag/typed_edge_inference.py` orchestrator, applying three inference rules (see § 4 taxonomy list).
+**Instance consumption:** LibV2 retrieval (graph-aware ranking); Trainforge question generation (prerequisite traversal).
+
+**Required fields:**
+| field | type | notes |
+| ----- | ---- | ----- |
+| `source` | string | concept id |
+| `target` | string | concept id |
+| `type` | enum | `{prerequisite, is-a, related-to}` |
+| `provenance` | object | `{rule, rule_version, evidence?}` (rule_version ≥ 1) |
+
+**Optional fields:** `confidence` (0–1), `weight` (number), plus `additionalProperties`.
+
+**Discriminators:** `type` enum; `related-to` is treated undirected, others directed (`typed_edge_inference.py:57`).
+
+**Instance example:**
+```json
+{"source":"scaffolding","target":"constructivism","type":"is-a","confidence":0.82,
+ "provenance":{"rule":"is_a_from_key_terms","rule_version":1,
+               "evidence":{"container":"constructivism","member":"scaffolding"}}}
+```
+
+### KeyTerm
+
+**Definition:** Appears in two surfaces:
+1. `schemas/academic/textbook_structure.schema.json#/properties/extractedConcepts/properties/keyTerms/items`
+2. Courseforge Page JSON-LD `sections[].keyTerms[]` (`generate_course.py:559-563`)
+
+**Instance production:** textbook-ingestor (textbook), content-generator agent (course pages via flip-card authoring).
+**Instance consumption:** Trainforge `_extract_section_metadata` merges `keyTerms[].term` into `concept_tags` (`process_course.py:1107-1116`).
+
+**Required fields (textbook_structure):** `term`.
+**Optional fields (textbook_structure):** `context`, `emphasisType ∈ {strong, em, heading, callout}`, `chapterId`, `sectionId`.
+**Page JSON-LD shape:** `{term, definition}` pairs (both strings).
+
+### Misconception
+
+**Definition:** No standalone schema; emitted in Courseforge JSON-LD (`page_metadata.misconceptions[]`) and stored on Chunk (enrichment).
+**Instance production:** content-generator authors them per week; merged into content-page JSON-LD at `generate_course.py:671`.
+**Instance consumption:** `Trainforge/generators/preference_factory.py` — explicit misconceptions back DPO `rejected` answers with stable IDs (`_misconception_id`, lines 140-143: `{chunk_id}_mc_{index:02d}_{hash}`).
+
+**Structural shape (as emitted):** a free-form dict — most commonly `{misconception: string, correction: string}`; passed through without enum constraint.
+
+### Assessment
+
+**Definition:** Python dataclass `AssessmentData` at `Trainforge/generators/assessment_generator.py:111`.
+**Instance production:** `AssessmentGenerator.generate()` (assessment-generator agent).
+**Instance consumption:** brightspace-packager (QTI emit); assessment-validator agent; `trainforge_decision.schema.json`.
+
+**Fields:** `assessment_id` (str), `title` (str), `course_code` (str), `questions` (list[QuestionData]), `objectives_targeted` (list[str]), `bloom_levels` (list[str]), `created_at` (ISO datetime), `status` (default `"generated"`).
+
+`to_dict()` also emits derived `question_count` and `total_points`.
+
+### Question
+
+Two closely-related representations exist:
+
+**Definition (factory-side):** dataclass `Question` at `Trainforge/generators/question_factory.py:36`.
+**Definition (generator-side):** dataclass `QuestionData` at `Trainforge/generators/assessment_generator.py:81`.
+
+**Instance production:** `QuestionFactory.create_*` methods (with Bloom-alignment enforcement, line 103); `AssessmentGenerator.generate()`.
+**Instance consumption:** brightspace-packager QTI emit; validators (bloom, question_quality, leak_check).
+
+**Required fields (Question):** `question_id`, `question_type` (enum, 7 values — see § 4), `stem`, `bloom_level`, `objective_id`.
+**Optional fields:** `points` (default 1.0), `feedback`, `choices[]` (QuestionChoice), `correct_answers[]` (for fill-in/matching), `case_sensitive` (bool).
+
+**QuestionData additional fields:** `source_chunks[]`, `generation_rationale`.
+
+**Discriminators:** `question_type` enum selects which field subset is populated (choices for MCQ, correct_answers for FIB/matching, stem-only for essay).
+
+### QuestionChoice
+
+**Definition:** dataclass at `Trainforge/generators/question_factory.py:28`.
+**Fields:** `text` (str), `is_correct` (bool, default False), `feedback` (Optional[str]).
+
+### Distractor
+
+**Definition:** `schemas/events/trainforge_decision.schema.json#/allOf/1/properties/question_data/properties/distractors/items` (schema-side); `QuestionChoice` with `is_correct=False` (code-side).
+
+**Fields (schema):**
+| field | type | notes |
+| ----- | ---- | ----- |
+| `text` | string | distractor option |
+| `misconception_targeted` | string | stable misconception id / description |
+| `plausibility_score` | number | |
+
+**Production:** `QuestionFactory.create_multiple_choice`; distractor rationale captured via `trainforge_capture.log_distractor_rationale`.
+
+### InstructionPair
+
+**Definition:** `schemas/knowledge/instruction_pair.schema.json`.
+**Instance production:** `Trainforge/synthesize_training.py` → `Trainforge/generators/instruction_factory.py`.
+**Instance consumption:** Downstream SFT trainers (Alpaca / OpenAI format).
+
+**Required fields:**
+| field | type | notes |
+| ----- | ---- | ----- |
+| `prompt` | string | 40–400 chars, no ≥50-char verbatim span from source |
+| `completion` | string | 50–600 chars |
+| `chunk_id` | string | source chunk |
+| `lo_refs` | string[] | ≥1 (never empty) |
+| `bloom_level` | enum | 6 Bloom levels |
+| `content_type` | string | free-string from chunk |
+| `seed` | int | deterministic template-selection seed |
+| `decision_capture_id` | string | event_id in decisions JSONL |
+
+**Optional fields:** `template_id` (Bloom × content-type template id), `provider ∈ {mock, anthropic}`, `schema_version` (const `"v1"`).
+
+**Discriminators:** `schema_version` const.
+
+### PreferencePair
+
+**Definition:** `schemas/knowledge/preference_pair.schema.json`.
+**Instance production:** `Trainforge/generators/preference_factory.py`.
+**Instance consumption:** DPO training pipelines.
+
+**Required fields:** `prompt` (40–400 chars), `chosen` (50–600), `rejected` (50–600; must differ from chosen with token-Jaccard δ ≥ 0.3), `chunk_id`, `lo_refs[]` (≥1), `seed`, `decision_capture_id`.
+**Optional fields:** `misconception_id` (null when rule-synthesized), `rejected_source ∈ {misconception, rule_synthesized}`, `provider ∈ {mock, anthropic}`, `schema_version` const `"v1"`.
+
+**Discriminators:** `rejected_source`; `misconception_id` nullability.
+
+### WCAGCompliance
+
+**Definition:** `schemas/compliance/wcag22_compliance.schema.json`.
+**Instance production:** accessibility-remediation agent; DART conversion validation.
+**Instance consumption:** `lib/validators/content.py::ContentStructureValidator`; WCAGValidator validation gate.
+
+**Top-level required:** `complianceLevel.standard ∈ {WCAG_2.0_AA, WCAG_2.1_AA, WCAG_2.2_AA}` (default `WCAG_2.2_AA`).
+
+**Structure:** 4 principle blocks — `perceivableRequirements`, `operableRequirements`, `understandableRequirements`, `robustRequirements`. Each carries nested booleans + numeric thresholds for the WCAG 2.2 success criteria listed in § 4.
+
+**Discriminators:** `complianceLevel.standard` enum.
+
+### Bootstrap5Migration
+
+**Definition:** `Courseforge/schemas/framework-migration/bootstrap5_migration_schema.json`.
+**Instance production:** Courseforge accessibility-remediation / framework-migration tooling.
+**Instance consumption:** brightspace-packager (for LMSes expecting Bootstrap 5 markup).
+
+Tool-local; describes the transformation contract used when upgrading older Bootstrap-4 content to Bootstrap-5 in place. Not consumed outside Courseforge.
+
+### CourseManifest
+
+**Definition:** `schemas/library/course_manifest.schema.json`.
+**Instance production:** `LibV2/tools/libv2/importer.py` emits this per course import.
+**Instance consumption:** LibV2 catalog generator, retrieval engine, fsck.
+
+**Required fields:** `libv2_version` (semver), `slug` (regex `^[a-z0-9][a-z0-9-]*[a-z0-9]$`, 3–100 chars), `import_timestamp`, `sourceforge_manifest` (with `sourceforge_version`, `export_timestamp`, `course_id`, `course_title`), `classification`, `content_profile`.
+
+**`classification` required:** `division ∈ {STEM, ARTS}`, `primary_domain`.
+**`classification` optional:** `secondary_domains[]`, `subdomains[]`, `topics[]`, `subtopics[]`.
+
+**Other optionals:** `ontology_mappings` (ACM CCS + LCSH; see § 4), `relationships` (`prerequisites[]`, `related_courses[]`, `successor_courses[]`), `quality_metadata` (`validation_status`, `completeness_score`, `annotation_coverage`), `provenance` (`source_type`, `source_path`, `original_provider`, `import_pipeline_version`).
+
+### CatalogEntry
+
+**Definition:** `schemas/library/catalog_entry.schema.json`.
+**Instance production:** `LibV2/tools/libv2/catalog.py` (from manifest).
+**Instance consumption:** LibV2 CLI (`catalog list`, `catalog stats`), retrieval engine indexes.
+
+**Required fields:** `slug`, `title`, `division ∈ {STEM, ARTS}`, `primary_domain`.
+**Optional fields:** `secondary_domains[]`, `subdomains[]`, `chunk_count` (int ≥ 0), `concept_count`, `token_count`, `difficulty_primary ∈ {foundational, intermediate, advanced, mixed}`, `language` (default `"en"`), `validation_status ∈ {pending, validated, failed}`.
+
+### DecisionEvent
+
+**Definition:** `schemas/events/decision_event.schema.json`.
+**Instance production:** `lib/decision_capture.py::DecisionCapture.log_decision` (line 441).
+**Instance consumption:** validators, training-data export (alpaca/openai/dpo/raw), MCP analysis tools.
+
+**Required fields (6):** `run_id`, `timestamp`, `operation`, `decision_type`, `decision`, `rationale` (≥20 chars — enforced by schema minLength).
+
+**Phase-0-hardening optional fields:** `event_id` (`^EVT_[a-f0-9]{16}$`), `seq` (monotonic int per run), `task_id` (`^T-[a-f0-9]{8}$`), `is_default` (bool), `outputs[]` (artifact pointers).
+
+**Other optionals:** `course_id` (`^[A-Z]{2,8}_[0-9]{3}$`), `module_id` (`^[A-Z]{2,8}_[0-9]{3}_W[0-9]{2}_M[0-9]{2}$`), `artifact_id` (SHA-256 short hash), `phase` (23-value enum), `tool ∈ {dart, courseforge, trainforge, orchestrator}`, `alternatives_considered[]`, `context`, `confidence ∈ [0.0, 1.0]`, `ml_features`, `inputs_ref[]` (see InputRef), `prompt_ref`, `outcome`, `metadata`.
+
+**Discriminators:** `tool` (which tool produced); `decision_type` (40-value enum — see § 4); `phase`.
+
+### TrainforgeDecisionEvent
+
+**Definition:** `schemas/events/trainforge_decision.schema.json` — `allOf: [{$ref: decision_event.schema.json}, {additional properties}]`.
+**Instance production:** `lib/trainforge_capture.py::TrainforgeCapture` (wraps DecisionCapture).
+**Instance consumption:** same as DecisionEvent + Trainforge-specific quality analyzers.
+
+**Extra properties over DecisionEvent:**
+- `assessment_context` — required `imscc_source`, optional `learning_objective_id`, `bloom_target` (6-level enum), `source_chunks[]` {`chunk_id`, `content_hash`, `relevance_score`, `token_count`, `source_file`}, `domain`, `domain_weight` (0–100).
+- `question_data` — `question_id`, `question_type` (8-value enum — see § 4), `question_stem`, `correct_answer`, `distractors[]` (see Distractor), `explanation`, `difficulty ∈ {easy, medium, hard}`, `points` (≥1), `time_estimate_seconds`, `rubric` (criteria with weight/levels).
+- `rag_metrics` — `chunks_retrieved`, `chunks_used`, `retrieval_latency_ms`, `generation_latency_ms`, `context_token_count`, `embedding_model`, `similarity_threshold`.
+- `alignment_check` — `lo_coverage_score`, `bloom_alignment_score`, `content_alignment_score` (all 0–1), `passed` (bool), `issues[]`.
+- `revision_chain[]` — ordered `{revision_number, timestamp, reason, changes_made[], validator_feedback}`.
+
+### AuditEvent
+
+**Definition:** `schemas/events/audit_event.schema.json`.
+**Instance production:** cross-cutting audit logger (file access, tool invocation, state changes).
+**Instance consumption:** compliance / audit reports; MCP hardening checks.
+
+**Required fields:** `run_id` (alphanumeric+underscore), `event_id` (`^EVT_[a-f0-9]{16}$`), `seq` (int ≥0), `timestamp`, `event_type` (8-value enum — see § 4).
+
+**Optional fields:** `component`, `worker_id`, `task_id` (`^T-[a-f0-9]{8}$`), `details` (oneOf over 7 sub-schemas keyed by `event_type`), `redacted_fields[]`, `metadata`.
+
+**Details sub-schemas:** `file_access_details` (operation, path, content_hash, size_bytes, success), `tool_invocation_details` (tool_name, version, args/result hashes, duration, exit_status), `state_change_details` (state_file, change_type ∈ {create,update,delete,lock,unlock}, prev/new hash), `workflow_event_details` (workflow_id, event_subtype ∈ 8 values), `validation_event_details` (validator_name, passed, score, waived, waiver_reason), `error_details` (error_type, message, recoverable, stack_trace), `security_event_details` (security_event_type ∈ 4 values).
+
+### HashChainedEvent
+
+**Definition:** `schemas/events/hash_chained_event.schema.json`.
+**Instance production:** `lib/hash_chain.py` (tamper-evident append).
+**Instance consumption:** audit verification, replay engine (`lib/replay_engine.py`).
+
+**Required fields:** `seq` (≥0), `prev_hash` (`genesis` or 64-char hex), `event_hash` (SHA-256 of `prev_hash + JSON(event)`), `timestamp`, `event` (arbitrary object).
+
+**Discriminators:** `prev_hash == "genesis"` marks the first link.
+
+### SessionAnnotation
+
+**Definition:** `schemas/events/session_annotation.schema.json`.
+**Instance production:** `lib/run_finalizer.py` (aggregates JSONL decision files at session end).
+**Instance consumption:** session-level quality reporting; training-data export filtering.
+
+**Required fields:** `session_id`, `run_id`, `tool ∈ {dart, courseforge, trainforge, orchestrator}`, `started_at`, `status ∈ {running, complete, error, partial, cancelled}`.
+
+**Optional fields:** `course_id` (`^[A-Z]{2,3}_[0-9]{3}$`), `phase`, `completed_at`, `duration_seconds`, `inputs` (bundle of input-type arrays), `outputs` (`files_created[]`, `imscc_package`, `total_modules`, `total_assessments`, `total_questions`, `training_examples_produced`), `decision_summary` (`total_decisions`, `by_type` map, `by_quality_level` with 4-level enum, `avg_rationale_length`, `avg_confidence`), `quality_metrics` (`validation_pass_rate`, `revision_rate`, `error_rate`, `bloom_distribution`), `acceptance` (`accepted`, `rejection_reason`, `revision_count`, `superseded_by`, `reviewer_notes`), `errors[]`, `decision_files[]`.
+
+### RunManifest
+
+**Definition:** `schemas/events/run_manifest.schema.json`.
+**Instance production:** `lib/run_manager.py` (at run initialization; written once, never mutated).
+**Instance consumption:** run discovery, fsck, replay engine.
+
+**Required fields:** `run_id` (`^RUN_[0-9]{8}_[0-9]{6}_[a-f0-9]{8}$`), `created_at`, `workflow_type ∈ {course_generation, intake_remediation, batch_dart, rag_training, textbook_to_course}`, `config_hashes` (`workflows_yaml`, `agents_yaml`, `schemas` — all `^sha256:[a-f0-9]{64}$`), `immutable` (const `true`).
+
+**Optional fields:** `git_commit` (40-hex or null), `git_dirty` (bool), `operator`, `goals[]`, `workflow_params`, `environment` (python_version, platform, hostname, etc.), `inputs[]` (`path`, `content_hash`, `hash_algorithm`, `size_bytes`), `schema_version` (default `"1.0.0"`).
+
+**Discriminators:** `workflow_type` enum; `immutable` const.
+
+### InputRef
+
+**Definition:** Python dataclass `InputRef` at `lib/provenance.py:37`. Mirrors `schemas/events/decision_event.schema.json#/properties/inputs_ref/items`.
+**Instance production:** `lib.provenance.create_input_ref()`.
+**Instance consumption:** decision events `inputs_ref[]`, run manifest `inputs[]`.
+
+**Fields:** `source_type` (string: textbook/pdf/imscc/web_search/prompt_template/assessment_bank/html/agent_output), `path_or_id` (string), `content_hash` (string, default `""`), `hash_algorithm ∈ {sha256, sha512, blake3}` (default sha256), `size_bytes` (int), `byte_range` (`{start, end}`, optional), `excerpt_range` (human string), `metadata` (dict).
+
+### OutputArtifact (OutputRef)
+
+**Definition:** Python dataclass `OutputRef` at `lib/provenance.py:91`. Mirrors `schemas/events/decision_event.schema.json#/properties/outputs/items`.
+**Instance production:** `lib.provenance.create_output_ref()`.
+**Instance consumption:** decision events `outputs[]`.
+
+**Fields:** `artifact_type` (string: html/imscc/assessment/chunk/etc.), `path` (string), `content_hash`, `hash_algorithm` (default sha256), `size_bytes`, `byte_range`, `metadata`.
+
+---
+
+## § 3 Relation inventory
+
+Single table of directed/undirected relations that cross class boundaries. Cardinality notation: 1 (exactly one), 0..1 (optional), 0..* (any), 1..* (at least one).
+
+| Relation | Domain → Range | Cardinality | Directed | Surface | Defined in |
+|---|---|---|---|---|---|
+| `hasModule` | Course → Module | 1..* | yes | `courseStructure.modules[]` | `schemas/academic/course_metadata.schema.json` |
+| `hasPage` | Module → Page | 1..* | yes | file tree / weekly emit | `Courseforge/scripts/generate_course.py:598` |
+| `hasSection` | Page → Section | 0..* | yes | JSON-LD `sections[]` | `generate_course.py:549-568` |
+| `hasContentBlock` | Section → ContentBlock | 1..* | yes | `sections[].contentBlocks[]` | `schemas/academic/textbook_structure.schema.json#/definitions/section` |
+| `hasSubsection` | Section → Section | 0..* | yes | recursive `subsections[]` | same |
+| `hasChild` (TOC) | TOC item → TOC item | 0..* | yes | recursive `children[]` | `textbook_structure.schema.json` |
+| `hasCourseObjective` | Course → LearningObjective | 1..* | yes | `courseObjectives[]` | `schemas/academic/learning_objectives.schema.json` |
+| `hasChapterObjective` | Chapter → LearningObjective | 0..* | yes | `chapters[].chapterObjectives[]` | same |
+| `hasSectionObjective` | Section → LearningObjective | 0..* | yes | `sections[].sectionObjectives[]` | same |
+| `prerequisiteOf` (LO) | LearningObjective → LearningObjective | 0..* | yes | LO `prerequisiteObjectives[]` | same |
+| `targetsObjective` | Page / Question → LearningObjective | 0..* | yes | `data-cf-objective-ref`, `objective_id` | `generate_course.py:378,491`; `question_factory.py:42` |
+| `follows` (chunk order) | Chunk → Chunk | 0..1 | yes | `follows_chunk` field | `Trainforge/process_course.py:1085` |
+| `hasConceptTag` | Chunk → Concept | 0..* | yes | `concept_tags[]` | `process_course.py:1087` |
+| `hasLORef` | Chunk → LearningObjective | 1..* | yes | `learning_outcome_refs[]` (required for pair generation) | `process_course.py:1088` |
+| `typedEdge:is-a` | Concept → Concept | 0..* | yes | TypedEdge type=`is-a` | `Trainforge/rag/inference_rules/is_a_from_key_terms.py` |
+| `typedEdge:prerequisite` | Concept → Concept | 0..* | yes | TypedEdge type=`prerequisite` | `Trainforge/rag/inference_rules/prerequisite_from_lo_order.py` |
+| `typedEdge:related-to` | Concept ↔ Concept | 0..* | no | TypedEdge type=`related-to` | `Trainforge/rag/inference_rules/related_from_cooccurrence.py` |
+| `hasQuestion` | Assessment → Question | 1..* | yes | `AssessmentData.questions` | `Trainforge/generators/assessment_generator.py:117` |
+| `hasChoice` | Question → QuestionChoice | 0..* | yes | `Question.choices` | `question_factory.py:45` |
+| `hasDistractor` | Question → Distractor | 0..* | yes | `question_data.distractors[]` | `schemas/events/trainforge_decision.schema.json` |
+| `targetsMisconception` | Distractor → Misconception | 0..1 | yes | `misconception_targeted` | same |
+| `derivedFromChunk` | InstructionPair / PreferencePair → Chunk | 1 | yes | `chunk_id` | `schemas/knowledge/instruction_pair.schema.json`, `preference_pair.schema.json` |
+| `encodesMisconception` | PreferencePair → Misconception | 0..1 | yes | `misconception_id` (nullable) | `schemas/knowledge/preference_pair.schema.json` |
+| `coursePrerequisite` | Course → Course | 0..* | yes | `relationships.prerequisites[]` | `schemas/library/course_manifest.schema.json` |
+| `relatedCourse` | Course ↔ Course | 0..* | no | `relationships.related_courses[]` | same |
+| `classifiedAs` | Course → Domain/Subdomain | 1..* | yes | `classification.*` | same |
+| `ontologyMap:acm_ccs` | Course → ACM CCS code | 0..* | yes | `ontology_mappings.acm_ccs[]` | same |
+| `ontologyMap:lcsh` | Course → LCSH URI | 0..* | yes | `ontology_mappings.lcsh[]` (with relation type) | same |
+| `producesOutput` | Decision → OutputArtifact | 0..* | yes | `outputs[]` | `schemas/events/decision_event.schema.json` |
+| `usedInput` | Decision → InputRef | 0..* | yes | `inputs_ref[]` | same |
+| `linksToTask` | Decision / AuditEvent → Task | 0..1 | yes | `task_id` | `decision_event.schema.json`, `audit_event.schema.json` |
+| `chainsFrom` | HashChainedEvent → HashChainedEvent | 0..1 | yes | `prev_hash` | `hash_chained_event.schema.json` |
+| `belongsToSession` | DecisionEvent → SessionAnnotation | 1 | yes | `run_id`/`session_id` linkage | `session_annotation.schema.json` |
+
+---
+
+## § 4 Taxonomies
+
+All enums quoted verbatim from the cited source.
+
+### Bloom's Taxonomy (6 levels)
+
+Source: `schemas/academic/learning_objectives.schema.json#/definitions/learningObjective/properties/bloomLevel`, `schemas/events/decision_event.schema.json#/properties/ml_features/properties/bloom_levels/items`.
+
+```
+remember, understand, apply, analyze, evaluate, create
+```
+
+### BLOOM_VERBS
+
+Source: `Courseforge/scripts/generate_course.py:136-143`.
+
+```python
+BLOOM_VERBS = {
+    "remember":   ["define", "list", "recall", "identify", "recognize", "name", "state"],
+    "understand": ["explain", "describe", "summarize", "interpret", "classify", "compare"],
+    "apply":      ["apply", "demonstrate", "implement", "solve", "use", "execute"],
+    "analyze":    ["analyze", "differentiate", "examine", "compare", "contrast", "organize"],
+    "evaluate":   ["evaluate", "assess", "critique", "judge", "justify", "argue"],
+    "create":     ["create", "design", "develop", "construct", "produce", "formulate"],
+}
+```
+
+### BLOOM_TO_DOMAIN
+
+Source: `Courseforge/scripts/generate_course.py:146-153`.
+
+```python
+BLOOM_TO_DOMAIN = {
+    "remember":   "factual",
+    "understand": "conceptual",
+    "apply":      "procedural",
+    "analyze":    "conceptual",
+    "evaluate":   "metacognitive",
+    "create":     "procedural",
+}
+```
+
+### BLOOM_QUESTION_MAP
+
+Source: `Trainforge/generators/question_factory.py:91-98`.
+
+```python
+BLOOM_QUESTION_MAP = {
+    "remember":   ["multiple_choice", "true_false", "fill_in_blank", "matching"],
+    "understand": ["multiple_choice", "short_answer", "fill_in_blank", "matching"],
+    "apply":      ["multiple_choice", "short_answer", "essay"],
+    "analyze":    ["multiple_choice", "short_answer", "essay", "matching"],
+    "evaluate":   ["essay", "short_answer", "multiple_choice"],
+    "create":     ["essay", "short_answer"],
+}
+```
+
+### Question types
+
+Two enums exist:
+
+**Trainforge internal (factory):** `Trainforge/generators/question_factory.py:81-89`
+```
+multiple_choice, multiple_response, true_false, fill_in_blank, short_answer, essay, matching
+```
+
+**Trainforge decision-capture schema:** `schemas/events/trainforge_decision.schema.json:64`
+```
+multiple_choice, true_false, short_answer, essay, matching, fill_in_blank, ordering, hotspot
+```
+
+### Content types
+
+**Page JSON-LD `sections[].contentType`** (inferred in `Courseforge/scripts/generate_course.py:388-405`):
+```
+definition, example, procedure, comparison, exercise, overview, summary, explanation
+```
+(`"application-note"` is also emitted for callout-warning type in `_render_content_sections` line 447.)
+
+**Textbook `contentBlock.blockType`** (14 values): source `schemas/academic/textbook_structure.schema.json#/definitions/contentBlock/properties/blockType`
+```
+paragraph, heading, list_ordered, list_unordered, definition_list, table, figure,
+callout_info, callout_warning, callout_note, code_block, blockquote, example, summary
+```
+
+### Module types (Page `moduleType`)
+
+Source: emit sites in `Courseforge/scripts/generate_course.py::generate_week()` (lines 647, 667, 686, 704, 728):
+```
+overview, content, application, assessment, summary
+```
+(`self_check` pages are labeled `moduleType="assessment"`.)
+
+### `data-cf-*` attribute vocabulary
+
+Source: `Courseforge/scripts/generate_course.py` (multiple render sites).
+
+| Attribute | Element | Allowed values |
+| --- | --- | --- |
+| `data-cf-role` | header, footer, a.skip-link | `template-chrome` (only) — lines 289, 290, 297 |
+| `data-cf-component` | div.flip-card, div.self-check, div.activity-card | `flip-card`, `self-check`, `activity` — lines 345, 374, 487 |
+| `data-cf-purpose` | same | `term-definition`, `formative-assessment`, `practice` — lines 345, 374, 487 |
+| `data-cf-objective-id` | li (in `.objectives`) | LO ID string (`TO-NN`, `CO-NN`, `WNN-CO-NN`) — line 314 |
+| `data-cf-objective-ref` | .self-check, .activity-card | LO ID string — lines 378, 491 |
+| `data-cf-objectives-count` | div.objectives | integer — line 327 |
+| `data-cf-bloom-level` | li, .self-check, .activity-card | 6-Bloom-level enum — lines 316, 375, 488 |
+| `data-cf-bloom-verb` | li | detected verb — line 318 |
+| `data-cf-bloom-range` | h2/h3 | e.g. `understand,apply` — line 427 |
+| `data-cf-cognitive-domain` | li | 4 values `{factual, conceptual, procedural, metacognitive}` — line 320 |
+| `data-cf-content-type` | h2, h3, .callout | content-type enum (above) — lines 423, 452 |
+| `data-cf-key-terms` | h2, h3 | comma-separated kebab-slug terms — line 425 |
+| `data-cf-term` | .flip-card | kebab-slug term — line 346 |
+
+### WCAG 2.2 AA structure
+
+Source: `schemas/compliance/wcag22_compliance.schema.json` (4 principle blocks).
+
+Principles (lines 46, 384, 659, 859):
+1. **Perceivable** — `perceivableRequirements`
+2. **Operable** — `operableRequirements`
+3. **Understandable** — `understandableRequirements`
+4. **Robust** — `robustRequirements`
+
+Explicitly-referenced WCAG 2.2 success criteria (from `description` strings):
+- **2.4.11** Focus Not Obscured (Minimum) — Level A
+- **2.4.12** Focus indicator fully visible — Level AA
+- **2.4.13** Focus Appearance — Level AA (min outline 2 CSS px, contrast ratio ≥3.0)
+- **2.5.7** Dragging Movements — Level AA
+- **2.5.8** Target Size (Minimum) — Level AA (min 24 CSS px)
+- **3.2.6** Consistent Help — Level A
+- **3.3.7** Redundant Entry — Level A
+- **3.3.8** Accessible Authentication (Minimum) — Level AA
+- **3.3.9** Accessible Authentication (Enhanced) — Level AAA
+
+**Testing tools:**
+- Automated: `axe-core, WAVE, Lighthouse, Pa11y, aXe DevTools`
+- Manual: `NVDA, JAWS, VoiceOver, TalkBack, keyboard_testing, color_contrast_analyzer`
+
+### Difficulty
+
+Two different enums exist:
+
+- **Trainforge question-level:** `easy, medium, hard` — `schemas/events/trainforge_decision.schema.json:93`.
+- **LibV2 course-level:** `foundational, intermediate, advanced, mixed` — `schemas/library/catalog_entry.schema.json:48`.
+
+### Course level
+
+Source: `schemas/academic/course_metadata.schema.json:43`.
+```
+undergraduate, graduate, professional, continuing_education
+```
+
+### LibV2 Division / Domain / Subdomain / Topic
+
+Source: `schemas/taxonomies/taxonomy.json`.
+
+**Divisions:** `STEM`, `ARTS`.
+
+**STEM domains (11):**
+`physics, chemistry, biology, mathematics, computer-science, engineering, medicine, environmental-science, data-science, educational-technology`. (Each has 4–10 subdomains; each subdomain has ~4 topics. Full tree in `schemas/taxonomies/taxonomy.json`.)
+
+**ARTS domains (8):**
+`education, design, visual-arts, music, literature, philosophy, history, linguistics`.
+
+Sample leaf path: `STEM → computer-science → algorithms → {sorting, searching, graph-algorithms, dynamic-programming, complexity-theory}`.
+
+### Pedagogy framework (12 tier domains)
+
+Source: `schemas/taxonomies/pedagogy_framework.yaml`.
+```
+ 1. foundational_theories       (Constructivism, Connectivism, Behaviorism, Cognitivism, Cognitive Load Theory)
+ 2. instructional_design        (UbD, ADDIE, SAM, Dick & Carey, Gagne, Merrill)
+ 3. multimedia_learning         (Mayer's principles, Dual coding)
+ 4. assessment_analytics        (Formative, Summative, Competency-based, Authentic, Learning analytics, Psychometrics)
+ 5. engagement_motivation       (Self-Determination, Gamification, Flow, Expectancy-Value, Attention/Engagement)
+ 6. emerging_technologies       (AI in education, Immersive learning, Microlearning, LXPs)
+ 7. social_learning             (Community of Inquiry, Peer learning, Online discussion, Social learning theory)
+ 8. hybrid_blended              (Blended models, Online course design)
+ 9. accessibility_udl           (UDL, Accessibility standards, Inclusive design)
+10. quality_standards           (OSCQR, Quality Matters, Course evaluation)
+11. learning_objectives         (Bloom's taxonomy, Writing objectives, Constructive alignment)
+12. professional_development    (Digital literacy, Evidence-based practice, Faculty development)
+```
+Coverage thresholds (`thresholds:`): `excellent=0.8, good=0.6, partial=0.4, minimal=0.2`.
+
+### LO `extractionSource` enum
+
+Source: `schemas/academic/learning_objectives.schema.json:234`.
+```
+explicit, definition, concept, procedure, example, summary, inferred
+```
+
+### LO `assessmentSuggestions` enum
+
+Source: `schemas/academic/learning_objectives.schema.json:223` (9 values).
+```
+exam, quiz, assignment, project, discussion, presentation, portfolio, demonstration, case_study
+```
+
+Courseforge's code-side per-Bloom map (`generate_course.py:533-540`) emits a narrower subset into page JSON-LD: `multiple_choice, true_false, fill_in_blank, short_answer, essay`.
+
+### Edge-type enum
+
+Source: `schemas/knowledge/concept_graph_semantic.schema.json:45`.
+```
+prerequisite, is-a, related-to
+```
+**Precedence on (source, target) collisions** (`Trainforge/rag/typed_edge_inference.py:48-52`): `is-a (3) > prerequisite (2) > related-to (1)`.
+
+### Inference rule names
+
+Source: `Trainforge/rag/inference_rules/*.py`:
+- `is_a_from_key_terms` (version 1) — `is_a_from_key_terms.py:26-27`
+- `prerequisite_from_lo_order` (version 1) — `prerequisite_from_lo_order.py:19-20`
+- `related_from_cooccurrence` (version 1) — `related_from_cooccurrence.py:21-22`
+- LLM escalation path (OFF by default) for "uncertain" pairs — `typed_edge_inference.py:15-24`.
+
+### Validation status enum
+
+Source: `schemas/library/catalog_entry.schema.json:55`, `schemas/library/course_manifest.schema.json:178`.
+```
+pending, validated, failed
+```
+
+### LibV2 ontology mapping types
+
+Source: `schemas/library/course_manifest.schema.json:86-116`.
+- **ACM CCS entry**: `{code, term, relevance ∈ [0, 1000]}`.
+- **LCSH entry**: `{uri, term, type ∈ {primary, related, broader, narrower}}`.
+
+### `audit_event.schema.json` enums
+
+Source: lines 30-42, plus details oneOf variants.
+
+**`event_type`:** `file_access, tool_invocation, state_change, decision_event, workflow_event, validation_event, error, security_event`.
+**`file_access_details.operation`:** `read, write, delete, create, list`.
+**`state_change_details.change_type`:** `create, update, delete, lock, unlock`.
+**`workflow_event_details.event_subtype`:** `start, phase_start, phase_complete, task_dispatch, task_complete, complete, failed, aborted`.
+**`security_event_details.security_event_type`:** `sandbox_violation, permission_denied, secret_detected, path_traversal_attempt`.
+
+### `decision_event.schema.json` — decision_type enum (40)
+
+Source: `schemas/events/decision_event.schema.json:63-103`.
+```
+approach_selection, strategy_decision, source_selection, source_interpretation,
+textbook_integration, existing_content_usage, content_structure, content_depth,
+content_adaptation, example_selection, pedagogical_strategy, assessment_design,
+bloom_level_assignment, learning_objective_mapping, accessibility_measures,
+format_decision, component_selection, quality_judgment, validation_result,
+error_handling, prompt_response, file_creation, outcome_signal, chunk_selection,
+question_generation, distractor_generation, revision_decision, source_usage,
+alignment_check, structure_detection, heading_assignment, alt_text_generation,
+math_conversion, research_approach, query_decomposition, retrieval_ranking,
+result_fusion, chunk_deduplication, index_strategy
+```
+
+### `decision_event.schema.json` — phase enum (23)
+
+Source: `schemas/events/decision_event.schema.json:53`.
+```
+input-research, exam-research, course-outliner, content-generator, brightspace-packager,
+dart-conversion, dart-validation, trainforge-assessment, validation, content-analysis,
+question-generation, assessment-assembly, courseforge-input-research, courseforge-exam-research,
+courseforge-course-outliner, courseforge-content-generator, courseforge-brightspace-packager,
+trainforge-content-analysis, trainforge-question-generation, trainforge-assessment-assembly,
+trainforge-validation, libv2-retrieval, libv2-indexing, libv2-fusion
+```
+(plus `null` allowed.)
+
+### Workflow type enum
+
+Source: `schemas/events/run_manifest.schema.json:40`.
+```
+course_generation, intake_remediation, batch_dart, rag_training, textbook_to_course
+```
+
+### Session status / tool / quality-level enums
+
+- Tool (`session_annotation.schema.json:18`, `decision_event.schema.json:56`): `dart, courseforge, trainforge, orchestrator`.
+- Session `status` (`session_annotation.schema.json:46`): `running, complete, error, partial, cancelled`.
+- Quality level (`decision_event.schema.json:281`): `exemplary, proficient, developing, inadequate`.
+- Edit distance (`decision_event.schema.json:265`): `none, low, medium, high`.
+
+### Hash algorithms
+
+Source: `lib/provenance.py:19`; `schemas/events/run_manifest.schema.json:99`; `schemas/events/decision_event.schema.json:195,243`.
+```
+sha256 (default), sha512, blake3
+```
+
+---
+
+## § 5 Provenance mechanisms
+
+Five independent surfaces carry provenance. Each surface answers "where did this come from?" for a different artifact class.
+
+### 5.1 Decision ledger (JSONL)
+
+**Surface:** append-only JSONL files under `training-captures/<tool>/<course>/phase_<phase>/decisions_*.jsonl`.
+**Producer:** `lib/decision_capture.py::DecisionCapture` (line 139; `log_decision` at line 441).
+**Contract:** `schemas/events/decision_event.schema.json` (+ `trainforge_decision.schema.json`).
+**Key fields for provenance:** `event_id`, `seq`, `run_id`, `task_id`, `inputs_ref[]` (InputRef), `outputs[]` (OutputArtifact), `prompt_ref`.
+
+Every captured decision carries a `rationale ≥ 20 chars` (schema-enforced `minLength`) plus optional `alternatives_considered[]`.
+
+### 5.2 Edge provenance
+
+**Surface:** on every `TypedEdge` emitted by the concept-graph orchestrator.
+**Producer:** the three inference rules (see § 4).
+**Contract:** `schemas/knowledge/concept_graph_semantic.schema.json#/properties/edges/items/properties/provenance` — required `{rule, rule_version}`, optional `evidence` (arbitrary dict; e.g. for `is_a_from_key_terms`, `{container, member}`).
+
+Document-level `rule_versions` object maps rule name → integer version (`concept_graph_semantic.schema.json:18-21`).
+
+### 5.3 Chunk source provenance
+
+**Surface:** `chunk.source` sub-object (see § 2 Chunk).
+**Producer:** `Trainforge/process_course.py::_create_chunk()` lines 1057-1077.
+**Key fields:** `course_id`, `module_id`, `lesson_id`, `section_heading`, `position_in_module`, optional `html_xpath` + `char_span` (Section 508 / ADA Title II round-trip: Worker E's audit trail), `item_path` (IMSCC-relative).
+
+A downstream diagnostic field `chunk._metadata_trace` (added by Worker M1 at `process_course.py:1219`) records where each enrichment field came from (JSON-LD / data-cf-* / heuristic). This is flagged as a temporary diagnostic in the referenced ADR.
+
+### 5.4 LibV2 course manifest provenance
+
+**Surface:** `CourseManifest.provenance` (`schemas/library/course_manifest.schema.json:196-215`).
+**Producer:** `LibV2/tools/libv2/importer.py`.
+**Fields:** `source_type`, `source_path`, `original_provider`, `import_pipeline_version`.
+In addition, `sourceforge_manifest` at the top level carries `{sourceforge_version, export_timestamp, course_id, course_title}` to link the manifest back to the producing Courseforge run.
+
+### 5.5 Content-hash provenance
+
+**Surface:** cryptographic hashes on files and excerpts.
+**Producer:** `lib/provenance.py` — `hash_file()`, `create_input_ref()`, `create_output_ref()` (InputRef at line 37, OutputRef at line 91).
+**Consumers:** `RunManifest.config_hashes` + `RunManifest.inputs[]` (immutable snapshot at run init); `DecisionEvent.inputs_ref[]` / `.outputs[]`; `AuditEvent.details.content_hash`.
+
+Every content-hash entry carries `hash_algorithm ∈ {sha256, sha512, blake3}` (default sha256).
+
+### Overlap table — which surface carries which fields
+
+| Field | Decision ledger | Edge provenance | Chunk source | Manifest provenance | Content-hash |
+|---|---|---|---|---|---|
+| `run_id`          | yes | — | — | (via import run) | yes (RunManifest) |
+| `rule` + version  | — | yes | — | — | — |
+| `rule_versions` map | — | (document-level) | — | — | — |
+| `html_xpath` + `char_span` | — | — | yes | — | — |
+| `content_hash`    | yes (inputs_ref/outputs) | — | — | — | yes |
+| `source_type`     | yes (inputs_ref) | — | (resource_type) | yes (provenance) | — |
+| `import_pipeline_version` | — | — | — | yes | — |
+| `prev_hash` / chain | — | — | — | — | yes (HashChainedEvent) |
+| `alternatives_considered` | yes | — | — | — | — |
+| `operator` / `git_commit` | — | — | — | — | yes (RunManifest) |
+
+---
+
+## § 6 Serialization surfaces
+
+Five distinct serializations carry this ontology into bytes on disk. They are not interchangeable — each has a different audience.
+
+### 6.1 JSON-LD emit (Courseforge Page metadata)
+
+Emit site: `Courseforge/scripts/generate_course.py:263-279` (injects `<script type="application/ld+json">` into `<head>`); dict builder at `:571-595`.
+
+Shape (trimmed):
+```json
+{
+  "@context": "https://ed4all.dev/ns/courseforge/v1",
+  "@type": "CourseModule",
+  "courseCode": "WCAG_201",
+  "weekNumber": 1,
+  "moduleType": "content",
+  "pageId": "week_01_content_01_intro",
+  "learningObjectives": [
+    {"id": "TO-01", "statement": "...", "bloomLevel": "understand",
+     "bloomVerb": "explain", "cognitiveDomain": "conceptual",
+     "keyConcepts": ["wcag", "aa"],
+     "assessmentSuggestions": ["multiple_choice", "short_answer", "fill_in_blank"],
+     "prerequisiteObjectives": ["TO-00"]}
+  ],
+  "sections": [
+    {"heading": "WCAG 2.2 AA basics", "contentType": "definition",
+     "keyTerms": [{"term": "perceivable", "definition": "..."}],
+     "bloomRange": ["understand", "apply"]}
+  ],
+  "misconceptions": [{"misconception": "...", "correction": "..."}],
+  "suggestedAssessmentTypes": ["multiple_choice", "true_false"]
+}
+```
+
+Consumer: `Trainforge/process_course.py::_extract_section_metadata` (priority chain documented in `Trainforge/CLAUDE.md` metadata-extraction section: JSON-LD > `data-cf-*` > regex heuristic).
+
+### 6.2 `data-cf-*` attribute vocabulary
+
+See the full table in § 4. Emit sites: `Courseforge/scripts/generate_course.py` (`_render_objectives`, `_render_flip_cards`, `_render_self_check`, `_render_activities`, `_render_content_sections`). Consumer: `Trainforge/parsers/html_content_parser.py` extracts these attributes during chunk alignment; `_CHROME_TAGS` skip filter (`html_content_parser.py:140`) drops `data-cf-role="template-chrome"` subtrees so navigation headers/footers don't pollute chunks.
+
+### 6.3 JSON Schema (draft-07) files
+
+16 files across `schemas/`, loaded via `lib/validation.py:104` (`SCHEMAS_DIR.rglob("*.json")`). Full index in § 10.
+
+Sizes (lines):
+
+| Subfolder | Files | Total lines |
+|---|---|---|
+| academic/ | 3 | 1,395 |
+| compliance/ | 1 | 1,131 |
+| events/ | 6 | 1,108 |
+| knowledge/ | 3 | 214 |
+| library/ | 2 | 276 |
+| taxonomies/ | 2 | 1,339 (json+yaml) |
+
+### 6.4 Python dataclasses
+
+| Dataclass | Location | Purpose |
+|---|---|---|
+| `Chunk` (dict shape; no dataclass yet) | `Trainforge/process_course.py:1079-1092` | unit of retrieval |
+| `Question` | `Trainforge/generators/question_factory.py:36` | factory-side question |
+| `QuestionChoice` | `question_factory.py:28` | choice option |
+| `QuestionData` | `Trainforge/generators/assessment_generator.py:81` | generator-side question |
+| `AssessmentData` | `assessment_generator.py:112` | assessment bundle |
+| `InputRef` | `lib/provenance.py:37` | provenance input pointer |
+| `OutputRef` | `lib/provenance.py:91` | provenance output pointer |
+| `ByteRange` | `lib/provenance.py:27` | byte range within a file |
+| `FsckIssue` / `FsckResult` | `lib/libv2_fsck.py:23,46` | fsck reporting |
+
+### 6.5 JSONL ledger format
+
+Append-only newline-delimited JSON files — one record per decision event. Example paths:
+```
+training-captures/courseforge/INT_101/phase_content-generator/decisions_20260419_101530.jsonl
+training-captures/trainforge/WCAG_201/phase_question-generation/decisions_20260419_101530.jsonl
+training-captures/dart/MTH_101/decisions_textbook.pdf_20260419_101530.jsonl
+```
+
+Hash-chained variant (`HashChainedEvent`) wraps each record with `{seq, prev_hash, event_hash, timestamp, event}` to make the ledger tamper-evident. `lib/hash_chain.py` is the writer; `lib/replay_engine.py` verifies chains on read.
+
+---
+
+## § 7 Identity & IDs
+
+Every identifier scheme currently in use.
+
+| ID type | Regex / pattern | Example | Generator |
+|---|---|---|---|
+| LibV2 course slug | `^[a-z0-9][a-z0-9-]*[a-z0-9]$`, 3–100 chars | `wcag-22-aa-compliance` | `LibV2/tools/libv2/importer.py:28` (`slugify`) |
+| Slug-uniqueness | suffix `-<N>` where N ≥ 2 | `wcag-22-aa-compliance-2` | `importer.py:49` (`ensure_unique_slug`) |
+| Course code | `^[A-Z]{2,8}_[0-9]{3}$` (decision event), `^[A-Z]{2,3}_[0-9]{3}$` (session annotation — narrower) | `WCAG_201`, `INT_101` | Hand-assigned |
+| LO ID — terminal | `TO-NN` | `TO-05` | Course-outliner agent |
+| LO ID — chapter | `CO-NN` | `CO-03` | Objective-synthesizer |
+| LO ID — week-scoped (legacy) | `WNN-CO-NN` | `W03-CO-01` | Deprecated in favor of canonical CO-NN; week-prefix normalization at `generate_course.py:605-613` |
+| Module ID | `^[A-Z]{2,8}_[0-9]{3}_W[0-9]{2}_M[0-9]{2}$` | `WCAG_201_W01_M02` | Course-outliner |
+| Chunk ID | `^<course>_chunk_\d{5}$` | `wcag_201_chunk_00042` | `Trainforge/process_course.py:790` (`prefix = f"{self.course_code.lower()}_chunk_"`; `f"{prefix}{i:05d}"` at 1003, 1027) |
+| Concept tag | kebab-case normalized slug | `cognitive-load-theory` | `process_course.py::normalize_tag` |
+| Misconception ID | `<chunk_id>_mc_<NN>_<hash>` | `wcag_201_chunk_00042_mc_01_a3f8` | `preference_factory.py:140-143` |
+| Event ID | `^EVT_[a-f0-9]{16}$` | `EVT_a3f8c1d2e4b5f6a7` | `lib/decision_capture.py:46-59` (fallback); `lib/sequence_manager.py` (primary) |
+| Task ID | `^T-[a-f0-9]{8}$` | `T-a3f8c1d2` | Orchestrator executor |
+| Run ID (tool-scoped) | `{TOOL}_{COURSE}_{YYYYMMDD_HHMMSS}` (free text; `^[A-Za-z0-9_]+$` on audit event) | `trainforge_wcag_201_20260419_101530` | `lib/run_manager.py` |
+| Run ID (hardened) | `^RUN_[0-9]{8}_[0-9]{6}_[a-f0-9]{8}$` | `RUN_20260419_101530_a3f8c1d2` | `lib/run_manager.py` (hardened mode) |
+| Content hash | 64-hex for SHA-256; also `sha256:<hex>` prefix form in run manifest | `sha256:a3f8…` | `lib/provenance.py::hash_file` |
+| Git commit | 40-hex | (40 hex chars) | run-manifest capture |
+| Session ID | free-string | (tool-specific) | `lib/run_finalizer.py` |
+
+No IRIs are minted yet. JSON-LD `@context` points at `https://ed4all.dev/ns/courseforge/v1` (non-resolvable at time of writing). LibV2 JSON Schemas use `$id: https://libv2.local/schema/<name>.schema.json`; project-root schemas use `urn:ed4all:schemas:<name>` or `https://ed4all.dev/schemas/…` depending on file age.
+
+---
+
+## § 8 Constraint inventory
+
+Where the ontology is actually enforced.
+
+### 8.1 JSON Schema constraints
+
+Per-file counts of constraint keywords (approximate, grep-based):
+
+| File | `required` blocks | enums | patterns / formats | min/max | Notable |
+|---|---|---|---|---|---|
+| `academic/course_metadata.schema.json` | many | `courseLevel` 4, `grade` 10, `unit` 4, `format` 4, `pacing` 3, many more | `courseNumber` pattern, ISBN pattern, `version` semver pattern | credit 0–20, duration 1–52, `learningOutcomes` 3–12, rationale counts | MIT OCW shape |
+| `academic/learning_objectives.schema.json` | LO required {objectiveId, statement, bloomLevel} | 6-Bloom, 9-assessment, 7-extractionSource | chapterId `^ch[0-9]+$`, sectionId `^ch[0-9]+_s[0-9]+$` | courseObjectives 3–15, statement ≥10 | |
+| `academic/textbook_structure.schema.json` | `documentInfo` {title, sourcePath, sourceFormat} | 3-sourceFormat, 14-blockType, 4-sourceType (explicit objectives), 4-emphasisType | level 1–6 | | |
+| `compliance/wcag22_compliance.schema.json` | `complianceLevel.standard` | 3-standard, 5-automated, 6-manual, 4-labelAssociation, many booleans | focusAppearance contrast ≥3.0, minOutlineWidth ≥2, targetSize ≥24 | | 1131 lines total |
+| `events/decision_event.schema.json` | run_id, timestamp, operation, decision_type, decision, rationale | 40-decision_type, 23-phase, 8-source_type, 4-hash_algorithm, 3-edit_distance, 4-quality_level, 4-tool | event_id, module_id, course_id, task_id, content_hash patterns | rationale ≥20, confidence 0–1 | rationale minLength is the headline gate |
+| `events/trainforge_decision.schema.json` | imscc_source | 6-bloom, 8-question_type, 3-difficulty | | `lo_coverage_score` 0–1 etc. | allOf ref to decision_event |
+| `events/audit_event.schema.json` | run_id, event_id, seq, timestamp, event_type | 8-event_type, 5-file_op, 5-state_change, 8-workflow_subtype, 4-security_type | event_id `^EVT_…`, content_hash, run_id alphanumeric | seq ≥0 | `additionalProperties: false` at root |
+| `events/hash_chained_event.schema.json` | seq, prev_hash, event_hash, timestamp, event | — | `prev_hash = "genesis"` OR 64-hex; `event_hash` 64-hex | seq ≥0 | tamper-evident |
+| `events/run_manifest.schema.json` | run_id, created_at, workflow_type, config_hashes, immutable | 5-workflow_type, 3-hash_algorithm | run_id `^RUN_…`, git_commit 40-hex, content_hash 64-hex | `immutable const: true` | |
+| `events/session_annotation.schema.json` | session_id, run_id, tool, started_at, status | 4-tool, 5-status, 4-quality_level | course_id `^[A-Z]{2,3}_[0-9]{3}$` | validation_pass_rate 0–1 etc. | |
+| `knowledge/concept_graph_semantic.schema.json` | kind, generated_at, nodes, edges; edge {source,target,type,provenance}; provenance {rule, rule_version} | 3-edge-type | kind const `concept_semantic`; rule_version ≥1 | confidence 0–1 | |
+| `knowledge/instruction_pair.schema.json` | prompt, completion, chunk_id, lo_refs, bloom_level, content_type, seed, decision_capture_id | 6-bloom, 2-provider | schema_version const `"v1"` | prompt 40–400, completion 50–600, lo_refs ≥1 item, content_type ≥1 char | |
+| `knowledge/preference_pair.schema.json` | prompt, chosen, rejected, chunk_id, lo_refs, seed, decision_capture_id | 2-rejected_source, 2-provider | `misconception_id` nullable | same length bounds as above | token-Jaccard δ ≥ 0.3 asserted in test-time, not schema |
+| `library/catalog_entry.schema.json` | slug, title, division, primary_domain | 2-division, 4-difficulty_primary, 3-validation_status | | chunk_count ≥0 etc. | |
+| `library/course_manifest.schema.json` | libv2_version, slug, import_timestamp, sourceforge_manifest {…}, classification {division, primary_domain}, content_profile {total_chunks, total_tokens} | 2-division, 4-LCSH relation type | slug pattern, libv2_version semver, language `^[a-z]{2}$` | slug 3–100 chars, ACM relevance 0–1000, 0–1 quality scores | |
+
+### 8.2 Runtime validators (9 files in `lib/validators/`)
+
+| File | Class | Gate behavior |
+|---|---|---|
+| `assessment.py` | `AssessmentQualityValidator` | assessment-level quality gate (`gate_id: assessment_quality`) |
+| `bloom.py` | `BloomAlignmentValidator` + `detect_bloom_level` helper | detects Bloom level from question stem; validates alignment (`gate_id: bloom_alignment`) |
+| `content.py` | `ContentStructureValidator` | HTML structure for course modules (`gate_id: content_structure`) |
+| `content_facts.py` | `ContentFactValidator` (+ `FactFlag`) | text factual-accuracy scanning — **warning-only** (§4.6) |
+| `imscc.py` | `IMSCCValidator` | IMSCC package structure (`gate_id: imscc_structure`) |
+| `leak_check.py` | `LeakCheckValidator` (wraps `lib.leak_checker.LeakChecker`) | answer-key leak detection (`gate_id: leak_check`) |
+| `oscqr.py` | `OSCQRValidator` | OSCQR rubric score (`gate_id: oscqr_score`) |
+| `question_quality.py` | `QuestionQualityValidator` | per-question quality (`gate_id: question_quality`) plus stop-word / Jaccard helpers |
+| `__init__.py` | package init | exposes validators |
+
+### 8.3 Validation gates (workflow → gate → validator)
+
+From root `/CLAUDE.md` § Active Gates:
+
+| Workflow | Gate | Validator |
+|---|---|---|
+| `course_generation` | `content_structure` | `ContentStructureValidator` |
+| `course_generation` | `imscc_structure` | `IMSCCValidator` |
+| `course_generation` | `wcag_compliance` | `WCAGValidator` |
+| `course_generation` | `oscqr_score` | `OSCQRValidator` |
+| `batch_dart` | `wcag_aa_compliance` | `WCAGValidator` |
+| `rag_training` | `assessment_quality` | `AssessmentQualityValidator` |
+| `rag_training` | `bloom_alignment` | `BloomAlignmentValidator` |
+| `rag_training` | `leak_check` | `LeakChecker` |
+
+Severity behavior (`critical | warning`), block/warn on fail, fail-closed vs warn on error. Defined in workflow config (`config/workflows.yaml`).
+
+### 8.4 Test-time assertions
+
+- `Trainforge/tests/test_generator_defects.py:272` — asserts `metrics_semantic_version == METRICS_SEMANTIC_VERSION` (current value 5).
+- Preference-pair token-Jaccard δ ≥ 0.3 between `chosen` and `rejected` (not schema-enforced; asserted in generator + tests).
+- Instruction-pair verbatim-span check: prompt/completion must not contain ≥50-char substring of source chunk (schema description at `schemas/knowledge/instruction_pair.schema.json:23`; enforced in `Trainforge/generators/instruction_factory.py`).
+
+### 8.5 LibV2 fsck checks
+
+Source: `lib/libv2_fsck.py:103` (`check_all`).
+
+- `_check_blobs` (line 146) — every blob's SHA-256 hash matches its filename.
+- `_check_catalog` (line 188) — catalog `course_index.json` consistency.
+- `_check_runs` (line 240) — every `runs/*/` has a valid `run_manifest.json`.
+- `_check_symlinks` (line 127) — symlinks resolve.
+- `_check_orphans` (line 130) — detects files not referenced by any index.
+- Cross-package concept index staleness (Worker G) (line 132).
+
+---
+
+## § 9 Versioning
+
+Every version counter currently in use:
+
+| Counter | Current value | Location |
+|---|---|---|
+| `CHUNK_SCHEMA_VERSION` | `"v4"` | `Trainforge/process_course.py:86`; written to every chunk `schema_version` field (line 1081) and quality report (lines 1749, 1779) |
+| `METRICS_SEMANTIC_VERSION` | `5` | `Trainforge/process_course.py:74` (Worker P bumped 4→5 for `package_completeness`) |
+| Inference `RULE_VERSION` | `1` (each) | `Trainforge/rag/inference_rules/*.py` — per-rule integer; on each edge as `provenance.rule_version` |
+| `rule_versions` object | `{rule_name: int ≥1}` | `schemas/knowledge/concept_graph_semantic.schema.json:17-21` — document-level map |
+| `schema_version` (decision event) | free string; defaults vary | `lib/decision_capture.py` sets `decision_event` default |
+| `schema_version` (RunManifest) | `"1.0.0"` default | `schemas/events/run_manifest.schema.json:114` |
+| `schema_version` (InstructionPair / PreferencePair) | const `"v1"` | `schemas/knowledge/{instruction,preference}_pair.schema.json` |
+| `metadata.version` (Course) | semver `^\d+\.\d+\.\d+$` | `schemas/academic/course_metadata.schema.json:714` |
+| `libv2_version` (CourseManifest) | semver `^\d+\.\d+\.\d+$` | `schemas/library/course_manifest.schema.json:11` |
+| `toolVersion` (LearningObjectives document) | semver | `schemas/academic/learning_objectives.schema.json:37` |
+| Schema title `version` fields | `"1.0.0"` / `"2.0.0"` (WCAG) | top-of-schema JSON comments |
+
+---
+
+## § 10 Schema file index
+
+Complete `/schemas/` tree: 16 files across 6 subfolders.
+
+| Path | Classes defined | Description |
+|---|---|---|
+| `schemas/academic/course_metadata.schema.json` | Course, Module | Full academic course metadata (MIT OCW shape) |
+| `schemas/academic/learning_objectives.schema.json` | LearningObjective | Extracted LO hierarchy (course/chapter/section/subsection) |
+| `schemas/academic/textbook_structure.schema.json` | Section, ContentBlock, TOC entry, key-term / definition / procedure / example records | DART-processed textbook semantic structure |
+| `schemas/compliance/wcag22_compliance.schema.json` | WCAGCompliance | WCAG 2.2 AA requirements (4 principles + SC codes) |
+| `schemas/events/decision_event.schema.json` | DecisionEvent | Base Claude-decision ledger record |
+| `schemas/events/trainforge_decision.schema.json` | TrainforgeDecisionEvent | Decision ledger + assessment/rag/alignment context (allOf) |
+| `schemas/events/audit_event.schema.json` | AuditEvent | Unified audit event w/ event-type-keyed details |
+| `schemas/events/hash_chained_event.schema.json` | HashChainedEvent | Tamper-evident hash chain wrapper |
+| `schemas/events/session_annotation.schema.json` | SessionAnnotation | Aggregated session summary across decisions |
+| `schemas/events/run_manifest.schema.json` | RunManifest | Immutable run initialization snapshot |
+| `schemas/knowledge/concept_graph_semantic.schema.json` | Concept, TypedEdge, rule_versions | Typed-edge concept graph (is-a / prerequisite / related-to) |
+| `schemas/knowledge/instruction_pair.schema.json` | InstructionPair | SFT training pair (prompt/completion) |
+| `schemas/knowledge/preference_pair.schema.json` | PreferencePair | DPO training pair (chosen/rejected) |
+| `schemas/library/catalog_entry.schema.json` | CatalogEntry | LibV2 master-catalog row |
+| `schemas/library/course_manifest.schema.json` | CourseManifest | LibV2 extended course metadata |
+| `schemas/taxonomies/taxonomy.json` | (STEM/ARTS data; not a schema) | Division/domain/subdomain/topic hierarchy |
+| `schemas/taxonomies/pedagogy_framework.yaml` | (pedagogy framework data) | 12-tier pedagogy gap-analysis framework |
+
+Tool-local schemas (NOT under `/schemas/`):
+
+| Path | Classes defined |
+|---|---|
+| `Courseforge/schemas/content-display/accordion-schema.json` | Accordion |
+| `Courseforge/schemas/content-display/content-display-schema.json` | ContentDisplay |
+| `Courseforge/schemas/content-display/enhanced-content-display-schema.json` | EnhancedContentDisplay |
+| `Courseforge/schemas/content-display/page-title-standards.json` | PageTitleStandards |
+| `Courseforge/schemas/layouts/course_card_schema.json` | CourseCard |
+| `Courseforge/schemas/template-integration/educational_template_schema.json` | EducationalTemplate |
+| `Courseforge/schemas/framework-migration/bootstrap5_migration_schema.json` | Bootstrap5Migration |
+
+---
+
+## § 11 Code pointers
+
+Exact file:line anchors to key emit/consume sites. Grep-verified against the tree at snapshot time.
+
+### Emit — Courseforge
+
+- **Page JSON-LD injection:** `Courseforge/scripts/generate_course.py:273-279` (wraps dict from `_build_page_metadata`).
+- **`_build_page_metadata`:** `Courseforge/scripts/generate_course.py:571-595`.
+- **`_build_objectives_metadata`:** `Courseforge/scripts/generate_course.py:512-546`.
+- **`_build_sections_metadata`:** `Courseforge/scripts/generate_course.py:549-568`.
+- **`_render_objectives`** (data-cf-objective-id + data-cf-bloom-level/verb/cognitive-domain): `generate_course.py:305-333`.
+- **`_render_flip_cards`** (data-cf-component=flip-card): `generate_course.py:336-352`.
+- **`_render_self_check`** (data-cf-component=self-check + objective-ref): `generate_course.py:355-385`.
+- **`_render_content_sections`** (data-cf-content-type + key-terms + bloom-range + application-note callout): `generate_course.py:408-477`.
+- **`_render_activities`** (data-cf-component=activity): `generate_course.py:480-497`.
+- **Template-chrome tags:** `generate_course.py:289, 290, 297` (`data-cf-role="template-chrome"` on skip-link, header, footer).
+- **`BLOOM_VERBS` / `BLOOM_TO_DOMAIN` / `detect_bloom_level`:** `generate_course.py:136-166`.
+- **`generate_week` (5-page emit):** `generate_course.py:598-738`.
+
+### Consume — Trainforge
+
+- **`_chunk_content`:** `Trainforge/process_course.py:787` — builds prefix, iterates parsed items.
+- **`_chunk_text_block`:** `Trainforge/process_course.py:932`.
+- **`_create_chunk`:** `Trainforge/process_course.py:1038` — full chunk shape (lines 1079-1092) + audit-trail source (1067-1077).
+- **`CHUNK_SCHEMA_VERSION`:** `Trainforge/process_course.py:86`.
+- **`METRICS_SEMANTIC_VERSION`:** `Trainforge/process_course.py:74`.
+- **`_metadata_trace` (Worker M1 diagnostic):** `Trainforge/process_course.py:1219`.
+- **Metadata extraction priority chain (JSON-LD → data-cf-* → heuristic):** `Trainforge/process_course.py:1099-1130` (`_extract_section_metadata`).
+- **Typed-edge orchestrator:** `Trainforge/rag/typed_edge_inference.py:1-24` (module docstring), precedence at lines 48-52, collision dedupe at 71-100.
+- **Inference rule: is-a from key terms:** `Trainforge/rag/inference_rules/is_a_from_key_terms.py:26-27` (name + version), emit at lines 155-165.
+- **Inference rule: prerequisite from LO order:** `Trainforge/rag/inference_rules/prerequisite_from_lo_order.py:19-20`, emit at 140-150.
+- **Inference rule: related from co-occurrence:** `Trainforge/rag/inference_rules/related_from_cooccurrence.py:21-22`, emit at 70-80.
+- **Template-chrome skip filter:** `Trainforge/parsers/html_content_parser.py:64, 78, 84, 102, 109, 138, 140` (`_CHROME_TAGS = {"header","footer","a","div","nav","aside"}`).
+
+### Question generation
+
+- **`BLOOM_QUESTION_MAP`:** `Trainforge/generators/question_factory.py:91-98`.
+- **`VALID_TYPES` (7-value factory enum):** `question_factory.py:81-89`.
+- **`QuestionChoice` / `Question` dataclasses:** `question_factory.py:28, 36`.
+- **`QuestionData` / `AssessmentData` dataclasses:** `Trainforge/generators/assessment_generator.py:81, 112`.
+- **Misconception ID generator:** `Trainforge/generators/preference_factory.py:140-143`.
+
+### Provenance + ledger
+
+- **`DecisionCapture`:** `lib/decision_capture.py:139`; `log_decision` at line 441; legacy output dir at line 187.
+- **`InputRef` / `OutputRef` / `ByteRange`:** `lib/provenance.py:27, 37, 91`; hash-algorithm constants at line 19.
+- **Hash chain:** `lib/hash_chain.py` (writer); `lib/replay_engine.py` (verifier).
+- **Schema resolver constants:** `lib/validation.py:24-26` (`DECISION_SCHEMA_PATH`, `TRAINFORGE_SCHEMA_PATH`, `SESSION_SCHEMA_PATH`); recursive discovery at `:104`.
+- **`SCHEMAS_DIR`:** `lib/path_constants.py:87`.
+
+### LibV2
+
+- **Slugify:** `LibV2/tools/libv2/importer.py:28` (`slugify`) and `:49` (`ensure_unique_slug`).
+- **File checksum (sha256 w/ prefix):** `LibV2/tools/libv2/importer.py:71-77`.
+- **fsck entry:** `lib/libv2_fsck.py:103` (`check_all`); sub-checks at lines 146, 188, 240, 127, 130, 132.
