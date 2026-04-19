@@ -31,9 +31,7 @@ Ed4All/
 ├── LibV2/                   # Course content repository
 │   ├── courses/             # Educational content storage
 │   ├── catalog/             # Derived indexes
-│   ├── tools/               # CLI & retrieval engine
-│   ├── ontology/            # Taxonomy & pedagogy models
-│   └── schema/              # Catalog & manifest schemas
+│   └── tools/               # CLI & retrieval engine
 ├── MCP/
 │   ├── server.py            # FastMCP server (core file tools)
 │   ├── tools/               # Domain tool modules

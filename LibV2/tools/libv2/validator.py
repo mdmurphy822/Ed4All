@@ -43,9 +43,30 @@ class ValidationResult:
         self.warnings.extend(other.warnings)
 
 
+def _resolve_project_schemas_dir(repo_root: Path) -> Path:
+    """Resolve the project-root /schemas/ directory from an arbitrary repo_root.
+
+    Schemas and ontology previously lived under ``LibV2/schema/`` and
+    ``LibV2/ontology/``; they are now unified under ``<project-root>/schemas/``.
+    This helper resolves that location regardless of whether the caller
+    supplied a LibV2 directory or the project root as ``repo_root``.
+    """
+    try:
+        from lib.paths import SCHEMAS_PATH  # type: ignore
+        if SCHEMAS_PATH.exists():
+            return SCHEMAS_PATH
+    except Exception:
+        pass
+    # If repo_root looks like LibV2 (has courses/), project root is its parent
+    if (repo_root / "courses").exists() and (repo_root.parent / "schemas").exists():
+        return repo_root.parent / "schemas"
+    # Fallback: assume repo_root IS the project root
+    return repo_root / "schemas"
+
+
 def load_schema(repo_root: Path, schema_name: str) -> Optional[dict]:
-    """Load a JSON schema from the schema directory."""
-    schema_path = repo_root / "schema" / schema_name
+    """Load a JSON schema from the project-root schemas/library directory."""
+    schema_path = _resolve_project_schemas_dir(repo_root) / "library" / schema_name
     if schema_path.exists():
         with open(schema_path) as f:
             return json.load(f)
@@ -177,8 +198,8 @@ def validate_taxonomy_compliance(course_dir: Path, repo_root: Path) -> Validatio
     """Validate that course classification uses valid taxonomy terms."""
     result = ValidationResult(valid=True)
 
-    # Load taxonomy
-    taxonomy_path = repo_root / "ontology" / "taxonomy.json"
+    # Load taxonomy (now lives under <project-root>/schemas/taxonomies/)
+    taxonomy_path = _resolve_project_schemas_dir(repo_root) / "taxonomies" / "taxonomy.json"
     if not taxonomy_path.exists():
         result.add_warning("taxonomy.json not found, skipping taxonomy validation")
         return result
