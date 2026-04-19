@@ -74,6 +74,15 @@ workflows:
               on_fail: block
               on_error: fail_closed
 
+          - gate_id: page_objectives
+            validator: lib.validators.page_objectives.PageObjectivesValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
       - name: validation
         agents: [oscqr-course-evaluator, quality-assurance]
         parallel: true
@@ -450,6 +459,15 @@ workflows:
             behavior:
               on_fail: warn
               on_error: warn
+
+          - gate_id: page_objectives
+            validator: lib.validators.page_objectives.PageObjectivesValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
 
       - name: trainforge_assessment
         agents: [assessment-generator]
