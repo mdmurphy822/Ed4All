@@ -216,8 +216,21 @@ def package_imscc(
 
     manifest_xml = build_manifest(content_dir, course_code, course_title)
 
+    stub_included = False
+
     with zipfile.ZipFile(output_path, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("imsmanifest.xml", manifest_xml)
+
+        # REC-TAX-01 cleanup (Wave 3, Worker M): bundle Worker J's
+        # course_metadata.json classification stub at the zip root when
+        # present. Trainforge consume already supports both zip-root and
+        # sibling paths, but zip-root is the canonical self-contained
+        # delivery — this closes the Wave 2 integration gap. Additive
+        # only; absence is a no-op for backward-compat.
+        stub_path = content_dir / "course_metadata.json"
+        if stub_path.exists():
+            zf.write(stub_path, stub_path.name)
+            stub_included = True
 
         file_count = 0
         for week_dir in sorted(content_dir.glob("week_*")):
@@ -228,7 +241,15 @@ def package_imscc(
                 file_count += 1
 
     print(f"IMSCC created: {output_path}")
-    print(f"  Files: {file_count} HTML + 1 manifest = {file_count + 1} total")
+    if stub_included:
+        total = file_count + 2
+        print(
+            f"  Files: {file_count} HTML + 1 manifest + 1 course_metadata.json "
+            f"= {total} total"
+        )
+    else:
+        total = file_count + 1
+        print(f"  Files: {file_count} HTML + 1 manifest = {total} total")
     print(f"  Size: {output_path.stat().st_size / 1024:.1f} KB")
 
 
