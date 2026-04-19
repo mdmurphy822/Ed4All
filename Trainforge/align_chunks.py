@@ -462,13 +462,77 @@ def _mock_role(chunk: Dict, concept_first_seen: Dict[str, int]) -> str:
     return "introduce"
 
 
+def _deterministic_role(chunk: Dict) -> Tuple[Optional[str], Optional[str]]:
+    """Try to resolve teaching_role deterministically from explicit metadata.
+
+    Precedence:
+      1. ``chunk["teaching_role_attr"]`` — surfaced by
+         ``Trainforge/parsers/html_content_parser.py`` from a
+         ``data-cf-teaching-role`` attribute on a flip-card / self-check /
+         activity element (Courseforge REC-VOC-02 emit path).
+      2. ``chunk["source"]["teaching_role"]`` — when the chunker propagates
+         the parser's per-section role directly onto the chunk's source dict.
+      3. ``chunk["source"]["section_teaching_roles"]`` — JSON-LD-derived
+         section roles, used only when exactly one role is declared
+         (ambiguous multi-value sections fall through).
+
+    Returns ``(role, provenance)`` on success, ``(None, None)`` otherwise.
+    Callers treat ``None`` as "no deterministic signal, continue to
+    heuristic/LLM classifier".
+    """
+    # 1. Explicit per-chunk attribute
+    attr_role = chunk.get("teaching_role_attr")
+    if isinstance(attr_role, str) and attr_role in VALID_ROLES:
+        return attr_role, "attr"
+
+    source = chunk.get("source", {}) or {}
+    if isinstance(source, dict):
+        # 2. Chunker-propagated parser role
+        src_role = source.get("teaching_role")
+        if isinstance(src_role, str) and src_role in VALID_ROLES:
+            return src_role, "source"
+
+        # 3. JSON-LD section roles — unambiguous single-value case only
+        section_roles = source.get("section_teaching_roles") or []
+        if isinstance(section_roles, list) and len(section_roles) == 1:
+            candidate = section_roles[0]
+            if isinstance(candidate, str) and candidate in VALID_ROLES:
+                return candidate, "jsonld"
+
+    return None, None
+
+
 def classify_teaching_roles(
     chunks: List[Dict],
     llm_provider: str = "mock",
     llm_model: str = "claude-haiku-4-5-20251001",
     verbose: bool = False,
 ) -> None:
-    """Mutate chunks in-place to add teaching_role field."""
+    """Mutate chunks in-place to add teaching_role field.
+
+    Precedence (REC-VOC-02, Wave 2):
+      1. Deterministic signal from Courseforge-emitted metadata
+         (``data-cf-teaching-role`` / JSON-LD ``teachingRole``). Skip all
+         downstream classifiers.
+      2. Existing deterministic heuristic (``_heuristic_role``).
+      3. LLM classifier (anthropic) or mock fallback.
+    The LLM path is preserved as-is for legacy IMSCCs that don't carry
+    the deterministic attribute.
+    """
+    # Belt-and-suspenders: catch schema drift against the canonical
+    # teaching_role enum. Soft-imports so standalone Trainforge installs
+    # (without the repo root on sys.path) still work.
+    try:
+        from lib.ontology.teaching_roles import get_valid_roles as _canonical_valid_roles
+        if VALID_ROLES != _canonical_valid_roles():
+            print(
+                "  WARNING: teaching_role schema drift: "
+                f"align_chunks.VALID_ROLES={VALID_ROLES} vs "
+                f"schemas/taxonomies/teaching_role.json={_canonical_valid_roles()}"
+            )
+    except Exception:
+        pass  # standalone install without repo-level lib on sys.path
+
     # Build concept_first_seen for mock/heuristic fallback
     concept_first_seen: Dict[str, int] = {}
     for chunk in chunks:
@@ -477,33 +541,50 @@ def classify_teaching_roles(
             if tag not in concept_first_seen:
                 concept_first_seen[tag] = pos
 
+    deterministic_count = 0
     heuristic_count = 0
     llm_count = 0
     ambiguous_chunks = []
 
     for chunk in chunks:
+        # 1. Deterministic metadata (Courseforge REC-VOC-02 emit path)
+        det_role, det_source = _deterministic_role(chunk)
+        if det_role:
+            chunk["teaching_role"] = det_role
+            chunk["teaching_role_source"] = det_source
+            deterministic_count += 1
+            if verbose:
+                print(f"  {chunk['id']}: role={det_role} (deterministic:{det_source})")
+            continue
+
+        # 2. Existing heuristic
         role = _heuristic_role(chunk)
         if role:
             chunk["teaching_role"] = role
+            chunk["teaching_role_source"] = "heuristic"
             heuristic_count += 1
             if verbose:
                 print(f"  {chunk['id']}: role={role} (heuristic)")
         else:
             ambiguous_chunks.append(chunk)
 
-    # Handle ambiguous chunks
+    # 3. Handle ambiguous chunks via LLM or mock fallback
     if llm_provider == "anthropic" and ambiguous_chunks:
         _classify_with_llm(ambiguous_chunks, concept_first_seen, llm_model, verbose)
+        for chunk in ambiguous_chunks:
+            chunk.setdefault("teaching_role_source", "llm")
         llm_count = len(ambiguous_chunks)
     else:
         # Mock: use heuristic fallback
         for chunk in ambiguous_chunks:
             role = _mock_role(chunk, concept_first_seen)
             chunk["teaching_role"] = role
+            chunk["teaching_role_source"] = "mock"
             if verbose:
                 print(f"  {chunk['id']}: role={role} (mock)")
 
-    print(f"  Teaching roles: {heuristic_count} heuristic, "
+    print(f"  Teaching roles: {deterministic_count} deterministic, "
+          f"{heuristic_count} heuristic, "
           f"{llm_count or len(ambiguous_chunks)} {'LLM' if llm_provider == 'anthropic' else 'mock'}")
 
 
