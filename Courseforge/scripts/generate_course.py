@@ -21,7 +21,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Ensure project root is importable so lib.ontology.bloom resolves when
 # this script is invoked from inside Courseforge/scripts/.
@@ -31,6 +31,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from lib.ontology.bloom import get_verbs_list as _get_canonical_verbs_list  # noqa: E402
 from lib.ontology.taxonomy import validate_classification  # noqa: E402
+from lib.ontology.teaching_roles import map_role as _map_teaching_role  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -339,6 +340,9 @@ def _render_objectives(objectives: List[Dict]) -> str:
 
 def _render_flip_cards(terms: List[Dict]) -> str:
     """Render a grid of flip cards for key terms with data-cf-* metadata."""
+    # REC-VOC-02: deterministic teaching_role from (component, purpose) pair.
+    fc_role = _map_teaching_role("flip-card", "term-definition")
+    fc_role_attr = f' data-cf-teaching-role="{fc_role}"' if fc_role else ""
     cards = []
     for _i, t in enumerate(terms):
         front = html_mod.escape(t["term"])
@@ -346,7 +350,7 @@ def _render_flip_cards(terms: List[Dict]) -> str:
         term_slug = _slugify(t["term"])
         cards.append(f"""
       <div class="flip-card" tabindex="0" role="button" aria-label="Flip card: {front}"
-           data-cf-component="flip-card" data-cf-purpose="term-definition"
+           data-cf-component="flip-card" data-cf-purpose="term-definition"{fc_role_attr}
            data-cf-term="{term_slug}">
         <div class="flip-card-inner">
           <div class="flip-card-front">{front}</div>
@@ -374,8 +378,12 @@ def _render_self_check(questions: List[Dict]) -> str:
         # Build data-cf-* attributes for the self-check
         bloom = q.get("bloom_level", "remember")
         obj_ref = q.get("objective_ref", "")
+        # REC-VOC-02: deterministic teaching_role from (component, purpose) pair.
+        sc_role = _map_teaching_role("self-check", "formative-assessment")
+        sc_role_attr = f' data-cf-teaching-role="{sc_role}"' if sc_role else ""
         sc_attrs = (
             f' data-cf-component="self-check" data-cf-purpose="formative-assessment"'
+            f'{sc_role_attr}'
             f' data-cf-bloom-level="{bloom}"'
         )
         if obj_ref:
@@ -484,11 +492,15 @@ def _render_content_sections(sections: List[Dict]) -> str:
 def _render_activities(activities: List[Dict]) -> str:
     """Render activity cards with data-cf-* metadata."""
     parts = []
+    # REC-VOC-02: deterministic teaching_role from (component, purpose) pair.
+    act_role = _map_teaching_role("activity", "practice")
+    act_role_attr = f' data-cf-teaching-role="{act_role}"' if act_role else ""
     for i, act in enumerate(activities, 1):
         bloom = act.get("bloom_level", "apply")
         obj_ref = act.get("objective_ref", "")
         act_attrs = (
             f' data-cf-component="activity" data-cf-purpose="practice"'
+            f'{act_role_attr}'
             f' data-cf-bloom-level="{bloom}"'
         )
         if obj_ref:
@@ -550,6 +562,37 @@ def _build_objectives_metadata(objectives: List[Dict]) -> List[Dict[str, Any]]:
     return result
 
 
+def _collect_section_roles(section: Dict) -> List[str]:
+    """Collect deterministic teachingRole values for components inside a section.
+
+    Walks the section's flip_cards / self_check / activities children (if
+    present) and maps each (component, purpose) pair via
+    `lib.ontology.teaching_roles.map_role`. Returns a sorted list (stable
+    for diff-friendly JSON-LD output). Empty list when no tagged
+    components are found.
+
+    Sections today commonly carry only ``flip_cards`` inline, but we
+    defensively handle ``self_check`` and ``activities`` so future
+    structural changes don't silently drop role coverage.
+    """
+    roles: Set[str] = set()
+    if section.get("flip_cards"):
+        r = _map_teaching_role("flip-card", "term-definition")
+        if r:
+            roles.add(r)
+    for _q in section.get("self_check", []) or []:
+        r = _map_teaching_role("self-check", "formative-assessment")
+        if r:
+            roles.add(r)
+            break  # one entry is enough to cover the section
+    for _a in section.get("activities", []) or []:
+        r = _map_teaching_role("activity", "practice")
+        if r:
+            roles.add(r)
+            break
+    return sorted(roles)
+
+
 def _build_sections_metadata(sections: List[Dict]) -> List[Dict[str, Any]]:
     """Build structured section metadata for JSON-LD."""
     result = []
@@ -565,6 +608,11 @@ def _build_sections_metadata(sections: List[Dict]) -> List[Dict[str, Any]]:
                 {"term": t["term"], "definition": t["definition"]}
                 for t in section["flip_cards"]
             ]
+        # REC-VOC-02: deterministic teaching_role array collected from
+        # tagged components inside the section (stable, diff-friendly order).
+        teaching_roles = _collect_section_roles(section)
+        if teaching_roles:
+            entry["teachingRole"] = teaching_roles
         bloom_range = section.get("bloom_range")
         if bloom_range:
             entry["bloomRange"] = [bloom_range] if isinstance(bloom_range, str) else bloom_range
