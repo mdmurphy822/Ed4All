@@ -10,9 +10,20 @@ All extracted content is treated equally and mapped to appropriate Bloom's level
 
 import random
 import re
+import sys
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import Dict, List, Optional
+
+# Ensure project root is importable so lib.ontology.bloom resolves when
+# this module is run from inside Courseforge/ (often invoked directly by
+# script name, not as a package).
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from lib.ontology.bloom import get_verb_objects as _get_canonical_verb_objects  # noqa: E402
 
 
 class BloomLevel(Enum):
@@ -51,81 +62,32 @@ class BloomVerb:
     example_template: str  # template for generating objectives
 
 
-# Comprehensive verb mappings with usage contexts
-BLOOM_VERBS: Dict[BloomLevel, List[BloomVerb]] = {
-    BloomLevel.REMEMBER: [
-        BloomVerb("define", BloomLevel.REMEMBER, "terms and concepts", "Define {concept}"),
-        BloomVerb("list", BloomLevel.REMEMBER, "items, steps, or components", "List the {components} of {topic}"),
-        BloomVerb("recall", BloomLevel.REMEMBER, "facts or information", "Recall {fact} about {topic}"),
-        BloomVerb("identify", BloomLevel.REMEMBER, "elements or characteristics", "Identify {element} in {context}"),
-        BloomVerb("name", BloomLevel.REMEMBER, "specific items", "Name the {items} associated with {topic}"),
-        BloomVerb("state", BloomLevel.REMEMBER, "rules or principles", "State the {rule} for {topic}"),
-        BloomVerb("label", BloomLevel.REMEMBER, "diagrams or parts", "Label the {parts} of {diagram}"),
-        BloomVerb("match", BloomLevel.REMEMBER, "terms to definitions", "Match {terms} with their {definitions}"),
-        BloomVerb("recognize", BloomLevel.REMEMBER, "patterns or examples", "Recognize {pattern} in {context}"),
-        BloomVerb("select", BloomLevel.REMEMBER, "correct options", "Select the correct {option} for {question}"),
-    ],
-    BloomLevel.UNDERSTAND: [
-        BloomVerb("explain", BloomLevel.UNDERSTAND, "concepts or processes", "Explain {concept} and its significance"),
-        BloomVerb("describe", BloomLevel.UNDERSTAND, "characteristics or features", "Describe the {features} of {topic}"),
-        BloomVerb("summarize", BloomLevel.UNDERSTAND, "main points", "Summarize the key points of {topic}"),
-        BloomVerb("classify", BloomLevel.UNDERSTAND, "categories", "Classify {items} according to {criteria}"),
-        BloomVerb("compare", BloomLevel.UNDERSTAND, "similarities and differences", "Compare {item1} and {item2}"),
-        BloomVerb("interpret", BloomLevel.UNDERSTAND, "meaning or data", "Interpret the {data} from {source}"),
-        BloomVerb("discuss", BloomLevel.UNDERSTAND, "topics in depth", "Discuss the implications of {topic}"),
-        BloomVerb("paraphrase", BloomLevel.UNDERSTAND, "in own words", "Paraphrase {statement} in your own words"),
-        BloomVerb("distinguish", BloomLevel.UNDERSTAND, "between concepts", "Distinguish between {concept1} and {concept2}"),
-        BloomVerb("illustrate", BloomLevel.UNDERSTAND, "with examples", "Illustrate {concept} with examples"),
-    ],
-    BloomLevel.APPLY: [
-        BloomVerb("apply", BloomLevel.APPLY, "knowledge to situations", "Apply {concept} to {situation}"),
-        BloomVerb("demonstrate", BloomLevel.APPLY, "skills or techniques", "Demonstrate {skill} in {context}"),
-        BloomVerb("implement", BloomLevel.APPLY, "procedures or solutions", "Implement {procedure} for {goal}"),
-        BloomVerb("solve", BloomLevel.APPLY, "problems", "Solve {problem} using {method}"),
-        BloomVerb("use", BloomLevel.APPLY, "tools or methods", "Use {tool} to accomplish {task}"),
-        BloomVerb("execute", BloomLevel.APPLY, "procedures", "Execute {procedure} correctly"),
-        BloomVerb("compute", BloomLevel.APPLY, "calculations", "Compute {value} given {inputs}"),
-        BloomVerb("calculate", BloomLevel.APPLY, "numerical results", "Calculate {result} for {scenario}"),
-        BloomVerb("practice", BloomLevel.APPLY, "skills", "Practice {skill} in {context}"),
-        BloomVerb("perform", BloomLevel.APPLY, "tasks", "Perform {task} according to {standards}"),
-    ],
-    BloomLevel.ANALYZE: [
-        BloomVerb("analyze", BloomLevel.ANALYZE, "components or relationships", "Analyze {topic} to identify {components}"),
-        BloomVerb("differentiate", BloomLevel.ANALYZE, "elements", "Differentiate between {element1} and {element2}"),
-        BloomVerb("examine", BloomLevel.ANALYZE, "in detail", "Examine {topic} to determine {aspect}"),
-        BloomVerb("organize", BloomLevel.ANALYZE, "information", "Organize {information} by {criteria}"),
-        BloomVerb("relate", BloomLevel.ANALYZE, "connections", "Relate {concept1} to {concept2}"),
-        BloomVerb("categorize", BloomLevel.ANALYZE, "into groups", "Categorize {items} based on {features}"),
-        BloomVerb("deconstruct", BloomLevel.ANALYZE, "into parts", "Deconstruct {system} into its components"),
-        BloomVerb("investigate", BloomLevel.ANALYZE, "thoroughly", "Investigate {topic} to understand {aspect}"),
-        BloomVerb("contrast", BloomLevel.ANALYZE, "differences", "Contrast {item1} with {item2}"),
-        BloomVerb("attribute", BloomLevel.ANALYZE, "causes or sources", "Attribute {outcome} to {cause}"),
-    ],
-    BloomLevel.EVALUATE: [
-        BloomVerb("evaluate", BloomLevel.EVALUATE, "based on criteria", "Evaluate {item} against {criteria}"),
-        BloomVerb("assess", BloomLevel.EVALUATE, "quality or performance", "Assess the {quality} of {item}"),
-        BloomVerb("critique", BloomLevel.EVALUATE, "strengths and weaknesses", "Critique {work} identifying strengths and weaknesses"),
-        BloomVerb("justify", BloomLevel.EVALUATE, "decisions", "Justify {decision} based on {evidence}"),
-        BloomVerb("judge", BloomLevel.EVALUATE, "merit", "Judge the {merit} of {approach}"),
-        BloomVerb("argue", BloomLevel.EVALUATE, "positions", "Argue for or against {position}"),
-        BloomVerb("defend", BloomLevel.EVALUATE, "choices", "Defend {choice} with supporting evidence"),
-        BloomVerb("support", BloomLevel.EVALUATE, "claims", "Support {claim} with {evidence}"),
-        BloomVerb("recommend", BloomLevel.EVALUATE, "best options", "Recommend {option} based on {analysis}"),
-        BloomVerb("prioritize", BloomLevel.EVALUATE, "importance", "Prioritize {items} by {criteria}"),
-    ],
-    BloomLevel.CREATE: [
-        BloomVerb("create", BloomLevel.CREATE, "new products", "Create {product} that demonstrates {concept}"),
-        BloomVerb("design", BloomLevel.CREATE, "systems or solutions", "Design {solution} for {problem}"),
-        BloomVerb("construct", BloomLevel.CREATE, "artifacts", "Construct {artifact} using {method}"),
-        BloomVerb("develop", BloomLevel.CREATE, "plans or programs", "Develop {plan} for {goal}"),
-        BloomVerb("formulate", BloomLevel.CREATE, "hypotheses or plans", "Formulate {hypothesis} about {topic}"),
-        BloomVerb("compose", BloomLevel.CREATE, "written works", "Compose {work} addressing {topic}"),
-        BloomVerb("plan", BloomLevel.CREATE, "strategies", "Plan {strategy} to achieve {objective}"),
-        BloomVerb("invent", BloomLevel.CREATE, "new solutions", "Invent {solution} for {challenge}"),
-        BloomVerb("produce", BloomLevel.CREATE, "outputs", "Produce {output} meeting {specifications}"),
-        BloomVerb("generate", BloomLevel.CREATE, "ideas or content", "Generate {ideas} for {purpose}"),
-    ],
-}
+# Comprehensive verb mappings with usage contexts.
+#
+# Source of truth: schemas/taxonomies/bloom_verbs.json (loaded via
+# lib.ontology.bloom). This module's local BloomVerb dataclass carries an
+# extra `level` field that the ontology BloomVerb omits (redundant with the
+# dict key). The builder below bridges the two shapes so downstream imports
+# (see objective_formatter.py, __init__.py) continue to see
+# Dict[BloomLevel, List[BloomVerb]] with the richer local dataclass.
+# Migrated in Wave 1.2 / Worker H (REC-BL-01).
+def _build_bloom_verbs() -> Dict[BloomLevel, List[BloomVerb]]:
+    canonical = _get_canonical_verb_objects()
+    return {
+        BloomLevel(level): [
+            BloomVerb(
+                verb=entry.verb,
+                level=BloomLevel(level),
+                usage_context=entry.usage_context,
+                example_template=entry.example_template,
+            )
+            for entry in canonical[level]
+        ]
+        for level in ("remember", "understand", "apply", "analyze", "evaluate", "create")
+    }
+
+
+BLOOM_VERBS: Dict[BloomLevel, List[BloomVerb]] = _build_bloom_verbs()
 
 
 class BloomTaxonomyMapper:

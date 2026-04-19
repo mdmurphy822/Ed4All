@@ -41,36 +41,43 @@ try:
 except ImportError:
     LEAK_CHECKER_AVAILABLE = False
 
+# Source of truth for the verb lists: schemas/taxonomies/bloom_verbs.json
+# via lib.ontology.bloom. Migrated in Wave 1.2 / Worker H (REC-BL-01).
+# TODO(wave-future): migrate patterns + question_types to taxonomy schemas
+# (only the verb portion is loaded from the canonical taxonomy today).
+from lib.ontology.bloom import get_verbs_list as _get_canonical_verbs_list  # noqa: E402
+_CANONICAL_VERBS = _get_canonical_verbs_list()
+
 
 # Bloom's Taxonomy levels with associated question patterns
 BLOOM_LEVELS = {
     "remember": {
-        "verbs": ["define", "list", "recall", "identify", "name"],
+        "verbs": _CANONICAL_VERBS["remember"],
         "patterns": ["What is...?", "List the...", "Which of the following...?"],
         "question_types": ["multiple_choice", "true_false", "fill_in_blank"],
     },
     "understand": {
-        "verbs": ["explain", "describe", "summarize", "interpret", "paraphrase"],
+        "verbs": _CANONICAL_VERBS["understand"],
         "patterns": ["Explain why...", "Describe how...", "What does X mean?"],
         "question_types": ["multiple_choice", "short_answer", "fill_in_blank"],
     },
     "apply": {
-        "verbs": ["apply", "demonstrate", "use", "solve", "implement"],
+        "verbs": _CANONICAL_VERBS["apply"],
         "patterns": ["How would you use...?", "Apply X to...", "Solve..."],
         "question_types": ["multiple_choice", "short_answer", "essay"],
     },
     "analyze": {
-        "verbs": ["analyze", "compare", "contrast", "differentiate", "examine"],
+        "verbs": _CANONICAL_VERBS["analyze"],
         "patterns": ["Compare and contrast...", "What are the differences...", "Analyze..."],
         "question_types": ["multiple_choice", "essay", "short_answer"],
     },
     "evaluate": {
-        "verbs": ["evaluate", "judge", "justify", "critique", "assess"],
+        "verbs": _CANONICAL_VERBS["evaluate"],
         "patterns": ["Evaluate the effectiveness...", "Justify your answer...", "Assess..."],
         "question_types": ["essay", "multiple_choice", "short_answer"],
     },
     "create": {
-        "verbs": ["create", "design", "develop", "construct", "formulate"],
+        "verbs": _CANONICAL_VERBS["create"],
         "patterns": ["Design a...", "Develop a plan for...", "Create..."],
         "question_types": ["essay", "short_answer"],
     },

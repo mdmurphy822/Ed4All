@@ -37,8 +37,18 @@ if str(LIBV2_TOOLS_PATH) not in sys.path:
     sys.path.insert(0, str(LIBV2_TOOLS_PATH))
 
 from lib.libv2_storage import LIBV2_COURSES, LIBV2_ROOT  # noqa: E402
+from lib.ontology.bloom import get_all_verbs as _get_all_canonical_verbs  # noqa: E402
 
 logger = logging.getLogger(__name__)
+
+# Pre-compiled alternation of all canonical Bloom verbs, sorted longest
+# first so multi-word verbs (future additions) bind before their prefixes.
+# Source of truth: schemas/taxonomies/bloom_verbs.json via
+# lib.ontology.bloom. Migrated in Wave 1.2 / Worker H (REC-BL-01).
+_BLOOM_VERB_ALT = "|".join(
+    re.escape(v)
+    for v in sorted(_get_all_canonical_verbs(), key=len, reverse=True)
+)
 
 
 @dataclass
@@ -469,14 +479,11 @@ class TrainforgeRAG:
         )
         cleaned = re.sub(preamble[0], "", text, flags=re.IGNORECASE).strip()
 
-        # Remove leading Bloom verbs
-        bloom_verbs = (
-            "define|list|recall|identify|explain|describe|summarize|"
-            "apply|demonstrate|use|solve|analyze|compare|contrast|"
-            "evaluate|judge|justify|create|design|develop"
-        )
+        # Remove leading Bloom verbs. _BLOOM_VERB_ALT is the canonical
+        # 60-verb alternation from schemas/taxonomies/bloom_verbs.json,
+        # built once at module import and sorted longest-first.
         cleaned = re.sub(
-            rf"^(?:{bloom_verbs})\s+", "", cleaned, flags=re.IGNORECASE
+            rf"^(?:{_BLOOM_VERB_ALT})\s+", "", cleaned, flags=re.IGNORECASE
         ).strip()
 
         return cleaned if cleaned else text

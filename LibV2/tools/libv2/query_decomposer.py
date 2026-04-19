@@ -8,6 +8,7 @@ for improved retrieval coverage.
 import re
 from typing import Optional
 
+from ._bloom_verbs import get_verbs_list as _get_canonical_verbs_list
 from .query_decomposition import (
     BLOOM_LEVELS,
     INTENT_ASPECT_RULES,
@@ -107,33 +108,12 @@ class QueryDecomposer:
         ],
     }
 
-    # Bloom's verb patterns for level detection
-    BLOOM_VERBS = {
-        'remember': [
-            'define', 'identify', 'list', 'name', 'recall', 'recognize',
-            'state', 'describe', 'label', 'match', 'select',
-        ],
-        'understand': [
-            'explain', 'summarize', 'interpret', 'classify', 'compare',
-            'contrast', 'discuss', 'distinguish', 'paraphrase', 'predict',
-        ],
-        'apply': [
-            'apply', 'demonstrate', 'implement', 'solve', 'use', 'execute',
-            'illustrate', 'operate', 'practice', 'schedule',
-        ],
-        'analyze': [
-            'analyze', 'differentiate', 'examine', 'categorize', 'compare',
-            'contrast', 'deconstruct', 'distinguish', 'investigate', 'organize',
-        ],
-        'evaluate': [
-            'evaluate', 'assess', 'critique', 'judge', 'justify', 'defend',
-            'argue', 'support', 'validate', 'recommend', 'prioritize',
-        ],
-        'create': [
-            'create', 'design', 'develop', 'construct', 'produce', 'compose',
-            'generate', 'plan', 'formulate', 'invent', 'synthesize',
-        ],
-    }
+    # Bloom's verb patterns for level detection.
+    # Source of truth: schemas/taxonomies/bloom_verbs.json, vendored at
+    # LibV2/vendor/bloom_verbs.json (LibV2 cannot import from Ed4All's
+    # lib/ package per LibV2/CLAUDE.md; _bloom_verbs.py bridges the gap).
+    # Migrated in Wave 1.2 / Worker H (REC-BL-01).
+    BLOOM_VERBS = _get_canonical_verbs_list()
 
     # Domain keyword hints
     DOMAIN_KEYWORDS = {

@@ -123,6 +123,10 @@ class SemanticStructureExtractor:
     """
 
     # Bloom's taxonomy verb patterns for question analysis
+    # TODO(wave-future): consolidate BLOOM_PATTERNS once pattern-taxonomy
+    # schema exists. These are regex alternations (not plain verb lists),
+    # so migration to schemas/taxonomies/bloom_verbs.json requires a
+    # pattern-schema layer — out of scope for REC-BL-01.
     BLOOM_PATTERNS = {
         'remember': [
             r'\b(define|list|recall|identify|name|state|label|match|recognize)\b',

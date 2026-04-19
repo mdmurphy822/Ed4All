@@ -16,34 +16,15 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
+from lib.ontology.bloom import get_verbs as _get_canonical_verbs
 
-# Bloom's taxonomy verb indicators per level
-BLOOM_VERBS: Dict[str, Set[str]] = {
-    "remember": {
-        "define", "list", "recall", "identify", "name", "recognize",
-        "state", "describe", "label", "match", "select",
-    },
-    "understand": {
-        "explain", "describe", "summarize", "interpret", "paraphrase",
-        "classify", "discuss", "distinguish", "predict",
-    },
-    "apply": {
-        "apply", "demonstrate", "use", "solve", "implement",
-        "execute", "calculate", "illustrate", "operate",
-    },
-    "analyze": {
-        "analyze", "compare", "contrast", "differentiate", "examine",
-        "distinguish", "organize", "categorize", "deconstruct",
-    },
-    "evaluate": {
-        "evaluate", "judge", "justify", "critique", "assess",
-        "defend", "argue", "support", "prioritize",
-    },
-    "create": {
-        "create", "design", "develop", "construct", "formulate",
-        "generate", "produce", "compose", "plan",
-    },
-}
+# Bloom's taxonomy verb indicators per level.
+# Source of truth: schemas/taxonomies/bloom_verbs.json (loaded via
+# lib.ontology.bloom). Migrated from a hand-maintained dict in Wave 1.2 /
+# Worker H (REC-BL-01). Behavior-preserving: the canonical set is a
+# superset of the previous hand-maintained list, so every pre-migration
+# detection still fires.
+BLOOM_VERBS: Dict[str, Set[str]] = _get_canonical_verbs()
 
 
 def detect_bloom_level(stem: str) -> Optional[str]:
