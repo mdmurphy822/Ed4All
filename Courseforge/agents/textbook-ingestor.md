@@ -207,7 +207,7 @@ def extract_structure(processed_html_path: str, workspace: str) -> Dict:
 ## Output Format
 
 The agent produces a textbook structure JSON conforming to:
-`schemas/learning-objectives/textbook_structure_schema.json`
+`schemas/academic/textbook_structure.schema.json`
 
 ### Output JSON Structure
 ```json

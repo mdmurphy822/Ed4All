@@ -291,7 +291,7 @@ The course-outliner can now receive learning objectives from multiple sources:
 {
   "source": "objective-synthesizer",
   "format": "textbook_objectives",
-  "schema": "schemas/learning-objectives/learning_objectives_schema.json",
+  "schema": "schemas/academic/learning_objectives.schema.json",
   "data": {
     "documentMetadata": { ... },
     "courseObjectives": [ ... ],
