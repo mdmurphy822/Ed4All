@@ -5,16 +5,27 @@ Package multi-file weekly course content into an IMS Common Cartridge (IMSCC) fi
 Walks 03_content_development/week_*/ directories and creates an IMSCC with a proper
 imsmanifest.xml reflecting the week -> module hierarchy.
 
-When ``--objectives`` is provided, every ``week_*/*.html`` page with JSON-LD is
-validated against the canonical objectives registry before packaging; the
-packager refuses to build when any page's ``learningObjectives`` lists an ID
-outside its week's allowed set. This guards against the LO-fanout defect that
-shipped in pre-Worker-H packages and capped Trainforge quality metrics.
+Per-week ``learningObjectives`` validation runs by default (Wave 2, Worker L
+— REC-CTR-03). Every ``week_*/*.html`` page with JSON-LD is validated against
+the canonical objectives registry before packaging; the packager refuses to
+build when any page's ``learningObjectives`` lists an ID outside its week's
+allowed set. This guards against the LO-fanout defect that shipped in
+pre-Worker-H packages and capped Trainforge quality metrics.
+
+Resolution order for the objectives file:
+
+    1. Explicit ``--objectives PATH`` argument.
+    2. Auto-discovery: ``<content_dir>/course.json`` if it exists.
+    3. None available — log a warning and skip validation (backward-compat).
+
+``--skip-validation`` remains as an explicit opt-out for emergencies.
 
 Usage:
     python package_multifile_imscc.py <content_dir> <output_imscc>
     python package_multifile_imscc.py <content_dir> <output_imscc> \
         --objectives inputs/exam-objectives/SAMPLE_101_objectives.json
+    python package_multifile_imscc.py <content_dir> <output_imscc> \
+        --skip-validation  # escape hatch, not recommended for production
 """
 
 import argparse
@@ -162,9 +173,36 @@ def package_imscc(
     objectives_path: Optional[Path] = None,
     skip_validation: bool = False,
 ):
-    """Create the IMSCC zip package. Refuses to build when per-week LO
-    validation fails (unless skip_validation is explicitly set)."""
-    if objectives_path and not skip_validation:
+    """Create the IMSCC zip package.
+
+    Per-week learningObjectives validation runs by default (Wave 2, Worker L
+    — REC-CTR-03). Resolution order for the objectives file:
+
+    1. Explicit ``objectives_path`` argument (CLI ``--objectives PATH``).
+    2. Auto-discovery: ``content_dir / "course.json"`` if it exists.
+    3. None available → log a warning and skip validation (backward-compat
+       for callers that never wired the flag).
+
+    ``skip_validation=True`` (CLI ``--skip-validation``) is an explicit
+    opt-out that bypasses validation even when an objectives file is
+    available. Hard-fail (``SystemExit(2)``) only occurs on a genuine
+    validation FAILURE — never on a missing objectives file alone.
+    """
+    # Auto-discover objectives if not explicitly provided (default-on behavior).
+    if objectives_path is None and not skip_validation:
+        candidate = content_dir / "course.json"
+        if candidate.exists():
+            objectives_path = candidate
+            print(f"[validate] Auto-discovered objectives at {candidate}")
+
+    if skip_validation:
+        print("[validate] SKIPPED (per --skip-validation) — build will not be gated on LO correctness.")
+    elif objectives_path is None:
+        print(
+            "[validate] WARNING: no objectives file found; skipping LO validation. "
+            "Pass --objectives or place course.json at content root to enable."
+        )
+    else:
         print(f"[validate] Checking per-week learningObjectives against {objectives_path.name}...")
         ok, failures = validate_content_objectives(content_dir, objectives_path)
         if not ok:
@@ -174,9 +212,7 @@ def package_imscc(
             print("Fix the offending pages (or re-run generate_course.py with --objectives) then retry.")
             print("Override with --skip-validation if you really know what you're doing.")
             raise SystemExit(2)
-        print(f"[validate] All week pages pass per-week LO contract.")
-    elif skip_validation:
-        print("[validate] SKIPPED (per --skip-validation) — build will not be gated on LO correctness.")
+        print("[validate] All week pages pass per-week LO contract.")
 
     manifest_xml = build_manifest(content_dir, course_code, course_title)
 
@@ -204,9 +240,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("course_title", nargs="?", default="Sample Course",
                    help="Course title (default: Sample Course)")
     p.add_argument("--objectives", type=Path, default=None,
-                   help="Canonical objectives JSON to validate per-week LO specificity before packaging")
+                   help=("Canonical objectives JSON to validate per-week LO "
+                         "specificity before packaging. If omitted, auto-"
+                         "discovered at <content_dir>/course.json when present."))
     p.add_argument("--skip-validation", action="store_true",
-                   help="Bypass objectives validation even when --objectives is given (escape hatch)")
+                   help=("Opt out of per-week LO validation (not recommended "
+                         "for production builds)."))
     return p
 
 
