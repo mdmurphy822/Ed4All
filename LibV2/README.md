@@ -21,13 +21,21 @@ LibV2/
 │   ├── by_division/             # STEM.json, ARTS.json
 │   ├── by_domain/               # physics.json, etc.
 │   └── cross_references/        # Shared concepts
-├── ontology/                    # Classification systems
-│   ├── taxonomy.json            # STEM/Arts hierarchy
-│   ├── acm_ccs/                 # ACM Computing Classification
-│   └── lcsh/                    # Library of Congress headings
-├── schema/                      # JSON Schema definitions
 ├── docs/                        # Documentation
 └── tools/                       # Management CLI
+```
+
+LibV2's JSON Schema definitions and classification taxonomy now live at the
+project root under `/schemas/`:
+
+```
+<project-root>/schemas/
+├── library/
+│   ├── catalog_entry.schema.json
+│   └── course_manifest.schema.json
+└── taxonomies/
+    ├── taxonomy.json            # STEM/Arts hierarchy
+    └── pedagogy_framework.yaml
 ```
 
 ## Classification System
