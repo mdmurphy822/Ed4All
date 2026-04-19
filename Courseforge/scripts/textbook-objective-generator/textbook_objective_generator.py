@@ -3,7 +3,7 @@ Textbook Objective Generator
 
 Main module that generates learning objectives from textbook structure.
 Takes the output of semantic-structure-extractor and produces learning objectives
-conforming to schemas/learning-objectives/learning_objectives_schema.json.
+conforming to schemas/academic/learning_objectives.schema.json.
 
 Equal Treatment Principle:
 - Generates objectives for ALL extracted content
@@ -105,7 +105,7 @@ class TextbookObjectiveGenerator:
             textbook_structure: Output from semantic-structure-extractor
 
         Returns:
-            Dictionary conforming to learning_objectives_schema.json
+            Dictionary conforming to learning_objectives.schema.json
         """
         self.formatter.reset_counter()
 

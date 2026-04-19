@@ -13,7 +13,7 @@ Supports:
 - Presentation schema transformation
 
 Output conforms to schemas/presentation/presentation_schema.json or
-textbook_structure_schema.json based on extraction method used.
+textbook_structure.schema.json based on extraction method used.
 """
 
 import json
@@ -189,7 +189,7 @@ class SemanticStructureExtractor:
             source_path: Path to the source file (for metadata)
 
         Returns:
-            Dictionary conforming to textbook_structure_schema.json
+            Dictionary conforming to textbook_structure.schema.json
         """
         soup = BeautifulSoup(html_content, 'html.parser')
 
@@ -233,7 +233,7 @@ class SemanticStructureExtractor:
             format: Format hint ("auto", "html", "markdown")
 
         Returns:
-            Dictionary conforming to textbook_structure_schema.json
+            Dictionary conforming to textbook_structure.schema.json
         """
         path = Path(file_path)
         with open(path, encoding='utf-8') as f:
@@ -260,7 +260,7 @@ class SemanticStructureExtractor:
             format: Format hint ("auto", "html", "markdown")
 
         Returns:
-            Dictionary conforming to textbook_structure_schema.json
+            Dictionary conforming to textbook_structure.schema.json
         """
         # Auto-detect format
         if format == "auto":
@@ -905,7 +905,7 @@ def extract_textbook_structure(file_path: str, config_path: Optional[str] = None
         config_path: Optional path to configuration file
 
     Returns:
-        Dictionary conforming to textbook_structure_schema.json
+        Dictionary conforming to textbook_structure.schema.json
     """
     extractor = SemanticStructureExtractor(config_path)
     return extractor.extract_file(file_path)
