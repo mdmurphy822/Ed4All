@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://ed4all.dev/schemas/concept_graph_semantic.schema.json",
+  "$id": "https://ed4all.dev/schemas/knowledge/concept_graph_semantic.schema.json",
   "title": "Concept Graph (Semantic)",
   "description": "Typed-edge concept graph emitted alongside concept_graph.json. Edges carry a type (prerequisite | is-a | related-to) and per-edge provenance. See docs/concept-graph/typed-edges.md for rule descriptions and precedence.",
   "type": "object",
