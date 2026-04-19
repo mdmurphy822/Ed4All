@@ -368,3 +368,92 @@ def test_write_chunks_valid_chunks_pass_strict(monkeypatch, tmp_path):
     pc.CourseProcessor._write_chunks(stub, [_make_valid_chunk()])
     assert (tmp_path / "chunks.jsonl").exists()
     assert (tmp_path / "chunks.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# Wave 3 / Worker M — Case preservation for learning_outcome_refs (A3)
+# ---------------------------------------------------------------------------
+#
+# The opt-in env var ``TRAINFORGE_PRESERVE_LO_CASE=true`` stops
+# ``CourseProcessor._extract_objective_refs`` from lowercasing
+# structured LO ids at ingest. Default stays lowercase for backward-
+# compat with existing LibV2 chunks; the default flips in Wave 4's
+# structural migration. See plans/kg-quality-review-2026-04/
+# worker-m-subplan.md §2.
+# ---------------------------------------------------------------------------
+
+
+class _LOStub:
+    """Minimal LearningObjective look-alike for _extract_objective_refs.
+
+    The production code reads ``lo.id`` via ``hasattr`` (see
+    ``process_course.py::_extract_objective_refs``); we only need that
+    attribute to exercise the case-normalisation branch.
+    """
+
+    def __init__(self, obj_id: str):
+        self.id = obj_id
+
+
+def _call_extract_objective_refs(obj_ids):
+    """Run ``CourseProcessor._extract_objective_refs`` on a synthetic item.
+
+    Uses a SimpleNamespace shim so we don't need a full processor
+    instance — the method only touches ``self.WEEK_PREFIX_RE`` and
+    ``self.OBJECTIVE_CODE_RE`` (both class attrs on CourseProcessor).
+    """
+    from types import SimpleNamespace
+
+    import Trainforge.process_course as pc
+
+    item = {
+        "learning_objectives": [_LOStub(x) for x in obj_ids],
+        "key_concepts": [],
+        "sections": [],
+        "objective_refs": [],
+    }
+    stub = SimpleNamespace(
+        WEEK_PREFIX_RE=pc.CourseProcessor.WEEK_PREFIX_RE,
+        OBJECTIVE_CODE_RE=pc.CourseProcessor.OBJECTIVE_CODE_RE,
+    )
+    return pc.CourseProcessor._extract_objective_refs(stub, item)
+
+
+def test_preserve_case_flag_off_lowercases(monkeypatch):
+    """Default env (unset) → refs lowercased for backward-compat."""
+    monkeypatch.delenv("TRAINFORGE_PRESERVE_LO_CASE", raising=False)
+    refs = _call_extract_objective_refs(["TO-01"])
+    assert refs == ["to-01"], (
+        f"default env must lowercase LO refs; got {refs}"
+    )
+
+
+def test_preserve_case_flag_on_preserves(monkeypatch):
+    """TRAINFORGE_PRESERVE_LO_CASE=true → refs preserve source casing."""
+    monkeypatch.setenv("TRAINFORGE_PRESERVE_LO_CASE", "true")
+    refs = _call_extract_objective_refs(["TO-01"])
+    assert refs == ["TO-01"], (
+        f"flag=true must preserve case; got {refs}"
+    )
+
+
+def test_preserve_case_flag_non_true_values_lowercase(monkeypatch):
+    """Only the literal string 'true' enables preservation (case-insensitive)."""
+    for val in ("false", "0", "", "1", "yes"):
+        monkeypatch.setenv("TRAINFORGE_PRESERVE_LO_CASE", val)
+        refs = _call_extract_objective_refs(["TO-01"])
+        assert refs == ["to-01"], (
+            f"TRAINFORGE_PRESERVE_LO_CASE={val!r} should NOT enable "
+            f"preservation; got {refs}"
+        )
+
+
+def test_preserve_case_flag_on_still_strips_week_prefix(monkeypatch):
+    """Week prefix (W01-, w01-) still stripped regardless of case flag."""
+    monkeypatch.setenv("TRAINFORGE_PRESERVE_LO_CASE", "true")
+    refs = _call_extract_objective_refs(["W03-CO-05"])
+    # WEEK_PREFIX_RE is case-insensitive → W03- stripped; CO-05 stays
+    # uppercase because preserve_case is on.
+    assert refs == ["CO-05"], (
+        f"week prefix should strip; casing should preserve; got {refs}"
+    )
