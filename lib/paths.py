@@ -55,8 +55,10 @@ STATE_PATH = PROJECT_ROOT / "state"
 
 LIBV2_CATALOG = LIBV2_PATH / "catalog"
 LIBV2_COURSES = LIBV2_PATH / "courses"
-LIBV2_ONTOLOGY = LIBV2_PATH / "ontology"
-LIBV2_SCHEMA = LIBV2_PATH / "schema"
+# Library schemas and ontology are unified under project-root /schemas/
+# (Formerly LibV2/ontology/ and LibV2/schema/; migrated in Worker S PR.)
+LIBV2_ONTOLOGY = SCHEMAS_PATH / "taxonomies"
+LIBV2_SCHEMA = SCHEMAS_PATH / "library"
 LIBV2_TOOLS = LIBV2_PATH / "tools"
 
 # ============================================================================
