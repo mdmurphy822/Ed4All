@@ -25,6 +25,8 @@ Usage:
 import argparse
 import html.parser
 import json
+import logging
+import os
 import re
 import sys
 import xml.etree.ElementTree as ET
@@ -33,6 +35,8 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+
+logger = logging.getLogger(__name__)
 
 # Add project root to path
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -84,6 +88,81 @@ METRICS_SEMANTIC_VERSION = 5
 # per release train; see ADR-001 Contract 1 and docs/contributing/workers.md
 # for the rebase protocol.
 CHUNK_SCHEMA_VERSION = "v4"
+
+
+# Worker I (REC-CTR-01): opt-in chunk validation against chunk_v4.schema.json.
+# The schema plus its $ref store (Worker F's taxonomies) is cached after first
+# load. jsonschema is imported lazily so this module stays importable when the
+# dependency is missing (same pattern as lib/validation.py::load_schema).
+_CHUNK_VALIDATOR: Any = None
+_CHUNK_SCHEMA_LOAD_FAILED: bool = False
+
+
+def _load_chunk_validator() -> Any:
+    """Build and cache a Draft202012Validator for chunk_v4.schema.json.
+
+    The validator carries a RefResolver populated with every schema under
+    ``schemas/`` keyed by its ``$id``, so ``$ref`` URIs to Worker F's
+    taxonomies resolve offline. Returns None if jsonschema is unavailable
+    or the schema file cannot be loaded — caller treats that as "hook
+    disabled" and the pipeline proceeds without validation.
+    """
+    global _CHUNK_VALIDATOR, _CHUNK_SCHEMA_LOAD_FAILED
+    if _CHUNK_VALIDATOR is not None:
+        return _CHUNK_VALIDATOR
+    if _CHUNK_SCHEMA_LOAD_FAILED:
+        return None
+    try:
+        import jsonschema  # noqa: F401
+        from jsonschema import Draft202012Validator, RefResolver
+    except ImportError:
+        _CHUNK_SCHEMA_LOAD_FAILED = True
+        return None
+    schemas_root = PROJECT_ROOT / "schemas"
+    schema_path = schemas_root / "knowledge" / "chunk_v4.schema.json"
+    if not schema_path.exists():
+        _CHUNK_SCHEMA_LOAD_FAILED = True
+        return None
+    try:
+        with open(schema_path) as f:
+            schema = json.load(f)
+        store: Dict[str, Any] = {}
+        for p in schemas_root.rglob("*.json"):
+            try:
+                with open(p) as f:
+                    s = json.load(f)
+            except (OSError, json.JSONDecodeError):
+                continue
+            sid = s.get("$id")
+            if sid:
+                store[sid] = s
+        resolver = RefResolver.from_schema(schema, store=store)
+        _CHUNK_VALIDATOR = Draft202012Validator(schema, resolver=resolver)
+    except Exception:
+        _CHUNK_SCHEMA_LOAD_FAILED = True
+        return None
+    return _CHUNK_VALIDATOR
+
+
+def _validate_chunk(chunk: Dict[str, Any]) -> Optional[str]:
+    """Validate a single chunk against chunk_v4.schema.json.
+
+    Returns a formatted error string on first failure, or None on success.
+    Also returns None when the schema/validator cannot be loaded (missing
+    jsonschema dep, missing schema file) so the hook stays non-fatal during
+    bootstrap.
+    """
+    validator = _load_chunk_validator()
+    if validator is None:
+        return None
+    errors = sorted(
+        validator.iter_errors(chunk), key=lambda e: list(e.absolute_path)
+    )
+    if not errors:
+        return None
+    first = errors[0]
+    path = ".".join(str(p) for p in first.absolute_path) or "root"
+    return f"{path}: {first.message}"
 
 
 # Worker M1 (§4.4a diagnostic): maps each _metadata_trace value to the
@@ -1667,6 +1746,30 @@ class CourseProcessor:
     def _write_chunks(self, chunks: List[Dict[str, Any]]):
         jsonl_path = self.corpus_dir / "chunks.jsonl"
         json_path = self.corpus_dir / "chunks.json"
+
+        # Worker I (REC-CTR-01): opt-in chunk validation against
+        # schemas/knowledge/chunk_v4.schema.json. Gated by
+        # TRAINFORGE_VALIDATE_CHUNKS=true for fail-closed behavior; default
+        # is warn-log so existing pipelines don't break when the schema lands.
+        strict = os.getenv("TRAINFORGE_VALIDATE_CHUNKS", "").lower() == "true"
+        validation_errors: List[str] = []
+        for i, chunk in enumerate(chunks):
+            err = _validate_chunk(chunk)
+            if err is None:
+                continue
+            chunk_id = chunk.get("id", f"<index {i}>")
+            msg = f"Chunk {chunk_id}: {err}"
+            if strict:
+                validation_errors.append(msg)
+            else:
+                logger.warning("chunk_v4 validation: %s", msg)
+        if validation_errors:
+            preview = "; ".join(validation_errors[:5])
+            suffix = " ..." if len(validation_errors) > 5 else ""
+            raise ValueError(
+                f"chunk_v4 validation failed for {len(validation_errors)} chunk(s): "
+                f"{preview}{suffix}"
+            )
 
         with open(jsonl_path, "w", encoding="utf-8") as f:
             for chunk in chunks:
