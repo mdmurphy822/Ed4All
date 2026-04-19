@@ -23,6 +23,14 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+# Ensure project root is importable so lib.ontology.bloom resolves when
+# this script is invoked from inside Courseforge/scripts/.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from lib.ontology.bloom import get_verbs_list as _get_canonical_verbs_list  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # Canonical-objectives loading & per-week LO resolution
@@ -133,14 +141,9 @@ def resolve_week_objectives(
 # Bloom's taxonomy detection
 # ---------------------------------------------------------------------------
 
-BLOOM_VERBS: Dict[str, List[str]] = {
-    "remember": ["define", "list", "recall", "identify", "recognize", "name", "state"],
-    "understand": ["explain", "describe", "summarize", "interpret", "classify", "compare"],
-    "apply": ["apply", "demonstrate", "implement", "solve", "use", "execute"],
-    "analyze": ["analyze", "differentiate", "examine", "compare", "contrast", "organize"],
-    "evaluate": ["evaluate", "assess", "critique", "judge", "justify", "argue"],
-    "create": ["create", "design", "develop", "construct", "produce", "formulate"],
-}
+# Source of truth: schemas/taxonomies/bloom_verbs.json (loaded via
+# lib.ontology.bloom). Migrated in Wave 1.2 / Worker H (REC-BL-01).
+BLOOM_VERBS: Dict[str, List[str]] = _get_canonical_verbs_list()
 
 # Cognitive domain inference from content type / Bloom's level
 BLOOM_TO_DOMAIN: Dict[str, str] = {
