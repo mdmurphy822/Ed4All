@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/academic/v1/courseforge_page_types.schema.json",
+  "title": "Courseforge Page Types",
+  "description": "Authoritative page-type vocabulary schema for Courseforge module pages. Overlaps intentionally with schemas/taxonomies/module_type.json — module_type.json is the pure vocabulary taxonomy; this file is the academic-domain schema that code-level validators $ref. Per REC-CTR-02.",
+  "$comment": "Values identical to schemas/taxonomies/module_type.json, lifted from Courseforge/scripts/generate_course.py:647-759 (six _build_page_metadata call sites: overview, content, application, assessment, summary, discussion). This file serves as the canonical academic-schema-domain reference; module_type.json serves as the pure taxonomy-domain reference. Both are needed because Worker I's knowledge schemas $ref the academic file while taxonomy consumers $ref module_type.json. The enum is duplicated (not $ref'd across folders) to keep this file self-contained for external validators; if either diverges later, a Wave 2 PR reconciles. Per REC-CTR-02.",
+  "$defs": {
+    "CourseforgePageType": {
+      "type": "string",
+      "enum": [
+        "overview",
+        "content",
+        "application",
+        "assessment",
+        "summary",
+        "discussion"
+      ]
+    }
+  },
+  "$ref": "#/$defs/CourseforgePageType"
+}
