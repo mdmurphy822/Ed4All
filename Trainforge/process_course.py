@@ -583,8 +583,8 @@ class CourseProcessor:
         imscc_path: str,
         output_dir: str,
         course_code: str,
-        division: str = "STEM",
-        domain: str = "",
+        division: Optional[str] = None,
+        domain: Optional[str] = None,
         subdomains: Optional[List[str]] = None,
         secondary_domains: Optional[List[str]] = None,
         topics: Optional[List[str]] = None,
@@ -605,11 +605,64 @@ class CourseProcessor:
         self.imscc_path = Path(imscc_path)
         self.output_dir = Path(output_dir)
         self.course_code = course_code
-        self.division = division
-        self.domain = domain
-        self.subdomains = subdomains or []
-        self.secondary_domains = secondary_domains or []
-        self.topics = topics or []
+
+        # ------------------------------------------------------------------
+        # Wave 2 REC-TAX-01: classification resolution.
+        # Priority:
+        #   1. Explicit kwargs (non-None) from the caller/CLI — override.
+        #   2. course_metadata.json stub at IMSCC root or alongside the file.
+        #   3. Backward-compat defaults (division="STEM", domain="").
+        # The loader runs before the fields are set so we can log the source.
+        # ------------------------------------------------------------------
+        stub = self._load_classification_stub() or {}
+        stub_cls = stub.get("classification") if isinstance(stub, dict) else None
+        stub_cls = stub_cls if isinstance(stub_cls, dict) else {}
+
+        cli_has_division = division is not None
+        cli_has_domain = domain is not None
+        cli_has_subdomains = subdomains is not None
+        cli_has_topics = topics is not None
+
+        self.division = (
+            division if cli_has_division
+            else stub_cls.get("division") or "STEM"
+        )
+        self.domain = (
+            domain if cli_has_domain
+            else stub_cls.get("primary_domain") or ""
+        )
+        self.subdomains = (
+            list(subdomains) if cli_has_subdomains
+            else list(stub_cls.get("subdomains") or [])
+        )
+        self.topics = (
+            list(topics) if cli_has_topics
+            else list(stub_cls.get("topics") or [])
+        )
+        self.secondary_domains = list(secondary_domains or [])
+
+        # Provenance log (observability — surface which path provided
+        # classification so misconfiguration is trivially diagnosable).
+        if stub_cls and not (cli_has_division or cli_has_domain or cli_has_subdomains or cli_has_topics):
+            logger.info(
+                "Using classification from course_metadata.json stub "
+                "(division=%s, primary_domain=%s)",
+                self.division, self.domain,
+            )
+        elif stub_cls and (cli_has_division or cli_has_domain or cli_has_subdomains or cli_has_topics):
+            logger.info(
+                "Using classification from CLI flags (override stub); "
+                "resolved division=%s, primary_domain=%s",
+                self.division, self.domain,
+            )
+        elif cli_has_division or cli_has_domain:
+            logger.info(
+                "Using classification from CLI flags "
+                "(division=%s, primary_domain=%s)",
+                self.division, self.domain,
+            )
+        else:
+            logger.info("No classification provided; using defaults (division=STEM)")
 
         # Sub-directories
         self.corpus_dir = self.output_dir / "corpus"
@@ -660,6 +713,59 @@ class CourseProcessor:
         # Populated by _chunk_content; used as the denominator for
         # misconceptions_present_rate in _generate_quality_report.
         self._pages_with_misconceptions: Set[str] = set()
+
+    # ------------------------------------------------------------------
+    # Classification stub loader (Wave 2 REC-TAX-01)
+    # ------------------------------------------------------------------
+
+    def _load_classification_stub(self) -> Optional[Dict[str, Any]]:
+        """Locate and parse ``course_metadata.json``, if present.
+
+        Searches (in order):
+          1. Inside the IMSCC zip at root — forward-compat for when the
+             packager starts bundling the stub (future Wave 2 worker).
+          2. Alongside the IMSCC file (``imscc_path.parent /
+             course_metadata.json``) — today's Courseforge layout, where
+             ``generate_course.py`` writes the stub to the content dir
+             and the IMSCC is packaged to the same directory.
+
+        Returns the parsed dict on success or ``None`` when no stub is
+        found or parsing fails. A parse failure is logged but non-fatal
+        so the pipeline falls back to CLI / defaults.
+        """
+        # 1. In-zip lookup.
+        try:
+            if self.imscc_path.exists():
+                with zipfile.ZipFile(self.imscc_path, "r") as z:
+                    if "course_metadata.json" in z.namelist():
+                        try:
+                            data = json.loads(
+                                z.read("course_metadata.json").decode("utf-8")
+                            )
+                            if isinstance(data, dict):
+                                return data
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to parse course_metadata.json "
+                                "inside IMSCC zip (%s): %s",
+                                self.imscc_path, e,
+                            )
+        except Exception as e:
+            logger.debug("IMSCC stub lookup (zip) skipped: %s", e)
+
+        # 2. Sibling lookup (current Courseforge layout).
+        sibling = self.imscc_path.parent / "course_metadata.json"
+        if sibling.exists():
+            try:
+                data = json.loads(sibling.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return data
+            except Exception as e:
+                logger.warning(
+                    "Failed to parse sibling course_metadata.json at %s: %s",
+                    sibling, e,
+                )
+        return None
 
     # ------------------------------------------------------------------
     # Main entry point
@@ -2831,11 +2937,39 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--course-code", required=True, help="Course code (e.g. SAMPLE_101)")
     p.add_argument("--output", required=True, help="Output directory")
     p.add_argument("--objectives", help="Path to objectives JSON (optional)")
-    p.add_argument("--division", default="STEM", choices=["STEM", "ARTS"], help="Division")
-    p.add_argument("--domain", required=True, help="Primary domain")
-    p.add_argument("--subdomain", action="append", default=[], help="Subdomain (repeatable)")
+    # Wave 2 REC-TAX-01: classification flags accept None sentinels so the
+    # CourseProcessor can distinguish "user didn't pass this flag" (use
+    # course_metadata.json stub if present) from "user explicitly set this"
+    # (override the stub). --domain is no longer required at the argparse
+    # layer; main() enforces that either the stub or --domain supplies a
+    # primary domain before the processor starts.
+    p.add_argument(
+        "--division",
+        default=None,
+        choices=["STEM", "ARTS"],
+        help="Division (overrides course_metadata.json stub when provided)",
+    )
+    p.add_argument(
+        "--domain",
+        default=None,
+        help=(
+            "Primary domain (overrides course_metadata.json stub when "
+            "provided; required when no stub is present)"
+        ),
+    )
+    p.add_argument(
+        "--subdomain",
+        action="append",
+        default=None,
+        help="Subdomain (repeatable; overrides stub when provided)",
+    )
     p.add_argument("--secondary-domain", action="append", default=[], help="Secondary domain (repeatable)")
-    p.add_argument("--topic", action="append", default=[], help="Topic (repeatable)")
+    p.add_argument(
+        "--topic",
+        action="append",
+        default=None,
+        help="Topic (repeatable; overrides stub when provided)",
+    )
     p.add_argument("--align", action="store_true",
                    help="Run alignment stage after processing (prereq_concepts, teaching_role, learning_outcome_refs)")
     p.add_argument("--llm-provider", default="mock", choices=["mock", "anthropic"],
@@ -2870,6 +3004,26 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main():
     args = build_parser().parse_args()
+
+    # Wave 2 REC-TAX-01: require either a course_metadata.json stub OR a
+    # --domain CLI flag. The processor can boot with defaults for legacy
+    # pipelines that set --division but not --domain, but an empty primary
+    # domain is a misconfiguration worth catching before Stage 1.
+    if args.domain is None:
+        imscc_path = Path(args.imscc)
+        has_stub = (imscc_path.parent / "course_metadata.json").exists()
+        if not has_stub and imscc_path.exists():
+            try:
+                with zipfile.ZipFile(imscc_path, "r") as z:
+                    has_stub = "course_metadata.json" in z.namelist()
+            except Exception:
+                pass
+        if not has_stub:
+            sys.stderr.write(
+                "error: --domain is required when no course_metadata.json "
+                "stub is present at the IMSCC path or its parent directory.\n"
+            )
+            sys.exit(2)
 
     processor = CourseProcessor(
         imscc_path=args.imscc,
@@ -2940,14 +3094,17 @@ def main():
         try:
             from LibV2.tools.libv2.importer import import_course as do_import
 
+            # Use processor-resolved fields so stub-driven classification
+            # flows into LibV2 import when no CLI flags were set (Wave 2
+            # REC-TAX-01).
             slug = do_import(
                 source_dir=Path(args.output),
                 repo_root=PROJECT_ROOT / "LibV2",
-                division=args.division,
-                domain=args.domain,
-                subdomains=args.subdomain if args.subdomain else None,
-                topics=args.topic if args.topic else None,
-                secondary_domains=args.secondary_domain if args.secondary_domain else None,
+                division=processor.division,
+                domain=processor.domain,
+                subdomains=processor.subdomains if processor.subdomains else None,
+                topics=processor.topics if processor.topics else None,
+                secondary_domains=processor.secondary_domains if processor.secondary_domains else None,
                 imscc_path=Path(args.imscc),
                 strict_validation=False,
             )
@@ -2956,7 +3113,10 @@ def main():
         except Exception as e:
             print(f"[LibV2] Import failed: {e}")
             print("[LibV2] You can import manually later with:")
-            print(f"  python -m LibV2.tools.libv2.cli import {args.output} --domain {args.domain} --division {args.division}")
+            print(
+                f"  python -m LibV2.tools.libv2.cli import {args.output} "
+                f"--domain {processor.domain} --division {processor.division}"
+            )
 
     # Optional: retrieval benchmark over the freshly regenerated corpus.
     # Measures whether the per-chunk summary improves BM25 recall@k over
