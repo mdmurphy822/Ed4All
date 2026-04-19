@@ -179,6 +179,10 @@ class ContentProfiler:
     }
 
     # Bloom's taxonomy verb patterns for difficulty estimation
+    # TODO(wave-future): consolidate BLOOM_PATTERNS once pattern-taxonomy
+    # schema exists. Currently coupled with BLOOM_DIFFICULTY_WEIGHTS below;
+    # loading from schemas/taxonomies/bloom_verbs.json requires untangling
+    # the verb list from the difficulty-weight mapping.
     BLOOM_PATTERNS: Dict[str, List[str]] = {
         'remember': ['define', 'list', 'recall', 'identify', 'name', 'state', 'label', 'match', 'recognize'],
         'understand': ['explain', 'describe', 'summarize', 'classify', 'compare', 'interpret', 'discuss'],
