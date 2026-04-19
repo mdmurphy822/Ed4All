@@ -230,8 +230,8 @@ def test_emitted_pairs_validate_against_schemas(tmp_path):
         seed=17,
     )
 
-    inst_schema = _load_schema("instruction_pair.schema.json")
-    pref_schema = _load_schema("preference_pair.schema.json")
+    inst_schema = _load_schema("knowledge/instruction_pair.schema.json")
+    pref_schema = _load_schema("knowledge/preference_pair.schema.json")
 
     inst = _load_jsonl(working / "training_specs" / "instruction_pairs.jsonl")
     pref = _load_jsonl(working / "training_specs" / "preference_pairs.jsonl")

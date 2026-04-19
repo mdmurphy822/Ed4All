@@ -26,7 +26,7 @@ inference rules drift.
 1. `build_semantic_graph(chunks, course, concept_graph)` produces an `edges`
    list whose `(source, target, type)` tuples exactly match
    `expected_semantic_graph.json`'s tuples.
-2. The output validates against `schemas/concept_graph_semantic.schema.json`.
+2. The output validates against `schemas/knowledge/concept_graph_semantic.schema.json`.
 3. Two back-to-back invocations produce byte-identical artifacts once
    `generated_at` is held fixed.
 

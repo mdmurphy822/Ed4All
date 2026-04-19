@@ -4,7 +4,7 @@
   "title": "Trainforge Assessment Decision Schema",
   "description": "Extends decision_event_schema for assessment-based RAG training on IMSCC packages",
   "allOf": [
-    {"$ref": "decision_event_schema.json"},
+    {"$ref": "decision_event.schema.json"},
     {
       "properties": {
         "assessment_context": {

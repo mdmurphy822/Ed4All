@@ -13,7 +13,7 @@ Files you care about:
 
 - `Trainforge/rag/typed_edge_inference.py` — orchestrator.
 - `Trainforge/rag/inference_rules/` — one module per rule.
-- `schemas/concept_graph_semantic.schema.json` — the wire format.
+- `schemas/knowledge/concept_graph_semantic.schema.json` — the wire format.
 - `Trainforge/tests/fixtures/mini_course_typed_graph/` — smoke fixture.
 
 ## The three rules
