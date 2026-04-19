@@ -10,9 +10,19 @@ Falls back to regex heuristics for non-Courseforge IMSCC packages.
 
 import json as json_mod
 import re
+import sys
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# Ensure project root is importable so lib.ontology.bloom resolves when
+# this module is executed from inside Trainforge/.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from lib.ontology.bloom import get_verbs_list as _get_canonical_verbs_list  # noqa: E402
 
 
 @dataclass
@@ -152,15 +162,10 @@ class HTMLContentParser:
             print(f"LO: {obj.text}")
     """
 
-    # Bloom's taxonomy verbs by level
-    BLOOM_VERBS = {
-        "remember": ["define", "list", "recall", "identify", "recognize", "name", "state"],
-        "understand": ["explain", "describe", "summarize", "interpret", "classify", "compare"],
-        "apply": ["apply", "demonstrate", "implement", "solve", "use", "execute"],
-        "analyze": ["analyze", "differentiate", "examine", "compare", "contrast", "organize"],
-        "evaluate": ["evaluate", "assess", "critique", "judge", "justify", "argue"],
-        "create": ["create", "design", "develop", "construct", "produce", "formulate"]
-    }
+    # Bloom's taxonomy verbs by level.
+    # Source of truth: schemas/taxonomies/bloom_verbs.json (loaded via
+    # lib.ontology.bloom). Migrated in Wave 1.2 / Worker H (REC-BL-01).
+    BLOOM_VERBS = _get_canonical_verbs_list()
 
     # Interactive component patterns
     COMPONENT_PATTERNS = {
