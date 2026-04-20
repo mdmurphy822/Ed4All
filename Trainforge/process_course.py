@@ -44,6 +44,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.decision_capture import DecisionCapture
+from lib.ontology.slugs import canonical_slug
 from Trainforge.generators import summary_factory
 from Trainforge.parsers.html_content_parser import HTMLContentParser, HTMLTextExtractor
 from Trainforge.parsers.xpath_walker import (
@@ -377,16 +378,19 @@ def compile_domain_concept_seeds(
 # ---------------------------------------------------------------------------
 
 def normalize_tag(raw: str) -> str:
-    """Normalize a concept string to lowercase-hyphenated tag."""
-    tag = raw.lower().strip()
-    tag = re.sub(r"[^a-z0-9\s-]", "", tag)
-    tag = re.sub(r"\s+", "-", tag)
-    tag = tag.strip("-")
-    # Limit to 4 words
+    """Normalize a concept string to lowercase-hyphenated tag.
+
+    Canonicalization delegates to the shared ``lib.ontology.slugs.canonical_slug``
+    (REC-ID-03, Wave 4 Worker Q). The display-layer rules — truncating to 4
+    tokens and rejecting tags whose first character isn't alphabetic — remain
+    specific to Trainforge's LibV2 tag format and stay here.
+    """
+    tag = canonical_slug(raw)
+    # Limit to 4 words (display-layer cap specific to LibV2 tag URLs).
     parts = tag.split("-")
     if len(parts) > 4:
         tag = "-".join(parts[:4])
-    # Tags must start with a letter (LibV2 lowercase-hyphenated format)
+    # Tags must start with a letter (LibV2 lowercase-hyphenated format).
     if tag and not tag[0].isalpha():
         return ""
     return tag
