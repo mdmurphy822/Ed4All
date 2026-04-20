@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ed4all.dev/ns/courseforge/v1/CourseModule.schema.json",
   "title": "Courseforge JSON-LD Page Metadata v1",
-  "description": "Formalizes the JSON-LD contract emitted by Courseforge on every course-module HTML page inside <script type=\"application/ld+json\"> blocks. Top-level type is CourseModule. Consumed by Trainforge's html_content_parser and process_course pipeline as the authoritative metadata source (priority: JSON-LD > data-cf-* > regex heuristics). Per REC-JSL-01 this schema tightens the misconception shape (both keys required) and normalizes bloomRange to an array.",
-  "$comment": "Shape lifted from Courseforge/scripts/generate_course.py: _build_page_metadata (L571-595), _build_objectives_metadata (L512-546), _build_sections_metadata (L549-568). Taxonomy $refs target Worker F's schemas (merged in PR #20). Enum reconciliation: learningObjectives[].assessmentSuggestions and suggestedAssessmentTypes both reference question_type.json's 9-value QuestionType union; emit-side vocabulary at :534-539 and :689,707 is a subset. Per KG-quality review Wave 1.2 plan, Worker C outline at plans/kg-quality-review-2026-04/discovery/c-jsonld-contract.md.",
+  "description": "Formalizes the JSON-LD contract emitted by Courseforge on every course-module HTML page inside <script type=\"application/ld+json\"> blocks. Top-level type is CourseModule. Consumed by Trainforge's html_content_parser and process_course pipeline as the authoritative metadata source (priority: JSON-LD > data-cf-* > regex heuristics). Per REC-JSL-01 this schema tightens the misconception shape (both keys required) and normalizes bloomRange to an array. Wave 9 adds optional page-level and section-level sourceReferences[] (each conforming to schemas/knowledge/source_reference.schema.json).",
+  "$comment": "Shape lifted from Courseforge/scripts/generate_course.py: _build_page_metadata (L571-595), _build_objectives_metadata (L512-546), _build_sections_metadata (L549-568). Taxonomy $refs target Worker F's schemas (merged in PR #20). Enum reconciliation: learningObjectives[].assessmentSuggestions and suggestedAssessmentTypes both reference question_type.json's 9-value QuestionType union; emit-side vocabulary at :534-539 and :689,707 is a subset. Per KG-quality review Wave 1.2 plan, Worker C outline at plans/kg-quality-review-2026-04/discovery/c-jsonld-contract.md. Wave 9 source-provenance additions: optional sourceReferences arrays at page and section level, $ref-ing the canonical SourceReference shape.",
   "type": "object",
   "required": ["@context", "@type", "courseCode", "weekNumber", "moduleType", "pageId"],
   "additionalProperties": false,
@@ -59,6 +59,11 @@
       "type": "array",
       "items": { "type": "string" },
       "description": "pageIds that are prerequisite to this page. Consume-only today (Trainforge reads at html_content_parser.py:219; no emit site yet). Reserved here for Wave 2 REC-JSL-02 emit."
+    },
+    "sourceReferences": {
+      "type": "array",
+      "items": { "$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json" },
+      "description": "Wave 9: optional page-level source attribution. Each entry references a DART-synthesized source block (canonical shape: schemas/knowledge/source_reference.schema.json). Emitted by generate_course.py when source_module_map.json is populated; absent when no DART input (course_generation workflow) or when routing produced no mapping. Elided when empty so legacy callers stay schema-clean."
     }
   },
   "$defs": {
@@ -134,6 +139,11 @@
           "minItems": 1,
           "maxItems": 2,
           "description": "Bloom's level range for the section. Per REC-JSL-01 normalized to array (emitter at generate_course.py:566 wraps scalar strings). Legacy str|array drift handled defensively at consume side but emit is array-only."
+        },
+        "sourceReferences": {
+          "type": "array",
+          "items": { "$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json" },
+          "description": "Wave 9: optional section-level source attribution. Emit only when a section draws from a different set of source blocks than the page overall (override pattern). Falls back to page-level sourceReferences when absent. Each entry conforms to schemas/knowledge/source_reference.schema.json."
         }
       }
     },

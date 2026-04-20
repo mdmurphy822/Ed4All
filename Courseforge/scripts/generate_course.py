@@ -307,8 +307,40 @@ def _wrap_page(title: str, course_code: str, week_num: int, body_html: str,
 </html>"""
 
 
-def _render_objectives(objectives: List[Dict]) -> str:
-    """Render a learning objectives box with data-cf-* metadata attributes."""
+def _source_attr_string(
+    source_ids: Optional[List[str]],
+    source_primary: Optional[str] = None,
+) -> str:
+    """Render the ``data-cf-source-ids`` / ``data-cf-source-primary`` attrs.
+
+    Wave 9 source-provenance emit surface (P2 decision: section / heading /
+    component wrappers only; no per-``<p>`` / ``<li>`` / ``<tr>`` bloat).
+    Callers pass the sourceId list for the enclosing element; an empty or
+    None list produces an empty string so the renderer stays identical to
+    legacy behavior for non-textbook workflows.
+    """
+    if not source_ids:
+        return ""
+    joined = ",".join(html_mod.escape(sid) for sid in source_ids if sid)
+    out = f' data-cf-source-ids="{joined}"'
+    if source_primary:
+        out += f' data-cf-source-primary="{html_mod.escape(source_primary)}"'
+    return out
+
+
+def _render_objectives(
+    objectives: List[Dict],
+    *,
+    source_ids: Optional[List[str]] = None,
+    source_primary: Optional[str] = None,
+) -> str:
+    """Render a learning objectives box with data-cf-* metadata attributes.
+
+    Wave 9: when ``source_ids`` is non-empty, the enclosing
+    ``.objectives`` wrapper carries ``data-cf-source-ids`` (and optionally
+    ``data-cf-source-primary``) so downstream consumers can tie the block
+    back to a DART source region.
+    """
     items = []
     for o in objectives:
         bloom_level = o.get("bloom_level")
@@ -327,8 +359,9 @@ def _render_objectives(objectives: List[Dict]) -> str:
             f'      <li{attrs}><strong>{o["id"]}:</strong> {html_mod.escape(o["statement"])}</li>'
         )
     items_html = "\n".join(items)
+    wrapper_source_attrs = _source_attr_string(source_ids, source_primary)
     return f"""
-    <div class="objectives" role="region" aria-label="Learning Objectives">
+    <div class="objectives" role="region" aria-label="Learning Objectives"{wrapper_source_attrs}>
       <h2>Learning Objectives</h2>
       <p>After completing this module, you will be able to:</p>
       <ul>
@@ -359,8 +392,19 @@ def _render_flip_cards(terms: List[Dict]) -> str:
     return f'    <div class="flip-card-grid">{"".join(cards)}\n    </div>'
 
 
-def _render_self_check(questions: List[Dict]) -> str:
-    """Render self-check quiz questions with JS feedback and data-cf-* metadata."""
+def _render_self_check(
+    questions: List[Dict],
+    *,
+    source_ids: Optional[List[str]] = None,
+    source_primary: Optional[str] = None,
+) -> str:
+    """Render self-check quiz questions with JS feedback and data-cf-* metadata.
+
+    Wave 9: each ``.self-check`` wrapper carries ``data-cf-source-ids``
+    derived from the per-question ``source_references`` when declared, or
+    the page-level ``source_ids`` otherwise. Emit happens at the wrapper
+    level only (P2 decision).
+    """
     blocks = []
     for i, q in enumerate(questions, 1):
         opts = []
@@ -387,6 +431,14 @@ def _render_self_check(questions: List[Dict]) -> str:
         )
         if obj_ref:
             sc_attrs += f' data-cf-objective-ref="{html_mod.escape(obj_ref)}"'
+        q_refs = q.get("source_references")
+        if q_refs:
+            q_ids = _refs_to_id_list(q_refs)
+            q_primary = _refs_primary(q_refs)
+        else:
+            q_ids = source_ids
+            q_primary = source_primary
+        sc_attrs += _source_attr_string(q_ids, q_primary)
         blocks.append(f"""
     <div class="self-check"{sc_attrs}>
       <h3>Question {i}</h3>
@@ -416,8 +468,21 @@ def _infer_content_type(section: Dict) -> str:
     return "explanation"
 
 
-def _render_content_sections(sections: List[Dict]) -> str:
-    """Render content sections with h2/h3 headings, data-cf-* metadata, and paragraphs."""
+def _render_content_sections(
+    sections: List[Dict],
+    *,
+    source_ids: Optional[List[str]] = None,
+    source_primary: Optional[str] = None,
+) -> str:
+    """Render content sections with h2/h3 headings, data-cf-* metadata, and paragraphs.
+
+    Wave 9 source-provenance (P2 decision): when a per-section source
+    override is declared on ``section["source_references"]`` (list of
+    SourceReference dicts), that section's heading carries its own
+    ``data-cf-source-ids``. Otherwise the page-level ``source_ids`` are
+    used for every heading that doesn't override. Never emitted on
+    per-``<p>`` / ``<li>`` / ``<tr>`` children.
+    """
     parts = []
     for section in sections:
         heading = html_mod.escape(section["heading"])
@@ -436,6 +501,18 @@ def _render_content_sections(sections: List[Dict]) -> str:
             h_attrs += f' data-cf-key-terms="{key_term_slugs}"'
         if bloom_range:
             h_attrs += f' data-cf-bloom-range="{bloom_range}"'
+
+        # Wave 9: per-section source override takes precedence over
+        # page-level ids. Falls back to page ids when the section doesn't
+        # declare its own mapping.
+        section_refs = section.get("source_references")
+        if section_refs:
+            section_ids = _refs_to_id_list(section_refs)
+            section_primary = _refs_primary(section_refs)
+        else:
+            section_ids = source_ids
+            section_primary = source_primary
+        h_attrs += _source_attr_string(section_ids, section_primary)
 
         parts.append(f"    <{tag}{h_attrs}>{heading}</{tag}>")
         for para in section.get("paragraphs", []):
@@ -488,8 +565,18 @@ def _render_content_sections(sections: List[Dict]) -> str:
     return "\n".join(parts)
 
 
-def _render_activities(activities: List[Dict]) -> str:
-    """Render activity cards with data-cf-* metadata."""
+def _render_activities(
+    activities: List[Dict],
+    *,
+    source_ids: Optional[List[str]] = None,
+    source_primary: Optional[str] = None,
+) -> str:
+    """Render activity cards with data-cf-* metadata.
+
+    Wave 9: per-activity ``source_references`` override the page-level
+    ``source_ids`` when present. Emit site is the ``.activity-card``
+    wrapper only (P2 decision).
+    """
     parts = []
     # REC-VOC-02: deterministic teaching_role from (component, purpose) pair.
     act_role = _map_teaching_role("activity", "practice")
@@ -504,6 +591,14 @@ def _render_activities(activities: List[Dict]) -> str:
         )
         if obj_ref:
             act_attrs += f' data-cf-objective-ref="{html_mod.escape(obj_ref)}"'
+        act_refs = act.get("source_references")
+        if act_refs:
+            act_ids = _refs_to_id_list(act_refs)
+            act_primary = _refs_primary(act_refs)
+        else:
+            act_ids = source_ids
+            act_primary = source_primary
+        act_attrs += _source_attr_string(act_ids, act_primary)
         parts.append(f"""
     <div class="activity-card"{act_attrs}>
       <h3>Activity {i}: {html_mod.escape(act["title"])}</h3>
@@ -593,7 +688,14 @@ def _collect_section_roles(section: Dict) -> List[str]:
 
 
 def _build_sections_metadata(sections: List[Dict]) -> List[Dict[str, Any]]:
-    """Build structured section metadata for JSON-LD."""
+    """Build structured section metadata for JSON-LD.
+
+    Wave 9 addition (source provenance): each section may carry a
+    ``source_references`` key (list of
+    :class:`schemas/knowledge/source_reference.schema.json` SourceReference
+    objects). When present and non-empty, emitted as ``sourceReferences``
+    on the section entry. Absent / empty → elided for backward compat.
+    """
     result = []
     for section in sections:
         content_type = section.get("content_type") or _infer_content_type(section)
@@ -615,6 +717,10 @@ def _build_sections_metadata(sections: List[Dict]) -> List[Dict[str, Any]]:
         bloom_range = section.get("bloom_range")
         if bloom_range:
             entry["bloomRange"] = [bloom_range] if isinstance(bloom_range, str) else bloom_range
+        # Wave 9: section-level source attribution (override pattern).
+        section_refs = section.get("source_references")
+        if section_refs:
+            entry["sourceReferences"] = list(section_refs)
         result.append(entry)
     return result
 
@@ -627,6 +733,7 @@ def _build_page_metadata(
     suggested_assessments: Optional[List[str]] = None,
     classification: Optional[Dict] = None,
     prerequisite_pages: Optional[List[str]] = None,
+    source_references: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Build the JSON-LD metadata dict for a single page.
 
@@ -637,6 +744,14 @@ def _build_page_metadata(
       * ``prerequisite_pages``: when non-empty, emits the
         ``prerequisitePages`` array matching
         ``schemas/knowledge/courseforge_jsonld_v1.schema.json`` §58-62.
+
+    Wave 9 addition (source provenance):
+      * ``source_references``: optional list of SourceReference dicts
+        (per ``schemas/knowledge/source_reference.schema.json``). Emitted
+        as top-level ``sourceReferences`` when non-empty. Mirrors the
+        ``prerequisite_pages`` elision pattern — empty / None → key
+        omitted so the page still validates against the schema for
+        non-textbook workflows (course_generation).
     """
     meta: Dict[str, Any] = {
         "@context": "https://ed4all.dev/ns/courseforge/v1",
@@ -658,7 +773,112 @@ def _build_page_metadata(
         meta["classification"] = classification
     if prerequisite_pages:
         meta["prerequisitePages"] = list(prerequisite_pages)
+    if source_references:
+        meta["sourceReferences"] = list(source_references)
     return meta
+
+
+def _refs_to_id_list(refs: Optional[List[Dict[str, Any]]]) -> List[str]:
+    """Return the sourceId list implied by a SourceReference array.
+
+    Shape matches ``schemas/knowledge/source_reference.schema.json``:
+    every entry has a ``sourceId`` key. Missing / malformed entries are
+    skipped silently — emit-side validation is the source-refs gate's
+    job, not the renderer's.
+    """
+    if not refs:
+        return []
+    ids: List[str] = []
+    for ref in refs:
+        if isinstance(ref, dict):
+            sid = ref.get("sourceId")
+            if isinstance(sid, str) and sid:
+                ids.append(sid)
+    return ids
+
+
+def _refs_primary(refs: Optional[List[Dict[str, Any]]]) -> Optional[str]:
+    """Return the single dominant sourceId when one exists.
+
+    A ref with ``role == "primary"`` wins; when multiple primaries exist
+    (or none) we return None so callers can skip the
+    ``data-cf-source-primary`` attribute. Keeps the attribute honest —
+    only emitted when routing produced an unambiguous dominant source.
+    """
+    if not refs:
+        return None
+    primary_ids = [
+        ref.get("sourceId")
+        for ref in refs
+        if isinstance(ref, dict)
+        and ref.get("role") == "primary"
+        and isinstance(ref.get("sourceId"), str)
+        and ref.get("sourceId")
+    ]
+    if len(primary_ids) == 1:
+        return primary_ids[0]
+    return None
+
+
+def _page_refs_for(
+    source_module_map: Optional[Dict[str, Dict[str, Dict[str, Any]]]],
+    week_num: int,
+    page_id: str,
+) -> Optional[List[Dict[str, Any]]]:
+    """Look up the SourceReference list for a given (week, page) pair.
+
+    ``source_module_map`` follows the Wave 9 shape emitted by the
+    ``source-router`` agent::
+
+        {
+          "week_03": {
+            "content_01": {
+              "primary":      ["dart:slug#s5_p2"],
+              "contributing": ["dart:slug#s4_p0"],
+              "confidence":   0.85
+            },
+            ...
+          }
+        }
+
+    The function normalizes the ``primary`` / ``contributing`` lists into
+    a SourceReference array. When the page is absent or the map is empty,
+    returns ``None`` so the renderer elides all source-ref output for
+    that page (backward-compat path).
+    """
+    if not source_module_map:
+        return None
+    week_key = f"week_{week_num:02d}"
+    week_entries = source_module_map.get(week_key)
+    if not isinstance(week_entries, dict):
+        return None
+    # Map may key by either the full page_id or a short key; prefer exact
+    # match on the emitted page_id, fall back to stripping the week prefix.
+    entry = week_entries.get(page_id)
+    if entry is None:
+        short_key = page_id
+        prefix = f"week_{week_num:02d}_"
+        if short_key.startswith(prefix):
+            short_key = short_key[len(prefix):]
+        entry = week_entries.get(short_key)
+    if not isinstance(entry, dict):
+        return None
+
+    refs: List[Dict[str, Any]] = []
+    confidence = entry.get("confidence")
+    for sid in entry.get("primary") or []:
+        if isinstance(sid, str) and sid:
+            ref: Dict[str, Any] = {"sourceId": sid, "role": "primary"}
+            if isinstance(confidence, (int, float)):
+                ref["confidence"] = float(confidence)
+            refs.append(ref)
+    for sid in entry.get("contributing") or []:
+        if isinstance(sid, str) and sid:
+            ref = {"sourceId": sid, "role": "contributing"}
+            if isinstance(confidence, (int, float)):
+                ref["confidence"] = float(confidence)
+            refs.append(ref)
+    return refs or None
 
 
 def generate_week(
@@ -668,6 +888,7 @@ def generate_week(
     canonical_objectives: Optional[Dict[str, Any]] = None,
     classification: Optional[Dict] = None,
     prerequisite_map: Optional[Dict[str, List[str]]] = None,
+    source_module_map: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
 ):
     """Generate all files for a single week.
 
@@ -685,6 +906,13 @@ def generate_week(
       * ``prerequisite_map`` — optional ``{page_id: [prereq_page_id, ...]}``
         map; non-empty entries surface as ``prerequisitePages`` arrays on
         the matching page's JSON-LD.
+
+    Wave 9 addition (source provenance):
+      * ``source_module_map`` — optional ``{week_key: {page_id: entry}}``
+        map produced by the ``source-router`` agent. Populates JSON-LD
+        ``sourceReferences[]`` and ``data-cf-source-ids`` attributes on
+        each page's HTML. Absent / empty → no source attribution emitted;
+        backward-compat for non-textbook workflows.
     """
     week_num = week_data["week_number"]
     week_dir = output_dir / f"week_{week_num:02d}"
@@ -709,7 +937,14 @@ def generate_week(
     week_misconceptions = week_data.get("misconceptions", [])
 
     # 1. Overview
-    overview_body = _render_objectives(week_data["objectives"])
+    overview_page_id = f"week_{week_num:02d}_overview"
+    overview_refs = _page_refs_for(source_module_map, week_num, overview_page_id)
+    overview_ids = _refs_to_id_list(overview_refs)
+    overview_primary = _refs_primary(overview_refs)
+    overview_body = _render_objectives(
+        week_data["objectives"], source_ids=overview_ids,
+        source_primary=overview_primary,
+    )
     if week_data.get("overview_text"):
         for p in week_data["overview_text"]:
             overview_body += f"\n    <p>{p}</p>"
@@ -720,13 +955,13 @@ def generate_week(
         overview_body += "\n    </ul>"
     overview_body += f"\n    <p><strong>Estimated time:</strong> {week_data.get('estimated_hours', '3-4')} hours</p>"
 
-    overview_page_id = f"week_{week_num:02d}_overview"
     overview_meta = _build_page_metadata(
         course_code, week_num, "overview",
         overview_page_id,
         objectives=week_data["objectives"],
         classification=classification,
         prerequisite_pages=prereq_lookup.get(overview_page_id),
+        source_references=overview_refs,
     )
     overview_html = _wrap_page(
         f"Week {week_num} Overview: {week_data['title']}",
@@ -738,11 +973,18 @@ def generate_week(
     # 2. Content modules
     for ci, content in enumerate(week_data.get("content_modules", []), 1):
         slug = re.sub(r"[^a-z0-9]+", "_", content["title"].lower()).strip("_")[:40]
-        content_body = _render_content_sections(content["sections"])
+        page_id = f"week_{week_num:02d}_content_{ci:02d}_{slug}"
+        page_refs = _page_refs_for(source_module_map, week_num, page_id)
+        page_ids_list = _refs_to_id_list(page_refs)
+        page_primary = _refs_primary(page_refs)
+        content_body = _render_content_sections(
+            content["sections"],
+            source_ids=page_ids_list,
+            source_primary=page_primary,
+        )
         extra_js = FLIP_CARD_JS if any(
             s.get("flip_cards") for s in content["sections"]
         ) else ""
-        page_id = f"week_{week_num:02d}_content_{ci:02d}_{slug}"
         content_meta = _build_page_metadata(
             course_code, week_num, "content", page_id,
             objectives=week_data["objectives"],
@@ -750,6 +992,7 @@ def generate_week(
             misconceptions=content.get("misconceptions", week_misconceptions),
             classification=classification,
             prerequisite_pages=prereq_lookup.get(page_id),
+            source_references=page_refs,
         )
         content_html = _wrap_page(
             f"Week {week_num}: {content['title']}",
@@ -761,9 +1004,14 @@ def generate_week(
 
     # 3. Application / Activities
     if week_data.get("activities"):
-        app_body = "\n    <h2>Learning Activities</h2>"
-        app_body += _render_activities(week_data["activities"])
         app_page_id = f"week_{week_num:02d}_application"
+        app_refs = _page_refs_for(source_module_map, week_num, app_page_id)
+        app_ids = _refs_to_id_list(app_refs)
+        app_primary = _refs_primary(app_refs)
+        app_body = "\n    <h2>Learning Activities</h2>"
+        app_body += _render_activities(
+            week_data["activities"], source_ids=app_ids, source_primary=app_primary,
+        )
         app_meta = _build_page_metadata(
             course_code, week_num, "application",
             app_page_id,
@@ -771,6 +1019,7 @@ def generate_week(
             suggested_assessments=["short_answer", "essay"],
             classification=classification,
             prerequisite_pages=prereq_lookup.get(app_page_id),
+            source_references=app_refs,
         )
         app_html = _wrap_page(
             f"Week {week_num}: Application &amp; Activities",
@@ -781,10 +1030,17 @@ def generate_week(
 
     # 4. Self-check
     if week_data.get("self_check_questions"):
+        sc_page_id = f"week_{week_num:02d}_self_check"
+        sc_refs = _page_refs_for(source_module_map, week_num, sc_page_id)
+        sc_ids = _refs_to_id_list(sc_refs)
+        sc_primary = _refs_primary(sc_refs)
         sc_body = "\n    <h2>Self-Check: Test Your Understanding</h2>"
         sc_body += "\n    <p>Select the best answer for each question. You will receive immediate feedback.</p>"
-        sc_body += _render_self_check(week_data["self_check_questions"])
-        sc_page_id = f"week_{week_num:02d}_self_check"
+        sc_body += _render_self_check(
+            week_data["self_check_questions"],
+            source_ids=sc_ids,
+            source_primary=sc_primary,
+        )
         sc_meta = _build_page_metadata(
             course_code, week_num, "assessment",
             sc_page_id,
@@ -792,6 +1048,7 @@ def generate_week(
             suggested_assessments=["multiple_choice", "true_false"],
             classification=classification,
             prerequisite_pages=prereq_lookup.get(sc_page_id),
+            source_references=sc_refs,
         )
         sc_html = _wrap_page(
             f"Week {week_num}: Self-Check Quiz",
@@ -801,7 +1058,12 @@ def generate_week(
         (week_dir / f"week_{week_num:02d}_self_check.html").write_text(sc_html, encoding="utf-8")
 
     # 5. Summary
-    summary_body = "\n    <h2>Key Takeaways</h2>"
+    summary_page_id = f"week_{week_num:02d}_summary"
+    summary_refs = _page_refs_for(source_module_map, week_num, summary_page_id)
+    summary_ids = _refs_to_id_list(summary_refs)
+    summary_primary = _refs_primary(summary_refs)
+    summary_heading_attrs = _source_attr_string(summary_ids, summary_primary)
+    summary_body = f"\n    <h2{summary_heading_attrs}>Key Takeaways</h2>"
     if week_data.get("key_takeaways"):
         summary_body += "\n    <ul>"
         for kt in week_data["key_takeaways"]:
@@ -812,13 +1074,13 @@ def generate_week(
     if week_data.get("next_week_preview"):
         summary_body += f"\n    <h2>Looking Ahead</h2>\n    <p>{week_data['next_week_preview']}</p>"
 
-    summary_page_id = f"week_{week_num:02d}_summary"
     summary_meta = _build_page_metadata(
         course_code, week_num, "summary",
         summary_page_id,
         objectives=week_data["objectives"],
         classification=classification,
         prerequisite_pages=prereq_lookup.get(summary_page_id),
+        source_references=summary_refs,
     )
     summary_html = _wrap_page(
         f"Week {week_num}: Summary &amp; Reflection",
@@ -830,8 +1092,13 @@ def generate_week(
     # 6. Discussion
     if week_data.get("discussion"):
         disc = week_data["discussion"]
+        disc_page_id = f"week_{week_num:02d}_discussion"
+        disc_refs = _page_refs_for(source_module_map, week_num, disc_page_id)
+        disc_ids = _refs_to_id_list(disc_refs)
+        disc_primary = _refs_primary(disc_refs)
+        disc_attrs = _source_attr_string(disc_ids, disc_primary)
         disc_body = f"""
-    <div class="discussion-prompt">
+    <div class="discussion-prompt"{disc_attrs}>
       <h2>Discussion Forum</h2>
       <p>{disc["prompt"]}</p>
       <h3>Guidelines</h3>
@@ -841,13 +1108,13 @@ def generate_week(
         <li><strong>Due:</strong> {disc.get("due", "Initial post by Wednesday; replies by Sunday")}</li>
       </ul>
     </div>"""
-        disc_page_id = f"week_{week_num:02d}_discussion"
         disc_meta = _build_page_metadata(
             course_code, week_num, "discussion",
             disc_page_id,
             objectives=week_data["objectives"],
             classification=classification,
             prerequisite_pages=prereq_lookup.get(disc_page_id),
+            source_references=disc_refs,
         )
         disc_html = _wrap_page(
             f"Week {week_num}: Discussion",
@@ -866,6 +1133,7 @@ def generate_course(
     output_dir: str,
     objectives_path: Optional[str] = None,
     classification: Optional[Dict] = None,
+    source_module_map_path: Optional[str] = None,
 ):
     """Generate a full course from a JSON data file.
 
@@ -888,6 +1156,13 @@ def generate_course(
             classification triggers emission of:
               * ``course_metadata.json`` at ``output_dir`` root, and
               * a ``classification`` key on every page's JSON-LD.
+        source_module_map_path: Optional path to a Wave 9
+            ``source_module_map.json`` produced by the ``source-router``
+            agent. Shape: ``{week_key: {page_id: {primary: [...],
+            contributing: [...], confidence: 0.x}}}``. Populates
+            ``sourceReferences[]`` in JSON-LD and ``data-cf-source-ids``
+            on HTML wrappers. Absent / empty → no provenance emit
+            (backward compat).
     """
     data = json.loads(Path(course_data_path).read_text())
     out = Path(output_dir)
@@ -912,6 +1187,16 @@ def generate_course(
     # Sourced from course data; empty/missing → no prerequisitePages emitted.
     prerequisite_map = data.get("prerequisite_map") or {}
 
+    # Wave 9: optional source-routing map. Prefer explicit CLI path, then
+    # course-data override, then no map at all (backward-compat path).
+    source_module_map: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None
+    if source_module_map_path:
+        map_path = Path(source_module_map_path)
+        if map_path.exists():
+            source_module_map = json.loads(map_path.read_text(encoding="utf-8"))
+    elif isinstance(data.get("source_module_map"), dict):
+        source_module_map = data.get("source_module_map")
+
     canonical = None
     if objectives_path:
         canonical = load_canonical_objectives(Path(objectives_path))
@@ -930,6 +1215,7 @@ def generate_course(
             canonical_objectives=canonical,
             classification=effective_classification,
             prerequisite_map=prerequisite_map,
+            source_module_map=source_module_map,
         )
         total_files += count
         print(f"  Week {week['week_number']:2d}: {count} files - {', '.join(files)}")
@@ -1014,6 +1300,15 @@ def _build_cli_parser() -> argparse.ArgumentParser:
             "(REC-TAX-01), e.g. software-engineering,algorithms."
         ),
     )
+    parser.add_argument(
+        "--source-module-map",
+        default=None,
+        help=(
+            "Wave 9: optional path to source_module_map.json produced by the "
+            "source-router agent. Populates sourceReferences[] in JSON-LD and "
+            "data-cf-source-ids on HTML wrappers. Absent → no provenance emit."
+        ),
+    )
     return parser
 
 
@@ -1044,4 +1339,5 @@ if __name__ == "__main__":
         args.output_dir,
         objectives_path=args.objectives,
         classification=classification,
+        source_module_map_path=args.source_module_map,
     )

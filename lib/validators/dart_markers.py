@@ -13,15 +13,21 @@ MCP.tools.pipeline_tools.validate_dart_markers (the MCP tool) into the
 ValidationGateManager Validator protocol so it can be wired as a
 validation gate in config/workflows.yaml.
 
-Wave 8 addition: warning-level source-provenance markers
+Wave 8 addition: source-provenance markers
   - data-dart-source attribute on every <section>
   - data-dart-block-id attribute on every <section>
 
 These are emitted by `DART/multi_source_interpreter.py::generate_html_from_synthesized`
 (multi-source path) and stamped with `data-dart-source="claude_llm"` on the
-legacy claude_processor path. They are checked at WARNING severity only —
-promotion to critical is deferred to Wave 9, per the design doc: new
-emission paths need time to shake out edge cases before we block on them.
+legacy claude_processor path.
+
+Wave 9 promotion: attributes that ARE emitted but are malformed / missing
+on a <section> that otherwise carries the DART semantic contract are now
+reported at CRITICAL severity. The graceful-fallback rule is preserved:
+when a document carries NO <section> elements with the DART semantic
+class (pre-Wave-8 legacy HTML), we do not fail — only pages that claim
+to be DART-produced and then omit provenance are blocked. This matches
+the design doc's "promote after Wave 8 emit has settled" note.
 
 Referenced by: config/workflows.yaml
   - batch_dart.multi_source_synthesis -> dart_markers
@@ -52,6 +58,18 @@ _SECTION_OPEN_RE = re.compile(r"<section\b[^>]*>", re.IGNORECASE)
 # Attribute presence checks run against each section's attribute string.
 _DATA_DART_SOURCE_RE = re.compile(r'\bdata-dart-source\s*=', re.IGNORECASE)
 _DATA_DART_BLOCK_ID_RE = re.compile(r'\bdata-dart-block-id\s*=', re.IGNORECASE)
+
+# Wave 9: critical-severity checks for malformed attributes. An attribute
+# that is *present but empty* is a bug in the emit path and must block —
+# this is the "emitted-but-malformed" failure mode. Fully-absent attrs
+# remain at warning severity per the graceful-fallback rule documented
+# at the top of this module.
+_EMPTY_DATA_DART_SOURCE_RE = re.compile(
+    r'\bdata-dart-source\s*=\s*(["\'])\1', re.IGNORECASE,
+)
+_EMPTY_DATA_DART_BLOCK_ID_RE = re.compile(
+    r'\bdata-dart-block-id\s*=\s*(["\'])\1', re.IGNORECASE,
+)
 
 
 class DartMarkersValidator:
@@ -128,19 +146,30 @@ class DartMarkersValidator:
                     suggestion=f"Ensure DART output emits one of: {needles}",
                 ))
 
-        # Wave 8: warning-level source-provenance marker checks. Count how
-        # many <section> elements carry data-dart-source / data-dart-block-id
-        # attributes. Missing attributes surface as warnings only — the
-        # critical required markers above remain the blocking contract.
+        # Wave 8 + Wave 9: source-provenance marker checks.
+        #
+        # Rules:
+        #   - Absent attributes on every <section>           -> warning
+        #     (graceful fallback for pre-Wave-8 legacy HTML).
+        #   - Some <section>s carry attrs, others don't      -> warning
+        #     (emit has settled but coverage is incomplete).
+        #   - An attr is PRESENT but the value is EMPTY      -> critical
+        #     (Wave 9 "emitted-but-malformed" blocker).
         section_tags = _SECTION_OPEN_RE.findall(content)
         total_sections = len(section_tags)
         sections_without_source = 0
         sections_without_block_id = 0
+        empty_source_count = 0
+        empty_block_id_count = 0
         for tag in section_tags:
             if not _DATA_DART_SOURCE_RE.search(tag):
                 sections_without_source += 1
+            elif _EMPTY_DATA_DART_SOURCE_RE.search(tag):
+                empty_source_count += 1
             if not _DATA_DART_BLOCK_ID_RE.search(tag):
                 sections_without_block_id += 1
+            elif _EMPTY_DATA_DART_BLOCK_ID_RE.search(tag):
+                empty_block_id_count += 1
 
         if total_sections > 0 and sections_without_source > 0:
             issues.append(GateIssue(
@@ -168,6 +197,34 @@ class DartMarkersValidator:
                 suggestion=(
                     "Ensure DART emits data-dart-block-id on every <section>. "
                     "Multi-source path uses \"s{index}\" or content-hash IDs."
+                ),
+            ))
+
+        # Wave 9 critical-severity checks: attributes emitted-but-malformed.
+        if empty_source_count > 0:
+            issues.append(GateIssue(
+                severity="critical",
+                code="EMPTY_DATA_DART_SOURCE",
+                message=(
+                    f"{empty_source_count}/{total_sections} <section> elements carry "
+                    "data-dart-source but the value is empty"
+                ),
+                suggestion=(
+                    "Emit one of the typed extractor enum values: pdftotext, "
+                    "pdfplumber, ocr, synthesized, claude_llm."
+                ),
+            ))
+        if empty_block_id_count > 0:
+            issues.append(GateIssue(
+                severity="critical",
+                code="EMPTY_DATA_DART_BLOCK_ID",
+                message=(
+                    f"{empty_block_id_count}/{total_sections} <section> elements carry "
+                    "data-dart-block-id but the value is empty"
+                ),
+                suggestion=(
+                    "Populate with the synthesized-JSON block_id "
+                    "(e.g. \"s3_c0\") or a 16-hex content hash."
                 ),
             ))
 
