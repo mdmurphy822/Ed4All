@@ -137,10 +137,22 @@ def _seed_rng(chunk_id: str, seed: int) -> random.Random:
     return random.Random(int(h.hexdigest(), 16))
 
 
-def _misconception_id(chunk_id: str, index: int, text: str) -> str:
-    """Stable id for a misconception: chunk_id + index + short hash of text."""
-    short = hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
-    return f"{chunk_id}_mc_{index:02d}_{short}"
+def _misconception_id(misconception_text: str, correction_text: str) -> str:
+    """Content-hash misconception ID (REC-LNK-02).
+
+    Stable across runs and across chunk re-chunking. The hash input is
+    ``misconception_text.strip() + "|" + correction_text.strip()`` -- outer
+    whitespace is normalised but inner whitespace is preserved, so cosmetic
+    edits do not churn IDs but real text edits do.
+
+    Form: ``mc_<16-hex-char sha256>``. Replaces the earlier unstable
+    position-based format ``{chunk_id}_mc_{index:02d}_{hash}``.
+    """
+    mt = (misconception_text or "").strip()
+    ct = (correction_text or "").strip()
+    content = f"{mt}|{ct}"
+    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+    return f"mc_{digest}"
 
 
 def _clamp_length(text: str, lo: int, hi: int, pad_hint: str) -> str:
@@ -334,7 +346,10 @@ def synthesize_preference_pair(
         if rejected_candidate and rejected_candidate != chosen:
             rejected = rejected_candidate
             source = "misconception"
-            mc_id = _misconception_id(chunk_id, idx, str(mc.get("misconception", "")))
+            mc_id = _misconception_id(
+                str(mc.get("misconception", "")),
+                str(mc.get("correction", "")),
+            )
 
     if not rejected or rejected == chosen:
         rejected = _rule_synthesize_rejected(chosen, topic, rng)
