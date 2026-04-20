@@ -35,6 +35,19 @@ def cli(ctx, verbose):
     ctx.obj['verbose'] = verbose
 
 
+# Register Wave 7 canonical 'ed4all run' command. Imported lazily to keep
+# legacy CLI paths working if the orchestrator package fails to import.
+try:
+    from cli.commands import register_run_command
+
+    register_run_command(cli)
+except ImportError as _run_import_err:  # pragma: no cover
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "cli.commands.run unavailable: %s", _run_import_err
+    )
+
+
 # =============================================================================
 # VALIDATE-RUN COMMAND
 # =============================================================================
@@ -414,7 +427,10 @@ def textbook_to_course(ctx, pdf_path, course_name, objectives, weeks,
                        no_assessments, assessment_count, bloom_levels,
                        priority, dry_run, output_json):
     """
-    Create a complete course from a PDF textbook.
+    [DEPRECATED] Create a complete course from a PDF textbook.
+
+    Superseded by ``ed4all run textbook-to-course`` (Wave 7). This command
+    will be removed in the next cleanup cycle.
 
     Pipeline: DART (PDF->HTML) -> Courseforge (content) -> Trainforge (assessments)
 
@@ -438,6 +454,13 @@ def textbook_to_course(ctx, pdf_path, course_name, objectives, weeks,
     """
     import asyncio
     import json as json_lib
+
+    click.secho(
+        "DEPRECATED: Use 'ed4all run textbook-to-course' instead. "
+        "This command will be removed in the next cleanup cycle.",
+        fg='yellow',
+        err=True,
+    )
 
     pdf_path = Path(pdf_path)
 
