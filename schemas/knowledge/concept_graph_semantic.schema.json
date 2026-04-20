@@ -52,6 +52,7 @@
     },
     "edges": {
       "type": "array",
+      "$comment": "REC-LNK-04 (Wave 5.2, Worker U): edges may cross node-type namespaces (federation-by-convention). Legacy taxonomic edges (is-a, prerequisite, related-to) connect concept node IDs. New pedagogical edge types reference heterogeneous endpoints by ID namespace: concept IDs (flat slug or '{course_id}:{slug}'), LO IDs (e.g. 'TO-NN', 'CO-NN', lowercased), chunk IDs (raw chunk.id strings), misconception IDs ('mc_[0-9a-f]{16}' per schemas/knowledge/misconception.schema.json), and question IDs. Consumers resolve endpoints by ID-namespace prefix; no new node types are added to the concept-graph schema itself.",
       "items": {
         "type": "object",
         "required": ["source", "target", "type", "provenance"],
@@ -61,7 +62,16 @@
           "target": {"type": "string"},
           "type": {
             "type": "string",
-            "enum": ["prerequisite", "is-a", "related-to"]
+            "enum": [
+              "prerequisite",
+              "is-a",
+              "related-to",
+              "assesses",
+              "exemplifies",
+              "misconception-of",
+              "derived-from-objective",
+              "defined-by"
+            ]
           },
           "confidence": {
             "type": "number",

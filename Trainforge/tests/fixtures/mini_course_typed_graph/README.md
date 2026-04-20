@@ -1,9 +1,16 @@
 # mini_course_typed_graph — typed-edge inference fixture
 
 Small, deterministic fixture for Worker F's typed-edge concept-graph
-inference. Exercises all three rule modules (`is_a_from_key_terms`,
+inference. Exercises all three taxonomic rule modules (`is_a_from_key_terms`,
 `prerequisite_from_lo_order`, `related_from_cooccurrence`) plus precedence
 resolution.
+
+Wave 5.2 (Worker U, REC-LNK-04) adds five pedagogical edge types. On this
+fixture only `derived-from-objective` fires (chunks carry
+`learning_outcome_refs`). The other four (`defined-by`, `exemplifies`,
+`misconception-of`, `assesses`) emit empty: this fixture predates Worker
+S's `occurrences[]` additions, has no example-typed chunks, and the
+`build_semantic_graph` caller threads no misconceptions/questions.
 
 The fixture is stored as the three JSON artifacts the inference layer
 consumes directly (chunks, course, co-occurrence concept graph). We do NOT
@@ -44,3 +51,5 @@ inference rules drift.
 - **Precedence**: `aria-role` and `accessibility-attribute` have both an
   `is-a` claim and a `related-to` claim; the orchestrator keeps only the
   `is-a` edge.
+- **`derived-from-objective`** (Wave 5.2): each of the four chunks with a
+  populated `learning_outcome_refs` produces a `chunk_id --> lo_id` edge.
