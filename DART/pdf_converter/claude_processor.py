@@ -3,6 +3,15 @@ Claude-based text processor for PDF structure detection and ordering.
 
 Uses Claude API to review extracted PDF text, fix ordering issues,
 and detect document structure for WCAG-compliant HTML generation.
+
+Source-provenance note (Wave 8): this is the legacy DART path. Per P5
+decision, it emits only a minimal ``data-dart-source="claude_llm"`` stamp
+on top-level ``<section>`` wrappers (applied in
+``DART/pdf_converter/converter.py::_generate_html_from_structure``). For
+full per-block source attribution, page refs, and confidence envelopes,
+the multi-source interpreter (``DART/multi_source_interpreter.py``) is
+the primary source-provenance path. See
+``plans/source-provenance/design.md`` §"DART changes".
 """
 
 import hashlib
