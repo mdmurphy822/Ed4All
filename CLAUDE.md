@@ -284,12 +284,15 @@ Priority extraction chain (extends the Courseforge chain above): JSON-LD > `data
 
 | Tool | Description |
 |------|-------------|
-| `create_textbook_pipeline_tool` | Initialize textbook-to-course pipeline |
+| `create_textbook_pipeline_tool` | **DEPRECATED (Wave 7)**: Initialize textbook-to-course pipeline. Prefer `create_workflow(workflow_type="textbook_to_course", ...)` via `cli/commands/run.py`. |
 | `stage_dart_outputs` | Stage DART outputs for Courseforge |
 | `get_pipeline_status` | Check pipeline progress |
 | `validate_dart_markers` | Validate DART output markers |
-| `run_textbook_pipeline_tool` | Execute full textbook pipeline |
+| `run_textbook_pipeline_tool` | **DEPRECATED (Wave 7)**: Execute full textbook pipeline. Prefer the workflow runner via `ed4all run textbook-to-course`. |
 | `archive_to_libv2` | Archive course artifacts to LibV2 |
+| `build_source_module_map` | **Pipeline-internal (Wave 9)**: router that maps DART source blocks to Courseforge pages. Wired into the dispatch registry (`MCP/tools/pipeline_tools.py::_build_tool_registry`) for the `source_mapping` phase of `textbook_to_course`, but intentionally **not** decorated with `@mcp.tool()` — not reachable from external MCP clients. |
+
+**Deprecated CLI surface**: `ed4all textbook-to-course` (top-level command at `cli/main.py`) is also **deprecated as of Wave 7** — emits a yellow warning at invocation and forwards to `create_textbook_pipeline`. Prefer `ed4all run textbook-to-course --corpus ... --course-name ...`.
 
 ### Analysis Tools
 
