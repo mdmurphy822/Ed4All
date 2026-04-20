@@ -157,6 +157,19 @@ agents:
       - objective_synthesis
     max_instances: 1
 
+  source-router:
+    # Wave 9: binds DART source blocks to Courseforge module pages.
+    # Output: source_module_map.json consumed by content-generator + the
+    # source_refs validation gate.
+    source: Courseforge/agents/source-router.md
+    type: source-attribution-router
+    capabilities:
+      - source_block_enumeration
+      - page_to_source_mapping
+      - tfidf_scoring
+      - confidence_scoring
+    max_instances: 1
+
   # =============================================================================
   # TRAINFORGE AGENTS
   # =============================================================================
