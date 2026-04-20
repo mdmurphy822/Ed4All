@@ -74,6 +74,7 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),
         "course_name": ("workflow_params", "course_name"),
         "objectives_path": ("workflow_params", "objectives_path"),
+        "duration_weeks": ("workflow_params", "duration_weeks"),
         "source_module_map_path": (
             "phase_outputs", "source_mapping", "source_module_map_path",
         ),
