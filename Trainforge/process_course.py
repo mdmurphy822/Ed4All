@@ -986,6 +986,12 @@ class CourseProcessor:
                 # fallback attachment when a chunk can't be mapped to a
                 # specific section in _extract_objective_refs.
                 "objective_refs": parsed.objective_refs,
+                # Wave 10: page-level aggregated source_references (full
+                # SourceReference dicts). Threaded into _create_chunk so
+                # chunks carry source.source_references[] end-to-end.
+                # Absence = pre-Wave-9 corpus; downstream treats as
+                # "unknown", not an error.
+                "source_references": parsed.source_references,
                 # Worker M1 diagnostic flags (§4.4a H5 detection)
                 "_jsonld_tag_present": jsonld_tag_present,
                 "_jsonld_parse_failed": jsonld_parse_failed,
@@ -1075,7 +1081,7 @@ class CourseProcessor:
             # Merge adjacent small sections into larger pedagogical units
             merged = self._merge_small_sections(item["sections"])
 
-            for heading, text, chunk_type in merged:
+            for heading, text, chunk_type, section_source_ids in merged:
                 if not text.strip():
                     continue
                 # Strip feedback from quiz section text (sections were parsed before HTML stripping)
@@ -1097,6 +1103,7 @@ class CourseProcessor:
                     start_id=chunk_counter,
                     follows_chunk_id=prev_chunk_id,
                     position_in_module=position_in_module,
+                    section_source_ids=section_source_ids,
                 )
                 chunks.extend(item_chunks)
                 chunk_counter += len(item_chunks)
@@ -1108,20 +1115,52 @@ class CourseProcessor:
         print(f"  Generated {len(chunks)} chunks")
         return chunks
 
-    def _merge_small_sections(self, sections) -> List[Tuple[str, str, str]]:
+    # Wave 10: role-precedence ranking for merging source_references across
+    # multiple sections that collapse into one chunk. Lower integer = stronger
+    # (primary overrides contributing, contributing overrides corroborating).
+    _SOURCE_ROLE_PRECEDENCE = {"primary": 0, "contributing": 1, "corroborating": 2}
+
+    def _merge_section_source_ids(
+        self, accumulated: List[str], section_source_ids: List[str]
+    ) -> List[str]:
+        """Union two sourceId-string lists, dedupe, preserve insertion order.
+
+        Used while collapsing multiple sections into one chunk. The chunk's
+        aggregate source_references[] must contain every distinct sourceId
+        from every merged section; role-precedence is enforced downstream in
+        ``_resolve_chunk_source_references`` when the strings are paired
+        with their full SourceReference dicts.
+        """
+        seen = {sid for sid in accumulated}
+        for sid in section_source_ids:
+            if sid and sid not in seen:
+                seen.add(sid)
+                accumulated.append(sid)
+        return accumulated
+
+    def _merge_small_sections(
+        self, sections
+    ) -> List[Tuple[str, str, str, List[str]]]:
         """
         Merge adjacent sections that are below MIN_CHUNK_SIZE into combined blocks.
 
-        Returns list of (heading, combined_text, chunk_type) tuples.
+        Returns list of (heading, combined_text, chunk_type, merged_source_ids)
+        tuples. ``merged_source_ids`` is the union of every section's
+        ``data-cf-source-ids`` attribute (stringified) across all sections
+        that collapsed into the same chunk (Wave 10); dedupe + insertion-
+        order preserved so downstream role-precedence resolution stays
+        deterministic.
         """
-        merged: List[Tuple[str, str, str]] = []
+        merged: List[Tuple[str, str, str, List[str]]] = []
         buffer_heading = ""
         buffer_text = ""
         buffer_wc = 0
         buffer_type = "explanation"
+        buffer_source_ids: List[str] = []
 
         for section in sections:
             section_type = self._type_from_heading(section.heading)
+            section_src = list(getattr(section, "source_references", []) or [])
 
             if buffer_wc == 0:
                 # Start a new buffer
@@ -1129,6 +1168,7 @@ class CourseProcessor:
                 buffer_text = section.content
                 buffer_wc = section.word_count
                 buffer_type = section_type
+                buffer_source_ids = list(section_src)
             elif buffer_wc + section.word_count <= self.MAX_CHUNK_SIZE:
                 # Merge into buffer
                 buffer_text += "\n\n" + section.content
@@ -1136,17 +1176,19 @@ class CourseProcessor:
                 # Keep the first heading but prefer non-trivial types
                 if buffer_type == "explanation" and section_type != "explanation":
                     buffer_type = section_type
+                self._merge_section_source_ids(buffer_source_ids, section_src)
             else:
                 # Flush buffer and start new
-                merged.append((buffer_heading, buffer_text, buffer_type))
+                merged.append((buffer_heading, buffer_text, buffer_type, buffer_source_ids))
                 buffer_heading = section.heading
                 buffer_text = section.content
                 buffer_wc = section.word_count
                 buffer_type = section_type
+                buffer_source_ids = list(section_src)
 
         # Flush remaining
         if buffer_text.strip():
-            merged.append((buffer_heading, buffer_text, buffer_type))
+            merged.append((buffer_heading, buffer_text, buffer_type, buffer_source_ids))
 
         return merged
 
@@ -1155,6 +1197,7 @@ class CourseProcessor:
         heading: str, chunk_type: str, prefix: str, start_id: int,
         follows_chunk_id: Optional[str] = None,
         position_in_module: int = 0,
+        section_source_ids: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Split a text block into chunks of appropriate size.
 
@@ -1234,6 +1277,7 @@ class CourseProcessor:
                 position_in_module=position_in_module,
                 html_xpath=container_xpath,
                 char_span=char_span,
+                section_source_ids=section_source_ids,
             ))
         else:
             # Split by sentences. Locate each sub_text independently,
@@ -1263,6 +1307,7 @@ class CourseProcessor:
                     position_in_module=position_in_module + i,
                     html_xpath=container_xpath,
                     char_span=char_span,
+                    section_source_ids=section_source_ids,
                 ))
                 last_chunk_id = this_chunk_id
 
@@ -1275,6 +1320,7 @@ class CourseProcessor:
         position_in_module: int = 0,
         html_xpath: Optional[str] = None,
         char_span: Optional[List[int]] = None,
+        section_source_ids: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         words = text.split()
         word_count = len(words)
@@ -1308,6 +1354,28 @@ class CourseProcessor:
         # file without walking imsmanifest.xml.
         if item.get("item_path"):
             source["item_path"] = item["item_path"]
+
+        # Wave 10: fold DART source provenance into source.source_references[].
+        # Precedence chain (same first-seen-wins policy as the parser):
+        #   1. page-level JSON-LD sourceReferences (full shape)
+        #   2. section-level JSON-LD sourceReferences (full shape)
+        #   3. section-level data-cf-source-ids (stringified sourceId →
+        #      synthesised {sourceId, role: 'contributing'})
+        #   4. page-level data-cf-source-ids (same synthesis)
+        # For merged sections (_merge_small_sections), ``section_source_ids``
+        # already carries the unioned sourceId strings across every merged
+        # section. Role-precedence between JSON-LD entries is preserved by
+        # first-seen-wins: page-level JSON-LD overrides section-level, and
+        # section-level JSON-LD overrides data-cf-* synthesis. When the
+        # authoritative shape is missing (pre-Wave-9 corpora), the field is
+        # omitted entirely — consumers treat absence as 'unknown'.
+        resolved_refs = self._resolve_chunk_source_references(
+            item=item,
+            section_heading=section_heading,
+            section_source_ids=section_source_ids or [],
+        )
+        if resolved_refs:
+            source["source_references"] = resolved_refs
 
         chunk: Dict[str, Any] = {
             "id": chunk_id,
@@ -1498,6 +1566,89 @@ class CourseProcessor:
         self._all_concept_tags.update(concept_tags)
 
         return chunk
+
+    def _resolve_chunk_source_references(
+        self,
+        *,
+        item: Dict[str, Any],
+        section_heading: str,
+        section_source_ids: List[str],
+    ) -> List[Dict[str, Any]]:
+        """Wave 10: resolve the chunk's source_references[] array.
+
+        Walks the precedence chain and returns a list of full
+        SourceReference dicts (one per unique sourceId). Returns an empty
+        list when no references are available (pre-Wave-9 corpus or a
+        chunk whose section carries no ``data-cf-source-ids`` and whose
+        page JSON-LD carries no ``sourceReferences``).
+
+        Precedence (first-seen wins on sourceId collision):
+          1. Page-level JSON-LD ``sourceReferences`` (full shape).
+          2. Section-level JSON-LD ``sourceReferences`` (matched by
+             heading equality, case-insensitive; ``(part N)`` suffixes
+             stripped to match _extract_section_metadata).
+          3. Section-level ``data-cf-source-ids`` — the stringified ids
+             that came through _merge_small_sections → auto-roled as
+             ``contributing`` (P1 decision: HTML attrs lack role
+             authority so they default to contributing).
+          4. Page-level ``data-cf-source-ids`` fallback — not rebuilt
+             here because _extract_sections already rolls them into
+             item['source_references'] via _build_page_source_refs;
+             already captured in step 1 above.
+
+        Role-precedence across JSON-LD entries (primary > contributing >
+        corroborating) is preserved because the parser's
+        _build_page_source_refs already normalised the dedup; downstream
+        reads them in first-seen order and uses their authoritative role.
+        """
+        refs: List[Dict[str, Any]] = []
+        seen: set = set()
+
+        def _add(entry: Dict[str, Any]) -> None:
+            sid = entry.get("sourceId") if isinstance(entry, dict) else None
+            if not isinstance(sid, str) or not sid:
+                return
+            if sid in seen:
+                return
+            seen.add(sid)
+            refs.append(dict(entry))
+
+        # 1. Page-level parsed refs (already aggregated by the parser:
+        # page JSON-LD + section JSON-LD + HTML fallback merged with
+        # JSON-LD precedence). item["source_references"] is a list of
+        # full SourceReference dicts when Wave 9 input is present.
+        for entry in item.get("source_references", []) or []:
+            if isinstance(entry, dict):
+                _add(entry)
+
+        # 2. Section-level JSON-LD override: if a JSON-LD section matches
+        # this chunk's heading and declares its own sourceReferences, add
+        # them. The parser's _build_page_source_refs already merged these
+        # into item["source_references"] so step 1 typically covers this,
+        # but we re-walk here to ensure per-chunk specificity when
+        # sections carry refs that aren't in the page-level set.
+        chunk_heading_norm = re.sub(
+            r'\s*\(part\s+\d+\)\s*$', '', section_heading or ''
+        ).lower()
+        cf_meta = item.get("courseforge_metadata") or {}
+        for sec in cf_meta.get("sections", []) or []:
+            if not isinstance(sec, dict):
+                continue
+            if sec.get("heading", "").lower() != chunk_heading_norm:
+                continue
+            for entry in sec.get("sourceReferences", []) or []:
+                if isinstance(entry, dict):
+                    _add(entry)
+            break
+
+        # 3. Section-level data-cf-source-ids (stringified; auto-roled).
+        # These come from ``_merge_small_sections`` which already unioned
+        # every merged section's attrs. Any id already captured in steps
+        # 1-2 above keeps its authoritative role via first-seen-wins.
+        for sid in section_source_ids or []:
+            _add({"sourceId": sid, "role": "contributing"})
+
+        return refs
 
     def _extract_section_metadata(
         self, item: Dict[str, Any], section_heading: str
@@ -2248,6 +2399,20 @@ class CourseProcessor:
         # concept, which may be less than ``frequency`` (frequency counts
         # total tag mentions — a chunk that lists a tag twice counts twice).
         concept_to_chunks: Dict[str, set] = defaultdict(set)
+        # Wave 10: lookup from chunk id → source.source_references[] (if
+        # any). Used to copy the first occurrence's refs onto the emitted
+        # concept node as ``source_refs[]``. Same additive-optional pattern
+        # as occurrences[]: absence = 'unknown' (pre-Wave-9 chunk) → the
+        # node is emitted without ``source_refs``.
+        chunk_source_refs: Dict[str, List[Dict[str, Any]]] = {}
+        for chunk in chunks:
+            cid = chunk.get("id")
+            if not cid:
+                continue
+            src = chunk.get("source") or {}
+            refs = src.get("source_references") if isinstance(src, dict) else None
+            if isinstance(refs, list) and refs:
+                chunk_source_refs[cid] = refs
 
         def _accept(tag: str) -> bool:
             if include_tags is not None and tag not in include_tags:
@@ -2294,7 +2459,18 @@ class CourseProcessor:
             # chunk_id stay legacy-shaped.
             occurrences = concept_to_chunks.get(node_id)
             if occurrences:
-                node["occurrences"] = sorted(occurrences)
+                sorted_occurrences = sorted(occurrences)
+                node["occurrences"] = sorted_occurrences
+                # Wave 10: populate source_refs[] from occurrences[0] (the
+                # first chunk by sorted-ID ordering). Copy the full
+                # SourceReference dicts verbatim so the node carries the
+                # same authoritative roles as the underlying chunk. Only
+                # emit when non-empty — pre-Wave-9 corpora produce empty
+                # chunk source_references and therefore empty node
+                # source_refs → field omitted.
+                first_chunk_refs = chunk_source_refs.get(sorted_occurrences[0])
+                if first_chunk_refs:
+                    node["source_refs"] = [dict(r) for r in first_chunk_refs]
             nodes.append(node)
         node_ids = {n["id"] for n in nodes}
 

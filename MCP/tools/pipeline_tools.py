@@ -39,6 +39,42 @@ def _ensure_directories():
 _ensure_directories()
 
 
+def _detect_source_provenance(course_dir: Path) -> bool:
+    """Wave 10: scan archived chunks.jsonl for chunks with source_references[].
+
+    Returns True when at least one chunk in ``<course_dir>/corpus/chunks.jsonl``
+    carries ``source.source_references[]`` populated with at least one entry.
+    Returns False on missing file, read errors, malformed JSONL lines, or
+    when no chunks carry refs (pre-Wave-9 corpus). The manifest then advertises
+    ``features.source_provenance: false`` so LibV2 retrieval callers can
+    fast-skip source-grounded queries.
+    """
+    chunks_path = course_dir / "corpus" / "chunks.jsonl"
+    if not chunks_path.exists() or not chunks_path.is_file():
+        return False
+    try:
+        with open(chunks_path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    chunk = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    continue
+                if not isinstance(chunk, dict):
+                    continue
+                source = chunk.get("source")
+                if not isinstance(source, dict):
+                    continue
+                refs = source.get("source_references")
+                if isinstance(refs, list) and len(refs) > 0:
+                    return True
+    except OSError:
+        return False
+    return False
+
+
 async def create_textbook_pipeline(
     pdf_paths: str,
     course_name: str,
@@ -570,6 +606,14 @@ def register_pipeline_tools(mcp):
                     "size": imscc_p.stat().st_size,
                 }
 
+            # Wave 10: advisory feature flag — scan the archived corpus's
+            # chunks.jsonl (if any) for chunks carrying
+            # source.source_references[]. Lets LibV2 retrieval callers
+            # fast-skip source-grounded queries on legacy corpora.
+            # Defaults false when no chunks file is found, when it can't
+            # be read, or when no chunks carry refs.
+            source_provenance_flag = _detect_source_provenance(course_dir)
+
             manifest = {
                 "libv2_version": "1.2.0",
                 "slug": slug,
@@ -583,6 +627,9 @@ def register_pipeline_tools(mcp):
                 "provenance": {
                     "source_type": "textbook_to_course_pipeline",
                     "import_pipeline_version": "1.0.0",
+                },
+                "features": {
+                    "source_provenance": source_provenance_flag,
                 },
             }
 

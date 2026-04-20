@@ -132,7 +132,7 @@
       "type": "object",
       "required": ["course_id", "module_id", "lesson_id"],
       "additionalProperties": false,
-      "description": "Chunk provenance block. Per REC-CTR-01 course_id/module_id/lesson_id are the structural core and strictly required; additionalProperties=false prevents silent drift. Audit-trail fields (html_xpath, char_span, item_path) support the Section 508 / ADA Title II round-trip contract documented at docs/compliance/audit-trail.md.",
+      "description": "Chunk provenance block. Per REC-CTR-01 course_id/module_id/lesson_id are the structural core and strictly required; additionalProperties=false prevents silent drift. Audit-trail fields (html_xpath, char_span, item_path) support the Section 508 / ADA Title II round-trip contract documented at docs/compliance/audit-trail.md. Wave 10 adds optional source_references[] threading DART/Courseforge provenance end-to-end; see schemas/knowledge/source_reference.schema.json for the canonical shape.",
       "properties": {
         "course_id": {
           "type": "string",
@@ -180,6 +180,11 @@
         "item_path": {
           "type": "string",
           "description": "IMSCC-relative path to the source HTML file, for auditor navigation without imsmanifest.xml traversal."
+        },
+        "source_references": {
+          "type": "array",
+          "items": { "$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json" },
+          "description": "Wave 10: optional array of DART/Courseforge source references threaded from Courseforge JSON-LD sourceReferences[] and data-cf-source-ids HTML attributes. Always an array because _merge_small_sections may collapse 2+ sections into one chunk, each potentially carrying its own refs. Absence = 'unknown' (pre-Wave-9 corpora) — never an error. Populated by process_course.py::_create_chunk; unioned with role-precedence (primary > contributing > corroborating) when sections merge."
         }
       }
     },

@@ -46,6 +46,11 @@
             "type": "array",
             "items": {"type": "string"},
             "description": "Chunk IDs that reference this concept (REC-LNK-01, Worker S Wave 5.1). Populated from chunk->concept inverted index at graph-build time. Sorted for deterministic output. Stable across re-chunks only when TRAINFORGE_CONTENT_HASH_IDS=true (Worker N's flag); position-based chunk IDs invalidate entries on re-chunk. Legacy nodes without this field still validate (optional)."
+          },
+          "source_refs": {
+            "type": "array",
+            "items": {"$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json"},
+            "description": "Wave 10: optional array of DART/Courseforge source references for this concept. Populated at graph-build time by copying source.source_references[] from occurrences[0] (the first chunk by sorted-ID ordering from Wave 5). Absence = 'unknown' (pre-Wave-9 corpora, or a concept whose first occurrence chunk carries no source refs). Lets consumers answer 'what source(s) introduce this concept' without a two-hop chunk dereference."
           }
         }
       }
