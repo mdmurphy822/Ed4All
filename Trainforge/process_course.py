@@ -23,6 +23,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import html.parser
 import json
 import logging
@@ -88,6 +89,32 @@ METRICS_SEMANTIC_VERSION = 5
 # per release train; see ADR-001 Contract 1 and docs/contributing/workers.md
 # for the rebase protocol.
 CHUNK_SCHEMA_VERSION = "v4"
+
+
+# Worker N (REC-ID-01): opt-in content-hash chunk IDs. When
+# TRAINFORGE_CONTENT_HASH_IDS=true, chunk IDs are derived from
+# sha256(text + source_locator + schema_version) so re-chunking the same
+# source produces identical IDs; this keeps edge-evidence references that
+# quote chunk IDs stable across re-runs. Default remains position-based for
+# backward compatibility with already-ingested LibV2 courses.
+USE_CONTENT_HASH_IDS = os.getenv("TRAINFORGE_CONTENT_HASH_IDS", "").lower() == "true"
+
+
+def _generate_chunk_id(prefix: str, start_id: int, text: str, source_locator: str) -> str:
+    """Generate a chunk ID.
+
+    Default (legacy): position-based ``f"{prefix}{start_id:05d}"``.
+
+    When ``TRAINFORGE_CONTENT_HASH_IDS=true``: content-addressed
+    ``f"{prefix}{sha256(text|source_locator|v4)[:16]}"``, stable across
+    re-chunks. Reads the env var on each call so tests can flip it via
+    ``monkeypatch.setenv`` without module reloads.
+    """
+    if os.getenv("TRAINFORGE_CONTENT_HASH_IDS", "").lower() == "true":
+        payload = f"{text}|{source_locator}|{CHUNK_SCHEMA_VERSION}"
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+        return f"{prefix}{digest}"
+    return f"{prefix}{start_id:05d}"
 
 
 # Worker I (REC-CTR-01): opt-in chunk validation against chunk_v4.schema.json.
@@ -1186,11 +1213,17 @@ class CourseProcessor:
                         return [idx, idx + len(collapsed_needle)]
             return [search_from, search_from + len(needle)]
 
+        # Worker N (REC-ID-01): resolve a stable per-source locator for
+        # content-hash IDs. ``item_path`` is the IMSCC-relative HTML file
+        # path and is stable across re-runs; fall back to module/lesson
+        # composite if a parser variant ever omits it.
+        source_locator = item.get("item_path") or f"{item['module_id']}/{item['item_id']}"
+
         if word_count <= self.MAX_CHUNK_SIZE:
             # Fits in one chunk.
             char_span = _locate(text, search_from=0)
             chunks.append(self._create_chunk(
-                chunk_id=f"{prefix}{start_id:05d}",
+                chunk_id=_generate_chunk_id(prefix, start_id, text, source_locator),
                 text=text, html=html, item=item,
                 section_heading=heading, chunk_type=chunk_type,
                 follows_chunk_id=follows_chunk_id,
@@ -1204,9 +1237,14 @@ class CourseProcessor:
             # disjoint and contiguous.
             sub_texts = self._split_by_sentences(text, self.TARGET_CHUNK_SIZE)
             prev_end = 0
+            # Worker N (REC-ID-01): track the last emitted chunk id directly
+            # rather than re-deriving it from position — under content-hash
+            # mode the previous chunk's ID is only knowable once generated.
+            last_chunk_id = follows_chunk_id
             for i, sub_text in enumerate(sub_texts):
                 part_heading = f"{heading} (part {i + 1})" if len(sub_texts) > 1 else heading
-                prev_id = follows_chunk_id if i == 0 else f"{prefix}{start_id + i - 1:05d}"
+                prev_id = last_chunk_id
+                this_chunk_id = _generate_chunk_id(prefix, start_id + i, sub_text, source_locator)
                 char_span = _locate(sub_text, search_from=prev_end)
                 # Keep spans non-decreasing even if the locator fallback
                 # collided with an earlier part's text.
@@ -1214,7 +1252,7 @@ class CourseProcessor:
                     char_span = [prev_end, prev_end + (char_span[1] - char_span[0])]
                 prev_end = char_span[1]
                 chunks.append(self._create_chunk(
-                    chunk_id=f"{prefix}{start_id + i:05d}",
+                    chunk_id=this_chunk_id,
                     text=sub_text, html="" if i > 0 else html, item=item,
                     section_heading=part_heading, chunk_type=chunk_type,
                     follows_chunk_id=prev_id,
@@ -1222,6 +1260,7 @@ class CourseProcessor:
                     html_xpath=container_xpath,
                     char_span=char_span,
                 ))
+                last_chunk_id = this_chunk_id
 
         return chunks
 
