@@ -32,7 +32,7 @@ import sys
 import xml.etree.ElementTree as ET
 import zipfile
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -1426,6 +1426,27 @@ class CourseProcessor:
         # Stamp the chunk schema version on every chunk so downstream
         # readers can gate on capabilities without re-reading manifest.json.
         chunk["schema_version"] = CHUNK_SCHEMA_VERSION
+
+        # REC-PRV-01 (Worker P Wave 4.1): stamp run_id + created_at on every
+        # newly-emitted chunk so downstream consumers can answer "all chunks
+        # added after run R" and age out stale assertions at graph
+        # granularity. `run_id` is sourced from the active DecisionCapture
+        # ledger (same value that appears on decision_event.schema.json
+        # records for this run). `created_at` is the emit timestamp in ISO
+        # 8601 UTC. Both fields are optional at the schema level — legacy
+        # chunks without them continue to validate.
+        #
+        # `capture` may be absent in unit tests that bypass __init__
+        # (test_provenance.py pattern); mirror the defensive getattr used
+        # for bloom_source logging at L1346. When capture is absent we
+        # still stamp created_at (datetime.now is always available) but
+        # skip run_id — a run_id requires a DecisionCapture instance.
+        capture_for_run_id = getattr(self, "capture", None)
+        if capture_for_run_id is not None:
+            run_id = getattr(capture_for_run_id, "run_id", None)
+            if run_id:
+                chunk["run_id"] = run_id
+        chunk["created_at"] = datetime.now(timezone.utc).isoformat()
 
         self.stats["total_words"] += word_count
         self.stats["total_tokens_estimate"] += tokens_estimate

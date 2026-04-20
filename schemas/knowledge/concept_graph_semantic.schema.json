@@ -28,7 +28,16 @@
         "properties": {
           "id": {"type": "string"},
           "label": {"type": "string"},
-          "frequency": {"type": "integer", "minimum": 0}
+          "frequency": {"type": "integer", "minimum": 0},
+          "run_id": {
+            "type": "string",
+            "description": "Pipeline run that produced this node (REC-PRV-01, Worker P Wave 4.1). Sourced from the active DecisionCapture instance's run_id. Always populated on new runs; legacy nodes without this field still validate."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO 8601 UTC timestamp when the node was emitted (REC-PRV-01, Worker P Wave 4.1). Equal to the artifact-level generated_at for a given run. Always populated on new runs; legacy nodes without this field still validate."
+          }
         }
       }
     },
@@ -62,6 +71,15 @@
               "rule_version": {"type": "integer", "minimum": 1},
               "evidence": {"type": "object", "additionalProperties": true}
             }
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Pipeline run that produced this edge (REC-PRV-01, Worker P Wave 4.1). Sourced from the active DecisionCapture instance's run_id. Always populated on new runs; legacy edges without this field still validate."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO 8601 UTC timestamp when the edge was emitted (REC-PRV-01, Worker P Wave 4.1). Equal to the artifact-level generated_at for a given run. Always populated on new runs; legacy edges without this field still validate."
           }
         }
       }

@@ -116,6 +116,15 @@
     "_metadata_trace": {
       "type": "object",
       "description": "Worker M1 (VERSIONING.md §4.4a) diagnostic — records the source path for each enrichment field. Removed by a later fix PR; schema permits its presence to keep diagnostic runs valid."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Pipeline run that produced this chunk (REC-PRV-01, Worker P Wave 4.1). Matches decision_event.schema.json run_id format — sourced from the active DecisionCapture instance's run_id. Always populated on new runs; legacy chunks without this field still validate."
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp when the chunk was emitted (REC-PRV-01, Worker P Wave 4.1). Produced by datetime.now(timezone.utc).isoformat(). Always populated on new runs; legacy chunks without this field still validate."
     }
   },
   "$defs": {
