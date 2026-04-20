@@ -1,0 +1,101 @@
+{
+  "kind": "concept_semantic",
+  "generated_at": "2026-04-20T00:00:00+00:00",
+  "rule_versions": {
+    "is_a_from_key_terms": 1,
+    "related_from_cooccurrence": 1,
+    "defined_by_from_first_mention": 1
+  },
+  "nodes": [
+    {
+      "id": "photosynthesis",
+      "label": "Photosynthesis",
+      "frequency": 3,
+      "occurrences": [
+        "testpipe_101_chunk_00001",
+        "testpipe_101_chunk_00002"
+      ]
+    },
+    {
+      "id": "chloroplast",
+      "label": "Chloroplast",
+      "frequency": 2,
+      "occurrences": [
+        "testpipe_101_chunk_00001",
+        "testpipe_101_chunk_00002"
+      ]
+    },
+    {
+      "id": "calvin-cycle",
+      "label": "Calvin Cycle",
+      "frequency": 1,
+      "occurrences": [
+        "testpipe_101_chunk_00003"
+      ]
+    },
+    {
+      "id": "light-dependent-reactions",
+      "label": "Light Dependent Reactions",
+      "frequency": 1,
+      "occurrences": [
+        "testpipe_101_chunk_00002"
+      ]
+    },
+    {
+      "id": "atp",
+      "label": "ATP",
+      "frequency": 2,
+      "occurrences": [
+        "testpipe_101_chunk_00002",
+        "testpipe_101_chunk_00003"
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "source": "chloroplast",
+      "target": "photosynthesis",
+      "type": "is-a",
+      "confidence": 0.8,
+      "provenance": {
+        "rule": "is_a_from_key_terms",
+        "rule_version": 1,
+        "evidence": {
+          "chunk_id": "testpipe_101_chunk_00001",
+          "term": "chloroplast",
+          "definition_excerpt": "The plant organelle where photosynthesis occurs.",
+          "pattern": "is an?"
+        }
+      }
+    },
+    {
+      "source": "photosynthesis",
+      "target": "calvin-cycle",
+      "type": "related-to",
+      "confidence": 0.7,
+      "provenance": {
+        "rule": "related_from_cooccurrence",
+        "rule_version": 1,
+        "evidence": {
+          "cooccurrence_weight": 2,
+          "threshold": 1
+        }
+      }
+    },
+    {
+      "source": "calvin-cycle",
+      "target": "photosynthesis",
+      "type": "defined-by",
+      "confidence": 0.9,
+      "provenance": {
+        "rule": "defined_by_from_first_mention",
+        "rule_version": 1,
+        "evidence": {
+          "chunk_id": "testpipe_101_chunk_00003",
+          "concept_slug": "calvin-cycle",
+          "first_mention_position": 0
+        }
+      }
+    }
+  ]
+}
