@@ -1210,227 +1210,246 @@ def _build_tool_registry() -> dict:
         # fixes/contracts.md § "Courseforge content-generator contract".
         # ============================================================================
         async def _generate_course_content(**kwargs):
-            """Generate real course content modules from DART outputs + objectives.
+            """Generate 5-page weekly course modules from DART outputs + objectives.
 
-            Reads staged DART HTML content and objectives, then produces
-            one HTML module per week with structured educational content.
+            Replaces the legacy single-page stub with a full Courseforge
+            emission: overview, content, application, self_check, and
+            summary pages per week. Every emitted page carries the full
+            ``data-cf-*`` attribute surface and a JSON-LD
+            ``CourseModule`` body that validates against
+            ``schemas/knowledge/courseforge_jsonld_v1.schema.json``.
+
+            Delegates the actual HTML rendering to
+            ``Courseforge.scripts.generate_course.generate_week`` (the
+            mature multi-file emitter) — this wrapper only adapts the
+            pipeline's kwargs into the ``week_data`` payload that the
+            emitter consumes, plus forwards the Wave 9 source-routing
+            map when one is present on disk.
             """
-            import html as _html
-            import re as _re
+            from MCP.tools import _content_gen_helpers as _cgh
+            from Courseforge.scripts import generate_course as _gen
 
             project_id = kwargs.get("project_id", "")
+            if not project_id:
+                return json.dumps({"error": "generate_course_content requires project_id"})
+
             project_path = _PROJECT_ROOT / "Courseforge" / "exports" / project_id
             content_dir = project_path / "03_content_development"
             content_dir.mkdir(parents=True, exist_ok=True)
 
-            # Load project config to get objectives and duration
             config_path = project_path / "project_config.json"
             if not config_path.exists():
                 return json.dumps({"error": f"Project config not found: {config_path}"})
-
             with open(config_path) as f:
                 config = json.load(f)
 
-            duration_weeks = config.get("duration_weeks", 12)
-            objectives_path = config.get("objectives_path")
+            course_code = config.get("course_name") or project_id
+            duration_weeks = int(config.get("duration_weeks") or 12)
+            objectives_path = config.get("objectives_path") or kwargs.get("objectives_path")
 
-            # Load objectives
-            objectives_data = {}
-            if objectives_path and Path(objectives_path).exists():
-                with open(objectives_path) as f:
-                    objectives_data = json.load(f)
+            # ---------------------------------------------------------- #
+            # Staged DART HTML — prefer the staging_dir passed by the    #
+            # workflow runner; fall back to the most-recent staging run. #
+            # ---------------------------------------------------------- #
+            staging_kwarg = kwargs.get("staging_dir")
+            staging_dir = Path(staging_kwarg) if staging_kwarg else None
+            html_files = _cgh.collect_staged_html(staging_dir, COURSEFORGE_INPUTS)
+            topics = _cgh.parse_dart_html_files(html_files)
 
-            chapter_objectives = objectives_data.get("chapter_objectives", [])
-            terminal_objectives = objectives_data.get("terminal_objectives", [])
-
-            # Collect staged DART content from staging directory
-            source_content = ""
-            staging_dir = COURSEFORGE_INPUTS
-            for staging_run in sorted(staging_dir.iterdir()):
-                if not staging_run.is_dir():
-                    continue
-                for src_file in staging_run.iterdir():
-                    if src_file.suffix in (".html", ".htm", ".txt"):
-                        try:
-                            source_content += src_file.read_text(
-                                encoding="utf-8", errors="ignore"
-                            )
-                        except OSError:
-                            pass
-
-            # Parse source HTML into sections for topic-based selection
-            # Split on </section> or <h2 or <h3 boundaries
-            section_blocks = _re.split(r"(?=<section |<h[23])", source_content)
-            source_sections = []
-            for block in section_blocks:
-                text = _re.sub(r"<[^>]+>", " ", block)
-                text = _re.sub(r"\s+", " ", text).strip()
-                if len(text) > 50:
-                    source_sections.append(text)
-
-            def _find_relevant_sections(objectives, all_sections, max_words=4000):
-                """Find sections matching objective keywords."""
-                # Extract keywords from objectives
-                keywords = set()
-                for obj in objectives:
-                    stmt = obj.get("statement", "").lower()
-                    # Extract significant words (skip common ones)
-                    for word in _re.findall(r"\b[a-z]{4,}\b", stmt):
-                        if word not in {"that", "this", "with", "from", "have", "will",
-                                       "should", "able", "their", "which", "these",
-                                       "more", "between", "both", "each", "such",
-                                       "including", "based", "using", "through"}:
-                            keywords.add(word)
-
-                # Score each section by keyword overlap
-                scored = []
-                for section in all_sections:
-                    section_lower = section.lower()
-                    score = sum(1 for kw in keywords if kw in section_lower)
-                    if score > 0:
-                        scored.append((score, section))
-
-                scored.sort(key=lambda x: -x[0])
-
-                # Collect top sections up to word limit
-                result = []
-                total_words = 0
-                for _, section in scored:
-                    words_in_section = len(section.split())
-                    if total_words + words_in_section > max_words:
-                        if result:  # Already have some content
-                            break
-                    result.append(section)
-                    total_words += words_in_section
-
-                return result
-
-            generated_files = []
-            # Map weeks to chapter_objectives (6 entries cover 12 weeks in pairs)
-            for week_num in range(1, duration_weeks + 1):
-                week_dir = content_dir / f"week_{week_num:02d}"
-                week_dir.mkdir(parents=True, exist_ok=True)
-
-                # Map week number to objectives index (weeks come in pairs from 6 chapter groups)
-                obj_idx = (week_num - 1) // 2
-                week_objectives = []
-                if obj_idx < len(chapter_objectives):
-                    ch = chapter_objectives[obj_idx]
-                    week_objectives = ch.get("objectives", [])
-                    base_title = ch.get("chapter", f"Week {week_num}")
-                    # Add "(Part 1)" or "(Part 2)" for paired weeks
-                    part = "Part 1" if week_num % 2 == 1 else "Part 2"
-                    week_title = f"{base_title} ({part})"
-                else:
-                    week_title = f"Week {week_num}: Course Integration"
-                    # Use terminal objectives for overflow weeks
-                    week_objectives = [
-                        {"statement": to.get("statement", ""), "bloomLevel": to.get("bloomLevel", "")}
-                        for to in terminal_objectives[-(duration_weeks - week_num + 1):][:3]
-                    ]
-
-                # Find topic-relevant source content
-                relevant_sections = _find_relevant_sections(
-                    week_objectives, source_sections, max_words=3000
+            # ---------------------------------------------------------- #
+            # Objectives: honor supplied JSON; synthesize from DART otherwise.
+            # ---------------------------------------------------------- #
+            terminal_objectives, chapter_objectives = _cgh.load_objectives_json(
+                objectives_path
+            )
+            if not terminal_objectives and not chapter_objectives:
+                terminal_objectives, chapter_objectives = (
+                    _cgh.synthesize_objectives_from_topics(topics, duration_weeks)
                 )
 
-                # Build paragraphs from relevant sections
-                paragraphs = []
-                for section_text in relevant_sections:
-                    # Split section into natural paragraphs (~150 words)
-                    section_words = section_text.split()
-                    for i in range(0, len(section_words), 150):
-                        para = " ".join(section_words[i:i + 150])
-                        if para.strip() and len(para) > 30:
-                            paragraphs.append(_html.escape(para))
+            all_objectives = list(terminal_objectives) + list(chapter_objectives)
+            topics_by_week = _cgh._group_topics_by_week(topics, duration_weeks)
 
-                # Build objectives HTML
-                obj_html = ""
-                if week_objectives:
-                    obj_items = "\n".join(
-                        f'      <li>{_html.escape(o.get("statement", ""))}'
-                        f' <em>({o.get("bloomLevel", "")})</em></li>'
-                        for o in week_objectives
-                    )
-                    obj_html = f"""
-    <section id="objectives" aria-labelledby="objectives-heading">
-      <h2 id="objectives-heading">Learning Objectives</h2>
-      <p>By the end of this module, you should be able to:</p>
-      <ul>
-{obj_items}
-      </ul>
-    </section>"""
+            # ---------------------------------------------------------- #
+            # Source-routing map (Wave 9). Empty dict or missing file =>  #
+            # backward-compat path: pages emit without sourceReferences.  #
+            # ---------------------------------------------------------- #
+            source_module_map: Dict[str, Any] = {}
+            map_path_kwarg = kwargs.get("source_module_map_path")
+            if map_path_kwarg:
+                map_path = Path(map_path_kwarg)
+            else:
+                map_path = project_path / "source_module_map.json"
+            if map_path.exists():
+                try:
+                    source_module_map = json.loads(
+                        map_path.read_text(encoding="utf-8")
+                    ) or {}
+                except (OSError, ValueError):
+                    source_module_map = {}
 
-                # Build content sections from paragraphs
-                content_sections = []
-                section_size = max(1, len(paragraphs) // 3)
-                section_titles = ["Key Concepts", "Discussion & Analysis", "Application"]
+            # Wave 2 prerequisite map: each page prerequisites the prior
+            # page in the 5-page week sequence.
+            prerequisite_map: Dict[str, list] = {}
+            for week_num in range(1, duration_weeks + 1):
+                w = f"{week_num:02d}"
+                prerequisite_map[f"week_{w}_application"] = [
+                    f"week_{w}_overview"
+                ]
+                prerequisite_map[f"week_{w}_self_check"] = [
+                    f"week_{w}_application"
+                ]
+                prerequisite_map[f"week_{w}_summary"] = [
+                    f"week_{w}_self_check"
+                ]
 
-                for s_idx, s_title in enumerate(section_titles):
-                    s_paras = paragraphs[s_idx * section_size:(s_idx + 1) * section_size]
-                    if not s_paras:
+            # ---------------------------------------------------------- #
+            # Decision capture — content-generator phase.                 #
+            # ---------------------------------------------------------- #
+            capture = None
+            try:
+                from lib.decision_capture import DecisionCapture
+                capture = DecisionCapture(
+                    course_code=course_code,
+                    phase="content-generator",
+                    tool="courseforge",
+                    streaming=True,
+                )
+                capture.log_decision(
+                    decision_type="content_structure",
+                    decision=(
+                        f"Emit 5-page weekly modules (overview, content, "
+                        f"application, self_check, summary) for "
+                        f"{duration_weeks} weeks via Courseforge generate_week."
+                    ),
+                    rationale=(
+                        "The 5-page structure matches the Courseforge "
+                        "pipeline contract (plans/pipeline-execution-fixes/"
+                        "contracts.md) and ensures each weekly module "
+                        "validates under the page_objectives + "
+                        "content_structure gates."
+                    ),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "DecisionCapture init failed in content-generator: %s", exc
+                )
+                capture = None
+
+            # ---------------------------------------------------------- #
+            # Emit each week via generate_week.                           #
+            # ---------------------------------------------------------- #
+            generated_files: list = []
+            weeks_prepared = 0
+            for week_num in range(1, duration_weeks + 1):
+                week_topics = (
+                    topics_by_week[week_num - 1]
+                    if (week_num - 1) < len(topics_by_week)
+                    else []
+                )
+                # Per-week LO set: every terminal objective + at most two
+                # chapter objectives round-robin assigned by week.
+                week_chapter_cos = []
+                if chapter_objectives:
+                    step = max(1, len(chapter_objectives) // max(1, duration_weeks))
+                    start = (week_num - 1) * step
+                    week_chapter_cos = list(
+                        chapter_objectives[start:start + step + 1]
+                    )[:2] or [chapter_objectives[(week_num - 1) % len(chapter_objectives)]]
+
+                week_objectives = list(terminal_objectives) + week_chapter_cos
+                seen: set = set()
+                week_objectives_deduped = []
+                for o in week_objectives:
+                    if o["id"] in seen:
                         continue
-                    s_id = _re.sub(r"[^a-z0-9]+", "-", s_title.lower())
-                    para_html = "\n".join(f"      <p>{p}</p>" for p in s_paras)
-                    content_sections.append(f"""
-    <section id="{s_id}" aria-labelledby="{s_id}-heading">
-      <h2 id="{s_id}-heading">{_html.escape(s_title)}</h2>
-{para_html}
-    </section>""")
+                    seen.add(o["id"])
+                    week_objectives_deduped.append(o)
 
-                sections_html = "\n".join(content_sections)
+                week_data = _cgh.build_week_data(
+                    week_num=week_num,
+                    duration_weeks=duration_weeks,
+                    week_topics=week_topics,
+                    week_objectives=week_objectives_deduped,
+                    all_objectives=all_objectives,
+                    course_code=course_code,
+                )
 
-                # Build reflection/activity section
-                activity_html = """
-    <section id="activities" aria-labelledby="activities-heading">
-      <h2 id="activities-heading">Reflection &amp; Activities</h2>
-      <p>Consider the following questions as you review this week's material:</p>
-      <ol>
-        <li>How do the concepts presented this week connect to your own teaching or learning experience?</li>
-        <li>Which ideas challenge your current understanding of instructional design?</li>
-        <li>How might you apply these principles in designing a digital learning experience?</li>
-      </ol>
-    </section>"""
+                try:
+                    count, files = _gen.generate_week(
+                        week_data,
+                        content_dir,
+                        course_code,
+                        canonical_objectives=None,  # week_data already has canonical ids
+                        classification=None,
+                        prerequisite_map=prerequisite_map,
+                        source_module_map=source_module_map or None,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception(
+                        "generate_week failed for week %d: %s", week_num, exc
+                    )
+                    continue
 
-                safe_title = _html.escape(week_title)
-                module_html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DIGPED 101 - {safe_title}</title>
-  <style>
-    body {{ font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; max-width: 50em; margin: 0 auto; padding: 1em; color: #1a1a1a; }}
-    .skip-link {{ position: absolute; left: -9999px; }} .skip-link:focus {{ position: static; }}
-    h1 {{ font-size: 1.8em; border-bottom: 2px solid #333; padding-bottom: 0.3em; }}
-    h2 {{ font-size: 1.4em; margin-top: 1.5em; color: #2c5282; }}
-    ul, ol {{ margin: 0.8em 0; padding-left: 1.5em; }} li {{ margin: 0.4em 0; }}
-    section {{ margin-bottom: 1.5em; }}
-    @media (prefers-color-scheme: dark) {{ body {{ background: #1a1a1a; color: #e0e0e0; }} h2 {{ color: #90cdf4; }} }}
-  </style>
-</head>
-<body>
-  <a href="#main-content" class="skip-link">Skip to main content</a>
-  <main id="main-content" role="main">
-    <h1>{safe_title}</h1>
-{obj_html}
-{sections_html}
-{activity_html}
-  </main>
-</body>
-</html>"""
+                weeks_prepared += 1
+                week_dir = content_dir / f"week_{week_num:02d}"
+                for name in files:
+                    page_path = week_dir / name
+                    # Post-process: ensure every page carries an
+                    # objectives <section>. Overview already has one
+                    # from generate_week; the other four pages don't by
+                    # default but the page_objectives gate + integration
+                    # test require the data-cf-objective-id attribute on
+                    # every page.
+                    try:
+                        body = page_path.read_text(encoding="utf-8")
+                        updated = _cgh.ensure_objectives_on_page(
+                            body, week_objectives_deduped,
+                        )
+                        if updated != body:
+                            page_path.write_text(updated, encoding="utf-8")
+                    except OSError as exc:
+                        logger.warning(
+                            "Failed to post-process %s: %s", page_path, exc,
+                        )
+                    generated_files.append(str(page_path))
 
-                module_path = week_dir / "module.html"
-                module_path.write_text(module_html, encoding="utf-8")
-                generated_files.append(str(module_path))
+                if capture is not None:
+                    try:
+                        source_stems = sorted({
+                            t.get("source_file", "") for t in week_topics
+                            if t.get("source_file")
+                        })
+                        primary_heading = (
+                            week_topics[0]["heading"] if week_topics else "synthetic"
+                        )
+                        capture.log_decision(
+                            decision_type="source_selection",
+                            decision=(
+                                f"Week {week_num}: ground content on "
+                                f"{primary_heading!r} from sources "
+                                f"{source_stems or ['(no DART staging found)']}."
+                            ),
+                            rationale=(
+                                "Selected DART-derived topics whose parsed "
+                                "headings align with the week's chapter "
+                                "objectives; synthesized placeholder content "
+                                "only when no DART topics were available."
+                            ),
+                        )
+                    except Exception:  # noqa: BLE001
+                        # Never let decision capture crash emission.
+                        pass
 
             return json.dumps({
                 "success": True,
                 "project_id": project_id,
-                "weeks_prepared": duration_weeks,
+                "weeks_prepared": weeks_prepared,
                 "content_paths": generated_files,
-                "source_sections": len(source_sections),
-                "content_selection": "topic-aligned",
+                "source_sections": len(topics),
+                "content_selection": (
+                    "source-grounded" if topics else "synthesized"
+                ),
             })
 
         registry["generate_course_content"] = _generate_course_content
