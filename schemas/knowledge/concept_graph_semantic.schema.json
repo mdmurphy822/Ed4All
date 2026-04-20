@@ -82,14 +82,18 @@
             "type": "number"
           },
           "provenance": {
-            "type": "object",
-            "required": ["rule", "rule_version"],
-            "additionalProperties": true,
-            "properties": {
-              "rule": {"type": "string"},
-              "rule_version": {"type": "integer", "minimum": 1},
-              "evidence": {"type": "object", "additionalProperties": true}
-            }
+            "$comment": "REC-PRV-02 (Wave 6, Worker W): per-rule evidence sub-schemas with a oneOf discriminator keyed by the `rule` field. Each specific arm binds rule={rule_name} to evidence={matching $def}. The final FallbackProvenance arm matches any rule that isn't one of the 8 known rules (and allows evidence to be absent or any shape) — preserving backward-compat with legacy graphs and future rules. The arms are mutually exclusive by virtue of the `rule` const, so oneOf validation is unambiguous. Strict validation is opt-in via TRAINFORGE_STRICT_EVIDENCE=true (see lib/validators/evidence.py::get_schema): strip the fallback arm before validating. Each specific evidence $def sets additionalProperties:false to enforce shape when in strict mode; lenient mode passes through the fallback arm if a known-rule edge's evidence shape drifts.",
+            "oneOf": [
+              {"$ref": "#/$defs/IsAProvenance"},
+              {"$ref": "#/$defs/PrerequisiteProvenance"},
+              {"$ref": "#/$defs/RelatedProvenance"},
+              {"$ref": "#/$defs/AssessesProvenance"},
+              {"$ref": "#/$defs/ExemplifiesProvenance"},
+              {"$ref": "#/$defs/MisconceptionOfProvenance"},
+              {"$ref": "#/$defs/DerivedFromObjectiveProvenance"},
+              {"$ref": "#/$defs/DefinedByProvenance"},
+              {"$ref": "#/$defs/FallbackProvenance"}
+            ]
           },
           "run_id": {
             "type": "string",
@@ -101,6 +105,208 @@
             "description": "ISO 8601 UTC timestamp when the edge was emitted (REC-PRV-01, Worker P Wave 4.1). Equal to the artifact-level generated_at for a given run. Always populated on new runs; legacy edges without this field still validate."
           }
         }
+      }
+    }
+  },
+  "$defs": {
+    "IsAEvidence": {
+      "type": "object",
+      "description": "Evidence emitted by rule is_a_from_key_terms (Trainforge/rag/inference_rules/is_a_from_key_terms.py). Captures which chunk supplied the definition, the child term, a trimmed excerpt of the definition, and the regex pattern that matched.",
+      "required": ["chunk_id", "term", "definition_excerpt", "pattern"],
+      "additionalProperties": false,
+      "properties": {
+        "chunk_id": {"type": "string"},
+        "term": {"type": "string"},
+        "definition_excerpt": {"type": "string"},
+        "pattern": {"type": "string"}
+      }
+    },
+    "PrerequisiteEvidence": {
+      "type": "object",
+      "description": "Evidence emitted by rule prerequisite_from_lo_order (Trainforge/rag/inference_rules/prerequisite_from_lo_order.py). Records the first-LO skew that justified the directed prerequisite: the (source, target) concept pair's earliest LO id + positional index in course.learning_outcomes.",
+      "required": ["target_first_lo", "target_first_lo_position", "source_first_lo", "source_first_lo_position"],
+      "additionalProperties": false,
+      "properties": {
+        "target_first_lo": {"type": "string"},
+        "target_first_lo_position": {"type": "integer", "minimum": 0},
+        "source_first_lo": {"type": "string"},
+        "source_first_lo_position": {"type": "integer", "minimum": 0}
+      }
+    },
+    "RelatedEvidence": {
+      "type": "object",
+      "description": "Evidence emitted by rule related_from_cooccurrence (Trainforge/rag/inference_rules/related_from_cooccurrence.py). Records the co-occurrence weight that cleared the configurable threshold.",
+      "required": ["cooccurrence_weight", "threshold"],
+      "additionalProperties": false,
+      "properties": {
+        "cooccurrence_weight": {"type": "integer", "minimum": 0},
+        "threshold": {"type": "integer", "minimum": 0}
+      }
+    },
+    "AssessesEvidence": {
+      "type": "object",
+      "description": "Evidence emitted by rule assesses_from_question_lo (Trainforge/rag/inference_rules/assesses_from_question_lo.py). Materializes the explicit question->LO reference; optional source_chunk_id when the question carries a chunk pointer.",
+      "required": ["question_id", "objective_id"],
+      "additionalProperties": false,
+      "properties": {
+        "question_id": {"type": "string"},
+        "objective_id": {"type": "string"},
+        "source_chunk_id": {"type": "string"}
+      }
+    },
+    "ExemplifiesEvidence": {
+      "type": "object",
+      "description": "Evidence emitted by rule exemplifies_from_example_chunks (Trainforge/rag/inference_rules/exemplifies_from_example_chunks.py). content_type discriminates which signal fired: 'content_type_label' (JSON-LD / data-cf-content-type) or 'chunk_type' (structural classification).",
+      "required": ["chunk_id", "concept_slug", "content_type"],
+      "additionalProperties": false,
+      "properties": {
+        "chunk_id": {"type": "string"},
+        "concept_slug": {"type": "string"},
+        "content_type": {"type": "string", "enum": ["content_type_label", "chunk_type"]}
+      }
+    },
+    "MisconceptionOfEvidence": {
+      "type": "object",
+      "description": "Evidence emitted by rule misconception_of_from_misconception_ref (Trainforge/rag/inference_rules/misconception_of_from_misconception_ref.py). Materializes the explicit misconception->concept pointer from the first-class Misconception entity.",
+      "required": ["misconception_id", "concept_id"],
+      "additionalProperties": false,
+      "properties": {
+        "misconception_id": {"type": "string"},
+        "concept_id": {"type": "string"}
+      }
+    },
+    "DerivedFromObjectiveEvidence": {
+      "type": "object",
+      "description": "Evidence emitted by rule derived_from_lo_ref (Trainforge/rag/inference_rules/derived_from_lo_ref.py). Materializes the chunk->LO reference that already exists on the chunk via learning_outcome_refs.",
+      "required": ["chunk_id", "objective_id"],
+      "additionalProperties": false,
+      "properties": {
+        "chunk_id": {"type": "string"},
+        "objective_id": {"type": "string"}
+      }
+    },
+    "DefinedByEvidence": {
+      "type": "object",
+      "description": "Evidence emitted by rule defined_by_from_first_mention (Trainforge/rag/inference_rules/defined_by_from_first_mention.py). first_mention_position is always 0 (the first entry after sort-ASC on occurrences[]) — emitted for forward-compat in case the rule later supports non-first picks.",
+      "required": ["chunk_id", "concept_slug", "first_mention_position"],
+      "additionalProperties": false,
+      "properties": {
+        "chunk_id": {"type": "string"},
+        "concept_slug": {"type": "string"},
+        "first_mention_position": {"type": "integer", "minimum": 0}
+      }
+    },
+    "IsAProvenance": {
+      "type": "object",
+      "description": "Provenance arm for edges emitted by rule is_a_from_key_terms. Binds rule const + versioned evidence shape.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "is_a_from_key_terms"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/IsAEvidence"}
+      }
+    },
+    "PrerequisiteProvenance": {
+      "type": "object",
+      "description": "Provenance arm for edges emitted by rule prerequisite_from_lo_order.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "prerequisite_from_lo_order"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/PrerequisiteEvidence"}
+      }
+    },
+    "RelatedProvenance": {
+      "type": "object",
+      "description": "Provenance arm for edges emitted by rule related_from_cooccurrence.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "related_from_cooccurrence"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/RelatedEvidence"}
+      }
+    },
+    "AssessesProvenance": {
+      "type": "object",
+      "description": "Provenance arm for edges emitted by rule assesses_from_question_lo.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "assesses_from_question_lo"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/AssessesEvidence"}
+      }
+    },
+    "ExemplifiesProvenance": {
+      "type": "object",
+      "description": "Provenance arm for edges emitted by rule exemplifies_from_example_chunks.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "exemplifies_from_example_chunks"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/ExemplifiesEvidence"}
+      }
+    },
+    "MisconceptionOfProvenance": {
+      "type": "object",
+      "description": "Provenance arm for edges emitted by rule misconception_of_from_misconception_ref.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "misconception_of_from_misconception_ref"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/MisconceptionOfEvidence"}
+      }
+    },
+    "DerivedFromObjectiveProvenance": {
+      "type": "object",
+      "description": "Provenance arm for edges emitted by rule derived_from_lo_ref.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "derived_from_lo_ref"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/DerivedFromObjectiveEvidence"}
+      }
+    },
+    "DefinedByProvenance": {
+      "type": "object",
+      "description": "Provenance arm for edges emitted by rule defined_by_from_first_mention.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "defined_by_from_first_mention"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/DefinedByEvidence"}
+      }
+    },
+    "FallbackProvenance": {
+      "type": "object",
+      "description": "Lenient fallback arm of the provenance oneOf. Matches any edge whose rule is NOT one of the 8 modeled rules (mutually exclusive by the `not:enum` discriminator). Evidence may be absent or any shape — preserving backward-compat with legacy graphs and with future rules not yet modeled as a specific $def. Strip this arm from the oneOf when strict validation is required (see lib/validators/evidence.py::get_schema(strict=True) or TRAINFORGE_STRICT_EVIDENCE=true). The strict-stripped schema then rejects any edge whose rule is unknown OR whose evidence shape drifts from its modeled $def.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {
+          "type": "string",
+          "not": {
+            "enum": [
+              "is_a_from_key_terms",
+              "prerequisite_from_lo_order",
+              "related_from_cooccurrence",
+              "assesses_from_question_lo",
+              "exemplifies_from_example_chunks",
+              "misconception_of_from_misconception_ref",
+              "derived_from_lo_ref",
+              "defined_by_from_first_mention"
+            ]
+          }
+        },
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"type": "object", "additionalProperties": true}
       }
     }
   }

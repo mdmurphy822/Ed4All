@@ -13,11 +13,15 @@ schemas/
 │
 ├── academic/                              course-level academic metadata
 │   ├── course_metadata.schema.json         full course (MIT OCW-shape)
+│   ├── courseforge_page_types.schema.json  page-level type enum
 │   ├── learning_objectives.schema.json     extracted LOs + hierarchy
 │   └── textbook_structure.schema.json      DART-processed HTML structure
 │
 ├── compliance/                            accessibility standards
 │   └── wcag22_compliance.schema.json       WCAG 2.2 AA requirement matrix
+│
+├── config/                                orchestrator config meta-schemas
+│   └── workflows_meta.schema.json          validates config/workflows.yaml
 │
 ├── events/                                decision + audit log contracts
 │   ├── decision_event.schema.json          Claude decision ledger (base)
@@ -28,8 +32,12 @@ schemas/
 │   └── run_manifest.schema.json            immutable run-init snapshot
 │
 ├── knowledge/                             knowledge-graph + training pairs
+│   ├── chunk_v4.schema.json                Trainforge chunk contract
 │   ├── concept_graph_semantic.schema.json  typed-edge concept graph
+│   ├── courseforge_jsonld_v1.schema.json   Courseforge emit JSON-LD contract
 │   ├── instruction_pair.schema.json        SFT pairs (prompt/completion)
+│   ├── instruction_pair.strict.schema.json opt-in strict SFT variant
+│   ├── misconception.schema.json           first-class misconception entity
 │   └── preference_pair.schema.json         DPO pairs (chosen/rejected)
 │
 ├── library/                               LibV2 course repository
@@ -37,8 +45,15 @@ schemas/
 │   └── course_manifest.schema.json         extended course metadata
 │
 └── taxonomies/                            controlled vocabularies
+    ├── assessment_method.json              formative / summative / diagnostic
+    ├── bloom_verbs.json                    6-level / 60-verb canonical list
+    ├── cognitive_domain.json               factual / conceptual / procedural / metacognitive
+    ├── content_type.json                   section content-type enum
+    ├── module_type.json                    6-value module-type enum
+    ├── pedagogy_framework.yaml             12-tier pedagogy gap framework
+    ├── question_type.json                  7-value factory enum
     ├── taxonomy.json                       STEM/ARTS division hierarchy
-    └── pedagogy_framework.yaml             12-tier pedagogy gap framework
+    └── teaching_role.json                  (component, purpose) -> role mapping
 ```
 
 ## Naming convention
@@ -83,7 +98,8 @@ IMS CC / QTI XSDs under `Courseforge/schemas/imscc/` are upstream IMS Global spe
 
 - **`academic/`** — what a course, its chapters/sections, and its learning objectives look like before they become HTML.
 - **`compliance/`** — what WCAG 2.2 AA compliance looks like as a checkable manifest.
+- **`config/`** — meta-schemas that describe `config/*.yaml` orchestrator files themselves.
 - **`events/`** — the append-only contracts (decisions, audits, hash chains, run manifests, session summaries) that record everything that happened.
-- **`knowledge/`** — concept-graph edges and the instruction/preference training pairs derived from chunks.
+- **`knowledge/`** — concept-graph edges, chunk contracts, JSON-LD emit shape, misconception entities, and the instruction/preference training pairs derived from chunks.
 - **`library/`** — how a course surfaces in LibV2 (catalog entry + full manifest).
-- **`taxonomies/`** — the controlled vocabularies referenced by everything above.
+- **`taxonomies/`** — the controlled vocabularies referenced by everything above (loaded via `lib/ontology/`).
