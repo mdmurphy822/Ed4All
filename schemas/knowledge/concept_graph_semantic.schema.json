@@ -116,14 +116,19 @@
   "$defs": {
     "IsAEvidence": {
       "type": "object",
-      "description": "Evidence emitted by rule is_a_from_key_terms (Trainforge/rag/inference_rules/is_a_from_key_terms.py). Captures which chunk supplied the definition, the child term, a trimmed excerpt of the definition, and the regex pattern that matched.",
+      "description": "Evidence emitted by rule is_a_from_key_terms (Trainforge/rag/inference_rules/is_a_from_key_terms.py). Captures which chunk supplied the definition, the child term, a trimmed excerpt of the definition, and the regex pattern that matched. Wave 11 adds optional source_references[] (chunk-anchored provenance copied from the chunk's source.source_references[] when TRAINFORGE_SOURCE_PROVENANCE=true).",
       "required": ["chunk_id", "term", "definition_excerpt", "pattern"],
       "additionalProperties": false,
       "properties": {
         "chunk_id": {"type": "string"},
         "term": {"type": "string"},
         "definition_excerpt": {"type": "string"},
-        "pattern": {"type": "string"}
+        "pattern": {"type": "string"},
+        "source_references": {
+          "type": "array",
+          "items": {"$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json"},
+          "description": "Wave 11: optional array of DART/Courseforge source references copied from the originating chunk's source.source_references[]. Populated only when TRAINFORGE_SOURCE_PROVENANCE=true; absent on legacy corpora and when the source chunk carries no refs. Schema admits the field unconditionally so strict validators don't change behavior based on the flag."
+        }
       }
     },
     "PrerequisiteEvidence": {
@@ -150,24 +155,34 @@
     },
     "AssessesEvidence": {
       "type": "object",
-      "description": "Evidence emitted by rule assesses_from_question_lo (Trainforge/rag/inference_rules/assesses_from_question_lo.py). Materializes the explicit question->LO reference; optional source_chunk_id when the question carries a chunk pointer.",
+      "description": "Evidence emitted by rule assesses_from_question_lo (Trainforge/rag/inference_rules/assesses_from_question_lo.py). Materializes the explicit question->LO reference; optional source_chunk_id when the question carries a chunk pointer. Wave 11 adds optional source_references[] (copied from the referenced chunk's source.source_references[] when TRAINFORGE_SOURCE_PROVENANCE=true and source_chunk_id resolves to a chunk).",
       "required": ["question_id", "objective_id"],
       "additionalProperties": false,
       "properties": {
         "question_id": {"type": "string"},
         "objective_id": {"type": "string"},
-        "source_chunk_id": {"type": "string"}
+        "source_chunk_id": {"type": "string"},
+        "source_references": {
+          "type": "array",
+          "items": {"$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json"},
+          "description": "Wave 11: optional array of DART/Courseforge source references copied from the referenced chunk's source.source_references[]. Populated only when TRAINFORGE_SOURCE_PROVENANCE=true, source_chunk_id is set, and the resolved chunk carries refs."
+        }
       }
     },
     "ExemplifiesEvidence": {
       "type": "object",
-      "description": "Evidence emitted by rule exemplifies_from_example_chunks (Trainforge/rag/inference_rules/exemplifies_from_example_chunks.py). content_type discriminates which signal fired: 'content_type_label' (JSON-LD / data-cf-content-type) or 'chunk_type' (structural classification).",
+      "description": "Evidence emitted by rule exemplifies_from_example_chunks (Trainforge/rag/inference_rules/exemplifies_from_example_chunks.py). content_type discriminates which signal fired: 'content_type_label' (JSON-LD / data-cf-content-type) or 'chunk_type' (structural classification). Wave 11 adds optional source_references[] (copied from the example chunk's source.source_references[] when TRAINFORGE_SOURCE_PROVENANCE=true).",
       "required": ["chunk_id", "concept_slug", "content_type"],
       "additionalProperties": false,
       "properties": {
         "chunk_id": {"type": "string"},
         "concept_slug": {"type": "string"},
-        "content_type": {"type": "string", "enum": ["content_type_label", "chunk_type"]}
+        "content_type": {"type": "string", "enum": ["content_type_label", "chunk_type"]},
+        "source_references": {
+          "type": "array",
+          "items": {"$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json"},
+          "description": "Wave 11: optional array of DART/Courseforge source references copied from the originating chunk's source.source_references[]. Populated only when TRAINFORGE_SOURCE_PROVENANCE=true."
+        }
       }
     },
     "MisconceptionOfEvidence": {
@@ -182,23 +197,33 @@
     },
     "DerivedFromObjectiveEvidence": {
       "type": "object",
-      "description": "Evidence emitted by rule derived_from_lo_ref (Trainforge/rag/inference_rules/derived_from_lo_ref.py). Materializes the chunk->LO reference that already exists on the chunk via learning_outcome_refs.",
+      "description": "Evidence emitted by rule derived_from_lo_ref (Trainforge/rag/inference_rules/derived_from_lo_ref.py). Materializes the chunk->LO reference that already exists on the chunk via learning_outcome_refs. Wave 11 adds optional source_references[] (copied from the chunk's source.source_references[] when TRAINFORGE_SOURCE_PROVENANCE=true).",
       "required": ["chunk_id", "objective_id"],
       "additionalProperties": false,
       "properties": {
         "chunk_id": {"type": "string"},
-        "objective_id": {"type": "string"}
+        "objective_id": {"type": "string"},
+        "source_references": {
+          "type": "array",
+          "items": {"$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json"},
+          "description": "Wave 11: optional array of DART/Courseforge source references copied from the originating chunk's source.source_references[]. Populated only when TRAINFORGE_SOURCE_PROVENANCE=true."
+        }
       }
     },
     "DefinedByEvidence": {
       "type": "object",
-      "description": "Evidence emitted by rule defined_by_from_first_mention (Trainforge/rag/inference_rules/defined_by_from_first_mention.py). first_mention_position is always 0 (the first entry after sort-ASC on occurrences[]) — emitted for forward-compat in case the rule later supports non-first picks.",
+      "description": "Evidence emitted by rule defined_by_from_first_mention (Trainforge/rag/inference_rules/defined_by_from_first_mention.py). first_mention_position is always 0 (the first entry after sort-ASC on occurrences[]) — emitted for forward-compat in case the rule later supports non-first picks. Wave 11 adds optional source_references[] (copied from the first-mention chunk's source.source_references[] when TRAINFORGE_SOURCE_PROVENANCE=true).",
       "required": ["chunk_id", "concept_slug", "first_mention_position"],
       "additionalProperties": false,
       "properties": {
         "chunk_id": {"type": "string"},
         "concept_slug": {"type": "string"},
-        "first_mention_position": {"type": "integer", "minimum": 0}
+        "first_mention_position": {"type": "integer", "minimum": 0},
+        "source_references": {
+          "type": "array",
+          "items": {"$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json"},
+          "description": "Wave 11: optional array of DART/Courseforge source references copied from the first-mention chunk's source.source_references[]. Populated only when TRAINFORGE_SOURCE_PROVENANCE=true and the chunks list is available for lookup."
+        }
       }
     },
     "IsAProvenance": {
