@@ -1695,18 +1695,46 @@ def _build_tool_registry() -> dict:
     # contracts.md § "LibV2-archival contract".
     # ============================================================================
     async def _archive_to_libv2(**kwargs):
-        """Wrapper for archive_to_libv2."""
+        """Archive pipeline artifacts (sources + Trainforge outputs) to LibV2.
 
-        course_name = kwargs.get("course_name", "")
-        domain = kwargs.get("domain", "")
+        Parity with the ``@mcp.tool()`` variant at ``pipeline_tools.py:556-726``
+        (slug computation, source copying, manifest shape, feature-flag scans)
+        plus Wave 15 Trainforge output copying into
+        ``corpus/`` / ``graph/`` / ``training_specs/`` / ``quality/``.
+
+        Trainforge output lookup order (first match wins):
+          1. Explicit kwargs: ``project_workspace`` (str/Path), else
+             ``project_id`` → ``Courseforge/exports/{project_id}/trainforge/``.
+          2. Legacy ``assessment_path`` — when it points at a directory, used
+             as the Trainforge output root; when it points at a file, copied
+             into ``corpus/`` (preserves the MCP-tool variant's behavior so
+             existing provenance-flag tests keep passing).
+          3. Heuristic fallback — scan ``Courseforge/exports/*/trainforge/``
+             and ``state/runs/*/trainforge/`` for the most recently modified
+             ``chunks.jsonl``. Absence is not an error — features flags fall
+             back to ``false`` with a warning.
+        """
+        course_name = (
+            kwargs.get("course_name")
+            or kwargs.get("course_id")
+            or kwargs.get("id")
+            or ""
+        )
+        domain = kwargs.get("domain") or "general"
         division = kwargs.get("division", "STEM")
-        pdf_paths_str = kwargs.get("pdf_paths", "")
-        html_paths_str = kwargs.get("html_paths", "")
-        imscc_path_str = kwargs.get("imscc_path", "")
-        subdomains_str = kwargs.get("subdomains", "")
+        pdf_paths_str = kwargs.get("pdf_paths", "") or ""
+        html_paths_str = kwargs.get("html_paths", "") or ""
+        imscc_path_str = kwargs.get("imscc_path", "") or ""
+        assessment_path_str = kwargs.get("assessment_path", "") or ""
+        subdomains_str = kwargs.get("subdomains", "") or ""
+        project_workspace_kw = kwargs.get("project_workspace") or ""
+        project_id_kw = kwargs.get("project_id") or ""
+
+        if not course_name:
+            return json.dumps({"error": "archive_to_libv2 requires course_name"})
 
         slug = course_name.lower().replace("_", "-").replace(" ", "-")
-        libv2_root = _PROJECT_ROOT / "LibV2"
+        libv2_root = PROJECT_ROOT / "LibV2"
         course_dir = libv2_root / "courses" / slug
 
         for subdir in [
@@ -1715,8 +1743,21 @@ def _build_tool_registry() -> dict:
         ]:
             (course_dir / subdir).mkdir(parents=True, exist_ok=True)
 
-        archived = {"pdfs": [], "html": [], "imscc": None}
+        archived = {
+            "pdfs": [],
+            "html": [],
+            "imscc": None,
+            "assessment": None,
+            "trainforge": {
+                "chunks": None,
+                "graph": None,
+                "misconceptions": None,
+                "assessments": None,
+                "quality_report": None,
+            },
+        }
 
+        # --- Copy raw PDFs -------------------------------------------------
         if pdf_paths_str:
             for p in pdf_paths_str.split(","):
                 src = Path(p.strip())
@@ -1725,6 +1766,7 @@ def _build_tool_registry() -> dict:
                     shutil.copy2(src, dest)
                     archived["pdfs"].append(str(dest))
 
+        # --- Copy DART HTML outputs (+ adjacent .quality.json) -------------
         if html_paths_str:
             for p in html_paths_str.split(","):
                 src = Path(p.strip())
@@ -1732,13 +1774,138 @@ def _build_tool_registry() -> dict:
                     dest = course_dir / "source" / "html" / src.name
                     shutil.copy2(src, dest)
                     archived["html"].append(str(dest))
+                    quality_json = src.with_suffix(".quality.json")
+                    if quality_json.exists():
+                        shutil.copy2(
+                            quality_json, course_dir / "quality" / quality_json.name
+                        )
 
+        # --- Copy IMSCC package -------------------------------------------
         if imscc_path_str:
             src = Path(imscc_path_str)
             if src.exists():
                 dest = course_dir / "source" / "imscc" / src.name
                 shutil.copy2(src, dest)
                 archived["imscc"] = str(dest)
+
+        # --- Resolve Trainforge workspace ---------------------------------
+        trainforge_dir: Optional[Path] = None
+
+        if project_workspace_kw:
+            candidate = Path(project_workspace_kw)
+            if candidate.name != "trainforge":
+                candidate = candidate / "trainforge"
+            if candidate.exists() and candidate.is_dir():
+                trainforge_dir = candidate
+
+        if trainforge_dir is None and project_id_kw:
+            candidate = (
+                PROJECT_ROOT / "Courseforge" / "exports" / project_id_kw / "trainforge"
+            )
+            if candidate.exists() and candidate.is_dir():
+                trainforge_dir = candidate
+
+        # Legacy assessment_path handling: keep parity with the MCP-tool
+        # variant so existing provenance / evidence flag tests pass
+        # (they pass assessment_path=<chunks.jsonl>). If the path points at
+        # a directory, treat it as the trainforge workspace root.
+        if assessment_path_str:
+            ap = Path(assessment_path_str)
+            if ap.exists():
+                if ap.is_dir():
+                    if trainforge_dir is None:
+                        trainforge_dir = ap
+                else:
+                    dest = course_dir / "corpus" / ap.name
+                    shutil.copy2(ap, dest)
+                    archived["assessment"] = str(dest)
+
+        # Heuristic fallback: scan well-known locations for chunks.jsonl.
+        if trainforge_dir is None:
+            candidates: list[Path] = []
+            exports_root = PROJECT_ROOT / "Courseforge" / "exports"
+            if exports_root.exists():
+                for project_dir in exports_root.iterdir():
+                    if not project_dir.is_dir():
+                        continue
+                    tf = project_dir / "trainforge"
+                    if (tf / "chunks.jsonl").exists():
+                        candidates.append(tf)
+            runs_root = PROJECT_ROOT / "state" / "runs"
+            if runs_root.exists():
+                for run_dir in runs_root.iterdir():
+                    if not run_dir.is_dir():
+                        continue
+                    tf = run_dir / "trainforge"
+                    if (tf / "chunks.jsonl").exists():
+                        candidates.append(tf)
+            if candidates:
+                trainforge_dir = max(
+                    candidates,
+                    key=lambda p: (p / "chunks.jsonl").stat().st_mtime,
+                )
+
+        # --- Copy Trainforge outputs --------------------------------------
+        if trainforge_dir is not None and trainforge_dir.exists():
+            copy_map = [
+                (trainforge_dir / "chunks.jsonl",
+                 course_dir / "corpus" / "chunks.jsonl", "chunks"),
+                (trainforge_dir / "concept_graph_semantic.json",
+                 course_dir / "graph" / "concept_graph_semantic.json", "graph"),
+                (trainforge_dir / "misconceptions.json",
+                 course_dir / "graph" / "misconceptions.json", "misconceptions"),
+                (trainforge_dir / "assessments.json",
+                 course_dir / "training_specs" / "assessments.json", "assessments"),
+                (trainforge_dir / "quality" / "quality_report.json",
+                 course_dir / "quality" / "quality_report.json", "quality_report"),
+            ]
+            for src, dest, label in copy_map:
+                if src.exists() and src.is_file():
+                    try:
+                        shutil.copy2(src, dest)
+                        archived["trainforge"][label] = str(dest)
+                    except OSError as exc:
+                        logger.warning(
+                            f"archive_to_libv2: failed to copy {src} -> {dest}: {exc}"
+                        )
+        else:
+            logger.warning(
+                "archive_to_libv2: no Trainforge output dir located for "
+                f"course {course_name} — features flags will default to false."
+            )
+
+        # --- Build manifest (with source_artifacts checksums) -------------
+        import hashlib
+
+        def _sha256(filepath: Path) -> str:
+            h = hashlib.sha256()
+            with open(filepath, "rb") as f:
+                for block in iter(lambda: f.read(8192), b""):
+                    h.update(block)
+            return h.hexdigest()
+
+        source_artifacts: dict = {}
+        if archived["pdfs"]:
+            source_artifacts["pdf"] = [
+                {"path": p, "checksum": _sha256(Path(p)), "size": Path(p).stat().st_size}
+                for p in archived["pdfs"]
+            ]
+        if archived["html"]:
+            source_artifacts["html"] = [
+                {"path": p, "checksum": _sha256(Path(p)), "size": Path(p).stat().st_size}
+                for p in archived["html"]
+            ]
+        if archived["imscc"]:
+            imscc_p = Path(archived["imscc"])
+            source_artifacts["imscc"] = {
+                "path": archived["imscc"],
+                "checksum": _sha256(imscc_p),
+                "size": imscc_p.stat().st_size,
+            }
+
+        # Wave 10 / Wave 11 feature flags — scan the archived files.
+        source_provenance_flag = _detect_source_provenance(course_dir)
+        evidence_source_provenance_flag = _detect_evidence_source_provenance(course_dir)
 
         manifest = {
             "libv2_version": "1.2.0",
@@ -1750,9 +1917,14 @@ def _build_tool_registry() -> dict:
                 "subdomains": [s.strip() for s in subdomains_str.split(",")]
                 if subdomains_str else [],
             },
+            "source_artifacts": source_artifacts,
             "provenance": {
                 "source_type": "textbook_to_course_pipeline",
                 "import_pipeline_version": "1.0.0",
+            },
+            "features": {
+                "source_provenance": source_provenance_flag,
+                "evidence_source_provenance": evidence_source_provenance_flag,
             },
         }
 
@@ -1766,6 +1938,22 @@ def _build_tool_registry() -> dict:
             "course_dir": str(course_dir),
             "manifest_path": str(manifest_path),
             "archived": archived,
+            "features": {
+                "source_provenance": source_provenance_flag,
+                "evidence_source_provenance": evidence_source_provenance_flag,
+            },
+            "trainforge_workspace": (
+                str(trainforge_dir) if trainforge_dir is not None else None
+            ),
+            "artifact_counts": {
+                "pdfs": len(archived["pdfs"]),
+                "html_files": len(archived["html"]),
+                "imscc": 1 if archived["imscc"] else 0,
+                "assessment": 1 if archived["assessment"] else 0,
+                "trainforge": sum(
+                    1 for v in archived["trainforge"].values() if v is not None
+                ),
+            },
         })
 
     registry["archive_to_libv2"] = _archive_to_libv2
