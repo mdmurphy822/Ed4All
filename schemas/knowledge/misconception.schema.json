@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/knowledge/v1/misconception.schema.json",
+  "title": "Misconception",
+  "description": "First-class Misconception entity with content-hash ID (REC-LNK-02). Replaces the earlier unstable chunk-position-based misconception_id format.",
+  "type": "object",
+  "required": ["id", "misconception", "correction"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^mc_[0-9a-f]{16}$",
+      "description": "Content-hash misconception ID: sha256(misconception_text + '|' + correction_text)[:16]. Stable across runs when text is unchanged."
+    },
+    "misconception": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The incorrect belief or reasoning."
+    },
+    "correction": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The correct explanation."
+    },
+    "concept_id": {
+      "type": "string",
+      "description": "Optional typed link to the concept this misconception targets. Populated when upstream emit provides it (future wave may wire from JSON-LD)."
+    },
+    "lo_id": {
+      "type": "string",
+      "description": "Optional typed link to the LO this misconception threatens."
+    }
+  }
+}
