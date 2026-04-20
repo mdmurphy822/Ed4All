@@ -30,11 +30,52 @@ Deterministic: output sorted by (source, target); concepts without
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List
 
 RULE_NAME = "defined_by_from_first_mention"
-RULE_VERSION = 1
+# Wave 11 (Worker cc): bumped from 1 -> 2 to expose the optional
+# source_references[] emit shape on DefinedByEvidence.
+RULE_VERSION = 2
 EDGE_TYPE = "defined-by"
+
+# Wave 11: opt-in flag gates the evidence-arm source_references[] emission.
+SOURCE_PROVENANCE = os.getenv("TRAINFORGE_SOURCE_PROVENANCE", "").lower() == "true"
+
+
+def _build_chunk_index(chunks: List[Dict[str, Any]] | None) -> Dict[str, Dict[str, Any]]:
+    """Return a {chunk_id: chunk} lookup map for flag-on source_references
+    resolution. Returns an empty dict when chunks is None or empty."""
+    if not chunks:
+        return {}
+    idx: Dict[str, Dict[str, Any]] = {}
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        cid = chunk.get("id")
+        if not cid:
+            continue
+        idx[cid] = chunk
+    return idx
+
+
+def _lookup_source_references(
+    chunk_id: str, chunk_index: Dict[str, Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Return deep-copied source_references[] for the given chunk_id.
+
+    Returns [] when the chunk isn't in the index (legacy) or has no refs.
+    """
+    chunk = chunk_index.get(chunk_id)
+    if not isinstance(chunk, dict):
+        return []
+    source = chunk.get("source")
+    if not isinstance(source, dict):
+        return []
+    refs = source.get("source_references")
+    if not isinstance(refs, list):
+        return []
+    return [dict(r) for r in refs if isinstance(r, dict)]
 
 
 def _concept_slug(node_id: str) -> str:
@@ -68,7 +109,13 @@ def infer(
     Returns:
         A deterministically-ordered list of edge dicts.
     """
-    del chunks, course  # unused; interface parity
+    del course  # unused; interface parity
+
+    # Wave 11: build chunk lookup so the flag-on path can find source refs
+    # for each first-mention chunk. Pre-Wave-11, chunks were deleted here —
+    # now retained for the lookup. No behavioral change when the flag is off
+    # (the index is simply not consulted).
+    chunk_index = _build_chunk_index(chunks) if SOURCE_PROVENANCE else {}
 
     edges: List[Dict[str, Any]] = []
     for node in concept_graph.get("nodes", []) or []:
@@ -81,6 +128,17 @@ def infer(
         # Worker S sorts occurrences ASC at emit time; defensive re-sort
         # here in case an upstream fixture passes an unsorted list.
         first_chunk = sorted(occurrences)[0]
+        evidence: Dict[str, Any] = {
+            "chunk_id": first_chunk,
+            "concept_slug": _concept_slug(node_id),
+            "first_mention_position": 0,
+        }
+        # Wave 11: flag-gated source_references emit. Looks up the first-
+        # mention chunk in the index and copies its source_references[].
+        if SOURCE_PROVENANCE:
+            refs = _lookup_source_references(first_chunk, chunk_index)
+            if refs:
+                evidence["source_references"] = refs
         edges.append({
             "source": node_id,
             "target": first_chunk,
@@ -89,11 +147,7 @@ def infer(
             "provenance": {
                 "rule": RULE_NAME,
                 "rule_version": RULE_VERSION,
-                "evidence": {
-                    "chunk_id": first_chunk,
-                    "concept_slug": _concept_slug(node_id),
-                    "first_mention_position": 0,
-                },
+                "evidence": evidence,
             },
         })
 

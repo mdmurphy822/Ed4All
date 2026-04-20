@@ -190,10 +190,10 @@ Trainforge extracts structured metadata from Courseforge HTML output using a pri
 ### Schemas and concept graph (v0.2.0)
 
 - **Canonical chunk contract**: `schemas/knowledge/chunk_v4.schema.json`. Opt-in enforcement via `TRAINFORGE_VALIDATE_CHUNKS=true`; fails closed on shape drift. Wave 10: extended with optional `source.source_references[]`.
-- **Concept graph**: 8 edge types — 3 taxonomic (`is-a`, `prerequisite`, `related-to`) + 5 pedagogical (`assesses`, `exemplifies`, `misconception-of`, `derived-from-objective`, `defined-by`). Concept nodes carry optional `occurrences[]` (sorted chunk-ID back-references) and, as of Wave 10, optional `source_refs[]` — the SourceReference list copied from the first occurrence chunk's `source.source_references[]`. Per-rule evidence discriminator on `edges[].provenance`; strict mode via `TRAINFORGE_STRICT_EVIDENCE=true`. Evidence arms are NOT extended with source refs in Wave 10 — that's Wave 11 (flag-gated).
+- **Concept graph**: 8 edge types — 3 taxonomic (`is-a`, `prerequisite`, `related-to`) + 5 pedagogical (`assesses`, `exemplifies`, `misconception-of`, `derived-from-objective`, `defined-by`). Concept nodes carry optional `occurrences[]` (sorted chunk-ID back-references) and, as of Wave 10, optional `source_refs[]` — the SourceReference list copied from the first occurrence chunk's `source.source_references[]`. Per-rule evidence discriminator on `edges[].provenance`; strict mode via `TRAINFORGE_STRICT_EVIDENCE=true`. **Wave 11** adds optional `source_references[]` on the five chunk-anchored evidence arms (`IsAEvidence`, `ExemplifiesEvidence`, `DerivedFromObjectiveEvidence`, `DefinedByEvidence`, `AssessesEvidence`) — populated from the originating chunk's `source.source_references[]` when `TRAINFORGE_SOURCE_PROVENANCE=true`. Abstract arms (`PrerequisiteEvidence`, `RelatedEvidence`, `MisconceptionOfEvidence`) + `FallbackProvenance` are deferred to a future wave (P4 decision — they require re-plumbing `related_from_cooccurrence.py` to see chunks). The schema admits the field unconditionally; only the emit is gated, so strict validators stay consistent regardless of flag state.
 - **Misconception as first-class entity**: `schemas/knowledge/misconception.schema.json` — IDs follow `mc_[0-9a-f]{16}` (content hash).
 
-Full v0.2.0 change summary: `schemas/ONTOLOGY.md` § 12. Root `CLAUDE.md` lists all seven `TRAINFORGE_*` opt-in flags.
+Full v0.2.0 change summary: `schemas/ONTOLOGY.md` § 12. Root `CLAUDE.md` lists all eight `TRAINFORGE_*` / decision-capture opt-in flags.
 
 ---
 
