@@ -24,8 +24,8 @@
   "properties": {
     "id": {
       "type": "string",
-      "pattern": "^[a-z][a-z0-9_]*_chunk_\\d{5}$",
-      "description": "Globally unique chunk identifier: '<course_slug>_chunk_<5-digit sequence>'. Example: wcag_201_chunk_00001."
+      "pattern": "^[a-z][a-z0-9_]*_chunk_(\\d{5}|[0-9a-f]{16})$",
+      "description": "Globally unique chunk identifier. Default form: '<course_slug>_chunk_<5-digit position>'. When TRAINFORGE_CONTENT_HASH_IDS=true (Worker N, REC-ID-01), form is '<course_slug>_chunk_<16-hex-char sha256 of text|source_locator|schema_version>'; IDs are then stable across re-chunks. Example: wcag_201_chunk_00001 (legacy) or wcag_201_chunk_a3f2b9c8d1e4f567 (content-hash)."
     },
     "schema_version": {
       "const": "v4",
