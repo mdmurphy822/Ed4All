@@ -20,7 +20,10 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from MCP.orchestrator.llm_backend import LLMBackend
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -507,6 +510,7 @@ def classify_teaching_roles(
     llm_provider: str = "mock",
     llm_model: str = "claude-haiku-4-5-20251001",
     verbose: bool = False,
+    llm: Optional["LLMBackend"] = None,
 ) -> None:
     """Mutate chunks in-place to add teaching_role field.
 
@@ -518,6 +522,16 @@ def classify_teaching_roles(
       3. LLM classifier (anthropic) or mock fallback.
     The LLM path is preserved as-is for legacy IMSCCs that don't carry
     the deterministic attribute.
+
+    Args:
+        chunks: Chunks to classify in-place.
+        llm_provider: ``"anthropic"`` to invoke the LLM for ambiguous chunks,
+            anything else to stick with the mock/heuristic path.
+        llm_model: Model identifier passed to the backend.
+        verbose: Print per-chunk classifications.
+        llm: Optional pre-built :class:`LLMBackend` instance. When provided,
+            overrides the ``llm_provider`` path and routes LLM calls through
+            the injected backend — enabling local / api / mock swap-in.
     """
     # Belt-and-suspenders: catch schema drift against the canonical
     # teaching_role enum. Soft-imports so standalone Trainforge installs
@@ -568,9 +582,13 @@ def classify_teaching_roles(
         else:
             ambiguous_chunks.append(chunk)
 
-    # 3. Handle ambiguous chunks via LLM or mock fallback
-    if llm_provider == "anthropic" and ambiguous_chunks:
-        _classify_with_llm(ambiguous_chunks, concept_first_seen, llm_model, verbose)
+    # 3. Handle ambiguous chunks via LLM or mock fallback.
+    # Injected LLMBackend takes precedence over provider-string path.
+    use_llm = llm is not None or llm_provider == "anthropic"
+    if use_llm and ambiguous_chunks:
+        _classify_with_llm(
+            ambiguous_chunks, concept_first_seen, llm_model, verbose, llm=llm
+        )
         for chunk in ambiguous_chunks:
             chunk.setdefault("teaching_role_source", "llm")
         llm_count = len(ambiguous_chunks)
@@ -585,7 +603,7 @@ def classify_teaching_roles(
 
     print(f"  Teaching roles: {deterministic_count} deterministic, "
           f"{heuristic_count} heuristic, "
-          f"{llm_count or len(ambiguous_chunks)} {'LLM' if llm_provider == 'anthropic' else 'mock'}")
+          f"{llm_count or len(ambiguous_chunks)} {'LLM' if use_llm else 'mock'}")
 
 
 def _classify_with_llm(
@@ -593,17 +611,29 @@ def _classify_with_llm(
     concept_first_seen: Dict[str, int],
     model: str,
     verbose: bool,
+    llm: Optional["LLMBackend"] = None,
 ) -> None:
-    """Classify ambiguous chunks using Claude API in batches."""
-    try:
-        import anthropic
-    except ImportError:
-        print("  WARNING: anthropic package not installed, falling back to mock")
-        for chunk in chunks:
-            chunk["teaching_role"] = _mock_role(chunk, concept_first_seen)
-        return
+    """Classify ambiguous chunks using an LLM backend in batches.
 
-    client = anthropic.Anthropic()
+    Prefers an injected :class:`LLMBackend`. When none is provided, lazily
+    builds an :class:`AnthropicBackend` from the environment. The Anthropic
+    SDK is never imported at module scope — it's loaded via the orchestrator
+    backend module, which is the only place ``import anthropic`` lives.
+    """
+    if llm is None:
+        try:
+            from MCP.orchestrator.llm_backend import AnthropicBackend
+
+            llm = AnthropicBackend(default_model=model)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"  WARNING: could not initialize LLM backend ({exc}), "
+                "falling back to mock"
+            )
+            for chunk in chunks:
+                chunk["teaching_role"] = _mock_role(chunk, concept_first_seen)
+            return
+
     batch_size = 12
 
     for batch_start in range(0, len(chunks), batch_size):
@@ -634,12 +664,12 @@ def _classify_with_llm(
         )
 
         try:
-            response = client.messages.create(
+            text = llm.complete_sync(
+                system="",
+                user=prompt,
                 model=model,
                 max_tokens=1024,
-                messages=[{"role": "user", "content": prompt}],
             )
-            text = response.content[0].text
 
             # Extract JSON array from response
             match = re.search(r"\[.*\]", text, re.DOTALL)

@@ -125,7 +125,7 @@ pip install -e ".[full]"
 
 ```bash
 # One command: convert PDF, generate course, process corpus, import to LibV2
-ed4all textbook-to-course textbook.pdf -n COURSE_101 --weeks 12
+ed4all run textbook-to-course --corpus textbook.pdf --course-name COURSE_101 --weeks 12
 ```
 
 ### Stage by Stage
@@ -183,7 +183,9 @@ cd MCP && python server.py
 ## CLI
 
 ```bash
-ed4all textbook-to-course textbook.pdf -n COURSE_101  # Full pipeline
+ed4all run textbook-to-course --corpus textbook.pdf --course-name COURSE_101   # Full pipeline (primary)
+ed4all run <workflow> --dry-run --corpus <PATH> --course-name <NAME>           # Plan only, no execution
+ed4all run <workflow> --resume <run_id>                                        # Resume a prior run
 ed4all validate-run <run_id>                           # Validate run integrity
 ed4all summarize-run <run_id>                          # Generate run report
 ed4all diff-runs <run_a> <run_b>                       # Compare two runs

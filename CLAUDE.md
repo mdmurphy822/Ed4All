@@ -4,6 +4,37 @@ Unified orchestration system for DART, Courseforge, Trainforge, and LibV2.
 
 ## Quick Start
 
+### Canonical entry point
+
+```bash
+# Primary: run any workflow end-to-end via the unified CLI
+ed4all run <workflow_name> --corpus <PATH> --course-name <NAME> [--mode local|api]
+
+# Examples
+ed4all run textbook-to-course --corpus textbook.pdf --course-name PHYS_101
+ed4all run textbook-to-course --corpus ./pdfs/ --course-name BIO_201 --weeks 16
+ed4all run rag_training --corpus course.imscc --course-name CHEM_101 --mode api
+ed4all run textbook-to-course --corpus x.pdf --course-name T --dry-run   # plan only
+ed4all run textbook-to-course --resume WF-20260420-abc12345               # resume
+```
+
+Modes:
+
+- `--mode local` (default): uses the current Claude Code session as the LLM;
+  no API key required. Phase workers are dispatched as subagents.
+- `--mode api`: uses the Anthropic SDK directly (requires `ANTHROPIC_API_KEY`).
+  Workers run as Python coroutines and call the SDK directly.
+
+Environment toggles (override or supplement CLI flags):
+
+| Env Var | Default | Purpose |
+|---------|---------|---------|
+| `LLM_MODE` | `local` | Chooses `local` or `api` if `--mode` isn't passed. |
+| `LLM_PROVIDER` | `anthropic` | Provider in api mode (`anthropic` or `openai`; `openai` is stubbed, reserved for a later wave). |
+| `LLM_MODEL` | per-provider | Model ID override (e.g., a specific Claude release). |
+| `ANTHROPIC_API_KEY` | — | Required for api mode with Anthropic. |
+| `OPENAI_API_KEY` | — | Reserved; OpenAI backend not yet implemented. |
+
 ### MCP Server
 ```bash
 cd MCP
