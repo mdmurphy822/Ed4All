@@ -75,6 +75,68 @@ def _detect_source_provenance(course_dir: Path) -> bool:
     return False
 
 
+def _detect_evidence_source_provenance(course_dir: Path) -> bool:
+    """Wave 11: scan archived concept_graph_semantic.json for evidence-level refs.
+
+    Returns True when at least one edge in the archived concept graph's
+    ``edges[].provenance.evidence`` carries a populated ``source_references[]``
+    array. False on missing file, read errors, malformed JSON, or when no
+    edges carry evidence refs. The manifest then advertises
+    ``features.evidence_source_provenance: true/false`` so LibV2 retrieval
+    callers can distinguish chunk-level (Wave 10) from evidence-level (Wave 11)
+    provenance.
+
+    The scan looks in three candidate locations under ``<course_dir>``:
+    ``graph/concept_graph_semantic.json``, ``corpus/concept_graph_semantic.json``,
+    or any ``*.json`` file shaped like a semantic graph (``kind ==
+    "concept_semantic"``) sitting inside the corpus dir. First match wins.
+    """
+    candidates = [
+        course_dir / "graph" / "concept_graph_semantic.json",
+        course_dir / "corpus" / "concept_graph_semantic.json",
+    ]
+    for path in candidates:
+        if path.exists() and path.is_file():
+            try:
+                with open(path, encoding="utf-8") as f:
+                    graph = json.load(f)
+            except (OSError, json.JSONDecodeError, ValueError):
+                continue
+            if _graph_has_evidence_refs(graph):
+                return True
+            # First readable candidate wins — don't fall through to others
+            # if this one was valid shape but carried no refs.
+            return False
+    return False
+
+
+def _graph_has_evidence_refs(graph: object) -> bool:
+    """Return True iff the graph has at least one edge whose
+    ``provenance.evidence.source_references`` is a non-empty list.
+
+    Tolerates partial / legacy shapes: silently returns False on any
+    structural surprise rather than raising.
+    """
+    if not isinstance(graph, dict):
+        return False
+    edges = graph.get("edges")
+    if not isinstance(edges, list):
+        return False
+    for edge in edges:
+        if not isinstance(edge, dict):
+            continue
+        provenance = edge.get("provenance")
+        if not isinstance(provenance, dict):
+            continue
+        evidence = provenance.get("evidence")
+        if not isinstance(evidence, dict):
+            continue
+        refs = evidence.get("source_references")
+        if isinstance(refs, list) and len(refs) > 0:
+            return True
+    return False
+
+
 async def create_textbook_pipeline(
     pdf_paths: str,
     course_name: str,
@@ -614,6 +676,13 @@ def register_pipeline_tools(mcp):
             # be read, or when no chunks carry refs.
             source_provenance_flag = _detect_source_provenance(course_dir)
 
+            # Wave 11: companion flag for evidence-arm source_references[].
+            # True when the archived concept_graph_semantic.json carries at
+            # least one edge with evidence.source_references[]. Lets
+            # consumers distinguish chunk-level (Wave 10) from evidence-
+            # level (Wave 11) provenance.
+            evidence_source_provenance_flag = _detect_evidence_source_provenance(course_dir)
+
             manifest = {
                 "libv2_version": "1.2.0",
                 "slug": slug,
@@ -630,6 +699,7 @@ def register_pipeline_tools(mcp):
                 },
                 "features": {
                     "source_provenance": source_provenance_flag,
+                    "evidence_source_provenance": evidence_source_provenance_flag,
                 },
             }
 

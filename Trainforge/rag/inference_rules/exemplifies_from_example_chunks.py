@@ -23,11 +23,28 @@ chunk by sorted concept tag.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Tuple
 
 RULE_NAME = "exemplifies_from_example_chunks"
-RULE_VERSION = 1
+# Wave 11 (Worker cc): bumped from 1 -> 2 to expose the optional
+# source_references[] emit shape on ExemplifiesEvidence.
+RULE_VERSION = 2
 EDGE_TYPE = "exemplifies"
+
+# Wave 11: opt-in flag gates the evidence-arm source_references[] emission.
+SOURCE_PROVENANCE = os.getenv("TRAINFORGE_SOURCE_PROVENANCE", "").lower() == "true"
+
+
+def _chunk_source_references(chunk: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return a deep-copied list of source_references from a chunk's source block."""
+    source = chunk.get("source") if isinstance(chunk, dict) else None
+    if not isinstance(source, dict):
+        return []
+    refs = source.get("source_references")
+    if not isinstance(refs, list):
+        return []
+    return [dict(r) for r in refs if isinstance(r, dict)]
 
 
 def _is_example(chunk: Dict[str, Any]) -> Tuple[bool, str]:
@@ -91,6 +108,17 @@ def infer(
             key = (chunk_id, concept_id)
             if key in seen:
                 continue
+            evidence: Dict[str, Any] = {
+                "chunk_id": chunk_id,
+                "concept_slug": tag,
+                "content_type": content_type,
+            }
+            # Wave 11: flag-gated source_references emit from the example
+            # chunk's source.source_references[].
+            if SOURCE_PROVENANCE:
+                refs = _chunk_source_references(chunk)
+                if refs:
+                    evidence["source_references"] = refs
             seen[key] = {
                 "source": chunk_id,
                 "target": concept_id,
@@ -99,11 +127,7 @@ def infer(
                 "provenance": {
                     "rule": RULE_NAME,
                     "rule_version": RULE_VERSION,
-                    "evidence": {
-                        "chunk_id": chunk_id,
-                        "concept_slug": tag,
-                        "content_type": content_type,
-                    },
+                    "evidence": evidence,
                 },
             }
 

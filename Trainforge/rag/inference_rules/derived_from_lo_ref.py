@@ -20,11 +20,28 @@ same chunk's refs list are collapsed.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Tuple
 
 RULE_NAME = "derived_from_lo_ref"
-RULE_VERSION = 1
+# Wave 11 (Worker cc): bumped from 1 -> 2 to expose the optional
+# source_references[] emit shape on DerivedFromObjectiveEvidence.
+RULE_VERSION = 2
 EDGE_TYPE = "derived-from-objective"
+
+# Wave 11: opt-in flag gates the evidence-arm source_references[] emission.
+SOURCE_PROVENANCE = os.getenv("TRAINFORGE_SOURCE_PROVENANCE", "").lower() == "true"
+
+
+def _chunk_source_references(chunk: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return a deep-copied list of source_references from a chunk's source block."""
+    source = chunk.get("source") if isinstance(chunk, dict) else None
+    if not isinstance(source, dict):
+        return []
+    refs = source.get("source_references")
+    if not isinstance(refs, list):
+        return []
+    return [dict(r) for r in refs if isinstance(r, dict)]
 
 
 def infer(
@@ -59,6 +76,15 @@ def infer(
             key = (chunk_id, ref)
             if key in seen:
                 continue
+            evidence: Dict[str, Any] = {
+                "chunk_id": chunk_id,
+                "objective_id": ref,
+            }
+            # Wave 11: flag-gated source_references emit.
+            if SOURCE_PROVENANCE:
+                src_refs = _chunk_source_references(chunk)
+                if src_refs:
+                    evidence["source_references"] = src_refs
             seen[key] = {
                 "source": chunk_id,
                 "target": ref,
@@ -67,10 +93,7 @@ def infer(
                 "provenance": {
                     "rule": RULE_NAME,
                     "rule_version": RULE_VERSION,
-                    "evidence": {
-                        "chunk_id": chunk_id,
-                        "objective_id": ref,
-                    },
+                    "evidence": evidence,
                 },
             }
 
