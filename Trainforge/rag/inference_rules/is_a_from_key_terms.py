@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Tuple
 
+from lib.ontology.slugs import canonical_slug
 from Trainforge.rag.wcag_canonical_names import canonicalize_sc_references
 
 RULE_NAME = "is_a_from_key_terms"
@@ -52,16 +53,27 @@ _STOPWORDS = {
 def _slugify(text: str) -> str:
     """Normalize a term to a concept-graph-style id.
 
-    Lowercase, strip punctuation, collapse whitespace to a single hyphen. No
-    stemming — the graph already stores canonical tag slugs, so we just need
-    to match them.
+    Two site-specific preprocessing steps sit on top of the shared
+    ``canonical_slug`` (REC-ID-03, Wave 4 Worker Q):
+
+    1. ``canonicalize_sc_references`` rewrites WCAG Success Criterion variants
+       (e.g. ``"1.3.1"`` ↔ ``"SC 1.3.1"``) so that downstream substring matches
+       against graph node ids line up.
+    2. Non-alnum/whitespace/hyphen characters are replaced with SPACE (rather
+       than deleted like ``canonical_slug`` does). This preserves word
+       separation — ``"a.b"`` stays slugged as ``"a-b"`` rather than fusing to
+       ``"ab"`` — so phrase substrings match multi-word graph node ids.
+
+    After those two steps the string contains only alnum, whitespace, and
+    hyphens; ``canonical_slug`` then does the lowercase + kebab-case + edge
+    strip. A final multi-hyphen collapse matches the historical behavior of
+    this site (Courseforge's ``_slugify`` does not collapse interior runs of
+    hyphens; this rule does).
     """
     text = canonicalize_sc_references(text or "")
-    text = text.lower().strip()
-    text = re.sub(r"[^a-z0-9\s\-]", " ", text)
-    text = re.sub(r"\s+", "-", text.strip())
-    text = re.sub(r"-+", "-", text).strip("-")
-    return text
+    text = re.sub(r"[^a-z0-9\s\-]", " ", text.lower())
+    slug = canonical_slug(text)
+    return re.sub(r"-+", "-", slug).strip("-")
 
 
 def _candidate_parent_ids(
