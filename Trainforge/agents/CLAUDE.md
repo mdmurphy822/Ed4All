@@ -1,6 +1,8 @@
 # Trainforge Agent Protocols
 
 > **Universal Protocols**: See root `/CLAUDE.md` for orchestrator protocol, execution rules, decision capture requirements, and error handling.
+>
+> **Ontology contracts**: Chunks, concept nodes, concept edges, and decision events all have canonical schemas under `schemas/knowledge/` and `schemas/events/`. See `schemas/ONTOLOGY.md` § 12 for the v0.2.0 contract summary.
 
 ## Agent Coordination
 
