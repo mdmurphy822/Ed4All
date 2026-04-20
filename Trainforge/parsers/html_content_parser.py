@@ -53,6 +53,14 @@ class ContentSection:
     # merge these into a chunk's ``learning_outcome_refs`` so the
     # Activity→LO KG edge materializes.
     objective_refs: List[str] = field(default_factory=list)
+    # Wave 10: ``data-cf-source-ids`` values harvested from the section body.
+    # Courseforge emits these on ``<section>`` / heading / component wrapper
+    # elements per Wave 9 (P2 decision: never on ``<p>``/``<li>``/``<tr>``).
+    # Stored as the raw ``sourceId`` strings (``dart:{slug}#{block_id}``);
+    # process_course.py converts them to full SourceReference dicts with an
+    # auto-role of ``contributing`` when JSON-LD doesn't supply the full
+    # shape. Sorted + deduplicated for deterministic downstream diffs.
+    source_references: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -88,6 +96,18 @@ class ParsedHTMLModule:
     # mapped back to a specific section (the no-sections code path in
     # _chunk_content). Populated even when ``sections`` is empty.
     objective_refs: List[str] = field(default_factory=list)
+    # Wave 10: page-level aggregated source references. Each entry is a
+    # full ``SourceReference`` dict (per schemas/knowledge/source_reference
+    # .schema.json) — ``{sourceId, role, ...}``. Precedence:
+    #   1. JSON-LD ``sourceReferences`` (page-level + section-level) copied
+    #      verbatim (full shape when Courseforge is Wave 9+).
+    #   2. ``data-cf-source-ids`` HTML attributes (stringified sourceId
+    #      only) synthesised as ``{sourceId, role: 'contributing'}`` when
+    #      the sourceId isn't already represented in the JSON-LD set.
+    # Deduped by sourceId; first-seen wins on role collision so JSON-LD's
+    # authoritative role (primary / contributing / corroborating) is
+    # preserved over the HTML-attr fallback's default 'contributing'.
+    source_references: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class HTMLTextExtractor(HTMLParser):
@@ -258,6 +278,14 @@ class HTMLContentParser:
         )
         page_obj_refs = sorted({r for r in page_obj_ref_matches if r})
 
+        # Wave 10: page-level source_references aggregated with precedence
+        # JSON-LD (full shape) > data-cf-source-ids (sourceId strings
+        # auto-roled as 'contributing'). First-seen wins on sourceId
+        # collision so JSON-LD's authoritative role is preserved.
+        page_source_refs = self._build_page_source_refs(
+            json_ld, sections, html_content
+        )
+
         return ParsedHTMLModule(
             title=title,
             word_count=word_count,
@@ -271,7 +299,68 @@ class HTMLContentParser:
             prerequisite_pages=prerequisite_pages,
             suggested_assessment_types=suggested_assessments,
             objective_refs=page_obj_refs,
+            source_references=page_source_refs,
         )
+
+    def _build_page_source_refs(
+        self,
+        json_ld: Optional[Dict[str, Any]],
+        sections: List[ContentSection],
+        html_content: str,
+    ) -> List[Dict[str, Any]]:
+        """Wave 10: Aggregate page-level source_references with precedence.
+
+        Precedence:
+          1. JSON-LD page-level ``sourceReferences`` (full SourceReference
+             shape — sourceId, role, optional weight/confidence/pages/
+             extractor) copied verbatim.
+          2. JSON-LD section-level ``sourceReferences`` (same shape) —
+             appended after page-level.
+          3. ``data-cf-source-ids`` values from HTML attributes (strings
+             only) synthesised as ``{sourceId, role: 'contributing'}`` and
+             appended last.
+
+        First-seen wins on sourceId collision so JSON-LD's authoritative
+        role survives over the HTML-attr fallback. Returns an empty list
+        when no refs are found (pre-Wave-9 corpus) — consumers treat
+        absence as "unknown", never an error.
+        """
+        refs: List[Dict[str, Any]] = []
+        seen: set = set()
+
+        def _add(entry: Dict[str, Any]) -> None:
+            sid = entry.get("sourceId")
+            if not isinstance(sid, str) or not sid:
+                return
+            if sid in seen:
+                return
+            seen.add(sid)
+            refs.append(dict(entry))
+
+        # 1. Page-level JSON-LD sourceReferences
+        if isinstance(json_ld, dict):
+            for entry in json_ld.get("sourceReferences", []) or []:
+                if isinstance(entry, dict):
+                    _add(entry)
+            # 2. Section-level JSON-LD sourceReferences
+            for sec in json_ld.get("sections", []) or []:
+                if not isinstance(sec, dict):
+                    continue
+                for entry in sec.get("sourceReferences", []) or []:
+                    if isinstance(entry, dict):
+                        _add(entry)
+
+        # 3. HTML data-cf-source-ids fallback — synthesised 'contributing'
+        all_html_ids: List[str] = []
+        for raw in re.findall(r'data-cf-source-ids="([^"]*)"', html_content):
+            for piece in raw.split(","):
+                piece = piece.strip()
+                if piece:
+                    all_html_ids.append(piece)
+        for sid in all_html_ids:
+            _add({"sourceId": sid, "role": "contributing"})
+
+        return refs
 
     def _extract_json_ld(self, html: str) -> Optional[Dict[str, Any]]:
         """Extract the first JSON-LD block with Courseforge context from HTML."""
@@ -357,6 +446,29 @@ class HTMLContentParser:
             )
             distinct_obj_refs = sorted({r for r in obj_ref_matches if r})
 
+            # Wave 10: scan section body + heading attrs for
+            # ``data-cf-source-ids`` (comma-separated list of DART
+            # sourceIds). Courseforge Wave 9 emits these on <section>,
+            # headings, and component wrappers (.flip-card, .self-check,
+            # .activity-card, .discussion-prompt, .objectives) per the P2
+            # scope decision. Each attribute value can list multiple ids
+            # separated by commas; split + trim + deduplicate, preserving
+            # a sorted order so downstream diffs stay stable.
+            source_id_matches: List[str] = []
+            for src in re.findall(r'data-cf-source-ids="([^"]*)"', attrs_str):
+                source_id_matches.append(src)
+            for src in re.findall(r'data-cf-source-ids="([^"]*)"', section_html):
+                source_id_matches.append(src)
+            distinct_source_ids: List[str] = []
+            seen_ids: set = set()
+            for raw in source_id_matches:
+                for piece in raw.split(","):
+                    piece = piece.strip()
+                    if piece and piece not in seen_ids:
+                        seen_ids.add(piece)
+                        distinct_source_ids.append(piece)
+            distinct_source_ids.sort()
+
             sections.append(ContentSection(
                 heading=heading_text,
                 level=level,
@@ -368,6 +480,7 @@ class HTMLContentParser:
                 teaching_role=teaching_role,
                 teaching_roles=distinct_roles,
                 objective_refs=distinct_obj_refs,
+                source_references=distinct_source_ids,
             ))
 
         return sections
