@@ -193,6 +193,10 @@ libv2 eval compare <baseline.json> <comparison.json>     # Compare evaluation re
 libv2 validate indexes                                   # Validate index consistency
 ```
 
+### v0.2.0 ChunkFilter notes
+
+`ChunkFilter.content_type_label` performs strict enum validation when `TRAINFORGE_ENFORCE_CONTENT_TYPE=true` (Wave 5 Worker T); default remains lenient for legacy corpora. The canonical enum is defined in `../schemas/taxonomies/content_type.json`.
+
 ## File Formats
 
 ### Course Manifest (`manifest.json`)
