@@ -240,6 +240,12 @@ def register_pipeline_tools(mcp):
             staging_dir.mkdir(parents=True, exist_ok=True)
 
             staged_files = []
+            # Wave 8: role-tagged manifest entries for the downstream
+            # Courseforge source-router and Trainforge parser. Roles:
+            #   "content"             -> the rendered HTML page
+            #   "provenance_sidecar"  -> *_synthesized.json with per-block provenance
+            #   "quality_sidecar"     -> *.quality.json with WCAG + confidence aggregates
+            staged_entries = []
             errors = []
 
             html_paths = [Path(p.strip()) for p in dart_html_paths.split(",")]
@@ -249,10 +255,11 @@ def register_pipeline_tools(mcp):
                     errors.append(f"DART output not found: {html_path}")
                     continue
 
-                # Copy HTML file
+                # Copy HTML file (role=content)
                 dest = staging_dir / html_path.name
                 shutil.copy2(html_path, dest)
                 staged_files.append(str(dest))
+                staged_entries.append({"path": html_path.name, "role": "content"})
                 logger.info(f"Staged: {html_path.name} -> {dest}")
 
                 # Validate HTML structure
@@ -274,6 +281,10 @@ def register_pipeline_tools(mcp):
                     json_dest = staging_dir / json_path.name
                     shutil.copy2(json_path, json_dest)
                     staged_files.append(str(json_dest))
+                    staged_entries.append({
+                        "path": json_path.name,
+                        "role": "provenance_sidecar",
+                    })
                     logger.info(f"Staged: {json_path.name} -> {json_dest}")
 
                 # Also check for _synthesized.json pattern
@@ -283,7 +294,28 @@ def register_pipeline_tools(mcp):
                     synth_json_dest = staging_dir / synth_json_name
                     shutil.copy2(synth_json_path, synth_json_dest)
                     staged_files.append(str(synth_json_dest))
+                    staged_entries.append({
+                        "path": synth_json_name,
+                        "role": "provenance_sidecar",
+                    })
                     logger.info(f"Staged: {synth_json_name} -> {synth_json_dest}")
+
+                # Wave 8: also stage the DART quality sidecar if one exists.
+                # Convention: same stem as the HTML, suffix .quality.json.
+                # E.g. "science_of_learning.html" -> "science_of_learning.quality.json".
+                # The legacy stage_dart_outputs never copied this even though
+                # DART's convert_single_pdf has been writing it all along.
+                quality_name = html_path.stem + ".quality.json"
+                quality_path = html_path.parent / quality_name
+                if quality_path.exists():
+                    quality_dest = staging_dir / quality_name
+                    shutil.copy2(quality_path, quality_dest)
+                    staged_files.append(str(quality_dest))
+                    staged_entries.append({
+                        "path": quality_name,
+                        "role": "quality_sidecar",
+                    })
+                    logger.info(f"Staged: {quality_name} -> {quality_dest}")
 
             if errors and not staged_files:
                 return json.dumps({
@@ -292,13 +324,14 @@ def register_pipeline_tools(mcp):
                     "errors": errors
                 })
 
-            # Create manifest
+            # Create manifest (Wave 8: role-tagged entries under "files")
             manifest = {
                 "run_id": run_id,
                 "course_name": course_name,
                 "staged_at": datetime.now().isoformat(),
-                "staged_files": staged_files,
-                "errors": errors if errors else None
+                "staged_files": staged_files,            # back-compat flat list
+                "files": staged_entries,                 # role-tagged entries
+                "errors": errors if errors else None,
             }
 
             manifest_path = staging_dir / "staging_manifest.json"
@@ -309,6 +342,7 @@ def register_pipeline_tools(mcp):
                 "success": True,
                 "staging_dir": str(staging_dir),
                 "staged_files": staged_files,
+                "files": staged_entries,
                 "file_count": len(staged_files),
                 "manifest_path": str(manifest_path),
                 "warnings": errors if errors else None

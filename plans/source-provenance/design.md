@@ -437,3 +437,10 @@ All locked in. See `plans/pipeline-orchestration/design.md` for orchestration de
 - [ ] Branch target confirmed.
 - [ ] Worker prompts drafted per wave (with worktree isolation Step 0 guardrail).
 - [ ] Test corpus identified for validation (Deans for Impact 12pp is still the safest first test once all waves land).
+
+## Wave landing log
+
+- [x] **Wave 8 — DART + shared schema** (worker-a7c7f9d4): `schemas/knowledge/source_reference.schema.json` (new), DART per-section `provenance` block + per-block envelopes, `data-dart-*` HTML attributes on `<section>` + `.contact-card`, legacy `claude_processor` minimal stamp, `stage_dart_outputs` copies `*.quality.json` + role-tagged manifest, `DartMarkersValidator` warning-level provenance checks, DART/CLAUDE.md + root CLAUDE.md doc updates.
+- [ ] Wave 9 — Courseforge
+- [ ] Wave 10 — Trainforge chunk + node
+- [ ] Wave 11 — Trainforge evidence-arm enrichment

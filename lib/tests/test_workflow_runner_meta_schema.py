@@ -310,8 +310,14 @@ def test_dart_markers_validator_passes_on_compliant_html():
     from lib.validators.dart_markers import DartMarkersValidator
 
     result = DartMarkersValidator().validate({"html_content": GOOD_DART_HTML})
+    # Legacy critical markers are present -> gate passes.
     assert result.passed is True
-    assert result.issues == []
+    # Wave 8 added warning-level provenance checks. GOOD_DART_HTML has a
+    # <section> without data-dart-source / data-dart-block-id, so warnings
+    # are expected. No *critical* issues should be raised.
+    critical = [i for i in result.issues if i.severity == "critical"]
+    assert critical == []
+    # Score reflects critical markers only; warnings do not deduct.
     assert result.score == 1.0
 
 

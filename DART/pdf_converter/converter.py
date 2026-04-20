@@ -1035,7 +1035,7 @@ class PDFToAccessibleHTML:
                 # Create section ID from heading text
                 section_id = re.sub(r'[^a-z0-9]+', '-', text.lower())[:50].strip('-')
 
-                html_parts.append(f'  <section id="{section_id}" aria-labelledby="{section_id}-heading">')
+                html_parts.append(f'  <section id="{section_id}" aria-labelledby="{section_id}-heading" data-dart-source="claude_llm">')
                 html_parts.append(f'    <h{level} id="{section_id}-heading">{text}</h{level}>')
                 current_section = section_id
             else:
@@ -1122,7 +1122,7 @@ class PDFToAccessibleHTML:
         if doc.abstract:
             abstract_escaped = html.escape(doc.abstract)
             html_parts.extend([
-                '  <section class="abstract" aria-labelledby="abstract-heading">',
+                '  <section class="abstract" aria-labelledby="abstract-heading" data-dart-source="claude_llm">',
                 '    <h2 id="abstract-heading">Abstract</h2>',
                 f'    <p>{abstract_escaped}</p>',
                 '  </section>',
@@ -1157,14 +1157,14 @@ class PDFToAccessibleHTML:
 
                 if is_references:
                     html_parts.extend([
-                        '  <section id="references" class="references" aria-labelledby="references-heading">',
+                        '  <section id="references" class="references" aria-labelledby="references-heading" data-dart-source="claude_llm">',
                         f'    <h{level} id="references-heading">{content}</h{level}>',
                         '    <ol>',
                     ])
                     in_reference_section = True
                 else:
                     html_parts.extend([
-                        f'  <section id="{section_id}" aria-labelledby="{heading_id}">',
+                        f'  <section id="{section_id}" aria-labelledby="{heading_id}" data-dart-source="claude_llm">',
                         f'    <h{level} id="{heading_id}">{content}</h{level}>',
                     ])
 

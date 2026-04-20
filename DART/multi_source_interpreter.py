@@ -14,9 +14,11 @@ Architecture:
 Each section is synthesized by combining the best of all sources.
 """
 
+import hashlib
 import html
 import json
 import logging
+import os
 import re
 import sys
 import tempfile
@@ -105,6 +107,94 @@ CAMPUS_NAMES = {
     "UTI": "Utica University",
     "WES": "Westchester Community College",
 }
+
+# =============================================================================
+# PROVENANCE CONSTANTS (Wave 8)
+# =============================================================================
+
+# Canonical confidence scale (P1 decision). Also documented in DART/CLAUDE.md.
+# Every matcher branch selects one of these values; downstream consumers
+# (Courseforge source-router, Trainforge inference rules) read them as-is.
+CONFIDENCE_DIRECT_TABLE = 1.0       # pdfplumber structured row/cell
+CONFIDENCE_NAME_PATTERN = 0.8       # name-pattern match (e.g. jdoe@)
+CONFIDENCE_PROXIMITY = 0.6          # near-by-text proximity match
+CONFIDENCE_DERIVATION = 0.4         # synthesized from email local-part etc.
+CONFIDENCE_OCR_FALLBACK = 0.2       # pure OCR, no other source corroborates
+
+# Typed extractor enum values (matches SourceReference schema).
+SOURCE_PDFTOTEXT = "pdftotext"
+SOURCE_PDFPLUMBER = "pdfplumber"
+SOURCE_OCR = "ocr"
+SOURCE_SYNTHESIZED = "synthesized"
+SOURCE_CLAUDE = "claude"
+
+
+def _document_slug(code: str) -> str:
+    """Normalize a document identifier (campus code / stem) to the slug form
+    used in ``dart:{slug}#{block}`` source IDs."""
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", str(code)).strip("_").lower()
+    return slug or "document"
+
+
+def _content_hash_block_id(*parts: str) -> str:
+    """Return a 16-hex content-hash block ID.
+
+    Used when ``TRAINFORGE_CONTENT_HASH_IDS`` is truthy to produce re-chunk-
+    stable block identifiers. The fallback positional form (``s3_c0``) is
+    emitted otherwise so legacy corpora keep their existing IDs.
+    """
+    joined = "\x1f".join(p for p in parts if p is not None)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()[:16]
+
+
+def _use_content_hash_ids() -> bool:
+    return os.environ.get("TRAINFORGE_CONTENT_HASH_IDS", "").lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def _make_block_id(section_id: str, positional: str, *content_parts: str) -> str:
+    """Build a block ID using either the content-hash or positional scheme.
+
+    Positional IDs look like ``s3_c0`` and match the section record's
+    ``section_id``. Content-hash IDs collapse to a 16-hex string that is
+    stable across re-runs. Both schemes validate against the canonical
+    ``source_reference.schema.json`` pattern.
+    """
+    if _use_content_hash_ids() and content_parts:
+        return _content_hash_block_id(section_id, *content_parts)
+    return positional
+
+
+def _envelope(
+    value: Any,
+    source: str,
+    *,
+    pages: Optional[List[int]] = None,
+    confidence: float = 1.0,
+    method: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build a per-block provenance envelope.
+
+    Shape:
+        {"value": ..., "source": "pdfplumber", "pages": [3],
+         "confidence": 0.87, "method": "name_pattern"}
+
+    ``value`` is the leaf payload (string / list / dict). ``source`` is a
+    typed extractor enum value. ``pages`` is emitted as an empty list when
+    unknown (per design: real per-block page tracking is deferred — we
+    model the field but do not guess).
+    """
+    env: Dict[str, Any] = {
+        "value": value,
+        "source": source,
+        "pages": list(pages or []),
+        "confidence": float(confidence),
+    }
+    if method:
+        env["method"] = method
+    return env
+
 
 # =============================================================================
 # UTILITY FUNCTIONS
@@ -383,8 +473,16 @@ def _is_likely_contact_name(name: str) -> bool:
     return False
 
 
-def match_email_by_name(name: str, emails: List[str], text: str) -> str:
-    """Match an email to a contact name by pattern or proximity."""
+def match_email_by_name(
+    name: str, emails: List[str], text: str
+) -> Tuple[str, str, float]:
+    """Match an email to a contact name by pattern or proximity.
+
+    Returns a 3-tuple ``(email, method, confidence)``. ``method`` is one of
+    ``name_pattern`` / ``proximity`` / ``special_case`` (helpdesk/registrar)
+    and seeds the per-block provenance envelope; an empty email is returned
+    with method ``""`` and confidence ``0.0`` when no match is found.
+    """
     name_lower = name.lower()
     name_parts = name_lower.split()
 
@@ -392,12 +490,12 @@ def match_email_by_name(name: str, emails: List[str], text: str) -> str:
     if 'help desk' in name_lower or 'service desk' in name_lower:
         for email in emails:
             if 'help@' in email.lower() or 'helpdesk@' in email.lower():
-                return email
+                return email, "special_case", CONFIDENCE_NAME_PATTERN
 
     if 'registrar' in name_lower:
         for email in emails:
             if 'registrar' in email.lower():
-                return email
+                return email, "special_case", CONFIDENCE_NAME_PATTERN
 
     # Name pattern matching
     if len(name_parts) >= 2:
@@ -419,7 +517,7 @@ def match_email_by_name(name: str, emails: List[str], text: str) -> str:
             for pattern in patterns:
                 pattern_clean = pattern.replace('.', '').replace('_', '')
                 if pattern_clean in email_local or email_local.startswith(pattern_clean[:4]):
-                    return email
+                    return email, "name_pattern", CONFIDENCE_NAME_PATTERN
 
     # Proximity matching
     name_pos = text.lower().find(name_lower)
@@ -427,29 +525,43 @@ def match_email_by_name(name: str, emails: List[str], text: str) -> str:
         for email in emails:
             email_pos = text.lower().find(email.lower())
             if email_pos >= 0 and abs(name_pos - email_pos) < 300:
-                return email
+                return email, "proximity", CONFIDENCE_PROXIMITY
 
-    return ''
+    return "", "", 0.0
 
 
-def match_phone_by_proximity(name: str, email: str, phones: List[str], text: str) -> str:
-    """Match a phone number by proximity to name or email in text."""
+def match_phone_by_proximity(
+    name: str, email: str, phones: List[str], text: str
+) -> Tuple[str, str, float]:
+    """Match a phone number by proximity to name or email in text.
+
+    Returns ``(phone, method, confidence)``. Method is ``proximity`` (both
+    email-anchored and name-anchored) with the proximity confidence value.
+    """
     if email:
         email_pos = text.lower().find(email.lower())
         if email_pos >= 0:
             for phone in phones:
                 phone_pos = text.find(phone)
                 if phone_pos >= 0 and abs(phone_pos - email_pos) < 200:
-                    return phone.replace('.', '-').replace(' ', '-')
+                    return (
+                        phone.replace('.', '-').replace(' ', '-'),
+                        "proximity",
+                        CONFIDENCE_PROXIMITY,
+                    )
 
     name_pos = text.lower().find(name.lower())
     if name_pos >= 0:
         for phone in phones:
             phone_pos = text.find(phone)
             if phone_pos >= 0 and abs(phone_pos - name_pos) < 200:
-                return phone.replace('.', '-').replace(' ', '-')
+                return (
+                    phone.replace('.', '-').replace(' ', '-'),
+                    "proximity",
+                    CONFIDENCE_PROXIMITY,
+                )
 
-    return ''
+    return "", "", 0.0
 
 
 def extract_title_near_name(name: str, text: str) -> str:
@@ -478,60 +590,119 @@ def extract_title_near_name(name: str, text: str) -> str:
     return ''
 
 
-def synthesize_contacts(tables: List[Dict], entities: Dict, pdftotext: List[str]) -> List[Dict]:
+def synthesize_contacts(
+    tables: List[Dict],
+    entities: Dict,
+    pdftotext: List[str],
+    *,
+    section_id: str = "s",
+    section_pages: Optional[List[int]] = None,
+) -> List[Dict]:
     """
     Synthesize contacts using multi-source approach:
     1. Get headers from pdfplumber tables (contact names)
     2. Extract phones/emails from pdftotext
     3. Match by: email prefix, name proximity, pattern recognition
+
+    Each returned contact carries per-field provenance envelopes:
+        {
+          "block_id": "s3_c0",
+          "name":  {"value": ..., "source": ..., "pages": [...], "confidence": ...},
+          "email": {...},
+          "phone": {...},
+          "title": {...},
+          ...
+        }
+
+    Plus top-level plain-string fields (``name``, ``email``, ``phone``,
+    ``title``, ``notes``) for renderer / legacy consumer backward compat.
     """
     text = '\n'.join(pdftotext)
     phones = entities.get('phones', [])
     emails = entities.get('emails', [])
+    pages = list(section_pages or [])
 
     # Get contact names from table headers
-    contact_names = []
+    contact_names: List[Tuple[str, str]] = []  # (name, origin_source)
     seen_names = set()
 
     for table in tables:
         for h in table.get('headers', []):
             name = h.replace('\n', ' ').strip()
             if name and _is_likely_contact_name(name) and name not in seen_names:
-                contact_names.append(name)
+                contact_names.append((name, SOURCE_PDFPLUMBER))
                 seen_names.add(name)
 
-    # If no table headers, look for names in entities
+    # If no table headers, look for names in entities (pdftotext-derived)
     if not contact_names and entities.get('names'):
         for name in entities['names']:
             if name not in seen_names:
-                contact_names.append(name)
+                contact_names.append((name, SOURCE_PDFTOTEXT))
                 seen_names.add(name)
 
     # Build contacts with entity matching
     used_emails = set()
     used_phones = set()
-    contacts = []
+    contacts: List[Dict[str, Any]] = []
 
-    for name in contact_names:
-        contact = {'name': name, 'phone': '', 'email': '', 'title': '', 'notes': ''}
+    for idx, (name, name_source) in enumerate(contact_names):
+        positional = f"{section_id}_c{idx}"
+        block_id = _make_block_id(section_id, positional, "contact", name)
 
-        email = match_email_by_name(name, [e for e in emails if e not in used_emails], text)
+        name_conf = (
+            CONFIDENCE_DIRECT_TABLE if name_source == SOURCE_PDFPLUMBER
+            else CONFIDENCE_NAME_PATTERN
+        )
+        contact: Dict[str, Any] = {
+            "block_id": block_id,
+            "name": name,  # back-compat plain string
+            "phone": "",
+            "email": "",
+            "title": "",
+            "notes": "",
+            "name_provenance": _envelope(
+                name, name_source, pages=pages, confidence=name_conf,
+                method="table_header" if name_source == SOURCE_PDFPLUMBER else "entity_extraction",
+            ),
+        }
+
+        email, email_method, email_conf = match_email_by_name(
+            name, [e for e in emails if e not in used_emails], text
+        )
         if email:
             contact['email'] = email
+            contact['email_provenance'] = _envelope(
+                email, SOURCE_PDFTOTEXT, pages=pages,
+                confidence=email_conf, method=email_method,
+            )
             used_emails.add(email)
 
-        phone = match_phone_by_proximity(name, contact['email'],
-                                         [p for p in phones if p not in used_phones], text)
+        phone, phone_method, phone_conf = match_phone_by_proximity(
+            name, contact['email'],
+            [p for p in phones if p not in used_phones], text,
+        )
         if phone:
             contact['phone'] = phone
+            contact['phone_provenance'] = _envelope(
+                phone, SOURCE_PDFTOTEXT, pages=pages,
+                confidence=phone_conf, method=phone_method,
+            )
             used_phones.add(phone.replace('-', '').replace('.', '').replace(' ', ''))
 
-        contact['title'] = extract_title_near_name(name, text)
+        title = extract_title_near_name(name, text)
+        if title:
+            contact['title'] = title
+            contact['title_provenance'] = _envelope(
+                title, SOURCE_PDFTOTEXT, pages=pages,
+                confidence=CONFIDENCE_PROXIMITY, method="proximity",
+            )
+
         contacts.append(contact)
 
     # If we have emails but no contacts, create contacts from emails
+    # (synthesized / derivation path — confidence drops to CONFIDENCE_DERIVATION)
     if not contacts and emails:
-        for email in emails:
+        for idx, email in enumerate(emails):
             local = email.split('@')[0]
             if '_' in local or '.' in local:
                 parts = re.split(r'[._]', local)
@@ -539,24 +710,56 @@ def synthesize_contacts(tables: List[Dict], entities: Dict, pdftotext: List[str]
             else:
                 name = local.capitalize()
 
-            phone = match_phone_by_proximity(name, email, phones, text)
-            contacts.append({
-                'name': name,
-                'email': email,
-                'phone': phone,
-                'title': '',
-                'notes': ''
-            })
+            positional = f"{section_id}_c{idx}"
+            block_id = _make_block_id(section_id, positional, "contact", email)
+
+            phone, phone_method, phone_conf = match_phone_by_proximity(
+                name, email, phones, text
+            )
+            contact: Dict[str, Any] = {
+                "block_id": block_id,
+                "name": name,
+                "email": email,
+                "phone": phone,
+                "title": "",
+                "notes": "",
+                "name_provenance": _envelope(
+                    name, SOURCE_SYNTHESIZED, pages=pages,
+                    confidence=CONFIDENCE_DERIVATION,
+                    method="email_local_part",
+                ),
+                "email_provenance": _envelope(
+                    email, SOURCE_PDFTOTEXT, pages=pages,
+                    confidence=CONFIDENCE_NAME_PATTERN, method="entity_extraction",
+                ),
+            }
+            if phone:
+                contact['phone_provenance'] = _envelope(
+                    phone, SOURCE_PDFTOTEXT, pages=pages,
+                    confidence=phone_conf, method=phone_method,
+                )
+            contacts.append(contact)
 
     return contacts
 
 
-def synthesize_systems_table(tables: List[Dict], pdftotext: List[str]) -> List[Dict]:
+def synthesize_systems_table(
+    tables: List[Dict],
+    pdftotext: List[str],
+    *,
+    section_id: str = "s",
+    section_pages: Optional[List[int]] = None,
+) -> List[Dict]:
     """
     Synthesize systems table from pdfplumber structure + pdftotext content.
+
+    Each returned row carries a ``block_id`` and a ``provenance`` envelope
+    indicating which source produced the row (``pdfplumber`` for structured
+    extraction, ``pdftotext`` for the label-search fallback).
     """
     text = '\n'.join(pdftotext)
-    rows = []
+    rows: List[Dict[str, Any]] = []
+    section_pages = list(section_pages or [])
 
     system_labels = [
         'Campus Email', 'LTIs', 'Media Server', 'Virtual Classroom',
@@ -567,17 +770,35 @@ def synthesize_systems_table(tables: List[Dict], pdftotext: List[str]) -> List[D
     for table in tables:
         headers = table.get('headers', [])
         table_rows = table.get('rows', [])
+        table_page = table.get('page')
+        table_pages = [table_page] if isinstance(table_page, int) and table_page > 0 else section_pages
 
         if len(headers) >= 3:
             header_text = ' '.join(str(h).lower() for h in headers)
             if 'student' in header_text and 'faculty' in header_text:
-                for row in table_rows:
+                for ridx, row in enumerate(table_rows):
                     if len(row) >= 3:
                         label = str(row[0]).replace('\n', ' ').strip() if row[0] else ''
                         student = str(row[1]).replace('\n', ' ').strip() if row[1] else ''
                         faculty = str(row[2]).replace('\n', ' ').strip() if row[2] else ''
                         if label:
-                            rows.append({'label': label, 'student': student, 'faculty': faculty})
+                            positional = f"{section_id}_r{len(rows)}"
+                            block_id = _make_block_id(
+                                section_id, positional, "systems", label, student, faculty,
+                            )
+                            rows.append({
+                                'block_id': block_id,
+                                'label': label,
+                                'student': student,
+                                'faculty': faculty,
+                                'provenance': _envelope(
+                                    {"label": label, "student": student, "faculty": faculty},
+                                    SOURCE_PDFPLUMBER,
+                                    pages=table_pages,
+                                    confidence=CONFIDENCE_DIRECT_TABLE,
+                                    method="structured_table",
+                                ),
+                            })
 
     # Fallback: extract from text
     if not rows:
@@ -587,20 +808,51 @@ def synthesize_systems_table(tables: List[Dict], pdftotext: List[str]) -> List[D
                 context = text[label_pos + len(label):label_pos + len(label) + 500]
                 url_match = re.search(r'(https?://[^\s]+)', context)
                 content = url_match.group(1) if url_match else context[:100].split('\n')[0].strip()
-                rows.append({'label': label, 'student': content, 'faculty': content})
+                positional = f"{section_id}_r{len(rows)}"
+                block_id = _make_block_id(
+                    section_id, positional, "systems", label, content,
+                )
+                rows.append({
+                    'block_id': block_id,
+                    'label': label,
+                    'student': content,
+                    'faculty': content,
+                    'provenance': _envelope(
+                        {"label": label, "student": content, "faculty": content},
+                        SOURCE_PDFTOTEXT,
+                        pages=section_pages,
+                        confidence=CONFIDENCE_PROXIMITY,
+                        method="label_search",
+                    ),
+                })
 
     return rows
 
 
-def synthesize_roster(tables: List[Dict], pdftotext: List[str]) -> List[Tuple[str, str]]:
+def synthesize_roster(
+    tables: List[Dict],
+    pdftotext: List[str],
+    *,
+    section_id: str = "s",
+    section_pages: Optional[List[int]] = None,
+) -> List[Tuple[str, str]]:
     """
     Synthesize roster/course info from pdfplumber row labels + pdftotext content.
+
+    Returns ``List[Tuple[label, value]]`` for back-compat with the
+    ``render_kv_table`` consumer. Per-pair provenance is also accumulated
+    on the module-level ``_LAST_ROSTER_PROVENANCE`` cache, which
+    ``auto_synthesize_section`` reads so downstream artifacts see the
+    envelope shape. Kept as a side-channel to preserve the existing
+    tuple-based render path.
     """
     text = '\n'.join(pdftotext)
-    pairs = []
+    pairs: List[Tuple[str, str]] = []
+    envelopes: List[Dict[str, Any]] = []
+    section_pages = list(section_pages or [])
 
-    # Get labels from tables
-    table_labels = []
+    # Get labels from tables (with source tracking)
+    table_labels: List[str] = []
     for table in tables:
         for h in table.get('headers', []):
             label = str(h).replace('\n', ' ').strip()
@@ -612,7 +864,7 @@ def synthesize_roster(tables: List[Dict], pdftotext: List[str]) -> List[Tuple[st
                 if label and len(label) > 3:
                     table_labels.append(label)
 
-    # Extract key-value pairs from pdftotext
+    # Extract key-value pairs from pdftotext (primary source for value)
     kv_pairs, _ = extract_kv_pairs(pdftotext)
 
     # Merge
@@ -620,8 +872,24 @@ def synthesize_roster(tables: List[Dict], pdftotext: List[str]) -> List[Tuple[st
     for label, value in kv_pairs:
         pairs.append((label, value))
         seen_labels.add(label.lower())
+        positional = f"{section_id}_p{len(envelopes)}"
+        block_id = _make_block_id(section_id, positional, "roster", label, value)
+        # Label from pdftotext parsing; value also pdftotext -> high confidence.
+        envelopes.append({
+            "block_id": block_id,
+            "label": label,
+            "value": value,
+            "provenance": _envelope(
+                {"label": label, "value": value},
+                SOURCE_PDFTOTEXT,
+                pages=section_pages,
+                confidence=CONFIDENCE_NAME_PATTERN,
+                method="kv_parse",
+            ),
+        })
 
-    # Add table labels not in kv_pairs
+    # Add table labels not in kv_pairs — these are pdfplumber-sourced labels
+    # with pdftotext-sourced values, so we call it multi-source (synthesized).
     for label in table_labels:
         if label.lower() not in seen_labels:
             label_pos = text.lower().find(label.lower())
@@ -631,80 +899,372 @@ def synthesize_roster(tables: List[Dict], pdftotext: List[str]) -> List[Tuple[st
                 value = re.sub(r'^[:\s]+', '', value)
                 if value and len(value) > 3:
                     pairs.append((label, value))
+                    positional = f"{section_id}_p{len(envelopes)}"
+                    block_id = _make_block_id(
+                        section_id, positional, "roster", label, value,
+                    )
+                    envelopes.append({
+                        "block_id": block_id,
+                        "label": label,
+                        "value": value,
+                        "provenance": _envelope(
+                            {"label": label, "value": value},
+                            SOURCE_SYNTHESIZED,
+                            pages=section_pages,
+                            confidence=CONFIDENCE_PROXIMITY,
+                            method="label_search",
+                        ),
+                    })
 
+    # Publish per-pair envelopes via the module-level cache so
+    # auto_synthesize_section can attach them to the section record.
+    _LAST_ROSTER_PROVENANCE[section_id] = envelopes
     return pairs
 
 
-def auto_synthesize_section(ctx: Dict) -> Dict:
+# Side-channel cache: section_id -> per-pair envelope list. Populated by
+# synthesize_roster, consumed by auto_synthesize_section. Keyed so concurrent
+# sections don't stomp each other within a single synthesize run.
+_LAST_ROSTER_PROVENANCE: Dict[str, List[Dict[str, Any]]] = {}
+
+
+def _page_range_list(page_range: Any) -> List[int]:
+    """Coerce an ``estimate_page_range`` tuple into a list of page ints.
+
+    Returns the integer span ``[start, start+1, ..., end]``. Always emits a
+    list (never a bare tuple) so the JSON output matches the
+    ``SourceReference.pages`` shape.
+    """
+    if not page_range:
+        return []
+    try:
+        start, end = int(page_range[0]), int(page_range[1])
+    except (TypeError, ValueError, IndexError):
+        return []
+    if start <= 0 or end < start:
+        return []
+    return list(range(start, end + 1))
+
+
+def _aggregate_section_confidence(envelopes: List[Dict[str, Any]]) -> float:
+    """Average per-block envelope confidences; return 1.0 when empty."""
+    confidences = [
+        float(e.get("confidence", 0.0))
+        for e in envelopes
+        if isinstance(e, dict) and "confidence" in e
+    ]
+    if not confidences:
+        return 1.0
+    return round(sum(confidences) / len(confidences), 3)
+
+
+def _envelopes_from_contacts(contacts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Flatten per-contact field provenance envelopes into a single list."""
+    out: List[Dict[str, Any]] = []
+    for c in contacts:
+        for key in ("name_provenance", "email_provenance",
+                    "phone_provenance", "title_provenance"):
+            env = c.get(key)
+            if isinstance(env, dict):
+                out.append(env)
+    return out
+
+
+def auto_synthesize_section(ctx: Dict, section_index: int = 0) -> Dict:
     """
     Auto-synthesize a section using multi-source patterns.
+
+    Emits the Wave 8 per-section record shape::
+
+        {
+          "section_id": "s3",
+          "section_type": "...",
+          "section_title": "...",
+          "page_range": [3, 4],
+          "provenance": {
+            "sources": ["pdftotext", "pdfplumber"],
+            "strategy": "pdfplumber_headers+pdftotext_entities",
+            "confidence": 0.87
+          },
+          "data": { ... },
+          "sources_used": { ... }   # legacy back-compat field
+        }
+
+    ``section_index`` is the zero-based index within the document; it seeds
+    the canonical ``section_id`` (``"s{index}"``) that every block ID
+    derives from. ``auto_synthesize_section`` is additive: it preserves the
+    legacy ``sources_used`` dict so older consumers keep working.
     """
     stype = ctx['section_type']
     pdftotext = ctx['sources']['pdftotext']
     tables = ctx['sources']['tables']
     entities = ctx['entities']
+    page_range = ctx.get("page_range")
+    pages_list = _page_range_list(page_range)
+    section_id = f"s{section_index}"
+
+    sources_present: List[str] = []
+    if pdftotext:
+        sources_present.append(SOURCE_PDFTOTEXT)
+    if tables:
+        sources_present.append(SOURCE_PDFPLUMBER)
+    if ctx['sources'].get('ocr'):
+        sources_present.append(SOURCE_OCR)
+
+    def _record(
+        data: Dict[str, Any],
+        *,
+        strategy: str,
+        sources: List[str],
+        confidence: float,
+        legacy_sources_used: Dict[str, str],
+    ) -> Dict[str, Any]:
+        return {
+            "section_id": section_id,
+            "section_type": stype,
+            "section_title": ctx["section_title"],
+            "page_range": list(page_range) if isinstance(page_range, (list, tuple)) else [],
+            "provenance": {
+                "sources": sources,
+                "strategy": strategy,
+                "confidence": confidence,
+            },
+            "data": data,
+            # Back-compat: the old sources_used field is populated from
+            # provenance.strategy so legacy consumers keep working.
+            "sources_used": legacy_sources_used,
+        }
 
     if stype == 'campus-info':
         pairs, _ = extract_kv_pairs(pdftotext)
-        return {
-            'section_type': stype,
-            'section_title': ctx['section_title'],
-            'data': {'pairs': pairs},
-            'sources_used': {'structure': 'pdftotext key-value parsing', 'urls': 'pdftotext'}
-        }
+        pair_envelopes: List[Dict[str, Any]] = []
+        for pidx, (label, value) in enumerate(pairs):
+            positional = f"{section_id}_p{pidx}"
+            block_id = _make_block_id(section_id, positional, "campus-info", label, value)
+            pair_envelopes.append({
+                "block_id": block_id,
+                "label": label,
+                "value": value,
+                "provenance": _envelope(
+                    {"label": label, "value": value},
+                    SOURCE_PDFTOTEXT,
+                    pages=pages_list,
+                    confidence=CONFIDENCE_NAME_PATTERN,
+                    method="kv_parse",
+                ),
+            })
+        data = {"pairs": pairs, "pair_provenance": pair_envelopes}
+        return _record(
+            data,
+            strategy="pdftotext_kv_parsing",
+            sources=[SOURCE_PDFTOTEXT],
+            confidence=_aggregate_section_confidence(
+                [e["provenance"] for e in pair_envelopes]
+            ),
+            legacy_sources_used={
+                "structure": "pdftotext key-value parsing",
+                "urls": "pdftotext",
+            },
+        )
 
     elif stype == 'credentials':
         pairs, _ = extract_kv_pairs(pdftotext)
-        return {
-            'section_type': stype,
-            'section_title': ctx['section_title'],
-            'data': {'pairs': pairs},
-            'sources_used': {'structure': 'pdftotext key-value parsing'}
-        }
+        pair_envelopes = []
+        for pidx, (label, value) in enumerate(pairs):
+            positional = f"{section_id}_p{pidx}"
+            block_id = _make_block_id(section_id, positional, "credentials", label, value)
+            pair_envelopes.append({
+                "block_id": block_id,
+                "label": label,
+                "value": value,
+                "provenance": _envelope(
+                    {"label": label, "value": value},
+                    SOURCE_PDFTOTEXT,
+                    pages=pages_list,
+                    confidence=CONFIDENCE_NAME_PATTERN,
+                    method="kv_parse",
+                ),
+            })
+        data = {"pairs": pairs, "pair_provenance": pair_envelopes}
+        return _record(
+            data,
+            strategy="pdftotext_kv_parsing",
+            sources=[SOURCE_PDFTOTEXT],
+            confidence=_aggregate_section_confidence(
+                [e["provenance"] for e in pair_envelopes]
+            ),
+            legacy_sources_used={"structure": "pdftotext key-value parsing"},
+        )
 
     elif stype == 'contacts':
-        contacts = synthesize_contacts(tables, entities, pdftotext)
-        return {
-            'section_type': stype,
-            'section_title': ctx['section_title'],
-            'data': {'contacts': contacts},
-            'sources_used': {'structure': 'pdfplumber table headers', 'content': 'pdftotext entity matching'}
-        }
+        contacts = synthesize_contacts(
+            tables, entities, pdftotext,
+            section_id=section_id, section_pages=pages_list,
+        )
+        contact_sources = set()
+        for c in contacts:
+            for key in ("name_provenance", "email_provenance",
+                        "phone_provenance", "title_provenance"):
+                env = c.get(key)
+                if isinstance(env, dict):
+                    contact_sources.add(env.get("source", SOURCE_PDFTOTEXT))
+        sources = sorted(contact_sources) or [SOURCE_PDFTOTEXT]
+        return _record(
+            {"contacts": contacts},
+            strategy="pdfplumber_headers+pdftotext_entities",
+            sources=sources,
+            confidence=_aggregate_section_confidence(_envelopes_from_contacts(contacts)),
+            legacy_sources_used={
+                "structure": "pdfplumber table headers",
+                "content": "pdftotext entity matching",
+            },
+        )
 
     elif stype == 'systems':
-        rows = synthesize_systems_table(tables, pdftotext)
-        return {
-            'section_type': stype,
-            'section_title': ctx['section_title'],
-            'data': {'headers': ['', 'Students', 'Faculty'], 'rows': rows},
-            'sources_used': {'structure': 'pdfplumber 3-column table', 'content': 'pdftotext fills gaps'}
-        }
+        rows = synthesize_systems_table(
+            tables, pdftotext,
+            section_id=section_id, section_pages=pages_list,
+        )
+        row_envelopes = [r.get("provenance") for r in rows if isinstance(r.get("provenance"), dict)]
+        row_sources = sorted({e.get("source") for e in row_envelopes if e.get("source")})
+        return _record(
+            {"headers": ['', 'Students', 'Faculty'], "rows": rows},
+            strategy="pdfplumber_3col_table+pdftotext_fills",
+            sources=row_sources or [SOURCE_PDFPLUMBER],
+            confidence=_aggregate_section_confidence(row_envelopes),
+            legacy_sources_used={
+                "structure": "pdfplumber 3-column table",
+                "content": "pdftotext fills gaps",
+            },
+        )
 
     elif stype == 'roster':
-        pairs = synthesize_roster(tables, pdftotext)
-        return {
-            'section_type': stype,
-            'section_title': ctx['section_title'],
-            'data': {'pairs': pairs},
-            'sources_used': {'structure': 'pdfplumber row labels', 'content': 'pdftotext descriptions'}
-        }
+        pairs = synthesize_roster(
+            tables, pdftotext,
+            section_id=section_id, section_pages=pages_list,
+        )
+        envelopes = _LAST_ROSTER_PROVENANCE.pop(section_id, [])
+        env_sources = sorted({
+            e["provenance"].get("source")
+            for e in envelopes
+            if isinstance(e.get("provenance"), dict)
+        }) or [SOURCE_PDFTOTEXT]
+        return _record(
+            {"pairs": pairs, "pair_provenance": envelopes},
+            strategy="pdfplumber_row_labels+pdftotext_descriptions",
+            sources=env_sources,
+            confidence=_aggregate_section_confidence(
+                [e["provenance"] for e in envelopes if isinstance(e.get("provenance"), dict)]
+            ),
+            legacy_sources_used={
+                "structure": "pdfplumber row labels",
+                "content": "pdftotext descriptions",
+            },
+        )
 
     else:
         # Prose sections (no-account, guest, overview)
-        return {
-            'section_type': stype,
-            'section_title': ctx['section_title'],
-            'data': {'paragraphs': pdftotext},
-            'sources_used': {'content': 'pdftotext prose'}
-        }
+        paragraph_envelopes: List[Dict[str, Any]] = []
+        for pidx, para in enumerate(pdftotext):
+            if not para:
+                continue
+            positional = f"{section_id}_p{pidx}"
+            block_id = _make_block_id(section_id, positional, "prose", para)
+            paragraph_envelopes.append({
+                "block_id": block_id,
+                "text": para,
+                "provenance": _envelope(
+                    para,
+                    SOURCE_PDFTOTEXT,
+                    pages=pages_list,
+                    confidence=CONFIDENCE_NAME_PATTERN,
+                    method="prose_extract",
+                ),
+            })
+        data = {"paragraphs": pdftotext, "paragraph_provenance": paragraph_envelopes}
+        return _record(
+            data,
+            strategy="pdftotext_prose",
+            sources=[SOURCE_PDFTOTEXT],
+            confidence=_aggregate_section_confidence(
+                [e["provenance"] for e in paragraph_envelopes]
+            ),
+            legacy_sources_used={"content": "pdftotext prose"},
+        )
 
 
 # =============================================================================
 # HTML RENDERING
 # =============================================================================
 
+def _format_pages_attr(pages: Any) -> str:
+    """Format a list of page ints as a ``data-dart-pages`` attribute value.
+
+    Returns a single page as ``"3"``, a contiguous range as ``"3-5"``, and
+    a non-contiguous list as ``"3,5,7"``. Returns the empty string when
+    ``pages`` is empty or contains no positive ints — callers should omit
+    the attribute entirely in that case (avoid emitting lies).
+    """
+    if not pages:
+        return ""
+    try:
+        ints = sorted({int(p) for p in pages if int(p) > 0})
+    except (TypeError, ValueError):
+        return ""
+    if not ints:
+        return ""
+    if len(ints) == 1:
+        return str(ints[0])
+    # Check for contiguous range
+    if ints == list(range(ints[0], ints[-1] + 1)):
+        return f"{ints[0]}-{ints[-1]}"
+    return ",".join(str(i) for i in ints)
+
+
+def _build_dart_attrs(
+    block_id: Optional[str] = None,
+    source: Optional[str] = None,
+    sources: Optional[List[str]] = None,
+    pages: Optional[List[int]] = None,
+    confidence: Optional[float] = None,
+    strategy: Optional[str] = None,
+) -> str:
+    """Build a string of ``data-dart-*`` attributes (with leading space).
+
+    Empty / None values are skipped — in particular, ``data-dart-pages`` is
+    omitted when the page list is empty (we do not emit lies), and
+    ``data-dart-confidence`` is omitted when ``1.0`` (the implicit default
+    for directly-extracted blocks).
+    """
+    attrs: List[str] = []
+    if block_id:
+        attrs.append(f'data-dart-block-id="{html.escape(block_id, quote=True)}"')
+    if source:
+        attrs.append(f'data-dart-source="{html.escape(source, quote=True)}"')
+    if sources:
+        joined = ",".join(sources)
+        attrs.append(f'data-dart-sources="{html.escape(joined, quote=True)}"')
+    pages_attr = _format_pages_attr(pages) if pages else ""
+    if pages_attr:
+        attrs.append(f'data-dart-pages="{pages_attr}"')
+    if confidence is not None and confidence < 1.0 and confidence >= 0.0:
+        attrs.append(f'data-dart-confidence="{confidence:.2f}"')
+    if strategy:
+        attrs.append(f'data-dart-strategy="{html.escape(strategy, quote=True)}"')
+    if not attrs:
+        return ""
+    return " " + " ".join(attrs)
+
+
 def render_contact_cards(contacts: List[Dict]) -> str:
-    """Render contacts as semantic contact cards."""
+    """Render contacts as semantic contact cards.
+
+    When contacts carry Wave 8 provenance envelopes (``block_id``,
+    ``*_provenance``), the contact-card wrapper emits ``data-dart-*``
+    attributes so downstream Trainforge / Courseforge can attribute
+    content back to its source. Plain-dict contacts without provenance
+    continue to render cleanly (attributes are omitted).
+    """
     if not contacts:
         return ""
 
@@ -714,7 +1274,37 @@ def render_contact_cards(contacts: List[Dict]) -> str:
         if not name:
             continue
 
-        parts = ['<div class="contact-card dart-contact-card">']
+        # Collect provenance from the primary name envelope (the "identity"
+        # of the contact) and union sources/pages from other fields.
+        name_env = contact.get("name_provenance") or {}
+        block_id = contact.get("block_id") or ""
+        source = name_env.get("source")
+        pages = list(name_env.get("pages", []) or [])
+        confidence = name_env.get("confidence")
+
+        # Union sources across all field envelopes.
+        all_sources: List[str] = []
+        for key in ("name_provenance", "email_provenance",
+                    "phone_provenance", "title_provenance"):
+            env = contact.get(key)
+            if isinstance(env, dict):
+                src = env.get("source")
+                if src and src not in all_sources:
+                    all_sources.append(src)
+                for p in env.get("pages", []) or []:
+                    if p not in pages:
+                        pages.append(p)
+        sources_attr = all_sources if len(all_sources) > 1 else None
+
+        attrs = _build_dart_attrs(
+            block_id=block_id or None,
+            source=source,
+            sources=sources_attr,
+            pages=pages,
+            confidence=confidence,
+        )
+
+        parts = [f'<div class="contact-card dart-contact-card"{attrs}>']
         parts.append(f'  <h3>{html.escape(name)}</h3>')
 
         title = contact.get('title', '')
@@ -844,13 +1434,33 @@ def generate_html_from_synthesized(synthesized: Dict) -> str:
         'overview': 'dart-section--prose',
     }
 
-    # Render sections
+    # Render sections (Wave 8 emits data-dart-* provenance on each <section>)
     sections_html = []
     for i, section in enumerate(sections):
         content = render_from_synthesized(section)
         stype = section.get('section_type', '')
         type_class = _SECTION_TYPE_CSS.get(stype, 'dart-section--prose')
-        sections_html.append(f'''<section id="s{i}" class="dart-section {type_class}" aria-labelledby="s{i}-h">
+        section_id = section.get('section_id', f"s{i}")
+
+        prov = section.get('provenance', {}) if isinstance(section, dict) else {}
+        prov_sources = prov.get('sources', []) if isinstance(prov, dict) else []
+        prov_strategy = prov.get('strategy') if isinstance(prov, dict) else None
+        prov_confidence = prov.get('confidence') if isinstance(prov, dict) else None
+        section_pages = _page_range_list(section.get('page_range'))
+
+        primary_source = prov_sources[0] if prov_sources else None
+        sources_attr = prov_sources if len(prov_sources) > 1 else None
+
+        section_attrs = _build_dart_attrs(
+            block_id=section_id,
+            source=primary_source,
+            sources=sources_attr,
+            pages=section_pages,
+            confidence=prov_confidence,
+            strategy=prov_strategy,
+        )
+
+        sections_html.append(f'''<section id="s{i}" class="dart-section {type_class}" aria-labelledby="s{i}-h"{section_attrs}>
   <h2 id="s{i}-h">{html.escape(section["section_title"])}</h2>
 {content}
 </section>''')
@@ -1239,7 +1849,10 @@ def batch_synthesize_all(combined_dir: str = None, output_dir: str = None) -> Li
             synthesized = {
                 'campus_code': code,
                 'campus_name': CAMPUS_NAMES.get(code, code),
-                'sections': [auto_synthesize_section(ctx) for ctx in contexts]
+                'sections': [
+                    auto_synthesize_section(ctx, section_index=i)
+                    for i, ctx in enumerate(contexts)
+                ]
             }
 
             synth_path = synthesized_dir / f"{code}_synthesized.json"
@@ -1287,7 +1900,10 @@ def convert_single_pdf(combined_json_path: str, output_path: str = None) -> Dict
     name = CAMPUS_NAMES.get(code, code)
 
     contexts = export_section_contexts(combined)
-    sections = [auto_synthesize_section(ctx) for ctx in contexts]
+    sections = [
+        auto_synthesize_section(ctx, section_index=i)
+        for i, ctx in enumerate(contexts)
+    ]
     synthesized = {
         'campus_code': code,
         'campus_name': name,
