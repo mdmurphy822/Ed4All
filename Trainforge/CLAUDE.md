@@ -185,11 +185,12 @@ Trainforge extracts structured metadata from Courseforge HTML output using a pri
 | `misconceptions` | JSON-LD misconceptions | Common errors with corrections |
 | `run_id` | Active `DecisionCapture` | Provenance — emitted unconditionally on all chunks (Wave 4.1) |
 | `created_at` | Active `DecisionCapture` | Provenance timestamp — emitted unconditionally (Wave 4.1) |
+| `source.source_references[]` | Courseforge JSON-LD `sourceReferences` + `data-cf-source-ids` (Wave 10) | Optional array of DART/Courseforge source references per the canonical `source_reference.schema.json` shape. JSON-LD refs carry authoritative roles (primary / contributing / corroborating); HTML-attr-only refs auto-role as `contributing`. Merged chunks (via `_merge_small_sections`) union refs across all merged sections with role-precedence preserved (first-seen wins, primary > contributing > corroborating). Absence = pre-Wave-9 corpus ("unknown") — never an error. |
 
 ### Schemas and concept graph (v0.2.0)
 
-- **Canonical chunk contract**: `schemas/knowledge/chunk_v4.schema.json`. Opt-in enforcement via `TRAINFORGE_VALIDATE_CHUNKS=true`; fails closed on shape drift.
-- **Concept graph**: 8 edge types — 3 taxonomic (`is-a`, `prerequisite`, `related-to`) + 5 pedagogical (`assesses`, `exemplifies`, `misconception-of`, `derived-from-objective`, `defined-by`). Concept nodes carry optional `occurrences[]` (sorted chunk-ID back-references). Per-rule evidence discriminator on `edges[].provenance`; strict mode via `TRAINFORGE_STRICT_EVIDENCE=true`.
+- **Canonical chunk contract**: `schemas/knowledge/chunk_v4.schema.json`. Opt-in enforcement via `TRAINFORGE_VALIDATE_CHUNKS=true`; fails closed on shape drift. Wave 10: extended with optional `source.source_references[]`.
+- **Concept graph**: 8 edge types — 3 taxonomic (`is-a`, `prerequisite`, `related-to`) + 5 pedagogical (`assesses`, `exemplifies`, `misconception-of`, `derived-from-objective`, `defined-by`). Concept nodes carry optional `occurrences[]` (sorted chunk-ID back-references) and, as of Wave 10, optional `source_refs[]` — the SourceReference list copied from the first occurrence chunk's `source.source_references[]`. Per-rule evidence discriminator on `edges[].provenance`; strict mode via `TRAINFORGE_STRICT_EVIDENCE=true`. Evidence arms are NOT extended with source refs in Wave 10 — that's Wave 11 (flag-gated).
 - **Misconception as first-class entity**: `schemas/knowledge/misconception.schema.json` — IDs follow `mc_[0-9a-f]{16}` (content hash).
 
 Full v0.2.0 change summary: `schemas/ONTOLOGY.md` § 12. Root `CLAUDE.md` lists all seven `TRAINFORGE_*` opt-in flags.

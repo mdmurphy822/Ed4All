@@ -1352,6 +1352,17 @@ Wave 9 is the emit-side Courseforge counterpart to Wave 8's DART provenance:
 - **content-generator prompt** gains a "Source Material" section that declares the three emission surfaces (JSON-LD page, JSON-LD section, HTML attrs) and the inviolable "zero invention" rule. Schema change + prompt change ship together per the Courseforge audit.
 - **`DartMarkersValidator`** promoted: `data-dart-source` / `data-dart-block-id` attributes that are present-but-empty now raise critical severity (`EMPTY_DATA_DART_SOURCE`, `EMPTY_DATA_DART_BLOCK_ID`). Fully-absent attributes stay at warning severity so pre-Wave-8 legacy HTML keeps passing — only the "emitted-but-malformed" case blocks.
 
+### Wave 10 changes — Trainforge chunk + node source-provenance propagation
+
+Wave 10 threads Courseforge's `sourceReferences` + `data-cf-source-ids` through Trainforge's parser → chunker → concept-graph builder so chunks carry `source.source_references[]` and concept nodes carry `source_refs[]`. Fully additive + unflagged; absence = "unknown" for pre-Wave-9 corpora.
+
+- **`chunk_v4.schema.json`** `$defs/Source` gains optional `source_references[]` (items `$ref` the canonical `source_reference.schema.json`). Strict `additionalProperties: false` preserved — the field is declared explicitly. Legacy chunks without the field continue to validate under `TRAINFORGE_VALIDATE_CHUNKS=true`.
+- **`concept_graph_semantic.schema.json`** node gains optional `source_refs[]` (same `$ref`). Populated from the chunk at `occurrences[0]` (Wave 5 sorted-ID ordering) at `_build_tag_graph` emit time. Evidence arm shapes (IsA, Prerequisite, Related, Assesses, Exemplifies, MisconceptionOf, DerivedFromObjective, DefinedBy) are **NOT** touched in Wave 10 — that work lives in Wave 11 behind `TRAINFORGE_SOURCE_PROVENANCE`.
+- **`Trainforge/parsers/html_content_parser.py`** — `ContentSection` gains `source_references: List[str]` (raw `data-cf-source-ids` strings); `ParsedHTMLModule` gains `source_references: List[Dict]` (full SourceReference dicts aggregated via precedence: page-level JSON-LD > section-level JSON-LD > HTML `data-cf-source-ids` auto-roled as `contributing`). First-seen wins on sourceId collision so JSON-LD's authoritative role survives.
+- **`Trainforge/process_course.py`** — `_chunk_content` threads parser aggregations into the per-item dict; `_merge_small_sections` now returns 4-tuples `(heading, text, chunk_type, merged_source_ids)` and unions sourceIds across every collapsed section (dedupe + insertion-order preserved); `_create_chunk` folds the resolved refs into `source["source_references"]` via new `_resolve_chunk_source_references` helper (full precedence chain); `_build_tag_graph` copies `source.source_references[]` from each concept's first-occurrence chunk onto `node["source_refs"]`.
+- **`MCP/tools/pipeline_tools.py::archive_to_libv2`** — LibV2 archive manifest gains `features.source_provenance` advisory flag. Scans the archived `chunks.jsonl` once at manifest-build time; true when at least one chunk carries `source.source_references[]` with at least one entry; false otherwise (missing file, read errors, legacy corpus). Lets LibV2 retrieval callers fast-skip source-grounded queries on pre-Wave-10 corpora.
+- **No new env flag.** All fields are optional; absence = "unknown". Evidence arm enrichment (the only mandatory-via-flag work) waits for Wave 11.
+
 ### Deferred / out-of-scope
 
 Not landed in v0.2.0 (tracked for future waves):
