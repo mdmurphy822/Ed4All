@@ -247,6 +247,15 @@ Courseforge HTML pages include machine-readable metadata for downstream Trainfor
 
 This metadata follows priority extraction in Trainforge: JSON-LD > data-cf-* attributes > regex heuristics.
 
+### DART Source-Provenance Output (Wave 8)
+
+DART-produced HTML + synthesized JSON carry per-block source attribution so downstream consumers can trace every claim back to its PDF origin:
+- **`data-dart-*` attributes**: `data-dart-block-id`, `data-dart-source`, `data-dart-sources`, `data-dart-pages`, `data-dart-confidence`, `data-dart-strategy` on `<section>` + component wrappers. See `DART/CLAUDE.md` § "Source provenance" for the canonical attribute table + confidence scale.
+- **Per-block envelopes** in `*_synthesized.json` `data.contacts[]`, `data.rows[]`, `data.pair_provenance[]`: `{value, source, pages, confidence, method}` shape.
+- **Canonical shape**: `schemas/knowledge/source_reference.schema.json` (shared by Courseforge + Trainforge in Waves 9–11).
+
+Priority extraction chain (extends the Courseforge chain above): JSON-LD > `data-cf-*` > `data-dart-*` > regex heuristics.
+
 ### Orchestrator Tools
 
 | Tool | Description |
