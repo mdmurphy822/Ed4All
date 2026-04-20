@@ -1019,7 +1019,11 @@ def _build_tool_registry() -> dict:
         pdf = Path(pdf_path)
         out_dir = Path(output_dir_str) if output_dir_str else DART_PATH / "output"
         out_dir.mkdir(parents=True, exist_ok=True)
+        # Output filename is keyed on the PDF basename so multi-PDF corpora
+        # don't collide on a shared `course_code`. `code` is retained for
+        # combined-JSON lookups + HTML title below.
         code = course_code or pdf.stem
+        out_stem = pdf.stem
 
         sys.path.insert(0, str(DART_PATH))
 
@@ -1030,7 +1034,7 @@ def _build_tool_registry() -> dict:
         if combined_json.exists():
             try:
                 from multi_source_interpreter import convert_single_pdf
-                html_output = out_dir / f"{code}_synthesized.html"
+                html_output = out_dir / f"{out_stem}_synthesized.html"
                 convert_single_pdf(str(combined_json), str(html_output))
                 return json.dumps({
                     "success": True,
@@ -1068,7 +1072,7 @@ def _build_tool_registry() -> dict:
             return json.dumps({"error": "No meaningful text extracted from PDF"})
 
         # Build accessible HTML from raw extracted text
-        html_output = out_dir / f"{code}_accessible.html"
+        html_output = out_dir / f"{out_stem}_accessible.html"
         html_content = _raw_text_to_accessible_html(raw_text, code)
         html_output.write_text(html_content, encoding="utf-8")
 
@@ -1748,6 +1752,41 @@ def _build_tool_registry() -> dict:
         })
 
     registry["archive_to_libv2"] = _archive_to_libv2
+
+    async def _build_source_module_map(**kwargs):
+        """Minimal source-router stub (Wave 9 `source_mapping` phase).
+
+        Writes an empty `source_module_map.json` so Courseforge's content
+        generator falls through to the Wave 9 backward-compat path (no source
+        refs emitted). A richer heuristic or LLM-backed router can replace this
+        once Wave 7's LocalDispatcher is wired for per-phase subagent dispatch.
+        """
+        project_id = kwargs.get("project_id", "")
+        staging_dir = kwargs.get("staging_dir", "")
+        textbook_structure_path = kwargs.get("textbook_structure_path", "")
+
+        if not project_id:
+            return json.dumps({"error": "source-router requires project_id"})
+
+        project_path = PROJECT_ROOT / "Courseforge" / "exports" / project_id
+        project_path.mkdir(parents=True, exist_ok=True)
+        map_path = project_path / "source_module_map.json"
+
+        # Empty map — triggers Wave 9 fallback. The field is optional in the
+        # JSON-LD schema; content-generator handles absent/empty maps as "no
+        # source grounding available", emits pages without sourceReferences[].
+        map_data: dict = {}
+        map_path.write_text(json.dumps(map_data, indent=2), encoding="utf-8")
+
+        return json.dumps({
+            "source_module_map_path": str(map_path),
+            "source_chunk_ids": [],
+            "staging_dir": staging_dir,
+            "textbook_structure_path": textbook_structure_path,
+            "routing_mode": "stub_empty_map",
+        })
+
+    registry["build_source_module_map"] = _build_source_module_map
 
     return registry
 
