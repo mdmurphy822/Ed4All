@@ -57,6 +57,97 @@ _PARAGRAPH_RE = re.compile(r"(?is)<p[^>]*>(.*?)</p>")
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
+# Headings that almost certainly aren't real chapter/topic titles.
+# Matched case-insensitively and via substring against the normalized heading
+# (lowercased, whitespace-collapsed). Keeping this explicit rather than
+# hand-tuning a classifier — catches the front-matter / back-matter /
+# publisher-chrome categories that plagued the first real corpus run.
+_HEADING_BLOCKLIST_TOKENS = frozenset([
+    # Bibliographic / front / back matter
+    "references", "bibliography", "index", "glossary", "appendix",
+    "appendices", "abstract", "foreword", "preface", "afterword",
+    "acknowledgements", "acknowledgments", "acknowledgement",
+    "about the author", "about the authors", "about this book",
+    "table of contents", "contents", "copyright", "isbn",
+    # Publisher / location chrome
+    "vancouver bc", "vancouver, bc", "toronto on", "london uk",
+    "creative commons", "bccampus", "published by",
+    # Generic / low-signal chapter chrome
+    "purpose of the chapter", "purpose of this chapter",
+    "overview", "introduction to this chapter", "in this chapter",
+    "chapter summary", "chapter objectives", "key takeaways",
+    "key points", "further reading", "further readings",
+    "additional resources", "additional reading", "see also",
+    "citation", "citations", "sources", "notes",
+    # Navigation / template residue
+    "skip to main content", "main content", "navigation",
+    "table of", "learning objectives",
+])
+
+# Prefixes that mark a heading as a mid-sentence fragment that leaked into
+# the `<h2>` parse (e.g. pdftotext misinterpretation of a running header).
+_HEADING_LEADING_FRAGMENT_RE = re.compile(
+    r"^(on the other hand|however|therefore|moreover|furthermore|"
+    r"in addition|for example|for instance|that is|that said|"
+    r"in contrast|similarly|as such|as a result|in summary|"
+    r"in conclusion|winston churchill|once said)\b",
+    re.IGNORECASE,
+)
+
+# City + 2-letter abbrev (VANCOUVER BC, LONDON UK, TORONTO ON, …).
+_CITY_ABBREV_RE = re.compile(
+    r"^[A-Z][A-Z ]{2,30}\s+[A-Z]{2}$"
+)
+
+
+def _is_low_signal_heading(heading: str) -> bool:
+    """Return True when a heading looks like front/back-matter chrome
+    rather than a real chapter/topic title.
+
+    Applied inside ``parse_dart_html_files`` so downstream objective
+    synthesis never turns publisher boilerplate into a week topic.
+    """
+    if not heading:
+        return True
+    text = heading.strip()
+    if not text:
+        return True
+
+    # Very short: single-word or bare-noun "title" — usually
+    # TOC entries or running headers pulled by pdftotext.
+    word_count = len(text.split())
+    if word_count == 1 and len(text) <= 12:
+        return True
+
+    # All-caps short heading — almost always chrome (e.g. VANCOUVER BC,
+    # REFERENCES, ABSTRACT). Real chapter titles are usually Title Case
+    # and ≥ 3 words.
+    if text.isupper() and word_count <= 4 and len(text) <= 40:
+        return True
+
+    # City + 2-letter state/country pattern (VANCOUVER BC).
+    if _CITY_ABBREV_RE.match(text):
+        return True
+
+    # Blocklist match (substring, case-insensitive).
+    normalized = " ".join(text.lower().split())
+    for token in _HEADING_BLOCKLIST_TOKENS:
+        if token in normalized:
+            return True
+
+    # Looks like a mid-sentence fragment (lowercase start or
+    # discourse-marker lead-in).
+    if text[0].islower():
+        return True
+    if _HEADING_LEADING_FRAGMENT_RE.match(text):
+        return True
+
+    # Pure digits / numeric-metadata-looking (ISBN 978-..., page 42).
+    if re.match(r"^\d+([.\-\s]\d+)*$", text):
+        return True
+
+    return False
+
 
 # ---------------------------------------------------------------------------
 # Text helpers
@@ -180,6 +271,13 @@ def parse_dart_html_files(html_paths: List[Path]) -> List[Dict[str, Any]]:
             if word_count < 30:
                 continue
 
+            # Skip front/back-matter chrome and publisher boilerplate —
+            # these leaked into the first real run (VANCOUVER BC,
+            # REFERENCES, PURPOSE OF THE CHAPTER, mid-sentence
+            # fragments) and turned whole weeks into junk.
+            if _is_low_signal_heading(heading):
+                continue
+
             topics.append({
                 "heading": heading[:120],
                 "paragraphs": paragraphs,
@@ -187,7 +285,20 @@ def parse_dart_html_files(html_paths: List[Path]) -> List[Dict[str, Any]]:
                 "source_file": stem,
                 "word_count": word_count,
             })
-    return topics
+
+    # De-duplicate topics that share a normalized heading (case- and
+    # whitespace-insensitive). Keeps the first occurrence, which tends
+    # to be the most content-rich one when a heading repeats across
+    # front-matter / index / chapter body.
+    seen = set()
+    deduped: List[Dict[str, Any]] = []
+    for topic in topics:
+        key = " ".join(topic["heading"].lower().split())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(topic)
+    return deduped
 
 
 def collect_staged_html(
