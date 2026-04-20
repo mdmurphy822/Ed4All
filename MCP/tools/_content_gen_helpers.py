@@ -182,6 +182,24 @@ def _is_low_signal_heading(heading: str) -> bool:
                  normalized):
         return True
 
+    # Ends with a hyphen-truncated word fragment (pdftotext artifact
+    # from text-body soft-hyphen line breaks that got misread as
+    # heading). Example: "...have an inconsis-"
+    if re.search(r"[A-Za-z]{2,}-$", text):
+        return True
+
+    # Repeated 2-word sequence within the heading — another pdftotext
+    # artifact where a paragraph fragment double-parses. Example:
+    # "AmountOfMatter and Living AmountOfMatter and Living have…"
+    if word_count >= 4:
+        lowered = [w.lower() for w in words]
+        seen_pairs = set()
+        for i in range(len(lowered) - 1):
+            pair = (lowered[i], lowered[i + 1])
+            if pair in seen_pairs:
+                return True
+            seen_pairs.add(pair)
+
     return False
 
 
