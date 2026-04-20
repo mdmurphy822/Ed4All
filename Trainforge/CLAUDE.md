@@ -227,13 +227,15 @@ Full v0.2.0 change summary: `schemas/ONTOLOGY.md` § 12. Root `CLAUDE.md` lists 
 All decisions are written to:
 ```
 training-captures/trainforge/{COURSE_CODE}/
-├── phase_content-extraction/
+├── phase_trainforge-content-analysis/
 │   └── decisions_YYYYMMDD_HHMMSS.jsonl
-├── phase_question-generation/
+├── phase_trainforge-question-generation/
 │   └── decisions_YYYYMMDD_HHMMSS.jsonl
-└── phase_validation/
+└── phase_trainforge-validation/
     └── decisions_YYYYMMDD_HHMMSS.jsonl
 ```
+
+The directory name is derived from the active `DecisionCapture.phase`, which must be one of the canonical hyphenated values in `schemas/events/decision_event.schema.json`. `CourseProcessor` uses `phase="trainforge-content-analysis"` (see `Trainforge/process_course.py`). Prior revisions used the underscore form `phase_content-extraction/`; under `DECISION_VALIDATION_STRICT=true` that value fails closed because it is not a canonical enum member.
 
 ### MCP Tools
 
