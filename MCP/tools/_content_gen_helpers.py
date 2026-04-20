@@ -101,11 +101,12 @@ _CITY_ABBREV_RE = re.compile(
 
 
 def _is_low_signal_heading(heading: str) -> bool:
-    """Return True when a heading looks like front/back-matter chrome
-    rather than a real chapter/topic title.
+    """Return True when a heading looks like front/back-matter chrome,
+    sentence-body residue, or otherwise isn't a real chapter/topic title.
 
     Applied inside ``parse_dart_html_files`` so downstream objective
-    synthesis never turns publisher boilerplate into a week topic.
+    synthesis never turns publisher boilerplate or mid-paragraph
+    fragments into a week topic.
     """
     if not heading:
         return True
@@ -115,8 +116,14 @@ def _is_low_signal_heading(heading: str) -> bool:
 
     # Very short: single-word or bare-noun "title" — usually
     # TOC entries or running headers pulled by pdftotext.
-    word_count = len(text.split())
+    words = text.split()
+    word_count = len(words)
     if word_count == 1 and len(text) <= 12:
+        return True
+
+    # Real chapter titles are rarely > 10 words. Anything longer is
+    # almost always a sentence that pdftotext misread as a heading.
+    if word_count > 10:
         return True
 
     # All-caps short heading — almost always chrome (e.g. VANCOUVER BC,
@@ -146,7 +153,63 @@ def _is_low_signal_heading(heading: str) -> bool:
     if re.match(r"^\d+([.\-\s]\d+)*$", text):
         return True
 
+    # Starts with an interrogative / conditional / adverbial starter
+    # word that is almost never how a chapter title opens. ("Can you
+    # imagine...", "If this book were offered...", "Thus there is a
+    # continuum...", "Now add the metaproperty...")
+    first_word = words[0].lower().rstrip(",.:;")
+    if first_word in _SENTENCE_STARTER_WORDS:
+        return True
+
+    # Ends with a function word (preposition / conjunction / article) —
+    # strong signal the heading is a truncated sentence. ("For my
+    # personal comments on", "If this book were to be offered to a
+    # commercial publisher, would you recommend it for")
+    last_word = words[-1].lower().rstrip(",.:;!?")
+    if last_word in _SENTENCE_TAIL_WORDS:
+        return True
+
+    # Mid-sentence period followed by more words → the heading spans
+    # multiple sentences, which real titles don't.
+    # ("Translational Research and the Semantic Web. Students should
+    # study and")
+    if re.search(r"\.\s+[A-Za-z]", text):
+        return True
+
+    # Error / log message residue from textbook code examples.
+    if re.search(r"\b(an error occurred|exception|stack trace|"
+                 r"traceback|undefined|not found|failed to)\b",
+                 normalized):
+        return True
+
     return False
+
+
+# Words that real chapter titles almost never start with (but that
+# show up as the first word when a sentence gets misread as a heading).
+_SENTENCE_STARTER_WORDS = frozenset([
+    "can", "could", "would", "should", "will", "does", "do", "did",
+    "is", "are", "was", "were", "has", "have", "had",
+    "what", "who", "whom", "whose", "which", "where", "when", "why",
+    "how", "if", "unless", "because", "though", "although", "while",
+    "now", "thus", "hence", "therefore", "moreover", "furthermore",
+    "however", "nevertheless", "meanwhile", "still", "yet",
+    "imagine", "consider", "note", "notice", "suppose", "assume",
+    "given", "since", "so", "then", "also", "further",
+])
+
+# Function words that real chapter titles never end with.
+_SENTENCE_TAIL_WORDS = frozenset([
+    "and", "or", "but", "nor", "yet", "so",
+    "of", "to", "for", "on", "at", "by", "in", "with", "as", "from",
+    "into", "onto", "upon", "about", "against", "between", "through",
+    "over", "under", "after", "before", "during",
+    "the", "a", "an",
+    "is", "are", "was", "were", "be", "been", "being",
+    "that", "this", "these", "those",
+    "my", "your", "his", "her", "its", "our", "their",
+    "not", "no", "too",
+])
 
 
 # ---------------------------------------------------------------------------
