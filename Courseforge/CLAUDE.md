@@ -243,12 +243,16 @@ Courseforge HTML pages embed machine-readable instructional design metadata for 
 
 | Attribute | Element | Purpose |
 |-----------|---------|---------|
+| `data-cf-role` | `<body>` (template chrome) | Page role classification (e.g. `template-chrome`) |
 | `data-cf-objective-id` | `<li>` (objectives) | Learning objective identifier |
 | `data-cf-bloom-level` | `<li>`, `.self-check`, `.activity-card` | Bloom's taxonomy level |
 | `data-cf-bloom-verb` | `<li>` (objectives) | Detected Bloom's verb |
+| `data-cf-bloom-range` | `<section>`, `<h2>` | Section-level Bloom level span (emit-only) |
 | `data-cf-cognitive-domain` | `<li>` (objectives) | Knowledge domain (factual/conceptual/procedural/metacognitive) |
 | `data-cf-content-type` | `<h2>`, `<h3>`, `.callout` | Section content classification |
+| `data-cf-teaching-role` | `<section>`, component wrappers | Pedagogical teaching role (Wave 2) |
 | `data-cf-key-terms` | `<h2>`, `<h3>` | Comma-separated term slugs |
+| `data-cf-term` | key-term `<span>` | Individual term slug (emit-only) |
 | `data-cf-component` | `.flip-card`, `.self-check`, `.activity-card` | Interactive component type |
 | `data-cf-purpose` | `.flip-card`, `.self-check`, `.activity-card` | Pedagogical purpose |
 | `data-cf-objective-ref` | `.self-check`, `.activity-card` | Associated learning objective |
@@ -260,8 +264,9 @@ Each page includes a `<script type="application/ld+json">` block in `<head>` wit
 - `sections`: Heading, content type, Bloom's range, key terms with definitions
 - `misconceptions`: Common misconceptions with corrections
 - `suggestedAssessmentTypes`: Recommended question formats
+- `prerequisitePages`: Cross-page prerequisite refs (Wave 2)
 
-Context namespace: `https://ed4all.dev/ns/courseforge/v1`
+Canonical shape: `schemas/knowledge/courseforge_jsonld_v1.schema.json`. Context namespace: `https://ed4all.dev/ns/courseforge/v1`.
 
 ---
 
@@ -341,8 +346,8 @@ Courseforge can import and remediate IMSCC packages from:
 ### Scripts for Course Generation
 | Script | Location | Purpose |
 |--------|----------|---------|
-| `generate_course.py` | `scripts/` | Multi-file weekly course generation with metadata enrichment |
-| `package_multifile_imscc.py` | `scripts/` | Package multi-file course output into IMSCC |
+| `generate_course.py` | `scripts/` | Multi-file weekly course generation. Emits page-level JSON-LD, `course_metadata.json`, prerequisite-page refs, and `data-cf-teaching-role` (Wave 2). |
+| `package_multifile_imscc.py` | `scripts/` | Packages multi-file output into IMSCC. Default-on structural validation (Wave 2); auto-discovers `course.json` and bundles `course_metadata.json` in the zip (Wave 3). |
 
 ### Scripts for Intake
 | Script | Location | Purpose |

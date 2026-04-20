@@ -52,6 +52,7 @@ DART is exposed via the Ed4All MCP server with these tools:
 | `convert_pdf_multi_source` | Convert single PDF using multi-source synthesis |
 | `batch_convert_multi_source` | Batch convert all PDFs |
 | `validate_wcag_compliance` | Validate HTML for WCAG 2.2 AA |
+| `validate_dart_markers` | Validate DART output markers. Wired as the `dart_markers` gate on `batch_dart` and `textbook_to_course` (Wave 6). |
 | `get_dart_status` | Get DART capabilities |
 | `list_available_campuses` | List available combined JSONs |
 | `extract_and_convert_pdf` | Extract and convert a single PDF to accessible HTML |

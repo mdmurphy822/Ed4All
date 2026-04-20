@@ -45,6 +45,8 @@ assessment = generator.generate(
 
 **CRITICAL**: All Claude decisions MUST be captured for training data.
 
+> **Strict-mode opt-in (Wave 1).** Set `DECISION_VALIDATION_STRICT=true` to fail-closed on unknown `decision_type` values. The canonical 44-value enum lives at `schemas/events/decision_event.schema.json`. Default remains lenient (unknown values pass with a warning).
+
 ### Required Captures
 
 1. **Content Selection**
@@ -181,6 +183,16 @@ Trainforge extracts structured metadata from Courseforge HTML output using a pri
 | `content_type_label` | JSON-LD / data-cf-content-type | Section classification (explanation, example, procedure, etc.) |
 | `key_terms` | JSON-LD keyTerms | Structured term/definition pairs |
 | `misconceptions` | JSON-LD misconceptions | Common errors with corrections |
+| `run_id` | Active `DecisionCapture` | Provenance — emitted unconditionally on all chunks (Wave 4.1) |
+| `created_at` | Active `DecisionCapture` | Provenance timestamp — emitted unconditionally (Wave 4.1) |
+
+### Schemas and concept graph (v0.2.0)
+
+- **Canonical chunk contract**: `schemas/knowledge/chunk_v4.schema.json`. Opt-in enforcement via `TRAINFORGE_VALIDATE_CHUNKS=true`; fails closed on shape drift.
+- **Concept graph**: 8 edge types — 3 taxonomic (`is-a`, `prerequisite`, `related-to`) + 5 pedagogical (`assesses`, `exemplifies`, `misconception-of`, `derived-from-objective`, `defined-by`). Concept nodes carry optional `occurrences[]` (sorted chunk-ID back-references). Per-rule evidence discriminator on `edges[].provenance`; strict mode via `TRAINFORGE_STRICT_EVIDENCE=true`.
+- **Misconception as first-class entity**: `schemas/knowledge/misconception.schema.json` — IDs follow `mc_[0-9a-f]{16}` (content hash).
+
+Full v0.2.0 change summary: `schemas/ONTOLOGY.md` § 12. Root `CLAUDE.md` lists all seven `TRAINFORGE_*` opt-in flags.
 
 ---
 

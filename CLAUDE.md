@@ -211,8 +211,8 @@ for i in range(50):
 ### Courseforge Metadata Output
 
 Courseforge HTML pages include machine-readable metadata for downstream Trainforge consumption:
-- **`data-cf-*` attributes**: Inline metadata on HTML elements (objective IDs, Bloom's levels, content types, key terms)
-- **JSON-LD blocks**: Structured `<script type="application/ld+json">` per page with learning objectives, section metadata, misconceptions, and assessment suggestions
+- **`data-cf-*` attributes**: Inline metadata on HTML elements (role, objective IDs, Bloom's levels/verbs, cognitive domain, content types, teaching role, key terms, component, purpose). See `Courseforge/CLAUDE.md` for the canonical attribute table.
+- **JSON-LD blocks**: Structured `<script type="application/ld+json">` per page with learning objectives, section metadata, misconceptions, and assessment suggestions. Canonical shape: `schemas/knowledge/courseforge_jsonld_v1.schema.json`.
 
 This metadata follows priority extraction in Trainforge: JSON-LD > data-cf-* attributes > regex heuristics.
 
@@ -517,7 +517,10 @@ validation_gates:
 | `course_generation` | `imscc_structure` | IMSCCValidator |
 | `course_generation` | `wcag_compliance` | WCAGValidator |
 | `course_generation` | `oscqr_score` | OSCQRValidator |
+| `course_generation` | `page_objectives` | PageObjectivesValidator (Wave 2) |
 | `batch_dart` | `wcag_aa_compliance` | WCAGValidator |
+| `batch_dart` | `dart_markers` | DartMarkersValidator (Wave 6) |
+| `textbook_to_course` | `dart_markers` | DartMarkersValidator (Wave 6) |
 | `rag_training` | `assessment_quality` | AssessmentQualityValidator |
 | `rag_training` | `bloom_alignment` | BloomAlignmentValidator |
 | `rag_training` | `leak_check` | LeakChecker |
@@ -536,6 +539,44 @@ Location: `config/workflows.yaml`
 Defines agent capabilities and project paths.
 Location: `config/agents.yaml`
 
+### workflows_meta.schema.json
+
+Meta-schema that validates `config/workflows.yaml` at load time (phase routing, gate shape, `inputs_from` references). Wave 6 Worker V.
+Location: `schemas/config/workflows_meta.schema.json`
+
+---
+
+## Opt-In Behavior Flags
+
+Seven environment-variable toggles gate opt-in strict / stable-ID behavior. All default off to preserve backward compatibility with legacy corpora. See `schemas/ONTOLOGY.md` § 12 for landing wave and full rationale.
+
+| Flag | When on |
+|------|---------|
+| `TRAINFORGE_CONTENT_HASH_IDS` | Chunk IDs become re-chunk-stable content hashes. |
+| `TRAINFORGE_SCOPE_CONCEPT_IDS` | Concept node IDs become `{course_id}:{slug}` for cross-course disambiguation. |
+| `TRAINFORGE_PRESERVE_LO_CASE` | LO refs retain emit case (`TO-01` vs `to-01`). |
+| `TRAINFORGE_VALIDATE_CHUNKS` | Enforces `schemas/knowledge/chunk_v4.schema.json` on every chunk write. |
+| `TRAINFORGE_ENFORCE_CONTENT_TYPE` | Constrains `content_type_label` to the canonical 8-value enum. |
+| `TRAINFORGE_STRICT_EVIDENCE` | Strips the FallbackProvenance arm from the evidence discriminator. |
+| `DECISION_VALIDATION_STRICT` | Fails closed on unknown `decision_type` values in decision captures. |
+
+---
+
+## Canonical Helpers
+
+Single-source-of-truth loaders under `lib/ontology/`:
+
+- `lib/ontology/bloom.py` — Bloom verb / level / cognitive-domain detection.
+- `lib/ontology/slugs.py::canonical_slug` — unified slug helper.
+- `lib/ontology/teaching_roles.py` — `(component, purpose) → role` mapper.
+- `lib/ontology/taxonomy.py::load_taxonomy(name)` — generic JSON-taxonomy loader, reads from `schemas/taxonomies/`.
+
+Validators under `lib/validators/` (see Active Gates above for wiring):
+
+- `lib/validators/page_objectives.py` — objective coverage per page.
+- `lib/validators/content_type.py` — content_type enum enforcement (gated).
+- `lib/validators/evidence.py` — per-rule evidence discriminator loader; strict mode drops FallbackProvenance.
+
 ---
 
 ## Individual Project Guides
@@ -544,6 +585,8 @@ Location: `config/agents.yaml`
 - **Courseforge**: `Courseforge/CLAUDE.md`
 - **Trainforge**: `Trainforge/CLAUDE.md`
 - **LibV2**: `LibV2/CLAUDE.md`
+- **Ontology map + v0.2.0 changes**: `schemas/ONTOLOGY.md`
+- **KG-quality review (source of v0.2.0 work)**: `plans/kg-quality-review-2026-04/review.md`
 
 ---
 
