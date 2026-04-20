@@ -68,6 +68,27 @@ def _key(edge: Dict[str, Any]) -> Tuple[str, str, bool]:
     return (edge["source"], edge["target"], False)
 
 
+def _stamp_provenance(
+    obj: Dict[str, Any],
+    run_id: Optional[str],
+    created_at: str,
+) -> Dict[str, Any]:
+    """Stamp ``run_id`` + ``created_at`` onto a node or edge dict in-place.
+
+    REC-PRV-01 (Worker P Wave 4.1). ``run_id`` is omitted when ``None`` so
+    tests that construct graphs without a DecisionCapture instance keep
+    passing. ``created_at`` is always stamped — it's produced by the
+    orchestrator, not the rule modules, so it's always available.
+
+    Schema side: both fields are OPTIONAL per ``concept_graph_semantic.schema.json``
+    — legacy artifacts without them still validate.
+    """
+    if run_id:
+        obj["run_id"] = run_id
+    obj["created_at"] = created_at
+    return obj
+
+
 def _apply_precedence(edges: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Apply the precedence policy.
 
@@ -105,21 +126,32 @@ def _apply_precedence(edges: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     )
 
 
-def _build_nodes(concept_graph: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _build_nodes(
+    concept_graph: Dict[str, Any],
+    run_id: Optional[str] = None,
+    created_at: Optional[str] = None,
+) -> List[Dict[str, Any]]:
     """Copy nodes verbatim from the co-occurrence graph.
 
     The semantic graph shares its node set with the co-occurrence graph —
     no typed edge can reference a node that didn't already qualify for the
     base graph.
+
+    REC-PRV-01 (Worker P Wave 4.1): when ``run_id`` / ``created_at`` are
+    provided, stamp them onto each node so the semantic graph is
+    time- and run-addressable.
     """
-    return [
-        {
+    nodes: List[Dict[str, Any]] = []
+    for n in concept_graph.get("nodes", []):
+        node = {
             "id": n["id"],
             "label": n.get("label", n["id"]),
             "frequency": n.get("frequency", 0),
         }
-        for n in concept_graph.get("nodes", [])
-    ]
+        if created_at is not None:
+            _stamp_provenance(node, run_id, created_at)
+        nodes.append(node)
+    return nodes
 
 
 def _llm_escalate(
@@ -129,6 +161,8 @@ def _llm_escalate(
     rule_edges: List[Dict[str, Any]],
     llm_callable: Callable[..., List[Dict[str, Any]]],
     decision_capture: Any = None,
+    run_id: Optional[str] = None,
+    created_at: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Invoke the LLM callable to propose extra edges and log decisions.
 
@@ -169,6 +203,8 @@ def _llm_escalate(
                 "evidence": dict(edge.get("evidence") or {}),
             },
         }
+        if created_at is not None:
+            _stamp_provenance(record, run_id, created_at)
         normalized.append(record)
         if decision_capture is not None:
             try:
@@ -198,6 +234,7 @@ def build_semantic_graph(
     decision_capture: Any = None,
     related_threshold: int = _related_mod.DEFAULT_THRESHOLD,
     now: Optional[datetime] = None,
+    run_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the typed-edge concept graph.
 
@@ -212,15 +249,34 @@ def build_semantic_graph(
             and fallback paths are deterministic.
         decision_capture: Optional ``DecisionCapture`` instance. Used only
             when LLM escalation fires (per CLAUDE.md: "ALL Claude decisions
-            MUST be logged").
+            MUST be logged"). When ``run_id`` is not explicitly provided,
+            ``decision_capture.run_id`` (if present) is used as the source
+            for per-node/per-edge provenance (REC-PRV-01, Worker P).
         related_threshold: Minimum co-occurrence weight for ``related-to``.
         now: Override for ``generated_at``. When supplied, makes the
             artifact byte-identical across runs.
+        run_id: REC-PRV-01 (Worker P Wave 4.1). Pipeline run identifier
+            stamped on every emitted node + edge. When ``None``, falls
+            back to ``decision_capture.run_id`` if available; otherwise
+            no ``run_id`` field is stamped. The per-node/per-edge
+            ``created_at`` is always stamped with the artifact-level
+            timestamp (``now`` or ``datetime.now(timezone.utc)``).
 
     Returns:
         Dict matching ``schemas/knowledge/concept_graph_semantic.schema.json``.
     """
-    nodes = _build_nodes(concept_graph)
+    # REC-PRV-01: resolve effective run_id / created_at once so every node
+    # and edge in the artifact shares the same stamp. ``created_at`` equals
+    # the artifact-level ``generated_at`` deliberately — the graph is an
+    # atomic snapshot; per-element timestamps would drift only by sub-ms
+    # jitter and break determinism tests that pin ``now``.
+    effective_run_id = run_id
+    if effective_run_id is None and decision_capture is not None:
+        effective_run_id = getattr(decision_capture, "run_id", None)
+    effective_now = now or datetime.now(timezone.utc)
+    created_at = effective_now.isoformat()
+
+    nodes = _build_nodes(concept_graph, run_id=effective_run_id, created_at=created_at)
 
     rule_edges: List[Dict[str, Any]] = []
     rule_versions: Dict[str, int] = {}
@@ -238,6 +294,11 @@ def build_semantic_graph(
         except Exception as exc:
             logger.warning("Rule %s failed: %s", rule_mod.RULE_NAME, exc)
             produced = []
+        # REC-PRV-01: stamp each rule-produced edge with run provenance
+        # before precedence resolution. Rule modules stay pure (they don't
+        # know about run_id); the orchestrator decorates their output.
+        for edge in produced:
+            _stamp_provenance(edge, effective_run_id, created_at)
         rule_edges.extend(produced)
         rule_versions[rule_mod.RULE_NAME] = rule_mod.RULE_VERSION
 
@@ -253,6 +314,8 @@ def build_semantic_graph(
             rule_edges=rule_resolved,
             llm_callable=llm_callable,
             decision_capture=decision_capture,
+            run_id=effective_run_id,
+            created_at=created_at,
         )
         if extra:
             rule_versions["llm_typed_edge"] = 1
@@ -262,7 +325,7 @@ def build_semantic_graph(
     else:
         resolved = rule_resolved
 
-    generated_at = (now or datetime.now(timezone.utc)).isoformat()
+    generated_at = effective_now.isoformat()
 
     return {
         "kind": ARTIFACT_KIND,
