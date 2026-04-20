@@ -712,9 +712,15 @@ class CourseProcessor:
             )
 
         # Decision capture
+        # Phase value must be in the canonical enum at
+        # ``schemas/events/decision_event.schema.json`` (hyphenated). Prior
+        # emit used the underscore form ``"content_extraction"`` which failed
+        # closed under ``DECISION_VALIDATION_STRICT=true``. The canonical
+        # enum value for Trainforge's first stage is
+        # ``"trainforge-content-analysis"``.
         self.capture = DecisionCapture(
             course_code=course_code,
-            phase="content_extraction",
+            phase="trainforge-content-analysis",
             tool="trainforge",
             streaming=True,
         )
@@ -1475,7 +1481,17 @@ class CourseProcessor:
                     kt["term"] = canonicalize_sc_references(kt["term"])
                 if "definition" in kt:
                     kt["definition"] = canonicalize_sc_references(kt["definition"])
-            chunk["key_terms"] = key_terms
+            # chunk_v4 schema requires ``definition`` with minLength 1. Both
+            # the data-cf-* fallback (``_extract_section_metadata`` emits
+            # ``definition=""``) and occasional JSON-LD keyTerm entries with
+            # empty/whitespace definitions trip schema validation when
+            # ``TRAINFORGE_VALIDATE_CHUNKS=true``. Attempt a best-effort
+            # extraction from the chunk's own text for each empty-definition
+            # entry; drop entries when no definition can be recovered rather
+            # than emit schema-invalid placeholders.
+            key_terms = self._fill_or_drop_empty_key_term_definitions(key_terms, text)
+            if key_terms:
+                chunk["key_terms"] = key_terms
 
         # Page-level metadata
         misconceptions = item.get("misconceptions", [])
@@ -1774,6 +1790,73 @@ class CourseProcessor:
                     break
 
         return bloom_level, content_type_label, key_terms, trace
+
+    @staticmethod
+    def _fill_or_drop_empty_key_term_definitions(
+        key_terms: List[Dict[str, str]], section_text: str
+    ) -> List[Dict[str, str]]:
+        """Ensure every key_term entry has a non-empty ``definition``.
+
+        chunk_v4 schema requires ``KeyTerm.definition`` with ``minLength: 1``.
+        The data-cf-* fallback path in ``_extract_section_metadata`` synthesises
+        ``{"term": t, "definition": ""}`` because data-cf-* attrs carry term
+        slugs but no prose definition. Occasional JSON-LD entries with empty
+        definitions also exist. For any entry lacking a definition, attempt
+        to lift one from the chunk's own text by finding the first sentence
+        that mentions the term. When extraction fails, drop the entry rather
+        than emit a schema-invalid placeholder.
+        """
+        if not key_terms:
+            return []
+
+        # Cache sentence splits once per chunk text rather than per-term.
+        sentences: List[str] = []
+        if section_text:
+            # Lightweight sentence split — enough for definition lookup. We
+            # avoid pulling an NLP dependency; the heuristic only needs to
+            # find "the sentence mentioning X" and return a single line.
+            for raw in re.split(r"(?<=[.!?])\s+", section_text):
+                s = raw.strip()
+                if s:
+                    sentences.append(s)
+
+        def _find_definition(term: str) -> str:
+            if not term:
+                return ""
+            term_norm = term.strip().lower()
+            if not term_norm:
+                return ""
+            # Prefer sentences where the term appears (whole-word match).
+            # Fall back to simple substring when the word boundary path
+            # misses (multi-word terms, punctuation, hyphens).
+            pattern = re.compile(
+                r"(?<!\w)" + re.escape(term_norm) + r"(?!\w)",
+                re.IGNORECASE,
+            )
+            for sentence in sentences:
+                if pattern.search(sentence):
+                    return sentence
+            for sentence in sentences:
+                if term_norm in sentence.lower():
+                    return sentence
+            return ""
+
+        filled: List[Dict[str, str]] = []
+        for kt in key_terms:
+            if not isinstance(kt, dict):
+                continue
+            term = (kt.get("term") or "").strip()
+            definition = (kt.get("definition") or "").strip()
+            if not term:
+                continue
+            if definition:
+                filled.append({"term": term, "definition": definition})
+                continue
+            derived = _find_definition(term)
+            if derived:
+                filled.append({"term": term, "definition": derived})
+            # else: omit — never emit empty-string placeholder.
+        return filled
 
     # ------------------------------------------------------------------
     # Chunk helpers
@@ -2308,6 +2391,99 @@ class CourseProcessor:
             graph_kind="concept",
         )
 
+    def _build_misconceptions_for_graph(
+        self, chunks: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Derive misconception entities from chunks for the semantic graph.
+
+        The ``misconception-of`` inference rule expects a list of misconception
+        dicts with stable ``id`` (``mc_[0-9a-f]{16}``) + optional ``concept_id``.
+        Chunks carry misconceptions on their ``misconceptions`` list (populated
+        from JSON-LD ``misconceptions[]`` during ``_chunk_content``). We map
+        each entry to a misconception entity whose ``concept_id`` is the
+        chunk's first concept tag — the best available signal for which
+        concept the misconception threatens without an explicit author-side
+        declaration. When the chunk has no concept tags, the misconception
+        is still emitted (so downstream consumers see it) but without
+        ``concept_id`` — the rule skips entries lacking ``concept_id``, so
+        those simply don't produce an edge.
+        """
+        from Trainforge.rag.typed_edge_inference import _make_concept_id
+
+        course_id = getattr(self, "course_code", "") or ""
+        entities: List[Dict[str, Any]] = []
+        seen: Set[str] = set()
+        for chunk in chunks:
+            raw = chunk.get("misconceptions") or []
+            if not raw:
+                continue
+            tags = [t for t in (chunk.get("concept_tags") or []) if t]
+            first_tag = tags[0] if tags else None
+            for entry in raw:
+                if isinstance(entry, dict):
+                    statement = (entry.get("misconception") or "").strip()
+                    correction = (entry.get("correction") or "").strip()
+                    explicit_cid = (entry.get("concept_id") or "").strip() or None
+                elif isinstance(entry, str):
+                    statement = entry.strip()
+                    correction = ""
+                    explicit_cid = None
+                else:
+                    continue
+                if not statement:
+                    continue
+                # Content-hash ID per misconception.schema.json.
+                seed = f"{statement}|{correction}"
+                mc_id = "mc_" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+                if mc_id in seen:
+                    continue
+                seen.add(mc_id)
+                entity: Dict[str, Any] = {
+                    "id": mc_id,
+                    "misconception": statement,
+                    "correction": correction or statement,
+                }
+                concept_id: Optional[str] = explicit_cid
+                if not concept_id and first_tag:
+                    concept_id = _make_concept_id(first_tag, course_id)
+                if concept_id:
+                    entity["concept_id"] = concept_id
+                entities.append(entity)
+        return entities
+
+    def _build_questions_for_graph(
+        self, chunks: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Derive question entities from assessment-item chunks.
+
+        The ``assesses`` inference rule expects a list of question dicts with
+        ``id`` + ``objective_id`` (and optional ``source_chunk_id``). For
+        every chunk classified as an ``assessment_item`` that carries
+        ``learning_outcome_refs``, emit one question entity per referenced
+        objective so the rule can materialise ``question→LO`` edges. The
+        chunk ID doubles as ``source_chunk_id`` so Wave 11
+        ``TRAINFORGE_SOURCE_PROVENANCE`` can resolve evidence refs.
+        """
+        questions: List[Dict[str, Any]] = []
+        for chunk in chunks:
+            if chunk.get("chunk_type") != "assessment_item":
+                continue
+            chunk_id = chunk.get("id")
+            if not chunk_id:
+                continue
+            refs = chunk.get("learning_outcome_refs") or []
+            for ref in refs:
+                if not ref:
+                    continue
+                # Deterministic question ID keyed off (chunk_id, objective).
+                q_id = f"q_{chunk_id}_{ref}"
+                questions.append({
+                    "id": q_id,
+                    "objective_id": ref,
+                    "source_chunk_id": chunk_id,
+                })
+        return questions
+
     def _generate_semantic_concept_graph(
         self,
         chunks: List[Dict[str, Any]],
@@ -2319,6 +2495,11 @@ class CourseProcessor:
         See ``Trainforge.rag.typed_edge_inference`` for rule details and
         precedence. The LLM path is opt-in via ``self.typed_edges_llm`` and
         has a deterministic fallback (no callable wired → rules only).
+
+        The ``misconceptions=`` and ``questions=`` kwargs are derived from
+        the chunk corpus so the ``misconception-of`` and ``assesses`` rules
+        can fire. Both were previously always ``None`` at this call site,
+        leaving those rule emitters inert.
         """
         from Trainforge.rag.typed_edge_inference import build_semantic_graph
 
@@ -2341,6 +2522,9 @@ class CourseProcessor:
             except Exception:  # pragma: no cover — capture is best-effort
                 pass
 
+        misconceptions = self._build_misconceptions_for_graph(chunks)
+        questions = self._build_questions_for_graph(chunks)
+
         return build_semantic_graph(
             chunks=chunks,
             course=course,
@@ -2348,6 +2532,8 @@ class CourseProcessor:
             llm_enabled=self.typed_edges_llm and llm_callable is not None,
             llm_callable=llm_callable,
             decision_capture=self.capture,
+            misconceptions=misconceptions or None,
+            questions=questions or None,
         )
 
     def _generate_pedagogy_graph(self, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
