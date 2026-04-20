@@ -637,7 +637,6 @@ Source: `Courseforge/scripts/generate_course.py` (multiple render sites).
 | `data-cf-purpose` | same | `term-definition`, `formative-assessment`, `practice` — lines 345, 374, 487 |
 | `data-cf-objective-id` | li (in `.objectives`) | LO ID string (`TO-NN`, `CO-NN`, `WNN-CO-NN`) — line 314 |
 | `data-cf-objective-ref` | .self-check, .activity-card | LO ID string — lines 378, 491 |
-| `data-cf-objectives-count` | div.objectives | integer — line 327 |
 | `data-cf-bloom-level` | li, .self-check, .activity-card | 6-Bloom-level enum — lines 316, 375, 488 |
 | `data-cf-bloom-verb` | li | detected verb — line 318 |
 | `data-cf-bloom-range` | h2/h3 | e.g. `understand,apply` — line 427 |
@@ -645,6 +644,8 @@ Source: `Courseforge/scripts/generate_course.py` (multiple render sites).
 | `data-cf-content-type` | h2, h3, .callout | content-type enum (above) — lines 423, 452 |
 | `data-cf-key-terms` | h2, h3 | comma-separated kebab-slug terms — line 425 |
 | `data-cf-term` | .flip-card | kebab-slug term — line 346 |
+| `data-cf-source-ids` | `<section>`, h2/h3, .flip-card, .self-check, .activity-card, .discussion-prompt, .objectives | Comma-joined DART `sourceId` list (`dart:{slug}#{block_id}`) — Wave 9. Never emitted on `<p>`/`<li>`/`<tr>` (P2 decision). |
+| `data-cf-source-primary` | same elements as `data-cf-source-ids` | Single dominant `sourceId`. Emitted only when the enclosing block has one unambiguous primary source. Wave 9. |
 
 ### WCAG 2.2 AA structure
 
@@ -1326,6 +1327,30 @@ Two new gates wire into `config/workflows.yaml` (Worker V, Wave 6):
 ### Decision type enum expansion
 
 `decision_type` enum in `schemas/events/decision_event.schema.json` grew from 39 → 44 values. Five additions (Wave 1, Worker G): `concept_graph_publish`, `chunk_validation_failure`, `opt_in_flag_override`, `typed_edge_dedup`, `evidence_discriminator_fallback`. The `DECISION_VALIDATION_STRICT=true` flag (above) enforces the enum at write time; default is lenient (unknown values pass with a warning).
+
+### Wave 8 changes — DART source provenance
+
+Wave 8 lands the shared `SourceReference` shape and threads per-block provenance through DART's emit path:
+
+- **New canonical schema**: `schemas/knowledge/source_reference.schema.json` — `{sourceId, role, weight?, confidence?, pages?, extractor?}`. `sourceId` matches `^dart:[a-z0-9_-]+#[a-z0-9_-]+$`. Shared by Courseforge JSON-LD (Wave 9) and Trainforge chunks + evidence (Waves 10–11).
+- **DART per-section record** gains a `provenance: {sources, strategy, confidence}` block + `section_id` + `page_range`. Legacy `sources_used` retained for back-compat.
+- **DART per-block envelope** — every leaf in matcher output (`synthesize_contacts`, `synthesize_systems_table`, `synthesize_roster`, campus-info/credentials matchers) carries a `{value, source, pages, confidence, method}` envelope + a `block_id` (positional `s3_c0` or content-hash under `TRAINFORGE_CONTENT_HASH_IDS=1`).
+- **`data-dart-*` HTML attributes**: `data-dart-block-id`, `data-dart-source`, `data-dart-sources`, `data-dart-pages`, `data-dart-confidence`, `data-dart-strategy` on every `<section>` + `.contact-card`. Scoped per P2 decision — never on per-`<p>`/`<li>`/`<tr>` children.
+- **Staging handoff fix**: `stage_dart_outputs` now role-tags manifest entries as `content` / `provenance_sidecar` / `quality_sidecar`, and the `.quality.json` sidecar is copied to the staging dir (previously it was written but never staged).
+- **DartMarkersValidator** adds warning-level `data-dart-source` / `data-dart-block-id` presence checks (promoted to critical-on-malformed in Wave 9).
+- **Confidence scale**: canonical 5-value float set (1.0 direct-table, 0.8 name-pattern, 0.6 proximity, 0.4 derivation, 0.2 OCR-fallback) documented in `DART/multi_source_interpreter.py` module constants.
+
+### Wave 9 changes — Courseforge source attribution
+
+Wave 9 is the emit-side Courseforge counterpart to Wave 8's DART provenance:
+
+- **New workflow phase** `source_mapping` in `textbook_to_course` (`config/workflows.yaml`) runs between `objective_extraction` and `course_planning`. Driven by the new `source-router` agent. Output: `source_module_map.json` keyed by `week_XX` → `page_id` → `{primary, contributing, confidence}`.
+- **`content_generation.inputs_from`** expanded from the opaque `project_id` to also receive `source_module_map_path` + `staging_dir`, so per-page agents can cite their DART sources.
+- **`courseforge_jsonld_v1.schema.json`** gains optional `sourceReferences` at page-level AND inside `$defs/Section.properties`. Both `$ref` the canonical `source_reference.schema.json` shape. Elided when empty → backward-compat for courses without DART input.
+- **`generate_course.py`** emits `sourceReferences[]` in JSON-LD and `data-cf-source-ids` + optional `data-cf-source-primary` attributes on `<section>` / headings / component wrappers (`.flip-card`, `.self-check`, `.activity-card`, `.discussion-prompt`, `.objectives`). Never on `<p>`/`<li>`/`<tr>` (P2 decision).
+- **New validator**: `lib.validators.source_refs.PageSourceRefValidator`, wired as a critical-severity gate on the `content_generation` phase. Verifies every emitted `sourceId` resolves against the staging manifest's provenance sidecars. Graceful fallback: empty `source_module_map.json` → no refs expected, gate passes clean.
+- **content-generator prompt** gains a "Source Material" section that declares the three emission surfaces (JSON-LD page, JSON-LD section, HTML attrs) and the inviolable "zero invention" rule. Schema change + prompt change ship together per the Courseforge audit.
+- **`DartMarkersValidator`** promoted: `data-dart-source` / `data-dart-block-id` attributes that are present-but-empty now raise critical severity (`EMPTY_DATA_DART_SOURCE`, `EMPTY_DATA_DART_BLOCK_ID`). Fully-absent attributes stay at warning severity so pre-Wave-8 legacy HTML keeps passing — only the "emitted-but-malformed" case blocks.
 
 ### Deferred / out-of-scope
 
