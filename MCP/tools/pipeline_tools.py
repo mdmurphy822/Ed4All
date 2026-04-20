@@ -2074,7 +2074,7 @@ def _build_tool_registry() -> dict:
                     if not project_dir.is_dir():
                         continue
                     tf = project_dir / "trainforge"
-                    if (tf / "chunks.jsonl").exists():
+                    if (tf / "chunks.jsonl").exists() or (tf / "corpus" / "chunks.jsonl").exists():
                         candidates.append(tf)
             runs_root = PROJECT_ROOT / "state" / "runs"
             if runs_root.exists():
@@ -2082,30 +2082,50 @@ def _build_tool_registry() -> dict:
                     if not run_dir.is_dir():
                         continue
                     tf = run_dir / "trainforge"
-                    if (tf / "chunks.jsonl").exists():
+                    if (tf / "chunks.jsonl").exists() or (tf / "corpus" / "chunks.jsonl").exists():
                         candidates.append(tf)
             if candidates:
-                trainforge_dir = max(
-                    candidates,
-                    key=lambda p: (p / "chunks.jsonl").stat().st_mtime,
-                )
+                def _chunks_mtime(p):
+                    # Support both flat and nested (CourseProcessor-native) layouts.
+                    nested = p / "corpus" / "chunks.jsonl"
+                    flat = p / "chunks.jsonl"
+                    if nested.exists():
+                        return nested.stat().st_mtime
+                    if flat.exists():
+                        return flat.stat().st_mtime
+                    return 0.0
+                trainforge_dir = max(candidates, key=_chunks_mtime)
 
         # --- Copy Trainforge outputs --------------------------------------
+        # Worker β writes in CourseProcessor's native nested layout
+        # (trainforge/corpus/chunks.jsonl, trainforge/graph/*.json). We
+        # also check the flat layout for backward-compat with any caller
+        # that mirrors the older stub's expected paths.
+        def _pick(*candidates):
+            for c in candidates:
+                if c.exists() and c.is_file():
+                    return c
+            return None
+
         if trainforge_dir is not None and trainforge_dir.exists():
             copy_map = [
-                (trainforge_dir / "chunks.jsonl",
+                (_pick(trainforge_dir / "corpus" / "chunks.jsonl",
+                       trainforge_dir / "chunks.jsonl"),
                  course_dir / "corpus" / "chunks.jsonl", "chunks"),
-                (trainforge_dir / "concept_graph_semantic.json",
+                (_pick(trainforge_dir / "graph" / "concept_graph_semantic.json",
+                       trainforge_dir / "concept_graph_semantic.json"),
                  course_dir / "graph" / "concept_graph_semantic.json", "graph"),
-                (trainforge_dir / "misconceptions.json",
+                (_pick(trainforge_dir / "graph" / "misconceptions.json",
+                       trainforge_dir / "misconceptions.json"),
                  course_dir / "graph" / "misconceptions.json", "misconceptions"),
-                (trainforge_dir / "assessments.json",
+                (_pick(trainforge_dir / "training_specs" / "assessments.json",
+                       trainforge_dir / "assessments.json"),
                  course_dir / "training_specs" / "assessments.json", "assessments"),
-                (trainforge_dir / "quality" / "quality_report.json",
+                (_pick(trainforge_dir / "quality" / "quality_report.json"),
                  course_dir / "quality" / "quality_report.json", "quality_report"),
             ]
             for src, dest, label in copy_map:
-                if src.exists() and src.is_file():
+                if src is not None and src.exists() and src.is_file():
                     try:
                         shutil.copy2(src, dest)
                         archived["trainforge"][label] = str(dest)

@@ -239,11 +239,16 @@ def _assert_worker_beta(export_dir: Path) -> None:
     for run_dir in (PROJECT_ROOT / "state" / "runs").glob("*/trainforge"):
         candidates.append(run_dir)
 
+    # Accept both the flat layout (trainforge/chunks.jsonl) and the
+    # CourseProcessor-native nested layout (trainforge/corpus/chunks.jsonl)
+    # that Worker β actually emits.
     chunks_file: Path | None = None
     for candidate in candidates:
-        candidate_chunks = candidate / "chunks.jsonl"
-        if candidate_chunks.exists():
-            chunks_file = candidate_chunks
+        for candidate_chunks in (candidate / "chunks.jsonl", candidate / "corpus" / "chunks.jsonl"):
+            if candidate_chunks.exists():
+                chunks_file = candidate_chunks
+                break
+        if chunks_file is not None:
             break
 
     assert chunks_file is not None, (
