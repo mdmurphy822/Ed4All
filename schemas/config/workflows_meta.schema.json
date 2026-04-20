@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.local/schemas/config/workflows_meta.schema.json",
+  "title": "Ed4All Workflows Meta-Schema",
+  "description": "Meta-schema validating config/workflows.yaml shape. Load-time enforcement catches typos in gate IDs, phase names, validator paths, severities, and inter-phase routing before any workflow runs.",
+  "type": "object",
+  "required": ["workflows"],
+  "additionalProperties": true,
+  "properties": {
+    "workflows": {
+      "type": "object",
+      "description": "Keyed by workflow name. Each value is a Workflow definition.",
+      "minProperties": 1,
+      "additionalProperties": {
+        "$ref": "#/$defs/Workflow"
+      }
+    },
+    "defaults": {
+      "type": "object",
+      "description": "Default settings applied to all workflows.",
+      "additionalProperties": true
+    },
+    "dependency_resolution": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "hardening": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "Workflow": {
+      "type": "object",
+      "required": ["phases"],
+      "additionalProperties": true,
+      "properties": {
+        "description": {"type": "string"},
+        "mcp_tools": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "retry_policy": {"type": "object", "additionalProperties": true},
+        "poison_pill": {"type": "object", "additionalProperties": true},
+        "phases": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/Phase"}
+        }
+      }
+    },
+    "Phase": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": true,
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z_][a-z0-9_]*$",
+          "description": "snake_case phase identifier"
+        },
+        "agents": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "parallel": {"type": "boolean"},
+        "max_concurrent": {"type": "integer", "minimum": 1},
+        "batch_by": {"type": ["string", "null"]},
+        "depends_on": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "optional": {"type": "boolean"},
+        "timeout_minutes": {"type": "integer", "minimum": 1},
+        "batch_timeout_minutes": {"type": "integer", "minimum": 1},
+        "description": {"type": "string"},
+        "inputs_from": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/InputRoute"}
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          }
+        },
+        "validation_gates": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/Gate"}
+        }
+      }
+    },
+    "InputRoute": {
+      "type": "object",
+      "required": ["param", "source"],
+      "additionalProperties": false,
+      "properties": {
+        "param": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$",
+          "description": "Name of the parameter as passed to phase tasks."
+        },
+        "source": {
+          "enum": ["workflow_params", "phase_outputs", "literal"]
+        },
+        "key": {"type": "string"},
+        "phase": {"type": "string"},
+        "output": {"type": "string"},
+        "value": {}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"source": {"const": "workflow_params"}},
+            "required": ["source"]
+          },
+          "then": {"required": ["key"]}
+        },
+        {
+          "if": {
+            "properties": {"source": {"const": "phase_outputs"}},
+            "required": ["source"]
+          },
+          "then": {"required": ["phase", "output"]}
+        },
+        {
+          "if": {
+            "properties": {"source": {"const": "literal"}},
+            "required": ["source"]
+          },
+          "then": {"required": ["value"]}
+        }
+      ]
+    },
+    "Gate": {
+      "type": "object",
+      "required": ["gate_id", "validator", "severity"],
+      "additionalProperties": false,
+      "properties": {
+        "gate_id": {
+          "type": "string",
+          "pattern": "^[a-z_][a-z0-9_]*$"
+        },
+        "validator": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_.]*\\.[A-Za-z_][A-Za-z0-9_]*$",
+          "description": "Dotted module path ending in the validator class name."
+        },
+        "severity": {
+          "enum": ["critical", "warning", "info"]
+        },
+        "threshold": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "behavior": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "on_fail": {"enum": ["block", "warn", "fail_closed"]},
+            "on_error": {"enum": ["block", "warn", "fail_closed"]}
+          }
+        },
+        "description": {"type": "string"},
+        "enabled": {"type": "boolean"}
+      }
+    }
+  }
+}
