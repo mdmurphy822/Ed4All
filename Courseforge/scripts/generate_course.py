@@ -30,6 +30,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from lib.ontology.bloom import get_verbs_list as _get_canonical_verbs_list  # noqa: E402
+from lib.ontology.slugs import canonical_slug as _slugify  # noqa: E402
 from lib.ontology.taxonomy import validate_classification  # noqa: E402
 from lib.ontology.teaching_roles import map_role as _map_teaching_role  # noqa: E402
 
@@ -171,10 +172,9 @@ def detect_bloom_level(objective_text: str) -> Tuple[Optional[str], Optional[str
     return None, None
 
 
-def _slugify(text: str) -> str:
-    """Convert text to a lowercase-hyphenated slug."""
-    slug = re.sub(r"[^a-z0-9\s-]", "", text.lower())
-    return re.sub(r"\s+", "-", slug).strip("-")
+# `_slugify` is imported at the top of the module from
+# ``lib.ontology.slugs.canonical_slug`` per REC-ID-03 (Wave 4, Worker Q). The
+# alias preserves the local callers' ``_slugify(...)`` spelling.
 
 
 # ---------------------------------------------------------------------------
