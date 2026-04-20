@@ -2236,6 +2236,18 @@ class CourseProcessor:
         course_id = getattr(self, "course_code", "") or ""
         tag_frequency: Dict[str, int] = defaultdict(int)
         co_occurrence: Dict[Tuple[str, str], int] = defaultdict(int)
+        # REC-LNK-01 (Wave 5.1, Worker S): inverted index from concept node_id
+        # to the set of chunk IDs that reference the concept. Always-on
+        # additive behaviour (no env var). Stable across re-chunks only when
+        # TRAINFORGE_CONTENT_HASH_IDS=true (Worker N's flag); position-based
+        # IDs invalidate entries on re-chunk. Using a set per-node avoids
+        # duplicate chunk IDs when a chunk lists the same tag twice; sorted
+        # to a list at emit time for deterministic output.
+        #
+        # Note: len(occurrences) counts DISTINCT chunks referencing the
+        # concept, which may be less than ``frequency`` (frequency counts
+        # total tag mentions — a chunk that lists a tag twice counts twice).
+        concept_to_chunks: Dict[str, set] = defaultdict(set)
 
         def _accept(tag: str) -> bool:
             if include_tags is not None and tag not in include_tags:
@@ -2245,9 +2257,16 @@ class CourseProcessor:
             return True
 
         for chunk in chunks:
+            chunk_id = chunk.get("id")
             tags = [t for t in chunk.get("concept_tags", []) if _accept(t)]
             for tag in tags:
                 tag_frequency[tag] += 1
+                if chunk_id:
+                    # Key the inverted index by the SAME node_id the emit
+                    # loop below will produce — using _make_concept_id so
+                    # the occurrences[] keys align with node["id"] under
+                    # either flag state of TRAINFORGE_SCOPE_CONCEPT_IDS.
+                    concept_to_chunks[_make_concept_id(tag, course_id)].add(chunk_id)
             for i, a in enumerate(tags):
                 for b in tags[i + 1:]:
                     key = tuple(sorted([a, b]))
@@ -2268,6 +2287,14 @@ class CourseProcessor:
             }
             if SCOPE_CONCEPT_IDS and course_id:
                 node["course_id"] = course_id
+            # REC-LNK-01: attach sorted occurrences[] back-reference.
+            # Sort is ASCII-ASC on chunk ID string — deterministic across
+            # runs, cross-platform stable. Only emit when non-empty so
+            # nodes whose tag wasn't present on any chunk with a resolvable
+            # chunk_id stay legacy-shaped.
+            occurrences = concept_to_chunks.get(node_id)
+            if occurrences:
+                node["occurrences"] = sorted(occurrences)
             nodes.append(node)
         node_ids = {n["id"] for n in nodes}
 
