@@ -47,6 +47,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.decision_capture import DecisionCapture  # noqa: E402
+from lib.validators.content_type import (  # noqa: E402
+    assert_chunk_type,
+    validate_chunk_type,
+)
 
 from Trainforge.generators.instruction_factory import (  # noqa: E402
     synthesize_instruction_pair,
@@ -257,6 +261,25 @@ def run_synthesis(
                     stats.rejected_reasons.get(f"instruction:{reason}", 0) + 1
                 )
             else:
+                # REC-VOC-03 Phase 2 (Worker T): opt-in content_type enforcement
+                # against ChunkType enum. Flag off -> no-op; flag on -> fail-closed.
+                # Matches Worker I's TRAINFORGE_VALIDATE_CHUNKS pattern at
+                # process_course.py:1987-2009.
+                ct_value = inst_result.pair.get("content_type", "")
+                if not validate_chunk_type(ct_value):
+                    stats.instruction_pairs_rejected += 1
+                    reason = "invalid_content_type"
+                    stats.rejected_reasons[f"instruction:{reason}"] = (
+                        stats.rejected_reasons.get(f"instruction:{reason}", 0) + 1
+                    )
+                    chunk_id = inst_result.pair.get("chunk_id", "<unknown>")
+                    # Fail-closed: raise so the pipeline surfaces the bad vocabulary
+                    # rather than silently rejecting. Caller sets the env var
+                    # intentionally; silent drop would undermine that intent.
+                    assert_chunk_type(
+                        ct_value,
+                        context=f"instruction_pair.chunk_id={chunk_id}",
+                    )
                 capture.log_decision(
                     decision_type="instruction_pair_synthesis",
                     decision=(
