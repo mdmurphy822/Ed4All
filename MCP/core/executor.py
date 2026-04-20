@@ -98,6 +98,7 @@ AGENT_TOOL_MAPPING = {
     # -------------------------------------------------------------------------
     "textbook-stager": "stage_dart_outputs",
     "textbook-ingestor": "create_course_project",
+    "source-router": "build_source_module_map",
 
     # -------------------------------------------------------------------------
     # DART/REMEDIATION AGENTS (Multi-Source Synthesis)
