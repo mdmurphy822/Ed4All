@@ -16,12 +16,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import yaml
+
 from .config import OrchestratorConfig, WorkflowPhase
 from .executor import ExecutionResult, TaskExecutor
 
 logger = logging.getLogger(__name__)
 
 STATE_PATH = Path(__file__).resolve().parent.parent.parent / "state"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+WORKFLOWS_YAML_PATH = PROJECT_ROOT / "config" / "workflows.yaml"
+WORKFLOWS_META_SCHEMA_PATH = PROJECT_ROOT / "schemas" / "config" / "workflows_meta.schema.json"
 
 
 # =============================================================================
@@ -32,9 +37,17 @@ STATE_PATH = Path(__file__).resolve().parent.parent.parent / "state"
 #   - ("workflow_params", key) => from workflow creation params
 #   - ("phase_outputs", phase_name, key) => from a prior phase's extracted outputs
 #   - ("literal", value) => hardcoded value
+#
+# REC-CTR-05 (Wave 6): Routing is now primarily defined in config/workflows.yaml
+# via per-phase `inputs_from:` and `outputs:` blocks. The legacy dicts below
+# act as backwards-compat fallbacks for phases whose YAML entries have not yet
+# been annotated. `_load_workflows_config()` validates the YAML against
+# schemas/config/workflows_meta.schema.json at module load time, so typos in
+# gate IDs, phase names, severities, or inter-phase references are caught
+# pre-flight.
 # =============================================================================
 
-PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
+_LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
     "dart_conversion": {
         # Task creation handled specially in _create_phase_tasks (one task per PDF)
         "course_code": ("workflow_params", "course_name"),
@@ -84,7 +97,7 @@ PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
 # Maps phase names to the keys extracted from their task results.
 # After a phase completes, these fields are pulled from the result
 # and stored in workflow state under phase_outputs[phase_name].
-PHASE_OUTPUT_KEYS: Dict[str, List[str]] = {
+_LEGACY_PHASE_OUTPUT_KEYS: Dict[str, List[str]] = {
     "dart_conversion": ["output_path", "output_paths", "success", "html_length"],
     "staging": ["staging_dir", "staged_files", "file_count"],
     "objective_extraction": ["project_id", "project_path", "objective_ids"],
@@ -95,6 +108,279 @@ PHASE_OUTPUT_KEYS: Dict[str, List[str]] = {
     "libv2_archival": ["course_slug", "course_dir", "manifest_path"],
     "finalization": ["project_id", "package_path", "course_slug"],
 }
+
+
+# Backwards-compat: expose the legacy aliases. Callers outside this module
+# historically imported these names directly. New code should call
+# _get_phase_param_routing() / _get_phase_output_keys() or the YAML-first
+# accessors, which respect per-phase YAML overrides.
+PHASE_PARAM_ROUTING = _LEGACY_PHASE_PARAM_ROUTING
+PHASE_OUTPUT_KEYS = _LEGACY_PHASE_OUTPUT_KEYS
+
+
+# =============================================================================
+# YAML-BASED PHASE ROUTING LOADER (REC-CTR-05)
+# =============================================================================
+
+# Module-level cache for loaded + validated workflows.yaml. Populated lazily
+# by _load_workflows_config(). Reset for tests via _reset_workflows_cache().
+_WORKFLOWS_CONFIG_CACHE: Optional[Dict[str, Any]] = None
+
+# Track phases we've already warn-logged for fall-through to legacy defaults,
+# to avoid log spam when the same phase fires repeatedly across a workflow.
+_FALLBACK_LOGGED: set = set()
+
+
+def _reset_workflows_cache() -> None:
+    """Clear the cached workflows config and fallback-log tracker.
+
+    Primarily used by tests to force a reload after modifying the underlying
+    YAML or schema on disk.
+    """
+    global _WORKFLOWS_CONFIG_CACHE
+    _WORKFLOWS_CONFIG_CACHE = None
+    _FALLBACK_LOGGED.clear()
+
+
+def _load_workflows_config(force_reload: bool = False) -> Dict[str, Any]:
+    """Load and validate config/workflows.yaml against the meta-schema.
+
+    Validates against schemas/config/workflows_meta.schema.json plus a
+    cross-reference integrity check: any `inputs_from` entry with
+    source=phase_outputs must reference a prior-phase output declared in
+    that phase's `outputs:` list.
+
+    Raises:
+        ValueError: If workflows.yaml is missing, malformed, or fails
+            meta-schema/cross-ref validation.
+
+    Returns:
+        The raw parsed YAML dict (already validated).
+    """
+    global _WORKFLOWS_CONFIG_CACHE
+    if _WORKFLOWS_CONFIG_CACHE is not None and not force_reload:
+        return _WORKFLOWS_CONFIG_CACHE
+
+    if not WORKFLOWS_YAML_PATH.exists():
+        raise ValueError(
+            f"Workflows config not found: {WORKFLOWS_YAML_PATH}. "
+            "workflow_runner requires config/workflows.yaml to load phase routing."
+        )
+
+    try:
+        with open(WORKFLOWS_YAML_PATH) as f:
+            data = yaml.safe_load(f)
+    except yaml.YAMLError as e:
+        raise ValueError(f"Invalid YAML in {WORKFLOWS_YAML_PATH}: {e}") from e
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"workflows.yaml must be a mapping at the top level, got {type(data).__name__}"
+        )
+
+    # Meta-schema validation (REC-CTR-05). If jsonschema is not installed or
+    # the schema file is missing, log a warning and skip — don't block
+    # execution purely on meta-schema tooling availability.
+    if WORKFLOWS_META_SCHEMA_PATH.exists():
+        try:
+            import jsonschema
+            with open(WORKFLOWS_META_SCHEMA_PATH) as f:
+                meta_schema = json.load(f)
+            try:
+                jsonschema.validate(data, meta_schema)
+            except jsonschema.ValidationError as e:
+                path = ".".join(str(p) for p in e.absolute_path)
+                raise ValueError(
+                    f"config/workflows.yaml failed meta-schema validation at '{path}': "
+                    f"{e.message}"
+                ) from e
+        except ImportError:
+            logger.warning(
+                "jsonschema not installed; skipping workflows.yaml meta-schema validation. "
+                "Install jsonschema to catch config typos pre-flight."
+            )
+    else:
+        logger.warning(
+            "Meta-schema not found at %s; skipping structural validation of workflows.yaml.",
+            WORKFLOWS_META_SCHEMA_PATH,
+        )
+
+    # Cross-reference integrity: every phase_outputs input must resolve
+    # to a prior phase's declared outputs.
+    _validate_inputs_from_references(data)
+
+    _WORKFLOWS_CONFIG_CACHE = data
+    return data
+
+
+def _validate_inputs_from_references(workflows_data: Dict[str, Any]) -> None:
+    """Ensure `inputs_from: {source: phase_outputs,...}` references resolve.
+
+    For each workflow, iterates phases in declared order and checks that any
+    phase_outputs-sourced input refers to (phase, output) that was declared
+    in a prior phase's `outputs:` list. Phases without an explicit `outputs:`
+    block are treated as exposing the legacy output keys for that phase,
+    preserving backwards compatibility.
+
+    Raises:
+        ValueError: On the first unresolved reference, with a clear message.
+    """
+    for wf_name, wf in (workflows_data.get("workflows") or {}).items():
+        if not isinstance(wf, dict):
+            continue
+        seen_outputs: Dict[str, set] = {}
+        for phase in wf.get("phases", []) or []:
+            if not isinstance(phase, dict):
+                continue
+            phase_name = phase.get("name", "<unnamed>")
+            for route in phase.get("inputs_from") or []:
+                if not isinstance(route, dict):
+                    continue
+                if route.get("source") != "phase_outputs":
+                    continue
+                ref_phase = route.get("phase")
+                ref_output = route.get("output")
+                if ref_phase not in seen_outputs:
+                    raise ValueError(
+                        f"Workflow '{wf_name}' phase '{phase_name}' inputs_from "
+                        f"references unknown or not-yet-declared phase '{ref_phase}'."
+                    )
+                if ref_output not in seen_outputs[ref_phase]:
+                    raise ValueError(
+                        f"Workflow '{wf_name}' phase '{phase_name}' inputs_from "
+                        f"references '{ref_phase}.{ref_output}' but '{ref_phase}' does "
+                        f"not declare '{ref_output}' in its outputs. "
+                        f"Declared outputs: {sorted(seen_outputs[ref_phase])}"
+                    )
+            # Record this phase's declared outputs, falling back to legacy
+            # keys so legacy phases still satisfy downstream references.
+            declared = phase.get("outputs")
+            if declared is None:
+                declared = _LEGACY_PHASE_OUTPUT_KEYS.get(phase_name, [])
+            seen_outputs[phase_name] = set(declared or [])
+
+
+def _phase_yaml_block(phase_name: str) -> Optional[Dict[str, Any]]:
+    """Locate the first phase entry matching `phase_name` across all workflows.
+
+    Phase names are used as dict keys in the legacy dicts, so callers only
+    have a phase name (not workflow+phase). If the same phase name appears in
+    multiple workflows (e.g. `dart_conversion` in `batch_dart`-siblings),
+    the first YAML block with an `inputs_from:` or `outputs:` annotation
+    wins. This preserves the prior implicit behavior where a phase had a
+    single global routing signature.
+    """
+    try:
+        data = _load_workflows_config()
+    except ValueError:
+        # Propagate to caller at first use; logged there.
+        raise
+
+    fallback: Optional[Dict[str, Any]] = None
+    for wf in (data.get("workflows") or {}).values():
+        if not isinstance(wf, dict):
+            continue
+        for phase in wf.get("phases", []) or []:
+            if not isinstance(phase, dict):
+                continue
+            if phase.get("name") == phase_name:
+                if phase.get("inputs_from") or phase.get("outputs"):
+                    return phase
+                if fallback is None:
+                    fallback = phase
+    return fallback
+
+
+def _get_phase_param_routing(phase_name: str) -> Dict[str, Tuple]:
+    """Return {param: (source_type, *path)} routing for a phase.
+
+    Preference order:
+      1. YAML `inputs_from:` block for this phase (REC-CTR-05).
+      2. Legacy in-memory `_LEGACY_PHASE_PARAM_ROUTING` entry (warn once).
+      3. Empty dict.
+    """
+    try:
+        block = _phase_yaml_block(phase_name)
+    except ValueError as e:
+        logger.error("Failed to load workflows.yaml for phase routing: %s", e)
+        block = None
+
+    if block and block.get("inputs_from"):
+        routing: Dict[str, Tuple] = {}
+        for route in block["inputs_from"]:
+            if not isinstance(route, dict):
+                continue
+            param = route.get("param")
+            source = route.get("source")
+            if not param or not source:
+                continue
+            if source == "workflow_params":
+                routing[param] = ("workflow_params", route.get("key"))
+            elif source == "phase_outputs":
+                routing[param] = (
+                    "phase_outputs",
+                    route.get("phase"),
+                    route.get("output"),
+                )
+            elif source == "literal":
+                routing[param] = ("literal", route.get("value"))
+        return routing
+
+    # Fallback to legacy in-memory dict
+    if phase_name in _LEGACY_PHASE_PARAM_ROUTING:
+        if phase_name not in _FALLBACK_LOGGED:
+            logger.warning(
+                "Phase '%s' has no `inputs_from:` block in config/workflows.yaml; "
+                "falling back to legacy in-memory routing. Annotate the phase to "
+                "silence this warning.",
+                phase_name,
+            )
+            _FALLBACK_LOGGED.add(phase_name)
+        return _LEGACY_PHASE_PARAM_ROUTING[phase_name]
+
+    return {}
+
+
+def _get_phase_output_keys(phase_name: str) -> List[str]:
+    """Return the list of output keys to extract from a phase's task results.
+
+    Preference order:
+      1. YAML `outputs:` block for this phase.
+      2. Legacy in-memory `_LEGACY_PHASE_OUTPUT_KEYS` entry (warn once).
+      3. Empty list.
+    """
+    try:
+        block = _phase_yaml_block(phase_name)
+    except ValueError as e:
+        logger.error("Failed to load workflows.yaml for phase outputs: %s", e)
+        block = None
+
+    if block and block.get("outputs"):
+        return list(block["outputs"])
+
+    if phase_name in _LEGACY_PHASE_OUTPUT_KEYS:
+        key = f"outputs:{phase_name}"
+        if key not in _FALLBACK_LOGGED:
+            logger.warning(
+                "Phase '%s' has no `outputs:` block in config/workflows.yaml; "
+                "falling back to legacy in-memory output keys.",
+                phase_name,
+            )
+            _FALLBACK_LOGGED.add(key)
+        return list(_LEGACY_PHASE_OUTPUT_KEYS[phase_name])
+
+    return []
+
+
+# Eager load + validate workflows.yaml at module import so typos surface
+# before any workflow attempts to run. Tests that want a pristine config
+# should call _reset_workflows_cache() after patching.
+try:
+    _load_workflows_config()
+except ValueError as _e:
+    # Log and re-raise so downstream imports see the error immediately.
+    logger.error("workflows.yaml failed pre-flight validation: %s", _e)
+    raise
 
 
 class WorkflowRunner:
@@ -269,7 +555,7 @@ class WorkflowRunner:
         Returns:
             Dict of resolved parameter values
         """
-        routing = PHASE_PARAM_ROUTING.get(phase_name, {})
+        routing = _get_phase_param_routing(phase_name)
         params = {}
 
         for param_name, source_spec in routing.items():
@@ -400,7 +686,7 @@ class WorkflowRunner:
         Returns:
             Dict of extracted output values
         """
-        output_keys = PHASE_OUTPUT_KEYS.get(phase_name, [])
+        output_keys = _get_phase_output_keys(phase_name)
         extracted = {}
 
         for result in results.values():

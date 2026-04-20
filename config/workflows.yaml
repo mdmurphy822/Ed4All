@@ -230,6 +230,20 @@ workflows:
         batch_timeout_minutes: 30
         description: Synthesize accessible HTML from combined extraction sources
 
+        # REC-CTR-06: DART markers gate ensures downstream LO-extraction + KG
+        # pipelines see the expected DART semantic classes. Silently-dropped
+        # markers previously degraded Trainforge/Courseforge pipelines.
+        validation_gates:
+          - gate_id: dart_markers
+            validator: lib.validators.dart_markers.DartMarkersValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Ensure DART HTML emits skip-link, role=main, aria-labelledby sections, and DART semantic classes
+
       - name: validation
         agents: [accessibility-remediation]
         parallel: true
@@ -398,6 +412,33 @@ workflows:
         timeout_minutes: 90
         description: Convert PDF textbooks to accessible HTML via multi-source synthesis
 
+        # REC-CTR-05: Explicit parameter routing (was hardcoded in
+        # MCP/core/workflow_runner.py::PHASE_PARAM_ROUTING).
+        inputs_from:
+          - param: course_code
+            source: workflow_params
+            key: course_name
+
+        # REC-CTR-05: Explicit output keys (was hardcoded in
+        # MCP/core/workflow_runner.py::PHASE_OUTPUT_KEYS).
+        outputs:
+          - output_path
+          - output_paths
+          - success
+          - html_length
+
+        # REC-CTR-06: DART markers gate on textbook pipeline first phase.
+        validation_gates:
+          - gate_id: dart_markers
+            validator: lib.validators.dart_markers.DartMarkersValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Ensure DART HTML emits skip-link, role=main, aria-labelledby sections, and DART semantic classes
+
       - name: staging
         agents: [textbook-stager]
         parallel: false
@@ -405,6 +446,23 @@ workflows:
         depends_on: [dart_conversion]
         timeout_minutes: 10
         description: Stage DART outputs to Courseforge inputs directory
+
+        inputs_from:
+          - param: run_id
+            source: workflow_params
+            key: run_id
+          - param: dart_html_paths
+            source: phase_outputs
+            phase: dart_conversion
+            output: output_paths
+          - param: course_name
+            source: workflow_params
+            key: course_name
+
+        outputs:
+          - staging_dir
+          - staged_files
+          - file_count
 
       - name: objective_extraction
         agents: [textbook-ingestor]
@@ -414,6 +472,22 @@ workflows:
         timeout_minutes: 60
         description: Extract structure and synthesize learning objectives from textbook
 
+        inputs_from:
+          - param: course_name
+            source: workflow_params
+            key: course_name
+          - param: objectives_path
+            source: workflow_params
+            key: objectives_path
+          - param: duration_weeks
+            source: workflow_params
+            key: duration_weeks
+
+        outputs:
+          - project_id
+          - project_path
+          - objective_ids
+
       - name: course_planning
         agents: [course-outliner]
         parallel: false
@@ -421,6 +495,21 @@ workflows:
         depends_on: [objective_extraction]
         timeout_minutes: 60
         description: Create course structure from synthesized objectives
+
+        inputs_from:
+          - param: project_id
+            source: phase_outputs
+            phase: objective_extraction
+            output: project_id
+          - param: course_name
+            source: workflow_params
+            key: course_name
+          - param: objectives_path
+            source: workflow_params
+            key: objectives_path
+
+        outputs:
+          - project_id
 
       - name: content_generation
         agents: [content-generator]
@@ -431,6 +520,17 @@ workflows:
         timeout_minutes: 120
         batch_timeout_minutes: 30
         description: Generate course content modules
+
+        inputs_from:
+          - param: project_id
+            source: phase_outputs
+            phase: objective_extraction
+            output: project_id
+
+        outputs:
+          - project_id
+          - content_paths
+          - weeks_prepared
 
         validation_gates:
           - gate_id: content_structure
@@ -449,6 +549,17 @@ workflows:
         depends_on: [content_generation]
         timeout_minutes: 45
         description: Package course as IMSCC
+
+        inputs_from:
+          - param: project_id
+            source: phase_outputs
+            phase: objective_extraction
+            output: project_id
+
+        outputs:
+          - package_path
+          - libv2_package_path
+          - project_id
 
         validation_gates:
           - gate_id: imscc_structure
@@ -479,6 +590,30 @@ workflows:
         description: Generate assessments from IMSCC course package
         optional: true  # Can be skipped via generate_assessments=false
 
+        inputs_from:
+          - param: course_id
+            source: workflow_params
+            key: course_name
+          - param: imscc_path
+            source: phase_outputs
+            phase: packaging
+            output: package_path
+          - param: bloom_levels
+            source: workflow_params
+            key: bloom_levels
+          - param: question_count
+            source: workflow_params
+            key: assessment_count
+          - param: objective_ids
+            source: phase_outputs
+            phase: objective_extraction
+            output: objective_ids
+
+        outputs:
+          - output_path
+          - assessment_id
+          - question_count
+
         validation_gates:
           - gate_id: imscc_input_valid
             validator: lib.validators.imscc.IMSCCValidator
@@ -508,6 +643,33 @@ workflows:
         timeout_minutes: 30
         description: Archive all pipeline artifacts to LibV2 (raw PDFs, DART HTML, IMSCC, RAG corpus)
 
+        inputs_from:
+          - param: course_name
+            source: workflow_params
+            key: course_name
+          - param: domain
+            source: workflow_params
+            key: domain
+          - param: division
+            source: workflow_params
+            key: division
+          - param: pdf_paths
+            source: workflow_params
+            key: pdf_paths
+          - param: html_paths
+            source: phase_outputs
+            phase: dart_conversion
+            output: output_paths
+          - param: imscc_path
+            source: phase_outputs
+            phase: packaging
+            output: package_path
+
+        outputs:
+          - course_slug
+          - course_dir
+          - manifest_path
+
       - name: finalization
         agents: [brightspace-packager]
         parallel: false
@@ -515,6 +677,21 @@ workflows:
         depends_on: [libv2_archival]
         timeout_minutes: 30
         description: Final validation and training data export
+
+        inputs_from:
+          - param: project_id
+            source: phase_outputs
+            phase: objective_extraction
+            output: project_id
+          - param: course_slug
+            source: phase_outputs
+            phase: libv2_archival
+            output: course_slug
+
+        outputs:
+          - project_id
+          - package_path
+          - course_slug
 
 # Default settings applied to all workflows
 defaults:
