@@ -534,6 +534,9 @@ workflows:
           - param: objectives_path
             source: workflow_params
             key: objectives_path
+          - param: duration_weeks
+            source: workflow_params
+            key: duration_weeks
           - param: source_module_map_path
             source: phase_outputs
             phase: source_mapping

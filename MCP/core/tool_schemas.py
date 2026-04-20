@@ -433,6 +433,120 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "description": "Wave 9 source_mapping phase stub: writes an empty source_module_map.json so content-generator falls through to the LO-only backward-compat path.",
     },
 
+    # =========================================================================
+    # PIPELINE TOOLS - Additional (create/run/status/markers)
+    # Added by pipeline-plumbing remediation to close MCP audit Q1 (latent
+    # PR #45 failure mode for tools present as @mcp.tool() + reachable from
+    # agent mappings but missing TOOL_SCHEMAS entries). Required-param lists
+    # match each tool's @mcp.tool() decorator signature in MCP/tools/*.py.
+    # create_textbook_pipeline_tool + run_textbook_pipeline_tool are
+    # DEPRECATED (Wave 7) but remain wired for one cycle.
+    # =========================================================================
+    "create_textbook_pipeline_tool": {
+        "required": ["pdf_paths", "course_name"],
+        "optional": [
+            "objectives_path", "duration_weeks", "generate_assessments",
+            "assessment_count", "bloom_levels", "priority",
+        ],
+        "defaults": {
+            "objectives_path": None,
+            "duration_weeks": 12,
+            "generate_assessments": True,
+            "assessment_count": 50,
+            "bloom_levels": "remember,understand,apply,analyze",
+            "priority": "normal",
+        },
+        "param_mapping": {
+            "pdfs": "pdf_paths",
+            "input": "pdf_paths",
+            "sources": "pdf_paths",
+            "course": "course_name",
+            "name": "course_name",
+            "objectives": "objectives_path",
+            "duration": "duration_weeks",
+            "weeks": "duration_weeks",
+            "blooms": "bloom_levels",
+            "count": "assessment_count",
+        },
+        "description": "Create and orchestrate a textbook-to-course pipeline (DEPRECATED Wave 7; prefer `ed4all run textbook-to-course`)",
+    },
+
+    "run_textbook_pipeline_tool": {
+        "required": ["workflow_id"],
+        "optional": [],
+        "defaults": {},
+        "param_mapping": {
+            "workflow": "workflow_id",
+            "id": "workflow_id",
+        },
+        "description": "Execute a previously created textbook-to-course pipeline (DEPRECATED Wave 7)",
+    },
+
+    "get_pipeline_status": {
+        "required": ["workflow_id"],
+        "optional": [],
+        "defaults": {},
+        "param_mapping": {
+            "workflow": "workflow_id",
+            "id": "workflow_id",
+        },
+        "description": "Get status of a textbook-to-course pipeline",
+    },
+
+    "validate_dart_markers": {
+        "required": ["html_path"],
+        "optional": [],
+        "defaults": {},
+        "param_mapping": {
+            "input": "html_path",
+            "file": "html_path",
+            "path": "html_path",
+        },
+        "description": "Validate that an HTML file has required DART accessibility markers",
+    },
+
+    # =========================================================================
+    # ANALYSIS TOOLS (3)
+    # =========================================================================
+    "analyze_training_data": {
+        "required": [],
+        "optional": [],
+        "defaults": {},
+        "param_mapping": {},
+        "description": "Analyze captured training data quality and distribution",
+    },
+
+    "get_quality_distribution": {
+        "required": [],
+        "optional": ["min_quality"],
+        "defaults": {
+            "min_quality": "developing",
+        },
+        "param_mapping": {
+            "quality": "min_quality",
+            "threshold": "min_quality",
+        },
+        "description": "Get quality distribution with filtering preview",
+    },
+
+    "preview_export_filter": {
+        "required": [],
+        "optional": ["min_quality", "min_confidence", "require_accepted", "deduplicate"],
+        "defaults": {
+            "min_quality": "developing",
+            "min_confidence": 0.0,
+            "require_accepted": False,
+            "deduplicate": True,
+        },
+        "param_mapping": {
+            "quality": "min_quality",
+            "confidence": "min_confidence",
+            "accepted_only": "require_accepted",
+            "dedupe": "deduplicate",
+        },
+        "description": "Preview how many records would be exported with given filters",
+    },
+
 }
 
 
