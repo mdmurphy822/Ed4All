@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json",
+  "title": "SourceReference",
+  "description": "Canonical cross-subsystem shape for referencing a DART-synthesized source block. Shared by DART provenance sidecars, Courseforge JSON-LD sourceReferences[], Trainforge chunk Source.source_references[], and evidence-arm enrichment (Waves 8-11). See plans/source-provenance/design.md for the full contract.",
+  "type": "object",
+  "required": ["sourceId", "role"],
+  "additionalProperties": false,
+  "properties": {
+    "sourceId": {
+      "type": "string",
+      "pattern": "^dart:[a-z0-9_-]+#[a-z0-9_-]+$",
+      "description": "Canonical DART block identifier: dart:{document_slug}#{block_id}. block_id is content-hash (16-hex) when TRAINFORGE_CONTENT_HASH_IDS=true, positional (s3_c0 style) otherwise."
+    },
+    "role": {
+      "type": "string",
+      "enum": ["primary", "contributing", "corroborating"],
+      "description": "primary=the block IS this source; contributing=the block draws from this source; corroborating=this source supports the claim but isn't synthesized from."
+    },
+    "weight": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Optional. Relative contribution weight when multi-source."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Optional. Ingestor's confidence that this mapping is correct."
+    },
+    "pages": {
+      "type": "array",
+      "items": {
+        "type": "integer",
+        "minimum": 1
+      },
+      "description": "Optional. PDF page numbers. Populated when DART carries real page tracking; empty array or omitted when unknown."
+    },
+    "extractor": {
+      "type": "string",
+      "enum": ["pdftotext", "pdfplumber", "ocr", "claude", "synthesized"],
+      "description": "Optional. Which extraction stage produced this block (propagated from DART's per-block envelope)."
+    }
+  }
+}
