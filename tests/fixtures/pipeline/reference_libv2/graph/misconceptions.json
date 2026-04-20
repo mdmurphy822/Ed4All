@@ -1,0 +1,11 @@
+{
+  "misconceptions": [
+    {
+      "id": "mc_6630ceb3f576327d",
+      "misconception": "Plants get their food from the soil.",
+      "correction": "Plants produce their own food via photosynthesis; soil contributes water and minerals but not the carbon that builds plant biomass.",
+      "concept_id": "photosynthesis",
+      "lo_id": "CO-03"
+    }
+  ]
+}

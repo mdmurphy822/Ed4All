@@ -1204,6 +1204,11 @@ def _build_tool_registry() -> dict:
 
         registry["create_course_project"] = _create_course_project
 
+        # ============================================================================
+        # BLOCK: Worker α edits ONLY below this line through the next END marker.
+        # Scope: _generate_course_content replacement. See plans/pipeline-execution-
+        # fixes/contracts.md § "Courseforge content-generator contract".
+        # ============================================================================
         async def _generate_course_content(**kwargs):
             """Generate real course content modules from DART outputs + objectives.
 
@@ -1429,6 +1434,7 @@ def _build_tool_registry() -> dict:
             })
 
         registry["generate_course_content"] = _generate_course_content
+        # END BLOCK: Worker α
 
         async def _package_imscc(**kwargs):
             """Build a real IMS Common Cartridge package from generated content.
@@ -1548,6 +1554,11 @@ def _build_tool_registry() -> dict:
 
         registry["analyze_imscc_content"] = _analyze_imscc_content
 
+        # ============================================================================
+        # BLOCK: Worker β edits ONLY below this line through the next END marker.
+        # Scope: _generate_assessments replacement. See plans/pipeline-execution-
+        # fixes/contracts.md § "Trainforge-execution contract".
+        # ============================================================================
         async def _generate_assessments(**kwargs):
             """Generate real content-grounded assessments using AssessmentGenerator.
 
@@ -1673,10 +1684,16 @@ def _build_tool_registry() -> dict:
             })
 
         registry["generate_assessments"] = _generate_assessments
+        # END BLOCK: Worker β
     except Exception:
         pass
 
     # LibV2 archival tool
+    # ============================================================================
+    # BLOCK: Worker γ edits ONLY below this line through the next END marker.
+    # Scope: _archive_to_libv2 extension. See plans/pipeline-execution-fixes/
+    # contracts.md § "LibV2-archival contract".
+    # ============================================================================
     async def _archive_to_libv2(**kwargs):
         """Wrapper for archive_to_libv2."""
 
@@ -1752,6 +1769,7 @@ def _build_tool_registry() -> dict:
         })
 
     registry["archive_to_libv2"] = _archive_to_libv2
+    # END BLOCK: Worker γ
 
     async def _build_source_module_map(**kwargs):
         """Minimal source-router stub (Wave 9 `source_mapping` phase).
