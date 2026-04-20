@@ -328,8 +328,7 @@ def _render_objectives(objectives: List[Dict]) -> str:
         )
     items_html = "\n".join(items)
     return f"""
-    <div class="objectives" role="region" aria-label="Learning Objectives"
-         data-cf-objectives-count="{len(objectives)}">
+    <div class="objectives" role="region" aria-label="Learning Objectives">
       <h2>Learning Objectives</h2>
       <p>After completing this module, you will be able to:</p>
       <ul>
