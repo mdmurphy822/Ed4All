@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
+    from MCP.orchestrator.llm_backend import LLMBackend
+
     from .image_extractor import ExtractedImage
 
 logger = logging.getLogger(__name__)
@@ -39,33 +41,47 @@ class AltTextGenerator:
         api_key: Optional[str] = None,
         model: str = "claude-sonnet-4-20250514",
         use_ai: bool = True,
-        use_ocr_fallback: bool = True
+        use_ocr_fallback: bool = True,
+        llm: Optional["LLMBackend"] = None,
     ):
         """
         Initialize alt text generator.
 
         Args:
-            api_key: Anthropic API key (or from ANTHROPIC_API_KEY env)
+            api_key: Anthropic API key (or from ANTHROPIC_API_KEY env). Ignored
+                when ``llm`` is provided.
             model: Claude model to use for vision
             use_ai: Whether to use Claude API for alt text
             use_ocr_fallback: Whether to fall back to OCR
+            llm: Optional pre-built LLM backend (e.g., an
+                :class:`MCP.orchestrator.LLMBackend`). When provided, vision
+                completions route through it instead of constructing an
+                Anthropic client directly. Backward compatible: existing
+                callers that pass only ``api_key`` continue to work.
         """
         self.api_key = api_key or os.environ.get('ANTHROPIC_API_KEY')
         self.model = model
-        self.use_ai = use_ai and self.api_key is not None
         self.use_ocr_fallback = use_ocr_fallback
+        self._llm = llm
+
+        # Either an injected backend or a resolvable API key enables AI.
+        self.use_ai = use_ai and (llm is not None or self.api_key is not None)
 
         self._client = None
-        if self.use_ai:
+        if self.use_ai and llm is None:
             try:
-                import anthropic
-                self._client = anthropic.Anthropic(api_key=self.api_key)
-                logger.debug(f"Claude API initialized with model {model}")
+                from MCP.orchestrator.llm_backend import AnthropicBackend
+
+                self._client = AnthropicBackend(
+                    api_key=self.api_key,
+                    default_model=self.model,
+                )
+                logger.debug(f"LLM backend initialized with model {model}")
             except ImportError:
                 logger.warning("anthropic package not installed. AI alt text unavailable.")
                 self.use_ai = False
             except Exception as e:
-                logger.warning(f"Failed to initialize Claude API: {e}")
+                logger.warning(f"Failed to initialize LLM backend: {e}")
                 self.use_ai = False
 
         # Check for OCR availability
@@ -95,8 +111,8 @@ class AltTextGenerator:
         Returns:
             AltTextResult with generated text
         """
-        # Try Claude API first
-        if self.use_ai and self._client:
+        # Try Claude API first (via injected backend or legacy SDK path)
+        if self.use_ai and (self._llm is not None or self._client is not None):
             result = self._try_claude_with_retry(image, context)
             if result.success:
                 return result
@@ -190,31 +206,17 @@ class AltTextGenerator:
         # Build prompt
         prompt = self._build_prompt(image, context)
 
-        # Call Claude API
-        response = self._client.messages.create(
+        # Route through the LLM backend abstraction (injected or lazy-built).
+        backend = self._llm if self._llm is not None else self._client
+        response_text = backend.complete_sync(
+            system="",
+            user=prompt,
             model=self.model,
             max_tokens=500,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": media_type,
-                            "data": base64_data,
-                        }
-                    },
-                    {
-                        "type": "text",
-                        "text": prompt
-                    }
-                ]
-            }]
-        )
-
-        # Parse response
-        response_text = response.content[0].text.strip()
+            images=[
+                {"media_type": media_type, "data": base64_data},
+            ],
+        ).strip()
 
         # Extract alt text and long description
         alt_text, long_desc = self._parse_response(response_text)

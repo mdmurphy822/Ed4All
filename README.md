@@ -13,8 +13,6 @@ Give it source materials and a knowledge domain. It produces three outputs:
 2. **Digital Course Packages** -- LMS-ready IMSCC packages with weekly modules, Bloom's-aligned learning objectives, interactive assessments, and machine-readable instructional design metadata
 3. **Knowledge-Domain Language Graphs** -- RAG-optimized corpus with concept co-occurrence graphs, pedagogical metadata on every chunk, and structured training data ready for retrieval or fine-tuning
 
-> **Current state (v0.2.0).** KG-quality hardening complete across 6 waves: unified schema directory (`schemas/`), canonical ontology helpers under `lib/ontology/`, 8 concept-graph edge types, opt-in flags for re-chunk-stable IDs and strict validation, and typed evidence per inference rule. See [`schemas/ONTOLOGY.md`](schemas/ONTOLOGY.md) § 12 for the full v0.2.0 change summary, and [`plans/kg-quality-review-2026-04/review.md`](plans/kg-quality-review-2026-04/review.md) for the review this work was based on.
-
 ### Why this matters
 
 Every chunk in the output carries Bloom's taxonomy level, content type classification, key terms with definitions, misconceptions, and learning outcome references. This isn't a text dump — it's a pedagogically structured knowledge representation that LLMs can use for grounded generation, tutoring, and domain-specific reasoning.
@@ -125,7 +123,7 @@ pip install -e ".[full]"
 
 ```bash
 # One command: convert PDF, generate course, process corpus, import to LibV2
-ed4all textbook-to-course textbook.pdf -n COURSE_101 --weeks 12
+ed4all run textbook-to-course --corpus textbook.pdf --course-name COURSE_101 --weeks 12
 ```
 
 ### Stage by Stage
@@ -183,7 +181,9 @@ cd MCP && python server.py
 ## CLI
 
 ```bash
-ed4all textbook-to-course textbook.pdf -n COURSE_101  # Full pipeline
+ed4all run textbook-to-course --corpus textbook.pdf --course-name COURSE_101   # Full pipeline (primary)
+ed4all run <workflow> --dry-run --corpus <PATH> --course-name <NAME>           # Plan only, no execution
+ed4all run <workflow> --resume <run_id>                                        # Resume a prior run
 ed4all validate-run <run_id>                           # Validate run integrity
 ed4all summarize-run <run_id>                          # Generate run report
 ed4all diff-runs <run_a> <run_b>                       # Compare two runs

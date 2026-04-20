@@ -203,7 +203,12 @@ def register_pipeline_tools(mcp):
         bloom_levels: str = "remember,understand,apply,analyze",
         priority: str = "normal"
     ) -> str:
-        """Create and orchestrate a textbook-to-course pipeline."""
+        """Create and orchestrate a textbook-to-course pipeline.
+
+        NOTE: This tool is intended for internal / programmatic use.
+        End users should prefer the ``ed4all run textbook-to-course`` CLI,
+        which wraps creation + execution through ``PipelineOrchestrator``.
+        """
         return await create_textbook_pipeline(
             pdf_paths, course_name, objectives_path, duration_weeks,
             generate_assessments, assessment_count, bloom_levels, priority
@@ -571,7 +576,12 @@ def register_pipeline_tools(mcp):
 
     @mcp.tool()
     async def run_textbook_pipeline_tool(workflow_id: str) -> str:
-        """Execute a textbook-to-course pipeline that was previously created."""
+        """Execute a textbook-to-course pipeline that was previously created.
+
+        NOTE: This tool is intended for internal / programmatic use.
+        End users should prefer the ``ed4all run`` CLI, which combines
+        creation + execution through ``PipelineOrchestrator``.
+        """
         return await run_textbook_pipeline(workflow_id)
 
 

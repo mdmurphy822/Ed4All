@@ -13,9 +13,12 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from MCP.orchestrator.llm_backend import LLMBackend
 
 
 class BlockType(str, Enum):
@@ -217,35 +220,63 @@ Return ONLY the JSON object, no other text.'''
         max_tokens: int = 16384,
         cache_dir: Optional[str] = None,
         enable_cache: bool = True,
+        llm: Optional["LLMBackend"] = None,
     ):
         """
         Initialize Claude processor.
 
         Args:
-            api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY env var)
+            api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY env var).
+                Ignored when ``llm`` is provided.
             model: Claude model to use
             max_tokens: Maximum tokens in response
             cache_dir: Directory for caching responses
             enable_cache: Whether to use caching
+            llm: Optional pre-built LLM backend (e.g., an
+                :class:`MCP.orchestrator.LLMBackend` instance). When provided,
+                the processor routes completions through it instead of
+                constructing an Anthropic client directly. Keeps existing
+                callers that pass ``api_key`` working unchanged.
         """
         self.api_key = api_key or os.environ.get('ANTHROPIC_API_KEY')
         self.model = model
         self.max_tokens = max_tokens
         self.cache = ResponseCache(cache_dir) if enable_cache else None
         self._client = None
+        self._llm = llm
 
     @property
     def client(self):
-        """Lazy initialization of Anthropic client."""
+        """Lazy initialization of Anthropic client.
+
+        Only used when no injected ``llm`` backend was supplied. New callers
+        should prefer ``llm=...`` in the constructor so that mode switching
+        (local / api / mock) works uniformly. This path is retained for
+        backward compatibility with direct-SDK callers.
+        """
         if self._client is None:
             try:
-                import anthropic
-                self._client = anthropic.Anthropic(api_key=self.api_key)
-            except ImportError:
+                from MCP.orchestrator.llm_backend import AnthropicBackend
+
+                self._client = AnthropicBackend(
+                    api_key=self.api_key,
+                    default_model=self.model,
+                )
+            except Exception as exc:  # noqa: BLE001
                 raise ClaudeProcessingError(
-                    "anthropic package not installed. Run: pip install anthropic"
-                ) from None
+                    f"Could not initialize LLM backend: {exc}"
+                ) from exc
         return self._client
+
+    def _complete(self, system: str, user: str) -> str:
+        """Route a completion through the injected backend or the legacy path."""
+        backend = self._llm if self._llm is not None else self.client
+        return backend.complete_sync(
+            system=system,
+            user=user,
+            model=self.model,
+            max_tokens=self.max_tokens,
+        )
 
     def process_text(
         self,
@@ -265,10 +296,11 @@ Return ONLY the JSON object, no other text.'''
         Raises:
             ClaudeProcessingError: On any processing failure
         """
-        if not self.api_key:
+        if self._llm is None and not self.api_key:
             raise ClaudeProcessingError(
-                "No API key provided. Set ANTHROPIC_API_KEY environment variable "
-                "or pass api_key to ClaudeProcessor."
+                "No API key provided and no LLM backend injected. Set "
+                "ANTHROPIC_API_KEY, pass api_key=..., or inject an "
+                "LLMBackend via llm=... to ClaudeProcessor."
             )
 
         # Check cache first
@@ -287,16 +319,11 @@ Return ONLY the JSON object, no other text.'''
         # Build prompt
         user_prompt = self.USER_PROMPT_TEMPLATE.format(raw_text=raw_text)
 
-        # Call Claude API
+        # Call Claude via the LLM backend abstraction
         try:
-
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
+            response_text = self._complete(
                 system=self.SYSTEM_PROMPT,
-                messages=[
-                    {"role": "user", "content": user_prompt}
-                ],
+                user=user_prompt,
             )
         except Exception as e:
             error_str = str(e).lower()
@@ -305,7 +332,6 @@ Return ONLY the JSON object, no other text.'''
             raise ClaudeAPIError(f"API error: {e}") from e
 
         # Parse response
-        response_text = response.content[0].text
         response_json = self._extract_json(response_text)
 
         # Cache successful response
