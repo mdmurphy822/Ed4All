@@ -41,6 +41,11 @@
           "course_id": {
             "type": "string",
             "description": "When TRAINFORGE_SCOPE_CONCEPT_IDS=true, concept ID format becomes '{course_id}:{slug}' and this field carries the scoping course_id. Default behavior: concept IDs are flat slugs, course_id absent."
+          },
+          "occurrences": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Chunk IDs that reference this concept (REC-LNK-01, Worker S Wave 5.1). Populated from chunk->concept inverted index at graph-build time. Sorted for deterministic output. Stable across re-chunks only when TRAINFORGE_CONTENT_HASH_IDS=true (Worker N's flag); position-based chunk IDs invalidate entries on re-chunk. Legacy nodes without this field still validate (optional)."
           }
         }
       }
