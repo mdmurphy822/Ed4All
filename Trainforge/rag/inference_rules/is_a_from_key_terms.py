@@ -64,29 +64,51 @@ def _slugify(text: str) -> str:
     return text
 
 
-def _candidate_parent_ids(phrase: str, node_ids: set) -> List[str]:
+def _candidate_parent_ids(
+    phrase: str,
+    node_ids: set,
+    *,
+    course_id: str | None = None,
+) -> List[str]:
     """Return node ids from ``node_ids`` that appear in ``phrase``.
 
     Checked in descending length order so multi-word nodes ("keyboard-trap")
     win over their single-word substrings ("trap").
+
+    REC-ID-02 (Wave 4, Worker O): when ``TRAINFORGE_SCOPE_CONCEPT_IDS=true``
+    is in effect, graph node IDs are composite ``{course_id}:{slug}``. The
+    phrase-to-slug output must be scoped through ``_make_concept_id`` before
+    lookup so the flag-on path actually finds matches. The substring scan
+    continues to work against node IDs as-is — ``re.escape(nid)`` already
+    handles the ``:`` character harmlessly, and substring matches against
+    the *slug* portion still fire because the slug is a suffix of the
+    scoped ID.
     """
+    from Trainforge.rag.typed_edge_inference import _make_concept_id
+
     phrase_slug = _slugify(phrase)
     if not phrase_slug:
         return []
-    # Try the full phrase slug first.
     hits: List[str] = []
-    if phrase_slug in node_ids and phrase_slug not in _STOPWORDS:
-        hits.append(phrase_slug)
 
-    # Then scan for node ids as substrings of the slug. Longer ids first so
-    # we don't misattribute "wcag" when "wcag-compliance" is the real hit.
+    # Try the full phrase as a scoped node ID first.
+    scoped_phrase_id = _make_concept_id(phrase_slug, course_id)
+    if scoped_phrase_id in node_ids and phrase_slug not in _STOPWORDS:
+        hits.append(scoped_phrase_id)
+
+    # Then scan for node ids whose slug part appears as a substring of the
+    # phrase slug. Longer ids first so we don't misattribute "wcag" when
+    # "wcag-compliance" is the real hit. We strip the ``{course_id}:``
+    # prefix (when present) before the substring check so scope-off and
+    # scope-on produce equivalent matches.
     for nid in sorted(node_ids, key=lambda n: -len(n)):
-        if nid in _STOPWORDS:
+        nid_slug = nid.split(":", 1)[1] if ":" in nid else nid
+        if nid_slug in _STOPWORDS:
             continue
-        if nid == phrase_slug:
+        if nid == scoped_phrase_id:
             continue
-        # Substring match at hyphen/word boundary.
-        pattern = rf"(?:^|-){re.escape(nid)}(?:-|$)"
+        # Substring match at hyphen/word boundary against the slug portion.
+        pattern = rf"(?:^|-){re.escape(nid_slug)}(?:-|$)"
         if re.search(pattern, phrase_slug):
             if nid not in hits:
                 hits.append(nid)
@@ -112,6 +134,13 @@ def infer(
         A deterministically-ordered list of edge dicts.
     """
     del course  # unused; interface parity
+    # REC-ID-02 (Wave 4, Worker O): scope child slugs through the
+    # course-scoping helper before node-id lookup. When flag is off this is
+    # a no-op identity. When flag is on, node IDs in ``concept_graph`` are
+    # composite ``{course_id}:{slug}`` and the per-chunk ``source.course_id``
+    # supplies the scope.
+    from Trainforge.rag.typed_edge_inference import _make_concept_id
+
     node_ids = {n["id"] for n in concept_graph.get("nodes", [])}
     if not node_ids:
         return []
@@ -119,14 +148,18 @@ def infer(
     seen: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
     for chunk in chunks:
+        course_id = (chunk.get("source") or {}).get("course_id")
         for kt in chunk.get("key_terms", []) or []:
             term = (kt.get("term") or "").strip()
             definition = (kt.get("definition") or "").strip()
             if not term or not definition:
                 continue
 
-            child_id = _slugify(term)
-            if not child_id or child_id not in node_ids:
+            child_slug = _slugify(term)
+            if not child_slug:
+                continue
+            child_id = _make_concept_id(child_slug, course_id)
+            if child_id not in node_ids:
                 # Child isn't a graph node — nothing to attach.
                 continue
 
@@ -136,7 +169,9 @@ def infer(
                 if not m:
                     continue
                 phrase = m.group(1)
-                parents = _candidate_parent_ids(phrase, node_ids)
+                parents = _candidate_parent_ids(
+                    phrase, node_ids, course_id=course_id
+                )
                 for pid in parents:
                     if pid == child_id:
                         continue

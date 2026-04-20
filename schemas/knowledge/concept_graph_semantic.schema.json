@@ -37,6 +37,10 @@
             "type": "string",
             "format": "date-time",
             "description": "ISO 8601 UTC timestamp when the node was emitted (REC-PRV-01, Worker P Wave 4.1). Equal to the artifact-level generated_at for a given run. Always populated on new runs; legacy nodes without this field still validate."
+          },
+          "course_id": {
+            "type": "string",
+            "description": "When TRAINFORGE_SCOPE_CONCEPT_IDS=true, concept ID format becomes '{course_id}:{slug}' and this field carries the scoping course_id. Default behavior: concept IDs are flat slugs, course_id absent."
           }
         }
       }

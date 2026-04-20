@@ -2177,6 +2177,20 @@ class CourseProcessor:
         exclude_tags: Optional[Set[str]] = None,
         graph_kind: str = "concept",
     ) -> Dict[str, Any]:
+        # REC-ID-02 (Wave 4, Worker O): opt-in course-scoped concept IDs.
+        # When TRAINFORGE_SCOPE_CONCEPT_IDS=true, node IDs and edge endpoints
+        # are emitted as ``f"{course_id}:{slug}"`` and each node carries a
+        # ``course_id`` field. Default off → legacy flat-slug behaviour.
+        from Trainforge.rag.typed_edge_inference import (
+            SCOPE_CONCEPT_IDS,
+            _make_concept_id,
+        )
+
+        # ``course_code`` may be unset when the graph builder is called on
+        # a bare processor (e.g. unit tests using ``__new__``); fall back
+        # to an empty string → ``_make_concept_id`` treats empty as "no
+        # course_id" and emits flat slugs even under flag-on.
+        course_id = getattr(self, "course_code", "") or ""
         tag_frequency: Dict[str, int] = defaultdict(int)
         co_occurrence: Dict[Tuple[str, str], int] = defaultdict(int)
 
@@ -2197,19 +2211,31 @@ class CourseProcessor:
                     co_occurrence[key] += 1
 
         sorted_tags = sorted(tag_frequency.items(), key=lambda x: -x[1])
-        nodes = [
-            {"id": tag, "label": tag.replace("-", " ").title(), "frequency": freq}
-            for tag, freq in sorted_tags
-            if freq >= 2
-        ]
+        nodes: List[Dict[str, Any]] = []
+        for tag, freq in sorted_tags:
+            if freq < 2:
+                continue
+            node_id = _make_concept_id(tag, course_id)
+            # Label stays human-readable (no course_id prefix) regardless
+            # of scoping mode; only ``id`` is composite when the flag is on.
+            node: Dict[str, Any] = {
+                "id": node_id,
+                "label": tag.replace("-", " ").title(),
+                "frequency": freq,
+            }
+            if SCOPE_CONCEPT_IDS and course_id:
+                node["course_id"] = course_id
+            nodes.append(node)
         node_ids = {n["id"] for n in nodes}
 
         edges = []
         for (a, b), weight in co_occurrence.items():
-            if a in node_ids and b in node_ids:
+            scoped_a = _make_concept_id(a, course_id)
+            scoped_b = _make_concept_id(b, course_id)
+            if scoped_a in node_ids and scoped_b in node_ids:
                 edges.append({
-                    "source": a,
-                    "target": b,
+                    "source": scoped_a,
+                    "target": scoped_b,
                     "weight": weight,
                     "relation_type": "co-occurs",
                 })
