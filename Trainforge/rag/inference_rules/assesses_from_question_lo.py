@@ -24,11 +24,48 @@ same (question_id, objective_id) pair are collapsed.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, List, Tuple
 
 RULE_NAME = "assesses_from_question_lo"
-RULE_VERSION = 1
+# Wave 11 (Worker cc): bumped from 1 -> 2 to expose the optional
+# source_references[] emit shape on AssessesEvidence.
+RULE_VERSION = 2
 EDGE_TYPE = "assesses"
+
+# Wave 11: opt-in flag gates the evidence-arm source_references[] emission.
+SOURCE_PROVENANCE = os.getenv("TRAINFORGE_SOURCE_PROVENANCE", "").lower() == "true"
+
+
+def _build_chunk_index(chunks: List[Dict[str, Any]] | None) -> Dict[str, Dict[str, Any]]:
+    """Return a {chunk_id: chunk} lookup map."""
+    if not chunks:
+        return {}
+    idx: Dict[str, Dict[str, Any]] = {}
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        cid = chunk.get("id")
+        if not cid:
+            continue
+        idx[cid] = chunk
+    return idx
+
+
+def _lookup_source_references(
+    chunk_id: str, chunk_index: Dict[str, Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Return deep-copied source_references[] for the given chunk_id."""
+    chunk = chunk_index.get(chunk_id)
+    if not isinstance(chunk, dict):
+        return []
+    source = chunk.get("source")
+    if not isinstance(source, dict):
+        return []
+    refs = source.get("source_references")
+    if not isinstance(refs, list):
+        return []
+    return [dict(r) for r in refs if isinstance(r, dict)]
 
 
 def infer(
@@ -53,10 +90,14 @@ def infer(
     Returns:
         A deterministically-ordered list of edge dicts.
     """
-    del chunks, course, concept_graph  # unused; interface parity
+    del course, concept_graph  # unused; interface parity
 
     if not questions:
         return []
+
+    # Wave 11: build chunk lookup so the flag-on path can resolve
+    # source_chunk_id -> chunk.source.source_references[].
+    chunk_index = _build_chunk_index(chunks) if SOURCE_PROVENANCE else {}
 
     seen: Dict[Tuple[str, str], Dict[str, Any]] = {}
     for q in questions:
@@ -74,6 +115,14 @@ def infer(
         src_chunk = q.get("source_chunk_id")
         if src_chunk:
             evidence["source_chunk_id"] = src_chunk
+            # Wave 11: flag-gated source_references emit. Only when the
+            # question points at a chunk that actually exists and carries
+            # refs. Legacy questions without source_chunk_id emit no
+            # source_references (absence = unknown).
+            if SOURCE_PROVENANCE:
+                refs = _lookup_source_references(src_chunk, chunk_index)
+                if refs:
+                    evidence["source_references"] = refs
         seen[key] = {
             "source": q_id,
             "target": lo_id,

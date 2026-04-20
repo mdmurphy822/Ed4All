@@ -18,6 +18,7 @@ LLM, no network.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Dict, List, Tuple
 
@@ -25,8 +26,33 @@ from lib.ontology.slugs import canonical_slug
 from Trainforge.rag.wcag_canonical_names import canonicalize_sc_references
 
 RULE_NAME = "is_a_from_key_terms"
-RULE_VERSION = 1
+# Wave 11 (Worker cc): bumped from 1 -> 2 to expose the optional
+# source_references[] emit shape on IsAEvidence. The emit is flag-gated
+# behind TRAINFORGE_SOURCE_PROVENANCE but the version bump is unconditional
+# so consumers see the schema-generation shift regardless of flag state.
+RULE_VERSION = 2
 EDGE_TYPE = "is-a"
+
+# Wave 11: opt-in flag gates the evidence-arm source_references[] emission.
+# Captured at module import time so tests that need to toggle should
+# monkeypatch SOURCE_PROVENANCE directly (or importlib.reload this module).
+SOURCE_PROVENANCE = os.getenv("TRAINFORGE_SOURCE_PROVENANCE", "").lower() == "true"
+
+
+def _chunk_source_references(chunk: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Return a deep-copied list of source_references from a chunk's source block.
+
+    Returns an empty list when the field is absent, not a list, or empty.
+    Deep copies so downstream mutations on the evidence dict don't leak back
+    to the chunk's source block.
+    """
+    source = chunk.get("source") if isinstance(chunk, dict) else None
+    if not isinstance(source, dict):
+        return []
+    refs = source.get("source_references")
+    if not isinstance(refs, list):
+        return []
+    return [dict(r) for r in refs if isinstance(r, dict)]
 
 # Patterns that announce a parent-category:
 #   "is a ..."        "is an ..."
@@ -198,6 +224,19 @@ def infer(
                 key = (child_id, parent_id)
                 if key in seen:
                     continue
+                evidence: Dict[str, Any] = {
+                    "chunk_id": chunk.get("id"),
+                    "term": term,
+                    "definition_excerpt": definition[:200],
+                    "pattern": pattern_str,
+                }
+                # Wave 11: flag-gated source_references emit. Only copy when
+                # the flag is on AND the originating chunk carries refs —
+                # otherwise omit the field (pre-Wave-10 corpora, legacy).
+                if SOURCE_PROVENANCE:
+                    refs = _chunk_source_references(chunk)
+                    if refs:
+                        evidence["source_references"] = refs
                 seen[key] = {
                     "source": child_id,
                     "target": parent_id,
@@ -206,12 +245,7 @@ def infer(
                     "provenance": {
                         "rule": RULE_NAME,
                         "rule_version": RULE_VERSION,
-                        "evidence": {
-                            "chunk_id": chunk.get("id"),
-                            "term": term,
-                            "definition_excerpt": definition[:200],
-                            "pattern": pattern_str,
-                        },
+                        "evidence": evidence,
                     },
                 }
 

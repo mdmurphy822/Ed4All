@@ -1363,6 +1363,21 @@ Wave 10 threads Courseforge's `sourceReferences` + `data-cf-source-ids` through 
 - **`MCP/tools/pipeline_tools.py::archive_to_libv2`** — LibV2 archive manifest gains `features.source_provenance` advisory flag. Scans the archived `chunks.jsonl` once at manifest-build time; true when at least one chunk carries `source.source_references[]` with at least one entry; false otherwise (missing file, read errors, legacy corpus). Lets LibV2 retrieval callers fast-skip source-grounded queries on pre-Wave-10 corpora.
 - **No new env flag.** All fields are optional; absence = "unknown". Evidence arm enrichment (the only mandatory-via-flag work) waits for Wave 11.
 
+### Wave 11 changes — Trainforge evidence-arm source provenance
+
+Wave 11 completes the end-to-end provenance chain by threading Wave 10's chunk-level `source.source_references[]` into the **five chunk-anchored** edge evidence arms. Gated behind a new opt-in flag so strict-mode consumers on legacy corpora keep passing.
+
+- **`concept_graph_semantic.schema.json`** `$defs` — five evidence arms gain optional `source_references[]` (items `$ref` the canonical `source_reference.schema.json`):
+  - `IsAEvidence`, `ExemplifiesEvidence`, `DerivedFromObjectiveEvidence`, `DefinedByEvidence` — straightforward chunk-anchored rules; evidence already carries `chunk_id`.
+  - `AssessesEvidence` — complements the pre-existing optional `source_chunk_id`; refs are copied from the chunk that `source_chunk_id` resolves to.
+  - `additionalProperties: false` preserved on every arm — field declared explicitly. **Schema admits the field unconditionally**; only the rule-level emit is flag-gated so `TRAINFORGE_STRICT_EVIDENCE=true` behaviour is identical with / without the new flag.
+- **Three abstract arms deliberately NOT extended (P4 deferral to a future Wave 12)**: `PrerequisiteEvidence`, `RelatedEvidence`, `MisconceptionOfEvidence`. `related_from_cooccurrence.py` discards chunks before it sees co-occurrence signals (L50 `del chunks, course`); threading refs into `RelatedEvidence` is a non-trivial re-plumbing we don't attempt in this wave. Prerequisite + MisconceptionOf are cheap wins but bundled with the Related refactor so the abstract-arm work lands as one coherent wave.
+- **Rule modules** `is_a_from_key_terms.py`, `exemplifies_from_example_chunks.py`, `derived_from_lo_ref.py`, `defined_by_from_first_mention.py`, `assesses_from_question_lo.py` each bump `RULE_VERSION` from 1 -> 2 (unconditional — version reflects schema-generation shift, not runtime emit state). When `TRAINFORGE_SOURCE_PROVENANCE=true` each rule copies the originating chunk's `source.source_references[]` into the evidence arm (or the `source_chunk_id`-resolved chunk's refs for `AssessesEvidence`). Flag off or chunk carries no refs → field omitted (pre-Wave-11 shape retained for back-compat).
+- **`defined_by_from_first_mention.py`** + **`assesses_from_question_lo.py`** gain a `_build_chunk_index` helper (flag-gated) so the rule can resolve `chunk_id` -> `source.source_references[]`. Pre-Wave-11 both rules discarded `chunks`; the retention is wrapped in the flag check so flag-off behaviour is byte-identical.
+- **`typed_edge_inference.py::rule_versions`** map auto-surfaces the version bumps; no orchestrator changes required.
+- **`MCP/tools/pipeline_tools.py::archive_to_libv2`** — second advisory flag `features.evidence_source_provenance` joins `features.source_provenance`. A new `_detect_evidence_source_provenance` helper scans the archived `concept_graph_semantic.json` (checking `graph/` then `corpus/` subdirs); true when at least one edge carries `provenance.evidence.source_references[]`; false otherwise. Lets LibV2 consumers distinguish chunk-level (Wave 10) from evidence-level (Wave 11) provenance.
+- **New env flag** `TRAINFORGE_SOURCE_PROVENANCE` joins the root CLAUDE.md table (now eight `TRAINFORGE_*` / decision-capture flags). Default off. See § "Opt-In Behavior Flags" for rationale.
+
 ### Deferred / out-of-scope
 
 Not landed in v0.2.0 (tracked for future waves):
