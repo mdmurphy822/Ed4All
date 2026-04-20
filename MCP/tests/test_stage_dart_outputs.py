@@ -263,3 +263,107 @@ class TestMultipleHtmlInputs:
         assert len(quality) == 2
         paths = {f["path"] for f in quality}
         assert paths == {"a.quality.json", "b.quality.json"}
+
+
+class TestRegistryVariantParity:
+    """MCP audit Q4: the runtime registry variant of stage_dart_outputs
+    must carry Wave 8 role-tagging parity with the @mcp.tool() variant.
+
+    Prior state: the registry wrapper was a stripped-down copy that
+    skipped .quality.json + role tags entirely. Under pipeline dispatch
+    (TaskExecutor → registry), Wave 8 metadata was silently dropped. The
+    wrapper now mirrors the MCP variant's behavior.
+    """
+
+    @pytest.fixture
+    def registry_stage_tool(self, monkeypatch, tmp_path):
+        from MCP.tools.pipeline_tools import _build_tool_registry
+        staging_root = tmp_path / "cf_inputs_registry"
+        staging_root.mkdir()
+        monkeypatch.setattr(pipeline_tools, "COURSEFORGE_INPUTS", staging_root)
+        registry = _build_tool_registry()
+        return registry["stage_dart_outputs"], staging_root
+
+    def test_registry_variant_stages_quality_sidecar(
+        self, registry_stage_tool, tmp_path,
+    ):
+        tool, staging_root = registry_stage_tool
+        dart_dir = tmp_path / "dart_out"
+        dart_dir.mkdir()
+        html_file = dart_dir / "example.html"
+        _write_html(html_file)
+        _write_json(dart_dir / "example.quality.json", {
+            "confidence_score": 0.85,
+            "extraction_sources": ["pdftotext", "pdfplumber"],
+        })
+
+        run_id = "WF-REG-Q-001"
+        result = asyncio.run(tool(
+            run_id=run_id,
+            dart_html_paths=str(html_file),
+            course_name="TEST_101",
+        ))
+        payload = json.loads(result)
+        assert payload["success"] is True
+
+        # Wave 8: quality sidecar must land in the staged files + manifest.
+        staged_names = {Path(s).name for s in payload["staged_files"]}
+        assert "example.quality.json" in staged_names, (
+            "Registry variant dropped the .quality.json sidecar — "
+            "Wave 8 parity regression."
+        )
+        manifest = json.loads(
+            (staging_root / run_id / "staging_manifest.json").read_text()
+        )
+        assert "files" in manifest, "Registry manifest missing role-tagged 'files'"
+        roles = {f["role"] for f in manifest["files"]}
+        assert "quality_sidecar" in roles
+
+    def test_registry_variant_emits_role_tagged_files(
+        self, registry_stage_tool, tmp_path,
+    ):
+        tool, staging_root = registry_stage_tool
+        dart_dir = tmp_path / "dart_out"
+        dart_dir.mkdir()
+        html_file = dart_dir / "course_info.html"
+        _write_html(html_file)
+        _write_json(dart_dir / "course_info_synthesized.json", {
+            "campus_code": "TEST", "sections": [],
+        })
+        _write_json(dart_dir / "course_info.quality.json", {
+            "confidence_score": 0.9,
+        })
+
+        run_id = "WF-REG-ROLES-001"
+        asyncio.run(tool(
+            run_id=run_id,
+            dart_html_paths=str(html_file),
+            course_name="TEST_101",
+        ))
+
+        manifest = json.loads(
+            (staging_root / run_id / "staging_manifest.json").read_text()
+        )
+        roles_by_path = {f["path"]: f["role"] for f in manifest["files"]}
+        assert roles_by_path.get("course_info.html") == "content"
+        assert (
+            roles_by_path.get("course_info_synthesized.json")
+            == "provenance_sidecar"
+        )
+        assert (
+            roles_by_path.get("course_info.quality.json")
+            == "quality_sidecar"
+        )
+
+    def test_registry_variant_reports_missing_inputs(
+        self, registry_stage_tool, tmp_path,
+    ):
+        tool, _ = registry_stage_tool
+        result = asyncio.run(tool(
+            run_id="WF-REG-MISS-001",
+            dart_html_paths=str(tmp_path / "missing.html"),
+            course_name="TEST_101",
+        ))
+        payload = json.loads(result)
+        assert payload.get("success") is False
+        assert "No files staged" in payload.get("error", "")

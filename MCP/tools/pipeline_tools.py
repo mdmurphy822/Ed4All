@@ -1089,50 +1089,112 @@ def _build_tool_registry() -> dict:
     registry["extract_and_convert_pdf"] = _extract_and_convert_pdf
 
     # Pipeline tools - stage_dart_outputs
+    # Registry variant now has full Wave 8 parity with the @mcp.tool() variant
+    # (role-tagging, .quality.json copy, role-tagged manifest entries). The
+    # MCP-tool variant at lines 316-451 remains the source of truth for the
+    # copy/role logic; this wrapper just adapts kwargs into the Wave 8
+    # staging pipeline.
     async def _stage_dart_outputs(**kwargs):
-        """Wrapper for stage_dart_outputs."""
+        """Stage DART outputs to Courseforge inputs with Wave 8 role-tagging.
+
+        Copies HTML (role=content), *_synthesized.json provenance sidecars
+        (role=provenance_sidecar), and *.quality.json confidence sidecars
+        (role=quality_sidecar) to ``COURSEFORGE_INPUTS/{run_id}/`` and
+        emits a role-tagged ``staging_manifest.json``. Kept byte-for-byte
+        parity with the @mcp.tool() variant so pipeline-dispatch runs do
+        not silently drop Wave 8 metadata (audit Q4 finding).
+        """
         run_id = kwargs.get("run_id", "")
         dart_html_paths = kwargs.get("dart_html_paths", "")
         course_name = kwargs.get("course_name", "")
 
-        staging_dir = COURSEFORGE_INPUTS / run_id
-        staging_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            staging_dir = COURSEFORGE_INPUTS / run_id
+            staging_dir.mkdir(parents=True, exist_ok=True)
 
-        staged_files = []
-        errors = []
-        html_paths = [Path(p.strip()) for p in dart_html_paths.split(",")]
+            staged_files: list = []
+            staged_entries: list = []
+            errors: list = []
 
-        for html_path in html_paths:
-            if not html_path.exists():
-                errors.append(f"DART output not found: {html_path}")
-                continue
-            dest = staging_dir / html_path.name
-            shutil.copy2(html_path, dest)
-            staged_files.append(str(dest))
+            html_paths = [Path(p.strip()) for p in dart_html_paths.split(",") if p.strip()]
 
-            # Copy JSON metadata if exists
-            json_path = html_path.with_suffix(".json")
-            if json_path.exists():
-                shutil.copy2(json_path, staging_dir / json_path.name)
-                staged_files.append(str(staging_dir / json_path.name))
+            for html_path in html_paths:
+                if not html_path.exists():
+                    errors.append(f"DART output not found: {html_path}")
+                    continue
 
-        manifest = {
-            "run_id": run_id,
-            "course_name": course_name,
-            "staged_at": datetime.now().isoformat(),
-            "staged_files": staged_files,
-        }
-        manifest_path = staging_dir / "staging_manifest.json"
-        with open(manifest_path, "w") as f:
-            json.dump(manifest, f, indent=2)
+                # Copy HTML file (role=content)
+                dest = staging_dir / html_path.name
+                shutil.copy2(html_path, dest)
+                staged_files.append(str(dest))
+                staged_entries.append({"path": html_path.name, "role": "content"})
 
-        return json.dumps({
-            "success": True,
-            "staging_dir": str(staging_dir),
-            "staged_files": staged_files,
-            "file_count": len(staged_files),
-            "manifest_path": str(manifest_path),
-        })
+                # Copy accompanying JSON if it exists (DART synthesized metadata).
+                json_path = html_path.with_suffix(".json")
+                if json_path.exists():
+                    json_dest = staging_dir / json_path.name
+                    shutil.copy2(json_path, json_dest)
+                    staged_files.append(str(json_dest))
+                    staged_entries.append({
+                        "path": json_path.name,
+                        "role": "provenance_sidecar",
+                    })
+
+                # Also check for the _synthesized.json pattern.
+                synth_json_name = html_path.stem.replace("_synthesized", "") + "_synthesized.json"
+                synth_json_path = html_path.parent / synth_json_name
+                if synth_json_path.exists() and str(synth_json_path) != str(json_path):
+                    synth_json_dest = staging_dir / synth_json_name
+                    shutil.copy2(synth_json_path, synth_json_dest)
+                    staged_files.append(str(synth_json_dest))
+                    staged_entries.append({
+                        "path": synth_json_name,
+                        "role": "provenance_sidecar",
+                    })
+
+                # Wave 8: also stage the DART quality sidecar if one exists.
+                quality_name = html_path.stem + ".quality.json"
+                quality_path = html_path.parent / quality_name
+                if quality_path.exists():
+                    quality_dest = staging_dir / quality_name
+                    shutil.copy2(quality_path, quality_dest)
+                    staged_files.append(str(quality_dest))
+                    staged_entries.append({
+                        "path": quality_name,
+                        "role": "quality_sidecar",
+                    })
+
+            if errors and not staged_files:
+                return json.dumps({
+                    "success": False,
+                    "error": "No files staged",
+                    "errors": errors,
+                })
+
+            manifest = {
+                "run_id": run_id,
+                "course_name": course_name,
+                "staged_at": datetime.now().isoformat(),
+                "staged_files": staged_files,
+                "files": staged_entries,
+                "errors": errors if errors else None,
+            }
+            manifest_path = staging_dir / "staging_manifest.json"
+            with open(manifest_path, "w") as f:
+                json.dump(manifest, f, indent=2)
+
+            return json.dumps({
+                "success": True,
+                "staging_dir": str(staging_dir),
+                "staged_files": staged_files,
+                "files": staged_entries,
+                "file_count": len(staged_files),
+                "manifest_path": str(manifest_path),
+                "warnings": errors if errors else None,
+            })
+        except Exception as e:
+            logger.error(f"Registry _stage_dart_outputs failed: {e}")
+            return json.dumps({"error": str(e)})
 
     registry["stage_dart_outputs"] = _stage_dart_outputs
 
@@ -1347,8 +1409,12 @@ def _build_tool_registry() -> dict:
                     if (week_num - 1) < len(topics_by_week)
                     else []
                 )
-                # Per-week LO set: every terminal objective + at most two
-                # chapter objectives round-robin assigned by week.
+                # Per-week LO set: scope to this week's terminals + at most
+                # two chapter objectives round-robin assigned by week.
+                # Previously prepended ALL terminal_objectives to every week
+                # (investigation Issue 12 — inflated derived-from-objective
+                # edges from ~60 to 896 on OLSR_201). Now: each week gets
+                # only the terminal slice round-robin assigned to it.
                 week_chapter_cos = []
                 if chapter_objectives:
                     step = max(1, len(chapter_objectives) // max(1, duration_weeks))
@@ -1357,7 +1423,26 @@ def _build_tool_registry() -> dict:
                         chapter_objectives[start:start + step + 1]
                     )[:2] or [chapter_objectives[(week_num - 1) % len(chapter_objectives)]]
 
-                week_objectives = list(terminal_objectives) + week_chapter_cos
+                # Scope terminals per week. With N terminals and D weeks,
+                # each week claims ceil(N/D) terminals in source order.
+                week_terminals: list = []
+                if terminal_objectives:
+                    t_step = max(
+                        1,
+                        (len(terminal_objectives) + duration_weeks - 1) // duration_weeks,
+                    )
+                    t_start = (week_num - 1) * t_step
+                    week_terminals = list(
+                        terminal_objectives[t_start:t_start + t_step]
+                    )
+                    # Guarantee at least one terminal per week when corpus
+                    # has any terminals at all — round-robin fallback.
+                    if not week_terminals:
+                        week_terminals = [
+                            terminal_objectives[(week_num - 1) % len(terminal_objectives)]
+                        ]
+
+                week_objectives = list(week_terminals) + week_chapter_cos
                 seen: set = set()
                 week_objectives_deduped = []
                 for o in week_objectives:
@@ -1561,15 +1646,82 @@ def _build_tool_registry() -> dict:
     # Trainforge tools
     try:
         async def _analyze_imscc_content(**kwargs):
+            """Registry wrapper: real IMSCC analysis (parity with @mcp.tool() variant).
+
+            Previously a zero-value stub (audit Q4). Now opens the zip,
+            validates the manifest, counts HTML modules + existing
+            assessments, and suggests assessment opportunities — matching
+            the MCP variant at trainforge_tools.py:129.
+            """
+            import zipfile
+
             imscc_path = kwargs.get("imscc_path", "")
-            return json.dumps({
-                "source": imscc_path,
-                "analyzed_at": datetime.now().isoformat(),
-                "has_manifest": True,
-                "content": {"html_modules": 0, "existing_assessments": 0, "total_word_count": 0},
-                "learning_objectives": [],
-                "assessment_opportunities": [],
-            })
+            try:
+                imscc = Path(imscc_path)
+                if not imscc.exists():
+                    return json.dumps({"error": f"IMSCC not found: {imscc_path}"})
+
+                analysis = {
+                    "source": str(imscc),
+                    "analyzed_at": datetime.now().isoformat(),
+                    "content": {
+                        "html_modules": 0,
+                        "existing_assessments": 0,
+                        "total_word_count": 0,
+                    },
+                    "learning_objectives": [],
+                    "assessment_opportunities": [],
+                }
+
+                with zipfile.ZipFile(imscc, "r") as z:
+                    if "imsmanifest.xml" not in z.namelist():
+                        return json.dumps({
+                            "error": (
+                                f"Invalid IMSCC package: missing imsmanifest.xml "
+                                f"in {imscc.name}"
+                            ),
+                            "hint": (
+                                "A valid IMSCC package must contain an "
+                                "imsmanifest.xml file"
+                            ),
+                        })
+                    analysis["has_manifest"] = True
+
+                    for name in z.namelist():
+                        if name.endswith(".html"):
+                            analysis["content"]["html_modules"] += 1
+                            content = z.read(name).decode("utf-8", errors="ignore")
+                            word_count = len(content.split())
+                            analysis["content"]["total_word_count"] += word_count
+                            if "objective" in content.lower():
+                                analysis["learning_objectives"].append({
+                                    "source_file": name,
+                                    "detected": True,
+                                })
+                        elif name.endswith(".xml") and "assessment" in name.lower():
+                            analysis["content"]["existing_assessments"] += 1
+
+                if analysis["content"]["html_modules"] > 0:
+                    analysis["assessment_opportunities"] = [
+                        {
+                            "type": "quiz",
+                            "coverage": "per_module",
+                            "estimated_questions": (
+                                analysis["content"]["html_modules"] * 5
+                            ),
+                        },
+                        {
+                            "type": "exam",
+                            "coverage": "comprehensive",
+                            "estimated_questions": min(
+                                50, analysis["content"]["html_modules"] * 3
+                            ),
+                        },
+                    ]
+
+                return json.dumps(analysis)
+            except Exception as e:
+                return json.dumps({"error": str(e)})
 
         registry["analyze_imscc_content"] = _analyze_imscc_content
 
@@ -2225,16 +2377,38 @@ def _build_tool_registry() -> dict:
     # END BLOCK: Worker γ
 
     async def _build_source_module_map(**kwargs):
-        """Minimal source-router stub (Wave 9 `source_mapping` phase).
+        """Source-router (Wave 9 ``source_mapping`` phase) — real heuristic.
 
-        Writes an empty `source_module_map.json` so Courseforge's content
-        generator falls through to the Wave 9 backward-compat path (no source
-        refs emitted). A richer heuristic or LLM-backed router can replace this
-        once Wave 7's LocalDispatcher is wired for per-phase subagent dispatch.
+        Previously wrote an empty ``source_module_map.json``, which left
+        every Courseforge page emitted without ``sourceReferences[]`` and
+        pinned the ``source_provenance`` / ``evidence_source_provenance``
+        feature flags to false (investigation Issue 7). This implementation
+        routes DART source blocks to Courseforge pages via keyword-overlap
+        scoring:
+
+          1. Enumerate DART block IDs by scanning ``staging_dir`` for
+             ``*_synthesized.json`` sidecars — each ``sections[]`` entry
+             contributes ``section_id``, ``section_title``, and any
+             keyword-bearing text in ``data`` / ``sources_used``.
+          2. Load the textbook structure (when available) and the
+             project's objectives to enumerate per-page target topics.
+          3. For each week (1..duration_weeks) and each page role
+             (overview, content_0K, application, self_check, summary),
+             score DART blocks by keyword overlap with the page's
+             dominant topic. Blocks above a stronger threshold become
+             ``primary`` refs; blocks above a weaker threshold become
+             ``contributing`` refs.
+          4. Emit the map in the Wave 9 shape that
+             ``Courseforge.scripts.generate_course._page_refs_for``
+             consumes: ``{week_key: {page_id: {primary, contributing,
+             confidence}}}`` using ``dart:{slug}#{block_id}`` source IDs.
+
+        No LLM. Pure text overlap — imperfect but deterministic and
+        better than an empty map for provenance propagation.
         """
         project_id = kwargs.get("project_id", "")
-        staging_dir = kwargs.get("staging_dir", "")
-        textbook_structure_path = kwargs.get("textbook_structure_path", "")
+        staging_dir_kw = kwargs.get("staging_dir", "") or ""
+        textbook_structure_path = kwargs.get("textbook_structure_path", "") or ""
 
         if not project_id:
             return json.dumps({"error": "source-router requires project_id"})
@@ -2243,21 +2417,431 @@ def _build_tool_registry() -> dict:
         project_path.mkdir(parents=True, exist_ok=True)
         map_path = project_path / "source_module_map.json"
 
-        # Empty map — triggers Wave 9 fallback. The field is optional in the
-        # JSON-LD schema; content-generator handles absent/empty maps as "no
-        # source grounding available", emits pages without sourceReferences[].
-        map_data: dict = {}
-        map_path.write_text(json.dumps(map_data, indent=2), encoding="utf-8")
+        # ------------------------------------------------------------- #
+        # Load project config for duration_weeks + course_name.          #
+        # ------------------------------------------------------------- #
+        config_path = project_path / "project_config.json"
+        duration_weeks = 12
+        course_name = project_id
+        objectives_path: Optional[str] = None
+        if config_path.exists():
+            try:
+                cfg = json.loads(config_path.read_text(encoding="utf-8"))
+                duration_weeks = int(cfg.get("duration_weeks") or 12)
+                course_name = cfg.get("course_name") or project_id
+                objectives_path = cfg.get("objectives_path") or None
+            except (OSError, ValueError):
+                pass
+
+        # ------------------------------------------------------------- #
+        # Enumerate DART source blocks from staging_dir sidecars.        #
+        # Each entry: {block_id, slug, keywords(set[str]), title}.       #
+        # ------------------------------------------------------------- #
+        dart_blocks: list = []
+        staging_dir = Path(staging_dir_kw) if staging_dir_kw else None
+        if staging_dir is None or not staging_dir.exists():
+            # Fallback: scan Courseforge inputs for any synthesized sidecars.
+            staging_dir = COURSEFORGE_INPUTS
+
+        def _tokenize(text: str) -> set:
+            """Lowercase, strip punctuation, drop stopwords + short tokens."""
+            if not text:
+                return set()
+            import re as _re
+            cleaned = _re.sub(r"[^a-z0-9\s]", " ", text.lower())
+            _stopwords = {
+                "the", "and", "for", "with", "from", "that", "this", "are",
+                "was", "were", "has", "have", "had", "but", "not", "all",
+                "any", "may", "can", "one", "two", "its", "their", "they",
+                "will", "been", "you", "your", "our", "his", "her", "which",
+                "what", "who", "why", "how", "when", "where", "into", "out",
+                "over", "such", "more", "most", "some", "about", "there",
+                "these", "those", "than", "then", "also", "only", "used",
+                "use", "see", "via", "per",
+            }
+            return {
+                t for t in cleaned.split()
+                if len(t) > 3 and t not in _stopwords
+            }
+
+        if staging_dir and staging_dir.exists():
+            for sidecar in sorted(staging_dir.rglob("*_synthesized.json")):
+                try:
+                    doc = json.loads(sidecar.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                slug = sidecar.stem.replace("_synthesized", "")
+                sections = doc.get("sections") or []
+                if not isinstance(sections, list):
+                    continue
+                for section in sections:
+                    if not isinstance(section, dict):
+                        continue
+                    block_id = str(section.get("section_id") or "").strip()
+                    if not block_id:
+                        continue
+                    title = str(section.get("section_title") or "").strip()
+                    section_type = str(section.get("section_type") or "").strip()
+                    # Gather text for keyword extraction: title + any
+                    # paragraph text + key-value block labels + data keys.
+                    text_bits: list = [title, section_type]
+                    data = section.get("data")
+                    if isinstance(data, dict):
+                        for k, v in data.items():
+                            text_bits.append(str(k))
+                            if isinstance(v, str):
+                                text_bits.append(v)
+                            elif isinstance(v, list):
+                                for item in v[:20]:
+                                    if isinstance(item, str):
+                                        text_bits.append(item)
+                                    elif isinstance(item, dict):
+                                        for sub_v in item.values():
+                                            if isinstance(sub_v, str):
+                                                text_bits.append(sub_v)
+                    keywords = _tokenize(" ".join(text_bits))
+                    if not keywords:
+                        # Fall back to splitting the block id so at least
+                        # the title contributes a scoring signal.
+                        keywords = _tokenize(title) or _tokenize(slug)
+                    dart_blocks.append({
+                        "block_id": block_id,
+                        "slug": slug,
+                        "title": title,
+                        "keywords": keywords,
+                        "source_id": f"dart:{slug}#{block_id}",
+                    })
+
+        # ------------------------------------------------------------- #
+        # Enumerate per-week topics. Preference order:                   #
+        #   1. textbook_structure_path chapters/sections                 #
+        #   2. objectives_path chapter/terminal objective statements     #
+        #   3. DART block titles themselves (round-robin by week)        #
+        # ------------------------------------------------------------- #
+        week_topics: dict = {}  # week_num -> {page_id: set[str]}
+
+        def _set_week_page(week_num: int, page_id: str, kw: set):
+            week_topics.setdefault(week_num, {})[page_id] = kw
+
+        structure_chapters: list = []
+        if textbook_structure_path:
+            sp = Path(textbook_structure_path)
+            if sp.exists():
+                try:
+                    structure_doc = json.loads(sp.read_text(encoding="utf-8"))
+                    chapters = structure_doc.get("chapters") or []
+                    if isinstance(chapters, list):
+                        structure_chapters = chapters
+                except (OSError, ValueError):
+                    pass
+
+        objective_statements: list = []
+        if objectives_path:
+            op = Path(objectives_path)
+            if op.exists():
+                try:
+                    obj_doc = json.loads(op.read_text(encoding="utf-8"))
+                    for group in ("chapter_objectives", "terminal_objectives",
+                                  "course_objectives"):
+                        for item in obj_doc.get(group, []) or []:
+                            if isinstance(item, dict):
+                                text = (
+                                    item.get("statement")
+                                    or item.get("description")
+                                    or item.get("text")
+                                    or ""
+                                )
+                                if text:
+                                    objective_statements.append(text)
+                except (OSError, ValueError):
+                    pass
+
+        # Assemble per-week keyword bags.
+        page_roles = ("overview", "content_01", "application",
+                      "self_check", "summary")
+
+        # Prefer chapters / objective statements when available.
+        topic_pool: list = []
+        for ch in structure_chapters:
+            if isinstance(ch, dict):
+                ch_title = str(ch.get("title") or "")
+                ch_topics = [ch_title]
+                for sub in ch.get("sections") or []:
+                    if isinstance(sub, dict):
+                        ch_topics.append(str(sub.get("title") or ""))
+                    elif isinstance(sub, str):
+                        ch_topics.append(sub)
+                topic_pool.append(_tokenize(" ".join(ch_topics)))
+        if not topic_pool and objective_statements:
+            for stmt in objective_statements:
+                topic_pool.append(_tokenize(stmt))
+        if not topic_pool and dart_blocks:
+            # Final fallback: let DART block titles drive topic bags, one
+            # per block, so each week gets at least a nominal signal.
+            for blk in dart_blocks:
+                topic_pool.append(blk["keywords"])
+
+        # Distribute topic_pool across weeks (round-robin).
+        for week_num in range(1, duration_weeks + 1):
+            if not topic_pool:
+                primary_bag: set = set()
+            else:
+                # Pick the topic whose index matches (week_num-1) mod len.
+                primary_bag = topic_pool[(week_num - 1) % len(topic_pool)]
+            for page_id in page_roles:
+                # Application / self_check / summary share week bag;
+                # content_0N gets the same bag plus a blend across
+                # neighbor weeks so content doesn't duplicate overview.
+                bag = set(primary_bag)
+                if page_id.startswith("content") and len(topic_pool) > 1:
+                    neighbor = topic_pool[(week_num) % len(topic_pool)]
+                    bag = bag.union(neighbor)
+                _set_week_page(week_num, page_id, bag)
+
+        # ------------------------------------------------------------- #
+        # Score blocks per (week, page) and emit refs.                   #
+        # ------------------------------------------------------------- #
+        source_module_map: dict = {}
+        chunk_ids: set = set()
+
+        if dart_blocks:
+            for week_num in range(1, duration_weeks + 1):
+                week_key = f"week_{week_num:02d}"
+                pages_for_week = week_topics.get(week_num, {})
+                week_entries: dict = {}
+                for page_id, target_bag in pages_for_week.items():
+                    if not target_bag:
+                        # Degenerate fallback: assign the nth DART block
+                        # round-robin as primary.
+                        fallback = dart_blocks[(week_num - 1) % len(dart_blocks)]
+                        week_entries[page_id] = {
+                            "primary": [fallback["source_id"]],
+                            "contributing": [],
+                            "confidence": 0.3,
+                        }
+                        chunk_ids.add(fallback["source_id"])
+                        continue
+                    scored: list = []
+                    for blk in dart_blocks:
+                        overlap = len(target_bag & blk["keywords"])
+                        if overlap == 0:
+                            continue
+                        # Jaccard-ish score for ranking stability.
+                        union = max(1, len(target_bag | blk["keywords"]))
+                        score = overlap / union
+                        scored.append((score, overlap, blk))
+                    scored.sort(reverse=True, key=lambda x: (x[0], x[1]))
+                    primary_ids: list = []
+                    contributing_ids: list = []
+                    top_score = scored[0][0] if scored else 0.0
+                    # Strong threshold: top-K (K=1 for content pages,
+                    # K=2 when multiple blocks clearly overlap).
+                    for score, overlap, blk in scored:
+                        if score >= max(0.15, top_score * 0.8) and len(primary_ids) < 2:
+                            primary_ids.append(blk["source_id"])
+                        elif score >= 0.05 and len(contributing_ids) < 3:
+                            contributing_ids.append(blk["source_id"])
+                    if not primary_ids and scored:
+                        # Still assign the top match even when all scores
+                        # are low — better than producing no provenance.
+                        primary_ids.append(scored[0][2]["source_id"])
+                    if not primary_ids:
+                        # No overlap at all: round-robin a DART block as
+                        # primary with low confidence.
+                        fallback = dart_blocks[(week_num - 1) % len(dart_blocks)]
+                        primary_ids.append(fallback["source_id"])
+                        top_score = 0.2
+                    for sid in primary_ids:
+                        chunk_ids.add(sid)
+                    for sid in contributing_ids:
+                        chunk_ids.add(sid)
+                    week_entries[page_id] = {
+                        "primary": primary_ids,
+                        "contributing": contributing_ids,
+                        "confidence": round(max(top_score, 0.2), 2),
+                    }
+                if week_entries:
+                    source_module_map[week_key] = week_entries
+
+        map_path.write_text(
+            json.dumps(source_module_map, indent=2),
+            encoding="utf-8",
+        )
+
+        routing_mode = (
+            "keyword_overlap_heuristic" if dart_blocks
+            else "stub_empty_map"
+        )
 
         return json.dumps({
             "source_module_map_path": str(map_path),
-            "source_chunk_ids": [],
-            "staging_dir": staging_dir,
+            "source_chunk_ids": sorted(chunk_ids),
+            "staging_dir": str(staging_dir) if staging_dir else "",
             "textbook_structure_path": textbook_structure_path,
-            "routing_mode": "stub_empty_map",
+            "routing_mode": routing_mode,
+            "dart_blocks_indexed": len(dart_blocks),
+            "weeks_routed": len(source_module_map),
+            "course_name": course_name,
         })
 
     registry["build_source_module_map"] = _build_source_module_map
+
+    # ================================================================= #
+    # Runtime registry stubs for the 7 tools that AGENT_TOOL_MAPPING     #
+    # routes but _build_tool_registry previously skipped (MCP audit      #
+    # Q1 critical finding). Each wrapper imports the @mcp.tool()         #
+    # implementation at call time (register_* functions create closures  #
+    # — we extract them into a capturing MCP stand-in the same way       #
+    # test_stage_dart_outputs.py::_CapturingMCP does).                   #
+    # ================================================================= #
+    class _CapturingMCP:
+        """Minimal stand-in for FastMCP: captures decorated tools by name."""
+        def __init__(self) -> None:
+            self.tools: dict = {}
+
+        def tool(self):  # noqa: D401 - mimics FastMCP's .tool() decorator
+            def _decorator(fn):
+                self.tools[fn.__name__] = fn
+                return fn
+            return _decorator
+
+    def _capture_dart_tools() -> dict:
+        try:
+            from MCP.tools.dart_tools import register_dart_tools
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"DART tool capture failed: {exc}")
+            return {}
+        mcp_cap = _CapturingMCP()
+        register_dart_tools(mcp_cap)
+        return mcp_cap.tools
+
+    def _capture_courseforge_tools() -> dict:
+        try:
+            from MCP.tools.courseforge_tools import register_courseforge_tools
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Courseforge tool capture failed: {exc}")
+            return {}
+        mcp_cap = _CapturingMCP()
+        register_courseforge_tools(mcp_cap)
+        return mcp_cap.tools
+
+    def _capture_trainforge_tools() -> dict:
+        try:
+            from MCP.tools.trainforge_tools import register_trainforge_tools
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Trainforge tool capture failed: {exc}")
+            return {}
+        mcp_cap = _CapturingMCP()
+        register_trainforge_tools(mcp_cap)
+        return mcp_cap.tools
+
+    async def _get_courseforge_status(**kwargs):
+        """Registry wrapper: delegates to courseforge_tools.get_courseforge_status."""
+        tools = _capture_courseforge_tools()
+        tool = tools.get("get_courseforge_status")
+        if tool is None:
+            return json.dumps({"error": "get_courseforge_status tool unavailable"})
+        return await tool()
+
+    registry["get_courseforge_status"] = _get_courseforge_status
+
+    async def _validate_wcag_compliance(**kwargs):
+        """Registry wrapper: delegates to dart_tools.validate_wcag_compliance."""
+        html_path = kwargs.get("html_path") or kwargs.get("path") or ""
+        tools = _capture_dart_tools()
+        tool = tools.get("validate_wcag_compliance")
+        if tool is None:
+            return json.dumps({"error": "validate_wcag_compliance tool unavailable"})
+        return await tool(html_path=html_path)
+
+    registry["validate_wcag_compliance"] = _validate_wcag_compliance
+
+    async def _batch_convert_multi_source(**kwargs):
+        """Registry wrapper: delegates to dart_tools.batch_convert_multi_source."""
+        combined_dir = kwargs.get("combined_dir") or kwargs.get("input") or ""
+        output_zip = kwargs.get("output_zip")
+        output_dir = kwargs.get("output_dir")
+        tools = _capture_dart_tools()
+        tool = tools.get("batch_convert_multi_source")
+        if tool is None:
+            return json.dumps({"error": "batch_convert_multi_source tool unavailable"})
+        return await tool(
+            combined_dir=combined_dir,
+            output_zip=output_zip,
+            output_dir=output_dir,
+        )
+
+    registry["batch_convert_multi_source"] = _batch_convert_multi_source
+
+    async def _convert_pdf_multi_source(**kwargs):
+        """Registry wrapper: delegates to dart_tools.convert_pdf_multi_source."""
+        combined_json_path = (
+            kwargs.get("combined_json_path")
+            or kwargs.get("combined_json")
+            or kwargs.get("source")
+            or ""
+        )
+        output_path = kwargs.get("output_path")
+        course_code = kwargs.get("course_code")
+        tools = _capture_dart_tools()
+        tool = tools.get("convert_pdf_multi_source")
+        if tool is None:
+            return json.dumps({"error": "convert_pdf_multi_source tool unavailable"})
+        return await tool(
+            combined_json_path=combined_json_path,
+            output_path=output_path,
+            course_code=course_code,
+        )
+
+    registry["convert_pdf_multi_source"] = _convert_pdf_multi_source
+
+    async def _intake_imscc_package(**kwargs):
+        """Registry wrapper: delegates to courseforge_tools.intake_imscc_package."""
+        imscc_path = kwargs.get("imscc_path") or kwargs.get("package") or ""
+        output_dir = kwargs.get("output_dir") or kwargs.get("extract_to") or ""
+        remediate = kwargs.get("remediate", True)
+        tools = _capture_courseforge_tools()
+        tool = tools.get("intake_imscc_package")
+        if tool is None:
+            return json.dumps({"error": "intake_imscc_package tool unavailable"})
+        return await tool(
+            imscc_path=imscc_path,
+            output_dir=output_dir,
+            remediate=remediate,
+        )
+
+    registry["intake_imscc_package"] = _intake_imscc_package
+
+    async def _remediate_course_content(**kwargs):
+        """Registry wrapper: delegates to courseforge_tools.remediate_course_content."""
+        project_id = kwargs.get("project_id") or ""
+        remediation_types = kwargs.get("remediation_types")
+        tools = _capture_courseforge_tools()
+        tool = tools.get("remediate_course_content")
+        if tool is None:
+            return json.dumps({"error": "remediate_course_content tool unavailable"})
+        return await tool(
+            project_id=project_id,
+            remediation_types=remediation_types,
+        )
+
+    registry["remediate_course_content"] = _remediate_course_content
+
+    async def _validate_assessment(**kwargs):
+        """Registry wrapper: delegates to trainforge_tools.validate_assessment."""
+        assessment_id = (
+            kwargs.get("assessment_id")
+            or kwargs.get("assessment")
+            or kwargs.get("id")
+            or ""
+        )
+        tools = _capture_trainforge_tools()
+        tool = tools.get("validate_assessment")
+        if tool is None:
+            return json.dumps({"error": "validate_assessment tool unavailable"})
+        return await tool(assessment_id=assessment_id)
+
+    registry["validate_assessment"] = _validate_assessment
 
     return registry
 
