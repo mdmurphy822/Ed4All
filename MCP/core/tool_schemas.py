@@ -412,10 +412,11 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     },
 
     "archive_to_libv2": {
-        "required": ["course_name", "domain"],
-        "optional": ["division", "pdf_paths", "html_paths", "imscc_path", "assessment_path", "subdomains"],
+        "required": ["course_name"],
+        "optional": ["domain", "division", "pdf_paths", "html_paths", "imscc_path", "assessment_path", "subdomains"],
         "defaults": {
             "division": "STEM",
+            "domain": "general",
         },
         "param_mapping": {
             "course_id": "course_name",
