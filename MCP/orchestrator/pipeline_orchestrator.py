@@ -134,8 +134,11 @@ class PipelineOrchestrator:
 
     def _get_executor(self) -> TaskExecutor:
         if self._executor is None:
-            # Fallback: build a minimal executor. Most callers will pass one.
-            self._executor = TaskExecutor()
+            # Fallback: build an executor wired with the full pipeline tool
+            # registry so phase tasks can resolve their tool names. Without this,
+            # `ed4all run` fails with "Tool not registered" at first phase.
+            from MCP.tools.pipeline_tools import _build_tool_registry
+            self._executor = TaskExecutor(tool_registry=_build_tool_registry())
         return self._executor
 
     # ---------------------------------------------------------------- plan
