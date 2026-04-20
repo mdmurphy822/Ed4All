@@ -128,6 +128,111 @@ Text Dark: #333333         /* Main text color */
 }
 ```
 
+## Source Material Integration (Wave 9 — Source Provenance)
+
+**Critical contract**: When the `textbook_to_course` workflow runs, the
+orchestrator injects a curated slice of DART-synthesized source blocks
+into every content-generator task. The agent MUST cite those specific
+block IDs in its output so downstream Trainforge can trace every claim
+back to its PDF origin.
+
+### Inputs the agent receives
+
+| Parameter | Shape | Purpose |
+|-----------|-------|---------|
+| `source_module_map_path` | path | The Wave 9 `source_module_map.json`; lets the agent discover which DART blocks were routed to the specific (week, page) it's generating. |
+| `staging_dir` | path | Wave 8 staging dir containing `*_synthesized.json` provenance sidecars. The agent reads the sidecar text to ground generation. |
+| `source_chunks` | list of `sourceId` strings | Pre-filtered slice for THIS page. Each entry matches the canonical `^dart:{slug}#{block_id}$` pattern (`schemas/knowledge/source_reference.schema.json`). |
+
+### What the agent MUST emit
+
+1. **Page-level JSON-LD** — the page's JSON-LD block (inside
+   `<script type="application/ld+json">`) carries a top-level
+   `sourceReferences[]` array. Each entry has a required `sourceId` +
+   `role` (enum: `primary`, `contributing`, `corroborating`) plus
+   optional `weight`, `confidence`, `pages`, `extractor` (per
+   `schemas/knowledge/source_reference.schema.json`). The page-level
+   array reflects the aggregate of sources used across the page.
+
+2. **Section-level JSON-LD** — when a specific section draws from a
+   DIFFERENT set of source blocks than the page overall (e.g. a
+   definition sourced from chapter 3 embedded in a page otherwise
+   pulling from chapter 5), emit `sourceReferences[]` inside that
+   section's `sections[]` entry. Absent → the page-level array
+   applies. This is the override pattern.
+
+3. **HTML `data-cf-source-ids`** — on the enclosing `<section>`,
+   heading, or component wrapper element (`.flip-card`, `.self-check`,
+   `.activity-card`, `.activity-card`, `.discussion-prompt`), emit:
+   - `data-cf-source-ids="dart:slug#id1,dart:slug#id2"` (comma-joined).
+   - Optionally `data-cf-source-primary="dart:slug#id"` when one source
+     is clearly dominant.
+   Per Wave 9 decision P2, NEVER emit these attributes on `<p>`,
+   `<li>`, or `<tr>` children — the `data-cf-source-ids` scope stays
+   at the section / component-wrapper level to keep HTML bounded at
+   textbook scale.
+
+### Inviolable rules
+
+- **Zero invention.** The agent MUST NOT fabricate a `sourceId` that
+  isn't in the `source_chunks` list. Hallucinated IDs will be caught
+  by `lib/validators/source_refs.py` at the `source_refs` gate and
+  block packaging.
+- **Every claim is citable.** A paragraph whose facts cannot be
+  attributed to any block in `source_chunks` MUST either (a) cite the
+  closest contributing block with `role: "contributing"` or (b) be
+  rewritten to stay within the scope of the available sources.
+- **Roles mean something**:
+  - `primary` — this section IS a restatement / synthesis of that
+    source block.
+  - `contributing` — this section draws facts or examples from the
+    block but isn't a direct synthesis.
+  - `corroborating` — the block supports the claim but wasn't used
+    as the generative seed.
+
+### Backward compatibility (no source_chunks)
+
+When `source_chunks` is empty (non-textbook workflows such as
+`course_generation`, or legacy pipelines that never ran Wave 9's
+`source_mapping` phase), the agent generates from `(objectives,
+week_structure, templates, agent_prior)` as before and emits NO
+`sourceReferences[]` / `data-cf-source-ids` attributes. The schema
+field is optional; the source-refs validator short-circuits on an
+empty source_module_map. This preserves Wave 2–8 behavior byte-for-
+byte for courses that don't have a DART textbook input.
+
+### Example prompt fragment (inserted by orchestrator at task dispatch)
+
+```
+Source Material for this page (week_03_content_01_visual_perception):
+  Primary:      dart:science_of_learning#s5_p2
+  Contributing: dart:science_of_learning#s4_p0, dart:science_of_learning#s6_p1
+  Confidence:   0.85
+
+Read the staging sidecar at {staging_dir}/science_of_learning_synthesized.json
+and locate each block_id. Ground every claim in the primary block;
+use contributing blocks for examples and counterpoints only.
+Emit sourceReferences[] in JSON-LD + data-cf-source-ids on every
+<section> / heading / component wrapper.
+```
+
+### Decision capture
+
+Every source-selection choice MUST be logged:
+
+```python
+capture.log_decision(
+    decision_type="content_generation",   # Wave 6 canonical enum
+    decision="Used primary source s5_p2 for the POUR definition section",
+    rationale="Block s5_p2 contains the textbook's canonical definition of POUR; s4_p0 covered perception more generally and was cited as contributing",
+    alternatives_considered=[
+        "s6_p1: color-theory angle, weaker overlap with CO-05",
+    ],
+)
+```
+
+---
+
 ## Parallel Microtask Division (Template-Enhanced with Pattern 22 Prevention)
 
 ### **Microtask 1: Template-Aware Theoretical Foundation Development**

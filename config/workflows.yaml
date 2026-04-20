@@ -487,12 +487,39 @@ workflows:
           - project_id
           - project_path
           - objective_ids
+          - textbook_structure_path
+
+      - name: source_mapping
+        agents: [source-router]
+        parallel: false
+        max_concurrent: 1
+        depends_on: [objective_extraction]
+        timeout_minutes: 30
+        description: Map DART source blocks to Courseforge module pages (Wave 9)
+
+        inputs_from:
+          - param: project_id
+            source: phase_outputs
+            phase: objective_extraction
+            output: project_id
+          - param: staging_dir
+            source: phase_outputs
+            phase: staging
+            output: staging_dir
+          - param: textbook_structure_path
+            source: phase_outputs
+            phase: objective_extraction
+            output: textbook_structure_path
+
+        outputs:
+          - source_module_map_path
+          - source_chunk_ids
 
       - name: course_planning
         agents: [course-outliner]
         parallel: false
         max_concurrent: 1
-        depends_on: [objective_extraction]
+        depends_on: [source_mapping]
         timeout_minutes: 60
         description: Create course structure from synthesized objectives
 
@@ -507,6 +534,10 @@ workflows:
           - param: objectives_path
             source: workflow_params
             key: objectives_path
+          - param: source_module_map_path
+            source: phase_outputs
+            phase: source_mapping
+            output: source_module_map_path
 
         outputs:
           - project_id
@@ -526,6 +557,14 @@ workflows:
             source: phase_outputs
             phase: objective_extraction
             output: project_id
+          - param: source_module_map_path
+            source: phase_outputs
+            phase: source_mapping
+            output: source_module_map_path
+          - param: staging_dir
+            source: phase_outputs
+            phase: staging
+            output: staging_dir
 
         outputs:
           - project_id
@@ -541,6 +580,16 @@ workflows:
             behavior:
               on_fail: warn
               on_error: warn
+
+          - gate_id: source_refs
+            validator: lib.validators.source_refs.PageSourceRefValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Verify every emitted sourceId resolves against the DART staging manifest (Wave 9)
 
       - name: packaging
         agents: [brightspace-packager]

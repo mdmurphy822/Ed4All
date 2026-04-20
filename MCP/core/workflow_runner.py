@@ -62,13 +62,28 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         "objectives_path": ("workflow_params", "objectives_path"),
         "duration_weeks": ("workflow_params", "duration_weeks"),
     },
+    "source_mapping": {
+        # Wave 9: DART source-block -> Courseforge page routing.
+        "project_id": ("phase_outputs", "objective_extraction", "project_id"),
+        "staging_dir": ("phase_outputs", "staging", "staging_dir"),
+        "textbook_structure_path": (
+            "phase_outputs", "objective_extraction", "textbook_structure_path",
+        ),
+    },
     "course_planning": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),
         "course_name": ("workflow_params", "course_name"),
         "objectives_path": ("workflow_params", "objectives_path"),
+        "source_module_map_path": (
+            "phase_outputs", "source_mapping", "source_module_map_path",
+        ),
     },
     "content_generation": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),
+        "source_module_map_path": (
+            "phase_outputs", "source_mapping", "source_module_map_path",
+        ),
+        "staging_dir": ("phase_outputs", "staging", "staging_dir"),
     },
     "packaging": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),
@@ -100,7 +115,10 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
 _LEGACY_PHASE_OUTPUT_KEYS: Dict[str, List[str]] = {
     "dart_conversion": ["output_path", "output_paths", "success", "html_length"],
     "staging": ["staging_dir", "staged_files", "file_count"],
-    "objective_extraction": ["project_id", "project_path", "objective_ids"],
+    "objective_extraction": [
+        "project_id", "project_path", "objective_ids", "textbook_structure_path",
+    ],
+    "source_mapping": ["source_module_map_path", "source_chunk_ids"],
     "course_planning": ["project_id"],
     "content_generation": ["project_id", "content_paths", "weeks_prepared"],
     "packaging": ["package_path", "libv2_package_path", "project_id"],
