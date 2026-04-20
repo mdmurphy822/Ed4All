@@ -55,7 +55,16 @@ def _first_positions_by_concept(
     node_ids: set,
     lo_order: Dict[str, int],
 ) -> Dict[str, Tuple[int, str, str]]:
-    """For each concept, record (earliest_lo_pos, lo_id, chunk_id)."""
+    """For each concept, record (earliest_lo_pos, lo_id, chunk_id).
+
+    REC-ID-02 (Wave 4, Worker O): when ``TRAINFORGE_SCOPE_CONCEPT_IDS`` is
+    on, graph node IDs are composite ``{course_id}:{slug}``. Chunks store
+    raw (unscoped) slugs in ``concept_tags``; we scope each tag via the
+    chunk's ``source.course_id`` before node-id lookup. Flag-off path is
+    identity — behaviour unchanged.
+    """
+    from Trainforge.rag.typed_edge_inference import _make_concept_id
+
     first: Dict[str, Tuple[int, str, str]] = {}
     for chunk in chunks:
         refs = chunk.get("learning_outcome_refs") or []
@@ -63,12 +72,14 @@ def _first_positions_by_concept(
         if pos_info is None:
             continue
         position, lo_id = pos_info
+        course_id = (chunk.get("source") or {}).get("course_id")
         for tag in chunk.get("concept_tags") or []:
-            if tag not in node_ids:
+            scoped = _make_concept_id(tag, course_id)
+            if scoped not in node_ids:
                 continue
-            prior = first.get(tag)
+            prior = first.get(scoped)
             if prior is None or position < prior[0]:
-                first[tag] = (position, lo_id, chunk.get("id") or "")
+                first[scoped] = (position, lo_id, chunk.get("id") or "")
     return first
 
 
@@ -90,6 +101,8 @@ def infer(
     Returns:
         A deterministically-ordered list of edge dicts.
     """
+    from Trainforge.rag.typed_edge_inference import _make_concept_id
+
     node_ids = {n["id"] for n in concept_graph.get("nodes", [])}
     lo_order = _lo_order_map(course)
     if not node_ids or not lo_order:
@@ -100,10 +113,17 @@ def infer(
         return []
 
     # Collect co-occurring pairs (only infer prerequisite for pairs that
-    # share a chunk — otherwise the signal is too thin).
+    # share a chunk — otherwise the signal is too thin). Per-chunk course
+    # scoping matches the scoped node IDs produced upstream when the
+    # TRAINFORGE_SCOPE_CONCEPT_IDS flag is on.
     co_occurring: set = set()
     for chunk in chunks:
-        tags = [t for t in chunk.get("concept_tags") or [] if t in node_ids]
+        course_id = (chunk.get("source") or {}).get("course_id")
+        tags = [
+            _make_concept_id(t, course_id)
+            for t in chunk.get("concept_tags") or []
+        ]
+        tags = [t for t in tags if t in node_ids]
         for i, a in enumerate(tags):
             for b in tags[i + 1:]:
                 co_occurring.add(tuple(sorted((a, b))))

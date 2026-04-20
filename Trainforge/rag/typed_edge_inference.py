@@ -26,6 +26,7 @@ Decision capture: when the LLM path fires, each inferred edge logs a
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -41,6 +42,32 @@ from Trainforge.rag.inference_rules import related_from_cooccurrence as _related
 logger = logging.getLogger(__name__)
 
 ARTIFACT_KIND = "concept_semantic"
+
+# REC-ID-02 (Wave 4, Worker O): opt-in course-scoped concept IDs.
+# When TRAINFORGE_SCOPE_CONCEPT_IDS=true, every concept-node ID is emitted as
+# ``f"{course_id}:{slug}"`` instead of the flat slug. Default off → legacy
+# behaviour. The flag is captured at import time; tests that need to toggle
+# behaviour should monkeypatch ``SCOPE_CONCEPT_IDS`` directly (or
+# ``importlib.reload`` this module).
+SCOPE_CONCEPT_IDS = os.getenv("TRAINFORGE_SCOPE_CONCEPT_IDS", "").lower() == "true"
+
+
+def _make_concept_id(slug: str, course_id: Optional[str]) -> str:
+    """Return the scoped concept ID when the flag is on, else the flat slug.
+
+    When ``SCOPE_CONCEPT_IDS`` is True and ``course_id`` is truthy, returns
+    ``f"{course_id}:{slug}"``. Otherwise returns ``slug`` unchanged. Exposed
+    as a module-level helper so rule modules (and the co-occurrence graph
+    builder in ``Trainforge.process_course``) can produce node IDs that
+    match the graph's scoped namespace.
+
+    Cross-course behaviour: two courses carrying the same concept slug
+    produce two distinct scoped IDs — no silent merge. Wave 5 adds explicit
+    ``aliases[]`` / equivalence edges for cross-course reconciliation.
+    """
+    if SCOPE_CONCEPT_IDS and course_id:
+        return f"{course_id}:{slug}"
+    return slug
 
 # Precedence: higher wins. The orchestrator drops lower-precedence edges
 # whose (source, target) pair is already claimed by a higher-precedence
@@ -338,5 +365,7 @@ def build_semantic_graph(
 
 __all__ = [
     "ARTIFACT_KIND",
+    "SCOPE_CONCEPT_IDS",
+    "_make_concept_id",
     "build_semantic_graph",
 ]
