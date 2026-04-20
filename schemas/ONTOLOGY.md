@@ -1185,3 +1185,152 @@ Exact file:line anchors to key emit/consume sites. Grep-verified against the tre
 - **Slugify:** `LibV2/tools/libv2/importer.py:28` (`slugify`) and `:49` (`ensure_unique_slug`).
 - **File checksum (sha256 w/ prefix):** `LibV2/tools/libv2/importer.py:71-77`.
 - **fsck entry:** `lib/libv2_fsck.py:103` (`check_all`); sub-checks at lines 146, 188, 240, 127, 130, 132.
+
+---
+
+## § 12 v0.2.0 changes (Waves 1–6 summary)
+
+Additive section. Descriptive snapshot of what Waves 1–6 (commits `fea48f8` → post-Worker-V/W Wave 6 merges on `dev-v0.2.0`) added to the Ed4All ontology. No goal-setting, no gap analysis — just what's in the tree now that wasn't there at v0.2.0-alpha. For full rationale per recommendation, see `plans/kg-quality-review-2026-04/review.md` and the per-worker sub-plans under `plans/kg-quality-review-2026-04/`.
+
+### Wave-by-wave headline
+
+| Wave | Scope | Representative workers / PRs | KG impact |
+| ---- | ----- | ---------------------------- | --------- |
+| 1 | Decision-capture hardening, schema-directory unification, slug / Bloom / teaching-role canonicalization, 44-value `decision_type` enum | Workers A–G (PRs #14–22) | Canonical ID pipeline; fewer emit-side forks. |
+| 2 | Content-type enum; page-objectives validator; DART marker validation tool | Workers H–L (PRs #23–26) | Section metadata constrained; objective coverage enforced per page. |
+| 3 | Typed-edge precedence + dedupe; fixture-driven golden tuples; preservation of LO-ref case | Worker M (PR #24) | 3-tier typed-edge artifact stabilised. |
+| 4 | Opt-in content-hash chunk IDs; opt-in course-scoped concept IDs; run_id + created_at provenance fields on chunks/nodes/edges; courseforge_jsonld_v1 schema; strict instruction-pair variant; first-class Misconception schema | Workers N–R (PRs #27–31) | Provenance + stability surface complete; Misconception promoted from inline field to standalone entity. |
+| 5 | `occurrences[]` back-reference on concept nodes; opt-in `content_type` enforcement; 5 pedagogical edge types (assesses, exemplifies, misconception-of, derived-from-objective, defined-by) | Workers S–U (PRs #33–35, commit `5bf2c9a`) | Graph expanded to 8 edge types; concept→chunk inverted index published. |
+| 6 | Workflow meta-schema (`config/workflows_meta.schema.json`) + YAML phase routing; `validate_dart_markers` wired as validation gate; per-rule evidence discriminator on `concept_graph_semantic`; removal of emit-only `data-cf-objectives-count`; agent-doc sweep; this ONTOLOGY refresh | Workers V–W (Wave 6) | Governance surface tightened; evidence becomes typed per rule; docs reflect actual ontology. |
+
+### Taxonomies added (`schemas/taxonomies/`)
+
+Eight canonical taxonomy files ship under `schemas/taxonomies/` — all loadable via `lib/ontology/taxonomy.py::load_taxonomy(name)`:
+
+- `bloom_verbs.json` — 60-verb / 6-level authoritative list (loader: `lib/ontology/bloom.py`).
+- `question_type.json` — 7-value factory enum for assessments (MCQ, TF, short-answer, essay, fill-in-blank, matching, numeric).
+- `assessment_method.json` — formative / summative / diagnostic split.
+- `content_type.json` — 8-value section classification (explanation, example, procedure, definition, callout, assessment, summary, introduction).
+- `cognitive_domain.json` — factual / conceptual / procedural / metacognitive (Anderson-Krathwohl).
+- `teaching_role.json` — (component, purpose) → role mapping; loader: `lib/ontology/teaching_roles.py`.
+- `module_type.json` — 6-value enum (including `discussion`, surfaced by Worker B and schematized by Worker F).
+- `taxonomy.json` (pre-existing) — STEM/ARTS division hierarchy.
+- `pedagogy_framework.yaml` (pre-existing) — 12-tier gap framework.
+
+### Knowledge schemas added (`schemas/knowledge/`)
+
+- `courseforge_jsonld_v1.schema.json` — canonical shape of the JSON-LD block emitted by `generate_course.py::_build_page_metadata`.
+- `chunk_v4.schema.json` — Trainforge chunk contract (opt-in enforcement via `TRAINFORGE_VALIDATE_CHUNKS=true`).
+- `misconception.schema.json` — first-class Misconception entity. IDs follow `mc_[0-9a-f]{16}` pattern (content hash). Optional `concept_id` / `lo_id` links enable explicit misconception-of edges.
+- `instruction_pair.strict.schema.json` — opt-in strict variant of the SFT pair schema.
+- `concept_graph_semantic.schema.json` (modified) — now carries a `oneOf` discriminator on `edges[].provenance` keyed by rule name (see § 12 — per-rule evidence discriminator below).
+- `preference_pair.schema.json` (pre-existing) — DPO pairs.
+
+### Config meta-schema (`schemas/config/`)
+
+- `workflows_meta.schema.json` — validates `config/workflows.yaml` at load time. Validates top-level keys, per-workflow `phases[]`, gate shape (`gate_id`, `validator`, `severity`, `threshold`, `behavior`), `inputs_from` referencing prior-phase `outputs`, and no-duplicate-phase-names. Landed in Wave 6 (Worker V). Implemented via `_load_phase_routing_from_yaml()` in `MCP/core/workflow_runner.py`.
+
+### 6-value `moduleType`
+
+`moduleType` enum, cited on the Page class in § 2, is now `{overview, content, application, self_check, summary, discussion}`. The `discussion` value was surfaced by Worker B (decision capture), schematized by Worker F, and persists in `schemas/taxonomies/module_type.json`.
+
+### 8 edge types in the concept graph
+
+Three taxonomic edges (unchanged):
+- `is-a` — from `is_a_from_key_terms` rule.
+- `prerequisite` — from `prerequisite_from_lo_order` rule.
+- `related-to` — from `related_from_cooccurrence` rule (co-occurrence reuse).
+
+Five pedagogical edges (Wave 5, Worker U):
+- `assesses` — question → LO (`assesses_from_question_lo`).
+- `exemplifies` — chunk → concept, when chunk is flagged as example (`exemplifies_from_example_chunks`).
+- `misconception-of` — misconception → concept, from Misconception entity's `concept_id` (`misconception_of_from_misconception_ref`).
+- `derived-from-objective` — chunk → LO (`derived_from_lo_ref`, materializes existing `learning_outcome_refs`).
+- `defined-by` — concept → chunk, using `occurrences[0]` as canonical first mention (`defined_by_from_first_mention`).
+
+All eight are listed in `concept_graph_semantic.schema.json::properties.edges.items.properties.type.enum`. Heterogeneous endpoints (chunk IDs, LO IDs, misconception IDs, question IDs, concept IDs) are federated-by-convention: consumers resolve by ID-namespace prefix; no new node types are added to the schema.
+
+### Per-rule evidence discriminator (REC-PRV-02, Wave 6)
+
+`edges[].provenance` carries a `oneOf` discriminator with nine arms. Each of the 8 modeled rules has a `{Rule}Provenance` arm binding `rule = {name}` (via `const`) to a specific evidence `$def`:
+
+| Rule | Evidence `$def` | Required fields |
+| ---- | --------------- | --------------- |
+| `is_a_from_key_terms` | `IsAEvidence` | chunk_id, term, definition_excerpt, pattern |
+| `prerequisite_from_lo_order` | `PrerequisiteEvidence` | target_first_lo, target_first_lo_position, source_first_lo, source_first_lo_position |
+| `related_from_cooccurrence` | `RelatedEvidence` | cooccurrence_weight, threshold |
+| `assesses_from_question_lo` | `AssessesEvidence` | question_id, objective_id (+ optional source_chunk_id) |
+| `exemplifies_from_example_chunks` | `ExemplifiesEvidence` | chunk_id, concept_slug, content_type ∈ {content_type_label, chunk_type} |
+| `misconception_of_from_misconception_ref` | `MisconceptionOfEvidence` | misconception_id, concept_id |
+| `derived_from_lo_ref` | `DerivedFromObjectiveEvidence` | chunk_id, objective_id |
+| `defined_by_from_first_mention` | `DefinedByEvidence` | chunk_id, concept_slug, first_mention_position |
+
+The 9th arm (`FallbackProvenance`) matches any rule NOT in that list via `not: enum`, accepting any evidence shape. That keeps the default **lenient** — preserves backward-compat for legacy graphs and future rules. Strict mode is opt-in via `TRAINFORGE_STRICT_EVIDENCE=true` or `lib/validators/evidence.py::get_schema(strict=True)`; strict strips FallbackProvenance so unknown rules + shape-drifting known rules fail validation.
+
+### First-class `Misconception` entity
+
+Misconceptions moved from a Section field to a standalone entity (`schemas/knowledge/misconception.schema.json`, Worker R). Required fields: `id` (pattern `^mc_[0-9a-f]{16}$`, derived from a content hash of `{concept_id, misconception_text, correction}`), `concept_id` (optional link to concept node), `lo_id` (optional link), `misconception_text`, `correction`, provenance block. Materialized as `misconception-of` edges when `concept_id` is populated (see above).
+
+### `occurrences[]` back-reference on concept nodes
+
+Concept nodes optionally carry `occurrences: List[str]` — the sorted-ASC list of chunk IDs that reference the concept. Populated from a chunk→concept inverted index at `_build_tag_graph` time (Wave 5, Worker S). Consumed by `defined_by_from_first_mention` for its canonical first-mention edge. Stability depends on chunk-ID scheme: position-based IDs (default) invalidate occurrences on re-chunk; content-hash IDs (`TRAINFORGE_CONTENT_HASH_IDS=true`, Wave 4 Worker N) keep occurrences stable.
+
+### Opt-in flags (behavior toggles)
+
+Seven environment-variable flags gate opt-in behavior to preserve backward-compat with legacy LibV2 corpora:
+
+| Flag | Default | When on | Landed in |
+| ---- | ------- | ------- | --------- |
+| `TRAINFORGE_CONTENT_HASH_IDS` | off | Chunk IDs are content hashes instead of positional indices — re-chunk-stable. | Wave 4 (Worker N) |
+| `TRAINFORGE_SCOPE_CONCEPT_IDS` | off | Concept node IDs become `{course_id}:{slug}` — allows cross-course disambiguation. | Wave 4 (Worker O) |
+| `TRAINFORGE_PRESERVE_LO_CASE` | off | LO references retain emit case (e.g. `TO-01`) instead of lower-casing (`to-01`). | Wave 4 (Worker O) |
+| `TRAINFORGE_VALIDATE_CHUNKS` | off | Enforces `chunk_v4.schema.json` on every chunk write; fails closed on shape drift. | Wave 4 (Worker Q) |
+| `TRAINFORGE_ENFORCE_CONTENT_TYPE` | off | Constrains `content_type_label` values to the `content_type.json` enum; fails closed on unknowns. | Wave 5 (Worker T) |
+| `TRAINFORGE_STRICT_EVIDENCE` | off | Strips FallbackProvenance from the evidence discriminator; unknown rules + shape-drifting known rules fail validation. | Wave 6 (Worker W) |
+| `DECISION_VALIDATION_STRICT` | off | Fails closed on unknown `decision_type` values in decision captures. | Wave 1 (Worker G) |
+
+Default-off preserves today's lenient behavior; each flag represents a toggle that a regeneration run can flip to enforce the newer contract.
+
+### Always-emit provenance fields
+
+Three artifacts unconditionally carry `run_id` + `created_at` (REC-PRV-01, Wave 4.1 Worker P):
+
+- Chunks (`Trainforge/process_course.py::_create_chunk`).
+- Concept nodes (`Trainforge/rag/typed_edge_inference.py`).
+- Concept edges (same).
+
+Both sourced from the active `DecisionCapture` instance. Legacy artifacts without these fields still validate under the schemas (backward-compat retained).
+
+### Canonical helpers (`lib/ontology/`)
+
+All loaders read from `schemas/taxonomies/`; single source of truth per domain:
+
+- `lib/ontology/slugs.py::canonical_slug` — unified slug helper (REC-ID-03, Wave 4 Worker Q).
+- `lib/ontology/bloom.py` — `get_verbs()`, `get_verbs_list()`, `get_verb_objects()`, `get_all_verbs()`, `detect_bloom_level()`.
+- `lib/ontology/teaching_roles.py` — `(component, purpose) → role` mapper.
+- `lib/ontology/taxonomy.py::load_taxonomy(name)` — generic JSON-taxonomy loader.
+
+### Validators consolidated (`lib/validators/`)
+
+- `lib/validators/page_objectives.py` (Worker L) — wrapped as the `page_objectives` validation gate on packaging.
+- `lib/validators/content_type.py` (Worker T) — gated by `TRAINFORGE_ENFORCE_CONTENT_TYPE=true`.
+- `lib/validators/evidence.py` (Worker W) — thin loader over `concept_graph_semantic.schema.json`; strict-mode opt-in removes the fallback arm.
+
+### New validation gates
+
+Two new gates wire into `config/workflows.yaml` (Worker V, Wave 6):
+
+- `page_objectives` on the `packaging` phase of `course_generation` (Wave 2, Worker L).
+- `dart_markers` on the `dart_conversion` phase of `batch_dart` + `textbook_to_course` (REC-CTR-06, Wave 6 Worker V).
+
+### Decision type enum expansion
+
+`decision_type` enum in `schemas/events/decision_event.schema.json` grew from 39 → 44 values. Five additions (Wave 1, Worker G): `concept_graph_publish`, `chunk_validation_failure`, `opt_in_flag_override`, `typed_edge_dedup`, `evidence_discriminator_fallback`. The `DECISION_VALIDATION_STRICT=true` flag (above) enforces the enum at write time; default is lenient (unknown values pass with a warning).
+
+### Deferred / out-of-scope
+
+Not landed in v0.2.0 (tracked for future waves):
+
+- Concept aliases / cross-course equivalence edges (would add a new edge sub-type and touch the Worker O scoped-ID path).
+- Flipping any opt-in flag default to "on" (waits on a regeneration cycle of legacy LibV2 corpora).
+- `SectionContentType` enforcement (companion to `TRAINFORGE_ENFORCE_CONTENT_TYPE` — Worker T addressed ChunkType only).

@@ -73,8 +73,7 @@ COURSEFORGE_HTML_WITH_JSONLD = """<!DOCTYPE html>
 <body>
   <main>
     <h1>Week 2: Constructivism</h1>
-    <div class="objectives" role="region" aria-label="Learning Objectives"
-         data-cf-objectives-count="2">
+    <div class="objectives" role="region" aria-label="Learning Objectives">
       <h2>Learning Objectives</h2>
       <ul>
         <li data-cf-objective-id="CO-01" data-cf-bloom-level="understand"
