@@ -49,6 +49,11 @@ class ChunkFilter:
     for back-compat with existing callers.  The ``teaching_role`` /
     ``content_type_label`` / ``module_id`` / ``week_num`` fields were added in
     Worker J to expose v4 chunk metadata as filter axes.
+
+    REC-VOC-03 Phase 2 (Worker T): when ``TRAINFORGE_ENFORCE_CONTENT_TYPE=true``,
+    ``content_type_label`` is validated against the ChunkType enum from
+    ``schemas/taxonomies/content_type.json``. Flag off: accept any string
+    (backward-compat).
     """
     chunk_type: Optional[str] = None
     difficulty: Optional[str] = None
@@ -62,6 +67,19 @@ class ChunkFilter:
     content_type_label: Optional[str] = None
     module_id: Optional[str] = None
     week_num: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        # REC-VOC-03 Phase 2 (Worker T): opt-in content_type enforcement.
+        # Import inside the method so module-import time stays free of the
+        # lib.validators dependency (keeps LibV2 CLI startup cheap when the
+        # flag is off, which is the default).
+        if self.content_type_label is not None:
+            from lib.validators.content_type import assert_chunk_type
+
+            assert_chunk_type(
+                self.content_type_label,
+                context="ChunkFilter.content_type_label",
+            )
 
     def as_applied_dict(self) -> dict:
         """Return only the fields that are actively constraining results.
