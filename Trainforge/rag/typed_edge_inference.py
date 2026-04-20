@@ -31,11 +31,21 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from Trainforge.rag.inference_rules import (
+    infer_assesses,
+    infer_defined_by,
+    infer_derived_from_objective,
+    infer_exemplifies,
     infer_is_a,
+    infer_misconception_of,
     infer_prerequisite,
     infer_related,
 )
+from Trainforge.rag.inference_rules import assesses_from_question_lo as _assesses_mod
+from Trainforge.rag.inference_rules import defined_by_from_first_mention as _defined_by_mod
+from Trainforge.rag.inference_rules import derived_from_lo_ref as _derived_lo_mod
+from Trainforge.rag.inference_rules import exemplifies_from_example_chunks as _exemplifies_mod
 from Trainforge.rag.inference_rules import is_a_from_key_terms as _is_a_mod
+from Trainforge.rag.inference_rules import misconception_of_from_misconception_ref as _misconception_mod
 from Trainforge.rag.inference_rules import prerequisite_from_lo_order as _prereq_mod
 from Trainforge.rag.inference_rules import related_from_cooccurrence as _related_mod
 
@@ -72,8 +82,20 @@ def _make_concept_id(slug: str, course_id: Optional[str]) -> str:
 # Precedence: higher wins. The orchestrator drops lower-precedence edges
 # whose (source, target) pair is already claimed by a higher-precedence
 # type.
+#
+# REC-LNK-04 (Wave 5.2, Worker U): 5 new pedagogical edge types slot at
+# tier 2 (same as ``prerequisite``). In practice they don't collide with
+# taxonomic edges because their endpoint namespaces differ (concept↔chunk,
+# concept↔LO, chunk↔LO, misconception↔concept, question↔LO vs the
+# concept↔concept taxonomic edges). Tier 2 assignment is defensive —
+# ties among tier-2 rules break by fixed rule-invocation order.
 _PRECEDENCE: Dict[str, int] = {
     "is-a": 3,
+    "assesses": 2,
+    "defined-by": 2,
+    "derived-from-objective": 2,
+    "exemplifies": 2,
+    "misconception-of": 2,
     "prerequisite": 2,
     "related-to": 1,
 }
@@ -175,6 +197,16 @@ def _build_nodes(
             "label": n.get("label", n["id"]),
             "frequency": n.get("frequency", 0),
         }
+        # REC-LNK-04 (Wave 5.2, Worker U) / Worker S handoff: carry
+        # ``occurrences[]`` (Wave 5.1, REC-LNK-01) from the co-occurrence
+        # graph node into the semantic graph node so downstream consumers
+        # (e.g. the ``defined-by`` rule) don't have to re-derive the
+        # inverted index from chunks. Preserves Worker S's invariant that
+        # ``occurrences[]`` is available on every concept node that has
+        # chunks referencing it.
+        occurrences = n.get("occurrences")
+        if occurrences:
+            node["occurrences"] = list(occurrences)
         if created_at is not None:
             _stamp_provenance(node, run_id, created_at)
         nodes.append(node)
@@ -262,6 +294,8 @@ def build_semantic_graph(
     related_threshold: int = _related_mod.DEFAULT_THRESHOLD,
     now: Optional[datetime] = None,
     run_id: Optional[str] = None,
+    misconceptions: Optional[List[Dict[str, Any]]] = None,
+    questions: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Build the typed-edge concept graph.
 
@@ -288,6 +322,19 @@ def build_semantic_graph(
             no ``run_id`` field is stamped. The per-node/per-edge
             ``created_at`` is always stamped with the artifact-level
             timestamp (``now`` or ``datetime.now(timezone.utc)``).
+        misconceptions: REC-LNK-04 (Wave 5.2, Worker U). Optional list of
+            misconception entities (see ``schemas/knowledge/misconception.schema.json``).
+            Used by the ``misconception-of`` rule to emit
+            ``misconception_id -> concept_id`` edges when the upstream
+            ``concept_id`` field is populated. Current call sites pass
+            ``None`` → rule emits empty. Signal wiring deferred to a
+            future wave.
+        questions: REC-LNK-04 (Wave 5.2, Worker U). Optional list of
+            assessment-question dicts carrying at minimum ``id`` +
+            ``objective_id`` (and optional ``source_chunk_id``). Used by
+            the ``assesses`` rule to emit ``question_id -> objective_id``
+            edges. Current call sites pass ``None`` → rule emits empty.
+            Signal wiring deferred to a future wave.
 
     Returns:
         Dict matching ``schemas/knowledge/concept_graph_semantic.schema.json``.
@@ -309,12 +356,19 @@ def build_semantic_graph(
     rule_versions: Dict[str, int] = {}
 
     # Rules are invoked in a fixed order so that equal-precedence ties
-    # break deterministically. (The three built-in rules never collide on
-    # precedence; the ordering is for forward-compatibility.)
+    # break deterministically. Taxonomic rules (is-a, prerequisite,
+    # related-to) fire first to preserve Wave 4 behaviour on their output
+    # shape; Wave 5.2 pedagogical rules (REC-LNK-04, Worker U) follow
+    # alphabetically by EDGE_TYPE.
     for fn, rule_mod, kwargs in (
         (infer_is_a, _is_a_mod, {}),
         (infer_prerequisite, _prereq_mod, {}),
         (infer_related, _related_mod, {"threshold": related_threshold}),
+        (infer_assesses, _assesses_mod, {"questions": questions}),
+        (infer_defined_by, _defined_by_mod, {}),
+        (infer_derived_from_objective, _derived_lo_mod, {}),
+        (infer_exemplifies, _exemplifies_mod, {}),
+        (infer_misconception_of, _misconception_mod, {"misconceptions": misconceptions}),
     ):
         try:
             produced = fn(chunks, course, concept_graph, **kwargs) or []
