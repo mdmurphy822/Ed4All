@@ -31,13 +31,26 @@ from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
 
 COURSE_CODE = "TESTPIPE_101"
 
-# Minimal DART-shaped HTML fixture: two <section> blocks with text
-# matching the reference fixture's photosynthesis topic.
+# DART-shaped HTML fixture: multiple <section> blocks plus the
+# structurally-recognizable Learning Objectives / Misconception /
+# Exercise markers that the source-extraction policy relies on. Every
+# piece of pedagogical content here is "real source material" — no
+# template-generated prose — so the content-generator emits the same
+# structure on the test fixture as it does on the Keet corpus.
 _DART_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head><title>Photosynthesis Basics</title></head>
 <body>
 <main id="main-content" role="main">
+<section id="objectives-src" aria-labelledby="objectives-src-heading">
+  <h2 id="objectives-src-heading">Chapter Objectives</h2>
+  <p>After reading this chapter you will be able to:</p>
+  <ul>
+    <li>Describe the biological process of photosynthesis and the role of chloroplasts.</li>
+    <li>Explain the two stages of photosynthesis and how they couple energetically.</li>
+    <li>Identify three common misconceptions about photosynthesis and the evidence against them.</li>
+  </ul>
+</section>
 <section id="intro" aria-labelledby="intro-heading">
   <h2 id="intro-heading">Introduction to Photosynthesis</h2>
   <p>Photosynthesis is the biological process by which plants, algae, and
@@ -59,6 +72,23 @@ _DART_HTML = """<!DOCTYPE html>
   the chloroplast. The Calvin cycle takes place in the stroma, the
   fluid-filled space surrounding the thylakoids. Both stages work
   together to fix atmospheric carbon dioxide into organic glucose.</p>
+</section>
+<section id="misconceptions-src" aria-labelledby="misconceptions-src-heading">
+  <h2 id="misconceptions-src-heading">Common Misconceptions About Photosynthesis</h2>
+  <p>Misconception: Plants get their food from the soil.
+  Correction: Plants produce their own food through photosynthesis. Soil
+  provides water and mineral nutrients but not the carbon that makes up
+  plant biomass; that carbon comes from atmospheric carbon dioxide.</p>
+  <p>Misconception: Plants only photosynthesize during the day.
+  Correction: The light-dependent reactions require light, but the Calvin
+  cycle can continue briefly in darkness using stored ATP and NADPH.</p>
+</section>
+<section id="exercises-src" aria-labelledby="exercises-src-heading">
+  <h2 id="exercises-src-heading">Self-Check Questions</h2>
+  <p>Review question 1.1. Explain in one sentence what chloroplasts do and
+  why their pigment reflects green light.</p>
+  <p>Exercise 1.2. Compare the light-dependent reactions with the Calvin
+  cycle by identifying where each occurs and what it produces.</p>
 </section>
 </main>
 </body>
@@ -246,7 +276,11 @@ class TestContentGenerationShape:
         assert meta["moduleType"] == "assessment"
 
     def test_works_without_dart_staging(self, pipeline_registry):
-        """Missing staging dir must not crash; fall back to synthesis."""
+        """Missing staging dir must not crash. With the no-placeholder
+        policy, a corpus-less run emits overview + 1 content + application
+        + summary (the self_check page is skipped because there are no
+        real source questions to extract). No templates are fabricated.
+        """
         tools, tmp_path, _ = pipeline_registry
         project_id = "PROJ-TESTPIPE-05"
         project_path = _make_project(tmp_path, project_id, duration_weeks=1)
@@ -259,7 +293,13 @@ class TestContentGenerationShape:
         assert payload.get("success") is True
         week_01 = project_path / "03_content_development" / "week_01"
         html_files = list(week_01.glob("*.html"))
-        assert len(html_files) >= 5
+        # Minimum 4 pages without a corpus. No self_check page is emitted
+        # (no real questions to extract; the builder refuses to fabricate
+        # a "Which of the following best describes X?" placeholder).
+        assert len(html_files) >= 4
+        names = {f.name for f in html_files}
+        assert any("overview" in n for n in names)
+        assert any("summary" in n for n in names)
 
     def test_honors_source_module_map_when_populated(
         self, pipeline_registry,

@@ -99,6 +99,40 @@ _CITY_ABBREV_RE = re.compile(
     r"^[A-Z][A-Z ]{2,30}\s+[A-Z]{2}$"
 )
 
+# Author byline: a sequence of 2+ Title-Case tokens that look like names.
+# Catches "Hung-Nghiep Tran Atsuhiro Takasu" / "Cover design by Maria Keet"
+# — the tokens are all name-like (each starts with a capital, often hyphenated)
+# with no verb, topical noun, or connector word. Discriminator is that the
+# whole string is just proper nouns (and maybe the lead-ins "by" / "edited by"
+# / "cover design by").
+_NAME_TOKEN_RE = re.compile(
+    r"^[A-Z][A-Za-z'\-]+$"
+)
+_AUTHOR_BYLINE_LEADINS = frozenset([
+    "by", "edited by", "foreword by", "preface by",
+    "cover design by", "illustrations by", "translation by",
+])
+
+# A heading that ends with a colon (`:`) is almost always a prompt /
+# section-preamble rather than a real title. The exception is when the
+# colon is followed by a short noun-phrase subtitle separated by a newline
+# or em-dash — in that case the colon is a title:subtitle separator. This
+# regex identifies the "bare prompt" shape: ends with ":" and has NO
+# subtitle attached.
+_COLON_PROMPT_TAIL_RE = re.compile(r":\s*$")
+
+# Formula / notation fragments (e.g. "C v ∀R.D", "FirstYearCourse
+# SubClassOf isTaughtBy only Professor"). These look unlike prose headings
+# (unusual symbols / CamelCase multi-token strings) but for an ontology
+# textbook like Keet's, they're pedagogically meaningful — real examples
+# from the chapter body shown as section anchors. We KEEP them as valid
+# headings. Detection is informational only; no rejection.
+#
+# Decision (recorded here per task directive): formula-like heading
+# fragments are legitimate content in ontology / formal-methods textbooks
+# and should be preserved even though they superficially look like
+# sentence-body residue.
+
 
 def _is_low_signal_heading(heading: str) -> bool:
     """Return True when a heading looks like front/back-matter chrome,
@@ -200,6 +234,52 @@ def _is_low_signal_heading(heading: str) -> bool:
                 return True
             seen_pairs.add(pair)
 
+    # End-colon prompt heading ("This chapter covers the following topics:" /
+    # "The functional syntax equivalent is as follows:"). These aren't
+    # titles — they're the lead-in sentence to a list. Reject UNLESS the
+    # heading is very short (≤ 3 words) and looks like a title:subtitle
+    # prefix (e.g. "Introduction:" as a sole word).
+    if _COLON_PROMPT_TAIL_RE.search(text) and word_count > 3:
+        return True
+
+    # Author byline detector. A heading is a byline when:
+    #   (1) the heading starts with an explicit byline lead-in
+    #       ("by", "edited by", "cover design by") followed by 2+ Name-like
+    #       tokens — this is a high-precision signal regardless of token
+    #       count ("Cover design by Maria Keet" is a byline even at two
+    #       author tokens). OR
+    #   (2) every token is a Name-like token AND at least one token is
+    #       hyphenated (characteristic of author / transliterated names
+    #       like "Hung-Nghiep"). This keeps "European Union Policy" (a
+    #       real title) in bounds while catching "Hung-Nghiep Tran
+    #       Atsuhiro Takasu" author lists.
+    if word_count >= 2:
+        stripped_words = [w.strip(",.;:()[]\"'") for w in words]
+        tokens_for_name_check = stripped_words
+        leadin_matched = False
+        lowered_joined = " ".join(w.lower() for w in stripped_words)
+        for leadin in _AUTHOR_BYLINE_LEADINS:
+            if lowered_joined.startswith(leadin + " "):
+                leadin_words = leadin.split()
+                tokens_for_name_check = stripped_words[len(leadin_words):]
+                leadin_matched = True
+                break
+        if tokens_for_name_check and len(tokens_for_name_check) >= 2:
+            all_name_like = all(
+                _NAME_TOKEN_RE.match(tok) is not None
+                and tok.lower() not in _STOPWORDS
+                and tok.lower() not in _SENTENCE_STARTER_WORDS
+                and tok.lower() not in _SENTENCE_TAIL_WORDS
+                for tok in tokens_for_name_check
+            )
+            if all_name_like:
+                hyphenated = any("-" in tok for tok in tokens_for_name_check)
+                # (1) lead-in → high-confidence byline regardless of count.
+                # (2) no lead-in → require a hyphenated token so we don't
+                # drop legitimate "European Union Policy"-style titles.
+                if leadin_matched or hyphenated:
+                    return True
+
     return False
 
 
@@ -300,6 +380,238 @@ def _extract_key_terms(text: str, max_terms: int = 4) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
+# Source-corpus extractors (LOs / misconceptions / self-check questions)
+# ---------------------------------------------------------------------------
+#
+# All three extractors are pure string processing over the DART-staged HTML
+# text. They return empty lists when the source doesn't contain real entries
+# of the given kind — per the content-generation policy, downstream pages
+# should render with whatever real content exists and omit the rest rather
+# than synthesize template prose.
+
+
+# Headings that precede a learning-objectives bullet list.
+_LO_HEADING_HINT_RE = re.compile(
+    r"(?i)\b("
+    r"learning\s+objectives?"
+    r"|chapter\s+objectives?"
+    r"|after\s+(?:reading|completing|studying)\s+this\s+(?:chapter|section|module|unit)"
+    r"|by\s+the\s+end\s+of\s+this\s+(?:chapter|section|module|unit)"
+    r"|students?\s+will\s+(?:be\s+able\s+to|learn|understand)"
+    r"|you\s+will\s+be\s+able\s+to"
+    r"|in\s+this\s+(?:chapter|section|module|unit)\s+you\s+will"
+    r")\b"
+)
+
+# Inline prose lead-ins for LO sentences (when the chapter doesn't use a
+# bullet list but writes "After reading this chapter you will be able to
+# describe, explain, and compare …").
+_LO_INLINE_LEADIN_RE = re.compile(
+    r"(?is)(?:after\s+reading\s+this\s+chapter|by\s+the\s+end\s+of\s+this\s+(?:chapter|section)|"
+    r"you\s+will\s+be\s+able\s+to|students?\s+will\s+be\s+able\s+to)"
+    r"[,:]?\s*([^.]+?)\."
+)
+
+# Misconception extraction patterns.
+# Two common shapes:
+#   (a) "Misconception: ...\nCorrection: ..."
+#   (b) "Common misconception: ..." / "A common mistake is ..." / "Students
+#       often think …. In fact …"
+_MISCONCEPTION_CORRECTION_PAIR_RE = re.compile(
+    r"(?is)misconception\s*:\s*(.+?)"
+    r"\s*correction\s*:\s*(.+?)"
+    r"(?=\s*misconception\s*:|\s*$)"
+)
+_MISCONCEPTION_STANDALONE_RE = re.compile(
+    r"(?i)(?:a\s+)?common\s+(?:misconception|mistake|error|misunderstanding)\s+"
+    r"(?:is|here\s+is)\s*:?\s*(.+?)(?:\.\s|\.$)"
+)
+
+# "Warning:" / "Note that" / "Caution:" patterns typically flag things students
+# get wrong. We capture just the statement after the marker.
+_PITFALL_MARKER_RE = re.compile(
+    r"(?i)(?:warning|caution|note\s+that|pitfall|beware)\s*:?\s+(.+?)(?:\.\s|\.$)"
+)
+
+# Self-check / exercise / review-question extraction.
+# Keet-style: "Review question 2.3.", "Exercise 5.1.", "Self-check questions",
+# "Activity 3".
+_EXERCISE_MARKER_RE = re.compile(
+    r"(?i)\b(?:review\s+question|exercise|self[-\s]check\s+question|activity|"
+    r"practice\s+question|check\s+your\s+understanding)"
+    r"\s+(\d+(?:\.\d+)*)"
+    r"\s*[:.\-]?\s*(.+?)(?=\.\s+[A-Z]|\.$|\?|\n\n)"
+)
+
+
+def _split_sentences(text: str) -> List[str]:
+    """Split a chunk of prose into sentences. Naive ``. `` boundary — fine
+    for the extractors below which are themselves approximate."""
+    parts = re.split(r"(?<=[.!?])\s+", (text or "").strip())
+    return [p.strip() for p in parts if p.strip()]
+
+
+def extract_learning_objectives(full_text: str) -> List[str]:
+    """Return a list of learning-objective statements extracted from the
+    source text. Each entry is a cleaned sentence (no leading bullet /
+    numbering). Returns an empty list when no recognizable LO section was
+    found — callers MUST NOT fabricate objectives from the heading or
+    first paragraph when this returns [].
+
+    Heuristic: locate any sentence / list block introduced by an LO header
+    hint ("Learning Objectives", "After reading this chapter you will be
+    able to…", etc.) and collect the items that immediately follow.
+    """
+    if not full_text:
+        return []
+    los: List[str] = []
+
+    # Strategy 1: find an LO heading hint and harvest the items that follow.
+    # We look for the hint anywhere in the text and take up to ~500 chars
+    # after it as the LO "block"; split on newline / semicolon / bullet marks
+    # and keep items that start with a Bloom-ish verb (or any normal verb).
+    for m in _LO_HEADING_HINT_RE.finditer(full_text):
+        tail = full_text[m.end(): m.end() + 800]
+        # Stop at the next heading-ish marker (double newline, another LO
+        # hint, or a hard sentence-ending heading like "Introduction").
+        stop = re.search(r"\n\s*\n|Introduction\b|Summary\b", tail)
+        if stop:
+            tail = tail[: stop.start()]
+        for item in re.split(r"[•\u2022\n;]|(?<=\.)\s+(?=[A-Z][a-z])", tail):
+            candidate = item.strip().lstrip("-*").strip()
+            # Strip leading numbering (1., 1), (a), etc.).
+            candidate = re.sub(
+                r"^(?:\d+[.)]|\([a-z0-9]+\)|[a-z]\.)\s*", "", candidate
+            )
+            candidate = candidate.rstrip(".")
+            if len(candidate) < 15 or len(candidate) > 280:
+                continue
+            # Must contain at least one verb-ish token (rough check: has a
+            # word ending in common verb suffixes or a Bloom verb).
+            if re.search(
+                r"\b(describe|explain|apply|analyze|evaluate|create|identify|"
+                r"define|compare|contrast|differentiate|summarize|list|"
+                r"interpret|demonstrate|classify|distinguish|solve|design|"
+                r"construct|calculate|predict|assess|outline|relate|"
+                r"examine|justify|critique|recognize|recall|state)\b",
+                candidate, re.IGNORECASE,
+            ):
+                los.append(candidate)
+
+    # Strategy 2: inline "After reading this chapter you will be able to X, Y,
+    # and Z." — rare but occurs. Split the comma-list and emit each.
+    if not los:
+        for m in _LO_INLINE_LEADIN_RE.finditer(full_text):
+            statements = m.group(1).strip()
+            parts = re.split(r",\s*(?:and\s+)?|\band\b", statements)
+            for p in parts:
+                p_clean = p.strip().rstrip(".")
+                if 15 <= len(p_clean) <= 280:
+                    los.append(p_clean)
+
+    # De-dupe while preserving order.
+    seen: set = set()
+    uniq: List[str] = []
+    for entry in los:
+        key = " ".join(entry.lower().split())
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(entry)
+    return uniq
+
+
+def extract_misconceptions(full_text: str) -> List[Dict[str, str]]:
+    """Extract ``[{"misconception": str, "correction": str}]`` pairs from
+    the source text. Returns an empty list when no recognizable pattern
+    was found.
+
+    Priority:
+      1. ``Misconception: X. Correction: Y.`` pairs (strict shape).
+      2. ``Common misconception: X. In fact, Y.`` (corrective lead-in).
+
+    Both keys must be present in the output entry (schema: both required).
+    """
+    if not full_text:
+        return []
+    pairs: List[Dict[str, str]] = []
+
+    # Shape 1: paired Misconception / Correction blocks.
+    for m in _MISCONCEPTION_CORRECTION_PAIR_RE.finditer(full_text):
+        misconception = m.group(1).strip().rstrip(".")
+        correction = m.group(2).strip().rstrip(".")
+        # Strip trailing Misconception marker (lookahead can leave stray
+        # word fragments in correction).
+        misconception = re.sub(
+            r"\s*(Correction|Misconception)\s*:.*$", "", misconception
+        ).strip()
+        correction = re.sub(
+            r"\s*(Correction|Misconception)\s*:.*$", "", correction
+        ).strip()
+        if (
+            10 < len(misconception) < 400
+            and 10 < len(correction) < 600
+        ):
+            pairs.append({
+                "misconception": misconception,
+                "correction": correction,
+            })
+
+    # Shape 2: "Common misconception: ..." — no paired correction in the
+    # source, so we don't emit (schema requires both keys).
+    # We intentionally DO NOT fabricate a correction when the source only
+    # provides the misconception side. Drop the entry.
+
+    # De-dupe on the misconception statement.
+    seen: set = set()
+    uniq: List[Dict[str, str]] = []
+    for p in pairs:
+        key = " ".join(p["misconception"].lower().split())[:80]
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(p)
+    return uniq
+
+
+def extract_self_check_questions(full_text: str) -> List[Dict[str, Any]]:
+    """Extract real exercise/review question stems from the source text.
+
+    Returns a list of ``{"question": str, "bloom_level": str, "options":
+    []}`` dicts. ``options`` is empty because the extracted question text
+    rarely includes structured answer choices in a parseable shape;
+    downstream, generate_course will render the question as an open
+    reflection prompt.
+
+    Returns an empty list when no recognizable exercise pattern was found
+    — callers MUST NOT fabricate the legacy multi-choice stem placeholder.
+    """
+    if not full_text:
+        return []
+    questions: List[Dict[str, Any]] = []
+    for m in _EXERCISE_MARKER_RE.finditer(full_text):
+        stem = m.group(2).strip().rstrip(".")
+        if len(stem) < 15 or len(stem) > 400:
+            continue
+        bloom_level, _verb = detect_bloom_level(stem)
+        questions.append({
+            "question": stem,
+            "bloom_level": bloom_level or "understand",
+            "options": [],
+        })
+    # De-dupe on the first 80 chars of the stem.
+    seen: set = set()
+    uniq: List[Dict[str, Any]] = []
+    for q in questions:
+        key = " ".join(q["question"].lower().split())[:80]
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(q)
+    return uniq
+
+
+# ---------------------------------------------------------------------------
 # DART HTML parsing
 # ---------------------------------------------------------------------------
 
@@ -309,22 +621,46 @@ def parse_dart_html_files(html_paths: List[Path]) -> List[Dict[str, Any]]:
 
     Each topic dict:
         {
-            "heading": str,          # cleaned section heading
-            "paragraphs": List[str], # cleaned paragraph text
-            "key_terms": List[str],  # heuristic key terms (display case)
-            "source_file": str,      # file stem for provenance
+            "heading": str,                       # cleaned section heading
+            "paragraphs": List[str],              # cleaned paragraph text
+            "key_terms": List[str],               # heuristic key terms
+            "source_file": str,                   # file stem for provenance
             "word_count": int,
+            "extracted_lo_statements": List[str], # real LO statements from
+                                                  # source (empty when absent)
+            "extracted_misconceptions": List[Dict[str, str]],
+                                                  # real paired m/c entries
+            "extracted_questions": List[Dict[str, Any]],
+                                                  # real exercise stems
         }
 
     Sections with < 30 words are skipped (usually metadata headers).
     """
     topics: List[Dict[str, Any]] = []
+    # Per-file extracted content (spans all sections in the file). We run
+    # the corpus extractors on the whole-document text because LOs /
+    # misconceptions / exercises often live in their own section that may
+    # be filtered out by the heading filter (e.g. "Chapter Objectives"
+    # is blocklisted as a topic title because it's template chrome, but
+    # the BULLETS underneath are real LO content).
+    file_lo_map: Dict[str, List[str]] = {}
+    file_misconception_map: Dict[str, List[Dict[str, str]]] = {}
+    file_question_map: Dict[str, List[Dict[str, Any]]] = {}
+
     for path in html_paths:
         try:
             html = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
         stem = path.stem
+
+        # Whole-document text → feed to corpus extractors BEFORE we apply
+        # the heading filter (so content hidden under a blocklisted title
+        # like "Chapter Objectives" still gets captured).
+        whole_text = _strip_tags(html)
+        file_lo_map[stem] = extract_learning_objectives(whole_text)
+        file_misconception_map[stem] = extract_misconceptions(whole_text)
+        file_question_map[stem] = extract_self_check_questions(whole_text)
 
         # Prefer DART-shaped <section> blocks; fall back to whole-document
         # heading-boundary split when no <section> tags are present.
@@ -365,19 +701,34 @@ def parse_dart_html_files(html_paths: List[Path]) -> List[Dict[str, Any]]:
                 "key_terms": _extract_key_terms(full_text),
                 "source_file": stem,
                 "word_count": word_count,
+                # Populated in the finalization pass below so every topic
+                # from the same source carries the file's extracted items.
+                "extracted_lo_statements": [],
+                "extracted_misconceptions": [],
+                "extracted_questions": [],
             })
 
     # De-duplicate topics that share a normalized heading (case- and
     # whitespace-insensitive). Keeps the first occurrence, which tends
     # to be the most content-rich one when a heading repeats across
     # front-matter / index / chapter body.
-    seen = set()
+    seen: set = set()
     deduped: List[Dict[str, Any]] = []
     for topic in topics:
         key = " ".join(topic["heading"].lower().split())
         if key in seen:
             continue
         seen.add(key)
+        stem = topic.get("source_file", "")
+        topic["extracted_lo_statements"] = list(
+            file_lo_map.get(stem, [])
+        )
+        topic["extracted_misconceptions"] = [
+            dict(m) for m in file_misconception_map.get(stem, [])
+        ]
+        topic["extracted_questions"] = [
+            dict(q) for q in file_question_map.get(stem, [])
+        ]
         deduped.append(topic)
     return deduped
 
@@ -518,35 +869,33 @@ def synthesize_objectives_from_topics(
     JSON-LD schema's ``^[A-Z]{2,}-\\d{2,}$`` pattern: ``TO-NN`` for terminal,
     ``CO-NN`` for chapter-level.
 
-    One terminal objective per week of content (capped at ``duration_weeks``),
-    plus two chapter objectives per week — one to introduce the material at
-    ``understand`` level, one to apply it at ``analyze`` level. This keeps
-    the 5-page-per-week emission schema-clean even when no objectives JSON
-    was provided at pipeline entry.
+    Content policy (NO placeholder generations):
+      * Every emitted objective statement MUST come from the source corpus
+        — either from an extracted "Learning Objectives" list on the parse
+        side, or from a real section heading. No templated phrases
+        ("Apply concepts from X to analyze real-world examples.",
+        "Describe X and explain the core ideas.", etc.) are ever emitted.
+      * When the corpus is empty (no topics at all), this returns empty
+        lists. The caller (``_generate_course_content``) handles that by
+        emitting pages with an empty objectives array — schema-compliant,
+        since ``learningObjectives`` is not required top-level.
     """
     if not topics:
-        # Minimal scaffolding so downstream emission still produces valid
-        # pages. No DART content, no real objectives — this is an edge
-        # case for "empty corpus" runs.
-        terminal = [{
-            "id": "TO-01",
-            "statement": "Summarize the foundational concepts covered by the course.",
-            "bloom_level": "understand",
-            "bloom_verb": "summarize",
-            "key_concepts": [],
-        }]
-        chapter = [{
-            "id": "CO-01",
-            "statement": "Identify the main ideas introduced in the course materials.",
-            "bloom_level": "remember",
-            "bloom_verb": "identify",
-            "key_concepts": [],
-        }]
-        return (terminal, chapter)
+        # Empty corpus → empty objective lists. No placeholder synthesis.
+        return ([], [])
 
     # Group topics into weeks round-robin — later used for both objective
     # derivation and per-week content binding.
     topics_per_week = _group_topics_by_week(topics, duration_weeks)
+
+    # First: harvest all real LO statements extracted by parse_dart_html_files.
+    # A single textbook section may emit multiple LOs; we round-robin assign
+    # them across weeks below.
+    all_extracted_los: List[Tuple[str, List[str]]] = []  # (heading, [statements])
+    for topic in topics:
+        statements = topic.get("extracted_lo_statements") or []
+        if statements:
+            all_extracted_los.append((topic["heading"], statements))
 
     terminal: List[Dict[str, Any]] = []
     chapter: List[Dict[str, Any]] = []
@@ -554,54 +903,75 @@ def synthesize_objectives_from_topics(
     to_counter = 1
     co_counter = 1
 
+    # Path A: real LOs were extracted. Emit those verbatim.
+    if all_extracted_los:
+        for heading, statements in all_extracted_los:
+            primary_term_slug = canonical_slug(heading) or ""
+            for statement in statements:
+                level, verb = detect_bloom_level(statement)
+                entry: Dict[str, Any] = {
+                    "id": f"TO-{to_counter:02d}" if to_counter <= 2 else f"CO-{co_counter:02d}",
+                    "statement": statement,
+                    "key_concepts": [primary_term_slug] if primary_term_slug else [],
+                }
+                if level:
+                    entry["bloom_level"] = level
+                if verb:
+                    entry["bloom_verb"] = verb
+                # First two go to terminal (course-wide outcomes); the rest
+                # are chapter-level COs.
+                if to_counter <= 2:
+                    entry["id"] = f"TO-{to_counter:02d}"
+                    terminal.append(entry)
+                    to_counter += 1
+                else:
+                    entry["id"] = f"CO-{co_counter:02d}"
+                    chapter.append(entry)
+                    co_counter += 1
+        return (terminal, chapter)
+
+    # Path B: no real LOs extracted. Use real heading text as the LO
+    # statement. Heading text is literal source material — not fabricated
+    # prose. Downstream consumers see "Introduction to Photosynthesis" as
+    # the objective statement, which is less pedagogically framed but
+    # guaranteed non-placeholder.
     for week_num, week_topics in enumerate(topics_per_week, start=1):
         if not week_topics:
             continue
         primary = week_topics[0]
         primary_heading = primary["heading"]
         primary_terms = primary.get("key_terms") or [primary_heading]
-        # One TO per week.
-        terminal.append({
+        level, verb = detect_bloom_level(primary_heading)
+        terminal_entry: Dict[str, Any] = {
             "id": f"TO-{to_counter:02d}",
-            "statement": (
-                f"Apply concepts from {primary_heading.lower()} to analyze "
-                f"real-world examples."
-            ),
-            "bloom_level": "apply",
-            "bloom_verb": "apply",
+            "statement": primary_heading,
             "key_concepts": [canonical_slug(t) for t in primary_terms[:3]
                              if canonical_slug(t)],
-        })
+        }
+        if level:
+            terminal_entry["bloom_level"] = level
+        if verb:
+            terminal_entry["bloom_verb"] = verb
+        terminal.append(terminal_entry)
         to_counter += 1
 
-        # Two COs per week — one understand, one analyze.
-        chapter.append({
-            "id": f"CO-{co_counter:02d}",
-            "statement": (
-                f"Describe {primary_heading.lower()} and explain the core "
-                f"ideas presented in the source material."
-            ),
-            "bloom_level": "understand",
-            "bloom_verb": "describe",
-            "key_concepts": [canonical_slug(t) for t in primary_terms[:3]
-                             if canonical_slug(t)],
-        })
-        co_counter += 1
-
-        if len(week_topics) > 1:
-            secondary = week_topics[1]
-            sec_terms = secondary.get("key_terms") or [secondary["heading"]]
-            chapter.append({
+        # One CO per additional heading in the week (chapter-level
+        # objectives bind to the secondary sections the week covers).
+        for secondary in week_topics[1:]:
+            sec_heading = secondary["heading"]
+            sec_terms = secondary.get("key_terms") or [sec_heading]
+            sec_level, sec_verb = detect_bloom_level(sec_heading)
+            chapter_entry: Dict[str, Any] = {
                 "id": f"CO-{co_counter:02d}",
-                "statement": (
-                    f"Differentiate key aspects of {secondary['heading'].lower()} "
-                    f"and compare them with related concepts."
-                ),
-                "bloom_level": "analyze",
-                "bloom_verb": "differentiate",
+                "statement": sec_heading,
                 "key_concepts": [canonical_slug(t) for t in sec_terms[:3]
                                  if canonical_slug(t)],
-            })
+            }
+            if sec_level:
+                chapter_entry["bloom_level"] = sec_level
+            if sec_verb:
+                chapter_entry["bloom_verb"] = sec_verb
+            chapter.append(chapter_entry)
             co_counter += 1
 
     return (terminal, chapter)
@@ -649,18 +1019,22 @@ def build_week_data(
     :func:`Courseforge.scripts.generate_course.generate_week` consumes.
 
     Shape reference: the fixture in
-    ``tests/fixtures/pipeline/reference_week_01/``. We produce one
-    ``overview`` page (from the first topic / week heading), one
-    ``content`` module (from the second topic or a fallback synthesis),
-    one ``application`` activity, one ``self_check`` quiz, and one
-    ``summary`` — matching the contracts.md 5-page requirement.
+    ``tests/fixtures/pipeline/reference_week_01/``. We produce:
+      * one ``overview`` page (from the first topic / week heading),
+      * **N** ``content`` modules — **dynamic**, one per LO / distinct
+        source topic. Minimum 1 to preserve the 5-page floor.
+      * one ``application`` activity,
+      * one ``self_check`` quiz (only when real questions extracted),
+      * one ``summary``.
 
-    Per ``week_objectives`` is injected by the caller; this builder does
-    NOT re-derive objectives (so callers can use canonical TO/CO IDs from
-    an externally-supplied objectives JSON when available).
+    Content-policy note: this builder emits only grounded content —
+    heading + paragraph text pulled from the DART-staged HTML, plus
+    source-extracted misconceptions / self-check questions. When no real
+    extraction is available, the relevant section emits an empty list
+    (misconceptions, self_check_questions) so downstream consumers see a
+    schema-clean absence rather than templated filler.
     """
     primary_topic = week_topics[0] if week_topics else None
-    secondary_topic = week_topics[1] if len(week_topics) > 1 else primary_topic
 
     if primary_topic:
         week_title = primary_topic["heading"]
@@ -673,91 +1047,76 @@ def build_week_data(
         overview_text.append(primary_topic["paragraphs"][0])
         if len(primary_topic["paragraphs"]) > 1:
             overview_text.append(primary_topic["paragraphs"][1])
-    else:
-        overview_text.append(
-            f"This week surveys foundational concepts in {week_title.lower()}. "
-            f"Work through the overview, content, application, self-check, and "
-            f"summary pages in order."
-        )
+    elif week_topics:
+        # No primary with paragraphs but other topics exist — use their
+        # text so overview carries real source content.
+        for t in week_topics:
+            if t.get("paragraphs"):
+                overview_text.append(t["paragraphs"][0])
+                break
+    # If overview_text is STILL empty, we leave it empty — generate_week
+    # renders an overview heading + objectives list regardless.
 
-    # Content sections — emit one content page per week, with up to 2 sections.
-    content_sections: List[Dict[str, Any]] = []
-    if primary_topic:
-        content_sections.append(
-            _topic_to_section(primary_topic, section_role="definition"),
-        )
-    if secondary_topic and secondary_topic is not primary_topic:
-        content_sections.append(
-            _topic_to_section(secondary_topic, section_role="explanation"),
-        )
-    if not content_sections:
-        content_sections.append({
-            "heading": week_title,
-            "level": 2,
-            "content_type": "explanation",
-            "paragraphs": [
-                f"This week introduces the foundational ideas behind "
-                f"{week_title.lower()}. Review the associated objectives and "
-                f"note the key terms listed below."
-            ],
-            "key_terms": [],
-        })
+    # ---------------------------------------------------------------- #
+    # Dynamic content modules: one per LO when LOs are rich, otherwise
+    # one per distinct source topic. Minimum 1 to preserve the 5-page
+    # floor required by the integration-test contract.
+    # ---------------------------------------------------------------- #
+    content_modules = _build_content_modules_dynamic(
+        week_topics=week_topics,
+        week_objectives=week_objectives,
+        week_title=week_title,
+    )
 
-    content_modules = [{
-        "title": primary_topic["heading"] if primary_topic else week_title,
-        "sections": content_sections,
-        "misconceptions": _build_misconceptions_for_week(week_topics),
-    }]
-
-    # Activities — one practice activity tied to first objective.
+    # Activities — one practice activity tied to first objective. The
+    # description quotes the real objective statement (extracted) when
+    # available; otherwise falls back to the week title (real heading).
     activity_objective_ref = (
         week_objectives[0]["id"] if week_objectives else None
+    )
+    first_obj_statement = (
+        week_objectives[0]["statement"] if week_objectives else week_title
     )
     activities = [{
         "title": f"Apply: {week_title}",
         "description": _html.escape(
-            f"Work through a scenario that applies the concepts from "
-            f"{week_title.lower()} to a real-world example. Sketch a short "
-            f"response (150 words) or diagram that shows how the key ideas "
-            f"connect to practice."
+            f"Objective: {first_obj_statement}. "
+            f"Respond in your own words (150 words) or with a diagram "
+            f"demonstrating the concept from the week's material."
         ),
         "bloom_level": "apply",
         **({"objective_ref": activity_objective_ref}
            if activity_objective_ref else {}),
     }]
 
-    # Self-check questions — one question per objective (min 1).
+    # Self-check questions — extracted from source; empty when none.
     self_check_questions = _build_self_check_questions(
         week_topics, week_objectives
     )
 
-    # Summary key takeaways.
+    # Summary key takeaways — from real topic headings only.
     key_takeaways: List[str] = []
-    if primary_topic:
-        key_takeaways.append(
-            f"{primary_topic['heading']}: review the definitions and core "
-            f"relationships covered this week."
-        )
-    if secondary_topic and secondary_topic is not primary_topic:
-        key_takeaways.append(
-            f"{secondary_topic['heading']}: pay special attention to how "
-            f"this connects with the earlier concepts."
-        )
-    key_takeaways.append(
-        f"Map each learning objective in Week {week_num} to the sections "
-        f"where it's introduced and practiced."
-    )
+    seen_takeaway: set = set()
+    for t in week_topics:
+        heading = t.get("heading", "")
+        key = heading.lower().strip()
+        if not key or key in seen_takeaway:
+            continue
+        seen_takeaway.add(key)
+        key_takeaways.append(heading)
+    # Omit the "Map each learning objective…" boilerplate takeaway. When
+    # no topics are present, key_takeaways is empty — generate_week
+    # handles that by emitting the heading only.
 
-    reflection_questions = [
-        (
-            f"Which idea from this week's material on "
-            f"{week_title.lower()} challenged your prior understanding?"
-        ),
-        (
-            "How would you explain the week's core concept to someone "
-            "encountering it for the first time?"
-        ),
-    ]
+    # Reflection questions: when real objectives exist, echo their
+    # statement as a reflection prompt (not a fabricated stem).
+    reflection_questions: List[str] = []
+    for obj in (week_objectives or [])[:2]:
+        statement = obj.get("statement", "").strip().rstrip(".")
+        if statement:
+            reflection_questions.append(
+                f"Restate in your own words: {statement}."
+            )
 
     return {
         "week_number": week_num,
@@ -772,6 +1131,90 @@ def build_week_data(
         "reflection_questions": reflection_questions,
         "misconceptions": _build_misconceptions_for_week(week_topics),
     }
+
+
+def _build_content_modules_dynamic(
+    week_topics: List[Dict[str, Any]],
+    week_objectives: List[Dict[str, Any]],
+    week_title: str,
+) -> List[Dict[str, Any]]:
+    """Return ``content_modules`` list — **one module per LO or topic**.
+
+    Policy (per user directive — "number of html files per week should be
+    dynamic based on learning objectives identified"):
+      * N = max(len(week_objectives), len(week_topics), 1) — when we
+        have 3 distinct LOs we want 3 content pages, each focused on one
+        LO + its source section.
+      * When objectives and topics exist in different counts, we pair
+        them positionally: topic[i] is the source material for
+        objective[i] (when both indices exist).
+      * Module title = the topic heading (real source text) or the LO
+        statement (real source text) — never fabricated.
+      * Module sections = the topic's paragraphs. When no topic is
+        available for position ``i`` but an LO is, we fall back to a
+        single minimal section with the LO statement as heading; this is
+        literal source content, not a placeholder.
+
+    Minimum one module to preserve the integration test's 5-page floor.
+    """
+    # Per-file misconceptions. When a topic has extracted misconceptions,
+    # those attach to the module drawing from that topic.
+    modules: List[Dict[str, Any]] = []
+    topic_count = len(week_topics)
+    obj_count = len(week_objectives)
+    module_count = max(topic_count, obj_count, 1)
+
+    for i in range(module_count):
+        topic = week_topics[i] if i < topic_count else None
+        obj = week_objectives[i] if i < obj_count else None
+
+        # Title selection: prefer real topic heading; fall back to the
+        # LO statement (truncated) when no topic at this index.
+        if topic:
+            module_title = topic["heading"]
+        elif obj:
+            module_title = obj.get("statement") or week_title
+            module_title = module_title[:120]
+        else:
+            module_title = week_title
+
+        # Sections: built from the topic's paragraphs. If no topic at
+        # this index, emit a minimal section whose heading is the LO
+        # statement (source content).
+        if topic:
+            section_role = "definition" if i == 0 else "explanation"
+            sections = [_topic_to_section(topic, section_role=section_role)]
+        elif obj:
+            sections = [{
+                "heading": obj.get("statement", "")[:120] or week_title,
+                "level": 2,
+                "content_type": "explanation",
+                "paragraphs": [],
+                "key_terms": [],
+            }]
+        else:
+            # True empty corpus: emit a placeholder-free minimal section.
+            sections = [{
+                "heading": week_title,
+                "level": 2,
+                "content_type": "explanation",
+                "paragraphs": [],
+                "key_terms": [],
+            }]
+
+        # Per-module misconceptions come from the linked topic when present.
+        module_misconceptions = (
+            list(topic.get("extracted_misconceptions") or [])
+            if topic else []
+        )
+
+        modules.append({
+            "title": module_title,
+            "sections": sections,
+            "misconceptions": module_misconceptions,
+        })
+
+    return modules
 
 
 def _topic_to_section(
@@ -801,130 +1244,77 @@ def _build_self_check_questions(
     week_topics: List[Dict[str, Any]],
     week_objectives: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Produce 1–2 formative self-check questions for the week.
+    """Return real self-check questions extracted from the source corpus.
 
-    Questions are multiple-choice with one correct option + two
-    distractors. Wording is deterministic and topic-grounded so the
-    self-check page validates against the JSON-LD schema and the
-    page_objectives gate.
+    Policy: only emits entries that came from real exercise / review-question
+    markers in the DART-staged HTML (see :func:`extract_self_check_questions`).
+    When no real questions were extracted for any of the week's topics, returns
+    an empty list — downstream ``generate_week`` then skips the self_check
+    page entirely. The legacy multi-choice stem placeholder is never produced
+    here.
+
+    Each returned question dict carries the canonical keys
+    ``{"question", "bloom_level", "options", "objective_ref"}``. ``options``
+    is an empty list (extracted exercises rarely include structured choices
+    in a parseable shape); the self-check page renders open-ended prompts
+    in that case. ``objective_ref`` is attached when a positional LO is
+    available for the question's index.
     """
     questions: List[Dict[str, Any]] = []
-    focus_topic = week_topics[0] if week_topics else None
-    focus_heading = focus_topic["heading"] if focus_topic else "this week's topic"
-    primary_term = (
-        focus_topic["key_terms"][0]
-        if focus_topic and focus_topic.get("key_terms")
-        else focus_heading
-    )
-    first_obj = week_objectives[0] if week_objectives else None
-    q1: Dict[str, Any] = {
-        "question": (
-            f"Which of the following best describes the central idea of "
-            f"{focus_heading.lower()}?"
-        ),
-        "bloom_level": "understand",
-        "options": [
-            {
-                "text": (
-                    f"A concept rooted in {primary_term.lower()} and "
-                    f"related key terms covered this week."
-                ),
-                "correct": True,
-                "feedback": (
-                    f"Correct — {primary_term} is the central idea "
-                    f"introduced in this week's reading."
-                ),
-            },
-            {
-                "text": "An unrelated topic reserved for later in the course.",
-                "correct": False,
-                "feedback": (
-                    f"Not quite — revisit the overview page to see how "
-                    f"{primary_term.lower()} anchors this week."
-                ),
-            },
-            {
-                "text": "A minor footnote only mentioned in passing.",
-                "correct": False,
-                "feedback": (
-                    f"The material gives {primary_term.lower()} significant "
-                    f"attention; re-read the content page for context."
-                ),
-            },
-        ],
-    }
-    if first_obj:
-        q1["objective_ref"] = first_obj["id"]
-    questions.append(q1)
+    if not week_topics:
+        return []
 
-    if len(week_topics) > 1 and len(week_objectives) > 1:
-        second_topic = week_topics[1]
-        second_heading = second_topic["heading"]
-        q2: Dict[str, Any] = {
-            "question": (
-                f"How does {second_heading.lower()} extend or complement "
-                f"the earlier material this week?"
-            ),
-            "bloom_level": "analyze",
-            "objective_ref": week_objectives[1]["id"],
-            "options": [
-                {
-                    "text": (
-                        f"It builds directly on the foundational ideas "
-                        f"introduced earlier."
-                    ),
-                    "correct": True,
-                    "feedback": (
-                        f"Correct — the two topics reinforce each other in "
-                        f"the week's sequence."
-                    ),
-                },
-                {
-                    "text": "It replaces the earlier material entirely.",
-                    "correct": False,
-                    "feedback": (
-                        "The week's pages are sequential; later content "
-                        "builds on — not replaces — earlier content."
-                    ),
-                },
-                {
-                    "text": "It is unrelated and only included for balance.",
-                    "correct": False,
-                    "feedback": (
-                        "Both sections address the same week's theme; "
-                        "revisit the overview."
-                    ),
-                },
-            ],
-        }
-        questions.append(q2)
+    # Collect all extracted questions across the week's topics.
+    for topic in week_topics:
+        for q in topic.get("extracted_questions") or []:
+            # Defensive copy + normalize shape.
+            entry: Dict[str, Any] = {
+                "question": q["question"],
+                "bloom_level": q.get("bloom_level") or "understand",
+                "options": list(q.get("options") or []),
+            }
+            questions.append(entry)
+
+    # Bind each question to an objective by position (stable for canonical
+    # IDs). Missing positions drop the objective_ref key — the self-check
+    # page still validates (objective_ref is optional in generate_week).
+    for idx, q in enumerate(questions):
+        if idx < len(week_objectives):
+            q["objective_ref"] = week_objectives[idx]["id"]
+
     return questions
 
 
 def _build_misconceptions_for_week(
     week_topics: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Return a small set of synthesized misconceptions for the week.
+    """Return real misconception/correction pairs extracted from the source.
 
-    Kept short and deterministic — the ``misconception.json`` downstream
-    artifact is Worker β's responsibility; here we just seed the JSON-LD
-    ``misconceptions`` array so Trainforge can extract them.
+    Policy: only emits entries produced by :func:`extract_misconceptions`
+    (strict ``Misconception: ... / Correction: ...`` shape in the DART
+    text). Returns an empty list when no real pairs were extracted for any
+    of the week's topics — no "Students often assume X is a single idea"
+    template is ever produced here.
+
+    Output conforms to the ``Misconception`` JSON-LD schema: each dict has
+    both ``misconception`` and ``correction`` keys populated with strings.
     """
     if not week_topics:
         return []
-    focus = week_topics[0]
-    heading = focus["heading"]
-    return [{
-        "misconception": (
-            f"Students often assume {heading.lower()} is a single idea "
-            f"with a single definition."
-        ),
-        "correction": (
-            f"In practice, {heading.lower()} encompasses several related "
-            f"concepts — review the content page's key terms to see how "
-            f"they connect."
-        ),
-    }]
+    merged: List[Dict[str, str]] = []
+    seen: set = set()
+    for topic in week_topics:
+        for m in topic.get("extracted_misconceptions") or []:
+            mis = m.get("misconception", "").strip()
+            cor = m.get("correction", "").strip()
+            if not mis or not cor:
+                continue
+            key = " ".join(mis.lower().split())[:80]
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append({"misconception": mis, "correction": cor})
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -1034,4 +1424,7 @@ __all__ = [
     "synthesize_objectives_from_topics",
     "build_week_data",
     "ensure_objectives_on_page",
+    "extract_learning_objectives",
+    "extract_misconceptions",
+    "extract_self_check_questions",
 ]
