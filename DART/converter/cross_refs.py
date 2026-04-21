@@ -356,6 +356,136 @@ def _validate_toc_page_anchors(
     return pattern.sub(_rewrite_link, html_text)
 
 
+def _validate_toc_section_anchors(
+    html_text: str,
+    classified_blocks: List[ClassifiedBlock],
+) -> str:
+    """Wave 30 Gap 2: rewrite or disable orphan ``#sec-X-Y`` TOC links.
+
+    Mirrors ``_validate_toc_page_anchors`` for section-level anchors.
+    The TOC renderer emits ``<a href="#sec-X-Y">`` for entries whose
+    title starts with ``"X.Y "`` — those links are dead whenever no
+    matching ``id="sec-X-Y"`` landed in the body (heading promoter
+    didn't fire, classifier chose a non-numeric role, dotted-numeric
+    rule missed an alphabetic prefix, etc.).
+
+    Valid targets come from two sources:
+
+    * ``id="sec-..."`` attributes literally present in the rendered
+      HTML (covers the Wave 30 heading-promoter output + every
+      classified block the assembler has already stamped).
+    * ``classified_blocks`` with a dotted-numeric hierarchy — the
+      in-text cross-reference resolver (``_resolve_in_body``) emits
+      ``<a href="#sec-N-M">`` links for these before this pass
+      runs, so we must treat them as valid targets even when the
+      HTML fragment under test doesn't include the matching section
+      wrapper (common in narrow unit tests + during end-to-end
+      assembly before the section element is injected into the
+      final string).
+
+    Remediation (first match wins, matches the Wave 25 page-anchor
+    pattern exactly):
+
+    1. Target exists in body OR is backed by a classified block
+       with matching numeric hierarchy → pass through unchanged.
+    2. Rewrite to the chapter anchor when ``#sec-X-Y`` has no
+       matching section but ``#chap-X`` exists, so the TOC entry
+       still lands a reader on the right chapter.
+    3. Fall back to demoting the link to ``<span aria-disabled="true">``
+       so assistive tech does not announce it as clickable.
+    """
+    if "#sec-" not in html_text:
+        return html_text
+
+    # Collect every ``id="sec-..."`` that actually lives in the body.
+    emitted_section_ids: set = set()
+    for match in re.finditer(r'id="(sec-[A-Za-z0-9\-]+)"', html_text):
+        emitted_section_ids.add(match.group(1))
+
+    # Fold in classified-block-backed section ids so the in-text
+    # cross-reference resolver's ``<a href="#sec-N-M">`` output isn't
+    # demoted just because the test HTML doesn't carry the target
+    # wrapper. A block counts when its role is SECTION_HEADING /
+    # SUBSECTION_HEADING AND it carries a dotted-numeric hierarchy
+    # attribute.
+    for block in classified_blocks:
+        if block.role not in (
+            BlockRole.SECTION_HEADING,
+            BlockRole.SUBSECTION_HEADING,
+        ):
+            continue
+        attrs = block.attributes or {}
+        number: Optional[str] = None
+        for key in ("dotted_number", "section_number", "number"):
+            raw_val = attrs.get(key)
+            if raw_val is None:
+                continue
+            candidate = str(raw_val).strip().rstrip(".")
+            if candidate and re.match(
+                r"^[A-Za-z]?\d+(?:\.\d+){0,5}$", candidate
+            ):
+                number = candidate
+                break
+        if number is None:
+            continue
+        emitted_section_ids.add("sec-" + number.replace(".", "-"))
+
+    # Build page-level chap fallback (same convention as the page-anchor
+    # pass). If a section lives on the same page as a chapter opener,
+    # prefer the chap anchor over a dead-end link.
+    anchor_by_page: Dict[int, str] = {}
+    for block in classified_blocks:
+        page = getattr(block.raw, "page", None)
+        if page is None:
+            continue
+        if block.role == BlockRole.CHAPTER_OPENER:
+            attrs = block.attributes or {}
+            number = attrs.get("chapter_number") or attrs.get("number")
+            if not number:
+                for candidate in (
+                    str(attrs.get("heading_text") or ""),
+                    str(block.raw.text or ""),
+                ):
+                    m = _CHAPTER_NUMBER_RE.search(candidate)
+                    if m:
+                        number = m.group(1)
+                        break
+            if number and page not in anchor_by_page:
+                anchor_by_page[page] = f"chap-{number}"
+
+    # Also: leading chapter number X in a dotted anchor sec-X-Y maps
+    # back to chap-X. Used as a last-ditch chapter fallback when the
+    # classified-blocks scan didn't surface a same-page chapter.
+    emitted_chap_ids: set = set()
+    for match in re.finditer(r'id="(chap-\d+)"', html_text):
+        emitted_chap_ids.add(match.group(1))
+
+    def _rewrite_link(m: re.Match) -> str:
+        prefix = m.group(1)
+        target = m.group(2)
+        suffix = m.group(3)
+        label = m.group(4)
+        # Target exists (by HTML id OR classified-block backing) → leave alone.
+        if target in emitted_section_ids:
+            return m.group(0)
+        # Chapter-fallback: if the section anchor is sec-X-Y and
+        # chap-X exists, rewrite to chap-X.
+        chap_match = re.match(r"sec-(\d+)-", target)
+        if chap_match:
+            chap_candidate = f"chap-{chap_match.group(1)}"
+            if chap_candidate in emitted_chap_ids:
+                return f'{prefix}#{chap_candidate}{suffix}{label}</a>'
+        # Fallback: demote to an aria-disabled span so screen readers
+        # don't announce the dead link as clickable.
+        return f'<span aria-disabled="true">{label}</span>'
+
+    pattern = re.compile(
+        r'(<a\b[^>]*href=")#(sec-[A-Za-z0-9\-]+)("[^>]*>)(.*?)</a>',
+        re.DOTALL | re.IGNORECASE,
+    )
+    return pattern.sub(_rewrite_link, html_text)
+
+
 def resolve_cross_references(
     html_text: str,
     classified_blocks: List[ClassifiedBlock],
@@ -407,7 +537,13 @@ def resolve_cross_references(
     # Wave 25 Fix 6: post-pass to validate TOC ``#page-N`` anchors.
     # Runs regardless of classified_blocks presence so orphan page
     # links get demoted even when no other rewriting is needed.
-    return _validate_toc_page_anchors(rewritten, classified_blocks or [])
+    rewritten = _validate_toc_page_anchors(rewritten, classified_blocks or [])
+    # Wave 30 Gap 2: same treatment for ``#sec-X-Y`` TOC anchors —
+    # dead section links get rewritten to the nearest chapter anchor
+    # or demoted to aria-disabled spans. Runs AFTER the page-anchor
+    # pass so their remediation outputs (``<span aria-disabled>``) are
+    # not re-matched here (the section pattern requires ``<a ... #sec-``).
+    return _validate_toc_section_anchors(rewritten, classified_blocks or [])
 
 
 __all__ = ["resolve_cross_references"]

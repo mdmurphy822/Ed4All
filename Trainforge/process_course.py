@@ -705,11 +705,51 @@ class CourseProcessor:
         # Objectives (optional)
         self.objectives: Optional[Dict[str, Any]] = None
         self.domain_concept_seeds: List[Tuple[str, List[re.Pattern]]] = []
+        self._objectives_source: Optional[str] = None
+        resolved_objectives_path: Optional[Path] = None
         if objectives_path:
-            self.objectives = load_objectives(Path(objectives_path))
-            self.domain_concept_seeds = compile_domain_concept_seeds(
-                self.objectives.get("domain_concepts", [])
-            )
+            resolved_objectives_path = Path(objectives_path)
+            self._objectives_source = "kwarg"
+        else:
+            # Wave 30 Gap 4: when no objectives_path is supplied, probe the
+            # canonical auto-synthesized location the planner writes at
+            # ``{project_path}/01_learning_objectives/synthesized_objectives.json``.
+            # ``CourseProcessor`` is invoked with ``output_dir`` pointing
+            # at the Trainforge nested workspace (usually
+            # ``{project_path}/trainforge/``) — the synthesized objectives
+            # live one level up so ``output_dir.parent`` is the first
+            # candidate. For callers who pass the project root
+            # directly we also probe ``output_dir`` itself.
+            for _candidate_root in (self.output_dir.parent, self.output_dir):
+                _candidate = (
+                    _candidate_root
+                    / "01_learning_objectives"
+                    / "synthesized_objectives.json"
+                )
+                if _candidate.exists():
+                    resolved_objectives_path = _candidate
+                    self._objectives_source = "auto_synthesized"
+                    logger.info(
+                        "Wave 30 Gap 4: auto-detected synthesized objectives at %s",
+                        _candidate,
+                    )
+                    break
+
+        if resolved_objectives_path is not None:
+            try:
+                self.objectives = load_objectives(resolved_objectives_path)
+                self.domain_concept_seeds = compile_domain_concept_seeds(
+                    self.objectives.get("domain_concepts", [])
+                )
+            except Exception as _obj_exc:  # noqa: BLE001 — defensive
+                logger.warning(
+                    "Wave 30 Gap 4: failed to load objectives from %s: %s; "
+                    "course.json will land as an empty-learning_outcomes shell",
+                    resolved_objectives_path,
+                    _obj_exc,
+                )
+                self.objectives = None
+                self._objectives_source = "load_failed"
 
         # Decision capture
         # Phase value must be in the canonical enum at
@@ -844,9 +884,10 @@ class CourseProcessor:
         quality_report = self._generate_quality_report(chunks)
         # Typed-edge concept graph (additive to concept_graph). Rule-based
         # by default; LLM escalation opt-in via self.typed_edges_llm.
-        course_data_for_semantic = (
-            self._build_course_json(manifest) if self.objectives else None
-        )
+        # Wave 30 Gap 4: always build course_data (the empty-LOs shell is
+        # safe — semantic_graph_builder treats empty learning_outcomes
+        # as "no typed-edge seeds" rather than crashing).
+        course_data_for_semantic = self._build_course_json(manifest)
         semantic_graph = self._generate_semantic_concept_graph(
             chunks, course_data_for_semantic, concept_graph,
         )
@@ -3327,31 +3368,55 @@ class CourseProcessor:
         ``schemas/knowledge/course.schema.json`` before being returned.
         Schema violations are logged as warnings (best-effort) — the
         canonical shape is still emitted.
+
+        Wave 30 Gap 4: guarantee course.json materialisation. When
+        ``self.objectives`` is ``None`` (neither ``objectives_path``
+        kwarg nor the synthesized-objectives sidecar was available),
+        we now emit a valid shell:
+
+            {"course_code": ..., "title": ...,
+             "learning_outcomes": [], "note": "..."}
+
+        so LibV2 archival always lands a file + downstream joins
+        (``LibV2/tools/libv2/retrieval_scoring.py::load_course_outcomes``)
+        have something to look at instead of a ``FileNotFoundError``.
+        The ``note`` field is optional per the course schema
+        (``additionalProperties: true``) so validation still passes.
         """
-        outcomes = []
+        outcomes: List[Dict[str, Any]] = []
+        note: Optional[str] = None
 
-        for to in self.objectives.get("terminal_objectives", []):
-            outcomes.append({
-                "id": to["id"].lower(),
-                "statement": to["statement"],
-                "bloom_level": (to.get("bloomLevel") or to.get("bloom_level") or "understand"),
-                "hierarchy_level": "terminal",
-            })
-
-        for ch in self.objectives.get("chapter_objectives", []):
-            for obj in ch.get("objectives", []):
+        if self.objectives:
+            for to in self.objectives.get("terminal_objectives", []):
                 outcomes.append({
-                    "id": obj["id"].lower(),
-                    "statement": obj["statement"],
-                    "bloom_level": (obj.get("bloomLevel") or obj.get("bloom_level") or "understand"),
-                    "hierarchy_level": "chapter",
+                    "id": to["id"].lower(),
+                    "statement": to["statement"],
+                    "bloom_level": (to.get("bloomLevel") or to.get("bloom_level") or "understand"),
+                    "hierarchy_level": "terminal",
                 })
 
-        course_data = {
+            for ch in self.objectives.get("chapter_objectives", []):
+                for obj in ch.get("objectives", []):
+                    outcomes.append({
+                        "id": obj["id"].lower(),
+                        "statement": obj["statement"],
+                        "bloom_level": (obj.get("bloomLevel") or obj.get("bloom_level") or "understand"),
+                        "hierarchy_level": "chapter",
+                    })
+        else:
+            note = (
+                "No learning objectives were supplied or synthesized "
+                "for this course. Downstream retrieval/validation may "
+                "be degraded."
+            )
+
+        course_data: Dict[str, Any] = {
             "course_code": self.course_code,
             "title": manifest.get("title", ""),
             "learning_outcomes": outcomes,
         }
+        if note is not None:
+            course_data["note"] = note
 
         # Wave 24: best-effort schema validation against the canonical
         # course.schema.json. We don't hard-fail here because the schema
@@ -3408,10 +3473,16 @@ class CourseProcessor:
 
         _write(self.output_dir / "manifest.json", manifest)
 
-        # course.json — structured learning outcomes for LibV2 validator
-        if self.objectives:
-            course_data = self._build_course_json(manifest)
-            _write(self.output_dir / "course.json", course_data)
+        # course.json — structured learning outcomes for LibV2 validator.
+        # Wave 30 Gap 4: always write course.json (including the
+        # empty-learning_outcomes shell with a ``note`` field) so LibV2
+        # archival always lands a file and downstream retrieval joins
+        # have something to look at. Pre-Wave-30 this was gated on
+        # ``self.objectives`` being truthy, so pipeline runs that
+        # auto-synthesized objectives without threading the path in
+        # never emitted course.json.
+        course_data = self._build_course_json(manifest)
+        _write(self.output_dir / "course.json", course_data)
 
         _write(self.corpus_dir / "corpus_stats.json", corpus_stats)
         _write(self.graph_dir / "concept_graph.json", concept_graph)
