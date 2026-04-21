@@ -1095,7 +1095,7 @@ Every version counter currently in use:
 
 ## § 10 Schema file index
 
-Complete `/schemas/` tree: 16 files across 6 subfolders.
+`/schemas/` tree (canonical shapes, loadable from any project):
 
 | Path | Classes defined | Description |
 |---|---|---|
@@ -1103,19 +1103,33 @@ Complete `/schemas/` tree: 16 files across 6 subfolders.
 | `schemas/academic/learning_objectives.schema.json` | LearningObjective | Extracted LO hierarchy (course/chapter/section/subsection) |
 | `schemas/academic/textbook_structure.schema.json` | Section, ContentBlock, TOC entry, key-term / definition / procedure / example records | DART-processed textbook semantic structure |
 | `schemas/compliance/wcag22_compliance.schema.json` | WCAGCompliance | WCAG 2.2 AA requirements (4 principles + SC codes) |
+| `schemas/config/workflows_meta.schema.json` | WorkflowMeta | Meta-schema for `config/workflows.yaml` (phase routing, gate shape, inputs_from references) |
 | `schemas/events/decision_event.schema.json` | DecisionEvent | Base Claude-decision ledger record |
 | `schemas/events/trainforge_decision.schema.json` | TrainforgeDecisionEvent | Decision ledger + assessment/rag/alignment context (allOf) |
 | `schemas/events/audit_event.schema.json` | AuditEvent | Unified audit event w/ event-type-keyed details |
 | `schemas/events/hash_chained_event.schema.json` | HashChainedEvent | Tamper-evident hash chain wrapper |
 | `schemas/events/session_annotation.schema.json` | SessionAnnotation | Aggregated session summary across decisions |
 | `schemas/events/run_manifest.schema.json` | RunManifest | Immutable run initialization snapshot |
-| `schemas/knowledge/concept_graph_semantic.schema.json` | Concept, TypedEdge, rule_versions | Typed-edge concept graph (is-a / prerequisite / related-to) |
+| `schemas/knowledge/chunk_v4.schema.json` | Chunk | Trainforge chunk contract (gated by `TRAINFORGE_VALIDATE_CHUNKS`) |
+| `schemas/knowledge/concept_graph_semantic.schema.json` | Concept, TypedEdge, rule_versions | Typed-edge concept graph (8 edge types, per-rule evidence discriminator) |
+| `schemas/knowledge/course.schema.json` | Course (course.json) | Canonical shape for Trainforge-emitted `course.json`, consumed by LibV2 retrieval |
+| `schemas/knowledge/courseforge_jsonld_v1.schema.json` | CourseforgePage | JSON-LD block emitted per Courseforge HTML page |
 | `schemas/knowledge/instruction_pair.schema.json` | InstructionPair | SFT training pair (prompt/completion) |
+| `schemas/knowledge/instruction_pair.strict.schema.json` | InstructionPair (strict) | Opt-in strict variant of the SFT pair schema |
+| `schemas/knowledge/misconception.schema.json` | Misconception | First-class misconception entity (content-hash IDs) |
 | `schemas/knowledge/preference_pair.schema.json` | PreferencePair | DPO training pair (chosen/rejected) |
+| `schemas/knowledge/source_reference.schema.json` | SourceReference | Canonical `{sourceId, role, weight?, confidence?, pages?, extractor?}` shape shared across DART / Courseforge / Trainforge |
 | `schemas/library/catalog_entry.schema.json` | CatalogEntry | LibV2 master-catalog row |
-| `schemas/library/course_manifest.schema.json` | CourseManifest | LibV2 extended course metadata |
+| `schemas/library/course_manifest.schema.json` | CourseManifest | LibV2 extended course metadata (validated by `LibV2ManifestValidator`) |
 | `schemas/taxonomies/taxonomy.json` | (STEM/ARTS data; not a schema) | Division/domain/subdomain/topic hierarchy |
 | `schemas/taxonomies/pedagogy_framework.yaml` | (pedagogy framework data) | 12-tier pedagogy gap-analysis framework |
+| `schemas/taxonomies/bloom_verbs.json` | (taxonomy) | 60-verb / 6-level authoritative Bloom's list |
+| `schemas/taxonomies/question_type.json` | (taxonomy) | 7-value question-factory enum |
+| `schemas/taxonomies/assessment_method.json` | (taxonomy) | formative / summative / diagnostic |
+| `schemas/taxonomies/content_type.json` | (taxonomy) | 8-value section classification enum |
+| `schemas/taxonomies/cognitive_domain.json` | (taxonomy) | factual / conceptual / procedural / metacognitive |
+| `schemas/taxonomies/teaching_role.json` | (taxonomy) | (component, purpose) → role mapping |
+| `schemas/taxonomies/module_type.json` | (taxonomy) | 6-value moduleType enum |
 
 Tool-local schemas (NOT under `/schemas/`):
 
@@ -1278,19 +1292,21 @@ Concept nodes optionally carry `occurrences: List[str]` — the sorted-ASC list 
 
 ### Opt-in flags (behavior toggles)
 
-Seven environment-variable flags gate opt-in behavior to preserve backward-compat with legacy LibV2 corpora:
+Eleven environment-variable flags gate opt-in behavior to preserve backward-compat with legacy corpora. All default off; each flag represents a toggle a regeneration run can flip to enforce the newer contract.
 
-| Flag | Default | When on | Landed in |
-| ---- | ------- | ------- | --------- |
-| `TRAINFORGE_CONTENT_HASH_IDS` | off | Chunk IDs are content hashes instead of positional indices — re-chunk-stable. | Wave 4 (Worker N) |
-| `TRAINFORGE_SCOPE_CONCEPT_IDS` | off | Concept node IDs become `{course_id}:{slug}` — allows cross-course disambiguation. | Wave 4 (Worker O) |
-| `TRAINFORGE_PRESERVE_LO_CASE` | off | LO references retain emit case (e.g. `TO-01`) instead of lower-casing (`to-01`). | Wave 4 (Worker O) |
-| `TRAINFORGE_VALIDATE_CHUNKS` | off | Enforces `chunk_v4.schema.json` on every chunk write; fails closed on shape drift. | Wave 4 (Worker Q) |
-| `TRAINFORGE_ENFORCE_CONTENT_TYPE` | off | Constrains `content_type_label` values to the `content_type.json` enum; fails closed on unknowns. | Wave 5 (Worker T) |
-| `TRAINFORGE_STRICT_EVIDENCE` | off | Strips FallbackProvenance from the evidence discriminator; unknown rules + shape-drifting known rules fail validation. | Wave 6 (Worker W) |
-| `DECISION_VALIDATION_STRICT` | off | Fails closed on unknown `decision_type` values in decision captures. | Wave 1 (Worker G) |
-
-Default-off preserves today's lenient behavior; each flag represents a toggle that a regeneration run can flip to enforce the newer contract.
+| Flag | When on |
+| ---- | ------- |
+| `TRAINFORGE_CONTENT_HASH_IDS` | Chunk IDs are content hashes instead of positional indices — re-chunk-stable. |
+| `TRAINFORGE_SCOPE_CONCEPT_IDS` | Concept node IDs become `{course_id}:{slug}` — allows cross-course disambiguation. |
+| `TRAINFORGE_PRESERVE_LO_CASE` | LO references retain emit case (e.g. `TO-01`) instead of lower-casing (`to-01`). |
+| `TRAINFORGE_VALIDATE_CHUNKS` | Enforces `chunk_v4.schema.json` on every chunk write; fails closed on shape drift. |
+| `TRAINFORGE_ENFORCE_CONTENT_TYPE` | Constrains `content_type_label` values to the `content_type.json` enum; fails closed on unknowns. |
+| `TRAINFORGE_STRICT_EVIDENCE` | Strips FallbackProvenance from the evidence discriminator; unknown rules + shape-drifting known rules fail validation. |
+| `TRAINFORGE_SOURCE_PROVENANCE` | Evidence arms emit `source_references[]` sourced from chunks' `source.source_references[]`. Off: arms emit the pre-provenance shape. |
+| `DECISION_VALIDATION_STRICT` | Fails closed on unknown `decision_type` values in decision captures. |
+| `DART_LLM_CLASSIFICATION` | DART's block classifier routes through Claude via `LLMClassifier` instead of heuristic regex. Requires an injected `LLMBackend`. |
+| `DART_LEGACY_CONVERTER` | Forces `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html` to use the legacy regex path. One-release safety fallback. |
+| `LOCAL_DISPATCHER_ALLOW_STUB` | Permits `LocalDispatcher` to emit a stubbed `PhaseOutput` when no `agent_tool` callable is wired in. Tests / dry-run only; production `--mode local` runs fail loudly without it set. |
 
 ### Always-emit provenance fields
 

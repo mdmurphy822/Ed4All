@@ -97,6 +97,7 @@ USER REQUEST →
 | `html-design-research` | HTML/CSS design pattern research | Template and design validation |
 | `objective-synthesizer` | Learning objective synthesis | Combining objectives from textbooks |
 | `textbook-ingestor` | Textbook content processing | Entry point for textbook materials |
+| `source-router` | Bind DART source blocks to Courseforge module pages | Source attribution for pipeline runs |
 
 ### Intake & Remediation Agents (NEW)
 | Agent | Purpose | When to Use |
@@ -244,29 +245,43 @@ Courseforge HTML pages embed machine-readable instructional design metadata for 
 | Attribute | Element | Purpose |
 |-----------|---------|---------|
 | `data-cf-role` | `<body>` (template chrome) | Page role classification (e.g. `template-chrome`) |
-| `data-cf-objective-id` | `<li>` (objectives) | Learning objective identifier |
+| `data-cf-objective-id` | `<li>` (objectives) | Learning objective identifier (canonical `TO-NN` / `CO-NN` pattern) |
 | `data-cf-bloom-level` | `<li>`, `.self-check`, `.activity-card` | Bloom's taxonomy level |
 | `data-cf-bloom-verb` | `<li>` (objectives) | Detected Bloom's verb |
 | `data-cf-bloom-range` | `<section>`, `<h2>` | Section-level Bloom level span (emit-only) |
 | `data-cf-cognitive-domain` | `<li>` (objectives) | Knowledge domain (factual/conceptual/procedural/metacognitive) |
 | `data-cf-content-type` | `<h2>`, `<h3>`, `.callout` | Section content classification |
-| `data-cf-teaching-role` | `<section>`, component wrappers | Pedagogical teaching role (Wave 2) |
+| `data-cf-teaching-role` | `<section>`, component wrappers | Pedagogical teaching role |
 | `data-cf-key-terms` | `<h2>`, `<h3>` | Comma-separated term slugs |
 | `data-cf-term` | key-term `<span>` | Individual term slug (emit-only) |
 | `data-cf-component` | `.flip-card`, `.self-check`, `.activity-card` | Interactive component type |
 | `data-cf-purpose` | `.flip-card`, `.self-check`, `.activity-card` | Pedagogical purpose |
 | `data-cf-objective-ref` | `.self-check`, `.activity-card` | Associated learning objective |
+| `data-cf-source-ids` | `<section>`, headings, component wrappers | DART `sourceId`(s) that ground this block. Shape: `dart:{slug}#{block_id}`. Carried through from DART's `data-dart-block-id` when source material is present; elided when no source grounding exists. |
+| `data-cf-source-primary` | `<section>`, headings, component wrappers | The primary `sourceId` for the block (subset of `data-cf-source-ids`) when one source dominates. |
+
+Attributes stop at the **section / component wrapper level** — never on every `<p>` / `<li>` / `<tr>` in prose.
 
 ### JSON-LD Structured Metadata
 
 Each page includes a `<script type="application/ld+json">` block in `<head>` with:
-- `learningObjectives`: ID, statement, Bloom's level/verb, cognitive domain, assessment suggestions
-- `sections`: Heading, content type, Bloom's range, key terms with definitions
+- `learningObjectives`: ID (canonical `TO-NN` / `CO-NN`), statement, Bloom's level/verb, cognitive domain, assessment suggestions
+- `sections`: Heading, content type, Bloom's range, key terms with definitions, optional per-section `sourceReferences`
 - `misconceptions`: Common misconceptions with corrections
 - `suggestedAssessmentTypes`: Recommended question formats
-- `prerequisitePages`: Cross-page prerequisite refs (Wave 2)
+- `prerequisitePages`: Cross-page prerequisite refs
+- `sourceReferences`: Optional page-level DART source references (canonical `{sourceId, role, weight?, confidence?, pages?, extractor?}` shape). Page-level JSON-LD `role` is authoritative (`primary` / `contributing` / `corroborating`) and takes precedence over attribute-level roles.
 
 Canonical shape: `schemas/knowledge/courseforge_jsonld_v1.schema.json`. Context namespace: `https://ed4all.dev/ns/courseforge/v1`.
+
+### Learning Objective IDs
+
+Emitted LO IDs follow the pattern `^[A-Z]{2,}-\d{2,}$` from the canonical helper `lib/ontology/learning_objectives.py::mint_lo_id`:
+
+- `TO-NN` — terminal (course-wide) objective.
+- `CO-NN` — chapter-level objective.
+
+Synthesized objectives are persisted to `{project}/01_learning_objectives/synthesized_objectives.json` by the `plan_course_structure` phase in the `textbook_to_course` pipeline. Downstream Trainforge consumers match case-insensitively; the `TRAINFORGE_PRESERVE_LO_CASE` flag preserves the emit case.
 
 ---
 
@@ -346,8 +361,8 @@ Courseforge can import and remediate IMSCC packages from:
 ### Scripts for Course Generation
 | Script | Location | Purpose |
 |--------|----------|---------|
-| `generate_course.py` | `scripts/` | Multi-file weekly course generation. Emits page-level JSON-LD, `course_metadata.json`, prerequisite-page refs, and `data-cf-teaching-role` (Wave 2). |
-| `package_multifile_imscc.py` | `scripts/` | Packages multi-file output into IMSCC. Default-on structural validation (Wave 2); auto-discovers `course.json` and bundles `course_metadata.json` in the zip (Wave 3). |
+| `generate_course.py` | `scripts/` | Multi-file weekly course generation. Emits page-level JSON-LD, `course_metadata.json`, prerequisite-page refs, `data-cf-teaching-role`, and `data-cf-source-ids` / page-level `sourceReferences` when DART source material is staged. |
+| `package_multifile_imscc.py` | `scripts/` | Packages multi-file output into IMSCC. Structural validation is on by default (per-week `learningObjectives` must resolve to the week's LO manifest). Auto-discovers `course.json` and bundles `course_metadata.json` at the zip root. Manifest uses IMS Common Cartridge v1.3 namespaces; resources are nested under per-week `<item>` wrappers in the organization tree. **This is the runtime target of the MCP `package_imscc` tool** — `MCP/tools/pipeline_tools.py::_package_imscc` imports and delegates here instead of hand-rolling a ZIP. |
 
 ### Scripts for Intake
 | Script | Location | Purpose |
