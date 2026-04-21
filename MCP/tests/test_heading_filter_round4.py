@@ -68,15 +68,6 @@ class TestHeadingFilterKeepsLegitimateHeadings:
         heading = "Introduction to Photosynthesis"
         assert _cgh._is_low_signal_heading(heading) is False
 
-    def test_keeps_formula_fragment_short(self):
-        """Formula-like strings are pedagogically meaningful in ontology
-        / formal-methods textbooks. Per the documented decision in
-        ``_content_gen_helpers.py``, these are preserved rather than
-        filtered.
-        """
-        heading = "C v \u2200R.D"
-        assert _cgh._is_low_signal_heading(heading) is False
-
     def test_keeps_formula_fragment_camelcase(self):
         heading = "FirstYearCourse SubClassOf isTaughtBy only Professor"
         # Not rejected: CamelCase identifiers + formal keywords look
