@@ -92,6 +92,35 @@ class PageSourceRefValidator:
 
         if not emitted_ids:
             # Nothing to check. Backward-compat path.
+            #
+            # Wave 27 CRITICAL-2 turn-down: real textbook-to-course runs
+            # should ALWAYS have source-ids now that content-generator
+            # carry-through is wired. A truly empty emitted set on a
+            # real run means Courseforge didn't stamp anything — still a
+            # real problem, but not one this validator should fail
+            # closed on (some workflows like ``course_generation``
+            # legitimately run without DART provenance). Emit a
+            # warning so the gap surfaces in the gate output + captures
+            # without breaking the backward-compat legacy-caller path.
+            if inputs.get("page_paths") or inputs.get("html_contents"):
+                issues.append(GateIssue(
+                    severity="warning",
+                    code="EMPTY_SOURCE_REFS",
+                    message=(
+                        "No data-cf-source-ids attributes or JSON-LD "
+                        "sourceReferences emitted on any page. Wave 27 "
+                        "expects content-generator carry-through to "
+                        "stamp source-ids on every DART-derived element; "
+                        "empty emit usually means DART didn't stamp "
+                        "data-dart-block-id or the staging contract broke."
+                    ),
+                    suggestion=(
+                        "Check DART's ``data-dart-block-id`` coverage on "
+                        "source sections, then re-run the content-"
+                        "generation phase. Legacy callers can ignore "
+                        "this warning."
+                    ),
+                ))
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
