@@ -61,6 +61,12 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         "course_name": ("workflow_params", "course_name"),
         "objectives_path": ("workflow_params", "objectives_path"),
         "duration_weeks": ("workflow_params", "duration_weeks"),
+        "duration_weeks_explicit": (
+            "workflow_params", "duration_weeks_explicit",
+        ),
+        # Wave 24: textbook-ingestor needs staging_dir so
+        # extract_textbook_structure can walk the staged DART HTML.
+        "staging_dir": ("phase_outputs", "staging", "staging_dir"),
     },
     "source_mapping": {
         # Wave 9: DART source-block -> Courseforge page routing.
@@ -94,7 +100,9 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         "imscc_path": ("phase_outputs", "packaging", "package_path"),
         "bloom_levels": ("workflow_params", "bloom_levels"),
         "question_count": ("workflow_params", "assessment_count"),
-        "objective_ids": ("phase_outputs", "objective_extraction", "objective_ids"),
+        # Wave 24: real TO/CO objective_ids come from course_planning
+        # (was objective_extraction with phantom {COURSE}_OBJ_N IDs).
+        "objective_ids": ("phase_outputs", "course_planning", "objective_ids"),
     },
     "libv2_archival": {
         "course_name": ("workflow_params", "course_name"),
@@ -116,14 +124,27 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
 _LEGACY_PHASE_OUTPUT_KEYS: Dict[str, List[str]] = {
     "dart_conversion": ["output_path", "output_paths", "success", "html_length"],
     "staging": ["staging_dir", "staged_files", "file_count"],
+    # Wave 24: objective_extraction no longer emits objective_ids; it
+    # now emits textbook_structure_path + chapter_count + source_file_count
+    # + duration_weeks (autoscaled when --weeks unset).
+    # Real objective_ids surface from course_planning's synthesize step.
     "objective_extraction": [
-        "project_id", "project_path", "objective_ids", "textbook_structure_path",
+        "project_id", "project_path", "textbook_structure_path",
+        "chapter_count", "duration_weeks", "source_file_count",
     ],
     "source_mapping": ["source_module_map_path", "source_chunk_ids"],
-    "course_planning": ["project_id"],
+    "course_planning": [
+        "project_id", "synthesized_objectives_path",
+        "objective_ids", "terminal_count", "chapter_count",
+    ],
     "content_generation": ["project_id", "content_paths", "weeks_prepared"],
     "packaging": ["package_path", "libv2_package_path", "project_id"],
-    "trainforge_assessment": ["output_path", "assessment_id", "question_count"],
+    # Wave 24: surface chunks_path + assessments_path for the
+    # assessment_objective_alignment gate input builder.
+    "trainforge_assessment": [
+        "output_path", "assessments_path", "assessment_id",
+        "question_count", "chunks_path",
+    ],
     "libv2_archival": ["course_slug", "course_dir", "manifest_path"],
     "finalization": ["project_id", "package_path", "course_slug"],
 }

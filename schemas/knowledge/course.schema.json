@@ -1,0 +1,78 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ed4all.org/schemas/knowledge/course.schema.json",
+  "title": "Course (LibV2 course.json)",
+  "description": "Canonical shape for Trainforge-emitted course.json. Mirrors the on-disk artifact consumed by LibV2 retrieval (LibV2/tools/libv2/retrieval_scoring.py::load_course_outcomes) and the LibV2 scaffold validator (LibV2/tools/libv2/validator.py::validate_learning_outcomes). Wave 24 canonical source of truth — wired into Trainforge/process_course.py::_build_course_json for validation before write.",
+  "type": "object",
+  "required": [
+    "course_code",
+    "title",
+    "learning_outcomes"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "course_code": {
+      "type": "string",
+      "description": "Stable course identifier (e.g. PHYS_101).",
+      "minLength": 1
+    },
+    "title": {
+      "type": "string",
+      "description": "Human-readable course title from the IMSCC manifest."
+    },
+    "learning_outcomes": {
+      "type": "array",
+      "description": "Flat list of terminal + chapter LOs for this course. Emitted in the order produced by _build_course_json: terminal first, chapter second.",
+      "items": {
+        "$ref": "#/definitions/LearningOutcome"
+      }
+    }
+  },
+  "definitions": {
+    "LearningOutcome": {
+      "type": "object",
+      "required": ["id", "statement", "hierarchy_level"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Canonical LO ID. Matches the Courseforge JSON-LD pattern. Trainforge emits lowercase; LibV2 matches case-insensitively.",
+          "pattern": "^[a-zA-Z]{2,}-\\d{2,}$"
+        },
+        "statement": {
+          "type": "string",
+          "description": "The LO's natural-language statement (one sentence).",
+          "minLength": 1
+        },
+        "hierarchy_level": {
+          "type": "string",
+          "description": "Identifies whether this LO is a course-wide terminal outcome or a chapter-level outcome.",
+          "enum": ["terminal", "chapter"]
+        },
+        "bloom_level": {
+          "type": "string",
+          "description": "Bloom's taxonomy cognitive level. Canonical enum matches schemas/taxonomies/bloom_verbs.json top-level keys.",
+          "enum": [
+            "remember",
+            "understand",
+            "apply",
+            "analyze",
+            "evaluate",
+            "create"
+          ]
+        },
+        "bloom_verb": {
+          "type": "string",
+          "description": "Primary Bloom verb detected in the LO statement (optional; populated when hierarchy emit carries verb hints)."
+        },
+        "key_concepts": {
+          "type": "array",
+          "description": "Optional slugified concept tags the LO covers. Populated by synthesize_objectives_from_topics.",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

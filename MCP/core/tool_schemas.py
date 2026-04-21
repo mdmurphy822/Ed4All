@@ -433,6 +433,55 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "description": "Wave 9 source_mapping phase stub: writes an empty source_module_map.json so content-generator falls through to the LO-only backward-compat path.",
     },
 
+    # Wave 24: Replace textbook-ingestor's create_course_project dispatch
+    # with a real SemanticStructureExtractor call.
+    "extract_textbook_structure": {
+        "required": ["course_name"],
+        "optional": [
+            "staging_dir", "duration_weeks", "duration_weeks_explicit",
+            "objectives_path", "credit_hours",
+        ],
+        "defaults": {
+            "duration_weeks": 12,
+            "duration_weeks_explicit": True,
+            "credit_hours": 3,
+        },
+        "param_mapping": {
+            "course": "course_name",
+            "name": "course_name",
+            "course_code": "course_name",
+            "objectives": "objectives_path",
+            "objectives_file": "objectives_path",
+            "weeks": "duration_weeks",
+            "duration": "duration_weeks",
+        },
+        "description": "Wave 24: Extract semantic structure from staged DART HTML into textbook_structure.json.",
+    },
+
+    # Wave 24: Synthesize + persist real TO-NN/CO-NN objectives from
+    # the textbook_structure (or supplied objectives_path).
+    "plan_course_structure": {
+        "required": [],
+        "optional": [
+            "project_id", "course_name", "duration_weeks",
+            "objectives_path", "staging_dir", "source_module_map_path",
+        ],
+        "defaults": {
+            "duration_weeks": 12,
+        },
+        "param_mapping": {
+            "project": "project_id",
+            "course": "course_name",
+            "name": "course_name",
+            "course_code": "course_name",
+            "objectives": "objectives_path",
+            "objectives_file": "objectives_path",
+            "weeks": "duration_weeks",
+            "duration": "duration_weeks",
+        },
+        "description": "Wave 24: Plan course structure — synthesize TO/CO objectives from textbook structure and persist synthesized_objectives.json.",
+    },
+
     # =========================================================================
     # PIPELINE TOOLS - Additional (create/run/status/markers)
     # Added by pipeline-plumbing remediation to close MCP audit Q1 (latent

@@ -470,7 +470,7 @@ workflows:
         max_concurrent: 1
         depends_on: [staging]
         timeout_minutes: 60
-        description: Extract structure and synthesize learning objectives from textbook
+        description: Extract structure from staged DART HTML into textbook_structure.json (Wave 24)
 
         inputs_from:
           - param: course_name
@@ -482,12 +482,22 @@ workflows:
           - param: duration_weeks
             source: workflow_params
             key: duration_weeks
+          # Wave 24 HIGH-6: when --weeks is unset, auto-scale to max(8, chapters).
+          - param: duration_weeks_explicit
+            source: workflow_params
+            key: duration_weeks_explicit
+          - param: staging_dir
+            source: phase_outputs
+            phase: staging
+            output: staging_dir
 
         outputs:
           - project_id
           - project_path
-          - objective_ids
           - textbook_structure_path
+          - chapter_count
+          - duration_weeks
+          - source_file_count
 
       - name: source_mapping
         agents: [source-router]
@@ -521,7 +531,7 @@ workflows:
         max_concurrent: 1
         depends_on: [source_mapping]
         timeout_minutes: 60
-        description: Create course structure from synthesized objectives
+        description: Synthesize real TO/CO objectives + persist synthesized_objectives.json (Wave 24)
 
         inputs_from:
           - param: project_id
@@ -544,6 +554,10 @@ workflows:
 
         outputs:
           - project_id
+          - synthesized_objectives_path
+          - objective_ids
+          - terminal_count
+          - chapter_count
 
       - name: content_generation
         agents: [content-generator]
@@ -656,15 +670,23 @@ workflows:
           - param: question_count
             source: workflow_params
             key: assessment_count
+          # Wave 24: real TO/CO objective_ids come from course_planning
+          # (previously pulled from objective_extraction, which emitted
+          # phantom {COURSE}_OBJ_N placeholders).
           - param: objective_ids
             source: phase_outputs
-            phase: objective_extraction
+            phase: course_planning
             output: objective_ids
 
         outputs:
           - output_path
+          - assessments_path
           - assessment_id
           - question_count
+          # Wave 24: surface chunks_path so the
+          # assessment_objective_alignment gate builder can pair the
+          # assessments payload with the Trainforge chunks.jsonl.
+          - chunks_path
 
         validation_gates:
           - gate_id: imscc_input_valid
@@ -686,6 +708,21 @@ workflows:
             behavior:
               on_fail: block
               on_error: fail_closed
+
+          # Wave 24 scope 7: fail-loud gate that keeps assessment
+          # objective_ids aligned with chunk learning_outcome_refs. Before
+          # Wave 24, two disjoint LO schemes coexisted; if that failure
+          # mode ever resurfaces, this gate stops the pipeline before
+          # 896 phantom refs land in the training corpus.
+          - gate_id: assessment_objective_alignment
+            validator: lib.validators.assessment_objective_alignment.AssessmentObjectiveAlignmentValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Every assessment question's objective_id must appear in at least one chunk's learning_outcome_refs (Wave 24)
 
       - name: libv2_archival
         agents: [libv2-archivist]
