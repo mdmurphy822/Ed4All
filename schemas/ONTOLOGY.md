@@ -1045,9 +1045,10 @@ From root `/CLAUDE.md` § Active Gates:
 |---|---|---|
 | `course_generation` | `content_structure` | `ContentStructureValidator` |
 | `course_generation` | `imscc_structure` | `IMSCCValidator` |
-| `course_generation` | `wcag_compliance` | `WCAGValidator` |
-| `course_generation` | `oscqr_score` | `OSCQRValidator` |
-| `batch_dart` | `wcag_aa_compliance` | `WCAGValidator` |
+| `course_generation` | `wcag_compliance` | `WCAGValidator` (Wave 31 — semantic upgrade) |
+| `course_generation` | `oscqr_score` | `OSCQRValidator` (Wave 31 — real impl) |
+| `batch_dart` | `wcag_aa_compliance` | `WCAGValidator` (Wave 31 — semantic upgrade) |
+| `textbook_to_course` | `content_grounding` | `ContentGroundingValidator` (Wave 31) |
 | `rag_training` | `assessment_quality` | `AssessmentQualityValidator` |
 | `rag_training` | `bloom_alignment` | `BloomAlignmentValidator` |
 | `rag_training` | `leak_check` | `LeakChecker` |
