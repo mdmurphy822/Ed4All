@@ -135,35 +135,10 @@ def test_migrated_sites_match_canonical_apply_level():
     )
 
 
-def test_bloom_taxonomy_mapper_shape_preserved():
-    """Richest callsite preserves its local Dict[BloomLevel, List[BloomVerb]] shape."""
-    mapper_path = (
-        _REPO_ROOT
-        / "Courseforge"
-        / "scripts"
-        / "textbook-objective-generator"
-        / "bloom_taxonomy_mapper.py"
-    )
-    m = _load_by_path("bloom_taxonomy_mapper_wh_test", mapper_path)
-
-    assert m.BLOOM_VERBS, "BLOOM_VERBS must not be empty after migration"
-    for level, verbs in m.BLOOM_VERBS.items():
-        assert isinstance(level, m.BloomLevel), (
-            f"Expected BloomLevel key, got {type(level).__name__}"
-        )
-        assert len(verbs) == 10, (
-            f"Expected 10 verbs at {level}, got {len(verbs)}"
-        )
-        for v in verbs:
-            assert isinstance(v, m.BloomVerb), (
-                f"Expected local BloomVerb, got {type(v).__name__}"
-            )
-            assert v.level == level, (
-                f"Local BloomVerb.level must match its dict key (got {v.level} in {level})"
-            )
-            assert v.verb, "verb string must be non-empty"
-            assert v.usage_context, "usage_context must be non-empty"
-            assert v.example_template, "example_template must be non-empty"
+# Wave 28f: test_bloom_taxonomy_mapper_shape_preserved removed alongside the
+# textbook-objective-generator/ subtree deletion. The canonical bloom module
+# + its shape contracts are covered by test_canonical_shapes and
+# test_migrated_sites_match_canonical_apply_level above.
 
 
 def test_libv2_vendor_loader_matches_canonical():
