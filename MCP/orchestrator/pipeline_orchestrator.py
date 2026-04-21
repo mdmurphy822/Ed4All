@@ -37,7 +37,15 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class OrchestratorResult:
-    """Final result returned by ``PipelineOrchestrator.run()``."""
+    """Final result returned by ``PipelineOrchestrator.run()``.
+
+    Wave 29 Defect 3: carries an aggregated ``gates_passed`` flag so
+    downstream callers (CLI, programmatic consumers) don't have to
+    re-scan every phase to know whether gates ran cleanly. Aggregation
+    rule: ``gates_passed`` is ``True`` iff every phase that reports the
+    flag reports ``True`` — phases without a ``gates_passed`` entry
+    (no gates configured) are treated as passing.
+    """
 
     workflow_id: str
     status: Literal["ok", "failed", "dry_run"]
@@ -45,6 +53,16 @@ class OrchestratorResult:
     phase_outputs: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     dispatched_phases: List[str] = field(default_factory=list)
     error: Optional[str] = None
+
+    @property
+    def gates_passed(self) -> bool:
+        """Return True iff no phase reported a gate failure."""
+        for info in (self.phase_results or {}).values():
+            if not isinstance(info, dict):
+                continue
+            if info.get("gates_passed") is False:
+                return False
+        return True
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -54,6 +72,7 @@ class OrchestratorResult:
             "phase_outputs": self.phase_outputs,
             "dispatched_phases": self.dispatched_phases,
             "error": self.error,
+            "gates_passed": self.gates_passed,
         }
 
 
@@ -207,6 +226,20 @@ class PipelineOrchestrator:
             # Build orchestrator-level decision capture. Best-effort —
             # a DecisionCapture construction failure must not block
             # the executor build.
+            #
+            # Wave 29 Defect 5: prefer the canonical course code pinned
+            # onto ``params.canonical_course_code`` at workflow-creation
+            # time (see ``MCP/tools/pipeline_tools.py::create_textbook_pipeline``).
+            # That single source of truth is normalised ONCE at creation
+            # from ``params.course_name`` so the orchestrator capture
+            # doesn't re-normalise and drift out of alignment with the
+            # captures downstream CF/TF phases create from the same
+            # ``course_name``. Falls back to on-the-fly normalisation
+            # when the canonical code isn't available (legacy workflow
+            # states created before this change).
+            canonical_cc = None
+            if isinstance(params, dict):
+                canonical_cc = params.get("canonical_course_code")
             course_code_raw = (
                 params.get("course_name") if isinstance(params, dict) else None
             ) or (workflow_state.get("type") or "PIPELINE")
@@ -216,8 +249,19 @@ class PipelineOrchestrator:
                     normalize_course_code,
                 )
 
+                if canonical_cc:
+                    cc = canonical_cc
+                else:
+                    cc = normalize_course_code(str(course_code_raw))
+                    logger.debug(
+                        "DC5 fallback: workflow_state missing "
+                        "canonical_course_code; derived %s from %r",
+                        cc,
+                        course_code_raw,
+                    )
+
                 capture = DecisionCapture(
-                    course_code=normalize_course_code(str(course_code_raw)),
+                    course_code=cc,
                     phase="orchestrator",
                     tool="pipeline",
                     streaming=True,
