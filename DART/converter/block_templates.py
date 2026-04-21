@@ -97,11 +97,33 @@ def _extract_list_items(block: ClassifiedBlock) -> List[str]:
 
 
 def _tpl_chapter_opener(block: ClassifiedBlock) -> str:
-    """``<article role="doc-chapter">`` with schema.org Chapter microdata."""
+    """``<article role="doc-chapter">`` with schema.org Chapter microdata.
+
+    Wave 15: emits ``id="chap-{number}"`` whenever a chapter number can
+    be derived (explicit attribute or scraped from raw text) so the
+    cross-reference resolver and document-level JSON-LD ``hasPart`` can
+    target stable anchors. Falls back to the ``block_id``-based id when
+    no number is available.
+    """
     title = block.attributes.get("heading_text") or block.raw.text
     body = block.attributes.get("body_html", "")
+    number = (
+        block.attributes.get("chapter_number")
+        or block.attributes.get("number")
+    )
+    if not number:
+        # Scrape "Chapter N" from heading_text or raw text. The heuristic
+        # classifier strips the "Chapter N:" prefix into heading_text, so
+        # raw.text is usually where the number survives.
+        import re as _re
+        for candidate in (block.raw.text or "", block.attributes.get("heading_text") or ""):
+            m = _re.search(r"\bchapter\s+(\d+)\b", candidate, _re.IGNORECASE)
+            if m:
+                number = m.group(1)
+                break
+    chap_id = f"chap-{number}" if number else _stable_id(block, "chap")
     return (
-        f'<article role="doc-chapter" itemscope '
+        f'<article role="doc-chapter" id="{_escape(chap_id)}" itemscope '
         f'itemtype="https://schema.org/Chapter" {_provenance_attrs(block)}>'
         f"<header><h2 itemprop=\"name\">{_escape(title)}</h2></header>"
         f"{body}"
@@ -300,8 +322,17 @@ def _tpl_bibliography_entry(block: ClassifiedBlock) -> str:
     The assembler wraps the set in ``<ol role="doc-bibliography">``; each
     entry emits only the ``<li>`` node so the wrapping stays the
     assembler's concern.
+
+    Wave 15: when no explicit ``number`` / ``ref_id`` attribute is set,
+    scrape ``[N]`` or ``(N)`` from the raw text so the ``ref-N`` anchor
+    matches the target the cross-reference resolver is looking for.
     """
     number = block.attributes.get("number") or block.attributes.get("ref_id")
+    if not number:
+        import re as _re
+        match = _re.match(r"^\s*[\[\(](\d{1,3})[\]\)]\s+", block.raw.text or "")
+        if match:
+            number = match.group(1)
     anchor = f"ref-{number}" if number else f"ref-{block.raw.block_id}"
     return (
         f'<li id="{anchor}" role="doc-endnote" itemscope '
