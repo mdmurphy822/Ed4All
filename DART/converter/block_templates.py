@@ -39,19 +39,102 @@ def _role_attr(block: ClassifiedBlock) -> str:
     return f'data-dart-block-role="{block.role.value}"'
 
 
+# ---------------------------------------------------------------------------
+# Wave 19: data-dart-source mapping
+# ---------------------------------------------------------------------------
+#
+# Maps (classifier_source, upstream extractor) -> canonical data-dart-source
+# enum value emitted on every section/component wrapper. Kept in sync with
+# ``lib/validators/dart_markers.py`` and ``DART/CLAUDE.md`` § "Source
+# provenance".
+#
+# Enum values:
+#   pdftotext    - raw prose from pdftotext (default for heuristic blocks)
+#   pdfplumber   - pdfplumber table extractor
+#   pymupdf      - PyMuPDF figure / TOC / table fallback extractor
+#   claude_llm   - Claude-backed LLM classifier
+#   dart_converter - generic converter-output source (heuristic/no upstream)
+
+
+def _data_dart_source_value(block: ClassifiedBlock) -> str:
+    """Return the canonical ``data-dart-source`` enum value for ``block``.
+
+    Routing (first match wins):
+
+    * ``classifier_source == "extractor_hint"`` -> upstream ``raw.extractor``
+      (pdfplumber / pymupdf / pdftotext); default ``dart_converter``.
+    * ``classifier_source == "llm"`` -> ``claude_llm``.
+    * otherwise (``classifier_source == "heuristic"`` or anything else) ->
+      ``dart_converter``.
+    """
+    cs = getattr(block, "classifier_source", "heuristic") or "heuristic"
+    if cs == "extractor_hint":
+        extra_source = ""
+        if isinstance(block.attributes, dict):
+            extra_source = str(block.attributes.get("source") or "").strip()
+        if extra_source in {"pdfplumber", "pymupdf", "pdftotext"}:
+            return extra_source
+        up = getattr(block.raw, "extractor", "") or ""
+        if up in {"pdfplumber", "pymupdf"}:
+            return up
+        if up == "pdftotext":
+            return "pdftotext"
+        return "dart_converter"
+    if cs == "llm":
+        return "claude_llm"
+    # Heuristic / default fallback.
+    return "dart_converter"
+
+
 def _provenance_attrs(block: ClassifiedBlock) -> str:
-    """Emit DART provenance attributes common to every template.
+    """Emit DART provenance attributes common to every wrapper template.
 
     Includes: ``data-dart-block-role``, ``data-dart-block-id``, optional
-    ``data-dart-page``, and ``data-dart-confidence``. All values are
-    safe-escaped (they derive from enums, ints, floats, or a 16-hex
-    string produced by the segmenter).
+    ``data-dart-page``, ``data-dart-confidence``, and ``data-dart-source``
+    (Wave 19 restoration). All values are safe-escaped (they derive from
+    enums, ints, floats, or a 16-hex string produced by the segmenter).
     """
     parts = [_role_attr(block), f'data-dart-block-id="{block.raw.block_id}"']
     if block.raw.page is not None:
         parts.append(f'data-dart-page="{block.raw.page}"')
     parts.append(f'data-dart-confidence="{block.confidence:.2f}"')
+    parts.append(f'data-dart-source="{_data_dart_source_value(block)}"')
     return " ".join(parts)
+
+
+def _section_class(existing: str = "") -> str:
+    """Return a ``class="dart-section ..."`` attribute string.
+
+    Wave 19 restoration: the ``dart-section`` semantic class is required
+    by the ``dart_markers`` validator (``lib/validators/dart_markers.py``)
+    on every top-level ``<section>`` / ``<article>`` / ``<aside>`` wrapper.
+    When ``existing`` carries other classes (e.g. ``callout callout-info``)
+    they're preserved — ``dart-section`` is prepended.
+    """
+    existing = (existing or "").strip()
+    if existing:
+        return f'class="dart-section {existing}"'
+    return 'class="dart-section"'
+
+
+# Roles whose template emits a leaf element (``<p>``, ``<span>``,
+# ``<h1>``, ``<h3>``, ``<cite>``, ``<a>``, ``<li>``, ``<figcaption>``).
+# Per the Wave 8 P2 rule, leaf elements never carry ``data-dart-*``
+# attributes — the enclosing section/component wrapper does.
+_WAVE19_LEAF_ROLES = frozenset({
+    BlockRole.PARAGRAPH,
+    BlockRole.SUBSECTION_HEADING,
+    BlockRole.PAGE_BREAK,
+    BlockRole.CITATION,
+    BlockRole.CROSS_REFERENCE,
+    BlockRole.FIGURE_CAPTION,
+    BlockRole.BIBLIOGRAPHY_ENTRY,
+    BlockRole.TITLE,
+    BlockRole.AUTHOR_AFFILIATION,
+    BlockRole.COPYRIGHT_LICENSE,
+    BlockRole.KEYWORDS,
+    BlockRole.BIBLIOGRAPHIC_METADATA,
+})
 
 
 def _stable_id(block: ClassifiedBlock, prefix: str) -> str:
@@ -123,7 +206,7 @@ def _tpl_chapter_opener(block: ClassifiedBlock) -> str:
                 break
     chap_id = f"chap-{number}" if number else _stable_id(block, "chap")
     return (
-        f'<article role="doc-chapter" id="{_escape(chap_id)}" itemscope '
+        f'<article {_section_class()} role="doc-chapter" id="{_escape(chap_id)}" itemscope '
         f'itemtype="https://schema.org/Chapter" {_provenance_attrs(block)}>'
         f"<header><h2 itemprop=\"name\">{_escape(title)}</h2></header>"
         f"{body}"
@@ -136,27 +219,35 @@ def _tpl_section_heading(block: ClassifiedBlock) -> str:
     text = block.attributes.get("heading_text") or block.raw.text
     sid = _stable_id(block, "sec")
     return (
-        f'<section id="{sid}" role="region" aria-labelledby="{sid}-h" '
-        f"{_provenance_attrs(block)}>"
+        f'<section {_section_class()} id="{sid}" role="region" '
+        f'aria-labelledby="{sid}-h" {_provenance_attrs(block)}>'
         f'<h2 id="{sid}-h">{_escape(text)}</h2>'
         f"</section>"
     )
 
 
 def _tpl_subsection_heading(block: ClassifiedBlock) -> str:
-    """``<section>`` wrapped ``<h3>`` with ``aria-labelledby``."""
+    """Leaf ``<h3>`` with id — no section wrapper, no data-dart-* attrs.
+
+    Wave 19: subsection headings are leaf nodes (Wave 8 P2 rule — attributes
+    stop at the section/component wrapper level). The pre-Wave-13
+    pipeline emitted just an ``<h3>`` here; reverting to that shape
+    trims the ``<section>`` inflation the validator review surfaced.
+    """
     text = block.attributes.get("heading_text") or block.raw.text
     sid = _stable_id(block, "sub")
-    return (
-        f'<section id="{sid}" aria-labelledby="{sid}-h" {_provenance_attrs(block)}>'
-        f'<h3 id="{sid}-h">{_escape(text)}</h3>'
-        f"</section>"
-    )
+    return f'<h3 id="{sid}">{_escape(text)}</h3>'
 
 
 def _tpl_paragraph(block: ClassifiedBlock) -> str:
-    """Plain ``<p>`` with provenance attributes."""
-    return f"<p {_provenance_attrs(block)}>{_escape(block.raw.text)}</p>"
+    """Leaf ``<p>`` with no data-dart-* attributes.
+
+    Wave 19: strips provenance attributes from every ``<p>`` — per the
+    Wave 8 P2 rule, attributes stop at the section/component wrapper
+    level. The enclosing section/article carries the provenance; the
+    paragraph is a leaf.
+    """
+    return f"<p>{_escape(block.raw.text)}</p>"
 
 
 def _render_toc_entries(entries: list) -> str:
@@ -302,12 +393,15 @@ def _tpl_toc_nav(block: ClassifiedBlock) -> str:
 
 
 def _tpl_page_break(block: ClassifiedBlock) -> str:
-    """``<span role="doc-pagebreak">`` with ``aria-label``."""
+    """Leaf ``<span role="doc-pagebreak">`` with ``aria-label``.
+
+    Wave 19: no data-dart-* attributes — span is a leaf, not a wrapper.
+    """
     page_label = block.attributes.get("page") or block.raw.page or block.raw.text or ""
     label_text = f"page {page_label}" if page_label else "page break"
     return (
         f'<span class="page-break" role="doc-pagebreak" '
-        f'aria-label="{_escape(label_text)}" {_provenance_attrs(block)}></span>'
+        f'aria-label="{_escape(label_text)}"></span>'
     )
 
 
@@ -322,7 +416,8 @@ def _tpl_learning_objectives(block: ClassifiedBlock) -> str:
     items_html = _render_list_items(items) if items else f"<li>{_escape(block.raw.text)}</li>"
     sid = _stable_id(block, "lo")
     return (
-        f'<section itemscope itemtype="https://schema.org/LearningResource" '
+        f'<section {_section_class()} itemscope '
+        f'itemtype="https://schema.org/LearningResource" '
         f'aria-labelledby="{sid}-h" {_provenance_attrs(block)}>'
         f'<h3 id="{sid}-h" itemprop="learningResourceType">Learning Objectives</h3>'
         f"<ul>{items_html}</ul>"
@@ -339,7 +434,8 @@ def _tpl_key_takeaways(block: ClassifiedBlock) -> str:
     else:
         content = f"<p>{_escape(block.raw.text)}</p>"
     return (
-        f'<aside role="doc-tip" aria-labelledby="{sid}-h" {_provenance_attrs(block)}>'
+        f'<aside {_section_class()} role="doc-tip" '
+        f'aria-labelledby="{sid}-h" {_provenance_attrs(block)}>'
         f'<h4 id="{sid}-h">Key Takeaways</h4>'
         f"{content}"
         f"</aside>"
@@ -352,7 +448,8 @@ def _tpl_activity(block: ClassifiedBlock) -> str:
     title = block.attributes.get("title", "Activity")
     body = block.attributes.get("body_html") or f"<p>{_escape(block.raw.text)}</p>"
     return (
-        f'<section role="doc-example" aria-labelledby="{sid}-h" {_provenance_attrs(block)}>'
+        f'<section {_section_class()} role="doc-example" '
+        f'aria-labelledby="{sid}-h" {_provenance_attrs(block)}>'
         f'<h4 id="{sid}-h">{_escape(title)}</h4>'
         f"{body}"
         f"</section>"
@@ -367,7 +464,8 @@ def _tpl_self_check(block: ClassifiedBlock) -> str:
     else:
         questions = f"<p>{_escape(block.raw.text)}</p>"
     return (
-        f'<section role="doc-example" aria-label="Self-check" {_provenance_attrs(block)}>'
+        f'<section {_section_class()} role="doc-example" '
+        f'aria-label="Self-check" {_provenance_attrs(block)}>'
         f"<h4>Self-check</h4>"
         f"{questions}"
         f"</section>"
@@ -381,7 +479,8 @@ def _tpl_example(block: ClassifiedBlock) -> str:
     body = block.attributes.get("body_html") or f"<p>{_escape(block.raw.text)}</p>"
     heading = f"Example: {_escape(title)}" if title else "Example"
     return (
-        f'<section role="doc-example" aria-labelledby="{sid}-h" {_provenance_attrs(block)}>'
+        f'<section {_section_class()} role="doc-example" '
+        f'aria-labelledby="{sid}-h" {_provenance_attrs(block)}>'
         f'<h4 id="{sid}-h">{heading}</h4>'
         f"{body}"
         f"</section>"
@@ -395,7 +494,8 @@ def _tpl_exercise(block: ClassifiedBlock) -> str:
     body = block.attributes.get("body_html") or f"<p>{_escape(block.raw.text)}</p>"
     heading = f"Exercise: {_escape(title)}" if title else "Exercise"
     return (
-        f'<section role="doc-example" aria-labelledby="{sid}-h" {_provenance_attrs(block)}>'
+        f'<section {_section_class()} role="doc-example" '
+        f'aria-labelledby="{sid}-h" {_provenance_attrs(block)}>'
         f'<h4 id="{sid}-h">{heading}</h4>'
         f"{body}"
         f"</section>"
@@ -437,7 +537,8 @@ def _tpl_abstract(block: ClassifiedBlock) -> str:
     sid = _stable_id(block, "abs")
     body = block.attributes.get("body_html") or f"<p>{_escape(block.raw.text)}</p>"
     return (
-        f'<section role="doc-abstract" aria-labelledby="{sid}-h" '
+        f'<section {_section_class()} role="doc-abstract" '
+        f'aria-labelledby="{sid}-h" '
         f'itemprop="abstract" {_provenance_attrs(block)}>'
         f'<h2 id="{sid}-h">Abstract</h2>'
         f"{body}"
@@ -463,9 +564,12 @@ def _tpl_bibliography_entry(block: ClassifiedBlock) -> str:
         if match:
             number = match.group(1)
     anchor = f"ref-{number}" if number else f"ref-{block.raw.block_id}"
+    # Wave 19: <li> is a leaf inside the <ol role="doc-bibliography"> the
+    # assembler wraps around the entry set — no data-dart-* attributes
+    # on the inner list item per the Wave 8 P2 rule.
     return (
         f'<li id="{anchor}" role="doc-endnote" itemscope '
-        f'itemtype="https://schema.org/CreativeWork" {_provenance_attrs(block)}>'
+        f'itemtype="https://schema.org/CreativeWork">'
         f'<cite itemprop="citation">{_escape(block.raw.text)}</cite>'
         f"</li>"
     )
@@ -478,7 +582,8 @@ def _tpl_footnote(block: ClassifiedBlock) -> str:
     anchor_id = f"fn-{number}" if number else f"fn-{block.raw.block_id}"
     backref_target = f"#ref-fn{number}" if number else f"#ref-{block.raw.block_id}"
     return (
-        f'<aside id="{anchor_id}" role="doc-footnote" {_provenance_attrs(block)}>'
+        f'<aside {_section_class()} id="{anchor_id}" role="doc-footnote" '
+        f'{_provenance_attrs(block)}>'
         f"<p>{sup}{_escape(block.raw.text)} "
         f'<a href="{_escape(backref_target)}">\u21a9</a></p>'
         f"</aside>"
@@ -486,17 +591,22 @@ def _tpl_footnote(block: ClassifiedBlock) -> str:
 
 
 def _tpl_citation(block: ClassifiedBlock) -> str:
-    """Inline ``<cite>`` with provenance attributes."""
-    return f"<cite {_provenance_attrs(block)}>{_escape(block.raw.text)}</cite>"
+    """Inline ``<cite>`` — leaf, no data-dart-* attrs (Wave 19)."""
+    return f"<cite>{_escape(block.raw.text)}</cite>"
 
 
 def _tpl_cross_reference(block: ClassifiedBlock) -> str:
-    """``<a role="doc-cross-reference">`` anchor; target resolved in Wave 15."""
+    """Inline ``<a role="doc-cross-reference">`` anchor — leaf, no data-dart-*.
+
+    Wave 19: anchor is an inline leaf; the enclosing section/paragraph
+    wrapper carries the provenance. Target resolution done by
+    :func:`DART.converter.cross_refs.resolve_cross_references`.
+    """
     target_id = block.attributes.get("target_id", "")
     href = f"#{target_id}" if target_id else "#"
     return (
-        f'<a href="{_escape(href)}" role="doc-cross-reference" '
-        f"{_provenance_attrs(block)}>{_escape(block.raw.text)}</a>"
+        f'<a href="{_escape(href)}" role="doc-cross-reference">'
+        f"{_escape(block.raw.text)}</a>"
     )
 
 
@@ -566,14 +676,14 @@ def _tpl_figure(block: ClassifiedBlock) -> str:
 
 
 def _tpl_figure_caption(block: ClassifiedBlock) -> str:
-    """Standalone ``<figcaption>`` — rare, emitted when a caption detaches.
+    """Standalone ``<figcaption>`` — leaf, no data-dart-* attrs (Wave 19).
 
-    The provenance attributes still go on the ``<figcaption>`` itself so
-    the downstream validator can trace the block even when it isn't
-    nested in a ``<figure>``.
+    Rare — emitted when a caption detaches from its ``<figure>``. Per the
+    Wave 8 P2 rule, captions are leaf nodes; the surrounding figure (or
+    the enclosing section) carries the provenance.
     """
     return (
-        f'<figcaption itemprop="caption" {_provenance_attrs(block)}>'
+        f'<figcaption itemprop="caption">'
         f"{_escape(block.raw.text)}"
         f"</figcaption>"
     )
@@ -758,7 +868,8 @@ def _tpl_epigraph(block: ClassifiedBlock) -> str:
         f"<footer>\u2014 {_escape(attribution)}</footer>" if attribution else ""
     )
     return (
-        f'<section role="doc-epigraph" {_provenance_attrs(block)}>'
+        f'<section {_section_class()} role="doc-epigraph" '
+        f'{_provenance_attrs(block)}>'
         f"<blockquote>"
         f"<p>{_escape(block.raw.text)}</p>"
         f"{footer_html}"
@@ -770,7 +881,8 @@ def _tpl_epigraph(block: ClassifiedBlock) -> str:
 def _tpl_pullquote(block: ClassifiedBlock) -> str:
     """``<aside role="doc-pullquote">`` with decorative styling class."""
     return (
-        f'<aside role="doc-pullquote" class="pullquote" {_provenance_attrs(block)}>'
+        f'<aside {_section_class("pullquote")} role="doc-pullquote" '
+        f'{_provenance_attrs(block)}>'
         f"<blockquote>"
         f"<p>{_escape(block.raw.text)}</p>"
         f"</blockquote>"
@@ -802,7 +914,7 @@ def _callout(
     title = block.attributes.get("title", "")
     body = block.attributes.get("body_html") or f"<p>{_escape(block.raw.text)}</p>"
     return (
-        f'<aside role="{dpub_role}" class="{css_class}" '
+        f'<aside role="{dpub_role}" {_section_class(css_class)} '
         f'aria-labelledby="{sid}-h" {_provenance_attrs(block)}>'
         f'<h4 id="{sid}-h">'
         f'<span aria-hidden="true">{icon}</span> '
@@ -868,16 +980,20 @@ def _tpl_callout_danger(block: ClassifiedBlock) -> str:
 
 
 def _tpl_title(block: ClassifiedBlock) -> str:
-    """``<h1 itemprop="name">`` — normally the assembler emits the main H1."""
+    """Leaf ``<h1 itemprop="name">`` — no data-dart-* attrs (Wave 19).
+
+    Normally the assembler emits the main H1; this template renders
+    embedded TITLE blocks, which per the Wave 8 P2 rule are leaf nodes.
+    """
     return (
-        f'<h1 itemprop="name" {_provenance_attrs(block)}>'
+        f'<h1 itemprop="name">'
         f"{_escape(block.raw.text)}"
         f"</h1>"
     )
 
 
 def _tpl_author_affiliation(block: ClassifiedBlock) -> str:
-    """``schema.org/Person`` microdata with inline name + affiliation."""
+    """Leaf ``<p>`` with ``schema.org/Person`` microdata — no data-dart-*."""
     name = block.attributes.get("name")
     affiliation = block.attributes.get("affiliation")
     if name or affiliation:
@@ -890,34 +1006,34 @@ def _tpl_author_affiliation(block: ClassifiedBlock) -> str:
         body = f'<span itemprop="name">{_escape(block.raw.text)}</span>'
     return (
         f'<p class="authors" itemprop="author" itemscope '
-        f'itemtype="https://schema.org/Person" {_provenance_attrs(block)}>'
+        f'itemtype="https://schema.org/Person">'
         f"{body}"
         f"</p>"
     )
 
 
 def _tpl_copyright_license(block: ClassifiedBlock) -> str:
-    """``<p itemprop="license">`` copyright / license notice."""
+    """Leaf ``<p itemprop="license">`` — no data-dart-* attrs (Wave 19)."""
     return (
-        f'<p class="license" itemprop="license" {_provenance_attrs(block)}>'
+        f'<p class="license" itemprop="license">'
         f"{_escape(block.raw.text)}"
         f"</p>"
     )
 
 
 def _tpl_keywords(block: ClassifiedBlock) -> str:
-    """``<p itemprop="keywords">`` keyword list."""
+    """Leaf ``<p itemprop="keywords">`` — no data-dart-* attrs (Wave 19)."""
     return (
-        f'<p class="keywords" itemprop="keywords" {_provenance_attrs(block)}>'
+        f'<p class="keywords" itemprop="keywords">'
         f"{_escape(block.raw.text)}"
         f"</p>"
     )
 
 
 def _tpl_bibliographic_metadata(block: ClassifiedBlock) -> str:
-    """Fallback bucket for misc bibliographic metadata lines."""
+    """Leaf fallback ``<p>`` for bibliographic metadata — no data-dart-*."""
     return (
-        f'<p class="biblio-metadata" {_provenance_attrs(block)}>'
+        f'<p class="biblio-metadata">'
         f"{_escape(block.raw.text)}"
         f"</p>"
     )
