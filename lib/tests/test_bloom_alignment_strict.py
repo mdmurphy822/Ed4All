@@ -29,8 +29,8 @@ def _q(qid: str, stem: str, declared="understand"):
 
 
 def test_all_verbless_stems_score_zero_strict_mode():
-    """30 verb-less stems (the OLSR_201 shape) should score 0.0 in strict
-    mode — previously scored 1.0."""
+    """30 verb-less stems (the degenerate real-run shape) should
+    score 0.0 in strict mode — previously scored 1.0."""
     questions = [_q(f"q-{i:03d}", "<p>Something about Structural</p>") for i in range(30)]
     result = BloomAlignmentValidator().validate({
         "assessment_data": {"questions": questions},

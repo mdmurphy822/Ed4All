@@ -3,8 +3,8 @@
 The canonical ``course_id`` pattern at
 ``schemas/events/decision_event.schema.json`` is
 ``^[A-Z]{2,8}_[0-9]{3}$``. PDF-derived codes like ``"Ed4All"``,
-``"bates_teaching_digital_age"``, or ``"arxiv-2301.12345"`` fail that
-regex. Pre-Wave-22, 556/1134 of a recent run's decision records
+``"long_slug_style_textbook_name"``, or ``"arxiv-2301.12345"`` fail that
+regex. Pre-Wave-22, roughly half of a recent run's decision records
 carried ``course_id`` validation issues as a result.
 
 ``MCP.tools.dart_tools.normalize_course_code`` folds any input into
@@ -31,7 +31,7 @@ _CANON = re.compile(r"^[A-Z]{2,8}_[0-9]{3}$")
     "raw",
     [
         "Ed4All",
-        "bates_teaching_digital_age",
+        "long_slug_style_textbook_name",
         "arxiv-2301.12345",
         "keet_ontology_engineering",
         "MINI_TRAINING_101_PYTEST",
@@ -66,7 +66,7 @@ def test_normalization_is_deterministic():
     """Same input must always produce the same output (hash-based suffix)."""
     names = [
         "Ed4All",
-        "bates_teaching_digital_age",
+        "long_slug_style_textbook_name",
         "arxiv-2301.12345",
     ]
     for name in names:
@@ -82,7 +82,7 @@ def test_different_inputs_generally_yield_different_codes():
     """Distinct PDFs should usually produce distinct codes (low collision)."""
     inputs = [
         "Ed4All",
-        "bates_teaching_digital_age",
+        "long_slug_style_textbook_name",
         "arxiv-2301.12345",
         "keet_ontology_engineering",
         "textbook_a",
@@ -123,7 +123,7 @@ def test_normalization_validates_under_decision_event_schema():
     pattern = schema["properties"]["course_id"]["pattern"]
 
     live_regex = re.compile(pattern)
-    for raw in ("Ed4All", "bates_teaching_digital_age", "arxiv-2301.12345"):
+    for raw in ("Ed4All", "long_slug_style_textbook_name", "arxiv-2301.12345"):
         normalised = normalize_course_code(raw)
         assert live_regex.match(normalised), (
             f"Normalised code {normalised!r} fails live schema pattern "

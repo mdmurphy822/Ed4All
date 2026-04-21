@@ -4,7 +4,7 @@ Previously, the Wave 24 byline detector in ``_is_low_signal_heading``
 caught hyphenated-token names ("Hung-Nghiep Tran") but leaked:
 
 - 2-token full names without a lead-in ("Maria Keet", "John Smith")
-- Single-initial names ("A.W. (Tony) Bates")
+- Single-initial names with parenthetical nicknames ("J.Q. (Buddy) Doe")
 - "Edited by" / "Designed by" / "Illustrated by" lead-ins
 - Math / logic notation residue ("C v ∀R.D", "∀x (P(x) → Q(x))")
 - Formulaic-phrase lead-ins that pdftotext hoisted into headings
@@ -56,7 +56,7 @@ class TestWave27LowSignalHeadings:
         ) is True
 
     def test_initialed_name_with_parenthetical(self):
-        assert _cgh._is_low_signal_heading("A.W. (Tony) Bates") is True
+        assert _cgh._is_low_signal_heading("J.Q. (Buddy) Doe") is True
 
     def test_pure_math_formula(self):
         assert _cgh._is_low_signal_heading("\u2200x (P(x) \u2192 Q(x))") is True
@@ -110,9 +110,11 @@ class TestWave27LegitimateHeadings:
         # so the byline filter must not trip.
         assert _cgh._is_low_signal_heading("European Union Policy") is False
 
-    def test_teaching_in_a_digital_age(self):
+    def test_title_with_common_phrase(self):
+        # A 5-token title anchored by common title words ("in", "a",
+        # "Age") should not be demoted to low-signal chrome.
         assert _cgh._is_low_signal_heading(
-            "Teaching in a Digital Age"
+            "Learning in a Connected Age"
         ) is False
 
     def test_science_of_learning(self):

@@ -261,8 +261,8 @@ def _validate_toc_page_anchors(
 
     The TOC template emits ``<a href="#page-N">`` fallback anchors for
     entries whose title doesn't match ``Chapter N`` / ``N.M ``. When
-    no PAGE_BREAK block is emitted for page N (most pages on Bates
-    are not TOC-referenced, but the TOC template still emitted a
+    no PAGE_BREAK block is emitted for page N (most pages are not
+    TOC-referenced, but the TOC template still emitted a
     ``#page-N`` fallback), the link dead-ends.
 
     Remediation (first match wins):

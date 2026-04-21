@@ -557,9 +557,9 @@ and a literal `(figure)` placeholder caption. Wave 17 closes that gap:
 * `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html`
   auto-derives a sibling `{stem}_figures/` directory next to the
   output HTML when called with `output_path=<html path>`, so a PDF at
-  `/foo/bates.pdf` converted to `/foo/out/bates.html` persists
-  figures under `/foo/out/bates_figures/` and the HTML carries
-  relative `<img src="bates_figures/...png">` entries (the bundle is
+  `/foo/textbook.pdf` converted to `/foo/out/textbook.html` persists
+  figures under `/foo/out/textbook_figures/` and the HTML carries
+  relative `<img src="textbook_figures/...png">` entries (the bundle is
   portable). Explicit `figures_dir=<path>` wins. Neither set → a
   tempdir fallback (not portable, but keeps the end-to-end round trip
   working for tests / ad-hoc runs).
@@ -622,8 +622,10 @@ Attributes stop at the **section / component wrapper level**. Never on
 every `<p>` / `<span>` / `<li>` / `<h3>` / `<cite>` / `<a>` /
 `<figcaption>` in prose — those are leaf nodes, and the enclosing
 wrapper carries the provenance. The canonical leaf-role set is
-`DART/converter/block_templates._WAVE19_LEAF_ROLES`. Reverting the
-Wave 17 inflation drops the Bates HTML size from ~1.9 MB to ~1.5 MB.
+`DART/converter/block_templates._WAVE19_LEAF_ROLES`. On a full-
+textbook smoke (several hundred pages) the Wave 19 revert shrinks
+HTML output by ~20% (roughly 1.9 MB → 1.5 MB) relative to the Wave
+17 over-inflated variant.
 
 ### Sidecar emit
 
@@ -676,8 +678,8 @@ pdftotext output faithfully reproduces list markers (`•`, `·`, `▪`,
 `●`, `◦`, `○`, `▸`, `►`, `-`, `*`, `1.`, `1)`, `a.`, `a)`, `i.`,
 `(1)`) as literal leading characters on each item's block. Pre-Wave-21,
 those blocks flowed straight through into naked `<p>` elements —
-**323 bullet-marker + 114 numbered-item paragraphs** on the Bates
-textbook alone, zero `<ul>` wrappers in the output.
+hundreds of bullet-marker and numbered-item paragraphs on a
+bullet-heavy textbook, zero `<ul>` wrappers in the output.
 
 Wave 21 promotes marker-led blocks to `LIST_ITEM` in the heuristic
 classifier and groups consecutive runs into synthesized
@@ -757,7 +759,9 @@ If a `LIST_ITEM` escapes grouping (shouldn't happen normally),
 `_tpl_list_item` emits a single-item `<ul>` / `<ol>` wrapper
 rather than a naked `<li>` — keeps the HTML valid.
 
-### Bates smoke reduction
+### Full-textbook smoke reduction
+
+Observed on a ~580-page bullet-heavy textbook (anonymised corpus):
 
 | Metric | Pre-Wave-21 | Post-Wave-21 |
 |--------|-------------|---------------|
@@ -773,8 +777,8 @@ rather than a naked `<li>` — keeps the HTML valid.
 
 pdftotext faithfully reproduces **running headers / running footers /
 page numbers** as text lines in every page of its output. For a
-584-page textbook the result is ~500+ spurious content-polluting
-`<p>` blocks in the emitted HTML.
+long textbook (hundreds of pages), the result is hundreds of
+spurious content-polluting `<p>` blocks in the emitted HTML.
 
 `DART/converter/page_chrome.py` runs between pdftotext extraction and
 block segmentation to detect + strip that chrome.
@@ -795,7 +799,7 @@ hit — so the detector works end-to-end when PyMuPDF is missing.
 
 ### Page-number extraction
 
-When a chrome line ends in digits (`"Teaching in a Digital Age 164"`,
+When a chrome line ends in digits (`"<Book Title> 164"`,
 `"Chapter 3 — 47"`, or just `"164"`), the detector splits the fixed
 prefix from the variable page-number tail and remembers
 `{page_number_1_indexed: original_chrome_line}` on
@@ -844,9 +848,10 @@ pre-Wave-13 DART HTML + generic third-party HTML.
 
 ## Decision capture (Waves 12–21 wiring)
 
-Pre-Wave-22, every DART Claude call site was uninstrumented — a Bates
-run with dozens of per-block + per-figure Claude decisions produced
-two static 2-line boilerplate capture records from the MCP wrapper.
+Pre-Wave-22, every DART Claude call site was uninstrumented — a
+full-textbook run with dozens of per-block + per-figure Claude
+decisions produced two static 2-line boilerplate capture records
+from the MCP wrapper.
 Wave 22 DC1/DC3 threads a `DecisionCapture` instance through every
 Claude call site in the pipeline. The table below is the source of
 truth for what fires where.

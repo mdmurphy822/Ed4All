@@ -83,10 +83,11 @@ logger = logging.getLogger(__name__)
 # for backward compat.
 #
 # Canonical pattern: ``^[A-Z]{2,8}_[0-9]{3}$`` (2-8 uppercase letters,
-# underscore, 3 digits). PDF filenames like ``"Ed4All"`` or
-# ``"bates_teaching_digital_age"`` don't match out of the box, so
-# captures previously carried a ``course_id`` validation issue
-# (556/1134 records on a recent run). Normalisation strategy:
+# underscore, 3 digits). Raw course-code strings without the required
+# prefix_NNN format (e.g. a product name like ``"Ed4All"`` or a
+# long slug-style filename) don't match out of the box, so captures
+# previously carried a ``course_id`` validation issue (observed at
+# ~50% of records on a recent run). Normalisation strategy:
 #
 # 1. Uppercase + replace any non-alphanumeric with underscore.
 # 2. Strip leading/trailing underscores + collapse repeats.

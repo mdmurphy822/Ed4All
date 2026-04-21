@@ -49,8 +49,8 @@ class TestNormalisationHelpers:
         assert _normalise("Head\xa0Line") == "head line"
 
     def test_strip_trailing_digits_extracts_page_number(self):
-        prefix, page = _strip_trailing_digits("teaching in a digital age 164")
-        assert prefix == "teaching in a digital age"
+        prefix, page = _strip_trailing_digits("educational foundations 164")
+        assert prefix == "educational foundations"
         assert page == 164
 
     def test_strip_trailing_digits_handles_bare_number(self):
@@ -88,19 +88,19 @@ class TestDetectChromePositive:
         pages = []
         for i in range(2, 10):
             pages.append(
-                f"Teaching in a Digital Age {i}\n\n"
+                f"Educational Foundations {i}\n\n"
                 "Paragraph of real textbook prose on this page.\n"
                 "Additional content that should survive stripping.\n"
             )
         chrome = detect_page_chrome(_make_pages(*pages))
         # Fixed prefix detected, variable tail split off.
-        assert any("teaching in a digital age" in h for h in chrome.headers)
+        assert any("educational foundations" in h for h in chrome.headers)
         # Per-page page_number_lines populated (at least half the pages).
         assert len(chrome.page_number_lines) >= 4
         # The running header should no longer appear in stripped content.
         stripped_joined = _FORM_FEED.join(chrome.stripped_pages)
-        assert "Teaching in a Digital Age 2" not in stripped_joined
-        assert "Teaching in a Digital Age 9" not in stripped_joined
+        assert "Educational Foundations 2" not in stripped_joined
+        assert "Educational Foundations 9" not in stripped_joined
 
     def test_footer_only_chrome_detected(self):
         # Each page has enough unique body lines on top that only the
@@ -259,7 +259,7 @@ class TestStripChrome:
 
     def test_strip_is_idempotent(self):
         pages = [
-            f"Bates Chapter\n\nPage {i} content prose body goes here."
+            f"Chapter Title\n\nPage {i} content prose body goes here."
             for i in range(1, 8)
         ]
         raw = _make_pages(*pages)
@@ -346,8 +346,9 @@ class TestUnicodeNormalisation:
 
 # ---------------------------------------------------------------------------
 # Wave 25 Fix 1 — leading-digit chrome (even-page running footers like
-# "{N} A.W. (Tony) Bates" on the Bates textbook) must be detected + stripped
-# alongside the pre-existing trailing-digit support.
+# "{N} <author-name>" — page number followed by a fixed author-name
+# suffix) must be detected + stripped alongside the pre-existing
+# trailing-digit support.
 # ---------------------------------------------------------------------------
 
 
@@ -355,13 +356,13 @@ class TestUnicodeNormalisation:
 @pytest.mark.dart
 class TestLeadingDigitsHelper:
     def test_strip_leading_digits_extracts_page_number(self):
-        residual, page = _strip_leading_digits("164 a.w. (tony) bates")
-        assert residual == "a.w. (tony) bates"
+        residual, page = _strip_leading_digits("164 j. smith")
+        assert residual == "j. smith"
         assert page == 164
 
     def test_strip_leading_digits_returns_none_when_no_leading_int(self):
-        residual, page = _strip_leading_digits("teaching in a digital age")
-        assert residual == "teaching in a digital age"
+        residual, page = _strip_leading_digits("educational foundations")
+        assert residual == "educational foundations"
         assert page is None
 
     def test_strip_leading_digits_rejects_bare_number(self):
@@ -380,50 +381,51 @@ class TestLeadingDigitsHelper:
 @pytest.mark.dart
 class TestLeadingDigitFooterDetection:
     def test_leading_digit_footer_detected_across_pages(self):
-        # 10 even-page running footers "{N} A.W. (Tony) Bates" — pre-
-        # Wave-25 this slipped through into phantom footnotes.
+        # 10 even-page running footers "{N} J. Smith" (generic author
+        # name residue) — pre-Wave-25 this slipped through into
+        # phantom footnotes.
         pages = []
         for i in range(2, 12):
             pages.append(
                 f"Unique body prose line {i} aaa\n"
                 f"Different body content {i} bbb\n"
                 f"More unique words per page {i} ccc\n\n"
-                f"{i} A.W. (Tony) Bates"
+                f"{i} J. Smith"
             )
         chrome = detect_page_chrome(_make_pages(*pages))
         # Residual (the fixed part after the leading integer) lands in
         # footers as lowercased normalised form.
-        assert "a.w. (tony) bates" in chrome.footers
+        assert "j. smith" in chrome.footers
         # Per-page page_number_lines populated from the leading int.
         assert len(chrome.page_number_lines) >= 5
         # Stripped output no longer carries any of the per-page
         # footer variants.
         stripped_joined = _FORM_FEED.join(chrome.stripped_pages)
-        assert "2 A.W. (Tony) Bates" not in stripped_joined
-        assert "11 A.W. (Tony) Bates" not in stripped_joined
+        assert "2 J. Smith" not in stripped_joined
+        assert "11 J. Smith" not in stripped_joined
 
     def test_mixed_odd_trailing_and_even_leading_chrome(self):
-        # Odd-page trailing-digit header "Teaching in a Digital Age N";
-        # even-page leading-digit footer "{N} A.W. (Tony) Bates". Both
+        # Odd-page trailing-digit header "Educational Foundations N";
+        # even-page leading-digit footer "{N} J. Smith". Both
         # patterns must be detected separately.
         pages = []
         for i in range(1, 13):
             if i % 2 == 1:
                 pages.append(
-                    f"Teaching in a Digital Age {i}\n\n"
+                    f"Educational Foundations {i}\n\n"
                     f"Prose paragraph for odd page {i} with unique words."
                 )
             else:
                 pages.append(
                     f"Prose paragraph for even page {i} with unique words.\n\n"
-                    f"{i} A.W. (Tony) Bates"
+                    f"{i} J. Smith"
                 )
         chrome = detect_page_chrome(_make_pages(*pages))
-        assert any("teaching in a digital age" in h for h in chrome.headers)
-        assert "a.w. (tony) bates" in chrome.footers
+        assert any("educational foundations" in h for h in chrome.headers)
+        assert "j. smith" in chrome.footers
         stripped_joined = _FORM_FEED.join(chrome.stripped_pages)
-        assert "Teaching in a Digital Age" not in stripped_joined
-        assert "A.W. (Tony) Bates" not in stripped_joined
+        assert "Educational Foundations" not in stripped_joined
+        assert "J. Smith" not in stripped_joined
 
     def test_leading_digit_single_char_residual_not_flagged(self):
         # Short residual ("5 X") is ambiguous and must be guarded out

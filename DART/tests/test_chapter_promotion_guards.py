@@ -1,10 +1,11 @@
 """Wave 25 Fix 4: activity-prompt false-positive filter for CHAPTER_OPENER.
 
-Audit evidence: 39 ``<article role="doc-chapter">`` emissions on Bates
-vs 12 real chapters. 27 false positives were activity-prompt phrases:
-"What are your reasons?", "Determine which is a medium...", "Do you
-find the distinction helpful?" — all caught by the permissive
-chapter-heading regex.
+Audit evidence: on a textbook with many reflective activities, the
+permissive chapter-heading regex promoted dozens of activity-prompt
+phrases ("What are your reasons?", "Determine which is a medium...",
+"Do you find the distinction helpful?") to
+``<article role="doc-chapter">`` — tripling the emitted chapter count
+relative to the book's real chapter count.
 
 The guard rejects blocks whose text opens with an interrogative /
 directive starter UNLESS a strong chapter-number pattern (``"Chapter

@@ -332,14 +332,14 @@ class TestCourseforgeEmitsDataCfSourceIds:
         project_id = "PROJ-27-EMIT-04"
         project_path = _make_project(tmp_path, project_id)
         # Filename with mixed case + underscore — expect the canonical
-        # slug result ("olsr201" — canonical_slug drops the underscore).
+        # slug result ("xyz201" — canonical_slug drops the underscore).
         _stage_dart(
             staging_root, "WF-27-04",
             _DART_HTML_WITH_BLOCK_IDS.replace(
                 "<title>Photosynthesis Basics</title>",
-                "<title>OLSR_201 Textbook</title>",
+                "<title>XYZ_201 Textbook</title>",
             ),
-            "OLSR_201.html",
+            "XYZ_201.html",
         )
 
         asyncio.run(tools["generate_course_content"](
@@ -348,14 +348,14 @@ class TestCourseforgeEmitsDataCfSourceIds:
         ))
 
         week_01 = project_path / "03_content_development" / "week_01"
-        # Confirm the slug "olsr201" derived via canonical_slug is used.
+        # Confirm the slug "xyz201" derived via canonical_slug is used.
         found = False
         for html_file in week_01.glob("*content*.html"):
             body = html_file.read_text(encoding="utf-8")
-            if "dart:olsr201#" in body:
+            if "dart:xyz201#" in body:
                 found = True
                 break
-        assert found, "Expected source slug derived from OLSR_201 filename"
+        assert found, "Expected source slug derived from XYZ_201 filename"
 
     def test_source_id_pattern_validates_schema(self, pipeline_registry):
         """Emitted sourceIds match the source_reference schema pattern."""

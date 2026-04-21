@@ -1,11 +1,13 @@
 """Wave 25 Fix 5: dotted-numeric subsection → ``<h4>`` (and deeper levels).
 
-Audit: 149 short ``<p>`` bodies match ``^[0-9A-Z]+\\.[0-9]+.*`` on Bates
-(e.g. "4.8.1.1 Epistemological basis", "1.7.1. Fully online learning",
-"8.4.1.4 Maintenance costs"). ``<h4>`` count: 0 in the pre-Wave-25
-output because the heuristic classifier's regex didn't cover the
-dotted-numeric shape, and the Wave-18 font-size promoter only fires
-when ``text_spans`` is populated.
+Audit: on a textbook with dotted-numeric section numbering, dozens
+to hundreds of short ``<p>`` bodies match
+``^[0-9A-Z]+\\.[0-9]+.*`` (e.g. "4.8.1.1 Epistemological basis",
+"1.7.1. Fully online learning", "8.4.1.4 Maintenance costs"). Pre-
+Wave-25 the ``<h4>`` count was zero because the heuristic
+classifier's regex didn't cover the dotted-numeric shape, and the
+Wave-18 font-size promoter only fires when ``text_spans`` is
+populated.
 
 These tests exercise the heuristic path with ``text_spans`` absent.
 """

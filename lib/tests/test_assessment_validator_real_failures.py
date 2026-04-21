@@ -1,7 +1,7 @@
 """Wave 26 — AssessmentQualityValidator real-failure-mode tests.
 
-The legacy validator's placeholder regex list missed the actual OLSR_201
-failure modes:
+The legacy validator's placeholder regex list missed the actual
+real-world failure modes observed on a production RAG training run:
 
 1. Distinct-stem ratio across an assessment (30 questions, 2 unique stems).
 2. TOC-fragment correct answers ("1.1 Structural ... 14 1.7 ...").
@@ -56,7 +56,7 @@ def _q_tf(qid: str, stem: str, correct_answer: str = "True"):
 
 
 def test_30_questions_2_stems_fails_low_stem_diversity():
-    """OLSR_201 smoking gun: 30 questions, 2 distinct stems. Must fail
+    """Real-run smoking gun: 30 questions, 2 distinct stems. Must fail
     LOW_STEM_DIVERSITY as critical."""
     stems = [
         "<p>Explain the structural changes in the economy</p>",
@@ -106,8 +106,8 @@ def test_identical_distractor_template_fails_templated_distractors():
 
 
 def test_toc_fragment_correct_answer_fails_toc_check():
-    """The exact OLSR_201 failure: correct answer is raw TOC text with
-    page numbers. Must fail TOC_FRAGMENT_ANSWER."""
+    """The exact real-run failure: correct answer is raw TOC text
+    with page numbers. Must fail TOC_FRAGMENT_ANSWER."""
     toc_answer = (
         "1.1 Structural changes in the economy: the growth of a "
         "knowledge society 14 1.7 From the periphery to the core 22"

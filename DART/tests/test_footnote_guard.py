@@ -1,6 +1,6 @@
 """Wave 25 Fix 2: FOOTNOTE classifier guard against page-chrome superstrings.
 
-Leading-digit running footers ("{N} A.W. (Tony) Bates" on Bates) trip the
+Leading-digit running footers ("{N} <author-name>") trip the
 footnote-marker regex because the leading integer looks like a footnote
 reference. The chrome detector (Wave 25 Fix 1) normally strips these
 upstream, but the classifier carries a belt-and-braces guard that
@@ -34,15 +34,15 @@ def _make_block(text: str, *, page: int | None = 4) -> RawBlock:
 @pytest.mark.dart
 class TestFootnoteGuardUsingPageNumberLines:
     def test_block_matching_page_chrome_superstring_not_footnote(self):
-        # Simulated page-chrome record for Bates: page 4's running
-        # footer is "4 A.W. (Tony) Bates".
+        # Synthetic page-chrome record: page 4's running footer is
+        # "4 J. Smith" (the leading-digit author-name pattern).
         chrome = SimpleNamespace(
             headers=set(),
-            footers={"a.w. (tony) bates"},
-            page_number_lines={4: "4 A.W. (Tony) Bates"},
+            footers={"j. smith"},
+            page_number_lines={4: "4 J. Smith"},
         )
         clf = HeuristicClassifier(page_chrome=chrome)
-        block = _make_block("4 A.W. (Tony) Bates", page=4)
+        block = _make_block("4 J. Smith", page=4)
         result = clf.classify_sync([block])[0]
         # Guard fires: NOT FOOTNOTE.
         assert result.role != BlockRole.FOOTNOTE
@@ -51,23 +51,23 @@ class TestFootnoteGuardUsingPageNumberLines:
         # Chrome record exists but the block text does not match.
         chrome = SimpleNamespace(
             headers=set(),
-            footers={"a.w. (tony) bates"},
-            page_number_lines={4: "4 A.W. (Tony) Bates"},
+            footers={"j. smith"},
+            page_number_lines={4: "4 J. Smith"},
         )
         clf = HeuristicClassifier(page_chrome=chrome)
         block = _make_block(
-            "1 See the discussion in Smith et al. 2020 for further reading.",
+            "1 See the discussion in Jones et al. 2020 for further reading.",
             page=4,
         )
         result = clf.classify_sync([block])[0]
         assert result.role == BlockRole.FOOTNOTE
 
     def test_no_page_chrome_legacy_behavior_preserved(self):
-        # Absent page_chrome → the guard is a no-op. The Bates-style
-        # phantom-footnote would still emerge, proving the guard only
-        # activates with chrome context.
+        # Absent page_chrome → the guard is a no-op. The phantom-footnote
+        # would still emerge on a leading-digit author-name residue,
+        # proving the guard only activates with chrome context.
         clf = HeuristicClassifier()
-        block = _make_block("4 A.W. (Tony) Bates", page=4)
+        block = _make_block("4 J. Smith", page=4)
         result = clf.classify_sync([block])[0]
         # Legacy (pre-Wave-25) path: the leading-digit-looking FOOTNOTE
         # match succeeds.
@@ -80,11 +80,11 @@ class TestFootnoteGuardUsingPageNumberLines:
         # classifies as FOOTNOTE.
         chrome = SimpleNamespace(
             headers=set(),
-            footers={"a.w. (tony) bates"},
-            page_number_lines={4: "4 A.W. (Tony) Bates"},
+            footers={"j. smith"},
+            page_number_lines={4: "4 J. Smith"},
         )
         clf = HeuristicClassifier(page_chrome=chrome)
-        block = _make_block("4 A.W. (Tony) Bates", page=None)
+        block = _make_block("4 J. Smith", page=None)
         result = clf.classify_sync([block])[0]
         # Without a page, the guard can't compare against a chrome line
         # for that page — legacy FOOTNOTE path wins.
@@ -101,10 +101,10 @@ class TestFootnoteGuardUsingHeaderFooterSets:
         # headers/footers fallback path.
         chrome = SimpleNamespace(
             headers=set(),
-            footers={"a.w. (tony) bates"},
+            footers={"j. smith"},
             page_number_lines={},
         )
         clf = HeuristicClassifier(page_chrome=chrome)
-        block = _make_block("7 A.W. (Tony) Bates", page=7)
+        block = _make_block("7 J. Smith", page=7)
         result = clf.classify_sync([block])[0]
         assert result.role != BlockRole.FOOTNOTE

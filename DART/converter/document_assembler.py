@@ -156,8 +156,9 @@ def _dedup_chapter_openers(
 ) -> List[ClassifiedBlock]:
     """Drop second-and-later CHAPTER_OPENER blocks with duplicate keys.
 
-    Wave 25 Fix 3: audit found ``id="chap-1"`` appearing 2×,
-    ``id="chap-6"`` 3×, ``id="chap-12"`` 3× on Bates because the
+    Wave 25 Fix 3: audit found duplicate ``id="chap-N"`` anchors
+    (e.g. ``chap-1`` emitted 2×, ``chap-6`` 3×, ``chap-12`` 3×) on a
+    textbook whose back matter repeats chapter titles — the
     CHAPTER_OPENER classifier promoted both the real chapter opener
     AND the back-of-book recap entry. HTML validity breaks +
     ``<a href="#chap-6">`` non-deterministically scrolls to whichever

@@ -1,10 +1,11 @@
 """Wave 25 Fix 3: duplicate CHAPTER_OPENER → single emission.
 
-Audit evidence: ``id="chap-1"`` appears 2× on Bates, ``chap-6`` 3×,
-``chap-12`` 3×. The classifier promotes both the real chapter opener
-and a back-of-book recap/index entry referencing the same chapter.
-The assembler's dedup pass suppresses second-and-later occurrences,
-and the JSON-LD ``hasPart`` list stays unique.
+Audit evidence: on textbooks whose back matter repeats chapter
+titles, ``id="chap-1"`` can appear 2×, ``chap-6`` 3×, ``chap-12`` 3×.
+The classifier promotes both the real chapter opener and a back-of-
+book recap/index entry referencing the same chapter. The assembler's
+dedup pass suppresses second-and-later occurrences, and the JSON-LD
+``hasPart`` list stays unique.
 """
 
 from __future__ import annotations
@@ -74,8 +75,9 @@ class TestChapterIdDedup:
 
     def test_surviving_emission_keeps_data_dart_pages(self):
         # The first of a duplicate pair keeps its page provenance.
-        # Simulate the Bates-style case where the body opener is on
-        # an early page.
+        # Simulate the common case where the body opener is on an
+        # early page and a back-of-book recap repeats the same
+        # chapter title on a later page.
         blocks = [
             _chapter("Chapter 8 Curriculum Design", "b1", page=200),
             _chapter("Chapter 8 Curriculum Design", "b2", page=480),
