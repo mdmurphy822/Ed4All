@@ -142,3 +142,7 @@ examples/output/
 
 # Planning artifacts — scratch docs, reviews, sub-plans; kept local-only
 plans/
+
+# Top-level inputs/ — corpus PDFs + local scratch; directory kept, contents ignored
+inputs/*
+!inputs/.gitkeep
