@@ -172,7 +172,7 @@ def build_manifest(content_dir: Path, course_code: str, course_title: str) -> st
 
         week_item = ET.SubElement(root_item, cc("item"), {"identifier": week_id})
         # Prefer the real chapter title captured by generate_week in the
-        # overview H1 (e.g. "Week 1: Fundamental Change in Education")
+        # overview H1 (e.g. "Week 1: Introduction to Core Concepts")
         # over the bare "Week N" label that earlier revisions emitted and
         # that produced an uninformative LMS week list.
         ET.SubElement(week_item, cc("title")).text = _extract_week_title(
