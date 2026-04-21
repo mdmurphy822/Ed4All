@@ -110,8 +110,17 @@ class PipelineOrchestrator:
 
     # ---------------------------------------------------------- dispatcher
 
-    def _get_dispatcher(self):
-        """Lazily build the mode-appropriate dispatcher."""
+    def _get_dispatcher(
+        self,
+        workflow_state: Optional[Dict[str, Any]] = None,
+    ):
+        """Lazily build the mode-appropriate dispatcher.
+
+        Wave 23 Sub-task B: forwards ``workflow_state`` into
+        ``_get_executor`` so the API dispatcher gets a properly-wired
+        executor (run_id / run_path / capture) rather than the
+        timestamp-orphan fallback.
+        """
         if self._dispatcher is not None:
             return self._dispatcher
 
@@ -125,20 +134,106 @@ class PipelineOrchestrator:
 
             self._dispatcher = APIDispatcher(
                 llm_factory=self.llm_factory,
-                executor=self._get_executor(),
+                executor=self._get_executor(workflow_state=workflow_state),
                 config=self.config,
             )
         else:
             raise ValueError(f"Unknown orchestrator mode: {self.mode}")
         return self._dispatcher
 
-    def _get_executor(self) -> TaskExecutor:
-        if self._executor is None:
-            # Fallback: build an executor wired with the full pipeline tool
-            # registry so phase tasks can resolve their tool names. Without this,
-            # `ed4all run` fails with "Tool not registered" at first phase.
-            from MCP.tools.pipeline_tools import _build_tool_registry
-            self._executor = TaskExecutor(tool_registry=_build_tool_registry())
+    def _get_executor(
+        self,
+        workflow_state: Optional[Dict[str, Any]] = None,
+    ) -> TaskExecutor:
+        """Return a ``TaskExecutor`` wired for a specific workflow.
+
+        Wave 23 Sub-task B: pre-Wave-23 this method built an executor
+        with no ``run_id``, no ``run_path``, and no ``capture=``. That
+        left ``TaskExecutor.run_id`` auto-generating from a timestamp
+        (so checkpoints landed in an orphan ``state/runs/run_{ts}/``
+        dir nobody ever reads), and ``self.capture is None`` meant the
+        ``phase_start`` / ``phase_completion`` / ``task_retry`` /
+        ``workflow_execution`` emit sites at
+        ``MCP/core/executor.py:728, 875, 981`` never fired.
+
+        When a workflow state is known, this method now resolves the
+        workflow's actual ``params.run_id`` (e.g. ``TTC_OLSR_201_...``)
+        and builds:
+
+        - ``run_path`` at ``state/runs/{run_id}/`` — matches what
+          ``CheckpointManager`` + ``LockfileManager`` use.
+        - ``capture = DecisionCapture(course_code=normalize_course_code(...),
+          phase="orchestrator", tool="pipeline", ...)`` — the course
+          code is normalised via the Wave-22 DC4 pattern so the
+          orchestrator capture doesn't re-introduce the
+          ``course_id`` validation-issue noise the previous wave fixed.
+
+        Legacy callers that don't supply ``workflow_state`` (mostly
+        tests) still get a bare executor. A cached executor is
+        returned on repeat calls so the executor identity survives
+        across dispatcher callbacks.
+        """
+        if self._executor is not None:
+            return self._executor
+
+        # Fallback: build an executor wired with the full pipeline tool
+        # registry so phase tasks can resolve their tool names. Without this,
+        # `ed4all run` fails with "Tool not registered" at first phase.
+        from MCP.tools.pipeline_tools import _build_tool_registry
+
+        tool_registry = _build_tool_registry()
+
+        run_id: Optional[str] = None
+        run_path = None
+        capture = None
+        if workflow_state is not None:
+            params = workflow_state.get("params") or {}
+            if isinstance(params, str):
+                try:
+                    params = json.loads(params)
+                except (ValueError, TypeError):
+                    params = {}
+            # Prefer an explicit run_id emitted by the workflow
+            # creator (e.g. ``TTC_{course}_{ts}`` from
+            # ``pipeline_tools.create_textbook_pipeline``); fall back
+            # to the workflow_id which is always present.
+            run_id = params.get("run_id") if isinstance(params, dict) else None
+            if not run_id:
+                run_id = workflow_state.get("workflow_id") or workflow_state.get("id")
+
+            run_path = (self.state_dir / "runs" / run_id) if run_id else None
+
+            # Build orchestrator-level decision capture. Best-effort —
+            # a DecisionCapture construction failure must not block
+            # the executor build.
+            course_code_raw = (
+                params.get("course_name") if isinstance(params, dict) else None
+            ) or (workflow_state.get("type") or "PIPELINE")
+            try:
+                from lib.decision_capture import (
+                    DecisionCapture,
+                    normalize_course_code,
+                )
+
+                capture = DecisionCapture(
+                    course_code=normalize_course_code(str(course_code_raw)),
+                    phase="orchestrator",
+                    tool="pipeline",
+                    streaming=True,
+                )
+            except Exception as exc:  # noqa: BLE001 — capture is best-effort
+                logger.debug(
+                    "DecisionCapture construction failed in _get_executor: %s",
+                    exc,
+                )
+                capture = None
+
+        self._executor = TaskExecutor(
+            tool_registry=tool_registry,
+            run_id=run_id,
+            run_path=run_path,
+            capture=capture,
+        )
         return self._executor
 
     # ---------------------------------------------------------------- plan
@@ -157,7 +252,7 @@ class PipelineOrchestrator:
         if not wf_config:
             return []
 
-        runner = self._build_runner()
+        runner = self._build_runner(workflow_state=state)
         phases = runner._topological_sort(wf_config.phases)
         plan = []
         for idx, phase in enumerate(phases):
@@ -193,7 +288,7 @@ class PipelineOrchestrator:
                 error=f"Workflow not found: {workflow_id}",
             )
 
-        dispatcher = self._get_dispatcher()
+        dispatcher = self._get_dispatcher(workflow_state=state)
         logger.info(
             "PipelineOrchestrator dispatching workflow %s in %s mode via %s",
             workflow_id,
@@ -204,7 +299,7 @@ class PipelineOrchestrator:
         # Optional: pre-dispatch hook (used for decision capture + metrics)
         await dispatcher.before_run(workflow_id=workflow_id, state=state)
 
-        runner = self._build_runner()
+        runner = self._build_runner(workflow_state=state)
         try:
             raw = await runner.run_workflow(workflow_id)
         except Exception as exc:  # noqa: BLE001 — surface exact error to caller
@@ -231,8 +326,14 @@ class PipelineOrchestrator:
 
     # --------------------------------------------------------------- helpers
 
-    def _build_runner(self) -> WorkflowRunner:
-        return WorkflowRunner(self._get_executor(), self.config)
+    def _build_runner(
+        self,
+        workflow_state: Optional[Dict[str, Any]] = None,
+    ) -> WorkflowRunner:
+        return WorkflowRunner(
+            self._get_executor(workflow_state=workflow_state),
+            self.config,
+        )
 
     def _load_workflow_state(self, workflow_id: str) -> Optional[Dict[str, Any]]:
         path = STATE_PATH / "workflows" / f"{workflow_id}.json"

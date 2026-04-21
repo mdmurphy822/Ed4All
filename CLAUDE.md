@@ -584,6 +584,7 @@ validation_gates:
 | `batch_dart` | `wcag_aa_compliance` | WCAGValidator |
 | `batch_dart` | `dart_markers` | DartMarkersValidator (Wave 6) |
 | `textbook_to_course` | `dart_markers` | DartMarkersValidator (Wave 6) |
+| `textbook_to_course` | `libv2_manifest` | LibV2ManifestValidator (Wave 23) |
 | `rag_training` | `assessment_quality` | AssessmentQualityValidator |
 | `rag_training` | `bloom_alignment` | BloomAlignmentValidator |
 | `rag_training` | `leak_check` | LeakChecker |

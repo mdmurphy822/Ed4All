@@ -72,6 +72,77 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+# Wave 23 Sub-task B: ``normalize_course_code`` is the shared
+# course-code coercer introduced in Wave 22 DC4. Originally it lived
+# in ``MCP/tools/dart_tools.py`` for DART-specific capture setup.
+# Wave 23 promotes it to the shared decision-capture module so the
+# orchestrator-level ``PipelineOrchestrator._get_executor`` can use
+# the same normalisation without importing from a sibling MCP tool
+# module (avoiding a dependency inversion between ``lib/`` and
+# ``MCP/tools/``).  ``MCP/tools/dart_tools.py`` re-exports this name
+# for backward compat.
+#
+# Canonical pattern: ``^[A-Z]{2,8}_[0-9]{3}$`` (2-8 uppercase letters,
+# underscore, 3 digits). PDF filenames like ``"Ed4All"`` or
+# ``"bates_teaching_digital_age"`` don't match out of the box, so
+# captures previously carried a ``course_id`` validation issue
+# (556/1134 records on a recent run). Normalisation strategy:
+#
+# 1. Uppercase + replace any non-alphanumeric with underscore.
+# 2. Strip leading/trailing underscores + collapse repeats.
+# 3. If the result already matches the pattern, return as-is.
+# 4. Otherwise, split on ``_`` and use the first purely-alphabetic
+#    chunk (truncated to 8 chars) as the prefix. If no alphabetic
+#    chunk exists, use ``"PDF"`` as the fallback prefix.
+# 5. Derive a deterministic 3-digit numeric suffix from the full raw
+#    name via SHA-256 modulo 1000 so the same PDF always produces the
+#    same course code.
+import re as _re_norm
+
+_COURSE_CODE_PATTERN = _re_norm.compile(r"^[A-Z]{2,8}_[0-9]{3}$")
+
+
+def normalize_course_code(raw: str) -> str:
+    """Coerce a raw course code / PDF name into ``^[A-Z]{2,8}_[0-9]{3}$``.
+
+    Examples
+    --------
+    >>> normalize_course_code("MTH_101")
+    'MTH_101'
+    >>> normalize_course_code("Ed4All")  # doctest: +ELLIPSIS
+    'ED_...'
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        raw = "unknown"
+
+    uppered = _re_norm.sub(r"[^A-Za-z0-9]+", "_", raw).upper().strip("_")
+    uppered = _re_norm.sub(r"_+", "_", uppered)
+
+    if _COURSE_CODE_PATTERN.match(uppered):
+        return uppered
+
+    chunks = [c for c in uppered.split("_") if c]
+    prefix = ""
+    for chunk in chunks:
+        alpha_only = _re_norm.sub(r"[^A-Z]", "", chunk)
+        if len(alpha_only) >= 2:
+            prefix = alpha_only[:8]
+            break
+    if not prefix:
+        prefix = "PDF"
+    if len(prefix) < 2:
+        prefix = (prefix + "PDF")[:2]
+    prefix = prefix[:8]
+
+    suffix_int = int(hashlib.sha256(raw.encode("utf-8")).hexdigest(), 16) % 1000
+    suffix = f"{suffix_int:03d}"
+    candidate = f"{prefix}_{suffix}"
+    if not _COURSE_CODE_PATTERN.match(candidate):
+        candidate = f"PDF_{suffix}"
+    return candidate
+
+
 # ADR-001 Contract 3 + REC-CTR-04 (Worker G wave 1.1): decision-type registry.
 #
 # Source of truth is ``schemas/events/decision_event.schema.json``. The
