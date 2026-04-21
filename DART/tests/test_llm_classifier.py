@@ -442,3 +442,59 @@ class TestDefaultClassifierRouting:
         backend = MockBackend(responses=["[]"])
         classifier = default_classifier(llm=backend)
         assert isinstance(classifier, LLMClassifier)
+
+
+# ---------------------------------------------------------------------------
+# Running-event-loop safety — convert_pdftotext_to_html must not crash when
+# called from an already-running asyncio loop (pytest-asyncio, notebooks,
+# async web workers).
+# ---------------------------------------------------------------------------
+
+
+class TestConvertPdftotextRunningLoop:
+    """Guards the fix for the P2 review finding: ``asyncio.run`` inside
+    ``convert_pdftotext_to_html`` used to raise ``RuntimeError`` when a
+    loop was already running. The sync entry point now detects that case
+    and drives the coroutine on a worker thread; the async entry point
+    (``aconvert_pdftotext_to_html``) avoids the loop bounce entirely.
+    """
+
+    RAW = "Chapter 1: Intro\n\nHello world.\n\nAnother paragraph here.\n"
+
+    def test_sync_entry_point_works_outside_a_loop(self):
+        from DART.converter import convert_pdftotext_to_html
+
+        html = convert_pdftotext_to_html(self.RAW, title="Doc")
+        assert "<main" in html
+        assert "Hello world." in html
+
+    @pytest.mark.asyncio
+    async def test_sync_entry_point_works_inside_a_running_loop(self):
+        from DART.converter import convert_pdftotext_to_html
+
+        # This is the regression case: previously raised
+        # "asyncio.run() cannot be called from a running event loop".
+        html = convert_pdftotext_to_html(self.RAW, title="Doc")
+        assert "<main" in html
+
+    @pytest.mark.asyncio
+    async def test_async_entry_point_awaits_cleanly(self):
+        from DART.converter import aconvert_pdftotext_to_html
+
+        html = await aconvert_pdftotext_to_html(self.RAW, title="Doc")
+        assert "<main" in html
+
+    @pytest.mark.asyncio
+    async def test_sync_entry_point_with_llm_classifier_inside_loop(
+        self, monkeypatch
+    ):
+        """LLM path must also survive a running loop — it is async under
+        the hood, so the thread-bounce needs to drive its coroutine."""
+        from DART.converter import convert_pdftotext_to_html
+
+        monkeypatch.setenv("DART_LLM_CLASSIFICATION", "true")
+        # Respond with an empty array so the classifier falls back to
+        # the heuristic for every block (graceful-fallback path).
+        backend = MockBackend(responses=["[]"] * 10)
+        html = convert_pdftotext_to_html(self.RAW, title="Doc", llm=backend)
+        assert "<main" in html

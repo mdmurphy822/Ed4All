@@ -79,13 +79,68 @@ def convert_pdftotext_to_html(
     """
     blocks = segment_pdftotext_output(raw_text)
     classifier = default_classifier(llm=llm)
-
-    # Both classifier shapes expose ``classify`` as an async method; we
-    # run it to completion here so callers that are themselves sync
-    # (the existing ``_raw_text_to_accessible_html`` orchestrator and
-    # unit tests) don't have to propagate ``async``.
-    classified = asyncio.run(classifier.classify(blocks))
+    classified = _run_classifier_sync(classifier, blocks)
     return assemble_html(classified, title, metadata or {})
+
+
+async def aconvert_pdftotext_to_html(
+    raw_text: str,
+    title: str,
+    metadata: dict | None = None,
+    *,
+    llm: Optional[Any] = None,
+) -> str:
+    """Async variant of :func:`convert_pdftotext_to_html`.
+
+    Prefer this from async contexts (pytest-asyncio, notebooks, async
+    web workers). Awaits the classifier directly instead of bouncing the
+    coroutine through a worker thread.
+    """
+    blocks = segment_pdftotext_output(raw_text)
+    classifier = default_classifier(llm=llm)
+    if isinstance(classifier, HeuristicClassifier):
+        classified = classifier.classify_sync(blocks)
+    else:
+        classified = await classifier.classify(blocks)
+    return assemble_html(classified, title, metadata or {})
+
+
+def _run_classifier_sync(classifier, blocks):
+    # HeuristicClassifier.classify_sync avoids touching the loop; prefer
+    # it when the classifier is the heuristic (the vast majority case).
+    if isinstance(classifier, HeuristicClassifier):
+        return classifier.classify_sync(blocks)
+
+    coro = classifier.classify(blocks)
+    try:
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+
+    if running_loop is None:
+        return asyncio.run(coro)
+
+    # A loop is already running (pytest-asyncio, notebooks, async workers).
+    # Drive the coroutine on a dedicated thread so we don't deadlock the
+    # caller's loop and don't crash with "asyncio.run() cannot be called
+    # from a running event loop".
+    import threading
+
+    result: list = []
+    error: list = []
+
+    def _runner():
+        try:
+            result.append(asyncio.run(coro))
+        except BaseException as exc:  # noqa: BLE001
+            error.append(exc)
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join()
+    if error:
+        raise error[0]
+    return result[0]
 
 
 __all__ = [
@@ -95,6 +150,7 @@ __all__ = [
     "LLMClassifier",
     "RawBlock",
     "TEMPLATE_REGISTRY",
+    "aconvert_pdftotext_to_html",
     "assemble_html",
     "convert_pdftotext_to_html",
     "default_classifier",
