@@ -28,7 +28,13 @@ def _phase_input(
 
 class TestLocalDispatcherStub:
     @pytest.mark.asyncio
-    async def test_stub_dispatch_returns_ok(self, tmp_path: Path):
+    async def test_stub_dispatch_returns_ok(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        # Wave 28: stub path is now opt-in via
+        # ``LOCAL_DISPATCHER_ALLOW_STUB`` so production runs fail loudly
+        # instead of emitting empty phase outputs.
+        monkeypatch.setenv("LOCAL_DISPATCHER_ALLOW_STUB", "1")
         dispatcher = LocalDispatcher(project_root=tmp_path)
         result = await dispatcher.dispatch_phase(_phase_input())
         assert isinstance(result, PhaseOutput)
@@ -39,7 +45,10 @@ class TestLocalDispatcherStub:
         assert result.outputs["dispatch_mode"] == "stub"
 
     @pytest.mark.asyncio
-    async def test_dispatched_list_tracked(self, tmp_path: Path):
+    async def test_dispatched_list_tracked(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ):
+        monkeypatch.setenv("LOCAL_DISPATCHER_ALLOW_STUB", "1")
         dispatcher = LocalDispatcher(project_root=tmp_path)
         await dispatcher.dispatch_phase(_phase_input(phase_name="p1"))
         await dispatcher.dispatch_phase(_phase_input(phase_name="p2"))

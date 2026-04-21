@@ -41,6 +41,78 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 
+# Match the ``<h1>Week N Overview: {real title}</h1>`` tag emitted by
+# :func:`Courseforge.scripts.generate_course.generate_week`. The real
+# chapter title — the part after ``"Overview:"`` / ``"Overview &mdash;"`` /
+# ``"— Overview"`` — is what the manifest week item should surface so
+# Brightspace / Canvas render a meaningful week label instead of a bare
+# ``"Week 3"``.
+_WEEK_OVERVIEW_H1_RE = re.compile(
+    r"<h1[^>]*>\s*(.*?)\s*</h1>",
+    re.IGNORECASE | re.DOTALL,
+)
+_OVERVIEW_TITLE_SEP_RE = re.compile(
+    r"(?i)(?:overview\s*[:—–-]\s*|"      # "Overview: Title" / "Overview — Title"
+    r"\s*[—–-]\s*overview\s*$)"          # "Title — Overview"
+)
+_BARE_OVERVIEW_RE = re.compile(r"(?i)^\s*overview\s*$")
+
+
+def _extract_week_title(week_dir: Path, week_num: int) -> str:
+    """Derive a human-readable week title from the week's overview HTML.
+
+    Looks at ``week_NN_overview.html`` and pulls the chapter-title portion
+    out of the emitted ``<h1>`` (Courseforge generate_week wraps it as
+    ``"Week {N} Overview: {title}"``). Returns ``"Week {N}"`` when:
+
+      * the overview file is missing,
+      * its ``<h1>`` has no chapter title (neutral "Overview" fallback), or
+      * parsing fails for any I/O reason.
+
+    Never raises — packager manifest building is best-effort on the title
+    layer; the LO-contract validator is the real gate for package quality.
+    """
+    overview_path = week_dir / f"week_{week_num:02d}_overview.html"
+    if not overview_path.exists():
+        return f"Week {week_num}"
+    try:
+        html = overview_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return f"Week {week_num}"
+    m = _WEEK_OVERVIEW_H1_RE.search(html)
+    if not m:
+        return f"Week {week_num}"
+    raw = m.group(1).strip()
+    # Strip HTML entities that commonly appear in the H1 ("&mdash;").
+    raw = raw.replace("&mdash;", "—").replace("&ndash;", "–")
+    # Strip inner tags the H1 might carry (span wrappers, etc.).
+    raw = re.sub(r"<[^>]+>", "", raw).strip()
+
+    # Split off the "Week N Overview" prefix/suffix to isolate the real title.
+    # Try "Week N Overview: Title" first.
+    m2 = re.match(
+        rf"(?i)^week\s+{week_num}\s*(?:overview)?\s*[:—–-]\s*(.+)$",
+        raw,
+    )
+    if m2:
+        title = m2.group(1).strip()
+    else:
+        m3 = re.match(
+            rf"(?i)^(.+?)\s*[—–-]\s*week\s+{week_num}\s*(?:overview)?\s*$",
+            raw,
+        )
+        if m3:
+            title = m3.group(1).strip()
+        else:
+            title = raw
+
+    # Bare "Overview" / empty → neutral week label (content-gen emits this
+    # when no topic binds to the week).
+    if not title or _BARE_OVERVIEW_RE.match(title):
+        return f"Week {week_num}"
+    return f"Week {week_num}: {title}"
+
+
 def build_manifest(content_dir: Path, course_code: str, course_title: str) -> str:
     """Build imsmanifest.xml for multi-file weekly content."""
     ns = "http://www.imsglobal.org/xsd/imsccv1p3/imscp_v1p1"
@@ -99,7 +171,13 @@ def build_manifest(content_dir: Path, course_code: str, course_title: str) -> st
         week_id = f"WEEK_{week_num}"
 
         week_item = ET.SubElement(root_item, cc("item"), {"identifier": week_id})
-        ET.SubElement(week_item, cc("title")).text = f"Week {int(week_num)}"
+        # Prefer the real chapter title captured by generate_week in the
+        # overview H1 (e.g. "Week 1: Fundamental Change in Education")
+        # over the bare "Week N" label that earlier revisions emitted and
+        # that produced an uninformative LMS week list.
+        ET.SubElement(week_item, cc("title")).text = _extract_week_title(
+            week_dir, int(week_num)
+        )
 
         # Sort files: overview first, then content, application, self_check, summary, discussion
         order = {"overview": 0, "content": 1, "application": 2, "self_check": 3, "summary": 4, "discussion": 5}
