@@ -923,6 +923,7 @@ def _extract_figures(
     llm: Optional["LLMBackend"] = None,
     figures_dir: Optional[Path] = None,
     page_text_index: Optional[List[str]] = None,
+    capture: Optional[object] = None,
 ) -> List[ExtractedFigure]:
     """Return every figure-like region in ``pdf_path``.
 
@@ -967,7 +968,13 @@ def _extract_figures(
         try:
             from DART.pdf_converter.alt_text_generator import AltTextGenerator
 
-            alt_gen = AltTextGenerator(llm=llm, use_ocr_fallback=False)
+            # Wave 22 DC1: thread capture through so per-figure
+            # decisions are logged (was zero captures pre-Wave-22).
+            alt_gen = AltTextGenerator(
+                llm=llm,
+                use_ocr_fallback=False,
+                capture=capture,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.debug("AltTextGenerator init failed: %s", exc)
             alt_gen = None
@@ -1059,6 +1066,7 @@ def extract_document(
     *,
     llm: Optional["LLMBackend"] = None,
     figures_dir: Optional[Path] = None,
+    capture: Optional[object] = None,
 ) -> ExtractedDocument:
     """Extract a :class:`ExtractedDocument` from ``pdf_path``.
 
@@ -1128,6 +1136,7 @@ def extract_document(
             llm=llm,
             figures_dir=figures_dir,
             page_text_index=page_text_index,
+            capture=capture,
         )
     except Exception as exc:  # noqa: BLE001 — defense in depth
         logger.debug("Figure extraction raised unexpectedly: %s", exc)

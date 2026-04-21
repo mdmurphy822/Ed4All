@@ -43,6 +43,7 @@ class AltTextGenerator:
         use_ai: bool = True,
         use_ocr_fallback: bool = True,
         llm: Optional["LLMBackend"] = None,
+        capture: Optional[object] = None,
     ):
         """
         Initialize alt text generator.
@@ -58,11 +59,21 @@ class AltTextGenerator:
                 completions route through it instead of constructing an
                 Anthropic client directly. Backward compatible: existing
                 callers that pass only ``api_key`` continue to work.
+            capture: Optional
+                :class:`lib.decision_capture.DARTDecisionCapture` (or
+                compatible ``DecisionCapture`` with
+                ``log_alt_text_decision``). Wave 22 DC1: when supplied,
+                every generated alt-text fires one
+                ``alt_text_generation`` decision with dynamic rationale
+                (page, bbox, image hash, detected type, caption
+                presence). When ``None`` (the default), logging is
+                silently skipped so existing tests keep passing.
         """
         self.api_key = api_key or os.environ.get('ANTHROPIC_API_KEY')
         self.model = model
         self.use_ocr_fallback = use_ocr_fallback
         self._llm = llm
+        self.capture = capture
 
         # Either an injected backend or a resolvable API key enables AI.
         self.use_ai = use_ai and (llm is not None or self.api_key is not None)
@@ -115,20 +126,133 @@ class AltTextGenerator:
         if self.use_ai and (self._llm is not None or self._client is not None):
             result = self._try_claude_with_retry(image, context)
             if result.success:
+                self._log_alt_text_decision(image, result, context)
                 return result
 
         # Try OCR fallback
         if self.use_ocr_fallback and self._pytesseract:
             result = self._try_ocr_fallback(image)
             if result.success and result.alt_text:
+                self._log_alt_text_decision(image, result, context)
                 return result
 
         # Try caption-based fallback
         if image.nearby_caption:
-            return self._use_caption_fallback(image)
+            result = self._use_caption_fallback(image)
+            self._log_alt_text_decision(image, result, context)
+            return result
 
         # Final generic fallback
-        return self._generic_fallback(image)
+        result = self._generic_fallback(image)
+        self._log_alt_text_decision(image, result, context)
+        return result
+
+    def _log_alt_text_decision(
+        self,
+        image: "ExtractedImage",
+        result: AltTextResult,
+        context: str,
+    ) -> None:
+        """Wave 22 DC1: dynamic per-figure decision capture.
+
+        Uses the ``DARTDecisionCapture.log_alt_text_decision`` helper
+        when the injected capture is one; otherwise falls back to a
+        generic ``log_decision`` call. Every rationale interpolates
+        page, bbox, image hash, source strategy (claude / ocr /
+        caption / generic), and caption presence — no two captures
+        are byte-identical, meeting the audit's explicit "no static
+        boilerplate rationales" constraint.
+        """
+        capture = getattr(self, "capture", None)
+        if capture is None:
+            return
+
+        try:
+            import hashlib
+
+            # Image hash: first 12 chars of sha256(bytes). We only use
+            # the hash for correlation, never for content recovery, so
+            # 12 is plenty and keeps the rationale short.
+            img_bytes = getattr(image, "data", b"") or b""
+            img_hash = (
+                hashlib.sha256(img_bytes).hexdigest()[:12]
+                if img_bytes
+                else "none"
+            )
+
+            page = getattr(image, "page", 0) or 0
+            bbox = getattr(image, "bbox", None)
+            bbox_str = (
+                f"[{bbox[0]:.0f},{bbox[1]:.0f},{bbox[2]:.0f},{bbox[3]:.0f}]"
+                if bbox and len(bbox) == 4
+                else "unknown"
+            )
+            width = getattr(image, "width", None) or "?"
+            height = getattr(image, "height", None) or "?"
+            nearby_caption = getattr(image, "nearby_caption", "") or ""
+            caption_state = (
+                "caption-present"
+                if nearby_caption
+                else "caption-absent"
+            )
+
+            image_id = f"p{page:04d}-{img_hash}"
+            method = result.source  # 'claude' | 'ocr' | 'caption' | 'generic'
+
+            # Dynamic rationale interpolating every auditable signal.
+            rationale = (
+                f"Image {image_id} at page {page} bbox={bbox_str} "
+                f"size={width}x{height}; chose source={method} "
+                f"({caption_state}); "
+                f"alt len={len(result.alt_text)} chars, "
+                f"long_desc len={len(result.long_description)} chars; "
+                f"ctx len={len(context)} chars"
+            )
+
+            # Prefer the specialised helper when the capture carries it
+            # (Wave 22 DC1 re-uses the zero-caller helper at
+            # ``lib/decision_capture.py::DARTDecisionCapture.log_alt_text_decision``).
+            helper = getattr(capture, "log_alt_text_decision", None)
+            if callable(helper):
+                # The helper only accepts (image_id, alt_text, method),
+                # so after it logs the summary we also emit a richer
+                # ``log_decision`` carrying the dynamic rationale so
+                # the 20-char minimum and interpolated-signal audit
+                # requirements are satisfied together.
+                helper(image_id, result.alt_text, method=method)
+                log_fn = getattr(capture, "log_decision", None)
+                if callable(log_fn):
+                    log_fn(
+                        decision_type="alt_text_generation",
+                        decision=(
+                            f"Generated alt text for {image_id} via {method}"
+                        ),
+                        rationale=rationale,
+                        context=(
+                            f"alt={result.alt_text[:120]!r}"
+                            if result.alt_text
+                            else "alt=<empty>"
+                        ),
+                    )
+            else:
+                log_fn = getattr(capture, "log_decision", None)
+                if callable(log_fn):
+                    log_fn(
+                        decision_type="alt_text_generation",
+                        decision=(
+                            f"Generated alt text for {image_id} via {method}"
+                        ),
+                        rationale=rationale,
+                        context=(
+                            f"alt={result.alt_text[:120]!r}"
+                            if result.alt_text
+                            else "alt=<empty>"
+                        ),
+                    )
+        except Exception as exc:  # noqa: BLE001 — capture is best-effort
+            logger.debug(
+                "Alt-text capture emit failed (%s); continuing", exc
+            )
 
     def _try_claude_with_retry(
         self,
