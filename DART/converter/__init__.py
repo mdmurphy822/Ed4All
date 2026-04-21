@@ -63,6 +63,7 @@ def default_classifier(
     text_spans: Optional[list] = None,
     median_body_font_size: Optional[float] = None,
     capture: Optional[Any] = None,
+    page_chrome: Optional[Any] = None,
 ) -> Union[LLMClassifier, HeuristicClassifier]:
     """Return the configured classifier for the current environment.
 
@@ -96,6 +97,7 @@ def default_classifier(
     return HeuristicClassifier(
         text_spans=text_spans,
         median_body_font_size=median_body_font_size,
+        page_chrome=page_chrome,
     )
 
 
