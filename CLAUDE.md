@@ -232,7 +232,7 @@ for i in range(50):
 
 | Tool | Description |
 |------|-------------|
-| `create_course_project` | Initialize a standalone (non-pipeline) course project. For `textbook_to_course` runs the canonical planners are pipeline-internal `extract_textbook_structure` + `plan_course_structure`. |
+| `create_course_project` **[DEPRECATED Wave 28e]** | Initialize a standalone (non-pipeline) course project. Still functional for external MCP clients, but new integrations should route through the pipeline-internal `extract_textbook_structure` + `plan_course_structure` (Wave 24). |
 | `generate_course_content` | Generate content for weeks |
 | `package_imscc` | Package course as IMSCC. Runtime delegates to `Courseforge/scripts/package_multifile_imscc.py` (IMS CC v1.3 namespaces, per-week LO validation, `course_metadata.json` bundling). |
 | `intake_imscc_package` | Import existing IMSCC |
@@ -297,10 +297,12 @@ Priority extraction chain (extends the Courseforge chain above): JSON-LD > `data
 | `extract_textbook_structure` | `objective_extraction` | Runs `SemanticStructureExtractor` over every staged DART HTML file and merges per-file chapter/section hierarchies into a single `textbook_structure.json`. |
 | `plan_course_structure` | `course_planning` | Synthesizes canonical `TO-NN` / `CO-NN` learning objectives from the textbook structure and publishes `synthesized_objectives.json`. |
 
-**Deprecated surface**:
-
-- `create_textbook_pipeline_tool` / `run_textbook_pipeline_tool` (MCP tools) — superseded by `create_workflow(workflow_type="textbook_to_course", ...)` via `cli/commands/run.py`.
-- `ed4all textbook-to-course` (top-level CLI subcommand at `cli/main.py`) — emits a yellow warning at invocation. Prefer `ed4all run textbook-to-course --corpus ... --course-name ...`.
+**Removed in Wave 28f**: the deprecated `create_textbook_pipeline_tool`
+/ `run_textbook_pipeline_tool` MCP tools and the `ed4all
+textbook-to-course` top-level CLI subcommand have been deleted. Use
+`create_workflow(workflow_type="textbook_to_course", ...)` via
+`cli/commands/run.py`, or the canonical `ed4all run
+textbook-to-course --corpus ... --course-name ...`.
 
 ### Analysis Tools
 
@@ -647,7 +649,7 @@ Location: `schemas/config/workflows_meta.schema.json`
 
 ## Opt-In Behavior Flags
 
-Eleven environment-variable toggles gate opt-in strict / stable-ID / provenance behavior. All default off to preserve backward compatibility with legacy corpora. See `schemas/ONTOLOGY.md` § 12 for full rationale per flag.
+Ten environment-variable toggles gate opt-in strict / stable-ID / provenance behavior. All default off to preserve backward compatibility with legacy corpora. See `schemas/ONTOLOGY.md` § 12 for full rationale per flag.
 
 | Flag | When on |
 |------|---------|
@@ -660,7 +662,6 @@ Eleven environment-variable toggles gate opt-in strict / stable-ID / provenance 
 | `TRAINFORGE_SOURCE_PROVENANCE` | Evidence arms emit `source_references[]` sourced from chunks' `source.source_references[]`. Off: arms emit the pre-provenance shape. |
 | `DECISION_VALIDATION_STRICT` | Fails closed on unknown `decision_type` values in decision captures. |
 | `DART_LLM_CLASSIFICATION` | DART's block classifier routes through Claude via `LLMClassifier` instead of heuristic regex. Requires an injected `LLMBackend`. |
-| `DART_LEGACY_CONVERTER` | Forces `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html` to use the pre-multi-extractor regex path. One-release safety fallback. |
 | `LOCAL_DISPATCHER_ALLOW_STUB` | Permits `LocalDispatcher` to emit a stubbed `PhaseOutput` (`status="ok"`) when no `agent_tool` callable was wired in. Tests / dry-run only. Default off so production `--mode local` runs fail loudly instead of silently succeeding with empty phase outputs. |
 
 ---

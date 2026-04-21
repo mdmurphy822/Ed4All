@@ -2,9 +2,10 @@
 Canonical ``ed4all run`` CLI command (Wave 7).
 
 This command is the single recommended entry point for running any Ed4All
-workflow end-to-end. It replaces the ad-hoc trio of
+workflow end-to-end. Wave 7 replaced the ad-hoc trio of
 ``ed4all textbook-to-course`` + ``create_textbook_pipeline_tool`` +
-``run_textbook_pipeline_tool`` with a unified surface:
+``run_textbook_pipeline_tool`` with a unified surface; Wave 28f
+removed those predecessors entirely:
 
     ed4all run <workflow_name> [options]
 
