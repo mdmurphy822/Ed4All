@@ -33,16 +33,33 @@ Design invariants
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
 if TYPE_CHECKING:  # pragma: no cover - type-check only imports
     from MCP.orchestrator.llm_backend import LLMBackend
 
 logger = logging.getLogger(__name__)
+
+
+# Caption detection — match ``Figure N[.M]:`` / ``Fig. N:`` / ``Image N:``
+# / ``Figure N -`` patterns (case-insensitive). Keep the anchor loose so
+# we accept both colon and dash separators; the full matched line becomes
+# the caption (templates tolerate the leading label).
+_FIGURE_CAPTION_RE = re.compile(
+    r"^\s*(?:figure|fig\.?|image)\s+\d+(?:\.\d+)?\s*[:\-\u2013\u2014]\s*\S.*$",
+    re.IGNORECASE,
+)
+
+# Known raster formats we round-trip through. Anything else falls back to
+# ``.png`` so the file still lands on disk with a predictable extension.
+_KNOWN_IMAGE_EXTS = {"png", "jpeg", "jpg", "gif", "bmp", "tiff", "tif", "webp"}
 
 
 # ---------------------------------------------------------------------------
@@ -339,10 +356,118 @@ def _extract_ocr_text(pdf_path: str) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
+def _image_ext_from_format(fmt: Optional[str]) -> str:
+    """Normalise an upstream image format label to a filename extension.
+
+    PyMuPDF reports the underlying image format on ``ExtractedImage.format``
+    (``"png"``, ``"jpeg"``, etc.); a few odd corpora occasionally surface
+    ``None`` or an unknown label. We default to ``png`` so every
+    persisted figure still lands with a predictable extension.
+    """
+    if not fmt:
+        return "png"
+    label = str(fmt).strip().lower()
+    if label == "jpg":
+        return "jpg"
+    if label in _KNOWN_IMAGE_EXTS:
+        return label
+    return "png"
+
+
+def _figure_filename(page: int, image_bytes: bytes, fmt: Optional[str]) -> str:
+    """Compute the stable ``{page:04d}-{hash8}.{ext}`` filename.
+
+    ``page`` is 1-indexed (matches :class:`ExtractedFigure.page`).
+    ``hash8`` is the first eight hex chars of ``sha256(image_bytes)`` so
+    re-extracting the same bytes (same PDF, same page, same raster)
+    produces the same filename — callers can idempotently re-run the
+    pipeline without orphaning disk copies.
+    """
+    digest = hashlib.sha256(image_bytes or b"").hexdigest()[:8]
+    ext = _image_ext_from_format(fmt)
+    safe_page = max(0, int(page or 0))
+    return f"{safe_page:04d}-{digest}.{ext}"
+
+
+def _persist_image_bytes(
+    image_bytes: bytes,
+    figures_dir: Path,
+    *,
+    page: int,
+    fmt: Optional[str],
+) -> str:
+    """Write ``image_bytes`` to ``figures_dir`` and return the relative path.
+
+    Returns just the filename (no directory prefix) so the caller /
+    assembler layer can control the relative path written into the
+    final HTML ``<img src>`` attribute. Idempotent: if the target file
+    already exists we skip the write and return the same filename.
+    """
+    filename = _figure_filename(page, image_bytes, fmt)
+    figures_dir.mkdir(parents=True, exist_ok=True)
+    target = figures_dir / filename
+    if not target.exists():
+        try:
+            target.write_bytes(image_bytes)
+        except OSError as exc:  # pragma: no cover - disk errors are rare
+            logger.debug("Failed to persist figure to %s: %s", target, exc)
+            return ""
+    return filename
+
+
+def _find_caption_for_figure(
+    page_text: str,
+    page_number: Optional[int],
+    already_taken: Optional[set] = None,
+) -> Optional[str]:
+    """Best-effort figure caption scrape.
+
+    Scans ``page_text`` for the first ``Figure N.M:`` / ``Fig. N:`` /
+    ``Image N:`` / ``Figure N -`` line and returns the full line. Each
+    caption line is "claimed" via ``already_taken`` so multiple figures
+    on the same page bind to successive captions instead of all getting
+    the first one. ``already_taken`` is a ``set`` of line numbers into
+    ``page_text.splitlines()`` that the caller maintains per page.
+
+    Returns ``None`` when no caption is found, so downstream templates
+    can fall through to an alt-text-only or caption-less rendering.
+    """
+    if not page_text:
+        return None
+    lines = page_text.splitlines()
+    for idx, line in enumerate(lines):
+        if already_taken is not None and idx in already_taken:
+            continue
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _FIGURE_CAPTION_RE.match(stripped):
+            if already_taken is not None:
+                already_taken.add(idx)
+            return stripped
+    return None
+
+
+def _build_page_text_index(raw_text: str) -> List[str]:
+    """Split pdftotext output into a list of per-page strings.
+
+    pdftotext emits ``\\x0c`` between pages in ``-layout`` mode. When
+    form-feeds are absent we return a single-element list carrying the
+    whole document so the caption scraper still has something to scan.
+    """
+    if not raw_text:
+        return []
+    if "\x0c" in raw_text:
+        return raw_text.split("\x0c")
+    return [raw_text]
+
+
 def _extract_figures(
     pdf_path: str,
     *,
     llm: Optional["LLMBackend"] = None,
+    figures_dir: Optional[Path] = None,
+    page_text_index: Optional[List[str]] = None,
 ) -> List[ExtractedFigure]:
     """Return every figure-like region in ``pdf_path``.
 
@@ -352,6 +477,19 @@ def _extract_figures(
     :class:`DART.pdf_converter.alt_text_generator.AltTextGenerator`;
     when ``llm`` is ``None``, alt-text stays ``None`` so downstream
     templates can fall back to the caption.
+
+    When ``figures_dir`` is provided, raw image bytes returned by the
+    upstream extractor are persisted under ``figures_dir`` as
+    ``{page:04d}-{hash8}.{ext}`` and ``ExtractedFigure.image_path`` is
+    set to the relative filename (no directory prefix — the caller /
+    assembler layer decides the relative path written into ``<img
+    src>``). When ``figures_dir`` is ``None`` (the default), no disk
+    I/O occurs and ``image_path`` stays empty, matching pre-Wave-17
+    behaviour.
+
+    ``page_text_index`` (optional) is a per-page list of pdftotext
+    text used by the caption scraper; when absent we fall back to the
+    upstream extractor's ``nearby_caption`` attribute.
     """
     try:
         from DART.pdf_converter.image_extractor import PDFImageExtractor
@@ -379,8 +517,14 @@ def _extract_figures(
             logger.debug("AltTextGenerator init failed: %s", exc)
             alt_gen = None
 
+    # Track which caption lines have been claimed per page so multiple
+    # figures on the same page bind to distinct captions rather than all
+    # latching onto the first ``Figure N:`` line.
+    caption_claims: dict = {}
+
     figures: List[ExtractedFigure] = []
     for img in images:
+        page_number = int(getattr(img, "page", 0) or 0)
         alt_text: Optional[str] = None
         if alt_gen is not None:
             try:
@@ -390,13 +534,40 @@ def _extract_figures(
             except Exception as exc:  # noqa: BLE001
                 logger.debug("Alt-text generation failed for image: %s", exc)
 
+        # Caption: prefer the pdftotext-backed scraper (so "Figure N.M:"
+        # lines bind to real captions); fall back to the upstream
+        # extractor's nearby_caption only when we have nothing better.
+        caption: Optional[str] = None
+        if page_text_index and 0 < page_number <= len(page_text_index):
+            page_text = page_text_index[page_number - 1]
+            claims = caption_claims.setdefault(page_number, set())
+            caption = _find_caption_for_figure(page_text, page_number, claims)
+        if caption is None:
+            nearby = getattr(img, "nearby_caption", "") or None
+            if nearby:
+                caption = nearby
+
+        # Persist raw bytes when caller asked. ``img.data`` is populated
+        # by PDFImageExtractor; ``img.format`` carries the raster format.
+        image_path = ""
+        if figures_dir is not None:
+            data = getattr(img, "data", b"") or b""
+            if data:
+                fmt = getattr(img, "format", None)
+                image_path = _persist_image_bytes(
+                    data,
+                    Path(figures_dir),
+                    page=page_number,
+                    fmt=fmt,
+                )
+
         figures.append(
             ExtractedFigure(
-                page=int(getattr(img, "page", 0) or 0),
+                page=page_number,
                 bbox=tuple(getattr(img, "bbox", (0.0, 0.0, 0.0, 0.0))),  # type: ignore[arg-type]
-                image_path="",  # Raw bytes live on img.data; caller persists.
+                image_path=image_path,
                 alt_text=alt_text,
-                caption=(getattr(img, "nearby_caption", "") or None),
+                caption=caption,
             )
         )
 
@@ -412,6 +583,7 @@ def extract_document(
     pdf_path: str,
     *,
     llm: Optional["LLMBackend"] = None,
+    figures_dir: Optional[Path] = None,
 ) -> ExtractedDocument:
     """Extract a :class:`ExtractedDocument` from ``pdf_path``.
 
@@ -428,6 +600,14 @@ def extract_document(
         Optional :class:`LLMBackend` used to populate figure alt-text
         via the existing :class:`AltTextGenerator`. When ``None`` (the
         default), figure alt-text stays ``None``.
+    figures_dir:
+        Optional directory for persisted figure image bytes. When
+        provided, each :class:`ExtractedFigure` whose upstream
+        extractor returned image bytes is written to
+        ``figures_dir / {page:04d}-{hash8}.{ext}`` and its
+        ``image_path`` set to the relative filename. When ``None`` (the
+        default), no disk I/O occurs and ``image_path`` stays empty —
+        matching pre-Wave-17 behaviour.
     """
     raw_text = _run_pdftotext(pdf_path)
 
@@ -438,9 +618,16 @@ def extract_document(
         logger.debug("Table extraction raised unexpectedly: %s", exc)
         tables = []
 
+    page_text_index = _build_page_text_index(raw_text)
+
     figures: List[ExtractedFigure] = []
     try:
-        figures = _extract_figures(pdf_path, llm=llm)
+        figures = _extract_figures(
+            pdf_path,
+            llm=llm,
+            figures_dir=figures_dir,
+            page_text_index=page_text_index,
+        )
     except Exception as exc:  # noqa: BLE001 — defense in depth
         logger.debug("Figure extraction raised unexpectedly: %s", exc)
         figures = []

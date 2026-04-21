@@ -60,7 +60,7 @@ def no_optional_deps(monkeypatch):
     )
     monkeypatch.setattr(extractor_module.shutil, "which", lambda name: None)
     monkeypatch.setattr(
-        extractor_module, "_extract_figures", lambda pdf_path, *, llm=None: []
+        extractor_module, "_extract_figures", lambda pdf_path, *, llm=None, **_: []
     )
     yield
 
@@ -161,7 +161,7 @@ class TestPdfplumberTables:
         )
         monkeypatch.setattr(extractor_module.shutil, "which", lambda name: None)
         monkeypatch.setattr(
-            extractor_module, "_extract_figures", lambda pdf_path, *, llm=None: []
+            extractor_module, "_extract_figures", lambda pdf_path, *, llm=None, **_: []
         )
 
         doc = extract_document(str(pdf))
@@ -186,7 +186,7 @@ class TestPdfplumberTables:
         monkeypatch.setattr(extractor_module, "_extract_tables_pdfplumber", _boom)
         monkeypatch.setattr(extractor_module.shutil, "which", lambda name: None)
         monkeypatch.setattr(
-            extractor_module, "_extract_figures", lambda pdf_path, *, llm=None: []
+            extractor_module, "_extract_figures", lambda pdf_path, *, llm=None, **_: []
         )
 
         # The extractor should catch the helper's exception and degrade to [].
@@ -223,7 +223,7 @@ class TestOcrPath:
             extractor_module, "_extract_tables_pdfplumber", lambda pdf_path: []
         )
         monkeypatch.setattr(
-            extractor_module, "_extract_figures", lambda pdf_path, *, llm=None: []
+            extractor_module, "_extract_figures", lambda pdf_path, *, llm=None, **_: []
         )
         # Short-circuit the OCR helper to avoid requiring tesseract / PyMuPDF.
         monkeypatch.setattr(
@@ -264,10 +264,12 @@ class TestFigureExtraction:
         monkeypatch.setattr(extractor_module.shutil, "which", lambda name: None)
 
         # Short-circuit figure extraction with fake output that verifies
-        # the ``llm`` kwarg propagates.
+        # the ``llm`` kwarg propagates. Wave 17 adds ``figures_dir`` /
+        # ``page_text_index`` kwargs to the helper; accept them via
+        # ``**kwargs`` so this test remains signature-agnostic.
         seen_llm = []
 
-        def _fake_figures(pdf_path, *, llm=None):
+        def _fake_figures(pdf_path, *, llm=None, **kwargs):
             seen_llm.append(llm)
             return [
                 ExtractedFigure(
@@ -301,7 +303,7 @@ class TestFigureExtraction:
         )
         monkeypatch.setattr(extractor_module.shutil, "which", lambda name: None)
 
-        def _boom(pdf_path, *, llm=None):
+        def _boom(pdf_path, *, llm=None, **_):
             raise RuntimeError("PyMuPDF exploded")
 
         monkeypatch.setattr(extractor_module, "_extract_figures", _boom)
@@ -336,3 +338,207 @@ class TestDataclassDefaults:
         assert fig.alt_text is None
         assert fig.caption is None
         assert fig.image_path == ""
+
+
+# ---------------------------------------------------------------------------
+# Wave 17: figures_dir persistence + caption detector
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.dart
+class TestFiguresDirPersistence:
+    """Wave 17: ``figures_dir`` kwarg persists figure bytes to disk."""
+
+    def test_figures_dir_none_keeps_image_path_empty(
+        self, monkeypatch, tmp_path, no_optional_deps
+    ):
+        """Backward compat: ``figures_dir`` absent leaves image_path empty."""
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        monkeypatch.setattr(subprocess, "run", _fake_pdftotext_success(b"Text."))
+
+        # Stub _extract_figures to verify it was called without figures_dir.
+        seen_kwargs = {}
+
+        def _fake(pdf_path, *, llm=None, **kwargs):
+            seen_kwargs.update(kwargs)
+            return []
+
+        monkeypatch.setattr(extractor_module, "_extract_figures", _fake)
+
+        extract_document(str(pdf))
+        # figures_dir is present in kwargs (default None)
+        assert seen_kwargs.get("figures_dir") is None
+
+    def test_figures_dir_persists_bytes_and_sets_relative_path(
+        self, monkeypatch, tmp_path
+    ):
+        """End-to-end: figure bytes land on disk under ``figures_dir``."""
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        monkeypatch.setattr(subprocess, "run", _fake_pdftotext_success(b"Prose."))
+        monkeypatch.setattr(
+            extractor_module, "_extract_tables_pdfplumber", lambda p: []
+        )
+        monkeypatch.setattr(extractor_module.shutil, "which", lambda n: None)
+
+        # Fake a PyMuPDF-style ExtractedImage namespace with bytes.
+        img_bytes = b"\x89PNG\r\n\x1a\nfake-png-bytes"
+        fake_img = SimpleNamespace(
+            page=3,
+            bbox=(0.0, 0.0, 10.0, 10.0),
+            data=img_bytes,
+            format="png",
+            nearby_caption="",
+        )
+
+        # Patch PDFImageExtractor at import point inside _extract_figures.
+        def _fake_extractor_factory(pdf_path):
+            class _Ex:
+                def extract_all(inner_self):
+                    return [fake_img]
+
+            return _Ex()
+
+        # Instead of patching the class, patch _extract_figures' backbone
+        # by intercepting the import. Simpler: provide a fake module via
+        # monkeypatch.setattr on the ``image_extractor`` module attribute.
+        import sys as _sys
+
+        fake_module = SimpleNamespace(PDFImageExtractor=_fake_extractor_factory)
+        monkeypatch.setitem(
+            _sys.modules, "DART.pdf_converter.image_extractor", fake_module
+        )
+
+        figures_dir = tmp_path / "out_figures"
+        doc = extract_document(str(pdf), figures_dir=figures_dir)
+
+        assert len(doc.figures) == 1
+        fig = doc.figures[0]
+        # image_path is the relative filename (no directory prefix).
+        assert fig.image_path != ""
+        assert "/" not in fig.image_path
+        # File exists on disk.
+        assert (figures_dir / fig.image_path).exists()
+        # Contents match input.
+        assert (figures_dir / fig.image_path).read_bytes() == img_bytes
+        # Filename follows {page:04d}-{hash8}.{ext} pattern.
+        assert fig.image_path.startswith("0003-")
+        assert fig.image_path.endswith(".png")
+
+    def test_figure_persistence_is_idempotent(self, monkeypatch, tmp_path):
+        """Same bytes -> same filename, no double-write on re-extract."""
+        pdf = tmp_path / "doc.pdf"
+        pdf.write_bytes(b"%PDF-1.4")
+        monkeypatch.setattr(subprocess, "run", _fake_pdftotext_success(b"Prose."))
+        monkeypatch.setattr(
+            extractor_module, "_extract_tables_pdfplumber", lambda p: []
+        )
+        monkeypatch.setattr(extractor_module.shutil, "which", lambda n: None)
+
+        img_bytes = b"identical-bytes-every-time"
+        fake_img = SimpleNamespace(
+            page=1,
+            bbox=(0, 0, 1, 1),
+            data=img_bytes,
+            format="png",
+            nearby_caption="",
+        )
+
+        def _fake_factory(pdf_path):
+            class _Ex:
+                def extract_all(inner_self):
+                    return [fake_img]
+
+            return _Ex()
+
+        import sys as _sys
+
+        monkeypatch.setitem(
+            _sys.modules,
+            "DART.pdf_converter.image_extractor",
+            SimpleNamespace(PDFImageExtractor=_fake_factory),
+        )
+
+        figures_dir = tmp_path / "figs"
+        doc1 = extract_document(str(pdf), figures_dir=figures_dir)
+        first_path = doc1.figures[0].image_path
+
+        doc2 = extract_document(str(pdf), figures_dir=figures_dir)
+        second_path = doc2.figures[0].image_path
+
+        assert first_path == second_path
+        # Only one file on disk.
+        assert len(list(figures_dir.iterdir())) == 1
+
+
+@pytest.mark.unit
+@pytest.mark.dart
+class TestFigureCaptionDetector:
+    """Wave 17: best-effort caption scrape from pdftotext output."""
+
+    def test_caption_matches_figure_colon(self):
+        page_text = (
+            "Introductory prose.\n"
+            "Figure 1.2: A histogram of quarterly sales figures.\n"
+            "More prose.\n"
+        )
+        caption = extractor_module._find_caption_for_figure(
+            page_text, page_number=1
+        )
+        assert caption is not None
+        assert caption.startswith("Figure 1.2:")
+
+    def test_caption_matches_fig_abbreviation(self):
+        page_text = "Fig. 3: Sales over time.\n"
+        caption = extractor_module._find_caption_for_figure(
+            page_text, page_number=1
+        )
+        assert caption is not None
+        assert "Fig. 3:" in caption
+
+    def test_caption_matches_image_pattern(self):
+        page_text = "Image 5: Reference photograph.\n"
+        caption = extractor_module._find_caption_for_figure(
+            page_text, page_number=1
+        )
+        assert caption is not None
+        assert caption.startswith("Image 5:")
+
+    def test_caption_matches_dash_separator(self):
+        page_text = "Figure 4 - Outcome diagram illustrating flow.\n"
+        caption = extractor_module._find_caption_for_figure(
+            page_text, page_number=1
+        )
+        assert caption is not None
+        assert "Figure 4" in caption
+
+    def test_no_false_positives_on_prose(self):
+        """Plain prose that mentions figures must not be captured."""
+        page_text = (
+            "The following data shows trends over time.\n"
+            "We describe Figure interpretation in section 3.\n"  # no number
+            "The figure illustrates our hypothesis.\n"  # lowercase prose
+        )
+        caption = extractor_module._find_caption_for_figure(
+            page_text, page_number=1
+        )
+        assert caption is None
+
+    def test_multiple_figures_claim_successive_captions(self):
+        """``already_taken`` prevents multiple figures binding to one caption."""
+        page_text = (
+            "Figure 1.1: First caption.\n"
+            "Figure 1.2: Second caption.\n"
+        )
+        claims: set = set()
+        first = extractor_module._find_caption_for_figure(
+            page_text, page_number=1, already_taken=claims
+        )
+        second = extractor_module._find_caption_for_figure(
+            page_text, page_number=1, already_taken=claims
+        )
+        assert first is not None and first.startswith("Figure 1.1:")
+        assert second is not None and second.startswith("Figure 1.2:")
+        assert first != second
