@@ -47,12 +47,14 @@ from DART.converter.extractor import (
     ExtractedTOCEntry,
     ExtractedTable,
     ExtractedTextSpan,
+    PageChrome,
     extract_document,
     median_body_font_size,
 )
 from DART.converter.heuristic_classifier import HeuristicClassifier
 from DART.converter.llm_classifier import LLMClassifier
 from DART.converter.mathml import detect_formulas, render_mathml
+from DART.converter.page_chrome import detect_page_chrome, strip_page_chrome
 
 
 def default_classifier(
@@ -181,6 +183,7 @@ __all__ = [
     "ExtractedTextSpan",
     "HeuristicClassifier",
     "LLMClassifier",
+    "PageChrome",
     "RawBlock",
     "TEMPLATE_REGISTRY",
     "aconvert_pdftotext_to_html",
@@ -188,10 +191,12 @@ __all__ = [
     "convert_pdftotext_to_html",
     "default_classifier",
     "detect_formulas",
+    "detect_page_chrome",
     "extract_document",
     "median_body_font_size",
     "render_block",
     "render_mathml",
     "segment_extracted_document",
     "segment_pdftotext_output",
+    "strip_page_chrome",
 ]

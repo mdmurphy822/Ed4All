@@ -42,6 +42,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+from DART.converter.page_chrome import (
+    PageChrome,
+    detect_page_chrome,
+    strip_page_chrome,
+)
+
 if TYPE_CHECKING:  # pragma: no cover - type-check only imports
     from MCP.orchestrator.llm_backend import LLMBackend
 
@@ -203,6 +209,14 @@ class ExtractedDocument:
     pdf_metadata: Dict[str, Any] = field(default_factory=dict)
     text_spans: List[ExtractedTextSpan] = field(default_factory=list)
     links: List[ExtractedLink] = field(default_factory=list)
+    # Wave 20: running-header / running-footer / page-number chrome.
+    # Populated by :func:`DART.converter.page_chrome.detect_page_chrome`
+    # before ``raw_text`` is frozen. ``raw_text`` itself is already
+    # chrome-stripped when this field is non-empty so downstream
+    # segmentation never sees the polluting chrome lines; this field
+    # preserves the detection result (headers / footers / per-page
+    # page-number labels) for debuggability + sidecar emission.
+    page_chrome: PageChrome = field(default_factory=PageChrome)
 
 
 # ---------------------------------------------------------------------------
@@ -1085,6 +1099,26 @@ def extract_document(
         logger.debug("Table extraction raised unexpectedly: %s", exc)
         tables = []
 
+    # Wave 20: detect + strip page-chrome before anything downstream sees
+    # ``raw_text``. Detection is frequency-based on per-page top/bottom
+    # lines and degrades to a no-op on short / form-feed-less input.
+    # The stripped text is what every downstream consumer uses (figure
+    # caption scraping, segmentation, etc.); the detected chrome record
+    # is preserved on ``ExtractedDocument.page_chrome`` for sidecars.
+    try:
+        chrome = detect_page_chrome(raw_text)
+    except Exception as exc:  # noqa: BLE001 — chrome detection never blocks
+        logger.debug("Page-chrome detection raised unexpectedly: %s", exc)
+        chrome = PageChrome()
+
+    if chrome.headers or chrome.footers or chrome.page_number_lines:
+        try:
+            raw_text = strip_page_chrome(raw_text, chrome)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "Page-chrome strip raised unexpectedly: %s; keeping raw", exc
+            )
+
     page_text_index = _build_page_text_index(raw_text)
 
     figures: List[ExtractedFigure] = []
@@ -1169,6 +1203,7 @@ def extract_document(
         pdf_metadata=pdf_metadata,
         text_spans=text_spans,
         links=links,
+        page_chrome=chrome,
     )
 
 
@@ -1180,6 +1215,7 @@ __all__ = [
     "ExtractedTOCEntry",
     "ExtractedTable",
     "ExtractedTextSpan",
+    "PageChrome",
     "extract_document",
     "median_body_font_size",
 ]
