@@ -742,9 +742,11 @@ def _raw_text_to_accessible_html(
     metadata: Optional[dict] = None,
     *,
     source_pdf: Optional[str] = None,
+    output_path: Optional[str] = None,
+    figures_dir: Optional[str] = None,
     llm: Optional[object] = None,
 ) -> str:
-    """Wave 15+16 entry point: route raw pdftotext / PDF to DART.converter.
+    """Wave 15+16+17 entry point: route raw pdftotext / PDF to DART.converter.
 
     Flags:
 
@@ -765,6 +767,13 @@ def _raw_text_to_accessible_html(
     legacy raw-text-only call shape), behaviour is unchanged from Wave
     15 — the converter runs on ``raw_text`` alone.
 
+    Wave 17: when ``output_path`` is provided and ``figures_dir`` is
+    not overridden, the converter auto-derives a sibling figures
+    directory (``<output_stem>_figures``) next to the output HTML, so
+    persisted figure images stay relative to the HTML file and the
+    bundle is portable. Explicit ``figures_dir=...`` overrides the
+    sibling derivation.
+
     ``metadata`` carries Dublin Core fields (authors, date, language,
     rights, subject) that the new assembler emits as ``<meta>`` tags in
     ``<head>``. Legacy mode ignores this argument to preserve byte-for-
@@ -782,7 +791,6 @@ def _raw_text_to_accessible_html(
     # broken optional extractor never blocks the raw-text conversion.
     if source_pdf:
         try:
-            from DART.converter import aconvert_pdftotext_to_html
             from DART.converter.block_segmenter import (
                 segment_extracted_document,
             )
@@ -790,7 +798,66 @@ def _raw_text_to_accessible_html(
             from DART.converter.extractor import extract_document
             from DART.converter import default_classifier
 
-            doc = extract_document(source_pdf, llm=llm)
+            # Wave 17: derive a sibling figures dir from ``output_path``
+            # so persisted figure bytes travel with the HTML. Explicit
+            # ``figures_dir`` wins. Unset + unset → tempdir fallback
+            # (plumbed through anyway so ``data.image_path`` still
+            # points somewhere; the pipeline won't see the files but
+            # tests / ad-hoc runs keep the full round-trip).
+            resolved_figures_dir: Optional[Path] = None
+            rel_figures_prefix = ""
+            if figures_dir:
+                resolved_figures_dir = Path(figures_dir)
+                # A caller-supplied figures_dir is treated as relative
+                # to output_path when output_path exists, else as an
+                # absolute/cwd-relative path.
+                if output_path:
+                    out_parent = Path(output_path).resolve().parent
+                    try:
+                        rel = resolved_figures_dir.resolve().relative_to(
+                            out_parent
+                        )
+                        rel_figures_prefix = str(rel) + "/"
+                    except ValueError:
+                        rel_figures_prefix = str(resolved_figures_dir) + "/"
+                else:
+                    rel_figures_prefix = str(resolved_figures_dir) + "/"
+            elif output_path:
+                out_path = Path(output_path)
+                sibling_name = f"{out_path.stem}_figures"
+                resolved_figures_dir = out_path.parent / sibling_name
+                rel_figures_prefix = sibling_name + "/"
+            else:
+                # Neither output_path nor figures_dir provided. Fall
+                # back to a tempdir so figures still materialise on
+                # disk for downstream consumers that know how to find
+                # them; ``<img src>`` references become absolute paths
+                # which isn't portable but is better than empty ``src``.
+                import tempfile as _tempfile
+
+                resolved_figures_dir = Path(
+                    _tempfile.mkdtemp(prefix="dart_figures_")
+                )
+                rel_figures_prefix = str(resolved_figures_dir) + "/"
+                logger.debug(
+                    "No output_path or figures_dir; using tempdir %s for figures",
+                    resolved_figures_dir,
+                )
+
+            doc = extract_document(
+                source_pdf,
+                llm=llm,
+                figures_dir=resolved_figures_dir,
+            )
+
+            # Rewrite each figure's ``image_path`` to include the
+            # sibling-dir prefix so downstream blocks carry a relative
+            # path that resolves from the HTML output location.
+            if rel_figures_prefix:
+                for fig in doc.figures:
+                    if fig.image_path and "/" not in fig.image_path:
+                        fig.image_path = rel_figures_prefix + fig.image_path
+
             blocks = segment_extracted_document(doc)
             classifier = default_classifier(llm=llm)
             from DART.converter.heuristic_classifier import HeuristicClassifier
@@ -1550,13 +1617,18 @@ def _build_tool_registry() -> dict:
         pretty_title = out_stem.replace("-", " ").replace("_", " ").strip()
         html_output = out_dir / f"{out_stem}_accessible.html"
         # Pass ``source_pdf`` so Wave 16 extraction enrichment kicks in
-        # (pdfplumber tables + PyMuPDF figures + optional OCR). The
-        # extractor gracefully degrades when optional deps are missing
-        # so this never regresses the raw-text-only path.
+        # (pdfplumber tables + PyMuPDF figures + optional OCR). Pass
+        # ``output_path`` so Wave 17 figure persistence auto-derives a
+        # sibling ``{stem}_figures/`` directory; the caller override
+        # (``kwargs["figures_dir"]``) still wins when set explicitly.
+        # The extractor gracefully degrades when optional deps are
+        # missing so this never regresses the raw-text-only path.
         html_content = _raw_text_to_accessible_html(
             raw_text,
             pretty_title,
             source_pdf=str(pdf),
+            output_path=str(html_output),
+            figures_dir=kwargs.get("figures_dir"),
         )
         html_output.write_text(html_content, encoding="utf-8")
 

@@ -459,3 +459,50 @@ optional `source_pdf` kwarg:
 `extract_and_convert_pdf` (the MCP pipeline tool) already passes
 `source_pdf` so end-to-end textbook runs pick up the enrichment
 automatically.
+
+### Wave 17 figure persistence
+
+Wave 16 detected figures but left `ExtractedFigure.image_path` empty,
+so the rendered HTML had `<figure>` wrappers with empty `<img src>`
+and a literal `(figure)` placeholder caption. Wave 17 closes that gap:
+
+* `extract_document(pdf_path, *, llm=None, figures_dir=None)` —
+  optional `figures_dir` kwarg. When set, image bytes returned by the
+  PyMuPDF extractor are written to
+  `figures_dir / {page:04d}-{hash8}.{ext}` where `hash8` is the first
+  eight hex chars of `sha256(bytes)` and `ext` is derived from the
+  detected format (`png`/`jpeg`/…). `ExtractedFigure.image_path` is
+  set to the **relative** filename (no directory prefix) so the
+  caller / assembler layer decides the path written into `<img src>`.
+  Re-running on the same bytes is idempotent — same filename, no
+  double-write.
+* `figures_dir=None` (the default) preserves Wave 16 behaviour: no
+  disk I/O, `image_path` stays empty.
+* `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html`
+  auto-derives a sibling `{stem}_figures/` directory next to the
+  output HTML when called with `output_path=<html path>`, so a PDF at
+  `/foo/bates.pdf` converted to `/foo/out/bates.html` persists
+  figures under `/foo/out/bates_figures/` and the HTML carries
+  relative `<img src="bates_figures/...png">` entries (the bundle is
+  portable). Explicit `figures_dir=<path>` wins. Neither set → a
+  tempdir fallback (not portable, but keeps the end-to-end round trip
+  working for tests / ad-hoc runs).
+* Caption detection is best-effort — the extractor scans the matching
+  pdftotext page for lines matching
+  `^(Figure|Fig\.?|Image) N[.M]?\s*[:\-–—]` (case-insensitive) and
+  binds the first unclaimed match per page. When no pattern match is
+  found it falls back to PyMuPDF's `nearby_caption`. When both are
+  empty, `caption` stays `None` and the template degrades to a
+  caption-less `<figure>` — it **never** emits the literal
+  placeholder string `"(figure)"`.
+* Alt-text still requires an injected `LLMBackend` (Wave 16 behaviour
+  unchanged). When no backend is provided, the FIGURE template emits
+  `alt="" role="presentation"` — a WCAG 2.2 AA decorative fallback —
+  rather than an empty `alt=""` (which screen readers read as the
+  filename) or a missing attribute (invalid HTML).
+
+Public MCP `extract_and_convert_pdf` (`MCP/tools/dart_tools.py`)
+accepts an optional `figures_dir: Optional[str]` kwarg for callers
+that need to override the sibling-dir derivation; currently only the
+Wave-16 dual-extraction path honours it (the legacy
+`PDFToAccessibleHTML` strategy ignores it).

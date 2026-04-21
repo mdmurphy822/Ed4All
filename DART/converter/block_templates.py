@@ -383,22 +383,55 @@ def _tpl_figure(block: ClassifiedBlock) -> str:
     extractor output) for the image source. When no image source is
     available, the figure still renders with just a caption — useful
     for text-only figure references that survived pdftotext.
+
+    Wave 17 rules:
+
+    * Populated ``image_path`` + missing ``alt`` → emit ``alt=""
+      role="presentation"`` (WCAG-acceptable decorative fallback)
+      rather than omitting the attribute.
+    * Empty caption → emit no ``<figcaption>`` at all. Never emit the
+      literal placeholder string ``"(figure)"``; the schema.org
+      microdata plus (where present) the ``alt`` attribute already
+      describe the figure.
     """
     number = block.attributes.get("number")
     fig_id = f"fig-{number}" if number else f"fig-{block.raw.block_id}"
-    caption = block.attributes.get("caption") or block.raw.text
+    # Prefer the explicit caption attribute; fall back to raw.text only
+    # when it carries genuine content (segmenter leaves raw.text empty
+    # when neither caption nor alt was available — gates the fallback).
+    caption = block.attributes.get("caption") or ""
+    if not caption and block.raw.text:
+        caption = block.raw.text
     src = block.attributes.get("src") or block.attributes.get("image_path")
     alt = block.attributes.get("alt", "")
+
     img_html = ""
     if src:
-        img_html = (
-            f'<img src="{_escape(src)}" alt="{_escape(alt)}" itemprop="contentUrl">'
+        if alt:
+            img_html = (
+                f'<img src="{_escape(src)}" alt="{_escape(alt)}" '
+                f'itemprop="contentUrl">'
+            )
+        else:
+            # WCAG 2.2: decorative fallback when no alt is available.
+            # ``role="presentation"`` tells AT to ignore the image so
+            # absence of alt never surfaces as "image image image".
+            img_html = (
+                f'<img src="{_escape(src)}" alt="" role="presentation" '
+                f'itemprop="contentUrl">'
+            )
+
+    caption_html = ""
+    if caption.strip():
+        caption_html = (
+            f'<figcaption itemprop="caption">{_escape(caption)}</figcaption>'
         )
+
     return (
         f'<figure id="{fig_id}" itemscope '
         f'itemtype="https://schema.org/ImageObject" {_provenance_attrs(block)}>'
         f"{img_html}"
-        f'<figcaption itemprop="caption">{_escape(caption)}</figcaption>'
+        f"{caption_html}"
         f"</figure>"
     )
 

@@ -422,6 +422,7 @@ def register_dart_tools(mcp):
         pdf_path: str,
         course_code: Optional[str] = None,
         output_dir: Optional[str] = None,
+        figures_dir: Optional[str] = None,
     ) -> str:
         """
         Full DART pipeline: extract sources from PDF and convert to accessible HTML.
@@ -434,6 +435,12 @@ def register_dart_tools(mcp):
             pdf_path: Path to the PDF file to convert
             course_code: Optional course code for output organization
             output_dir: Optional output directory (defaults to DART/output/)
+            figures_dir: Optional directory for persisted figure images
+                (Wave 17). When unset and the Wave-16 dual-extraction path
+                is taken, the pipeline auto-derives a sibling
+                ``{stem}_figures/`` directory next to the output HTML so
+                ``<img src>`` references stay portable. Ignored by the
+                legacy ``PDFToAccessibleHTML`` strategy.
 
         Returns:
             JSON with output_path (HTML), success status, and metadata
