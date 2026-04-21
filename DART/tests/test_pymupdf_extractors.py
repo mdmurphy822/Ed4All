@@ -172,8 +172,8 @@ class TestExtractMetadataPymupdf:
         doc = _FakeFitzDoc(
             pages=[],
             metadata={
-                "title": "  Bates Teaching Digital Age  ",
-                "author": "A. W. Bates",
+                "title": "  Educational Foundations  ",
+                "author": "J. Smith",
                 "subject": "Online Learning",
                 "keywords": "learning, digital, open",
                 "creator": "TeX",
@@ -184,8 +184,8 @@ class TestExtractMetadataPymupdf:
             },
         )
         meta = _extract_metadata_pymupdf(doc)
-        assert meta["title"] == "Bates Teaching Digital Age"
-        assert meta["author"] == "A. W. Bates"
+        assert meta["title"] == "Educational Foundations"
+        assert meta["author"] == "J. Smith"
         assert meta["subject"] == "Online Learning"
         assert meta["creationDate"] == "2023-03-15"
         assert meta["modDate"] == "2024-01-01"

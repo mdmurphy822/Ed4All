@@ -1,10 +1,11 @@
 """Wave 25 Fix 6: doc-pagebreak anchors + TOC target validation.
 
-Audit: Bates ``<nav role="doc-toc">`` emits 190 ``<li><a href="#page-N">``
-entries; the body contains 0 ``id="page-N"`` anchors. 178 of the 190
-TOC links are dead. Root cause: the TOC template fallback writes
-``#page-N`` when the title doesn't match a chapter/section pattern,
-but no ``doc-pagebreak`` anchors are emitted.
+Audit: on a TOC-heavy textbook, ``<nav role="doc-toc">`` can emit
+hundreds of ``<li><a href="#page-N">`` entries while the body contains
+zero ``id="page-N"`` anchors, so the vast majority of TOC links are
+dead. Root cause: the TOC template fallback writes ``#page-N`` when
+the title doesn't match a chapter/section pattern, but no
+``doc-pagebreak`` anchors are emitted.
 
 Wave 25:
 1. Segmenter emits synthetic PAGE_BREAK blocks for TOC-referenced

@@ -1,6 +1,6 @@
 """Round-4 heading-filter tests.
 
-The OLSR_201 corpus run exposed residual leaked headings after rounds
+A real-world corpus run exposed residual leaked headings after rounds
 1-3:
 
   1. Colon-ended prompts:

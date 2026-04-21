@@ -1,7 +1,8 @@
 """Wave 21 list-detection tests.
 
-Bates-scale smoke (Wave 20) exposed 323 bullet-marker + 114 numbered
-paragraphs that flowed through as naked ``<p>`` elements because the
+Full-textbook smoke (Wave 20) exposed hundreds of bullet-marker and
+numbered paragraphs that flowed through as naked ``<p>`` elements
+because the
 pre-Wave-21 classifier had no list-item role. This module covers the
 three-layer fix:
 
@@ -197,7 +198,7 @@ class TestClassifierPromotion:
         clf = HeuristicClassifier()
         blocks = [
             _raw(
-                "Teaching in a digital age requires rethinking pedagogy.",
+                "Effective course design requires rethinking pedagogy.",
                 "b1",
             )
         ]

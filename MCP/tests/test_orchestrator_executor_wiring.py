@@ -6,7 +6,7 @@ NO capture. Effects at runtime:
 
 * ``TaskExecutor.run_id`` auto-generated from timestamp →
   ``run_path`` became ``state/runs/run_{ts}/`` instead of the
-  workflow's actual ``params.run_id`` (``TTC_OLSR_201_...``).
+  workflow's actual ``params.run_id`` (e.g. ``TTC_<course>_...``).
 * ``CheckpointManager`` wrote to an orphan directory nobody read.
 * ``LockfileManager`` operated outside the workflow's namespace.
 * ``self.capture is None`` → ``phase_start`` / ``phase_completion``
@@ -14,7 +14,7 @@ NO capture. Effects at runtime:
   ``executor.py:728, 875, 981`` never fired.
 
 Evidence from the Wave 22 audit: 15/15 ``state/runs/*/checkpoints/``
-dirs empty; ``training-captures/textbook-pipeline/OLSR_201/``
+dirs empty; ``training-captures/textbook-pipeline/<course_id>/``
 empty despite a completed run.
 
 This suite locks in the wire-up and back-compat semantics.

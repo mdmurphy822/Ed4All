@@ -2,8 +2,8 @@
 
 Pre-Wave-22 the per-figure Claude call in
 ``DART/pdf_converter/alt_text_generator.py::_call_claude_vision`` was
-uninstrumented — a Bates run with dozens of figures produced zero
-alt-text capture records. Wave 22 threads an optional ``capture``
+uninstrumented — a full-textbook run with dozens of figures produced
+zero alt-text capture records. Wave 22 threads an optional ``capture``
 kwarg through ``AltTextGenerator``; every ``generate`` call fires one
 ``alt_text_generation`` decision with dynamic rationale (page, bbox,
 image hash, source strategy, caption presence).

@@ -153,8 +153,8 @@ def segment_extracted_document(doc: "ExtractedDocument") -> List[RawBlock]:
     text_blocks = segment_pdftotext_output(doc.raw_text)
 
     # Wave 20: when page-chrome detection preserved a per-page page-
-    # number label (e.g. the chrome line "Teaching in a Digital Age 164"
-    # yielded page_number_lines[164] = "... 164"), stamp that label into
+    # number label (e.g. a chrome line "<Book Title> 164" yielded
+    # page_number_lines[164] = "... 164"), stamp that label into
     # every block on that page as ``extra["page_label"]`` so the
     # template emitter can surface ``data-dart-pages="164"`` even after
     # the chrome line itself has been stripped from the content stream.
@@ -221,7 +221,8 @@ def segment_extracted_document(doc: "ExtractedDocument") -> List[RawBlock]:
     # ``#page-N`` anchors that the TOC template emits so ``<a
     # href="#page-5">`` links have real destinations. We only emit
     # for TOC-referenced pages because every physical page otherwise
-    # would bloat the document with ~600 anchors on Bates.
+    # would bloat the document with hundreds of anchors on a long
+    # textbook.
     #
     # Each PAGE_BREAK block is inserted at the START of its target
     # page so the anchor resolves to the top of the page when the
