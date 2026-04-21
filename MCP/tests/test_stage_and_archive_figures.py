@@ -238,5 +238,71 @@ def test_registry_stage_dart_outputs_copies_figures_dir(tmp_path, monkeypatch):
     assert staged_figs.is_dir()
 
 
+def test_registry_archive_to_libv2_copies_figures_dir(tmp_path, monkeypatch):
+    """The pipeline-dispatch registry variant of ``archive_to_libv2``
+    must also copy the figures dir. Orchestrated / CLI runs use the
+    registry, not the ``@mcp.tool()`` variant, so without this parity
+    archived courses keep broken ``<img src>`` refs."""
+    from MCP.tools import pipeline_tools
+
+    src_dir = tmp_path / "dart_src"
+    src_dir.mkdir()
+    monkeypatch.setattr(pipeline_tools, "PROJECT_ROOT", tmp_path)
+
+    html_path, figures_dir = _write_dart_bundle(src_dir, "orchestrated")
+
+    registry = pipeline_tools._build_tool_registry()
+    archive = registry["archive_to_libv2"]
+    result_doc = json.loads(
+        asyncio.run(
+            archive(
+                course_name="ORCH_101",
+                domain="biology",
+                html_paths=str(html_path),
+            )
+        )
+    )
+    assert result_doc.get("success") is True
+    slug = result_doc["course_slug"]
+    dest = (
+        tmp_path / "LibV2" / "courses" / slug / "source" / "html"
+        / "orchestrated_figures"
+    )
+    assert dest.is_dir(), (
+        "registry archive_to_libv2 must copy {stem}_figures/ — the "
+        "@mcp.tool() variant already does; parity is required"
+    )
+    assert (dest / "0001-ab12cd34.png").exists()
+    assert (dest / "0002-ef56ab78.png").exists()
+
+
+def test_registry_archive_to_libv2_missing_figures_dir_is_silent(
+    tmp_path, monkeypatch
+):
+    """Backward compat on the registry path: HTML-only archival
+    (no figures dir) still succeeds."""
+    from MCP.tools import pipeline_tools
+
+    src_dir = tmp_path / "dart_src"
+    src_dir.mkdir()
+    monkeypatch.setattr(pipeline_tools, "PROJECT_ROOT", tmp_path)
+
+    html_path = src_dir / "plain.html"
+    html_path.write_text("<html><body>x</body></html>", encoding="utf-8")
+
+    registry = pipeline_tools._build_tool_registry()
+    archive = registry["archive_to_libv2"]
+    result_doc = json.loads(
+        asyncio.run(
+            archive(
+                course_name="PLAIN_REG",
+                domain="generic",
+                html_paths=str(html_path),
+            )
+        )
+    )
+    assert result_doc.get("success") is True
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])
