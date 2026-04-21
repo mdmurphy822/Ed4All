@@ -184,6 +184,7 @@ def segment_extracted_document(doc: "ExtractedDocument") -> List[RawBlock]:
     # Wave 18: build the TOC_NAV block first so it prepends the list.
     toc_blocks: List[RawBlock] = []
     raw_toc = getattr(doc, "toc", None) or []
+    toc_referenced_pages: set = set()
     if raw_toc:
         entries: List[dict] = []
         for entry in raw_toc:
@@ -197,6 +198,8 @@ def segment_extracted_document(doc: "ExtractedDocument") -> List[RawBlock]:
                 "title": str(title),
                 "page": max(1, page),
             })
+            if page > 0:
+                toc_referenced_pages.add(page)
         if entries:
             toc_text = " ".join(e["title"] for e in entries)
             normalised = _normalise_block_text(toc_text)
@@ -210,6 +213,41 @@ def segment_extracted_document(doc: "ExtractedDocument") -> List[RawBlock]:
                     extractor="pymupdf",
                     extractor_hint=BlockRole.TOC_NAV,
                     extra={"entries": entries},
+                )
+            )
+
+    # Wave 25 Fix 6: emit synthetic ``PAGE_BREAK`` blocks at form-feed
+    # boundaries for pages that are TOC targets. This populates the
+    # ``#page-N`` anchors that the TOC template emits so ``<a
+    # href="#page-5">`` links have real destinations. We only emit
+    # for TOC-referenced pages because every physical page otherwise
+    # would bloat the document with ~600 anchors on Bates.
+    #
+    # Each PAGE_BREAK block is inserted at the START of its target
+    # page so the anchor resolves to the top of the page when the
+    # reader clicks the TOC entry. The block is placed immediately
+    # before the first text block on that page.
+    page_break_blocks: List[RawBlock] = []
+    if toc_referenced_pages:
+        seen_pages: set = set()
+        for block in text_blocks:
+            if block.page is None or block.page in seen_pages:
+                continue
+            seen_pages.add(block.page)
+            if block.page not in toc_referenced_pages:
+                continue
+            pb_text = f"page-{block.page}"
+            page_break_blocks.append(
+                RawBlock(
+                    text=pb_text,
+                    block_id=_compute_block_id(pb_text, -block.page),
+                    page=block.page,
+                    extractor="pdftotext",
+                    extractor_hint=BlockRole.PAGE_BREAK,
+                    extra={
+                        "page": block.page,
+                        "toc_target": True,
+                    },
                 )
             )
 
@@ -279,7 +317,24 @@ def segment_extracted_document(doc: "ExtractedDocument") -> List[RawBlock]:
             )
         )
 
-    combined = toc_blocks + text_blocks + structured
+    # Wave 25 Fix 6: interleave PAGE_BREAK blocks at the start of each
+    # TOC-referenced page so the TOC's ``#page-N`` anchors have real
+    # destinations. Each PAGE_BREAK lands immediately before the first
+    # text block on its page.
+    text_blocks_with_pagebreaks: List[RawBlock] = []
+    pagebreak_by_page = {pb.page: pb for pb in page_break_blocks}
+    emitted_pages: set = set()
+    for block in text_blocks:
+        if (
+            block.page is not None
+            and block.page in pagebreak_by_page
+            and block.page not in emitted_pages
+        ):
+            text_blocks_with_pagebreaks.append(pagebreak_by_page[block.page])
+            emitted_pages.add(block.page)
+        text_blocks_with_pagebreaks.append(block)
+
+    combined = toc_blocks + text_blocks_with_pagebreaks + structured
 
     # Re-populate neighbour context across the combined sequence so
     # classifiers that use neighbours (the LLM classifier's prompt

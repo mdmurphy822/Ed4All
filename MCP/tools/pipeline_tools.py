@@ -1044,6 +1044,7 @@ def _run_dart_pipeline_body(
                 text_spans=spans,
                 median_body_font_size=median_fs,
                 capture=capture,
+                page_chrome=getattr(doc, "page_chrome", None),
             )
             from DART.converter.heuristic_classifier import HeuristicClassifier
 

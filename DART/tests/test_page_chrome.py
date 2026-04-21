@@ -17,6 +17,7 @@ import pytest
 from DART.converter.page_chrome import (
     PageChrome,
     _normalise,
+    _strip_leading_digits,
     _strip_trailing_digits,
     detect_page_chrome,
     strip_page_chrome,
@@ -341,3 +342,100 @@ class TestUnicodeNormalisation:
             )
         chrome = detect_page_chrome(_make_pages(*pages))
         assert "campus guide" in chrome.headers
+
+
+# ---------------------------------------------------------------------------
+# Wave 25 Fix 1 — leading-digit chrome (even-page running footers like
+# "{N} A.W. (Tony) Bates" on the Bates textbook) must be detected + stripped
+# alongside the pre-existing trailing-digit support.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.dart
+class TestLeadingDigitsHelper:
+    def test_strip_leading_digits_extracts_page_number(self):
+        residual, page = _strip_leading_digits("164 a.w. (tony) bates")
+        assert residual == "a.w. (tony) bates"
+        assert page == 164
+
+    def test_strip_leading_digits_returns_none_when_no_leading_int(self):
+        residual, page = _strip_leading_digits("teaching in a digital age")
+        assert residual == "teaching in a digital age"
+        assert page is None
+
+    def test_strip_leading_digits_rejects_bare_number(self):
+        # Bare numbers have no residual after the digits — leading-digit
+        # partition returns (residual=something, page=None) when the
+        # regex fails (no whitespace + residual text).
+        residual, page = _strip_leading_digits("164")
+        assert page is None
+        # Empty input degrades safely.
+        residual2, page2 = _strip_leading_digits("")
+        assert residual2 == ""
+        assert page2 is None
+
+
+@pytest.mark.unit
+@pytest.mark.dart
+class TestLeadingDigitFooterDetection:
+    def test_leading_digit_footer_detected_across_pages(self):
+        # 10 even-page running footers "{N} A.W. (Tony) Bates" — pre-
+        # Wave-25 this slipped through into phantom footnotes.
+        pages = []
+        for i in range(2, 12):
+            pages.append(
+                f"Unique body prose line {i} aaa\n"
+                f"Different body content {i} bbb\n"
+                f"More unique words per page {i} ccc\n\n"
+                f"{i} A.W. (Tony) Bates"
+            )
+        chrome = detect_page_chrome(_make_pages(*pages))
+        # Residual (the fixed part after the leading integer) lands in
+        # footers as lowercased normalised form.
+        assert "a.w. (tony) bates" in chrome.footers
+        # Per-page page_number_lines populated from the leading int.
+        assert len(chrome.page_number_lines) >= 5
+        # Stripped output no longer carries any of the per-page
+        # footer variants.
+        stripped_joined = _FORM_FEED.join(chrome.stripped_pages)
+        assert "2 A.W. (Tony) Bates" not in stripped_joined
+        assert "11 A.W. (Tony) Bates" not in stripped_joined
+
+    def test_mixed_odd_trailing_and_even_leading_chrome(self):
+        # Odd-page trailing-digit header "Teaching in a Digital Age N";
+        # even-page leading-digit footer "{N} A.W. (Tony) Bates". Both
+        # patterns must be detected separately.
+        pages = []
+        for i in range(1, 13):
+            if i % 2 == 1:
+                pages.append(
+                    f"Teaching in a Digital Age {i}\n\n"
+                    f"Prose paragraph for odd page {i} with unique words."
+                )
+            else:
+                pages.append(
+                    f"Prose paragraph for even page {i} with unique words.\n\n"
+                    f"{i} A.W. (Tony) Bates"
+                )
+        chrome = detect_page_chrome(_make_pages(*pages))
+        assert any("teaching in a digital age" in h for h in chrome.headers)
+        assert "a.w. (tony) bates" in chrome.footers
+        stripped_joined = _FORM_FEED.join(chrome.stripped_pages)
+        assert "Teaching in a Digital Age" not in stripped_joined
+        assert "A.W. (Tony) Bates" not in stripped_joined
+
+    def test_leading_digit_single_char_residual_not_flagged(self):
+        # Short residual ("5 X") is ambiguous and must be guarded out
+        # per the same short-prefix rule that applies to trailing-digit
+        # detection.
+        pages = []
+        for i in range(1, 8):
+            pages.append(
+                f"Unique prose for page {i} with many characters.\n\n"
+                f"{i} X"
+            )
+        chrome = detect_page_chrome(_make_pages(*pages))
+        assert "x" not in chrome.footers
+        # And also not in headers.
+        assert "x" not in chrome.headers
