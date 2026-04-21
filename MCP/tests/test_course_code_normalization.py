@@ -3,7 +3,7 @@
 The canonical ``course_id`` pattern at
 ``schemas/events/decision_event.schema.json`` is
 ``^[A-Z]{2,8}_[0-9]{3}$``. PDF-derived codes like ``"Ed4All"``,
-``"long_slug_style_textbook_name"``, or ``"arxiv-2301.12345"`` fail that
+``"long_slug_style_textbook_name"``, or ``"arxiv-0000.00000"`` fail that
 regex. Pre-Wave-22, roughly half of a recent run's decision records
 carried ``course_id`` validation issues as a result.
 
@@ -32,8 +32,8 @@ _CANON = re.compile(r"^[A-Z]{2,8}_[0-9]{3}$")
     [
         "Ed4All",
         "long_slug_style_textbook_name",
-        "arxiv-2301.12345",
-        "keet_ontology_engineering",
+        "arxiv-0000.00000",
+        "ontology_engineering_textbook",
         "MINI_TRAINING_101_PYTEST",
         "textbook",
         "  leading-space-name  ",
@@ -67,7 +67,7 @@ def test_normalization_is_deterministic():
     names = [
         "Ed4All",
         "long_slug_style_textbook_name",
-        "arxiv-2301.12345",
+        "arxiv-0000.00000",
     ]
     for name in names:
         first = normalize_course_code(name)
@@ -83,8 +83,8 @@ def test_different_inputs_generally_yield_different_codes():
     inputs = [
         "Ed4All",
         "long_slug_style_textbook_name",
-        "arxiv-2301.12345",
-        "keet_ontology_engineering",
+        "arxiv-0000.00000",
+        "ontology_engineering_textbook",
         "textbook_a",
         "textbook_b",
         "science_of_learning",
@@ -123,7 +123,7 @@ def test_normalization_validates_under_decision_event_schema():
     pattern = schema["properties"]["course_id"]["pattern"]
 
     live_regex = re.compile(pattern)
-    for raw in ("Ed4All", "long_slug_style_textbook_name", "arxiv-2301.12345"):
+    for raw in ("Ed4All", "long_slug_style_textbook_name", "arxiv-0000.00000"):
         normalised = normalize_course_code(raw)
         assert live_regex.match(normalised), (
             f"Normalised code {normalised!r} fails live schema pattern "

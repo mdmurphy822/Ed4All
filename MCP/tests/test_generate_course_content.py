@@ -36,7 +36,7 @@ COURSE_CODE = "TESTPIPE_101"
 # Exercise markers that the source-extraction policy relies on. Every
 # piece of pedagogical content here is "real source material" — no
 # template-generated prose — so the content-generator emits the same
-# structure on the test fixture as it does on the Keet corpus.
+# structure on the test fixture as it does on any production corpus.
 _DART_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head><title>Photosynthesis Basics</title></head>

@@ -1,9 +1,9 @@
 """Wave 27 HIGH-4 — heading blocklist for author bylines + math notation.
 
 Previously, the Wave 24 byline detector in ``_is_low_signal_heading``
-caught hyphenated-token names ("Hung-Nghiep Tran") but leaked:
+caught hyphenated-token names ("Ada-Lee Researcher") but leaked:
 
-- 2-token full names without a lead-in ("Maria Keet", "John Smith")
+- 2-token full names without a lead-in ("Jane Smith", "John Smith")
 - Single-initial names with parenthetical nicknames ("J.Q. (Buddy) Doe")
 - "Edited by" / "Designed by" / "Illustrated by" lead-ins
 - Math / logic notation residue ("C v ∀R.D", "∀x (P(x) → Q(x))")
@@ -32,11 +32,11 @@ class TestWave27LowSignalHeadings:
     """Headings that MUST be filtered out as low-signal chrome / residue."""
 
     def test_cover_design_byline_with_name(self):
-        assert _cgh._is_low_signal_heading("Cover design by Maria Keet") is True
+        assert _cgh._is_low_signal_heading("Cover design by Author Name") is True
 
     def test_multi_author_transliteration(self):
         assert _cgh._is_low_signal_heading(
-            "Hung-Nghiep Tran Atsuhiro Takasu"
+            "Ada-Lee Researcher Ben Otherwriter"
         ) is True
 
     def test_math_notation_short(self):
@@ -48,11 +48,11 @@ class TestWave27LowSignalHeadings:
         ) is True
 
     def test_two_token_full_name(self):
-        assert _cgh._is_low_signal_heading("Maria Keet") is True
+        assert _cgh._is_low_signal_heading("Jane Smith") is True
 
     def test_edited_by_byline(self):
         assert _cgh._is_low_signal_heading(
-            "Edited by Maria Keet and Diego Calvanese"
+            "Edited by Jane Smith and Robert Jones"
         ) is True
 
     def test_initialed_name_with_parenthetical(self):

@@ -96,18 +96,18 @@ def source_router_fixture(tmp_path, monkeypatch):
     staging = tmp_path / "staging"
     staging.mkdir()
 
-    _write_synthesized(staging / "keet_intro_synthesized.json", "keet_intro", [
+    _write_synthesized(staging / "textbook_a_synthesized.json", "textbook_a", [
         {
             "section_id": "s1",
             "section_type": "overview",
-            "section_title": "Fundamental Change in Education",
+            "section_title": "Introduction to Core Concepts",
             "page_range": [1, 3],
             "provenance": {"sources": ["pdftotext"], "strategy": "text_only"},
             "data": {
                 "paragraphs": [
-                    "This chapter examines fundamental change in education, "
-                    "including curriculum reform, pedagogical innovation, and "
-                    "assessment transformation."
+                    "This chapter introduces the foundational concepts, "
+                    "including key terminology, relevant frameworks, and the "
+                    "methodology that will be applied throughout the text."
                 ]
             },
         },
