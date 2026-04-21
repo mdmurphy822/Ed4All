@@ -801,11 +801,20 @@ def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
         """
         if not text:
             return False
+        # Multi-space column layout (pdftotext emits aligned table rows
+        # as "Kleur        Flower" / "Animal   Limb"). Real headings use
+        # single spaces between words.
+        if _re.search(r"\s{3,}", text):
+            return False
         words = text.split()
         word_count = len(words)
 
         # Trailing hyphen = pdftotext soft-hyphen line break, mid-word.
         if text.endswith("-"):
+            return False
+        # Starts with digit + closing punctuation ("4). Being on contract…")
+        # — sentence body that happened to begin with a numbered list opener.
+        if _re.match(r"^\d+[.)\]]", text):
             return False
         # Trailing function word = truncated sentence.
         last = words[-1].lower().rstrip(",.:;")
@@ -822,14 +831,11 @@ def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
         for tok in _HEADING_REJECT_TOKENS:
             if tok in normalized:
                 return False
-        # Table-row fragment: 3+ whitespace runs of 3+ spaces each
-        # (pdftotext emits aligned columns like "Good    Less good"). The
-        # strip() earlier collapsed runs, but multi-column text often
-        # still has 2+ words where half are redundant.
-        # Detect: repeated token pattern.
+        # Table-row fragment: >30% duplicate words
+        # (pdftotext repeats column labels in some layouts).
         if word_count >= 3:
             lowered = [w.lower() for w in words]
-            if len(set(lowered)) < word_count * 0.7:  # >30% duplicate words
+            if len(set(lowered)) < word_count * 0.7:
                 return False
         # Author byline: 2+ capitalized two-word tokens separated by ","
         # or "and" — "Tim Berners-Lee, James Hendler and Ora Lassila"
@@ -954,15 +960,27 @@ def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
             _flush_para()
             continue
 
-        # Detect chapter headings (numbered: "11. Behaviorism..." or "I. Definitions")
+        # Detect chapter headings (structured: "Chapter 1: ...", "Section 2: ...",
+        # "I. Definitions"). Require:
+        #   (a) match came after a blank line (no open paragraph), otherwise
+        #       we're inside a sentence ("Section 3.3, which essentially…") —
+        #       not a real chapter opener;
+        #   (b) the raw line is short enough to be a title (≤ 120 chars);
+        #   (c) the captured text passes sub-heading validity (rejects
+        #       truncated sentences, citations, table fragments, etc.).
         ch_match = chapter_heading.match(stripped)
-        if ch_match:
-            _flush_para()
-            if current_section["paragraphs"] or current_section["heading"] != title:
-                sections.append(current_section)
+        if (
+            ch_match
+            and not current_para
+            and len(stripped) <= 120
+        ):
             heading_text = ch_match.group(1).strip() if ch_match.group(1) else stripped
-            current_section = {"heading": heading_text, "level": 2, "paragraphs": []}
-            continue
+            if _is_valid_subheading(heading_text):
+                _flush_para()
+                if current_section["paragraphs"] or current_section["heading"] != title:
+                    sections.append(current_section)
+                current_section = {"heading": heading_text, "level": 2, "paragraphs": []}
+                continue
 
         # Detect sub-headings (Title Case, short, standalone after blank)
         if (
