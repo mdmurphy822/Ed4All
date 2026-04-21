@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import html
 import logging
-from typing import Callable, Dict, Iterable, List, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from DART.converter.block_roles import BlockRole, ClassifiedBlock
 
@@ -255,14 +255,86 @@ def _tpl_chapter_opener(block: ClassifiedBlock) -> str:
     )
 
 
+def _numeric_section_anchor(block: ClassifiedBlock) -> Optional[str]:
+    """Return a ``sec-{a}-{b}[-{c}...]`` id when the block carries a numeric hierarchy.
+
+    Wave 30 Gap 2: TOC entries whose titles start with ``N.M`` emit
+    ``<a href="#sec-N-M">`` targets (see ``_render_toc_entries``). Pre-
+    Wave-30, section / subsection headings emitted a block-id-based
+    stable anchor (``sec-<hash8>``) that never matched those TOC
+    refs, so every dotted-numeric TOC link was dead.
+
+    This helper extracts the dotted-numeric identifier from whichever
+    attribute the classifier recorded:
+
+    * ``dotted_number`` (Wave 25 Fix 5 — ``"1.1"``, ``"4.8.1.1"``, ...)
+    * ``section_number`` / ``number`` (legacy ``_PAPER_SECTION_NUMBERED``
+      path — ``"2"`` / ``"2.1"``).
+
+    The emitted id replaces each ``.`` with ``-`` so the anchor matches
+    the href format the cross-reference resolver + TOC renderer
+    already use: ``#sec-4-8-1-1`` for heading ``4.8.1.1``.
+    Alphabetic prefixes (``A2.3``) are kept verbatim (``sec-A2-3``).
+    Returns ``None`` when no numeric hierarchy is available so callers
+    can fall back to the stable-hash id.
+    """
+    import re as _re
+
+    attrs = block.attributes or {}
+    number: Optional[str] = None
+    for key in ("dotted_number", "section_number", "number"):
+        raw_val = attrs.get(key)
+        if raw_val is None:
+            continue
+        candidate = str(raw_val).strip().rstrip(".")
+        if candidate and _re.match(r"^[A-Za-z]?\d+(?:\.\d+){0,5}$", candidate):
+            number = candidate
+            break
+
+    if number is None:
+        # Last-resort: scrape a leading dotted-numeric prefix out of the
+        # heading text itself (handles blocks where the classifier
+        # didn't persist ``dotted_number`` but the raw text still
+        # carries ``"1.1 Title"``).
+        for candidate_text in (
+            str(attrs.get("heading_text") or ""),
+            str(block.raw.text or ""),
+        ):
+            m = _re.match(
+                r"^\s*([A-Za-z]?\d+(?:\.\d+){0,5})\.?\s+\S",
+                candidate_text,
+            )
+            if m:
+                number = m.group(1)
+                break
+
+    if number is None:
+        return None
+
+    return "sec-" + number.replace(".", "-")
+
+
 def _tpl_section_heading(block: ClassifiedBlock) -> str:
-    """``<section role="region">`` with ``aria-labelledby`` h2."""
+    """``<section role="region">`` with ``aria-labelledby`` h2.
+
+    Wave 30 Gap 2: when the block carries a dotted-numeric hierarchy
+    (``1``, ``1.1``, ``4.8.1.1``, ...) we emit ``id="sec-{A}-{B}..."``
+    so TOC links of the form ``#sec-A-B`` resolve. Non-numbered
+    section headings still fall back to the stable-hash id
+    (``sec-<block_id>``) so every section has *some* anchor to jump
+    to. The ``aria-labelledby`` target continues to use the
+    block-id-derived suffix so it stays unique even when two
+    sections share the same numbering (duplicate TOC entries in a
+    PDF outline).
+    """
     text = block.attributes.get("heading_text") or block.raw.text
-    sid = _stable_id(block, "sec")
+    numeric_id = _numeric_section_anchor(block)
+    sid = numeric_id if numeric_id else _stable_id(block, "sec")
+    heading_sid = f"{_stable_id(block, 'sec')}-h"
     return (
         f'<section {_section_class()} id="{sid}" role="region" '
-        f'aria-labelledby="{sid}-h" {_provenance_attrs(block)}>'
-        f'<h2 id="{sid}-h">{_escape(text)}</h2>'
+        f'aria-labelledby="{heading_sid}" {_provenance_attrs(block)}>'
+        f'<h2 id="{heading_sid}">{_escape(text)}</h2>'
         f"</section>"
     )
 
@@ -280,9 +352,16 @@ def _tpl_subsection_heading(block: ClassifiedBlock) -> str:
     The template picks the matching heading tag (``h3``/``h4``/
     ``h5``/``h6``) when present; legacy callers without ``level``
     see the original ``<h3>`` output.
+
+    Wave 30 Gap 2: numbered subsection headings (``1.1``, ``4.8.1.1``)
+    emit ``id="sec-{A}-{B}..."`` so TOC entries of the form
+    ``#sec-A-B`` resolve. Non-numbered subsection headings keep the
+    stable-hash id so downstream consumers (TOC validator,
+    aria-labelledby targets) can always find a grounding anchor.
     """
     text = block.attributes.get("heading_text") or block.raw.text
-    sid = _stable_id(block, "sub")
+    numeric_id = _numeric_section_anchor(block)
+    sid = numeric_id if numeric_id else _stable_id(block, "sub")
     level = block.attributes.get("level")
     if isinstance(level, int) and 3 <= level <= 6:
         tag = f"h{level}"
