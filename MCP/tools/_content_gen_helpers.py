@@ -95,7 +95,7 @@ _HEADING_BLOCKLIST_TOKENS = frozenset([
     "vancouver bc", "vancouver, bc", "toronto on", "london uk",
     "creative commons", "bccampus", "published by",
     # Wave 27 HIGH-4: publisher-credit / cover / copyright chrome that
-    # leaked into week titles on the real OLSR_201 run.
+    # has been observed leaking into week titles on real corpora.
     "cover design", "cover art", "designed by", "illustrated by",
     "illustrations by", "illustration by", "translation by",
     "all rights reserved", "rights reserved", "edited by",
@@ -133,10 +133,11 @@ _CITY_ABBREV_RE = re.compile(
 # whole string is just proper nouns (and maybe the lead-ins "by" / "edited by"
 # / "cover design by").
 #
-# Wave 27 broadens to include initialed names ("A.W.", "A.W.", "Dr.") and
-# parenthetical nicknames ("A.W. (Tony) Bates"). Token may be all-caps when
-# short (acronym initials like "A.W." / "EU") but a plain capitalized word
-# (≥ 2 letters) is still the common case.
+# Wave 27 broadens to include initialed names (e.g. single-letter initials
+# like "J.", multi-initial sequences like "J.R.R.", titles like "Dr.") and
+# parenthetical nicknames (e.g. "J.R.R. (Ronald) Tolkien"). Token may be
+# all-caps when short (acronym initials) but a plain capitalized word
+# (>= 2 letters) is still the common case.
 _NAME_TOKEN_RE = re.compile(
     r"^(?:"
     r"[A-Z]\."                      # single initial: "A."
@@ -1301,6 +1302,102 @@ def _group_topics_by_week(
 # ---------------------------------------------------------------------------
 
 
+# Bloom-level -> apply-phase prompt verb. Keeps the per-week prompt grounded
+# in the week's own cognitive demand rather than defaulting every activity
+# to "demonstrate the concept." ``analyze`` / ``evaluate`` weeks should ask
+# the student to compare / critique, not just restate.
+_BLOOM_APPLY_VERB = {
+    "remember": "recall",
+    "understand": "explain",
+    "apply": "apply",
+    "analyze": "compare",
+    "evaluate": "evaluate",
+    "create": "design",
+}
+
+
+def _build_activity_prompt(
+    *,
+    week_title: str,
+    week_topics: List[Dict[str, Any]],
+    week_objectives: List[Dict[str, Any]],
+    first_obj_statement: str,
+) -> Tuple[str, str]:
+    """Assemble a per-week activity prompt description + Bloom level.
+
+    Policy:
+      * Prompt references the week's **own** key terms when any topic
+        exposed them via ``_extract_key_terms`` / DART heading analysis.
+      * Prompt chooses an action verb based on the first objective's
+        Bloom level so an ``analyze`` week doesn't get a ``demonstrate``
+        prompt. Falls back to ``apply`` when no Bloom signal is present.
+      * When no topic or key-term data exists (empty-corpus week), emits
+        a neutral prompt keyed off the objective statement — NO
+        tautological "the concept from the week's material" tail.
+
+    Returns ``(description, bloom_level)``. ``description`` is un-escaped
+    raw text; the caller is responsible for ``_html.escape`` before
+    inserting into HTML.
+    """
+    # Harvest up to 2 distinctive key terms across the week's topics.
+    seen_terms: set = set()
+    terms: List[str] = []
+    for topic in week_topics or []:
+        for term in topic.get("key_terms") or []:
+            key = term.lower().strip()
+            if not key or key in seen_terms:
+                continue
+            seen_terms.add(key)
+            terms.append(term)
+            if len(terms) >= 2:
+                break
+        if len(terms) >= 2:
+            break
+
+    # Pick a Bloom-level-aware verb for the prompt's call-to-action.
+    bloom_level = (
+        (week_objectives[0].get("bloom_level") if week_objectives else None)
+        or "apply"
+    )
+    verb = _BLOOM_APPLY_VERB.get(bloom_level, "apply")
+
+    objective_stem = first_obj_statement.rstrip(".").strip()
+
+    if terms and week_topics:
+        # Prefer a prompt that names the actual terminology from the
+        # week's source material. Example: "Drawing on the week's
+        # reading, compare *domain_knowledge* and *procedural_knowledge*
+        # in light of the learning objective: 'Differentiate ...'."
+        term_list = ", ".join(terms)
+        description = (
+            f"Drawing on this week's reading, {verb} "
+            f"{term_list} in the context of the learning objective: "
+            f"\"{objective_stem}.\" "
+            f"Respond in roughly 150 words, citing at least one "
+            f"specific passage or example from the assigned material."
+        )
+    elif week_topics:
+        # Topic exists but no clean key terms — fall back to the topic
+        # heading as the anchor instead of the boilerplate phrase.
+        topic_heading = week_topics[0].get("heading") or week_title
+        description = (
+            f"Drawing on the section \"{topic_heading}\", {verb} the "
+            f"ideas behind the learning objective: "
+            f"\"{objective_stem}.\" Respond in roughly 150 words and "
+            f"support your answer with one example from the reading."
+        )
+    else:
+        # No topic data at all: neutral prompt, no "demonstrating the
+        # concept from the week's material" tail.
+        description = (
+            f"Working from the week's reading, {verb} the ideas behind "
+            f"the learning objective: \"{objective_stem}.\" "
+            f"Respond in roughly 150 words using your own examples."
+        )
+
+    return description, ("apply" if verb == "apply" else bloom_level)
+
+
 def build_week_data(
     week_num: int,
     duration_weeks: int,
@@ -1333,7 +1430,12 @@ def build_week_data(
     if primary_topic:
         week_title = primary_topic["heading"]
     else:
-        week_title = f"Week {week_num} Concepts"
+        # Fallback when no topic is bound to this week. The emitter in
+        # ``generate_week`` wraps this as ``"Week {N} Overview: {title}"``,
+        # so a neutral label here avoids the tautological
+        # ``"Week N Overview: Week N Concepts"`` H1 observed on corpora
+        # where week count exceeds topic count.
+        week_title = "Overview"
 
     # Overview: week-level paragraphs + readings
     overview_text: List[str] = []
@@ -1371,14 +1473,19 @@ def build_week_data(
     first_obj_statement = (
         week_objectives[0]["statement"] if week_objectives else week_title
     )
+    # Per-week activity description — varies by topic/key-terms/bloom so
+    # weeks don't emit a copy-pasted identical prompt body. Falls back to
+    # a neutral wording when the week has no topic data to ground on.
+    activity_description, activity_bloom = _build_activity_prompt(
+        week_title=week_title,
+        week_topics=week_topics,
+        week_objectives=week_objectives,
+        first_obj_statement=first_obj_statement,
+    )
     activities = [{
         "title": f"Apply: {week_title}",
-        "description": _html.escape(
-            f"Objective: {first_obj_statement}. "
-            f"Respond in your own words (150 words) or with a diagram "
-            f"demonstrating the concept from the week's material."
-        ),
-        "bloom_level": "apply",
+        "description": _html.escape(activity_description),
+        "bloom_level": activity_bloom,
         **({"objective_ref": activity_objective_ref}
            if activity_objective_ref else {}),
     }]

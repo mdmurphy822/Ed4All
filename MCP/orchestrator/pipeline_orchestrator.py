@@ -157,8 +157,9 @@ class PipelineOrchestrator:
         ``MCP/core/executor.py:728, 875, 981`` never fired.
 
         When a workflow state is known, this method now resolves the
-        workflow's actual ``params.run_id`` (e.g. ``TTC_OLSR_201_...``)
-        and builds:
+        workflow's actual ``params.run_id`` (e.g. the
+        ``TTC_{course_name}_{timestamp}`` run IDs minted by
+        ``create_textbook_pipeline``) and builds:
 
         - ``run_path`` at ``state/runs/{run_id}/`` — matches what
           ``CheckpointManager`` + ``LockfileManager`` use.
