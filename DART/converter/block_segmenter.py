@@ -121,7 +121,7 @@ def segment_pdftotext_output(raw_text: str) -> List[RawBlock]:
 
 
 def segment_extracted_document(doc: "ExtractedDocument") -> List[RawBlock]:
-    """Phase 1 Wave-16/18 entry point: ``ExtractedDocument`` -> ``List[RawBlock]``.
+    """Phase 1 Wave-16/18/20 entry point: ``ExtractedDocument`` -> ``List[RawBlock]``.
 
     Produces the Wave 12 baseline paragraph blocks from ``doc.raw_text``
     (via :func:`segment_pdftotext_output`) and then appends dedicated
@@ -151,6 +151,35 @@ def segment_extracted_document(doc: "ExtractedDocument") -> List[RawBlock]:
     ``id=`` attributes.
     """
     text_blocks = segment_pdftotext_output(doc.raw_text)
+
+    # Wave 20: when page-chrome detection preserved a per-page page-
+    # number label (e.g. the chrome line "Teaching in a Digital Age 164"
+    # yielded page_number_lines[164] = "... 164"), stamp that label into
+    # every block on that page as ``extra["page_label"]`` so the
+    # template emitter can surface ``data-dart-pages="164"`` even after
+    # the chrome line itself has been stripped from the content stream.
+    page_chrome = getattr(doc, "page_chrome", None)
+    page_labels = (
+        getattr(page_chrome, "page_number_lines", None) or {}
+        if page_chrome is not None
+        else {}
+    )
+    if page_labels:
+        for block in text_blocks:
+            if block.page is not None and block.page in page_labels:
+                # Derive the numeric label — the value stored in
+                # page_number_lines is the raw chrome line; we want
+                # just the page number.
+                from DART.converter.page_chrome import (
+                    _normalise,
+                    _strip_trailing_digits,
+                )
+
+                raw_line = page_labels[block.page]
+                norm = _normalise(raw_line)
+                _prefix, page_num = _strip_trailing_digits(norm)
+                if page_num is not None:
+                    block.extra["page_label"] = str(page_num)
 
     # Wave 18: build the TOC_NAV block first so it prepends the list.
     toc_blocks: List[RawBlock] = []

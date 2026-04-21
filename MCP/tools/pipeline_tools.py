@@ -11,7 +11,7 @@ import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 # Add project root to path for imports
 _MCP_DIR = Path(__file__).resolve().parents[1]
@@ -969,6 +969,7 @@ def _raw_text_to_accessible_html(
                 output_path=output_path,
                 source_pdf=source_pdf,
                 metadata=merged_metadata,
+                page_chrome=getattr(doc, "page_chrome", None),
             )
             return html_out
         except RuntimeError as exc:
@@ -1043,6 +1044,7 @@ def _emit_dart_sidecars_if_requested(
     output_path: Optional[str],
     source_pdf: Optional[str],
     metadata: Optional[dict],
+    page_chrome: Any = None,
 ) -> None:
     """Wave 19: write ``*_synthesized.json`` + ``*.quality.json`` sidecars.
 
@@ -1050,6 +1052,10 @@ def _emit_dart_sidecars_if_requested(
     figure-persistence pattern — tempdir callers skip). Failures are
     logged + swallowed so a sidecar write error never blocks the HTML
     return path.
+
+    Wave 20: ``page_chrome`` (optional) is surfaced into the synthesized
+    sidecar's ``document_provenance.page_chrome_detected`` block when
+    provided. Pre-Wave-20 callers that omit it get the original shape.
     """
     if not output_path:
         return
@@ -1067,6 +1073,7 @@ def _emit_dart_sidecars_if_requested(
             title=title,
             source_pdf=source_pdf,
             metadata=metadata or {},
+            page_chrome=page_chrome,
         )
         synth_path = base.parent / f"{base.name}_synthesized.json"
         synth_path.write_text(

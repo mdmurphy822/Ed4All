@@ -275,6 +275,7 @@ def build_synthesized_sidecar(
     title: str,
     source_pdf: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
+    page_chrome: Any = None,
 ) -> Dict[str, Any]:
     """Return the canonical ``*_synthesized.json`` sidecar dict.
 
@@ -306,9 +307,18 @@ def build_synthesized_sidecar(
             "extractors_used": [...],
             "figures_extracted": N,
             "tables_extracted": N,
-            "toc_entries": N
+            "toc_entries": N,
+            "page_chrome_detected": {
+              "headers": [...], "footers": [...], "pages_numbered": N
+            }
           }
         }
+
+    Wave 20: ``page_chrome`` is an optional :class:`DART.converter.page_chrome.PageChrome`
+    instance. When populated, its headers / footers / page-number map
+    are surfaced under ``document_provenance.page_chrome_detected`` for
+    debuggability. The surrounding sidecar shape is backward-compatible
+    — pre-Wave-20 consumers that ignore the new key see no change.
     """
     metadata = metadata or {}
     slug = _slug(title)
@@ -378,6 +388,20 @@ def build_synthesized_sidecar(
         "tables_extracted": tables_count,
         "toc_entries": toc_count,
     }
+
+    # Wave 20: surface page-chrome detection stats for debuggability.
+    if page_chrome is not None:
+        headers = sorted(getattr(page_chrome, "headers", None) or [])
+        footers = sorted(getattr(page_chrome, "footers", None) or [])
+        pages_numbered = len(
+            getattr(page_chrome, "page_number_lines", None) or {}
+        )
+        if headers or footers or pages_numbered:
+            doc_prov["page_chrome_detected"] = {
+                "headers": headers,
+                "footers": footers,
+                "pages_numbered": pages_numbered,
+            }
 
     sidecar: Dict[str, Any] = {
         "slug": slug,
