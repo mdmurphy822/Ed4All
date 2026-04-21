@@ -739,20 +739,77 @@ def register_pipeline_tools(mcp):
 def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
     """Convert raw pdftotext output to clean, semantic, WCAG 2.2 AA HTML.
 
-    Performs thorough cleaning:
-    - Strips standalone page numbers, TOC entries, headers/footers
-    - Removes repeated book title footers (e.g. "K-12 Blended Teaching")
-    - Removes EdTech Books boilerplate and URL footers
-    - Skips author biography sections (detects bio patterns)
-    - Detects real chapter/section headings from text structure
-    - Builds heading hierarchy (h1 → h2 → h3)
-    - Wraps content paragraphs in <p> tags
-    - Adds WCAG 2.2 AA landmarks (main, skip link, dark mode)
+    Processing pipeline (multi-pass, each isolates one concern):
+
+    0. **Soft-hyphen rejoin** — fold pdftotext word-break artifacts
+       (``...adapting pre-trained language mo-\\nrelated`` → one line).
+    1. **Running-header detection** — lines that appear ≥4 times
+       across the document (page headers/footers like
+       ``"x Teaching in a Digital Age xi"``) flagged for drop.
+    2. **Front-matter + TOC strip** — copyright/license/ISBN blocks
+       move to a metadata region; dot-leader TOC entries
+       (``"1.1 Foo . . . . . . 2"``) and numbered TOC lines drop.
+    3. **Metadata-paragraph extraction** — the author/affiliation/
+       arXiv-ID first paragraphs of arxiv papers move to a
+       ``<header role="banner">`` metadata block, not ``<main>``.
+    4. **Column-layout drop** — lines with 2+ runs of ≥5 spaces
+       (pdftotext column alignment) drop from the paragraph stream.
+    5. **Structure detection + heading hierarchy** — textbook
+       chapter openers (``Chapter N:``/``Section N:``) land as h2;
+       arxiv paper sections (``I. INTRODUCTION``/``1. METHOD``/
+       ``Abstract``/``Introduction``/etc.) also land as h2;
+       Title-Case standalone lines land as h3.
+    6. **Render** — WCAG 2.2 AA landmarks, deduped section IDs,
+       page ``<h1>`` emitted exactly once.
     """
     import html as _html
     import re as _re
 
     lines = raw_text.split("\n")
+
+    # ------------------------------------------------------------------
+    # Pass 0 — soft-hyphen rejoin (Fix D)
+    # ------------------------------------------------------------------
+    # pdftotext breaks hyphenated words across line endings. When a line
+    # ends with ``word-`` and the next non-empty line starts lowercase,
+    # rejoin them into a single line without the soft-hyphen.
+    rejoined_lines = []
+    skip_next = False
+    for i, line in enumerate(lines):
+        if skip_next:
+            skip_next = False
+            continue
+        stripped = line.rstrip()
+        # Look for ``...word-`` at EOL with at least 2 letters before the
+        # hyphen (avoids joining em-dashes / range hyphens).
+        if _re.search(r"[A-Za-z]{2,}-$", stripped) and i + 1 < len(lines):
+            nxt = lines[i + 1].lstrip()
+            if nxt and nxt[0].islower():
+                # Strip trailing hyphen + join with next line (without
+                # leading space so the word reassembles cleanly).
+                rejoined = stripped[:-1] + nxt
+                rejoined_lines.append(rejoined)
+                skip_next = True
+                continue
+        rejoined_lines.append(line)
+    lines = rejoined_lines
+
+    # ------------------------------------------------------------------
+    # Pass 1 — running-header / footer detection
+    # ------------------------------------------------------------------
+    # Lines that appear ≥4 times in the document with short content
+    # (≤ 60 chars) are almost always page headers/footers pulled by
+    # pdftotext as standalone content. Build a frequency map and flag
+    # high-count short lines as droppable.
+    from collections import Counter as _Counter
+    line_counts = _Counter(
+        line.strip() for line in lines
+        if line.strip() and len(line.strip()) <= 60
+    )
+    repeated_chrome = {
+        text for text, count in line_counts.items()
+        if count >= 4 and text  # guard against empty
+    }
 
     # ---- Pass 1: Identify the book title for footer stripping ----
     # The first non-empty line(s) are usually the book title
@@ -767,7 +824,34 @@ def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
 
     # ---- Compiled patterns ----
     page_num = _re.compile(r"^\s*\d{1,4}\s*$")
-    toc_entry = _re.compile(r"^.{5,60}\s{3,}\d{1,4}\s*$")
+    # TOC entry shapes we want to drop from the body:
+    #  - dot-leader form: ``"1.1 Foo . . . . . .     2"``
+    #  - numbered-plus-page form: ``"Preface                              vii"``
+    #  - simple ``"title  ....  page"``
+    toc_entry = _re.compile(r"^.{5,80}\s{3,}\d{1,4}\s*$")
+    toc_dot_leader = _re.compile(r"^.{5,120}(?:\s*\.\s*){3,}\d{1,4}\s*$")
+    toc_roman_page = _re.compile(
+        r"^[A-Za-z][A-Za-z\s\-]{3,80}\s{3,}[ivxl]{1,6}\s*$",
+        _re.IGNORECASE,
+    )
+    # Column-layout paragraph: 2+ runs of 5+ consecutive spaces
+    # anywhere in the line. Using findall for counting instead of a
+    # single regex match avoids the overlapping-anchor pitfall where
+    # ``"A     S     B"`` has two 5-space runs but can't be matched
+    # by a single ``\\S\\s{5,}\\S.*\\S\\s{5,}\\S`` pattern.
+    _col_run_re = _re.compile(r"\s{5,}")
+    def _has_column_layout(text: str) -> bool:
+        return len(_col_run_re.findall(text)) >= 2
+    # Front-matter / copyright token heuristics (Fix B).
+    front_matter_hint = _re.compile(
+        r"(?:copyright|©|\bisbn\b|licensed under|creative commons|"
+        r"all rights reserved|cover design by|typeset in|"
+        r"this work is licensed|cover photo)",
+        _re.IGNORECASE,
+    )
+    # Metadata-paragraph hints for arxiv papers (Fix E).
+    arxiv_meta_hint = _re.compile(r"\barxiv[:.][\d.]+v?\d*\b", _re.IGNORECASE)
+    email_hint = _re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
     # Chapter/section opener — requires an explicit structural prefix.
     # Dropped the bare `\d{1,2}\.` branch because it was false-positive on
     # numbered list items and date-prefixed paragraphs ("19 April 2015: …").
@@ -777,6 +861,23 @@ def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
         r"(?:I{1,3}V?|VI{0,3}|IX|X{1,3})\.\s+"
         r")(.+)",
     )
+    # Arxiv-paper section opener (Fix C): ALL-CAPS title after roman/
+    # arabic numeral + dot, OR a canonical paper-section keyword on
+    # its own line. Distinct from ``chapter_heading`` because the ALL-
+    # CAPS requirement gives high precision on paper layouts.
+    paper_section_numbered = _re.compile(
+        r"^(?:(?:I{1,3}V?|VI{0,3}|IX|X{1,3})\.|\d{1,2}\.)\s+"
+        r"([A-Z][A-Z\s&/\-]{2,60})$"
+    )
+    _PAPER_SECTION_KEYWORDS = frozenset([
+        "abstract", "introduction", "related work", "background",
+        "methodology", "methods", "method", "approach", "model",
+        "experiments", "experimental setup", "evaluation",
+        "results", "discussion", "analysis", "conclusion",
+        "conclusions", "future work", "limitations",
+        "references", "acknowledgements", "acknowledgments",
+        "appendix", "appendices",
+    ])
     # Sub-heading regex unchanged shape, but tightened post-match via
     # _is_valid_subheading below — the regex alone was letting through
     # author lists, citations, table-row fragments, and publisher chrome.
@@ -816,12 +917,27 @@ def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
         # — sentence body that happened to begin with a numbered list opener.
         if _re.match(r"^\d+[.)\]]", text):
             return False
-        # Trailing function word = truncated sentence.
+        # Trailing function word = truncated sentence. Also check the
+        # penultimate word — pdftotext often wraps mid-phrase as
+        # ``"… to specific"`` (the "to" is the signal, not the final
+        # adjective).
+        function_words = {
+            "and", "or", "but", "of", "to", "for", "on", "at", "by",
+            "in", "with", "as", "from", "into", "onto", "upon", "about",
+            "against", "between", "through", "over", "under", "after",
+            "before", "during",
+            "the", "a", "an",
+            "is", "are", "was", "were", "be", "been", "being",
+            "that", "this", "these", "those",
+            "my", "your", "his", "her", "its", "our", "their",
+        }
         last = words[-1].lower().rstrip(",.:;")
-        if last in {"and", "or", "but", "of", "to", "for", "on", "at", "by",
-                    "in", "with", "as", "from", "the", "a", "an", "is", "are",
-                    "was", "were", "be", "that", "this", "these", "those"}:
+        if last in function_words:
             return False
+        if word_count >= 2:
+            penult = words[-2].lower().rstrip(",.:;")
+            if penult in function_words:
+                return False
         # Too many periods = multi-sentence or citation
         # ("Tim Berners-Lee, James Hendler and Ora Lassila. The Semantic Web.")
         if text.count(".") >= 2:
@@ -841,6 +957,16 @@ def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
         # or "and" — "Tim Berners-Lee, James Hendler and Ora Lassila"
         if _re.search(r"\b(and|,)\s+[A-Z][a-z]+\s+[A-Z]", text):
             return False
+        # Ends with ':' and contains a lowercase instruction verb —
+        # inline instruction, not a title ("To calculate the exact
+        # omission rate:"). (Fix G)
+        if text.rstrip().endswith(":"):
+            lowered_body = text.lower()
+            if any(tok in lowered_body for tok in (
+                " calculate", " explain", " consider", " note",
+                " observe", " see ", " suppose",
+            )):
+                return False
         return True
 
     boilerplate = _re.compile(
@@ -870,14 +996,32 @@ def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
     )
 
     # ---- Pass 2: Clean lines ----
+    # Emits (cleaned_body_lines, metadata_lines): body flows into the
+    # structured section-build pass; metadata flows into the
+    # <header role="banner"> block above <main>.
     cleaned_lines = []
+    metadata_lines: list[str] = []
     in_toc = False
     in_bio = False
+    in_front_matter = False
+    front_matter_seen_content = False
     bio_line_count = 0
     prev_was_empty = True
+    # Front-matter capture only fires early in the document OR before we
+    # hit the first real heading. Tracking both prevents ``Creative
+    # Commons`` / ``©`` mentions deep in the body text from sucking up
+    # legitimate content into metadata (Fix B refinement).
+    total_nonempty = sum(1 for ln in lines if ln.strip())
+    _front_matter_budget = max(50, total_nonempty // 10)  # first ~10% of doc
+    _front_matter_closed = False
+    _nonempty_seen = 0
 
     for line in lines:
         stripped = line.strip()
+        if stripped:
+            _nonempty_seen += 1
+            if _nonempty_seen > _front_matter_budget:
+                _front_matter_closed = True
 
         # Empty line
         if not stripped:
@@ -885,12 +1029,22 @@ def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
                 bio_line_count += 1
                 if bio_line_count > 2:
                     in_bio = False  # Bios end after a gap
+            # A blank line after front-matter indicates the block is
+            # probably over — but only exit if we've seen at least one
+            # content line inside.
+            if in_front_matter and front_matter_seen_content:
+                in_front_matter = False
+                front_matter_seen_content = False
             cleaned_lines.append("")
             prev_was_empty = True
             continue
 
         # Skip standalone page numbers
         if page_num.match(stripped):
+            continue
+
+        # Drop running headers/footers that appear ≥4 times (Fix B).
+        if stripped in repeated_chrome:
             continue
 
         # Skip repeated book title footer
@@ -904,15 +1058,45 @@ def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
         if boilerplate.search(stripped):
             continue
 
-        # Skip TOC entries (title followed by large whitespace then page number)
-        if toc_entry.match(stripped):
+        # Drop column-layout lines (table rows, author affiliation
+        # grids, etc.) — 2+ runs of ≥5 consecutive spaces (Fix H).
+        if _has_column_layout(stripped):
+            continue
+
+        # Skip TOC entries — strict shapes: dot-leader, roman-page,
+        # simple-page (Fix B extension).
+        if (
+            toc_entry.match(stripped)
+            or toc_dot_leader.match(stripped)
+            or toc_roman_page.match(stripped)
+        ):
             in_toc = True
             continue
         if in_toc:
-            if len(stripped) > 40 and not toc_entry.match(stripped):
+            # Stay in TOC mode until we hit a line that doesn't look
+            # like a TOC entry AND is long enough to be body content.
+            if len(stripped) > 60 and not (
+                toc_entry.match(stripped)
+                or toc_dot_leader.match(stripped)
+                or toc_roman_page.match(stripped)
+            ):
                 in_toc = False
             else:
                 continue
+
+        # Front-matter / copyright block capture (Fix B). Only fires in
+        # the first ~10% of the document — later occurrences of
+        # ``copyright`` / ``Creative Commons`` / ``©`` are legitimate
+        # body-content mentions and should stay in <main>.
+        if not _front_matter_closed and front_matter_hint.search(stripped):
+            in_front_matter = True
+            front_matter_seen_content = True
+            metadata_lines.append(stripped)
+            continue
+        if in_front_matter and not _front_matter_closed:
+            front_matter_seen_content = True
+            metadata_lines.append(stripped)
+            continue
 
         # Detect and skip author bio blocks
         if prev_was_empty and (bio_start.match(stripped) or university_line.match(stripped)):
@@ -946,18 +1130,73 @@ def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
 
     # ---- Pass 3: Detect structure and build sections ----
     sections = []
-    current_section = {"heading": title, "level": 1, "paragraphs": []}
+    # First section is a title-seeded wrapper; we use the sentinel level 0
+    # so the renderer knows to emit its paragraphs WITHOUT its own heading
+    # (Fix A — prevents a duplicate <h1> inside <main>; the page <h1>
+    # appears once in <header role="banner">).
+    current_section = {"heading": title, "level": 0, "paragraphs": []}
     current_para = []
 
     def _flush_para():
         text = " ".join(current_para).strip()
-        if text and len(text) > 20:
-            current_section["paragraphs"].append(text)
+        if not text or len(text) <= 20:
+            current_para.clear()
+            return
+        # Drop assembled paragraphs that still look like column-layout
+        # table rows (Fix H refinement — a single line may survive
+        # per-line filtering, but when joined with another col-layout
+        # line the paragraph exposes the pattern).
+        if _has_column_layout(text):
+            current_para.clear()
+            return
+        # Fix E — metadata-paragraph extraction. First paragraph of an
+        # arxiv paper typically contains authors + affiliations + email
+        # + arXiv ID. If the initial (title-seeded) section has no real
+        # paragraphs yet and this paragraph matches metadata hints,
+        # route it to metadata_lines rather than the body.
+        if (
+            current_section["level"] == 0
+            and not current_section["paragraphs"]
+            and (
+                arxiv_meta_hint.search(text)
+                or email_hint.search(text)
+            )
+        ):
+            metadata_lines.append(text)
+            current_para.clear()
+            return
+        current_section["paragraphs"].append(text)
         current_para.clear()
+
+    def _is_paper_section_keyword(stripped: str) -> bool:
+        """Standalone canonical paper-section keyword (Abstract,
+        Introduction, …). Case-insensitive, but the whole line must be
+        just the keyword (plus optional trailing punctuation)."""
+        canon = stripped.lower().rstrip(":.")
+        return canon in _PAPER_SECTION_KEYWORDS
 
     for stripped in cleaned_lines:
         if not stripped:
             _flush_para()
+            continue
+
+        # Fix C — arxiv-paper section detector. ALL-CAPS after a
+        # numeral ("I. INTRODUCTION") OR a canonical keyword
+        # ("Abstract", "Introduction"). Fires at h2 level; standalone
+        # so it doesn't require an existing blank-line guard.
+        paper_match = paper_section_numbered.match(stripped)
+        if (paper_match or _is_paper_section_keyword(stripped)) and not current_para:
+            if paper_match:
+                heading_text = paper_match.group(1).strip().title()
+            else:
+                heading_text = stripped.rstrip(":.").strip().title()
+            _flush_para()
+            # Close out the current section (if any) and start a new h2.
+            if current_section["paragraphs"] or current_section["level"] != 0:
+                sections.append(current_section)
+            elif current_section["level"] == 0 and current_section["paragraphs"]:
+                sections.append(current_section)
+            current_section = {"heading": heading_text, "level": 2, "paragraphs": []}
             continue
 
         # Detect chapter headings (structured: "Chapter 1: ...", "Section 2: ...",
@@ -977,7 +1216,7 @@ def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
             heading_text = ch_match.group(1).strip() if ch_match.group(1) else stripped
             if _is_valid_subheading(heading_text):
                 _flush_para()
-                if current_section["paragraphs"] or current_section["heading"] != title:
+                if current_section["paragraphs"] or current_section["level"] != 0:
                     sections.append(current_section)
                 current_section = {"heading": heading_text, "level": 2, "paragraphs": []}
                 continue
@@ -996,7 +1235,7 @@ def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
             if current_section["paragraphs"]:
                 sections.append(current_section)
                 current_section = {"heading": stripped, "level": 3, "paragraphs": []}
-            elif current_section["heading"] == title:
+            elif current_section["level"] == 0:
                 current_section["heading"] = stripped
                 current_section["level"] = 2
             else:
@@ -1007,18 +1246,45 @@ def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
         current_para.append(stripped)
 
     _flush_para()
-    if current_section["paragraphs"]:
+    if current_section["paragraphs"] or current_section["level"] != 0:
         sections.append(current_section)
 
     # Build HTML
     safe_title = _html.escape(title.replace("-", " ").replace("_", " ").title())
     body_parts = []
+    seen_ids: set = set()  # Fix F — dedupe section IDs across the doc.
+
+    def _unique_id(base: str) -> str:
+        """Ensure every section id is unique — first occurrence keeps
+        the bare slug, subsequent occurrences get ``-2``, ``-3`` …"""
+        if base not in seen_ids:
+            seen_ids.add(base)
+            return base
+        i = 2
+        while f"{base}-{i}" in seen_ids:
+            i += 1
+        chosen = f"{base}-{i}"
+        seen_ids.add(chosen)
+        return chosen
 
     for section in sections:
-        h_level = min(section["level"], 6)
+        level = section["level"]
+        # Fix A — level-0 (title-seeded) sections render their
+        # paragraphs un-wrapped, with NO heading. The page <h1> appears
+        # once in <header role="banner"> below. This prevents the
+        # duplicate-<h1>-inside-<main> artifact that violates WCAG
+        # heading nesting.
+        if level == 0:
+            for para in section["paragraphs"]:
+                safe_para = _html.escape(para)
+                body_parts.append(f"<p>{safe_para}</p>")
+            continue
+
+        h_level = min(level, 6)
         h_tag = f"h{h_level}"
         heading = _html.escape(section["heading"])
-        section_id = _re.sub(r"[^a-z0-9]+", "-", section["heading"].lower()).strip("-")[:60]
+        base_id = _re.sub(r"[^a-z0-9]+", "-", section["heading"].lower()).strip("-")[:60] or "section"
+        section_id = _unique_id(base_id)
 
         body_parts.append(
             f'<section id="{section_id}" aria-labelledby="{section_id}-heading">'
@@ -1032,6 +1298,23 @@ def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
         body_parts.append("</section>")
 
     body_html = "\n".join(body_parts)
+
+    # Fix B / E — metadata block. Copyright/license/ISBN lines +
+    # extracted arxiv-author paragraphs get their own <header> region
+    # above the page <h1>. Rendered WITHOUT <h1> so the main page
+    # heading stays authoritative.
+    metadata_html = ""
+    if metadata_lines:
+        meta_items = []
+        for entry in metadata_lines:
+            safe = _html.escape(entry)
+            meta_items.append(f"    <p>{safe}</p>")
+        metadata_html = (
+            '  <aside role="complementary" aria-label="Document metadata" '
+            'class="document-metadata">\n'
+            + "\n".join(meta_items)
+            + "\n  </aside>"
+        )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -1059,6 +1342,7 @@ def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
   <a href="#main-content" class="skip-link">Skip to main content</a>
   <header role="banner">
     <h1>{safe_title}</h1>
+{metadata_html}
   </header>
   <main id="main-content" role="main">
 {body_html}
