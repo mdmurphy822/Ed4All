@@ -722,6 +722,22 @@ workflows:
           - course_dir
           - manifest_path
 
+        # Wave 23 Sub-task C: manifest integrity gate. Previously no
+        # gate ran here, so pipeline-built archives could silently
+        # violate the LibV2 scaffold contract downstream consumers
+        # assume (empty pedagogy/, missing course.json, checksum
+        # mismatches, etc.).
+        validation_gates:
+          - gate_id: libv2_manifest
+            validator: lib.validators.libv2_manifest.LibV2ManifestValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Validate LibV2 manifest JSON, schema, and on-disk artifact integrity
+
       - name: finalization
         agents: [brightspace-packager]
         parallel: false
