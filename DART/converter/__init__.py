@@ -62,6 +62,7 @@ def default_classifier(
     *,
     text_spans: Optional[list] = None,
     median_body_font_size: Optional[float] = None,
+    capture: Optional[Any] = None,
 ) -> Union[LLMClassifier, HeuristicClassifier]:
     """Return the configured classifier for the current environment.
 
@@ -82,10 +83,16 @@ def default_classifier(
     these kwargs — its prompt-based classification already uses text
     context directly. Extra kwargs are only consumed when the resolved
     classifier is the heuristic one.
+
+    Wave 22 DC1: optional ``capture`` forwards a
+    :class:`lib.decision_capture.DecisionCapture` instance into the
+    resolved classifier. The heuristic classifier ignores it (no
+    Claude calls = nothing to log); the LLM classifier uses it to
+    emit one ``structure_detection`` decision per batch.
     """
     flag = os.environ.get("DART_LLM_CLASSIFICATION", "").strip().lower()
     if flag == "true" and llm is not None:
-        return LLMClassifier(llm=llm)
+        return LLMClassifier(llm=llm, capture=capture)
     return HeuristicClassifier(
         text_spans=text_spans,
         median_body_font_size=median_body_font_size,

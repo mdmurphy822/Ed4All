@@ -38,36 +38,68 @@ from lib.paths import STATE_PATH  # noqa: E402
 from .config import OrchestratorConfig  # noqa: E402
 from .param_mapper import ParameterMappingError, TaskParameterMapper  # noqa: E402
 
-# Phase 0 Hardening: Import hardening modules with graceful fallback
+# Phase 0 Hardening: Import hardening modules with graceful fallback.
+#
+# Wave 22 F1 fix: these modules live in ``MCP/hardening/``, not in
+# ``MCP/core/``. The historical relative imports (``from .error_classifier
+# import ...``) silently hit the ``except ImportError`` arm, flipped every
+# ``HARDENING_*`` flag to ``False``, and left the entire Phase 0 stack
+# as a no-op at runtime. Tests that imported ``MCP.hardening.*`` directly
+# did not catch the regression. Absolute imports from ``..hardening.*``
+# restore the wiring; ``except ImportError`` is retained defensively for
+# deployments that strip the hardening package, and a debug log makes
+# future silent regressions observable.
 try:
-    from .error_classifier import ErrorClass, ErrorClassifier, PoisonPillDetector
+    from ..hardening.error_classifier import ErrorClass, ErrorClassifier, PoisonPillDetector
     HARDENING_ERROR_CLASSIFIER = True
-except ImportError:
+except ImportError as _exc:
     HARDENING_ERROR_CLASSIFIER = False
     ErrorClass = None
+    logging.getLogger(__name__).debug(
+        "Hardening import failed (error_classifier): %s", _exc
+    )
 
 try:
-    from .checkpoint import CheckpointManager, PhaseCheckpoint  # noqa: F401
+    from ..hardening.checkpoint import CheckpointManager, PhaseCheckpoint  # noqa: F401
     HARDENING_CHECKPOINTS = True
-except ImportError:
+except ImportError as _exc:
     HARDENING_CHECKPOINTS = False
+    logging.getLogger(__name__).debug(
+        "Hardening import failed (checkpoint): %s", _exc
+    )
 
 try:
-    from .validation_gates import (  # noqa: F401
+    from ..hardening.validation_gates import (  # noqa: F401
         GateConfig,
         GateResult,
         GateSeverity,
         ValidationGateManager,
     )
     HARDENING_VALIDATION_GATES = True
-except ImportError:
+except ImportError as _exc:
     HARDENING_VALIDATION_GATES = False
+    logging.getLogger(__name__).debug(
+        "Hardening import failed (validation_gates): %s", _exc
+    )
 
 try:
-    from .lockfile import LockfileManager  # noqa: F401
+    from ..hardening.lockfile import LockfileManager  # noqa: F401
     HARDENING_LOCKFILE = True
-except ImportError:
+except ImportError as _exc:
     HARDENING_LOCKFILE = False
+    logging.getLogger(__name__).debug(
+        "Hardening import failed (lockfile): %s", _exc
+    )
+
+# Aggregate flag — True only when every Phase 0 hardening submodule
+# imported cleanly. Consumers / regression tests assert against this
+# single value rather than the four leaf flags.
+HARDENING_PHASE_0 = (
+    HARDENING_ERROR_CLASSIFIER
+    and HARDENING_CHECKPOINTS
+    and HARDENING_VALIDATION_GATES
+    and HARDENING_LOCKFILE
+)
 
 if TYPE_CHECKING:
     from lib.decision_capture import DecisionCapture
@@ -268,6 +300,16 @@ class TaskExecutor:
         if HARDENING_VALIDATION_GATES:
             self.gate_manager = ValidationGateManager()
             logger.debug(f"[{self.run_id}] Validation gate manager initialized")
+
+        # Lock manager for cross-process resource locking (Wave 22 F1 fix:
+        # was imported but never instantiated).
+        self.lock_manager = None
+        if HARDENING_LOCKFILE and self.run_path:
+            try:
+                self.lock_manager = LockfileManager(self.run_path)
+                logger.debug(f"[{self.run_id}] Lock manager initialized")
+            except Exception as e:
+                logger.warning(f"[{self.run_id}] Failed to init lock manager: {e}")
 
     def validate_tool_registry(self, fail_fast: bool = True) -> Dict[str, List[str]]:
         """

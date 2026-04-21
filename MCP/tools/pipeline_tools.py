@@ -779,6 +779,7 @@ def _raw_text_to_accessible_html(
     output_path: Optional[str] = None,
     figures_dir: Optional[str] = None,
     llm: Optional[object] = None,
+    capture: Optional[object] = None,
 ) -> str:
     """Wave 15+16+17 entry point: route raw pdftotext / PDF to DART.converter.
 
@@ -818,6 +819,116 @@ def _raw_text_to_accessible_html(
     legacy_flag = _os.environ.get("DART_LEGACY_CONVERTER", "").strip().lower()
     if legacy_flag == "true":
         return _raw_text_to_accessible_html_legacy(raw_text, title)
+
+    # Wave 22 DC3: pipeline_run_attribution capture. One record per
+    # _raw_text_to_accessible_html call so runs are replayable from
+    # captures alone. When the caller doesn't supply a capture, we
+    # build a short-lived DARTDecisionCapture keyed on the PDF name
+    # (normalised to satisfy the schema course_id pattern — DC4).
+    _owns_capture = False
+    if capture is None and source_pdf:
+        try:
+            from lib.decision_capture import DARTDecisionCapture
+
+            from MCP.tools.dart_tools import normalize_course_code
+
+            _pdf_stem = Path(source_pdf).stem or "unknown"
+            capture = DARTDecisionCapture(
+                course_code=normalize_course_code(_pdf_stem),
+                pdf_name=_pdf_stem,
+            )
+            _owns_capture = True
+        except Exception as _exc:  # noqa: BLE001 — capture is best-effort
+            logger.debug("DC3 capture init failed (%s); continuing", _exc)
+            capture = None
+
+    if capture is not None:
+        try:
+            classifier_mode = (
+                "llm"
+                if _os.environ.get("DART_LLM_CLASSIFICATION", "").strip().lower() == "true"
+                and llm is not None
+                else "heuristic"
+            )
+            backend = "heuristic" if classifier_mode == "heuristic" else "claude"
+            legacy_flag_state = _os.environ.get(
+                "DART_LEGACY_CONVERTER", ""
+            ).strip().lower() or "false"
+            rationale = (
+                f"Ran DART pipeline against "
+                f"{Path(source_pdf).name if source_pdf else 'raw_text_only'}; "
+                f"backend={backend}; classifier_mode={classifier_mode}; "
+                f"raw_text len={len(raw_text or '')} chars; "
+                f"title={title!r}; "
+                f"output_path={'set' if output_path else 'unset'}; "
+                f"figures_dir={'set' if figures_dir else 'unset'}; "
+                f"llm={'injected' if llm is not None else 'none'}; "
+                f"legacy_flag={legacy_flag_state}"
+            )
+            capture.log_decision(
+                decision_type="pipeline_run_attribution",
+                decision=(
+                    f"Ran DART pipeline against "
+                    f"{Path(source_pdf).name if source_pdf else 'raw_text_only'}"
+                ),
+                rationale=rationale,
+                context=(
+                    f"source_pdf={source_pdf or ''}; "
+                    f"output_path={output_path or ''}"
+                ),
+            )
+        except Exception as _exc:  # noqa: BLE001 — capture is best-effort
+            logger.debug(
+                "DC3 pipeline_run_attribution log failed (%s); continuing",
+                _exc,
+            )
+
+    try:
+        return _run_dart_pipeline_body(
+            raw_text=raw_text,
+            title=title,
+            metadata=metadata,
+            source_pdf=source_pdf,
+            output_path=output_path,
+            figures_dir=figures_dir,
+            llm=llm,
+            capture=capture,
+        )
+    finally:
+        # Finalise an owned capture so the JSONL flushes before the
+        # caller's process ends. Externally-supplied captures are the
+        # caller's responsibility to close.
+        if _owns_capture and capture is not None:
+            try:
+                if hasattr(capture, "save"):
+                    capture.save()
+                elif hasattr(capture, "close"):
+                    capture.close()
+            except Exception as _exc:  # noqa: BLE001
+                logger.debug(
+                    "DC3 capture finalise failed (%s); continuing", _exc
+                )
+
+
+def _run_dart_pipeline_body(
+    *,
+    raw_text: str,
+    title: str,
+    metadata: Optional[dict],
+    source_pdf: Optional[str],
+    output_path: Optional[str],
+    figures_dir: Optional[str],
+    llm: Optional[object],
+    capture: Optional[object],
+) -> str:
+    """Actual conversion body for ``_raw_text_to_accessible_html``.
+
+    Wave 22 DC3 split the outer entry point from this body so the
+    pipeline_run_attribution capture can wrap the whole call with a
+    single try/finally. Behaviour is byte-for-byte identical to the
+    pre-Wave-22 monolithic function body — this is a pure extraction.
+    """
+    import os as _os
 
     # Wave 16 enriched path: when a source PDF is available, go through
     # the dual-extraction layer so tables / figures / OCR contribute
@@ -882,6 +993,7 @@ def _raw_text_to_accessible_html(
                 source_pdf,
                 llm=llm,
                 figures_dir=resolved_figures_dir,
+                capture=capture,
             )
 
             # Rewrite each figure's ``image_path`` to include the
@@ -931,6 +1043,7 @@ def _raw_text_to_accessible_html(
                 llm=llm,
                 text_spans=spans,
                 median_body_font_size=median_fs,
+                capture=capture,
             )
             from DART.converter.heuristic_classifier import HeuristicClassifier
 
@@ -994,7 +1107,7 @@ def _raw_text_to_accessible_html(
     from DART.converter.document_assembler import assemble_html
 
     raw_blocks = segment_pdftotext_output(raw_text)
-    raw_classifier = default_classifier(llm=llm)
+    raw_classifier = default_classifier(llm=llm, capture=capture)
     if isinstance(raw_classifier, HeuristicClassifier):
         raw_classified = raw_classifier.classify_sync(raw_blocks)
     else:
@@ -2620,20 +2733,16 @@ def _build_tool_registry() -> dict:
                 strict_mode=False,
             )
 
-            # CourseProcessor's internal DecisionCapture uses
-            # phase="content_extraction" (underscore), which is NOT one
-            # of the 24 dash-separated phase names enumerated in
-            # schemas/events/decision_event.schema.json. Under
-            # DECISION_VALIDATION_STRICT=true (the flag the integration
-            # test sets alongside the other opt-in shapes), strict
-            # validation fires an exception mid-run and the corpus is
-            # never written. Until process_course.py is patched (see
-            # open-issues note in the handback), scope the strict flag
-            # off for the duration of the CourseProcessor call only —
-            # the downstream AssessmentGenerator capture below still
-            # runs under the caller's configured strictness.
-            _prior_strict = _os.environ.get("DECISION_VALIDATION_STRICT")
-            _os.environ["DECISION_VALIDATION_STRICT"] = "false"
+            # Wave 22 DC2: the historical strict-mode override here was a
+            # landmine. process_course.py now uses the canonical phase
+            # name ``"trainforge-content-analysis"`` (already fixed) and
+            # Wave 22 adds the five previously-orphan decision_type
+            # values (assessment_planning, question_type_selection,
+            # assessment_generation, content_selection, boilerplate_strip)
+            # to ``schemas/events/decision_event.schema.json``. With both
+            # landmines cleared, the caller's configured strictness now
+            # applies uniformly across CourseProcessor + downstream
+            # AssessmentGenerator runs.
             try:
                 summary = processor.process()
             except Exception as e:
@@ -2642,11 +2751,6 @@ def _build_tool_registry() -> dict:
                     "traceback": _traceback.format_exc(limit=6),
                     "output_dir": str(trainforge_dir),
                 })
-            finally:
-                if _prior_strict is None:
-                    _os.environ.pop("DECISION_VALIDATION_STRICT", None)
-                else:
-                    _os.environ["DECISION_VALIDATION_STRICT"] = _prior_strict
 
             chunks_path = trainforge_dir / "corpus" / "chunks.jsonl"
             semantic_graph_path = trainforge_dir / "graph" / "concept_graph_semantic.json"
