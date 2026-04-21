@@ -122,11 +122,12 @@ class SemanticStructureExtractor:
     representation of textbook content suitable for learning objective extraction.
     """
 
-    # Bloom's taxonomy verb patterns for question analysis
-    # TODO(wave-future): consolidate BLOOM_PATTERNS once pattern-taxonomy
-    # schema exists. These are regex alternations (not plain verb lists),
-    # so migration to schemas/taxonomies/bloom_verbs.json requires a
-    # pattern-schema layer — out of scope for REC-BL-01.
+    # Bloom's taxonomy verb patterns for question analysis. These are
+    # regex alternations (not plain verb lists), so migrating to
+    # schemas/taxonomies/bloom_verbs.json requires a pattern-schema
+    # layer. See the canonical tracking TODO at
+    # `lib/semantic_structure_extractor/analysis/content_profiler.py`
+    # — Wave 28f deduped the TODO to a single site.
     BLOOM_PATTERNS = {
         'remember': [
             r'\b(define|list|recall|identify|name|state|label|match|recognize)\b',
