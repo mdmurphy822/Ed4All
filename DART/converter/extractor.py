@@ -40,12 +40,19 @@ import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:  # pragma: no cover - type-check only imports
     from MCP.orchestrator.llm_backend import LLMBackend
 
 logger = logging.getLogger(__name__)
+
+
+# Wave 18: PyMuPDF-native date format ("D:20230315091500-07'00'"). The PDF
+# spec date string starts with ``D:`` and uses 14-digit YYYYMMDDHHmmSS
+# followed by optional timezone. We normalise to ISO 8601 date (YYYY-MM-DD)
+# — good enough for Dublin Core / schema.org ``datePublished`` consumers.
+_PDF_DATE_RE = re.compile(r"^\s*D?:?\s*(\d{4})(\d{2})(\d{2})")
 
 
 # Caption detection — match ``Figure N[.M]:`` / ``Fig. N:`` / ``Image N:``
@@ -80,6 +87,11 @@ class ExtractedTable:
     ``html.escape`` without type-juggling. ``caption`` is a free-form
     string pulled from text immediately above / below the bbox when
     the extractor can identify one — often empty.
+
+    Wave 18: ``source`` records which extractor produced the table
+    (``"pdfplumber"`` or ``"pymupdf"``) so the reconciliation layer
+    can prefer one over the other and downstream templates can surface
+    a ``data-dart-table-extractor`` attribute for debuggability.
     """
 
     page: int
@@ -87,6 +99,7 @@ class ExtractedTable:
     header_rows: List[List[str]] = field(default_factory=list)
     body_rows: List[List[str]] = field(default_factory=list)
     caption: Optional[str] = None
+    source: str = "pdfplumber"
 
 
 @dataclass
@@ -110,12 +123,73 @@ class ExtractedFigure:
 
 
 @dataclass
+class ExtractedTOCEntry:
+    """A single entry in the PDF's native outline (``doc.get_toc()``).
+
+    Populated by :func:`_extract_toc_pymupdf` when PyMuPDF is available.
+    ``level`` starts at 1 for top-level chapters. ``page`` is 1-indexed
+    to match the rest of the extractor's page accounting.
+    """
+
+    level: int
+    title: str
+    page: int
+
+
+@dataclass
+class ExtractedTextSpan:
+    """A contiguous text run with layout + font metadata from PyMuPDF.
+
+    Produced by :func:`_extract_text_spans_pymupdf` via
+    ``page.get_text("dict")``. Consumed by the heuristic classifier's
+    font-size-based heading promotion (Wave 18): when a block's
+    dominant span renders at >= 1.5x the document's median body font
+    size, the block is promoted from ``PARAGRAPH`` to a heading role.
+    """
+
+    page: int
+    bbox: BBox
+    text: str
+    font_size: float
+    font_name: str
+    is_bold: bool
+    is_italic: bool
+
+
+@dataclass
+class ExtractedLink:
+    """A hyperlink region from ``page.get_links()``.
+
+    ``uri`` carries the external destination when the link points at a
+    URL. ``dest_page`` carries the 1-indexed target page for internal
+    (``goto``) links. Both are optional; at least one is typically
+    populated.
+    """
+
+    page: int
+    bbox: BBox
+    uri: Optional[str] = None
+    dest_page: Optional[int] = None
+
+
+@dataclass
 class ExtractedDocument:
     """Unified extraction artifact consumed by Phase 1 segmentation.
 
     Every field has a safe default so a pdftotext-only extraction
     still produces a valid document. Only ``raw_text`` is required —
     :func:`extract_document` raises when pdftotext itself fails.
+
+    Wave 18 additions — all PyMuPDF-sourced, all empty by default so
+    pre-Wave-18 callers stay compatible:
+
+    * ``toc`` — native PDF bookmarks / outline.
+    * ``pdf_metadata`` — normalised metadata dict (``title``,
+      ``author``, ``subject``, ``creationDate`` in ISO 8601, etc.).
+    * ``text_spans`` — font-size + bbox-tagged text runs used by the
+      heuristic heading promoter.
+    * ``links`` — hyperlink annotations (external URIs + internal
+      ``goto`` destinations).
     """
 
     raw_text: str
@@ -124,6 +198,11 @@ class ExtractedDocument:
     tables: List[ExtractedTable] = field(default_factory=list)
     figures: List[ExtractedFigure] = field(default_factory=list)
     ocr_text: Optional[str] = None
+    # Wave 18 additions — all PyMuPDF-sourced.
+    toc: List[ExtractedTOCEntry] = field(default_factory=list)
+    pdf_metadata: Dict[str, Any] = field(default_factory=dict)
+    text_spans: List[ExtractedTextSpan] = field(default_factory=list)
+    links: List[ExtractedLink] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +366,368 @@ def _extract_tables_pdfplumber(pdf_path: str) -> List[ExtractedTable]:
         return []
 
     return tables
+
+
+# ---------------------------------------------------------------------------
+# PyMuPDF peer extractors (Wave 18): TOC, metadata, spans, links, tables
+# ---------------------------------------------------------------------------
+#
+# Each helper accepts an already-open PyMuPDF ``fitz.Document`` and returns
+# a list / dict. Every one is individually guarded so a failure in any
+# single helper never takes the whole extraction down; PyMuPDF itself
+# stays an optional dep. The public ``extract_document`` entry point opens
+# the doc once and passes it into all of these helpers so we don't pay
+# the open cost per call.
+
+
+def _normalise_pdf_date(raw: Any) -> Optional[str]:
+    """Normalise a PyMuPDF metadata date to ISO 8601 (``YYYY-MM-DD``).
+
+    PyMuPDF surfaces PDF date strings like ``"D:20230315091500-07'00'"``
+    (PDF spec format). We extract the ``YYYYMMDD`` prefix and render it
+    as ``YYYY-MM-DD``. When the string doesn't match the PDF format, we
+    return it unchanged (so ISO-8601 dates passed through the metadata
+    dict stay intact). Non-string values degrade to ``None``.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, str):
+        raw = str(raw)
+    if not raw.strip():
+        return None
+    match = _PDF_DATE_RE.match(raw)
+    if match:
+        year, month, day = match.group(1), match.group(2), match.group(3)
+        return f"{year}-{month}-{day}"
+    # Not a PDF-spec date — pass through unchanged so ISO dates survive.
+    return raw.strip()
+
+
+def _extract_toc_pymupdf(doc: Any) -> List[ExtractedTOCEntry]:
+    """Return the PDF's native outline / TOC as a list of entries.
+
+    PyMuPDF's ``doc.get_toc(simple=True)`` returns a list of
+    ``[level, title, page]`` tuples, 1-indexed pages. We map them into
+    :class:`ExtractedTOCEntry` instances. Any failure — missing method
+    on older versions, broken outline, etc. — degrades to ``[]``.
+    """
+    try:
+        raw_toc = doc.get_toc(simple=True)
+    except Exception as exc:  # noqa: BLE001 — defensive
+        logger.debug("PyMuPDF get_toc failed: %s", exc)
+        return []
+    if not raw_toc:
+        return []
+
+    entries: List[ExtractedTOCEntry] = []
+    for row in raw_toc:
+        if not isinstance(row, (list, tuple)) or len(row) < 3:
+            continue
+        try:
+            level = int(row[0])
+            title = str(row[1] or "").strip()
+            page = int(row[2])
+        except (TypeError, ValueError):
+            continue
+        if not title:
+            continue
+        entries.append(
+            ExtractedTOCEntry(level=max(1, level), title=title, page=max(1, page))
+        )
+    return entries
+
+
+def _extract_metadata_pymupdf(doc: Any) -> Dict[str, Any]:
+    """Return a normalised metadata dict derived from ``doc.metadata``.
+
+    PyMuPDF surfaces ``{"title": ..., "author": ..., "subject": ...,
+    "keywords": ..., "creator": ..., "producer": ..., "creationDate":
+    ..., "modDate": ..., "format": ..., "encryption": ...}``. We keep
+    the keys that downstream consumers (Dublin Core emitter, document
+    JSON-LD) read and normalise the date fields to ISO 8601.
+
+    Empty / whitespace-only values are dropped so the merge step in
+    :mod:`MCP.tools.pipeline_tools` can trivially check truthiness to
+    decide whether to fill a blank in the caller's ``metadata`` dict.
+    """
+    try:
+        raw = dict(doc.metadata or {})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("PyMuPDF metadata access failed: %s", exc)
+        return {}
+
+    result: Dict[str, Any] = {}
+    for key in ("title", "author", "subject", "keywords", "creator", "producer"):
+        value = raw.get(key)
+        if isinstance(value, str) and value.strip():
+            result[key] = value.strip()
+
+    for date_key in ("creationDate", "modDate"):
+        normalised = _normalise_pdf_date(raw.get(date_key))
+        if normalised:
+            result[date_key] = normalised
+
+    return result
+
+
+def _flag_is_bold(flags: int) -> bool:
+    """Bit 4 (``2**4 == 16``) of a PyMuPDF span flag indicates bold."""
+    try:
+        return bool(int(flags) & 16)
+    except (TypeError, ValueError):
+        return False
+
+
+def _flag_is_italic(flags: int) -> bool:
+    """Bit 1 (``2**1 == 2``) of a PyMuPDF span flag indicates italic."""
+    try:
+        return bool(int(flags) & 2)
+    except (TypeError, ValueError):
+        return False
+
+
+def _extract_text_spans_pymupdf(doc: Any) -> List[ExtractedTextSpan]:
+    """Return every text span in ``doc`` with font-size + bbox metadata.
+
+    Walks ``page.get_text("dict")`` and collects every ``span`` in every
+    line of every text block. Spans with zero-length text or missing
+    bbox are skipped. Any per-page failure degrades to skipping that
+    page; missing-API failures (older PyMuPDF) degrade to ``[]``.
+    """
+    spans: List[ExtractedTextSpan] = []
+    try:
+        page_count = len(doc)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("PyMuPDF len(doc) failed: %s", exc)
+        return []
+
+    for page_index in range(page_count):
+        try:
+            page = doc[page_index]
+            page_dict = page.get_text("dict")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "PyMuPDF get_text('dict') failed on page %d: %s",
+                page_index + 1,
+                exc,
+            )
+            continue
+
+        for block in (page_dict or {}).get("blocks", []) or []:
+            # block type 0 is text (1 is image). Filter so we don't pick
+            # up image-block stubs with no spans.
+            if block.get("type", 0) != 0:
+                continue
+            for line in block.get("lines", []) or []:
+                for span in line.get("spans", []) or []:
+                    text = span.get("text") or ""
+                    if not text.strip():
+                        continue
+                    bbox = tuple(span.get("bbox") or (0.0, 0.0, 0.0, 0.0))
+                    if len(bbox) != 4:
+                        bbox = (0.0, 0.0, 0.0, 0.0)
+                    try:
+                        font_size = float(span.get("size", 0.0) or 0.0)
+                    except (TypeError, ValueError):
+                        font_size = 0.0
+                    flags = span.get("flags", 0)
+                    font_name = str(span.get("font") or "")
+                    spans.append(
+                        ExtractedTextSpan(
+                            page=page_index + 1,
+                            bbox=bbox,  # type: ignore[arg-type]
+                            text=text,
+                            font_size=font_size,
+                            font_name=font_name,
+                            is_bold=_flag_is_bold(flags),
+                            is_italic=_flag_is_italic(flags),
+                        )
+                    )
+    return spans
+
+
+def _extract_links_pymupdf(doc: Any) -> List[ExtractedLink]:
+    """Return every hyperlink in ``doc`` as an :class:`ExtractedLink`.
+
+    PyMuPDF ``page.get_links()`` returns a list of dicts with ``kind``
+    (``LINK_URI`` / ``LINK_GOTO`` / ...), ``from`` (rect), ``uri``,
+    and ``page`` (target page, 0-indexed). We normalise page numbers to
+    1-indexed to match the rest of the extractor.
+    """
+    links: List[ExtractedLink] = []
+    try:
+        page_count = len(doc)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("PyMuPDF len(doc) failed in links helper: %s", exc)
+        return []
+
+    for page_index in range(page_count):
+        try:
+            page = doc[page_index]
+            raw_links = page.get_links() or []
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "PyMuPDF get_links failed on page %d: %s",
+                page_index + 1,
+                exc,
+            )
+            continue
+
+        for link in raw_links:
+            rect = link.get("from")
+            if rect is None:
+                bbox: BBox = (0.0, 0.0, 0.0, 0.0)
+            else:
+                try:
+                    bbox = (
+                        float(rect[0]),
+                        float(rect[1]),
+                        float(rect[2]),
+                        float(rect[3]),
+                    )
+                except (TypeError, ValueError, IndexError):
+                    bbox = (0.0, 0.0, 0.0, 0.0)
+
+            uri = link.get("uri")
+            if isinstance(uri, str) and uri.strip():
+                uri_value: Optional[str] = uri.strip()
+            else:
+                uri_value = None
+
+            dest_raw = link.get("page")
+            dest_page: Optional[int] = None
+            if dest_raw is not None:
+                try:
+                    dest_int = int(dest_raw)
+                    # PyMuPDF uses -1 for "no target"; 0-indexed internal
+                    # page numbers get bumped to 1-indexed here.
+                    if dest_int >= 0:
+                        dest_page = dest_int + 1
+                except (TypeError, ValueError):
+                    dest_page = None
+
+            if uri_value is None and dest_page is None:
+                continue
+
+            links.append(
+                ExtractedLink(
+                    page=page_index + 1,
+                    bbox=bbox,
+                    uri=uri_value,
+                    dest_page=dest_page,
+                )
+            )
+    return links
+
+
+def _find_tables_pymupdf(doc: Any) -> List[ExtractedTable]:
+    """Return tables found by PyMuPDF's ``page.find_tables()`` API.
+
+    Used as a fallback when pdfplumber yields no tables. PyMuPDF's
+    ``find_tables()`` is 1.23+; on older installs the method is missing
+    and this helper degrades to ``[]``. Every extracted table is tagged
+    with ``source="pymupdf"`` so the reconciliation layer knows where
+    it came from.
+    """
+    tables: List[ExtractedTable] = []
+    try:
+        page_count = len(doc)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("PyMuPDF len(doc) failed in tables helper: %s", exc)
+        return []
+
+    for page_index in range(page_count):
+        try:
+            page = doc[page_index]
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "PyMuPDF page access failed on %d: %s", page_index + 1, exc
+            )
+            continue
+
+        find_tables = getattr(page, "find_tables", None)
+        if find_tables is None:
+            # Old PyMuPDF without the API — no tables, no crash.
+            logger.debug(
+                "PyMuPDF page.find_tables missing on page %d (version < 1.23?)",
+                page_index + 1,
+            )
+            continue
+
+        try:
+            found = find_tables()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "PyMuPDF find_tables raised on page %d: %s",
+                page_index + 1,
+                exc,
+            )
+            continue
+
+        # ``find_tables`` may return a TableFinder object with a ``.tables``
+        # attribute, or an iterable of tables directly. Handle both.
+        table_iter = getattr(found, "tables", None)
+        if table_iter is None:
+            try:
+                table_iter = list(found)
+            except TypeError:
+                table_iter = []
+
+        for tbl in table_iter or []:
+            try:
+                rows = tbl.extract() or []
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "PyMuPDF table.extract raised on page %d: %s",
+                    page_index + 1,
+                    exc,
+                )
+                continue
+            if not rows:
+                continue
+
+            header_rows = [_stringify_row(rows[0])]
+            body_rows = [_stringify_row(r) for r in rows[1:]]
+
+            bbox_raw = getattr(tbl, "bbox", (0.0, 0.0, 0.0, 0.0))
+            try:
+                bbox: BBox = (
+                    float(bbox_raw[0]),
+                    float(bbox_raw[1]),
+                    float(bbox_raw[2]),
+                    float(bbox_raw[3]),
+                )
+            except (TypeError, ValueError, IndexError):
+                bbox = (0.0, 0.0, 0.0, 0.0)
+
+            tables.append(
+                ExtractedTable(
+                    page=page_index + 1,
+                    bbox=bbox,
+                    header_rows=header_rows,
+                    body_rows=body_rows,
+                    caption=None,
+                    source="pymupdf",
+                )
+            )
+    return tables
+
+
+def median_body_font_size(spans: List[ExtractedTextSpan]) -> Optional[float]:
+    """Return the median ``font_size`` across all ``spans``.
+
+    Used by the heuristic classifier's font-size-based heading promoter.
+    Returns ``None`` when no usable spans are present so the promoter
+    can no-op.
+    """
+    sizes = [s.font_size for s in spans if s.font_size and s.font_size > 0]
+    if not sizes:
+        return None
+    sizes.sort()
+    mid = len(sizes) // 2
+    if len(sizes) % 2 == 1:
+        return float(sizes[mid])
+    return float((sizes[mid - 1] + sizes[mid]) / 2.0)
 
 
 # ---------------------------------------------------------------------------
@@ -579,6 +1020,26 @@ def _extract_figures(
 # ---------------------------------------------------------------------------
 
 
+def _open_pymupdf(pdf_path: str):
+    """Return an open PyMuPDF ``fitz.Document`` or ``None`` when unavailable.
+
+    Centralises the import + open dance so every Wave-18 PyMuPDF helper
+    can share a single document handle. Any failure (missing dep, bad
+    file) degrades to ``None`` so the calling code can no-op the
+    PyMuPDF-dependent extractors.
+    """
+    try:
+        import fitz  # type: ignore
+    except ImportError:
+        logger.debug("PyMuPDF not installed; skipping PyMuPDF-backed extractors")
+        return None
+    try:
+        return fitz.open(pdf_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("PyMuPDF could not open %s: %s", pdf_path, exc)
+        return None
+
+
 def extract_document(
     pdf_path: str,
     *,
@@ -608,6 +1069,12 @@ def extract_document(
         ``image_path`` set to the relative filename. When ``None`` (the
         default), no disk I/O occurs and ``image_path`` stays empty —
         matching pre-Wave-17 behaviour.
+
+    Wave 18: opens PyMuPDF once (when available) and runs every
+    PyMuPDF-backed peer extractor (TOC, metadata, text spans, links,
+    and the ``find_tables`` fallback) against the single shared
+    document handle. All outputs are additive — empty lists / dicts
+    when PyMuPDF is unavailable, so existing callers see no change.
     """
     raw_text = _run_pdftotext(pdf_path)
 
@@ -639,6 +1106,58 @@ def extract_document(
         logger.debug("OCR extraction raised unexpectedly: %s", exc)
         ocr_text = None
 
+    # Wave 18: PyMuPDF peer-extractor pass. One shared open handle.
+    toc: List[ExtractedTOCEntry] = []
+    pdf_metadata: Dict[str, Any] = {}
+    text_spans: List[ExtractedTextSpan] = []
+    links: List[ExtractedLink] = []
+
+    fitz_doc = _open_pymupdf(pdf_path)
+    if fitz_doc is not None:
+        try:
+            toc = _extract_toc_pymupdf(fitz_doc)
+        except Exception as exc:  # noqa: BLE001 — defense in depth
+            logger.debug("TOC extraction raised unexpectedly: %s", exc)
+            toc = []
+
+        try:
+            pdf_metadata = _extract_metadata_pymupdf(fitz_doc)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("PyMuPDF metadata raised unexpectedly: %s", exc)
+            pdf_metadata = {}
+
+        try:
+            text_spans = _extract_text_spans_pymupdf(fitz_doc)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Text-span extraction raised unexpectedly: %s", exc)
+            text_spans = []
+
+        try:
+            links = _extract_links_pymupdf(fitz_doc)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Link extraction raised unexpectedly: %s", exc)
+            links = []
+
+        # Table reconciliation: if pdfplumber gave us nothing AND
+        # PyMuPDF's find_tables has results, use PyMuPDF's instead. This
+        # lets PyMuPDF pick up tables on text-heavy textbooks where
+        # pdfplumber's structure detection fails to fire.
+        if not tables:
+            try:
+                pymupdf_tables = _find_tables_pymupdf(fitz_doc)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "PyMuPDF find_tables raised unexpectedly: %s", exc
+                )
+                pymupdf_tables = []
+            if pymupdf_tables:
+                tables = pymupdf_tables
+
+        try:
+            fitz_doc.close()
+        except Exception:  # noqa: BLE001
+            pass
+
     return ExtractedDocument(
         raw_text=raw_text,
         source_pdf=pdf_path,
@@ -646,6 +1165,10 @@ def extract_document(
         tables=tables,
         figures=figures,
         ocr_text=ocr_text,
+        toc=toc,
+        pdf_metadata=pdf_metadata,
+        text_spans=text_spans,
+        links=links,
     )
 
 
@@ -653,6 +1176,10 @@ __all__ = [
     "BBox",
     "ExtractedDocument",
     "ExtractedFigure",
+    "ExtractedLink",
+    "ExtractedTOCEntry",
     "ExtractedTable",
+    "ExtractedTextSpan",
     "extract_document",
+    "median_body_font_size",
 ]
