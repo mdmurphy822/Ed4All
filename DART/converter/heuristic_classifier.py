@@ -17,11 +17,27 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import List
+from typing import List, Optional
 
 from DART.converter.block_roles import BlockRole, ClassifiedBlock, RawBlock
 
 logger = logging.getLogger(__name__)
+
+# Wave 18: threshold multiplier for font-size-based heading promotion.
+# A block whose dominant span renders at ``_FONT_SIZE_HEADING_RATIO * median``
+# or more is a heading candidate. The value is deliberately generous — we
+# only *promote* paragraph-classified blocks, never demote explicit roles.
+_FONT_SIZE_HEADING_RATIO = 1.5
+
+# Bolded runs at ratios between ``_BOLD_HEADING_RATIO`` and
+# ``_FONT_SIZE_HEADING_RATIO`` get demoted to the weaker ``SUBSECTION_HEADING``
+# role — bold is a secondary tiebreaker and only fires when the font size
+# is already somewhat larger than body text.
+_BOLD_HEADING_RATIO = 1.15
+
+# Larger-still ratios ("display size") promote to the stronger
+# ``SECTION_HEADING`` role.
+_SECTION_HEADING_RATIO = 1.9
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +192,61 @@ def _keyword_role(text: str) -> BlockRole | None:
 # Classifier
 # ---------------------------------------------------------------------------
 
+def _match_block_to_spans(block, spans):
+    """Return the dominant :class:`ExtractedTextSpan` overlapping ``block``.
+
+    Wave 18 helper used by the heuristic classifier's font-size-based
+    heading promoter. The "dominant" span is the one whose ``.text``
+    shares the most characters with ``block.text`` AND sits on the same
+    page (when the block carries a page number).
+
+    Returns ``None`` when no span meets a minimum overlap threshold so
+    the promoter can no-op and leave the regex-based classification
+    untouched. This is deliberately conservative — we'd rather miss a
+    heading than promote a paragraph.
+    """
+    if not spans or not block.text:
+        return None
+
+    block_text = block.text.strip()
+    if not block_text:
+        return None
+
+    block_page = block.page
+
+    best_span = None
+    best_overlap = 0
+    for span in spans:
+        span_text = (span.text or "").strip()
+        if not span_text:
+            continue
+        # Page match when we know the block's page — avoids accidentally
+        # matching a same-wording heading from a different page.
+        if block_page is not None and span.page != block_page:
+            continue
+        # Cheap overlap: is the span's text a prefix of the block text?
+        # For single-line headings the whole span IS the block; we want
+        # short span-length / overlap tolerance so a 40-char heading
+        # that appears verbatim as the first run wins.
+        if block_text.startswith(span_text) or span_text.startswith(block_text):
+            overlap = min(len(span_text), len(block_text))
+        elif span_text in block_text:
+            overlap = len(span_text)
+        else:
+            continue
+
+        if overlap > best_overlap:
+            best_overlap = overlap
+            best_span = span
+
+    # Require the matched span to cover at least half the block text so
+    # a stray one-word span embedded mid-paragraph doesn't hijack the
+    # font-size signal.
+    if best_span is None or best_overlap < max(4, len(block_text) // 2):
+        return None
+    return best_span
+
+
 class HeuristicClassifier:
     """Regex / keyword based classifier used as the Wave 12 default.
 
@@ -189,7 +260,42 @@ class HeuristicClassifier:
         0.60 - metadata line (arxiv, copyright, email) via keyword hint
         0.50 - fallback paragraph
         0.30 - column-layout or low-signal residue
+
+    Wave 18 additions:
+
+    * ``text_spans`` — optional list of
+      :class:`DART.converter.extractor.ExtractedTextSpan` carrying
+      font-size + bbox metadata. When provided alongside
+      ``median_body_font_size``, the classifier promotes
+      regex-classified ``PARAGRAPH`` blocks whose dominant span
+      renders at >= 1.5x median body font to ``SECTION_HEADING`` /
+      ``SUBSECTION_HEADING`` (display ratios vs. merely-larger ratios).
+      Promotions never override explicit regex matches — bold /
+      large-font signals only affect fallback paragraphs.
+    * ``median_body_font_size`` — optional float. Callers can compute
+      it via :func:`DART.converter.extractor.median_body_font_size`
+      and pass it through so the classifier doesn't need to re-scan.
+      When ``None`` and ``text_spans`` is populated, the classifier
+      computes the median lazily on its own.
     """
+
+    def __init__(
+        self,
+        *,
+        text_spans: Optional[list] = None,
+        median_body_font_size: Optional[float] = None,
+    ) -> None:
+        self._text_spans = list(text_spans) if text_spans else []
+        if median_body_font_size is not None:
+            self._median_body_font_size = float(median_body_font_size)
+        elif self._text_spans:
+            # Lazy median fallback — import here to avoid a cycle at
+            # module load (extractor imports other converter modules).
+            from DART.converter.extractor import median_body_font_size as _median
+
+            self._median_body_font_size = _median(self._text_spans)
+        else:
+            self._median_body_font_size = None
 
     async def classify(self, blocks: List[RawBlock]) -> List[ClassifiedBlock]:
         """Classify ``blocks`` into ``ClassifiedBlock`` instances.
@@ -206,8 +312,70 @@ class HeuristicClassifier:
         results: List[ClassifiedBlock] = []
         for block in blocks:
             results.append(self._classify_one(block))
+        results = [self._maybe_promote_by_font_size(r) for r in results]
         logger.debug("Heuristic classifier produced %d decisions", len(results))
         return results
+
+    # ------------------------------------------------------------------
+    # Wave 18 font-size heading promoter
+    # ------------------------------------------------------------------
+
+    def _maybe_promote_by_font_size(self, classified: ClassifiedBlock) -> ClassifiedBlock:
+        """Promote paragraph-classified blocks that render at heading-sized font.
+
+        Rules:
+
+        * No spans or no median available → no-op.
+        * Block already has an explicit heading role → no-op (never demote).
+        * Dominant-span font ratio >= ``_SECTION_HEADING_RATIO`` →
+          promote to ``SECTION_HEADING``.
+        * Dominant-span font ratio >= ``_FONT_SIZE_HEADING_RATIO`` →
+          promote to ``SUBSECTION_HEADING``.
+        * Dominant-span font ratio >= ``_BOLD_HEADING_RATIO`` AND the
+          span is bold → promote to ``SUBSECTION_HEADING``.
+        """
+        if not self._text_spans or not self._median_body_font_size:
+            return classified
+        # Only act on the fallback paragraph role. Anything else is the
+        # regex classifier asserting a stronger role we shouldn't undo.
+        if classified.role != BlockRole.PARAGRAPH:
+            return classified
+
+        span = _match_block_to_spans(classified.raw, self._text_spans)
+        if span is None or span.font_size <= 0:
+            return classified
+
+        ratio = span.font_size / self._median_body_font_size
+        attrs = dict(classified.attributes or {})
+        attrs["heading_text"] = classified.raw.text
+        attrs["font_size"] = span.font_size
+        attrs["font_size_ratio"] = round(ratio, 2)
+
+        if ratio >= _SECTION_HEADING_RATIO:
+            return ClassifiedBlock(
+                raw=classified.raw,
+                role=BlockRole.SECTION_HEADING,
+                confidence=0.75,
+                attributes=attrs,
+                classifier_source="heuristic",
+            )
+        if ratio >= _FONT_SIZE_HEADING_RATIO:
+            return ClassifiedBlock(
+                raw=classified.raw,
+                role=BlockRole.SUBSECTION_HEADING,
+                confidence=0.70,
+                attributes=attrs,
+                classifier_source="heuristic",
+            )
+        if span.is_bold and ratio >= _BOLD_HEADING_RATIO:
+            return ClassifiedBlock(
+                raw=classified.raw,
+                role=BlockRole.SUBSECTION_HEADING,
+                confidence=0.65,
+                attributes=attrs,
+                classifier_source="heuristic",
+            )
+        return classified
 
     # -- Internals --------------------------------------------------------
 

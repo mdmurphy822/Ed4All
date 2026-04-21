@@ -858,8 +858,46 @@ def _raw_text_to_accessible_html(
                     if fig.image_path and "/" not in fig.image_path:
                         fig.image_path = rel_figures_prefix + fig.image_path
 
+            # Wave 18: merge PyMuPDF-surfaced PDF metadata into the
+            # caller's metadata dict. Only fill in blanks — never
+            # override explicit caller-supplied values. ``creationDate``
+            # is already normalised to ISO 8601 by the extractor.
+            merged_metadata = dict(metadata or {})
+            pdf_meta = getattr(doc, "pdf_metadata", None) or {}
+            if pdf_meta:
+                _META_FALLBACKS = {
+                    "title": "title",
+                    "author": "authors",
+                    "subject": "subject",
+                    "creationDate": "date",
+                }
+                for src_key, dest_key in _META_FALLBACKS.items():
+                    if src_key not in pdf_meta:
+                        continue
+                    value = pdf_meta[src_key]
+                    if not value:
+                        continue
+                    # Fill in blanks only — never stomp caller-provided
+                    # values. We check against the merged dict after
+                    # default copy so absent keys trigger the fill.
+                    if not merged_metadata.get(dest_key):
+                        merged_metadata[dest_key] = value
+
             blocks = segment_extracted_document(doc)
-            classifier = default_classifier(llm=llm)
+            # Wave 18: thread text_spans + median through the classifier
+            # so font-size-based heading promotion fires when PyMuPDF
+            # layout data is available.
+            from DART.converter.extractor import (
+                median_body_font_size as _median_font,
+            )
+
+            spans = list(getattr(doc, "text_spans", None) or [])
+            median_fs = _median_font(spans) if spans else None
+            classifier = default_classifier(
+                llm=llm,
+                text_spans=spans,
+                median_body_font_size=median_fs,
+            )
             from DART.converter.heuristic_classifier import HeuristicClassifier
 
             if isinstance(classifier, HeuristicClassifier):
@@ -889,7 +927,7 @@ def _raw_text_to_accessible_html(
                     classified = result[0]
                 except RuntimeError:
                     classified = asyncio.run(classifier.classify(blocks))
-            return assemble_html(classified, title, metadata or {})
+            return assemble_html(classified, title, merged_metadata)
         except RuntimeError as exc:
             logger.debug(
                 "Wave 16 extractor failed (%s); falling back to raw-text path",

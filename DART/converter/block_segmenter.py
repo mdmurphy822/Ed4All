@@ -121,7 +121,7 @@ def segment_pdftotext_output(raw_text: str) -> List[RawBlock]:
 
 
 def segment_extracted_document(doc: "ExtractedDocument") -> List[RawBlock]:
-    """Phase 1 Wave-16 entry point: ``ExtractedDocument`` -> ``List[RawBlock]``.
+    """Phase 1 Wave-16/18 entry point: ``ExtractedDocument`` -> ``List[RawBlock]``.
 
     Produces the Wave 12 baseline paragraph blocks from ``doc.raw_text``
     (via :func:`segment_pdftotext_output`) and then appends dedicated
@@ -129,13 +129,22 @@ def segment_extracted_document(doc: "ExtractedDocument") -> List[RawBlock]:
     ``doc.figures`` entry. Structured blocks carry:
 
     * ``extractor_hint`` set to the hinted :class:`BlockRole`
-      (``TABLE`` or ``FIGURE``), which downstream classifiers honour
-      by skipping text classification.
+      (``TABLE``, ``FIGURE``, or ``TOC_NAV``), which downstream
+      classifiers honour by skipping text classification.
     * ``extra`` populated with the structured payload (rows / header /
-      caption for tables; image_path / alt / caption for figures).
-    * ``extractor`` set to ``"pdfplumber"`` or ``"pymupdf"`` so
+      caption for tables; image_path / alt / caption for figures;
+      entries list for TOC navigation).
+    * ``extractor`` set to ``"pdfplumber"``, ``"pymupdf"`` so
       provenance attributes can distinguish structure-sourced blocks
       from pdftotext prose.
+
+    Wave 18: when ``doc.toc`` is non-empty, a synthetic ``TOC_NAV``
+    block is prepended at the start of the block list so the native
+    PDF outline renders as a ``<nav role="doc-toc">`` block ahead of
+    everything else. Table blocks also carry their upstream extractor
+    label (``source="pdfplumber"`` vs ``source="pymupdf"``) into
+    ``extra`` so the template can emit a ``data-dart-table-extractor``
+    attribute for debuggability.
 
     Block IDs stay positional-hashed and unique across the combined
     sequence so the downstream assembler never produces duplicate
@@ -143,8 +152,40 @@ def segment_extracted_document(doc: "ExtractedDocument") -> List[RawBlock]:
     """
     text_blocks = segment_pdftotext_output(doc.raw_text)
 
+    # Wave 18: build the TOC_NAV block first so it prepends the list.
+    toc_blocks: List[RawBlock] = []
+    raw_toc = getattr(doc, "toc", None) or []
+    if raw_toc:
+        entries: List[dict] = []
+        for entry in raw_toc:
+            title = getattr(entry, "title", "")
+            if not title:
+                continue
+            level = int(getattr(entry, "level", 1) or 1)
+            page = int(getattr(entry, "page", 0) or 0)
+            entries.append({
+                "level": max(1, level),
+                "title": str(title),
+                "page": max(1, page),
+            })
+        if entries:
+            toc_text = " ".join(e["title"] for e in entries)
+            normalised = _normalise_block_text(toc_text)
+            toc_blocks.append(
+                RawBlock(
+                    text=normalised or "Contents",
+                    block_id=_compute_block_id(
+                        f"toc:{normalised}", 0
+                    ),
+                    page=entries[0]["page"] if entries else None,
+                    extractor="pymupdf",
+                    extractor_hint=BlockRole.TOC_NAV,
+                    extra={"entries": entries},
+                )
+            )
+
     structured: List[RawBlock] = []
-    running_index = len(text_blocks)
+    running_index = len(toc_blocks) + len(text_blocks)
 
     for table in doc.tables:
         header_text = " | ".join(" ".join(row) for row in table.header_rows if row)
@@ -158,18 +199,20 @@ def segment_extracted_document(doc: "ExtractedDocument") -> List[RawBlock]:
         normalised = _normalise_block_text(text_summary)
         block_id = _compute_block_id(normalised, running_index)
         running_index += 1
+        table_source = getattr(table, "source", "pdfplumber") or "pdfplumber"
         structured.append(
             RawBlock(
                 text=normalised,
                 block_id=block_id,
                 page=table.page,
                 bbox=table.bbox,
-                extractor="pdfplumber",
+                extractor=table_source,
                 extractor_hint=BlockRole.TABLE,
                 extra={
                     "header_rows": list(table.header_rows),
                     "body_rows": list(table.body_rows),
                     "caption": caption,
+                    "source": table_source,
                 },
             )
         )
@@ -207,7 +250,7 @@ def segment_extracted_document(doc: "ExtractedDocument") -> List[RawBlock]:
             )
         )
 
-    combined = text_blocks + structured
+    combined = toc_blocks + text_blocks + structured
 
     # Re-populate neighbour context across the combined sequence so
     # classifiers that use neighbours (the LLM classifier's prompt
