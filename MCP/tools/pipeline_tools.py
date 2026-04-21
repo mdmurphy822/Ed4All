@@ -736,8 +736,51 @@ def register_pipeline_tools(mcp):
         return await run_textbook_pipeline(workflow_id)
 
 
-def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
-    """Convert raw pdftotext output to clean, semantic, WCAG 2.2 AA HTML.
+def _raw_text_to_accessible_html(
+    raw_text: str,
+    title: str,
+    metadata: Optional[dict] = None,
+) -> str:
+    """Wave 15 entry point: route raw pdftotext to DART.converter by default.
+
+    Flags:
+
+    * ``DART_LEGACY_CONVERTER=true`` forces the pre-Wave-15 regex path
+      (``_raw_text_to_accessible_html_legacy``) as a one-release safety
+      fallback. Default — and the path exercised by end-to-end tests —
+      is the Wave 12-14 ontology-aware pipeline
+      (``DART.converter.convert_pdftotext_to_html``), which produces
+      ``data-dart-block-role`` + Dublin Core + schema.org JSON-LD.
+    * ``DART_LLM_CLASSIFICATION`` is respected transitively through
+      ``DART.converter.default_classifier`` — when on AND a backend is
+      provided, block classification goes through Claude.
+
+    ``metadata`` carries Dublin Core fields (authors, date, language,
+    rights, subject) that the new assembler emits as ``<meta>`` tags in
+    ``<head>``. Legacy mode ignores this argument to preserve byte-for-
+    byte parity with the pre-Wave-15 output.
+    """
+    import os as _os
+
+    legacy_flag = _os.environ.get("DART_LEGACY_CONVERTER", "").strip().lower()
+    if legacy_flag == "true":
+        return _raw_text_to_accessible_html_legacy(raw_text, title)
+
+    # New path: delegate to the 4-phase pipeline. ``default_classifier``
+    # picks LLM vs heuristic based on ``DART_LLM_CLASSIFICATION``; the
+    # pipeline wraps every phase, so pipeline_tools stays a thin
+    # orchestrator.
+    from DART.converter import convert_pdftotext_to_html as _convert
+
+    return _convert(raw_text, title=title, metadata=metadata or {})
+
+
+def _raw_text_to_accessible_html_legacy(raw_text: str, title: str) -> str:
+    """Legacy Wave 11 regex-driven converter (gated by DART_LEGACY_CONVERTER).
+
+    Retained for one release cycle as a safety fallback so ops can
+    revert to the pre-Wave-15 output shape with a single env flag. Do
+    not extend — new behaviour lands in :mod:`DART.converter`.
 
     Processing pipeline (multi-pass, each isolates one concern):
 
