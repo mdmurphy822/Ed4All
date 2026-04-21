@@ -724,11 +724,49 @@ workflows:
               on_error: fail_closed
             description: Every assessment question's objective_id must appear in at least one chunk's learning_outcome_refs (Wave 24)
 
+      # Wave 30 Gap 3: training-pair synthesis. Pre-Wave-30,
+      # Trainforge/synthesize_training.py was never wired into any
+      # end-to-end run — every LibV2 course had zero SFT/DPO pairs
+      # so ``ed4all export-training ... --format dpo`` had nothing
+      # real to export. This phase reads the Trainforge corpus
+      # produced by ``trainforge_assessment`` and emits
+      # ``training_specs/instruction_pairs.jsonl`` +
+      # ``training_specs/preference_pairs.jsonl``. Optional: callers
+      # can skip it via ``generate_assessments=false`` (same gate
+      # that skips ``trainforge_assessment``).
+      - name: training_synthesis
+        agents: [training-synthesizer]
+        parallel: false
+        max_concurrent: 1
+        depends_on: [trainforge_assessment]
+        timeout_minutes: 30
+        description: Synthesize SFT + DPO training pairs from Trainforge chunks
+        optional: true
+
+        inputs_from:
+          - param: course_code
+            source: workflow_params
+            key: course_name
+          - param: assessments_path
+            source: phase_outputs
+            phase: trainforge_assessment
+            output: assessments_path
+          - param: chunks_path
+            source: phase_outputs
+            phase: trainforge_assessment
+            output: chunks_path
+
+        outputs:
+          - instruction_pairs_path
+          - preference_pairs_path
+          - instruction_pairs_count
+          - preference_pairs_count
+
       - name: libv2_archival
         agents: [libv2-archivist]
         parallel: false
         max_concurrent: 1
-        depends_on: [packaging, trainforge_assessment]
+        depends_on: [packaging, trainforge_assessment, training_synthesis]
         timeout_minutes: 30
         description: Archive all pipeline artifacts to LibV2 (raw PDFs, DART HTML, IMSCC, RAG corpus)
 

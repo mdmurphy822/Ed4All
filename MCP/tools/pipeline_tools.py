@@ -594,6 +594,93 @@ def register_pipeline_tools(mcp):
 
 
     @mcp.tool()
+    async def synthesize_training(
+        corpus_dir: str,
+        course_code: str,
+        provider: str = "mock",
+        seed: Optional[int] = None,
+    ) -> str:
+        """Generate SFT + DPO training pairs from a Trainforge corpus.
+
+        Wave 30 Gap 3: exposes
+        :func:`Trainforge.synthesize_training.run_synthesis` as an MCP
+        tool so external clients + the textbook_to_course pipeline both
+        route to the same backing implementation. Reads
+        ``{corpus_dir}/corpus/chunks.jsonl`` and writes
+        ``{corpus_dir}/training_specs/instruction_pairs.jsonl`` +
+        ``{corpus_dir}/training_specs/preference_pairs.jsonl``.
+
+        Args:
+            corpus_dir: Trainforge output directory (the one containing
+                ``corpus/`` and ``training_specs/``).
+            course_code: Course identifier for decision capture.
+            provider: Synthesis provider (``"mock"`` — default, only one
+                wired today — or the reserved ``"anthropic"``).
+            seed: Optional base seed for determinism.
+
+        Returns:
+            JSON with ``success``, the two output paths, and a stats
+            summary. When ``chunks.jsonl`` is missing the call returns
+            ``{"success": true, "skipped": true}`` so callers never
+            crash on the no-LLM-available / no-corpus path.
+        """
+        try:
+            from Trainforge.synthesize_training import (
+                DEFAULT_SEED,
+                run_synthesis,
+            )
+        except Exception as exc:
+            return json.dumps({
+                "error": f"Failed to import synthesize_training: {exc}",
+            })
+
+        corpus_dir_path = Path(corpus_dir)
+        chunks_path = corpus_dir_path / "corpus" / "chunks.jsonl"
+        if not chunks_path.exists():
+            logger.warning(
+                "synthesize_training: chunks.jsonl missing at %s; skipping",
+                chunks_path,
+            )
+            return json.dumps({
+                "success": True,
+                "skipped": True,
+                "reason": "chunks_missing",
+                "corpus_dir": str(corpus_dir_path),
+            })
+
+        if seed is None:
+            seed = DEFAULT_SEED
+
+        try:
+            stats = run_synthesis(
+                corpus_dir=corpus_dir_path,
+                course_code=course_code,
+                provider=provider,
+                seed=int(seed),
+            )
+        except Exception as exc:
+            return json.dumps({
+                "error": f"synthesize_training failed: {exc}",
+                "corpus_dir": str(corpus_dir_path),
+            })
+
+        return json.dumps({
+            "success": True,
+            "corpus_dir": str(corpus_dir_path),
+            "instruction_pairs_path": str(
+                corpus_dir_path / "training_specs" / "instruction_pairs.jsonl"
+            ),
+            "preference_pairs_path": str(
+                corpus_dir_path / "training_specs" / "preference_pairs.jsonl"
+            ),
+            "instruction_pairs_count": stats.instruction_pairs_emitted,
+            "preference_pairs_count": stats.preference_pairs_emitted,
+            "chunks_eligible": stats.chunks_eligible,
+            "chunks_total": stats.chunks_total,
+            "stats": stats.as_dict(),
+        })
+
+    @mcp.tool()
     async def archive_to_libv2(
         course_name: str,
         domain: str,
@@ -693,6 +780,58 @@ def register_pipeline_tools(mcp):
                     dest = course_dir / "corpus" / assess.name
                     shutil.copy2(assess, dest)
                     archived["assessment"] = str(dest)
+                    # Wave 30 Gap 3: when the caller points us at an
+                    # assessments.json (or its containing directory), also
+                    # pick up the Wave 30 training_synthesis artifacts.
+                    # Mirrors the registry variant's copy_map; we keep the
+                    # probe cheap so a missing sibling dir stays silent.
+                    assess_parent = assess.parent if assess.is_file() else assess
+                    for sibling_name in ("training_specs",):
+                        sibling_dir = assess_parent / sibling_name
+                        if not sibling_dir.is_dir():
+                            # trainforge_dir might be the parent of parent.
+                            sibling_dir = assess_parent.parent / sibling_name
+                        if not sibling_dir.is_dir():
+                            continue
+                        for fname in (
+                            "instruction_pairs.jsonl",
+                            "preference_pairs.jsonl",
+                            "dataset_config.json",
+                        ):
+                            src = sibling_dir / fname
+                            if src.exists() and src.is_file():
+                                dest = (
+                                    course_dir / "training_specs" / fname
+                                )
+                                try:
+                                    shutil.copy2(src, dest)
+                                    archived.setdefault(
+                                        "training_specs", []
+                                    ).append(str(dest))
+                                except OSError as _exc:
+                                    logger.debug(
+                                        "archive_to_libv2: failed to copy %s: %s",
+                                        src, _exc,
+                                    )
+                    # Wave 30 Gap 4: course.json is materialised alongside
+                    # assessments.json (trainforge_dir / course.json).
+                    for _course_root in (
+                        assess_parent,
+                        assess_parent.parent,
+                    ):
+                        _cj = _course_root / "course.json"
+                        if _cj.exists() and _cj.is_file():
+                            try:
+                                shutil.copy2(_cj, course_dir / "course.json")
+                                archived["course_json"] = str(
+                                    course_dir / "course.json"
+                                )
+                                break
+                            except OSError as _exc:
+                                logger.debug(
+                                    "archive_to_libv2: course.json copy failed: %s",
+                                    _exc,
+                                )
 
             # Build manifest
             import hashlib
@@ -928,6 +1067,44 @@ def _raw_text_to_accessible_html(
                 "DC3 pipeline_run_attribution log failed (%s); continuing",
                 _exc,
             )
+
+    # Wave 30 Gap 1: alt-text generation decision-capture + operator warning.
+    # Emits exactly one ``alt_text_generation`` decision per pipeline run
+    # summarising whether the run used a live LLM backend or fell back to
+    # the WCAG-decorative placeholder. Previously AltTextGenerator only
+    # fired per-figure captures when the LLM actually ran, so runs with
+    # ``llm=None`` produced no alt-text-related trace at all.
+    if source_pdf:
+        _alt_text_mode = "llm_generation" if llm is not None else "decorative_fallback"
+        if llm is None:
+            logger.warning(
+                "Alt-text generation skipped (no LLM backend); figures on %s "
+                "will emit WCAG-decorative fallback (alt='' role='presentation')",
+                Path(source_pdf).name,
+            )
+        if capture is not None:
+            try:
+                capture.log_decision(
+                    decision_type="alt_text_generation",
+                    decision=(
+                        f"Alt-text pipeline mode={_alt_text_mode} "
+                        f"for {Path(source_pdf).name}"
+                    ),
+                    rationale=(
+                        f"Run-level alt-text mode for "
+                        f"{Path(source_pdf).name}: mode={_alt_text_mode}; "
+                        f"llm={'injected' if llm is not None else 'none'}; "
+                        f"per-figure decisions follow when mode=llm_generation; "
+                        f"WCAG 1.1.1: empty alt + role=presentation emitted "
+                        f"on every <figure> when mode=decorative_fallback"
+                    ),
+                    context=f"source_pdf={source_pdf}",
+                )
+            except Exception as _exc:  # noqa: BLE001 — capture is best-effort
+                logger.debug(
+                    "Wave 30 alt_text_generation summary log failed (%s); continuing",
+                    _exc,
+                )
 
     try:
         return _run_dart_pipeline_body(
@@ -1982,6 +2159,31 @@ def _build_tool_registry() -> dict:
         # :func:`normalize_course_code`) when the orchestrator threaded
         # it through. Falls back to the PDF-stem-derived code inside
         # ``_raw_text_to_accessible_html`` when absent (legacy path).
+        # Wave 30 Gap 1: thread an LLM backend through so
+        # ``AltTextGenerator.generate()`` actually runs on every figure.
+        # Precedence: explicit ``kwargs["llm"]`` (tests / CLI override) >
+        # env-resolved backend when ``ANTHROPIC_API_KEY`` is set + the
+        # api-mode flag is on. Without a backend the figure template
+        # falls back to the WCAG-decorative placeholder (alt='' +
+        # role='presentation') and a single warning is logged — the
+        # pipeline does not crash on the no-LLM-available path.
+        _llm_backend = kwargs.get("llm")
+        if _llm_backend is None:
+            try:
+                import os as _os_inner
+                _api_key_present = bool(_os_inner.environ.get("ANTHROPIC_API_KEY"))
+                _mode = _os_inner.environ.get("LLM_MODE", "local").strip().lower()
+                if _api_key_present and _mode == "api":
+                    from MCP.orchestrator.llm_backend import build_backend
+                    _llm_backend = build_backend()
+            except Exception as _exc:  # noqa: BLE001 — never block on backend resolution
+                logger.debug(
+                    "Wave 30 Gap 1: LLM backend auto-resolve failed (%s); "
+                    "falling back to decorative alt-text",
+                    _exc,
+                )
+                _llm_backend = None
+
         html_content = _raw_text_to_accessible_html(
             raw_text,
             pretty_title,
@@ -1989,6 +2191,7 @@ def _build_tool_registry() -> dict:
             output_path=str(html_output),
             figures_dir=kwargs.get("figures_dir"),
             canonical_course_code=kwargs.get("canonical_course_code"),
+            llm=_llm_backend,
         )
         html_output.write_text(html_content, encoding="utf-8")
 
@@ -3444,6 +3647,143 @@ def _build_tool_registry() -> dict:
     except Exception:
         pass
 
+    # Wave 30 Gap 3: training_synthesis phase
+    # ============================================================================
+    # Wraps ``Trainforge.synthesize_training.run_synthesis`` as a pipeline phase
+    # so ``textbook_to_course`` runs now materialise ``training_specs/
+    # instruction_pairs.jsonl`` + ``training_specs/preference_pairs.jsonl``
+    # alongside ``assessments.json``. Pre-Wave-30 the synthesizer only ran
+    # when a human invoked its CLI — no textbook-to-course run ever emitted
+    # SFT / DPO pairs, so ``ed4all export-training ... --format dpo`` was
+    # exporting decision captures instead of real Q&A pairs.
+    # ============================================================================
+    async def _synthesize_training(**kwargs):
+        """Generate SFT + DPO training pairs from the Trainforge corpus.
+
+        Required inputs (accepts both shapes so both the MCP-tool and
+        pipeline-dispatch variants route here cleanly):
+
+        * ``corpus_dir`` OR ``trainforge_dir`` — the Trainforge output
+          directory that already holds ``corpus/chunks.jsonl``. Derived
+          from ``assessments_path`` (its parent) when neither is given.
+        * ``course_code`` OR ``course_name`` OR ``course_id`` — used for
+          decision capture so the run is traceable.
+
+        Optional:
+
+        * ``provider`` (``"mock"`` or ``"anthropic"``, default ``"mock"``
+          because the Anthropic provider hook is reserved for a later
+          wave). When ``None`` is explicitly set AND no LLM backend is
+          resolvable, the function logs a skip warning and returns an
+          empty-results shell rather than crashing.
+        * ``seed`` (int, default ``DEFAULT_SEED`` from
+          ``synthesize_training`` so re-runs are byte-identical).
+
+        Returns a JSON string with ``instruction_pairs_path``,
+        ``preference_pairs_path``, and the ``SynthesisStats`` dict.
+        """
+        # Resolve the corpus directory.
+        corpus_dir = (
+            kwargs.get("corpus_dir")
+            or kwargs.get("trainforge_dir")
+            or kwargs.get("output_dir")
+        )
+        if not corpus_dir:
+            assessments_path = kwargs.get("assessments_path")
+            if assessments_path:
+                corpus_dir = str(Path(assessments_path).parent)
+        if not corpus_dir:
+            chunks_path = kwargs.get("chunks_path")
+            if chunks_path:
+                # chunks.jsonl lives at {corpus_dir}/corpus/chunks.jsonl, so
+                # the Trainforge root is two parents up.
+                corpus_dir = str(Path(chunks_path).parent.parent)
+        if not corpus_dir:
+            return json.dumps({
+                "error": (
+                    "synthesize_training requires corpus_dir / "
+                    "trainforge_dir / assessments_path / chunks_path to "
+                    "locate corpus/chunks.jsonl"
+                ),
+            })
+
+        corpus_dir_path = Path(corpus_dir)
+        chunks_path = corpus_dir_path / "corpus" / "chunks.jsonl"
+        if not chunks_path.exists():
+            # Skip-with-warning: downstream archival can still run, we
+            # just won't have new training pairs. This is the safe
+            # no-LLM-available path the audit calls out.
+            logger.warning(
+                "synthesize_training: chunks.jsonl missing at %s; "
+                "skipping training-pair synthesis. ",
+                chunks_path,
+            )
+            return json.dumps({
+                "success": True,
+                "skipped": True,
+                "reason": "chunks_missing",
+                "corpus_dir": str(corpus_dir_path),
+            })
+
+        course_code = (
+            kwargs.get("course_code")
+            or kwargs.get("course_name")
+            or kwargs.get("course_id")
+            or "UNKNOWN"
+        )
+
+        provider = kwargs.get("provider", "mock")
+        # Seed defaults to synthesize_training's DEFAULT_SEED so re-runs
+        # are byte-identical. Callers can override for test determinism.
+        seed = kwargs.get("seed")
+
+        try:
+            from Trainforge.synthesize_training import (
+                DEFAULT_SEED,
+                run_synthesis,
+            )
+        except Exception as exc:  # pragma: no cover — dependency error
+            return json.dumps({
+                "error": f"Failed to import synthesize_training: {exc}",
+            })
+
+        if seed is None:
+            seed = DEFAULT_SEED
+
+        try:
+            stats = run_synthesis(
+                corpus_dir=corpus_dir_path,
+                course_code=str(course_code),
+                provider=str(provider),
+                seed=int(seed),
+            )
+        except Exception as exc:
+            return json.dumps({
+                "error": f"synthesize_training failed: {exc}",
+                "corpus_dir": str(corpus_dir_path),
+            })
+
+        instruction_pairs_path = (
+            corpus_dir_path / "training_specs" / "instruction_pairs.jsonl"
+        )
+        preference_pairs_path = (
+            corpus_dir_path / "training_specs" / "preference_pairs.jsonl"
+        )
+
+        return json.dumps({
+            "success": True,
+            "corpus_dir": str(corpus_dir_path),
+            "instruction_pairs_path": str(instruction_pairs_path),
+            "preference_pairs_path": str(preference_pairs_path),
+            "instruction_pairs_count": stats.instruction_pairs_emitted,
+            "preference_pairs_count": stats.preference_pairs_emitted,
+            "chunks_eligible": stats.chunks_eligible,
+            "chunks_total": stats.chunks_total,
+            "stats": stats.as_dict(),
+        })
+
+    registry["synthesize_training"] = _synthesize_training
+
     # LibV2 archival tool
     # ============================================================================
     # BLOCK: Worker γ edits ONLY below this line through the next END marker.
@@ -3643,6 +3983,21 @@ def _build_tool_registry() -> dict:
                 (_pick(trainforge_dir / "training_specs" / "assessments.json",
                        trainforge_dir / "assessments.json"),
                  course_dir / "training_specs" / "assessments.json", "assessments"),
+                # Wave 30 Gap 3: new training_synthesis phase outputs.
+                # These land under training_specs/ alongside assessments.json
+                # so LibV2 archives + downstream export tooling have real
+                # instruction + preference pairs to surface.
+                (_pick(trainforge_dir / "training_specs" / "instruction_pairs.jsonl"),
+                 course_dir / "training_specs" / "instruction_pairs.jsonl", "instruction_pairs"),
+                (_pick(trainforge_dir / "training_specs" / "preference_pairs.jsonl"),
+                 course_dir / "training_specs" / "preference_pairs.jsonl", "preference_pairs"),
+                (_pick(trainforge_dir / "training_specs" / "dataset_config.json"),
+                 course_dir / "training_specs" / "dataset_config.json", "dataset_config"),
+                # Wave 30 Gap 4: course.json is now written unconditionally
+                # (including an empty-LOs shell) so LibV2 retrieval + joins
+                # always have a file to look at.
+                (_pick(trainforge_dir / "course.json"),
+                 course_dir / "course.json", "course_json"),
                 (_pick(trainforge_dir / "quality" / "quality_report.json"),
                  course_dir / "quality" / "quality_report.json", "quality_report"),
             ]

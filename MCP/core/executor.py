@@ -171,6 +171,10 @@ AGENT_TOOL_MAPPING = {
     "rag-indexer": "analyze_imscc_content",
     "assessment-generator": "generate_assessments",
     "assessment-validator": "validate_assessment",
+    # Wave 30 Gap 3: wire the previously-unused synthesize_training CLI
+    # entry point as a first-class pipeline phase so textbook_to_course
+    # runs actually emit instruction + preference training pairs.
+    "training-synthesizer": "synthesize_training",
 
     # -------------------------------------------------------------------------
     # LIBV2 AGENTS
