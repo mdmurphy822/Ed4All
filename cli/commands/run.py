@@ -356,7 +356,7 @@ def run_command(
         )
         sys.exit(2)
 
-    asyncio.run(
+    exit_code = asyncio.run(
         _create_and_run(
             workflow=workflow,
             params=params,
@@ -367,6 +367,8 @@ def run_command(
             watch=watch,
         )
     )
+    if exit_code:
+        sys.exit(exit_code)
 
 
 # ============================================================================
@@ -460,6 +462,27 @@ def _print_dry_run_plan(plan: Dict[str, Any]) -> None:
         )
 
 
+def _any_gate_failed(result) -> bool:
+    """Return True if any phase reported ``gates_passed=False``.
+
+    Wave 29 Defect 3: phase_results is a ``{phase_name: {..., gates_passed:
+    bool, ...}}`` mapping produced by ``WorkflowRunner.run_workflow``.
+    The top-level workflow status can read ``COMPLETE`` even when gates
+    failed (``optional`` phases bypass the stop-on-fail check), so we
+    scan every phase directly.
+    """
+    if not result or not getattr(result, "phase_results", None):
+        return False
+    for info in result.phase_results.values():
+        if not isinstance(info, dict):
+            continue
+        # ``gates_passed`` key may be absent on phases that emitted no
+        # gates — treat absence as pass.
+        if info.get("gates_passed") is False:
+            return True
+    return False
+
+
 async def _create_and_run(
     *,
     workflow: str,
@@ -469,8 +492,18 @@ async def _create_and_run(
     model: Optional[str],
     output_json: bool,
     watch: bool,
-) -> None:
-    """Create the workflow then run it through the orchestrator."""
+) -> int:
+    """Create the workflow then run it through the orchestrator.
+
+    Wave 29 Defect 3: now returns an int exit code rather than None.
+    The top-level ``run_command`` propagates it via ``sys.exit``:
+
+    * ``0`` — workflow completed successfully (all gates passed).
+    * ``2`` — workflow ran to completion but at least one gate failed
+      **or** the workflow reported a non-ok status.
+    * ``1`` — workflow couldn't be created / initialised (existing
+      ``_emit_failure`` path, which calls ``sys.exit(1)`` directly).
+    """
     if workflow == "textbook_to_course":
         created = await _create_textbook_workflow(params)
     else:
@@ -478,7 +511,7 @@ async def _create_and_run(
 
     if "error" in created:
         _emit_failure(created, output_json=output_json)
-        return
+        return 1  # unreachable — _emit_failure sys.exits — but keeps typing honest
 
     workflow_id = created.get("workflow_id")
     if not workflow_id:
@@ -486,7 +519,7 @@ async def _create_and_run(
             {"error": "workflow creation returned no workflow_id", "detail": created},
             output_json=output_json,
         )
-        return
+        return 1
 
     orchestrator = _build_orchestrator(mode, provider=provider, model=model)
     if watch:
@@ -499,25 +532,30 @@ async def _create_and_run(
 
     if output_json:
         click.echo(json.dumps(result.to_dict(), indent=2, default=str))
-        return
-
-    if result.status == "ok":
-        click.secho(f"Workflow {workflow_id} completed successfully.", fg="green")
     else:
-        click.secho(
-            f"Workflow {workflow_id} finished with status={result.status}.",
-            fg="yellow",
-        )
-    if result.error:
-        click.secho(f"  Error: {result.error}", fg="red")
-    if result.phase_results:
-        click.echo()
-        click.echo("Phase summary:")
-        for name, info in result.phase_results.items():
-            click.echo(
-                f"  {name}: {info.get('completed', 0)}/{info.get('task_count', 0)}"
-                f" complete, gates={'pass' if info.get('gates_passed') else 'fail'}"
+        if result.status == "ok":
+            click.secho(f"Workflow {workflow_id} completed successfully.", fg="green")
+        else:
+            click.secho(
+                f"Workflow {workflow_id} finished with status={result.status}.",
+                fg="yellow",
             )
+        if result.error:
+            click.secho(f"  Error: {result.error}", fg="red")
+        if result.phase_results:
+            click.echo()
+            click.echo("Phase summary:")
+            for name, info in result.phase_results.items():
+                click.echo(
+                    f"  {name}: {info.get('completed', 0)}/{info.get('task_count', 0)}"
+                    f" complete, gates={'pass' if info.get('gates_passed') else 'fail'}"
+                )
+
+    # Wave 29 Defect 3: exit code propagation.
+    gates_failed = _any_gate_failed(result)
+    if gates_failed or result.status != "ok":
+        return 2
+    return 0
 
 
 def _resume_workflow(
@@ -529,9 +567,13 @@ def _resume_workflow(
     output_json: bool,
     watch: bool,
 ) -> None:
-    """Resume an existing workflow state through the orchestrator."""
+    """Resume an existing workflow state through the orchestrator.
 
-    async def _run() -> None:
+    Wave 29 Defect 3: ``--resume`` also honours the resumed workflow's
+    final gate status — a resumed run that fails gates exits 2.
+    """
+
+    async def _run() -> int:
         orchestrator = _build_orchestrator(mode, provider=provider, model=model)
         if watch:
             click.secho(
@@ -549,7 +591,14 @@ def _resume_workflow(
             if result.error:
                 click.secho(f"  Error: {result.error}", fg="red")
 
-    asyncio.run(_run())
+        gates_failed = _any_gate_failed(result)
+        if gates_failed or result.status != "ok":
+            return 2
+        return 0
+
+    exit_code = asyncio.run(_run())
+    if exit_code:
+        sys.exit(exit_code)
 
 
 def _emit_failure(payload: Dict[str, Any], *, output_json: bool) -> None:
