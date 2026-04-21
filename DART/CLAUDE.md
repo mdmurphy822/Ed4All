@@ -139,7 +139,7 @@ DART/
 - `pdfplumber` (table extraction)
 - `tesseract-ocr` (optional, for OCR validation)
 
-## Source provenance (Wave 8)
+## Source provenance
 
 DART emits per-block source attribution through three linked artifacts so
 downstream Courseforge / Trainforge can cite the PDF region every claim
@@ -211,7 +211,7 @@ to keep HTML size bounded at textbook scale.
 | Attribute | Shape | Notes |
 |-----------|-------|-------|
 | `data-dart-block-id` | `"s3"` or `"s3_c0"` or 16-hex | Matches `block_id` in synthesized JSON |
-| `data-dart-source` | `pdftotext \| pdfplumber \| pymupdf \| ocr \| synthesized \| claude_llm \| dart_converter` | Primary source enum. `dart_converter` added in Wave 19 as the default for heuristic-classifier blocks. |
+| `data-dart-source` | `pdftotext \| pdfplumber \| pymupdf \| ocr \| synthesized \| claude_llm \| dart_converter` | Primary source enum. `dart_converter` is the default emitted value for heuristic-classifier blocks. |
 | `data-dart-sources` | Comma-joined list | Only emitted when multi-source |
 | `data-dart-pages` | `"3"` or `"3-5"` or `"3,5,7"` | Omitted when unknown |
 | `data-dart-confidence` | 2-decimal float | Omitted when `1.0` (the implicit default) |
@@ -240,46 +240,43 @@ to the Courseforge staging dir and role-tags them in
 ### Validator
 
 `lib/validators/dart_markers.py` checks for `data-dart-source` /
-`data-dart-block-id` on every `<section>` at **warning** severity only.
-Promotion to critical is deferred to Wave 9 to let new emission paths
-shake out edge cases first.
+`data-dart-block-id` on every `<section>`. Absent-attribute is a
+warning (so legacy HTML keeps passing); present-but-empty
+(`data-dart-source=""`, `data-dart-block-id=""`) is a critical
+failure (`EMPTY_DATA_DART_SOURCE`, `EMPTY_DATA_DART_BLOCK_ID`).
 
-### Known gaps (deferred)
+### Known gaps
 
-- **Real per-block page tracking** — `clean_text` strips form feeds at L116;
-  per the design doc, keeping form feeds is a separate refactor. Wave 8
-  ships section-level `page_range` from fixture estimates; per-block
-  `pages` stays empty when genuinely unknown.
+- **Real per-block page tracking** — `clean_text` strips form feeds at
+  L116; keeping form feeds is a separate refactor. Section-level
+  `page_range` ships from fixture estimates; per-block `pages` stays
+  empty when genuinely unknown.
 - **OCR-quality sub-signal** — OCR-only blocks score `0.2` regardless of
   Tesseract per-word confidence. A separate `ocr_quality` field is
   follow-up work.
 
-## Multi-extractor pipeline (Waves 12–18)
+## Multi-extractor pipeline
 
-Raw-text pdftotext conversion is now a 4-phase pipeline under
-`DART/converter/`, replacing the ~900-LOC regex monolith that used to
-live in `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html`.
+Raw-text pdftotext conversion is a 4-phase pipeline under
+`DART/converter/`. pdftotext provides the text baseline; a
+dual-extraction layer adds pdfplumber tables, PyMuPDF figures /
+TOC / metadata / text spans / links, and Tesseract OCR when
+available. A reconciliation layer picks the best source per data
+type. pdftotext is the only hard dependency; every other extractor
+is optional and degrades gracefully.
 
-Wave 16 added a dual-extraction pre-phase so pdfplumber tables,
-PyMuPDF figures, and Tesseract OCR text survive into the HTML output.
-Wave 18 folds PyMuPDF in as a **full peer extractor**: every peer
-contributes different data, and a reconciliation layer picks the
-best source per data type. pdftotext remains the only hard
-dependency; every other extractor is optional and degrades
-gracefully.
-
-### Extractor peers (Wave 18)
+### Extractor peers
 
 | Extractor | Contributes | Status |
 |-----------|-------------|--------|
 | **pdftotext** | `raw_text` (line/column prose) | Hard dep. |
 | **pdfplumber** | `tables` (structure / bordered tables) | Optional. Primary for tables. |
-| **PyMuPDF (fitz)** | `figures` (raster bytes + caption) | Optional. Wave 17. |
-| **PyMuPDF (fitz)** | `toc` (native outline / bookmarks) | Optional. Wave 18. |
-| **PyMuPDF (fitz)** | `pdf_metadata` (title / author / dates) | Optional. Wave 18. |
-| **PyMuPDF (fitz)** | `text_spans` (bbox + font size + bold/italic) | Optional. Wave 18. |
-| **PyMuPDF (fitz)** | `links` (URI + internal goto) | Optional. Wave 18. |
-| **PyMuPDF (fitz)** | `tables` (find_tables fallback) | Optional. Wave 18. |
+| **PyMuPDF (fitz)** | `figures` (raster bytes + caption) | Optional. |
+| **PyMuPDF (fitz)** | `toc` (native outline / bookmarks) | Optional. |
+| **PyMuPDF (fitz)** | `pdf_metadata` (title / author / dates) | Optional. |
+| **PyMuPDF (fitz)** | `text_spans` (bbox + font size + bold/italic) | Optional. |
+| **PyMuPDF (fitz)** | `links` (URI + internal goto) | Optional. |
+| **PyMuPDF (fitz)** | `tables` (find_tables fallback) | Optional. |
 | **Tesseract** | `ocr_text` (scanned / image-only pages) | Optional. |
 
 Reconciliation rules:
@@ -290,7 +287,7 @@ Reconciliation rules:
   border-based detection). Each `ExtractedTable` carries a `source`
   attribute (`"pdfplumber"` | `"pymupdf"`), threaded through the
   `<table>` as `data-dart-table-extractor="..."` for debuggability.
-* **Headings (Wave 18 font-size promoter)** — when `text_spans` is
+* **Headings (font-size promoter)** — when `text_spans` is
   populated, the heuristic classifier promotes fallback `PARAGRAPH`
   blocks whose dominant span renders at ≥ 1.5× the document's median
   body font size to `SUBSECTION_HEADING`, and ≥ 1.9× to
@@ -313,7 +310,7 @@ Reconciliation rules:
   anchors can resolve in later waves; existing rewriters
   (`Chapter N`, `Figure N.M`, `Section N.M`, `[N]`) are untouched.
 
-### Wave 18 `ExtractedDocument` fields
+### `ExtractedDocument` fields
 
 ```
 toc:          list[ExtractedTOCEntry]  # {level, title, page}
@@ -322,9 +319,8 @@ text_spans:   list[ExtractedTextSpan]  # {page, bbox, text, font_size, font_name
 links:        list[ExtractedLink]      # {page, bbox, uri, dest_page}
 ```
 
-All default empty so pre-Wave-18 callers stay compatible. When
-PyMuPDF is unavailable (import fails or the document won't open),
-every PyMuPDF-sourced field degrades to `[]` / `{}`.
+Every PyMuPDF-sourced field defaults empty and degrades to `[]` / `{}`
+when PyMuPDF is unavailable (import fails or the document won't open).
 
 ### Phases
 
@@ -345,7 +341,7 @@ every PyMuPDF-sourced field degrades to `[]` / `{}`.
    accessibility summary in `<head>`, run post-assembly cross-reference
    resolution.
 
-### Wave 15 `<head>` enrichment
+### `<head>` enrichment
 
 The assembler emits in this order:
 
@@ -388,7 +384,7 @@ accidental anchors.
 | Env var | Effect |
 |---------|--------|
 | `DART_LLM_CLASSIFICATION=true` | Route classification through Claude via `LLMClassifier` instead of the heuristic regex path. Requires an injected `LLMBackend`. |
-| `DART_LEGACY_CONVERTER=true` | Force the pre-Wave-15 regex-driven `_raw_text_to_accessible_html_legacy` path in `MCP/tools/pipeline_tools.py`. One-release safety fallback; do not extend. |
+| `DART_LEGACY_CONVERTER=true` | Force the legacy regex-driven `_raw_text_to_accessible_html_legacy` path in `MCP/tools/pipeline_tools.py`. One-release safety fallback; do not extend. |
 
 ### Entry point
 
@@ -413,7 +409,7 @@ html = convert_pdftotext_to_html(
 thin orchestrator that delegates to this entry point unless the legacy
 flag is set.
 
-### Wave 16 dual-extraction flow
+### Dual-extraction flow
 
 Raw pdftotext extraction is the baseline; `DART.converter.extractor`
 adds a structured-extraction layer that preserves tables, figures, and
@@ -451,13 +447,13 @@ html = assemble_html(classified, title="My Book", metadata={})
 | `raw_text` | `str` | pdftotext output (required — the only hard dep). |
 | `source_pdf` | `str` | Source path. |
 | `pages_count` | `int` | Derived from form-feed markers when present. |
-| `tables` | `list[ExtractedTable]` | pdfplumber primary; PyMuPDF fallback when pdfplumber=[]. Each table carries `source` ∈ {`pdfplumber`, `pymupdf`} (Wave 18). |
+| `tables` | `list[ExtractedTable]` | pdfplumber primary; PyMuPDF fallback when pdfplumber=[]. Each table carries `source` ∈ {`pdfplumber`, `pymupdf`}. |
 | `figures` | `list[ExtractedFigure]` | PyMuPDF extractions; empty on failure. |
 | `ocr_text` | `Optional[str]` | Populated only when Tesseract + PyMuPDF both available. |
-| `toc` | `list[ExtractedTOCEntry]` | PyMuPDF native outline (Wave 18). Empty when no outline. |
-| `pdf_metadata` | `dict` | Normalised from `doc.metadata` (Wave 18). Dates in ISO 8601. |
-| `text_spans` | `list[ExtractedTextSpan]` | PyMuPDF spans (Wave 18): font size + bbox + bold/italic flags. Used by the font-size heading promoter. |
-| `links` | `list[ExtractedLink]` | PyMuPDF hyperlinks (Wave 18). `uri` for external, `dest_page` for internal. |
+| `toc` | `list[ExtractedTOCEntry]` | PyMuPDF native outline. Empty when no outline. |
+| `pdf_metadata` | `dict` | Normalised from `doc.metadata`. Dates in ISO 8601. |
+| `text_spans` | `list[ExtractedTextSpan]` | PyMuPDF spans: font size + bbox + bold/italic flags. Used by the font-size heading promoter. |
+| `links` | `list[ExtractedLink]` | PyMuPDF hyperlinks. `uri` for external, `dest_page` for internal. |
 
 `ExtractedTable.{page, bbox, header_rows, body_rows, caption, source}` —
 header_rows / body_rows are lists of stringified cells; `source` defaults
@@ -477,13 +473,13 @@ for font-size-based heading promotion.
 `ExtractedLink.{page, bbox, uri, dest_page}` — external URIs or internal
 1-indexed page targets.
 
-### Wave 16 structured block integration
+### Structured block integration
 
-`RawBlock` gained two optional fields: `extractor_hint: BlockRole`
+`RawBlock` carries two optional fields: `extractor_hint: BlockRole`
 (the segmenter stamps this when the block was produced by a
 structured extractor) and `extra: dict` (the structured payload —
 header rows / body rows / image path / alt / caption). Both default
-to empty so pre-Wave-16 callers stay compatible.
+empty so callers that feed raw-text-only input keep working.
 
 The classifier layer honours the hint:
 
@@ -494,15 +490,15 @@ The classifier layer honours the hint:
   row text as prose). Hinted blocks carry
   `classifier_source="extractor_hint"` in the output.
 
-### Wave 16 TABLE / FIGURE / FORMULA_MATH templates
+### TABLE / FIGURE / FORMULA_MATH templates
 
 * **TABLE** — accepts both legacy (`headers` + `rows`) and structured
   (`header_rows` + `body_rows`) attribute shapes. In the structured
   path, `<thead>` cells carry `scope="col"` and the first cell of
   every `<tbody>` row carries `scope="row"`.
-* **FIGURE** — accepts both `src` (legacy) and `image_path` (Wave 16)
-  for the image source. Emits `<figure>` + `<img alt>` +
-  `<figcaption>` with schema.org `ImageObject` microdata.
+* **FIGURE** — accepts both `src` and `image_path` for the image
+  source. Emits `<figure>` + `<img alt>` + `<figcaption>` with
+  schema.org `ImageObject` microdata.
 * **FORMULA_MATH** — delegates to `DART.converter.mathml` so LaTeX
   delimiters (`$...$`, `\(...\)`, `\[...\]`) and plain
   equation-on-a-line patterns (`E = mc^2`) all render as:
@@ -520,12 +516,12 @@ The classifier layer honours the hint:
   the raw source for assistive tech. Full LaTeX fidelity is out of
   scope for this wave.
 
-### Wave 16 pipeline_tools plumbing
+### `pipeline_tools` plumbing
 
 `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html` takes an
 optional `source_pdf` kwarg:
 
-* `source_pdf` omitted → raw-text-only path (Wave 15 behaviour).
+* `source_pdf` omitted → raw-text-only path.
 * `source_pdf` provided → routes through
   `extract_document(source_pdf, llm=...)` so pdfplumber tables,
   PyMuPDF figures, and OCR text contribute structured blocks. Any
@@ -536,11 +532,11 @@ optional `source_pdf` kwarg:
 `source_pdf` so end-to-end textbook runs pick up the enrichment
 automatically.
 
-### Wave 17 figure persistence
+### Figure persistence
 
-Wave 16 detected figures but left `ExtractedFigure.image_path` empty,
-so the rendered HTML had `<figure>` wrappers with empty `<img src>`
-and a literal `(figure)` placeholder caption. Wave 17 closes that gap:
+Figure bytes detected by the PyMuPDF extractor are written to disk so
+the rendered HTML carries real `<img src>` pointers (never empty
+`<img>` or literal `(figure)` placeholder captions).
 
 * `extract_document(pdf_path, *, llm=None, figures_dir=None)` —
   optional `figures_dir` kwarg. When set, image bytes returned by the
@@ -552,8 +548,8 @@ and a literal `(figure)` placeholder caption. Wave 17 closes that gap:
   caller / assembler layer decides the path written into `<img src>`.
   Re-running on the same bytes is idempotent — same filename, no
   double-write.
-* `figures_dir=None` (the default) preserves Wave 16 behaviour: no
-  disk I/O, `image_path` stays empty.
+* `figures_dir=None` (the default) skips disk I/O; `image_path` stays
+  empty.
 * `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html`
   auto-derives a sibling `{stem}_figures/` directory next to the
   output HTML when called with `output_path=<html path>`, so a PDF at
@@ -571,26 +567,25 @@ and a literal `(figure)` placeholder caption. Wave 17 closes that gap:
   empty, `caption` stays `None` and the template degrades to a
   caption-less `<figure>` — it **never** emits the literal
   placeholder string `"(figure)"`.
-* Alt-text still requires an injected `LLMBackend` (Wave 16 behaviour
-  unchanged). When no backend is provided, the FIGURE template emits
-  `alt="" role="presentation"` — a WCAG 2.2 AA decorative fallback —
-  rather than an empty `alt=""` (which screen readers read as the
-  filename) or a missing attribute (invalid HTML).
+* Alt-text requires an injected `LLMBackend`. When no backend is
+  provided, the FIGURE template emits `alt="" role="presentation"` —
+  a WCAG 2.2 AA decorative fallback — rather than an empty `alt=""`
+  (which screen readers read as the filename) or a missing attribute
+  (invalid HTML).
 
 Public MCP `extract_and_convert_pdf` (`MCP/tools/dart_tools.py`)
 accepts an optional `figures_dir: Optional[str]` kwarg for callers
-that need to override the sibling-dir derivation; currently only the
-Wave-16 dual-extraction path honours it (the legacy
-`PDFToAccessibleHTML` strategy ignores it).
+that need to override the sibling-dir derivation; only the
+dual-extraction path honours it (the legacy `PDFToAccessibleHTML`
+strategy ignores it).
 
-## Wave 19 contract restoration
+## Output contract for downstream consumers
 
-Waves 12–18 silently dropped parts of the pre-Wave-12 output contract
-that downstream consumers (Courseforge source-router, `dart_markers`
-gate, `semantic_structure_extractor`, `stage_dart_outputs`,
-`archive_to_libv2`) rely on. Wave 19 restores them:
+Courseforge source-router, the `dart_markers` gate,
+`semantic_structure_extractor`, `stage_dart_outputs`, and
+`archive_to_libv2` rely on this output contract:
 
-### `class="dart-document"` + `class="dart-section"` re-emit
+### `class="dart-document"` + `class="dart-section"` emit
 
 - The assembler stamps `class="dart-document"` on the `<main>` wrapper
   (one per document).
@@ -605,7 +600,7 @@ gate, `semantic_structure_extractor`, `stage_dart_outputs`,
 
 ### `data-dart-source` source enum
 
-The `data-dart-source` attribute is now stamped on every wrapper.
+The `data-dart-source` attribute is stamped on every wrapper.
 Routing (see `DART/converter/block_templates.py::_data_dart_source_value`):
 
 | classifier_source | upstream extractor | emitted value |
@@ -616,22 +611,21 @@ Routing (see `DART/converter/block_templates.py::_data_dart_source_value`):
 | `llm`             | *                  | `claude_llm` |
 | `heuristic` / default | *              | `dart_converter` |
 
-### Wave 8 P2 rule (re-enforced)
+### Provenance attribute placement rule
 
 Attributes stop at the **section / component wrapper level**. Never on
 every `<p>` / `<span>` / `<li>` / `<h3>` / `<cite>` / `<a>` /
 `<figcaption>` in prose — those are leaf nodes, and the enclosing
 wrapper carries the provenance. The canonical leaf-role set is
-`DART/converter/block_templates._WAVE19_LEAF_ROLES`. On a full-
-textbook smoke (several hundred pages) the Wave 19 revert shrinks
-HTML output by ~20% (roughly 1.9 MB → 1.5 MB) relative to the Wave
-17 over-inflated variant.
+`DART/converter/block_templates._WAVE19_LEAF_ROLES`. This keeps HTML
+size bounded at textbook scale (measured ~20% reduction vs. full-leaf
+stamping on a several-hundred-page textbook).
 
 ### Sidecar emit
 
-`MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html` now emits
-two sidecars next to the HTML when `output_path` is provided (mirrors
-the figure-persistence tempdir guard):
+`MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html` emits two
+sidecars next to the HTML when `output_path` is provided (mirrors the
+figure-persistence tempdir guard):
 
 - `{stem}_synthesized.json` — per-section provenance sidecar in the
   canonical shape (`sections[].section_id`, `section_title`,
@@ -647,23 +641,19 @@ the figure-persistence tempdir guard):
 ### `{stem}_figures/` propagation
 
 Both `stage_dart_outputs` (MCP tool + registry variant) and
-`archive_to_libv2` now copy a sibling `{stem}_figures/` directory
-alongside the HTML when present (backward-compat: missing dir silently
-skipped).
+`archive_to_libv2` copy a sibling `{stem}_figures/` directory
+alongside the HTML when present; a missing dir is silently skipped.
 
-### `data-dart-pages` — scope (Wave 20 unification)
+### `data-dart-pages` — scope
 
-The Wave 19 pipeline emitted both `data-dart-page` (singular) from the
-converter path and `data-dart-pages` (plural) from the multi-source
-synthesis path. Wave 20 unifies on the **plural** form across both
-paths to match the Wave 8 contract:
+Both emission paths use the plural `data-dart-pages` form:
 
 - **Converter path** (`DART/converter/block_templates.py::_provenance_attrs`):
   emits `data-dart-pages="N"` on every section / component wrapper
   when the block has a known page. The value is drawn from
-  `raw.extra["page_label"]` when the page-chrome detector (Wave 20)
-  supplied a printed-page label for that page; otherwise falls back
-  to the physical form-feed-derived `raw.page`.
+  `raw.extra["page_label"]` when the page-chrome detector supplied a
+  printed-page label for that page; otherwise falls back to the
+  physical form-feed-derived `raw.page`.
 - **Multi-source synthesis path** (`DART/multi_source_interpreter.py`):
   emits `data-dart-pages` as a range (`"3-5"`) or comma-joined list
   (`"3,5,7"`) covering a section `page_range`.
@@ -672,18 +662,14 @@ paths to match the Wave 8 contract:
 `data-dart-source` + `data-dart-block-id` presence; the page
 attribute remains optional (omitted when no page is known).
 
-## List detection (Wave 21)
+## List detection
 
 pdftotext output faithfully reproduces list markers (`•`, `·`, `▪`,
 `●`, `◦`, `○`, `▸`, `►`, `-`, `*`, `1.`, `1)`, `a.`, `a)`, `i.`,
-`(1)`) as literal leading characters on each item's block. Pre-Wave-21,
-those blocks flowed straight through into naked `<p>` elements —
-hundreds of bullet-marker and numbered-item paragraphs on a
-bullet-heavy textbook, zero `<ul>` wrappers in the output.
-
-Wave 21 promotes marker-led blocks to `LIST_ITEM` in the heuristic
-classifier and groups consecutive runs into synthesized
-`LIST_UNORDERED` / `LIST_ORDERED` blocks at the assembler layer.
+`(1)`) as literal leading characters on each item's block. The
+heuristic classifier promotes marker-led blocks to `LIST_ITEM` and
+the assembler groups consecutive runs into synthesized
+`LIST_UNORDERED` / `LIST_ORDERED` blocks.
 
 ### Marker charset
 
@@ -736,7 +722,7 @@ it's retained so callers that feed raw multi-line blocks
 (tests, future waves that preserve layout) still get nested
 output.
 
-### Template output + attribute placement (Wave 19 P2 rule)
+### Template output + attribute placement
 
 The `<ul>` / `<ol>` **is** the dart-section component wrapper.
 It carries `class="dart-section"`, `data-dart-block-role`,
@@ -759,21 +745,7 @@ If a `LIST_ITEM` escapes grouping (shouldn't happen normally),
 `_tpl_list_item` emits a single-item `<ul>` / `<ol>` wrapper
 rather than a naked `<li>` — keeps the HTML valid.
 
-### Full-textbook smoke reduction
-
-Observed on a ~580-page bullet-heavy textbook (anonymised corpus):
-
-| Metric | Pre-Wave-21 | Post-Wave-21 |
-|--------|-------------|---------------|
-| Bullet-marker `<p>` residue | 323 | 11 |
-| Numbered-item `<p>` residue | 114 | 1 |
-| `<ul>` wrappers | 0 | 287 |
-| `<ol>` wrappers | 46 (bib + TOC only) | 137 |
-| `<li>` children | 206 | 1,692 |
-| HTML size | 1.53 MB | 1.47 MB |
-| `dart_markers` validator score | 1.0 | 1.0 |
-
-## Page chrome detection (Wave 20)
+## Page chrome detection
 
 pdftotext faithfully reproduces **running headers / running footers /
 page numbers** as text lines in every page of its output. For a
@@ -834,43 +806,39 @@ debuggability. Short documents (< 4 pages) return an empty
 ### Downstream consumers
 
 - `data-dart-pages` on every section / component wrapper (see above).
-- Per-section `page_range: [first_page, last_page]` already emitted by
-  the synthesized sidecar; Wave 20 populates this from the newly-
-  reliable per-block `raw.page` via form-feed tracking.
+- Per-section `page_range: [first_page, last_page]` emitted by the
+  synthesized sidecar; populated from per-block `raw.page` via
+  form-feed tracking.
 
 ### `doc-chapter` extractor path
 
 `lib/semantic_structure_extractor/semantic_structure_extractor.py`
-now recognises Wave 13+ DART's `<article role="doc-chapter">`
-wrappers as the primary chapter grouping signal, with the legacy
-`<h2>`-hierarchy heuristic retained as a graceful fallback for
-pre-Wave-13 DART HTML + generic third-party HTML.
+recognises DART's `<article role="doc-chapter">` wrappers as the
+primary chapter grouping signal. The legacy `<h2>`-hierarchy
+heuristic is retained as a graceful fallback for generic third-party
+HTML that lacks the explicit doc-chapter role.
 
-## Decision capture (Waves 12–21 wiring)
+## Decision capture
 
-Pre-Wave-22, every DART Claude call site was uninstrumented — a
-full-textbook run with dozens of per-block + per-figure Claude
-decisions produced two static 2-line boilerplate capture records
-from the MCP wrapper.
-Wave 22 DC1/DC3 threads a `DecisionCapture` instance through every
-Claude call site in the pipeline. The table below is the source of
-truth for what fires where.
+A `DecisionCapture` instance is threaded through every Claude call
+site in the pipeline. The table below is the source of truth for
+what fires where.
 
 | Call site | Decision type | Trigger | Rationale signals |
 |-----------|---------------|---------|-------------------|
 | `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html` | `pipeline_run_attribution` | Once per pipeline run at function entry | backend, classifier_mode, raw_text length, title, output_path state, figures_dir state, llm injection state, legacy-flag state |
 | `DART/converter/llm_classifier.py::LLMClassifier._classify_batch` | `structure_detection` | One per batch (typical batch_size=20) | block-ID range, LLM vs heuristic-fallback counts, fallback fraction, avg confidence, low-confidence fraction, char prompt payload, model + max_tokens |
 | `DART/pdf_converter/alt_text_generator.py::AltTextGenerator.generate` | `alt_text_generation` (via `DARTDecisionCapture.log_alt_text_decision` + `log_decision`) | One per figure | page, bbox, image hash (first 12 chars of sha256), width×height, chosen source (claude / ocr / caption / generic), caption presence, alt-text length, long-description length, context length |
-| `MCP/tools/dart_tools.py::convert_pdf_multi_source` (pre-Wave-22) | `approach_selection` + `validation_result` | Once per call | multi-source synthesis details — static rationales retained for legacy-path telemetry |
+| `MCP/tools/dart_tools.py::convert_pdf_multi_source` | `approach_selection` + `validation_result` | Once per call | multi-source synthesis details (legacy-path telemetry) |
 
 ### Plumbing contract
 
 * `_raw_text_to_accessible_html(capture=...)` — optional kwarg. When
   `None` (default) and `source_pdf` is provided, the function builds
   a short-lived `DARTDecisionCapture` keyed on the normalised PDF
-  stem (Wave 22 DC4) and finalises it on exit. When the caller
-  supplies a capture, that capture is used for all emits (including
-  the per-batch LLM + per-figure alt-text records).
+  stem and finalises it on exit. When the caller supplies a capture,
+  that capture is used for all emits (including the per-batch LLM +
+  per-figure alt-text records).
 * `default_classifier(llm=..., capture=...)` — forwards `capture`
   into `LLMClassifier` when routing goes to the LLM path. The
   heuristic classifier ignores `capture` (no Claude calls = nothing
@@ -879,7 +847,7 @@ truth for what fires where.
   forwards `capture` into the figure-extraction loop, which hands
   it to `AltTextGenerator(..., capture=capture)`.
 
-### Course-code normalisation (Wave 22 DC4)
+### Course-code normalisation
 
 `MCP/tools/dart_tools.py::normalize_course_code` coerces any PDF
 filename into the canonical `^[A-Z]{2,8}_[0-9]{3}$` pattern so
