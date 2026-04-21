@@ -3321,14 +3321,20 @@ class CourseProcessor:
         return summary
 
     def _build_course_json(self, manifest: Dict[str, Any]) -> Dict[str, Any]:
-        """Build course.json with structured learning outcomes for LibV2."""
+        """Build course.json with structured learning outcomes for LibV2.
+
+        Wave 24: result validates against
+        ``schemas/knowledge/course.schema.json`` before being returned.
+        Schema violations are logged as warnings (best-effort) — the
+        canonical shape is still emitted.
+        """
         outcomes = []
 
         for to in self.objectives.get("terminal_objectives", []):
             outcomes.append({
                 "id": to["id"].lower(),
                 "statement": to["statement"],
-                "bloom_level": to.get("bloomLevel", "understand"),
+                "bloom_level": (to.get("bloomLevel") or to.get("bloom_level") or "understand"),
                 "hierarchy_level": "terminal",
             })
 
@@ -3337,15 +3343,45 @@ class CourseProcessor:
                 outcomes.append({
                     "id": obj["id"].lower(),
                     "statement": obj["statement"],
-                    "bloom_level": obj.get("bloomLevel", "understand"),
+                    "bloom_level": (obj.get("bloomLevel") or obj.get("bloom_level") or "understand"),
                     "hierarchy_level": "chapter",
                 })
 
-        return {
+        course_data = {
             "course_code": self.course_code,
             "title": manifest.get("title", ""),
             "learning_outcomes": outcomes,
         }
+
+        # Wave 24: best-effort schema validation against the canonical
+        # course.schema.json. We don't hard-fail here because the schema
+        # is advisory (a soft guard against drift) — a hard failure
+        # would block every pipeline run whose objectives file predates
+        # the schema. Errors log at WARNING so drift is observable.
+        try:
+            import jsonschema  # type: ignore
+            from pathlib import Path as _Path
+            schema_path = (
+                _Path(__file__).resolve().parent.parent
+                / "schemas" / "knowledge" / "course.schema.json"
+            )
+            if schema_path.exists():
+                with open(schema_path, encoding="utf-8") as _f:
+                    schema = json.load(_f)
+                try:
+                    jsonschema.validate(course_data, schema)
+                except jsonschema.ValidationError as exc:
+                    logger.warning(
+                        "course.json drifted from course.schema.json: %s",
+                        exc.message,
+                    )
+        except ImportError:
+            # jsonschema optional dep — skip silently.
+            pass
+        except Exception as exc:  # noqa: BLE001 - defensive
+            logger.debug("course.schema.json validation skipped: %s", exc)
+
+        return course_data
 
     # ------------------------------------------------------------------
     # Stage 6: Write metadata

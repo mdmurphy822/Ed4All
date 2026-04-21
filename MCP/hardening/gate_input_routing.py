@@ -349,6 +349,52 @@ def _build_libv2_manifest(
     return inputs, []
 
 
+def _build_assessment_objective_alignment(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Wave 24: assessments path + chunks path builder.
+
+    The Trainforge phase emits ``output_path`` for the assessments.json
+    and produces ``chunks.jsonl`` under ``{trainforge_dir}/corpus/``.
+    The trainforge_dir is the parent of the IMSCC's project dir —
+    derive it conservatively from the assessments output path.
+    """
+    assessments = _locate(
+        phase_outputs, "assessments_path", "assessment_path", "output_path",
+    )
+    if not assessments:
+        return {}, ["assessments_path"]
+
+    inputs: Dict[str, Any] = {"assessments_path": assessments}
+
+    # Chunks live at ``{trainforge_dir}/corpus/chunks.jsonl``. If the
+    # phase output surfaces chunks_path explicitly, prefer that.
+    chunks = _locate(phase_outputs, "chunks_path")
+    if not chunks:
+        # Derive from assessments path: walk up to find a 'corpus'
+        # sibling with chunks.jsonl, or fallback to the same directory.
+        try:
+            ap = Path(assessments)
+            for parent in [ap.parent, *ap.parents]:
+                candidate = parent / "corpus" / "chunks.jsonl"
+                if candidate.exists():
+                    chunks = str(candidate)
+                    break
+                # Also check a sibling chunks.jsonl.
+                sib = parent / "chunks.jsonl"
+                if sib.exists():
+                    chunks = str(sib)
+                    break
+        except (OSError, ValueError):
+            pass
+
+    if chunks:
+        inputs["chunks_path"] = chunks
+        return inputs, []
+    return inputs, ["chunks_path"]
+
+
 # ---------------------------------------------------------------------- #
 # Registry
 # ---------------------------------------------------------------------- #
@@ -467,6 +513,10 @@ def default_router() -> GateInputRouter:
     r.register(
         "lib.validators.libv2_manifest.LibV2ManifestValidator",
         _build_libv2_manifest,
+    )
+    r.register(
+        "lib.validators.assessment_objective_alignment.AssessmentObjectiveAlignmentValidator",
+        _build_assessment_objective_alignment,
     )
     return r
 

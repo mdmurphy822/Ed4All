@@ -153,7 +153,14 @@ class TestToolRegistryValidation:
         issues = executor.validate_tool_registry(fail_fast=False)
 
         assert len(issues["missing"]) > 0
-        assert "create_course_project" in issues["missing"]
+        # Wave 24: course-outliner now routes to plan_course_structure
+        # (was create_course_project pre-Wave-24); textbook-ingestor
+        # routes to extract_textbook_structure. Either surfaces as
+        # missing in an empty registry.
+        assert (
+            "plan_course_structure" in issues["missing"]
+            or "extract_textbook_structure" in issues["missing"]
+        )
 
     @pytest.mark.unit
     def test_validate_full_registry(self):
