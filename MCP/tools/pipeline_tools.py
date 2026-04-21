@@ -768,14 +768,74 @@ def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
     # ---- Compiled patterns ----
     page_num = _re.compile(r"^\s*\d{1,4}\s*$")
     toc_entry = _re.compile(r"^.{5,60}\s{3,}\d{1,4}\s*$")
+    # Chapter/section opener — requires an explicit structural prefix.
+    # Dropped the bare `\d{1,2}\.` branch because it was false-positive on
+    # numbered list items and date-prefixed paragraphs ("19 April 2015: …").
     chapter_heading = _re.compile(
         r"^(?:"
-        r"(?:Chapter|Part|Section|Unit)\s+\d+[.:]\s*|"
-        r"(?:I{1,3}V?|VI{0,3}|IX|X{1,3})\.\s+|"
-        r"\d{1,2}\.\s+"
+        r"(?:Chapter|Part|Section|Unit|Block|Appendix)\s+\d+[.:]\s*|"
+        r"(?:I{1,3}V?|VI{0,3}|IX|X{1,3})\.\s+"
         r")(.+)",
     )
+    # Sub-heading regex unchanged shape, but tightened post-match via
+    # _is_valid_subheading below — the regex alone was letting through
+    # author lists, citations, table-row fragments, and publisher chrome.
     sub_heading = _re.compile(r"^[A-Z][A-Za-z\s,&:'\-]{5,80}$")
+
+    # Domain-neutral reject tokens for sub-headings that slipped through.
+    _HEADING_REJECT_TOKENS = frozenset([
+        "references", "bibliography", "index", "glossary", "appendix",
+        "acknowledgements", "acknowledgments", "copyright", "isbn",
+        "vancouver bc", "table of contents", "cover design",
+        "this textbook", "typeset in", "overheard in",
+        "for my comments", "updates and revisions", "for a working",
+        "about the author", "about the authors",
+    ])
+
+    def _is_valid_subheading(text: str) -> bool:
+        """Post-regex filter for sub-headings.
+
+        Catches the residue that ``sub_heading`` regex lets through:
+        citations, author bylines, table-cell fragments, publisher chrome,
+        sentence fragments ending mid-word.
+        """
+        if not text:
+            return False
+        words = text.split()
+        word_count = len(words)
+
+        # Trailing hyphen = pdftotext soft-hyphen line break, mid-word.
+        if text.endswith("-"):
+            return False
+        # Trailing function word = truncated sentence.
+        last = words[-1].lower().rstrip(",.:;")
+        if last in {"and", "or", "but", "of", "to", "for", "on", "at", "by",
+                    "in", "with", "as", "from", "the", "a", "an", "is", "are",
+                    "was", "were", "be", "that", "this", "these", "those"}:
+            return False
+        # Too many periods = multi-sentence or citation
+        # ("Tim Berners-Lee, James Hendler and Ora Lassila. The Semantic Web.")
+        if text.count(".") >= 2:
+            return False
+        # Blocklist tokens
+        normalized = " ".join(text.lower().split())
+        for tok in _HEADING_REJECT_TOKENS:
+            if tok in normalized:
+                return False
+        # Table-row fragment: 3+ whitespace runs of 3+ spaces each
+        # (pdftotext emits aligned columns like "Good    Less good"). The
+        # strip() earlier collapsed runs, but multi-column text often
+        # still has 2+ words where half are redundant.
+        # Detect: repeated token pattern.
+        if word_count >= 3:
+            lowered = [w.lower() for w in words]
+            if len(set(lowered)) < word_count * 0.7:  # >30% duplicate words
+                return False
+        # Author byline: 2+ capitalized two-word tokens separated by ","
+        # or "and" — "Tim Berners-Lee, James Hendler and Ora Lassila"
+        if _re.search(r"\b(and|,)\s+[A-Z][a-z]+\s+[A-Z]", text):
+            return False
+        return True
 
     boilerplate = _re.compile(
         r"(?:"
@@ -912,6 +972,7 @@ def _raw_text_to_accessible_html(raw_text: str, title: str) -> str:
             and stripped[0].isupper()
             and not stripped.endswith(".")
             and not stripped.endswith(",")
+            and _is_valid_subheading(stripped)
         ):
             _flush_para()
             if current_section["paragraphs"]:
@@ -1071,9 +1132,14 @@ def _build_tool_registry() -> dict:
         if len(raw_text.strip()) < 100:
             return json.dumps({"error": "No meaningful text extracted from PDF"})
 
-        # Build accessible HTML from raw extracted text
+        # Build accessible HTML from raw extracted text.
+        # Use the PDF stem (e.g. "keet_ontology_engineering") as the doc title
+        # rather than the course_code — otherwise every PDF in a multi-PDF
+        # corpus gets the same <h1>/<title> (the course code), which poisons
+        # downstream objective extraction across the corpus.
+        pretty_title = out_stem.replace("-", " ").replace("_", " ").strip()
         html_output = out_dir / f"{out_stem}_accessible.html"
-        html_content = _raw_text_to_accessible_html(raw_text, code)
+        html_content = _raw_text_to_accessible_html(raw_text, pretty_title)
         html_output.write_text(html_content, encoding="utf-8")
 
         word_count = len(_re.findall(r"\b\w+\b", html_content))
