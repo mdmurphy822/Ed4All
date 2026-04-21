@@ -471,6 +471,26 @@ Every decision rationale MUST:
 - Explain the "why" not just the "what"
 - Reference alternatives when applicable
 
+### LLM call-site instrumentation (Wave 22)
+
+Every new Claude / LLM call site MUST wire up a `DecisionCapture`
+instance and emit at least one decision per call (per-batch when the
+call is batched). Static boilerplate rationales are forbidden —
+rationale must interpolate dynamic signals specific to the call
+(block IDs, image hashes, page numbers, model + max_tokens, confidence
+distributions, etc.) so captures are replayable post-hoc. A regression
+test MUST assert that the capture fires on the call path. Precedents:
+
+- DART LLM classifier: `DART/converter/llm_classifier.py` → one
+  `structure_detection` capture per batch (see
+  `DART/tests/test_llm_classifier_capture_wiring.py`).
+- DART alt-text generator: `DART/pdf_converter/alt_text_generator.py`
+  → one `alt_text_generation` capture per figure (see
+  `DART/tests/test_alt_text_generator_capture_wiring.py`).
+- DART pipeline entry point: `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html`
+  → one `pipeline_run_attribution` capture per run (see
+  `DART/tests/test_pipeline_run_attribution.py`).
+
 ### Assessment Quality (Trainforge)
 
 - Bloom's taxonomy alignment required

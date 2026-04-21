@@ -218,6 +218,15 @@ class LLMClassifier:
         The heuristic classifier used when the LLM response is
         unusable (invalid JSON, missing block IDs, unknown role
         strings). Defaults to a fresh :class:`HeuristicClassifier`.
+    capture:
+        Optional :class:`lib.decision_capture.DecisionCapture`
+        instance. When supplied, one ``decision_type="structure_detection"``
+        record is logged per LLM batch carrying the batch's block-ID
+        range, token + confidence stats, and fallback fraction so the
+        Wave-22 DC1 audit requirement (zero captures at per-batch
+        classification sites) is met. When ``None`` (the default)
+        logging is silently skipped — existing tests that don't care
+        about captures keep passing byte-for-byte.
     """
 
     def __init__(
@@ -228,6 +237,7 @@ class LLMClassifier:
         model: Optional[str] = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         fallback: Optional[HeuristicClassifier] = None,
+        capture: Optional[Any] = None,
     ):
         if llm is None:
             raise ValueError(
@@ -242,6 +252,7 @@ class LLMClassifier:
         self.model = model
         self.max_tokens = max_tokens
         self.fallback = fallback or HeuristicClassifier()
+        self.capture = capture
 
     async def classify(self, blocks: List[RawBlock]) -> List[ClassifiedBlock]:
         """Classify every block via the injected backend.
@@ -312,7 +323,9 @@ class LLMClassifier:
                 type(exc).__name__,
                 exc,
             )
-            return self.fallback.classify_sync(batch)
+            fallback_classified = self.fallback.classify_sync(batch)
+            self._log_batch_decision(batch, fallback_classified)
+            return fallback_classified
 
         # Defensive: some backends may hand back non-strings in surprising
         # cases; a streaming iterator (we never request stream=True) would
@@ -322,12 +335,16 @@ class LLMClassifier:
                 "LLMClassifier: backend returned %s, expected str; falling back",
                 type(raw_response).__name__,
             )
-            return self.fallback.classify_sync(batch)
+            fallback_classified = self.fallback.classify_sync(batch)
+            self._log_batch_decision(batch, fallback_classified)
+            return fallback_classified
 
         parsed = _parse_response(raw_response, batch)
         if not parsed:
             # Whole-batch fallback — parsing failed or nothing survived.
-            return self.fallback.classify_sync(batch)
+            fallback_classified = self.fallback.classify_sync(batch)
+            self._log_batch_decision(batch, fallback_classified)
+            return fallback_classified
 
         # Per-block merge: use the LLM label when we have a valid entry,
         # else fall back to the heuristic for that block alone.
@@ -380,9 +397,102 @@ class LLMClassifier:
                     interleaved.append(llm_map[block.block_id])
                 else:
                     interleaved.append(fallback_map[block.block_id])
+            self._log_batch_decision(batch, interleaved)
             return interleaved
 
+        self._log_batch_decision(batch, results)
         return results
+
+    def _log_batch_decision(
+        self,
+        batch: List[RawBlock],
+        classified: List[ClassifiedBlock],
+    ) -> None:
+        """Wave 22 DC1: one decision record per LLM classification batch.
+
+        Emits a single ``structure_detection`` decision carrying a
+        summary of the role distribution, the block-ID range covered,
+        aggregate token counts for the batch prompts, the fraction of
+        blocks that ended up at low confidence (< 0.7), and the
+        heuristic-fallback fraction. Rationale is dynamic — every
+        number is interpolated from the actual batch so no two
+        captures are byte-identical.
+
+        Silently no-ops when no capture was injected.
+        """
+        capture = getattr(self, "capture", None)
+        if capture is None or not batch:
+            return
+
+        # Role distribution summary (top-3, with counts).
+        from collections import Counter
+
+        role_counter = Counter(cb.role.value for cb in classified)
+        top_roles = role_counter.most_common(3)
+        role_summary = ", ".join(
+            f"{count} {role}" for role, count in top_roles
+        )
+
+        # Source distribution: LLM vs extractor_hint vs heuristic fallback.
+        source_counter = Counter(
+            cb.classifier_source for cb in classified
+        )
+        fallback_count = source_counter.get("heuristic", 0)
+        llm_count = source_counter.get("llm", 0)
+        fallback_fraction = (
+            fallback_count / len(classified) if classified else 0.0
+        )
+
+        # Confidence distribution.
+        confidences = [cb.confidence for cb in classified]
+        avg_conf = sum(confidences) / len(confidences) if confidences else 0.0
+        low_conf = sum(1 for c in confidences if c < 0.7)
+        low_conf_fraction = low_conf / len(confidences) if confidences else 0.0
+
+        # Token-count proxy: sum of block text lengths (chars → tokens
+        # ≈ chars / 4 for English prose; we surface chars directly so
+        # the number is auditable).
+        total_chars = sum(len(b.text or "") for b in batch)
+
+        # Block-ID range for auditability.
+        first_id = batch[0].block_id
+        last_id = batch[-1].block_id
+        batch_ids = [b.block_id for b in batch]
+
+        decision = (
+            f"Classified {len(batch)}-block batch — {role_summary}"
+            if role_summary
+            else f"Classified {len(batch)}-block batch"
+        )
+        rationale = (
+            f"Block range {first_id}..{last_id}; "
+            f"LLM={llm_count}, heuristic_fallback={fallback_count} "
+            f"({fallback_fraction * 100:.0f}% fallback); "
+            f"avg confidence {avg_conf:.2f}, "
+            f"{low_conf} blocks (<0.7) = {low_conf_fraction * 100:.0f}% low-confidence; "
+            f"~{total_chars} char prompt payload; "
+            f"model={self.model or 'default'} max_tokens={self.max_tokens}"
+        )
+
+        try:
+            capture.log_decision(
+                decision_type="structure_detection",
+                decision=decision,
+                rationale=rationale,
+                context=(
+                    f"batch_size={len(batch)}, "
+                    f"block_ids={batch_ids[:6]}{'...' if len(batch_ids) > 6 else ''}"
+                ),
+                inputs_ref=[
+                    {"source_type": "agent_output", "path_or_id": bid}
+                    for bid in batch_ids
+                ],
+                confidence=avg_conf,
+            )
+        except Exception as exc:  # noqa: BLE001 — capture is best-effort
+            logger.debug(
+                "LLMClassifier capture emit failed (%s); continuing", exc
+            )
 
 
 __all__ = ["LLMClassifier"]
