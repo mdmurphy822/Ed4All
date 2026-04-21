@@ -485,54 +485,15 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     },
 
     # =========================================================================
-    # PIPELINE TOOLS - Additional (create/run/status/markers)
+    # PIPELINE TOOLS - Additional (status/markers)
     # Added by pipeline-plumbing remediation to close MCP audit Q1 (latent
     # PR #45 failure mode for tools present as @mcp.tool() + reachable from
     # agent mappings but missing TOOL_SCHEMAS entries). Required-param lists
     # match each tool's @mcp.tool() decorator signature in MCP/tools/*.py.
-    # create_textbook_pipeline_tool + run_textbook_pipeline_tool are
-    # DEPRECATED (Wave 7) but remain wired for one cycle.
+    # Wave 28f: create_textbook_pipeline_tool + run_textbook_pipeline_tool
+    # (Wave 7 deprecated wrappers) were removed entirely — external MCP
+    # clients now route through the workflow API.
     # =========================================================================
-    "create_textbook_pipeline_tool": {
-        "required": ["pdf_paths", "course_name"],
-        "optional": [
-            "objectives_path", "duration_weeks", "generate_assessments",
-            "assessment_count", "bloom_levels", "priority",
-        ],
-        "defaults": {
-            "objectives_path": None,
-            "duration_weeks": 12,
-            "generate_assessments": True,
-            "assessment_count": 50,
-            "bloom_levels": "remember,understand,apply,analyze",
-            "priority": "normal",
-        },
-        "param_mapping": {
-            "pdfs": "pdf_paths",
-            "input": "pdf_paths",
-            "sources": "pdf_paths",
-            "course": "course_name",
-            "name": "course_name",
-            "objectives": "objectives_path",
-            "duration": "duration_weeks",
-            "weeks": "duration_weeks",
-            "blooms": "bloom_levels",
-            "count": "assessment_count",
-        },
-        "description": "Create and orchestrate a textbook-to-course pipeline (DEPRECATED Wave 7; prefer `ed4all run textbook-to-course`)",
-    },
-
-    "run_textbook_pipeline_tool": {
-        "required": ["workflow_id"],
-        "optional": [],
-        "defaults": {},
-        "param_mapping": {
-            "workflow": "workflow_id",
-            "id": "workflow_id",
-        },
-        "description": "Execute a previously created textbook-to-course pipeline (DEPRECATED Wave 7)",
-    },
-
     "get_pipeline_status": {
         "required": ["workflow_id"],
         "optional": [],
