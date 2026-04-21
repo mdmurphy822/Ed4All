@@ -30,12 +30,6 @@ from .converter import (
     PDFToAccessibleHTML,
     TextBlock,
 )
-from .wcag_enhancer import (
-    WCAGHTMLEnhancer,
-    WCAGOptions,
-    enhance_html_file,
-    enhance_html_wcag,
-)
 from .wcag_validator import (
     IssueSeverity,
     ValidationReport,
@@ -80,11 +74,6 @@ __all__ = [
     'PDFToAccessibleHTML',
     'ConversionResult',
     'TextBlock',
-    # WCAG Enhancement
-    'WCAGHTMLEnhancer',
-    'WCAGOptions',
-    'enhance_html_wcag',
-    'enhance_html_file',
     # WCAG Validation
     'WCAGValidator',
     'ValidationReport',

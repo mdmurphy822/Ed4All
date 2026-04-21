@@ -245,8 +245,14 @@ class RunSummarizer:
                         results = json.load(f)
                     summary.validation_results["final"] = results
 
-                    # Extract quality score if present
-                    if "quality_score" in results:
+                    # Extract quality score if present. Wave 28f
+                    # (FOLLOWUP-ADR001-2): read `overall_quality_score`
+                    # — the key the writer actually emits — and keep
+                    # the legacy `quality_score` / `score` fallbacks
+                    # so older artifacts still surface a score.
+                    if "overall_quality_score" in results:
+                        summary.quality_score = results["overall_quality_score"]
+                    elif "quality_score" in results:
                         summary.quality_score = results["quality_score"]
                     elif "score" in results:
                         summary.quality_score = results["score"]

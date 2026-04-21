@@ -453,9 +453,9 @@ def register_dart_tools(mcp):
         fallback, ignored ``figures_dir``, emitted no Wave-19
         sidecars, and routinely failed the ``dart_markers`` gate.
 
-        The legacy converter is retained strictly behind
-        ``DART_LEGACY_CONVERTER=true`` for one-release rollback
-        safety.
+        Wave 28f: the one-release ``DART_LEGACY_CONVERTER`` rollback
+        knob was removed. If pdftotext is unavailable this tool
+        returns an error rather than silently degrading.
 
         Args:
             pdf_path: Path to the PDF file to convert
@@ -558,46 +558,12 @@ def register_dart_tools(mcp):
             except (subprocess.SubprocessError, FileNotFoundError):
                 pdftotext_ok = False
 
-            # Legacy fallback: only when pdftotext is unavailable AND
-            # the opt-in DART_LEGACY_CONVERTER flag is set. New runs
-            # default to the Wave-15+ path.
-            legacy_flag = os.environ.get(
-                "DART_LEGACY_CONVERTER", ""
-            ).strip().lower() == "true"
-            if not pdftotext_ok and legacy_flag:
-                try:
-                    from pdf_converter.converter import PDFToAccessibleHTML
-
-                    converter = PDFToAccessibleHTML()
-                    legacy_result = converter.convert(str(pdf), str(out_dir))
-                    elapsed = (datetime.now() - start_time).total_seconds()
-                    return json.dumps({
-                        "success": legacy_result.success,
-                        "output_path": legacy_result.html_path,
-                        "method": "pdf_converter_legacy",
-                        "pages_processed": legacy_result.pages_processed,
-                        "elapsed_seconds": round(elapsed, 2),
-                        "error": (
-                            legacy_result.error
-                            if not legacy_result.success
-                            else None
-                        ),
-                    })
-                except ImportError:
-                    return json.dumps({
-                        "error": (
-                            "DART modules not available. "
-                            "pdftotext is unavailable and the legacy "
-                            "pdf_converter could not be imported."
-                        ),
-                    })
-
             if not pdftotext_ok:
                 return json.dumps({
                     "error": (
-                        "pdftotext unavailable or returned empty text; "
-                        "set DART_LEGACY_CONVERTER=true to opt into the "
-                        "pre-Wave-15 pdf_converter path."
+                        "pdftotext unavailable or returned empty text. "
+                        "Install poppler-utils (pdftotext) to enable the "
+                        "DART converter."
                     ),
                 })
 

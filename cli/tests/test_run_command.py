@@ -116,32 +116,10 @@ class TestValidation:
         assert "course-name" in result.output
 
 
-class TestDeprecationWarning:
-    def test_legacy_textbook_to_course_shows_warning(self, tmp_path):
-        runner = CliRunner()
-        # Use --dry-run to avoid actually running the pipeline
-        fake_pdf = tmp_path / "x.pdf"
-        fake_pdf.write_bytes(b"%PDF-1.4 fake")
-        result = runner.invoke(
-            cli,
-            [
-                "textbook-to-course",
-                str(fake_pdf),
-                "-n",
-                "TEST_101",
-                "--dry-run",
-            ],
-        )
-        assert result.exit_code == 0
-        # Deprecation warning goes to stderr (err=True in click.secho)
-        combined = result.output + (result.stderr_bytes.decode() if result.stderr_bytes else "")
-        assert "DEPRECATED" in combined
-
-    def test_legacy_command_help_still_works(self):
-        runner = CliRunner()
-        result = runner.invoke(cli, ["textbook-to-course", "--help"])
-        assert result.exit_code == 0
-        assert "DEPRECATED" in result.output
+# Wave 28f: TestDeprecationWarning class removed alongside the
+# ``ed4all textbook-to-course`` top-level command. The Wave 7 replacement
+# is ``ed4all run textbook-to-course ...``; see the TestRunCommand
+# coverage above.
 
 
 class TestResume:

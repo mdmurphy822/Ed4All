@@ -140,7 +140,8 @@ agents:
   # =============================================================================
 
   textbook-stager:
-    source: orchestrator/agents/textbook-stager.md
+    # Wave 28f: source .md removed — agent is implemented in-code by the
+    # staging phase dispatcher. No standalone agent spec file.
     type: utility
     capabilities:
       - file_staging
