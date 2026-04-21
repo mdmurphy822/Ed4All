@@ -127,7 +127,7 @@ _CITY_ABBREV_RE = re.compile(
 )
 
 # Author byline: a sequence of 2+ Title-Case tokens that look like names.
-# Catches "Hung-Nghiep Tran Atsuhiro Takasu" / "Cover design by Maria Keet"
+# Catches "A.B. Smith Jane Doe" / "Cover design by Author Name"
 # — the tokens are all name-like (each starts with a capital, often hyphenated)
 # with no verb, topical noun, or connector word. Discriminator is that the
 # whole string is just proper nouns (and maybe the lead-ins "by" / "edited by"
@@ -181,8 +181,8 @@ _COLON_PROMPT_TAIL_RE = re.compile(r":\s*$")
 
 # Formula / notation fragments (e.g. "C v ∀R.D", "FirstYearCourse
 # SubClassOf isTaughtBy only Professor"). These look unlike prose headings
-# (unusual symbols / CamelCase multi-token strings) but for an ontology
-# textbook like Keet's, they're pedagogically meaningful — real examples
+# (unusual symbols / CamelCase multi-token strings) but for an ontology or
+# formal-methods textbook they're pedagogically meaningful — real examples
 # from the chapter body shown as section anchors. We KEEP them as valid
 # headings. Detection is informational only; no rejection.
 #
@@ -317,13 +317,13 @@ def _is_low_signal_heading(heading: str) -> bool:
     #   (1) the heading starts with an explicit byline lead-in
     #       ("by", "edited by", "cover design by") followed by 1+ Name-like
     #       tokens — this is a high-precision signal regardless of count
-    #       ("Cover design by Maria Keet" is a byline even at two authors).
+    #       ("Cover design by Author Name" is a byline even at two authors).
     #   (2) every token is a Name-like token AND at least one token is
     #       hyphenated / multi-initialed (high-confidence author signal
-    #       like "Hung-Nghiep" or "A.W."). OR
+    #       like "J.K." or "A.B."). OR
     #   (3) Wave 27: exactly 2-3 tokens AND every token looks like a
     #       proper name AND no token matches the common-title-word set.
-    #       Catches bare 2-name bylines ("Maria Keet") without false-
+    #       Catches bare 2-name bylines ("Author Surname") without false-
     #       positive-demoting "European Union", "Creative Commons",
     #       "Digital Pedagogy", etc.
     if word_count >= 2:
@@ -354,8 +354,8 @@ def _is_low_signal_heading(heading: str) -> bool:
                 # (1) lead-in → high-confidence byline regardless of count.
                 # (2) hyphenated / initialed / parenthetical → strong name signal.
                 # (3) pure 2-3 token capitalized sequence where NO token is
-                #     in the curated common-title-word set (catches "Maria
-                #     Keet" without tripping "European Union Policy").
+                #     in the curated common-title-word set (catches "Jane
+                #     Doe" without tripping "European Union Policy").
                 if leadin_matched or hyphenated or initialed:
                     return True
                 if 2 <= len(tokens_for_name_check) <= 3:
@@ -386,7 +386,7 @@ _SENTENCE_STARTER_WORDS = frozenset([
 # short 2-3 token capitalized heading contains any of these, it's very likely
 # a legitimate chapter / section title ("European Union Policy", "Digital
 # Pedagogy", "Creative Commons", "Research Methods", "Science of Learning"),
-# NOT a bare author byline ("Maria Keet", "John Smith"). Kept intentionally
+# NOT a bare author byline ("Jane Doe", "John Smith"). Kept intentionally
 # small and conservative — only adds a token here when its surname usage is
 # rare AND it's a common title vocabulary word.
 _COMMON_TITLE_WORDS = frozenset([
@@ -566,8 +566,8 @@ _PITFALL_MARKER_RE = re.compile(
 )
 
 # Self-check / exercise / review-question extraction.
-# Keet-style: "Review question 2.3.", "Exercise 5.1.", "Self-check questions",
-# "Activity 3".
+# Textbook-style exercise markers: "Review question 2.3.", "Exercise 5.1.",
+# "Self-check questions", "Activity 3".
 _EXERCISE_MARKER_RE = re.compile(
     r"(?i)\b(?:review\s+question|exercise|self[-\s]check\s+question|activity|"
     r"practice\s+question|check\s+your\s+understanding)"
