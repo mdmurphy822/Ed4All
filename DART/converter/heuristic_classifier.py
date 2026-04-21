@@ -123,6 +123,144 @@ _BIBLIOGRAPHY_ENTRY = re.compile(
 # Footnote marker: "[1] ..." / "¹ ..." / "* ..." style prefix.
 _FOOTNOTE = re.compile(r"^(?:\*+|\[\d{1,3}\]|\(\d{1,3}\)|\d{1,3}\.?)\s+\S")
 
+# ---------------------------------------------------------------------------
+# Wave 21: list marker detection
+# ---------------------------------------------------------------------------
+#
+# pdftotext preserves list markers as literal characters at the start of
+# each item's block. Before Wave 21 these flowed straight through as
+# naked ``<p>•    Item`` paragraphs — 323 of them on the Bates textbook.
+# The classifier promotes each such block to ``LIST_ITEM`` with
+# ``attributes = {"marker", "marker_type", "text"}`` and the assembler
+# groups consecutive items into a single ``<ul>`` / ``<ol>``.
+
+# Unicode bullet characters (standalone, comprehensive charset).
+# Deliberately excludes en-dash / em-dash / middle-dot-lookalikes that
+# commonly appear mid-word.
+_UNORDERED_BULLET_CHARS = "\u2022\u00b7\u25aa\u25cf\u25e6\u25cb\u25b8\u25ba\u25a0\u25a1\u25fc\u25fe"
+
+# A Unicode bullet followed by required whitespace.
+_LIST_MARKER_UNICODE = re.compile(
+    rf"^([{_UNORDERED_BULLET_CHARS}])\s+(\S.*)$"
+)
+
+# ASCII hyphen / asterisk at start of line followed by whitespace AND
+# the rest looks like an item (starts with upper / digit / word-char).
+_LIST_MARKER_ASCII = re.compile(r"^([\-*])\s+([A-Za-z0-9].*)$")
+
+# Numbered markers. Matches "1.", "1)", "(1)", "12.", "a.", "a)",
+# "iv.", "vii)" — the latter two are lowercase roman. The tail must be
+# whitespace-separated, and the item body must start with upper, digit,
+# or open-paren (guards common abbreviations "e.g.", "i.e." which have
+# lowercase letters before the dot and no trailing capital).
+_LIST_MARKER_ORDERED = re.compile(
+    r"^(?:"
+    r"(\d{1,3})[.)]\s+|"                  # 1. / 1) / 12.
+    r"\((\d{1,3})\)\s+|"                  # (1)
+    r"([a-z])[.)]\s+|"                    # a. / a)
+    r"([ivxIVX]{1,5})[.)]\s+"             # iv. / VII)
+    r")([A-Z0-9\(].*)$"
+)
+
+
+def _match_list_marker(text: str):
+    """Return ``(marker_type, marker, rest)`` if ``text`` opens with a
+    list marker, else ``None``.
+
+    ``marker_type`` is ``"unordered"`` or ``"ordered"``. ``marker`` is
+    the literal prefix as authored (``•``, ``-``, ``1.``, ``a)``,
+    ``(3)``, ...). ``rest`` is the item body with the marker + its
+    trailing whitespace stripped.
+
+    Guards:
+
+    * The item body must be < 200 chars (list items are short).
+    * Body must start with capital letter, digit, or open-paren — this
+      rejects many false positives like "``- then`` something" that's
+      actually a mid-sentence dash continuation from a column-layout
+      artefact.
+    * Ascii ``-`` / ``*`` only matches when the next character is
+      whitespace AND the body starts with a capital or digit — pure
+      word-chars after a hyphen would be hyphenated words.
+    """
+    if not text:
+        return None
+    stripped = text.strip()
+    if not stripped:
+        return None
+
+    # Unicode bullets: most common case on educational PDFs.
+    m = _LIST_MARKER_UNICODE.match(stripped)
+    if m:
+        rest = m.group(2).strip()
+        if not rest or len(rest) > 4000:
+            return None
+        return ("unordered", m.group(1), rest)
+
+    # Ordered markers.
+    m = _LIST_MARKER_ORDERED.match(stripped)
+    if m:
+        # Pull the groups; exactly one numeric / alpha / roman / parens
+        # capture will be non-None depending on the branch that matched.
+        digit = m.group(1)
+        paren_digit = m.group(2)
+        alpha = m.group(3)
+        roman = m.group(4)
+        rest = m.group(5).strip()
+        if not rest or len(rest) > 4000:
+            return None
+        if digit is not None:
+            marker = f"{digit}."
+            # Recover the exact authored punctuation (1. vs 1)) by
+            # looking at the char immediately after the digit in the
+            # original text.
+            dot_or_paren = stripped[len(digit) : len(digit) + 1]
+            marker = f"{digit}{dot_or_paren}"
+        elif paren_digit is not None:
+            marker = f"({paren_digit})"
+        elif alpha is not None:
+            dot_or_paren = stripped[1:2]
+            marker = f"{alpha}{dot_or_paren}"
+        elif roman is not None:
+            dot_or_paren = stripped[len(roman) : len(roman) + 1]
+            marker = f"{roman}{dot_or_paren}"
+        else:  # pragma: no cover — regex guarantees at least one group
+            return None
+        return ("ordered", marker, rest)
+
+    # ASCII dash / asterisk: only fire when the body starts with
+    # something that looks like item content. This is intentionally
+    # conservative to avoid chewing on "- 5" range markers or
+    # "-negative" mid-word hyphens.
+    m = _LIST_MARKER_ASCII.match(stripped)
+    if m:
+        rest = m.group(2).strip()
+        if not rest or len(rest) > 4000:
+            return None
+        return ("unordered", m.group(1), rest)
+
+    return None
+
+
+def _looks_like_list_item(text: str):
+    """Public-ish wrapper returning the marker type string, or ``None``.
+
+    Wave 21 entry point used by the classifier and tests. Returns one of
+    ``"unordered"`` / ``"ordered"`` / ``None``. Callers needing the full
+    marker + body tuple should call :func:`_match_list_marker`.
+    """
+    match = _match_list_marker(text)
+    return match[0] if match else None
+
+
+# Embedded sibling numbered markers (``<space>N.<space>Upper`` /
+# ``<space>N)<space>Upper``). Used by :meth:`_classify_one` to recognise
+# fused numbered-list blocks that would otherwise capture via
+# :data:`_CHAPTER_HEADING`.
+_INLINE_NUMBERED_SIBLINGS = re.compile(
+    r"\s\d{1,3}[.)]\s+[A-Z]"
+)
+
 
 # ---------------------------------------------------------------------------
 # Support helpers
@@ -308,10 +446,25 @@ class HeuristicClassifier:
         return self.classify_sync(blocks)
 
     def classify_sync(self, blocks: List[RawBlock]) -> List[ClassifiedBlock]:
-        """Synchronous convenience wrapper around :meth:`classify`."""
+        """Synchronous convenience wrapper around :meth:`classify`.
+
+        Wave 21: a single input block can expand into multiple classified
+        blocks when a numbered-list block carries several embedded items
+        (pdftotext often merges siblings onto one logical line). The
+        classifier emits one ``LIST_ITEM`` per detected item in that
+        case; the downstream :mod:`DART.converter.document_assembler`
+        grouping pass then folds them into a single ``<ol>`` / ``<ul>``.
+        """
         results: List[ClassifiedBlock] = []
         for block in blocks:
-            results.append(self._classify_one(block))
+            classified = self._classify_one(block)
+            # Multi-item expansion: produced when a numbered block
+            # contains embedded list markers ("1. foo 2. bar 3. baz").
+            expanded = self._maybe_expand_numbered_run(classified)
+            if expanded is not None:
+                results.extend(expanded)
+            else:
+                results.append(classified)
         results = [self._maybe_promote_by_font_size(r) for r in results]
         logger.debug("Heuristic classifier produced %d decisions", len(results))
         return results
@@ -428,12 +581,22 @@ class HeuristicClassifier:
         chapter_match = _CHAPTER_HEADING.match(text)
         if chapter_match and len(text) < 160:
             heading_text = chapter_match.group(1).strip()
-            return self._make(
-                block,
-                BlockRole.CHAPTER_OPENER,
-                0.90,
-                attributes={"heading_text": heading_text},
-            )
+            # Wave 21 guard: when the text carries embedded sibling
+            # numbered markers (" 2. ", " 3. "), it's almost certainly
+            # a fused numbered-list block, not a chapter opener. Fall
+            # through to the list-item path so the classifier's
+            # expansion logic splits it into one LIST_ITEM per item.
+            if not (
+                text[0:1].isdigit()
+                and _LIST_MARKER_ORDERED.match(text)
+                and len(_INLINE_NUMBERED_SIBLINGS.findall(text)) >= 1
+            ):
+                return self._make(
+                    block,
+                    BlockRole.CHAPTER_OPENER,
+                    0.90,
+                    attributes={"heading_text": heading_text},
+                )
 
         # Numbered paper section ("1 Introduction", "2.1 Related Work").
         paper_match = _PAPER_SECTION_NUMBERED.match(text)
@@ -455,6 +618,17 @@ class HeuristicClassifier:
         # Bibliography entry (author-year or bracket-numbered).
         if _BIBLIOGRAPHY_ENTRY.match(text) and len(text) < 500:
             return self._make(block, BlockRole.BIBLIOGRAPHY_ENTRY, 0.80)
+
+        # Wave 21: list-item detection. Runs AFTER bibliography + chapter
+        # classification (both higher priority) but BEFORE the footnote
+        # / subheading fallbacks. A block whose first line matches a
+        # bullet / numbered / roman / alpha marker becomes LIST_ITEM
+        # with ``{marker, marker_type, text, sub_items}``. Nested
+        # sub-items (indented lines starting with a marker) are
+        # best-effort attached here.
+        list_classified = self._maybe_classify_list_item(block, text)
+        if list_classified is not None:
+            return list_classified
 
         # Footnote marker (small prefix + short body).
         if _FOOTNOTE.match(text) and len(text) < 400:
@@ -490,6 +664,284 @@ class HeuristicClassifier:
             attributes=attributes or {},
             classifier_source="heuristic",
         )
+
+    # ------------------------------------------------------------------
+    # Wave 21 list-item detection + multi-item expansion
+    # ------------------------------------------------------------------
+
+    def _maybe_classify_list_item(
+        self, block: RawBlock, text: str
+    ) -> Optional[ClassifiedBlock]:
+        """Return a ``LIST_ITEM`` ClassifiedBlock if ``text`` opens with a
+        list marker, else ``None``.
+
+        Single-line case: ``LIST_ITEM`` with ``marker`` / ``marker_type``
+        / ``text`` attributes.
+
+        Multi-line case (pdftotext ``-layout`` preserves indentation):
+        when subsequent non-empty lines in the same block are indented
+        (≥ 4 leading spaces) AND start with a marker themselves, they
+        become ``sub_items`` on the parent. This is the nested-list
+        MVP; deeper nesting is out of scope.
+
+        ``block.text`` has already been whitespace-collapsed by the
+        segmenter (see :func:`DART.converter.block_segmenter._normalise_block_text`),
+        so we lose the leading-whitespace signal for nested-sub-item
+        detection. Nesting therefore almost never fires in the current
+        pipeline — the code is retained so that callers who feed raw
+        multi-line blocks in (tests, future waves that preserve
+        layout) still get nested output.
+        """
+        # When the block already carries an extractor hint, don't
+        # override it — tables/figures win.
+        if block.extractor_hint is not None:
+            return None
+
+        lines = [ln for ln in block.text.splitlines() if ln.strip()]
+        if not lines:
+            match = _match_list_marker(text)
+            if match is None:
+                return None
+            marker_type, marker, rest = match
+            return self._build_list_item(block, marker_type, marker, rest, [])
+
+        # Primary: first line opens with a list marker.
+        first_line = lines[0]
+        match = _match_list_marker(first_line.lstrip())
+        if match is None:
+            return None
+        marker_type, marker, rest = match
+
+        # Long-item sanity guard: reject when the rest is clearly a
+        # wall of prose that happens to start with what looks like a
+        # list marker (e.g. a copyright blurb with a bullet glyph
+        # glued to its first word). We only bail when the text
+        # contains no embedded sibling markers AND is very long AND
+        # contains many sentence-ending periods — the signs of prose
+        # that got accidentally marker-tagged. Fused multi-item blocks
+        # (the common pdftotext case this wave fixes) have embedded
+        # siblings and therefore keep their LIST_ITEM role so the
+        # expansion path can split them.
+        if (
+            marker_type == "unordered"
+            and len(rest) > 600
+            and "\u2022" not in rest
+            and rest.count(". ") >= 4
+        ):
+            return None
+
+        # Collect nested sub-items when subsequent lines look indented +
+        # marker-prefixed. (Rare given segmenter whitespace collapsing —
+        # see docstring — but cheap to support.)
+        sub_items: List[dict] = []
+        for cont in lines[1:]:
+            leading = len(cont) - len(cont.lstrip())
+            if leading < 4:
+                continue
+            nested = _match_list_marker(cont.lstrip())
+            if nested is None:
+                continue
+            n_type, n_marker, n_rest = nested
+            sub_items.append(
+                {"text": n_rest, "marker": n_marker, "marker_type": n_type}
+            )
+
+        return self._build_list_item(block, marker_type, marker, rest, sub_items)
+
+    def _build_list_item(
+        self,
+        block: RawBlock,
+        marker_type: str,
+        marker: str,
+        rest: str,
+        sub_items: List[dict],
+    ) -> ClassifiedBlock:
+        attrs = {
+            "marker": marker,
+            "marker_type": marker_type,
+            "text": rest,
+        }
+        if sub_items:
+            attrs["sub_items"] = sub_items
+        return ClassifiedBlock(
+            raw=block,
+            role=BlockRole.LIST_ITEM,
+            confidence=0.85,
+            attributes=attrs,
+            classifier_source="heuristic",
+        )
+
+    # -- Multi-item expansion -------------------------------------------
+    # pdftotext output often fuses several numbered items onto one
+    # line when the source PDF used non-layout whitespace. Example:
+    # "1. First point. 2. Second point. 3. Third point." arrives as a
+    # single block. The per-block classifier above only catches the
+    # leading marker; this expander splits the remaining body on
+    # sibling markers so each item becomes its own LIST_ITEM.
+
+    # Matches embedded "<whitespace>N." / "<whitespace>N)" markers that
+    # introduce another list item. Captures: leading whitespace, the
+    # marker, and the rest of the segment up to the next marker / EOL.
+    _EMBEDDED_NUMBERED_MARKER = re.compile(
+        r"\s(\d{1,3})[.)]\s+(?=[A-Z])"
+    )
+
+    # Matches embedded unicode-bullet markers that introduce a sibling
+    # item inside a fused block ("foo • bar • baz"). Captures the bullet
+    # character; the body follows until the next bullet or EOL.
+    _EMBEDDED_UNICODE_BULLET = re.compile(
+        rf"\s([{_UNORDERED_BULLET_CHARS}])\s+"
+    )
+
+    def _maybe_expand_numbered_run(
+        self, classified: ClassifiedBlock
+    ) -> Optional[List[ClassifiedBlock]]:
+        """When a ``LIST_ITEM`` carries multiple items fused onto one
+        line, split it into a run of per-item classified blocks.
+
+        Handles two cases:
+
+        * **Ordered items** fused via "1. foo 2. bar 3. baz" — common
+          when pdftotext output drops the blank-line separator between
+          numbered entries.
+        * **Unordered items** fused via "• foo • bar • baz" — same root
+          cause on bullet lists.
+
+        Returns ``None`` when no expansion applies; otherwise returns a
+        list of ``LIST_ITEM`` ClassifiedBlocks. Each emitted block
+        shares the original ``raw`` (for provenance) but carries a
+        deterministic ``block_id`` suffix (``#2``, ``#3``, ...) so
+        IDs stay unique.
+        """
+        if classified.role != BlockRole.LIST_ITEM:
+            return None
+        attrs = classified.attributes or {}
+        marker_type = attrs.get("marker_type")
+        if marker_type not in {"ordered", "unordered"}:
+            return None
+        rest = str(attrs.get("text") or "")
+        if not rest or len(rest) < 40:
+            return None
+
+        if marker_type == "ordered":
+            return self._expand_ordered(classified, attrs, rest)
+        # marker_type == "unordered"
+        return self._expand_unordered(classified, attrs, rest)
+
+    def _expand_ordered(
+        self,
+        classified: ClassifiedBlock,
+        attrs: dict,
+        rest: str,
+    ) -> Optional[List[ClassifiedBlock]]:
+        markers = list(self._EMBEDDED_NUMBERED_MARKER.finditer(rest))
+        if not markers:
+            return None
+
+        numbers = [int(m.group(1)) for m in markers]
+        if not numbers:
+            return None
+        # Sequential check: numbers should be strictly ascending and
+        # each within 1–3 of the previous (no giant jumps).
+        prev = None
+        for n in numbers:
+            if prev is not None and (n <= prev or n - prev > 2):
+                return None
+            prev = n
+
+        first_marker = attrs.get("marker") or "1."
+        first_body = rest[: markers[0].start()].strip().rstrip(",;")
+        if not first_body:
+            return None
+        items: List[tuple[str, str]] = [(first_marker, first_body)]
+        for idx, m in enumerate(markers):
+            num = m.group(1)
+            start = m.end()
+            end = (
+                markers[idx + 1].start()
+                if idx + 1 < len(markers)
+                else len(rest)
+            )
+            body = rest[start:end].strip().rstrip(",;")
+            if not body:
+                continue
+            dot_or_paren = rest[m.start(1) + len(num) : m.start(1) + len(num) + 1]
+            if dot_or_paren not in {".", ")"}:
+                dot_or_paren = "."
+            items.append((f"{num}{dot_or_paren}", body))
+
+        if len(items) < 2:
+            return None
+        return self._emit_expanded(classified, items, "ordered")
+
+    def _expand_unordered(
+        self,
+        classified: ClassifiedBlock,
+        attrs: dict,
+        rest: str,
+    ) -> Optional[List[ClassifiedBlock]]:
+        markers = list(self._EMBEDDED_UNICODE_BULLET.finditer(rest))
+        if not markers:
+            return None
+
+        first_marker = attrs.get("marker") or "\u2022"
+        first_body = rest[: markers[0].start()].strip().rstrip(",;")
+        if not first_body:
+            return None
+        items: List[tuple[str, str]] = [(first_marker, first_body)]
+        for idx, m in enumerate(markers):
+            marker = m.group(1)
+            start = m.end()
+            end = (
+                markers[idx + 1].start()
+                if idx + 1 < len(markers)
+                else len(rest)
+            )
+            body = rest[start:end].strip().rstrip(",;")
+            if not body:
+                continue
+            items.append((marker, body))
+
+        if len(items) < 2:
+            return None
+        return self._emit_expanded(classified, items, "unordered")
+
+    def _emit_expanded(
+        self,
+        classified: ClassifiedBlock,
+        items: List[tuple[str, str]],
+        marker_type: str,
+    ) -> List[ClassifiedBlock]:
+        emitted: List[ClassifiedBlock] = []
+        for idx, (marker, body) in enumerate(items):
+            synth_raw = RawBlock(
+                text=body,
+                block_id=(
+                    classified.raw.block_id
+                    if idx == 0
+                    else f"{classified.raw.block_id}#{idx + 1}"
+                ),
+                page=classified.raw.page,
+                bbox=classified.raw.bbox,
+                extractor=classified.raw.extractor,
+                neighbors=dict(classified.raw.neighbors or {}),
+                extractor_hint=None,
+                extra=dict(classified.raw.extra or {}),
+            )
+            emitted.append(
+                ClassifiedBlock(
+                    raw=synth_raw,
+                    role=BlockRole.LIST_ITEM,
+                    confidence=0.85,
+                    attributes={
+                        "marker": marker,
+                        "marker_type": marker_type,
+                        "text": body,
+                    },
+                    classifier_source="heuristic",
+                )
+            )
+        return emitted
 
 
 __all__ = ["HeuristicClassifier"]
