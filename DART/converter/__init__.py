@@ -3,22 +3,31 @@
 Four-phase pipeline that replaces the monolithic regex-driven converter:
 
     1. segment  - split raw text into RawBlocks (block_segmenter)
-    2. classify - assign a BlockRole to each block (heuristic_classifier)
+    2. classify - assign a BlockRole to each block (heuristic_classifier
+                  or llm_classifier when DART_LLM_CLASSIFICATION=true)
     3. template - render each classified block via role template
     4. assemble - stitch rendered blocks into a full HTML document
 
-Wave 12 ships the foundation: enum, dataclasses, segmenter, heuristic
+Wave 12 shipped the foundation: enum, dataclasses, segmenter, heuristic
 classifier (ports existing regex logic from pipeline_tools), minimal
-template registry, and minimal assembler. Subsequent waves:
+template registry, and minimal assembler.
+
+Subsequent waves:
 
     Wave 13 - expand templates with DPUB-ARIA + schema.org + rich HTML
-    Wave 14 - add Claude-backed classifier behind LLMBackend
+    Wave 14 - add Claude-backed classifier behind LLMBackend (this wave)
     Wave 15 - document-level decoration (Dublin Core, JSON-LD, WCAG CSS)
     Wave 16 - dual-extraction + MathML + figure pipeline
 
 The existing ``_raw_text_to_accessible_html`` in ``MCP/tools/pipeline_tools.py``
 is left untouched. Wave 15 will flip the production path to this package.
 """
+
+from __future__ import annotations
+
+import asyncio
+import os
+from typing import Any, Optional, Union
 
 from DART.converter.block_roles import (
     BlockRole,
@@ -29,22 +38,53 @@ from DART.converter.block_segmenter import segment_pdftotext_output
 from DART.converter.block_templates import TEMPLATE_REGISTRY, render_block
 from DART.converter.document_assembler import assemble_html
 from DART.converter.heuristic_classifier import HeuristicClassifier
+from DART.converter.llm_classifier import LLMClassifier
+
+
+def default_classifier(
+    llm: Optional[Any] = None,
+) -> Union[LLMClassifier, HeuristicClassifier]:
+    """Return the configured classifier for the current environment.
+
+    Routing rules:
+
+    * ``DART_LLM_CLASSIFICATION=true`` **and** ``llm`` provided →
+      :class:`LLMClassifier` wrapping the injected backend.
+    * Otherwise (flag off, flag on without a backend, or any other
+      combination) → :class:`HeuristicClassifier`.
+
+    This factory keeps callers flag-agnostic: set the env var once and
+    every call-site picks up the new classifier, while unit tests that
+    don't opt in keep the deterministic heuristic path.
+    """
+    flag = os.environ.get("DART_LLM_CLASSIFICATION", "").strip().lower()
+    if flag == "true" and llm is not None:
+        return LLMClassifier(llm=llm)
+    return HeuristicClassifier()
 
 
 def convert_pdftotext_to_html(
     raw_text: str,
     title: str,
     metadata: dict | None = None,
+    *,
+    llm: Optional[Any] = None,
 ) -> str:
     """Full 4-phase pipeline: segment -> classify -> template -> assemble.
 
-    Wave 12 scope: heuristic classifier only, minimal templates, minimal
-    assembler. Subsequent waves add LLM classifier + ontology expansion +
-    document-level decoration.
+    Wave 14: adds an optional ``llm`` parameter. When the
+    ``DART_LLM_CLASSIFICATION`` flag is set and ``llm`` is provided,
+    classification is routed through Claude via :class:`LLMClassifier`;
+    otherwise the heuristic classifier is used.
     """
     blocks = segment_pdftotext_output(raw_text)
-    classifier = HeuristicClassifier()
-    classified = classifier.classify(blocks)
+    classifier = default_classifier(llm=llm)
+
+    # Both classifier shapes expose ``classify`` as an async method; we
+    # run it to completion here so callers that are themselves sync
+    # (the existing ``_raw_text_to_accessible_html`` orchestrator and
+    # unit tests) don't have to propagate ``async``.
+    classified = asyncio.run(classifier.classify(blocks))
     return assemble_html(classified, title, metadata or {})
 
 
@@ -52,10 +92,12 @@ __all__ = [
     "BlockRole",
     "ClassifiedBlock",
     "HeuristicClassifier",
+    "LLMClassifier",
     "RawBlock",
     "TEMPLATE_REGISTRY",
     "assemble_html",
     "convert_pdftotext_to_html",
+    "default_classifier",
     "render_block",
     "segment_pdftotext_output",
 ]

@@ -191,7 +191,18 @@ class HeuristicClassifier:
         0.30 - column-layout or low-signal residue
     """
 
-    def classify(self, blocks: List[RawBlock]) -> List[ClassifiedBlock]:
+    async def classify(self, blocks: List[RawBlock]) -> List[ClassifiedBlock]:
+        """Classify ``blocks`` into ``ClassifiedBlock`` instances.
+
+        The method is ``async`` for symmetry with ``LLMClassifier`` (Wave 14);
+        the heuristic logic itself is pure-Python and does not await. Callers
+        that cannot run an event loop may call the sync helper
+        :meth:`classify_sync` instead.
+        """
+        return self.classify_sync(blocks)
+
+    def classify_sync(self, blocks: List[RawBlock]) -> List[ClassifiedBlock]:
+        """Synchronous convenience wrapper around :meth:`classify`."""
         results: List[ClassifiedBlock] = []
         for block in blocks:
             results.append(self._classify_one(block))

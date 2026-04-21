@@ -591,7 +591,7 @@ Location: `schemas/config/workflows_meta.schema.json`
 
 ## Opt-In Behavior Flags
 
-Eight environment-variable toggles gate opt-in strict / stable-ID behavior. All default off to preserve backward compatibility with legacy corpora. See `schemas/ONTOLOGY.md` § 12 for landing wave and full rationale.
+Nine environment-variable toggles gate opt-in strict / stable-ID behavior. All default off to preserve backward compatibility with legacy corpora. See `schemas/ONTOLOGY.md` § 12 for landing wave and full rationale.
 
 | Flag | When on |
 |------|---------|
@@ -603,6 +603,7 @@ Eight environment-variable toggles gate opt-in strict / stable-ID behavior. All 
 | `TRAINFORGE_STRICT_EVIDENCE` | Strips the FallbackProvenance arm from the evidence discriminator. |
 | `TRAINFORGE_SOURCE_PROVENANCE` | Evidence arms emit `source_references[]` (from chunks' Wave 10 refs). Off: arms emit pre-Wave-11 shape (backward compat). |
 | `DECISION_VALIDATION_STRICT` | Fails closed on unknown `decision_type` values in decision captures. |
+| `DART_LLM_CLASSIFICATION` | DART's block classifier routes through Claude instead of heuristic regex. Requires an injected `LLMBackend`. |
 
 ---
 
