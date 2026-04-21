@@ -65,7 +65,7 @@ class TestExtractDocumentPageChrome:
         pdf = tmp_path / "textbook.pdf"
         pdf.write_bytes(b"%PDF-1.4 fake")
         pages = [
-            f"Teaching in a Digital Age {i}\n\n"
+            f"Educational Foundations {i}\n\n"
             f"Unique prose one {i} aaa\n"
             f"Unique prose two {i} bbb\n"
             f"Unique prose three {i} ccc\n"
@@ -79,11 +79,11 @@ class TestExtractDocumentPageChrome:
         assert isinstance(doc.page_chrome, PageChrome)
         # Chrome was detected.
         assert any(
-            "teaching in a digital age" in h for h in doc.page_chrome.headers
+            "educational foundations" in h for h in doc.page_chrome.headers
         )
         # Raw text no longer carries the running-header variants.
-        assert "Teaching in a Digital Age 2" not in doc.raw_text
-        assert "Teaching in a Digital Age 9" not in doc.raw_text
+        assert "Educational Foundations 2" not in doc.raw_text
+        assert "Educational Foundations 9" not in doc.raw_text
         # Page-number mapping populated (at least half the pages numbered).
         assert len(doc.page_chrome.page_number_lines) >= 4
 

@@ -3,8 +3,9 @@
 DART's Wave 13+ converter emits every chapter as an
 ``<article role="doc-chapter">`` wrapper. The pre-Wave-19 extractor
 only knew how to group chapters by heading hierarchy — fed the new
-shape, it emitted 90 chapters with ``title=None`` and 0 sections
-each on sample-corpus. These tests lock in the restored grouping path.
+shape, it emitted many chapters with ``title=None`` and 0 sections
+each on full-textbook corpora. These tests lock in the restored
+grouping path.
 """
 
 from __future__ import annotations
@@ -17,9 +18,13 @@ import pytest
 from lib.semantic_structure_extractor import SemanticStructureExtractor
 
 
-_SAMPLE_PATH = (
-    "/home/user/Projects/Ed4All/.claude/worktrees/agent-a0855638/"
-    "DART/output/sample_wave17/sample_digital_age_accessible.html"
+# Optional slow-path smoke target — points at an artifact from a
+# previous full-textbook run (any corpus). The test that consumes
+# this path auto-skips when the artifact is absent, so in CI this
+# path is effectively a no-op unless a maintainer has materialised
+# real HTML at one of the candidate locations.
+_TEXTBOOK_HTML_PATH = (
+    "/tmp/ed4all_textbook_smoke/textbook_accessible.html"
 )
 
 
@@ -130,23 +135,25 @@ def test_legacy_h2_hierarchy_path_still_works():
 
 
 # ---------------------------------------------------------------------------
-# sample-corpus smoke test — slow + skippable when the artifact isn't present
+# Full-textbook smoke test — slow + skippable when the artifact isn't present
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.slow
-def test_sample_has_at_least_30_real_chapter_titles():
-    """sample-corpus real-world smoke: the full textbook renders at least 30
-    chapters with non-None titles through the Wave 19 extractor."""
-    if not Path(_SAMPLE_PATH).exists():
-        # Also try the worktree-local output (if the orchestrator
-        # re-ran the pipeline against sample-corpus for verification).
-        alt = Path("/tmp/sample_wave19/sample-corpus.html")
+def test_full_textbook_has_at_least_30_real_chapter_titles():
+    """Full-textbook real-world smoke: a long textbook rendered
+    end-to-end should produce at least 30 chapters with non-None
+    titles through the Wave 19 extractor."""
+    if not Path(_TEXTBOOK_HTML_PATH).exists():
+        # Also try a legacy worktree-local output location (for
+        # maintainers who have materialised real HTML outside the
+        # canonical path).
+        alt = Path("/tmp/ed4all_textbook_smoke/textbook.html")
         if not alt.exists():
-            pytest.skip("sample-corpus HTML not available")
+            pytest.skip("Full-textbook HTML not available")
         path = alt
     else:
-        path = Path(_SAMPLE_PATH)
+        path = Path(_TEXTBOOK_HTML_PATH)
 
     html = path.read_text(encoding="utf-8")
     extractor = SemanticStructureExtractor()
