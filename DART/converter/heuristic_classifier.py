@@ -212,6 +212,19 @@ class HeuristicClassifier:
     # -- Internals --------------------------------------------------------
 
     def _classify_one(self, block: RawBlock) -> ClassifiedBlock:
+        # Wave 16: when the segmenter attached an ``extractor_hint``
+        # (structured extraction like pdfplumber tables / PyMuPDF
+        # figures), trust the hint at full confidence and forward the
+        # ``extra`` payload straight through to the template layer —
+        # text classification would only mislabel tables as prose.
+        if block.extractor_hint is not None:
+            return self._make(
+                block,
+                block.extractor_hint,
+                1.0,
+                attributes=dict(block.extra or {}),
+            )
+
         text = block.text.strip()
 
         if not text:

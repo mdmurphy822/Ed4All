@@ -251,14 +251,45 @@ class LLMClassifier:
         routed through the heuristic fallback. When a batch response
         is partial (missing IDs, unknown role strings), only the
         affected blocks fall back — the rest keep their LLM label.
+
+        Wave 16: blocks carrying an ``extractor_hint`` (structured
+        extraction from pdfplumber / PyMuPDF) skip the LLM entirely.
+        They are classified as the hinted role at confidence 1.0 and
+        re-interleaved into the output in original position so the
+        prompt never sees them and the backend is never asked to
+        classify e.g. a table's row text as prose.
         """
         if not blocks:
             return []
 
+        # Partition: hinted blocks never reach the LLM.
+        hinted: Dict[str, ClassifiedBlock] = {}
+        unhinted: List[RawBlock] = []
+        for block in blocks:
+            if block.extractor_hint is not None:
+                hinted[block.block_id] = ClassifiedBlock(
+                    raw=block,
+                    role=block.extractor_hint,
+                    confidence=1.0,
+                    attributes=dict(block.extra or {}),
+                    classifier_source="extractor_hint",
+                )
+            else:
+                unhinted.append(block)
+
+        classified_unhinted: List[ClassifiedBlock] = []
+        for start in range(0, len(unhinted), self.batch_size):
+            batch = unhinted[start : start + self.batch_size]
+            classified_unhinted.extend(await self._classify_batch(batch))
+
+        # Merge hinted + LLM-classified back into original input order.
+        unhinted_map = {cb.raw.block_id: cb for cb in classified_unhinted}
         results: List[ClassifiedBlock] = []
-        for start in range(0, len(blocks), self.batch_size):
-            batch = blocks[start : start + self.batch_size]
-            results.extend(await self._classify_batch(batch))
+        for block in blocks:
+            if block.block_id in hinted:
+                results.append(hinted[block.block_id])
+            else:
+                results.append(unhinted_map[block.block_id])
         return results
 
     async def _classify_batch(
