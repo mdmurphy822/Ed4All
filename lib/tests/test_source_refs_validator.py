@@ -393,3 +393,47 @@ class TestFileReading:
         assert "PAGE_NOT_FOUND" in codes
         # Warning doesn't block the gate.
         assert result.passed is True
+
+
+# ---------------------------------------------------------------------- #
+# Wave 27 CRITICAL-2: empty-emission warning on real runs
+# ---------------------------------------------------------------------- #
+
+
+class TestWave27EmptyEmitWarning:
+    """Wave 27 turn-down: real textbook-to-course runs should always emit
+    source-ids. Empty emit on a run that actually fed pages in surfaces
+    as a WARNING (not a failure) so the regression shows up in gate
+    output but legacy callers still pass.
+    """
+
+    def test_empty_emit_with_pages_emits_warning(self, tmp_path):
+        html = (
+            '<!DOCTYPE html><html><body><section><h2>Demo</h2>'
+            '</section></body></html>'
+        )
+        result = PageSourceRefValidator().validate({
+            "html_contents": [{"path": "page.html", "html": html}],
+        })
+        # Still passes — non-breaking change for legacy callers.
+        assert result.passed is True
+        codes = {i.code for i in result.issues}
+        # ...but the Wave 27 warning is recorded.
+        assert "EMPTY_SOURCE_REFS" in codes
+        warnings = [
+            i for i in result.issues
+            if i.severity == "warning" and i.code == "EMPTY_SOURCE_REFS"
+        ]
+        assert warnings
+        assert "data-cf-source-ids" in warnings[0].message
+
+    def test_no_pages_no_warning(self, tmp_path):
+        """Genuinely-legacy callers (no pages passed at all) stay silent."""
+        staging = _make_staging(tmp_path, "x", ["s0_c0"])
+        result = PageSourceRefValidator().validate({
+            "staging_dir": str(staging),
+        })
+        codes = {i.code for i in result.issues}
+        # No pages => no warning (classic backward-compat path).
+        assert "EMPTY_SOURCE_REFS" not in codes
+        assert result.passed is True

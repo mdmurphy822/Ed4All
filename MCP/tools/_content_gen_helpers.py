@@ -48,8 +48,10 @@ _STOPWORDS = frozenset([
 ])
 
 # Section / heading boundary; DART emits both <h1> (page top) and <h2>/<h3>.
+# Wave 27: we capture the full opening tag too so we can harvest
+# ``data-dart-block-id`` for source-id carry-through.
 _SECTION_RE = re.compile(
-    r"(?is)<section[^>]*>(.*?)(?=</section>|$)"
+    r"(?is)(<section[^>]*>)(.*?)(?=</section>|$)"
 )
 _HEADING_RE = re.compile(
     r"(?is)<(h[1-6])[^>]*>(.*?)</\1>"
@@ -57,6 +59,14 @@ _HEADING_RE = re.compile(
 _PARAGRAPH_RE = re.compile(r"(?is)<p[^>]*>(.*?)</p>")
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
+
+# Wave 27: extract DART block-id from the section wrapper opening tag.
+# DART Wave 8+ stamps ``data-dart-block-id="{block_id}"`` on every top-
+# level section; we carry it through onto the Courseforge page's section
+# element as ``data-cf-source-ids="dart:{slug}#{block_id}"``.
+_DATA_DART_BLOCK_ID_RE = re.compile(
+    r"""(?is)data-dart-block-id\s*=\s*["']([^"']+)["']"""
+)
 
 # Wave 24: DART Wave 13+ emits each chapter as <article role="doc-chapter">.
 # When present, parse_dart_html_files tags every topic with its chapter_id so
@@ -84,6 +94,11 @@ _HEADING_BLOCKLIST_TOKENS = frozenset([
     # Publisher / location chrome
     "vancouver bc", "vancouver, bc", "toronto on", "london uk",
     "creative commons", "bccampus", "published by",
+    # Wave 27 HIGH-4: publisher-credit / cover / copyright chrome that
+    # leaked into week titles on the real OLSR_201 run.
+    "cover design", "cover art", "designed by", "illustrated by",
+    "illustrations by", "illustration by", "translation by",
+    "all rights reserved", "rights reserved", "edited by",
     # Generic / low-signal chapter chrome
     "purpose of the chapter", "purpose of this chapter",
     "overview", "introduction to this chapter", "in this chapter",
@@ -117,13 +132,43 @@ _CITY_ABBREV_RE = re.compile(
 # with no verb, topical noun, or connector word. Discriminator is that the
 # whole string is just proper nouns (and maybe the lead-ins "by" / "edited by"
 # / "cover design by").
+#
+# Wave 27 broadens to include initialed names ("A.W.", "A.W.", "Dr.") and
+# parenthetical nicknames ("A.W. (Tony) Bates"). Token may be all-caps when
+# short (acronym initials like "A.W." / "EU") but a plain capitalized word
+# (≥ 2 letters) is still the common case.
 _NAME_TOKEN_RE = re.compile(
-    r"^[A-Z][A-Za-z'\-]+$"
+    r"^(?:"
+    r"[A-Z]\."                      # single initial: "A."
+    r"|[A-Z](?:\.[A-Z])+\.?"        # multi initial: "A.W." / "J.R.R."
+    r"|[A-Z][A-Za-z'\u00C0-\u017F\-]+"  # capitalized word, allows unicode diacritics + hyphens
+    r"|\([A-Z][A-Za-z'\u00C0-\u017F\-]+\)"  # parenthetical nickname: "(Tony)"
+    r")$"
 )
 _AUTHOR_BYLINE_LEADINS = frozenset([
     "by", "edited by", "foreword by", "preface by",
-    "cover design by", "illustrations by", "translation by",
+    "cover design by", "cover art by", "designed by",
+    "illustrations by", "illustration by", "translation by",
 ])
+
+# Wave 27 HIGH-4: formulaic-phrase markers. "The functional syntax
+# equivalent is as follows:" style lead-ins are chapter-body prose
+# erroneously promoted to section headings by pdftotext.
+_FORMULAIC_PHRASE_RE = re.compile(
+    r"(?i)(functional|logical|mathematical|formal)\s+"
+    r"(syntax|form|expression|representation|notation|equivalent)"
+)
+
+# Wave 27 HIGH-4: math / logic notation detector. Any one of these Unicode
+# symbols inside a short (≤ 40 chars) heading marks it as formula residue
+# rather than a real chapter title. Used for cases like "C v ∀R.D",
+# "∀x (P(x) → Q(x))", etc. Formulas are valid inline content but should
+# never be treated as topic headings for objective synthesis.
+_MATH_NOTATION_CHARS = frozenset(
+    "∀∃∈∉⊆⊇∪∩∧∨¬⊤⊥≡≢⇒⇔→←↔⊃⊂≤≥≠≈"
+    "∑∏∫∞∂∇αβγδεζηθικλμνξοπρστυφχψω"
+    "ΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡΣΤΥΦΧΨΩ"
+)
 
 # A heading that ends with a colon (`:`) is almost always a prompt /
 # section-preamble rather than a real title. The exception is when the
@@ -254,17 +299,32 @@ def _is_low_signal_heading(heading: str) -> bool:
     if _COLON_PROMPT_TAIL_RE.search(text) and word_count > 3:
         return True
 
+    # Wave 27 HIGH-4: math / logic notation detector. Short heading
+    # containing Unicode math symbols (∀ ∃ ∈ ⊆ ∧ ¬ etc.) is formula
+    # residue from the chapter body, not a real chapter title. Applied
+    # BEFORE the formulaic-phrase check because formula residues are
+    # often all-symbols with no English word at all.
+    if len(text) <= 40 and any(ch in _MATH_NOTATION_CHARS for ch in text):
+        return True
+
+    # Wave 27 HIGH-4: formulaic-phrase lead-ins that pdftotext hoisted
+    # into a heading ("The functional syntax equivalent is as follows:").
+    if _FORMULAIC_PHRASE_RE.search(text):
+        return True
+
     # Author byline detector. A heading is a byline when:
     #   (1) the heading starts with an explicit byline lead-in
-    #       ("by", "edited by", "cover design by") followed by 2+ Name-like
-    #       tokens — this is a high-precision signal regardless of token
-    #       count ("Cover design by Maria Keet" is a byline even at two
-    #       author tokens). OR
+    #       ("by", "edited by", "cover design by") followed by 1+ Name-like
+    #       tokens — this is a high-precision signal regardless of count
+    #       ("Cover design by Maria Keet" is a byline even at two authors).
     #   (2) every token is a Name-like token AND at least one token is
-    #       hyphenated (characteristic of author / transliterated names
-    #       like "Hung-Nghiep"). This keeps "European Union Policy" (a
-    #       real title) in bounds while catching "Hung-Nghiep Tran
-    #       Atsuhiro Takasu" author lists.
+    #       hyphenated / multi-initialed (high-confidence author signal
+    #       like "Hung-Nghiep" or "A.W."). OR
+    #   (3) Wave 27: exactly 2-3 tokens AND every token looks like a
+    #       proper name AND no token matches the common-title-word set.
+    #       Catches bare 2-name bylines ("Maria Keet") without false-
+    #       positive-demoting "European Union", "Creative Commons",
+    #       "Digital Pedagogy", etc.
     if word_count >= 2:
         stripped_words = [w.strip(",.;:()[]\"'") for w in words]
         tokens_for_name_check = stripped_words
@@ -276,7 +336,7 @@ def _is_low_signal_heading(heading: str) -> bool:
                 tokens_for_name_check = stripped_words[len(leadin_words):]
                 leadin_matched = True
                 break
-        if tokens_for_name_check and len(tokens_for_name_check) >= 2:
+        if tokens_for_name_check and len(tokens_for_name_check) >= 1:
             all_name_like = all(
                 _NAME_TOKEN_RE.match(tok) is not None
                 and tok.lower() not in _STOPWORDS
@@ -286,11 +346,24 @@ def _is_low_signal_heading(heading: str) -> bool:
             )
             if all_name_like:
                 hyphenated = any("-" in tok for tok in tokens_for_name_check)
+                initialed = any(
+                    "." in tok or (tok.startswith("(") and tok.endswith(")"))
+                    for tok in tokens_for_name_check
+                )
                 # (1) lead-in → high-confidence byline regardless of count.
-                # (2) no lead-in → require a hyphenated token so we don't
-                # drop legitimate "European Union Policy"-style titles.
-                if leadin_matched or hyphenated:
+                # (2) hyphenated / initialed / parenthetical → strong name signal.
+                # (3) pure 2-3 token capitalized sequence where NO token is
+                #     in the curated common-title-word set (catches "Maria
+                #     Keet" without tripping "European Union Policy").
+                if leadin_matched or hyphenated or initialed:
                     return True
+                if 2 <= len(tokens_for_name_check) <= 3:
+                    any_common_title_word = any(
+                        tok.lower() in _COMMON_TITLE_WORDS
+                        for tok in tokens_for_name_check
+                    )
+                    if not any_common_title_word:
+                        return True
 
     return False
 
@@ -307,6 +380,52 @@ _SENTENCE_STARTER_WORDS = frozenset([
     "imagine", "consider", "note", "notice", "suppose", "assume",
     "given", "since", "so", "then", "also", "further",
 ])
+
+# Wave 27 HIGH-4: common English title-bearing nouns / adjectives. When a
+# short 2-3 token capitalized heading contains any of these, it's very likely
+# a legitimate chapter / section title ("European Union Policy", "Digital
+# Pedagogy", "Creative Commons", "Research Methods", "Science of Learning"),
+# NOT a bare author byline ("Maria Keet", "John Smith"). Kept intentionally
+# small and conservative — only adds a token here when its surname usage is
+# rare AND it's a common title vocabulary word.
+_COMMON_TITLE_WORDS = frozenset([
+    # Disciplines / fields
+    "science", "sciences", "research", "studies", "theory", "theories",
+    "methods", "methodology", "analysis", "synthesis", "practice",
+    "education", "learning", "teaching", "pedagogy", "psychology",
+    "sociology", "philosophy", "economics", "mathematics", "physics",
+    "chemistry", "biology", "computing", "engineering", "medicine",
+    "history", "literature", "linguistics", "statistics", "genetics",
+    "ethics", "aesthetics", "politics", "government", "policy", "policies",
+    "law", "management", "leadership", "innovation", "technology",
+    # Descriptors / modifiers
+    "introduction", "overview", "foundations", "fundamentals", "principles",
+    "advanced", "basic", "modern", "classical", "contemporary", "digital",
+    "global", "international", "national", "regional", "local", "public",
+    "private", "creative", "critical", "applied", "theoretical",
+    "practical", "professional", "academic", "scientific", "european",
+    "american", "asian", "african", "eastern", "western", "northern",
+    "southern", "united",
+    # Structural / nouns common in titles
+    "chapter", "section", "module", "unit", "course", "program", "curriculum",
+    "system", "systems", "design", "framework", "approach", "model",
+    "perspective", "perspectives", "concept", "concepts", "process",
+    "processes", "development", "assessment", "evaluation", "reform",
+    "change", "growth", "world", "society", "community", "communities",
+    "culture", "cultures", "environment", "environments", "institution",
+    "institutions", "organization", "organizations", "movement", "movements",
+    "revolution", "revolutions", "tradition", "traditions", "union",
+    "commons", "commonwealth", "federation", "republic", "kingdom",
+    "empire", "age", "era", "century", "past", "future", "present",
+    "knowledge", "skills", "information", "communication", "media",
+    "networks", "data", "health", "welfare", "justice", "rights",
+    "democracy", "capitalism", "socialism", "liberalism", "conservatism",
+    "feminism", "philosophy", "ontology", "epistemology", "logic",
+    "logics", "reasoning", "representation", "computation", "cognition",
+    "perception", "memory", "language", "grammar", "syntax", "semantics",
+    "pragmatics", "phonetics", "morphology", "discourse",
+])
+
 
 # Function words that real chapter titles never end with.
 _SENTENCE_TAIL_WORDS = frozenset([
@@ -695,14 +814,17 @@ def parse_dart_html_files(html_paths: List[Path]) -> List[Dict[str, Any]]:
         # Prefer DART-shaped <section> blocks; fall back to whole-document
         # heading-boundary split when no <section> tags are present. When
         # <section> is present we also capture its byte-offset so chapter
-        # assignment can map the section back to its article wrapper.
-        section_matches: List[Tuple[str, int]] = []  # (body, start_offset)
+        # assignment can map the section back to its article wrapper, and
+        # Wave 27 captures ``data-dart-block-id`` from the opening tag so
+        # source-ids carry through into the Courseforge page.
+        # Section tuple: (opening_tag, body, start_offset)
+        section_matches: List[Tuple[str, str, int]] = []
         for m in _SECTION_RE.finditer(html):
-            section_matches.append((m.group(1), m.start()))
+            section_matches.append((m.group(1), m.group(2), m.start()))
         if not section_matches:
-            section_matches = [(html, 0)]
+            section_matches = [("", html, 0)]
 
-        for section_body, section_offset in section_matches:
+        for opening_tag, section_body, section_offset in section_matches:
             heading_match = _HEADING_RE.search(section_body)
             heading_raw = heading_match.group(2) if heading_match else ""
             heading = _strip_tags(heading_raw) or f"Section from {stem}"
@@ -729,6 +851,15 @@ def parse_dart_html_files(html_paths: List[Path]) -> List[Dict[str, Any]]:
             if _is_low_signal_heading(heading):
                 continue
 
+            # Wave 27: harvest DART block-id from the section wrapper.
+            # When absent (pre-Wave-12 DART output), leave empty so the
+            # downstream renderer falls back to the Wave 9 source-
+            # module-map path or silently elides source-ids.
+            block_id_match = _DATA_DART_BLOCK_ID_RE.search(opening_tag)
+            dart_block_id = (
+                block_id_match.group(1).strip() if block_id_match else ""
+            )
+
             topics.append({
                 "heading": heading[:120],
                 "paragraphs": paragraphs,
@@ -738,6 +869,11 @@ def parse_dart_html_files(html_paths: List[Path]) -> List[Dict[str, Any]]:
                 # Wave 24: chapter_id from <article role="doc-chapter">;
                 # None when DART didn't emit doc-chapter wrappers.
                 "chapter_id": _chapter_for_offset(section_offset),
+                # Wave 27: DART provenance for per-element source-id
+                # carry-through. ``dart_block_ids`` is a list so future
+                # multi-block topics (e.g. merged sibling sections) can
+                # contribute a comma-joined source-ids attribute.
+                "dart_block_ids": [dart_block_id] if dart_block_id else [],
                 # Populated in the finalization pass below so every topic
                 # from the same source carries the file's extracted items.
                 "extracted_lo_statements": [],
@@ -1386,16 +1522,78 @@ def _topic_to_section(
     ``courseforge_jsonld_v1.schema.json``. The Courseforge self-check /
     application pages still emit component metadata (via generate_week)
     because those keys live on the HTML elements, not the JSON-LD.
+
+    Wave 27 HIGH-3: when the DART source carries ``data-dart-block-id``
+    on the section wrapper, emit ``source_references[]`` on the
+    generated section so
+    :func:`Courseforge.scripts.generate_course._render_content_sections`
+    stamps ``data-cf-source-ids="dart:{slug}#{block_id}"`` on the
+    rendered ``<h2>`` wrapper. Also propagates into the page's JSON-LD
+    ``sections[].sourceReferences`` via ``_build_section_metadata``.
+    Back-compat: when DART didn't emit block IDs, the refs list is
+    empty and nothing is stamped.
     """
     key_terms = topic.get("key_terms", []) or []
     paragraphs = [_html.escape(p) for p in topic["paragraphs"][:3]]
-    return {
+    section: Dict[str, Any] = {
         "heading": topic["heading"],
         "level": 2,
         "content_type": section_role,
         "paragraphs": paragraphs,
         "key_terms": key_terms,
     }
+    source_refs = _topic_source_references(topic)
+    if source_refs:
+        section["source_references"] = source_refs
+    return section
+
+
+def _topic_source_references(
+    topic: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Build a ``sourceReferences[]`` list from a parsed DART topic.
+
+    Wave 27: every block ID captured on the source <section> wrapper
+    becomes one ``{sourceId, role}`` entry. The first block ID plays
+    the ``primary`` role; any additional IDs (future: multi-block
+    topics merged into one) play ``contributing``. Returns an empty
+    list when the topic has no DART block IDs — back-compat path for
+    pre-Wave-12 DART HTML.
+
+    Slug normalization differs between the two halves of the
+    ``dart:{slug}#{block_id}`` shape:
+
+    * Document slug — uses :func:`canonical_slug` on the source file
+      stem to match the way DART / Wave 9 source-router mint slugs.
+    * Block ID — uses a gentler lowercase + pattern-filter so DART's
+      native ``s3_c0`` / 16-hex IDs survive unchanged (the
+      ``canonical_slug`` helper would collapse underscores and break
+      the schema pattern).
+    """
+    block_ids = [
+        bid.strip() for bid in (topic.get("dart_block_ids") or [])
+        if isinstance(bid, str) and bid.strip()
+    ]
+    if not block_ids:
+        return []
+    stem = topic.get("source_file") or ""
+    slug = canonical_slug(stem)
+    if not slug:
+        return []
+    refs: List[Dict[str, Any]] = []
+    for idx, block_id in enumerate(block_ids):
+        # The source_reference schema requires block_id to match
+        # ``[a-z0-9_-]+``. Lowercase + strip any characters outside
+        # that set, keeping underscores and hyphens intact (DART's
+        # native ``s3_c0`` positional IDs MUST survive unchanged).
+        block_slug = re.sub(r"[^a-z0-9_-]+", "", block_id.lower())
+        if not block_slug:
+            continue
+        refs.append({
+            "sourceId": f"dart:{slug}#{block_slug}",
+            "role": "primary" if idx == 0 else "contributing",
+        })
+    return refs
 
 
 def _build_self_check_questions(

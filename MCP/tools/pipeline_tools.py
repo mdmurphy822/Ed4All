@@ -2761,10 +2761,31 @@ def _build_tool_registry() -> dict:
         async def _package_imscc(**kwargs):
             """Build a real IMS Common Cartridge package from generated content.
 
-            Creates a valid IMSCC ZIP with imsmanifest.xml and all HTML modules.
-            Parseable by Trainforge's IMSCCParser.
+            Wave 27 HIGH-2: delegates to the mature multi-file packager
+            (``Courseforge.scripts.package_multifile_imscc.package_imscc``)
+            rather than hand-rolling the ZIP. Consequences of the
+            delegation:
+
+            * Per-week ``learningObjectives`` validation runs by default
+              (the mature packager refuses to build when any page's LO
+              list references an out-of-week ID).
+            * ``course_metadata.json`` is bundled at the zip root when
+              present (the mature packager's Wave 3 REC-TAX-01 behavior).
+            * Manifest uses IMS Common Cartridge v1.3 namespaces.
+            * Resources are nested under per-week ``<item>`` wrappers in
+              the organization tree — Brightspace / Canvas / Moodle
+              render a week-grouped module list instead of a flat page
+              dump.
+
+            The legacy JSON envelope (``success``, ``package_path``,
+            ``libv2_package_path``, ``html_modules``, ``package_size_bytes``)
+            is preserved so callers see no contract change. LO-contract
+            failure surfaces as ``{"success": false, "error": ...,
+            "validation_failures": [...]}`` instead of silently falling
+            through.
             """
-            import zipfile
+            import sys as _sys
+            from pathlib import Path as _Path
 
             project_id = kwargs.get("project_id", "")
             project_path = _PROJECT_ROOT / "Courseforge" / "exports" / project_id
@@ -2772,14 +2793,7 @@ def _build_tool_registry() -> dict:
             final_dir = project_path / "05_final_package"
             final_dir.mkdir(parents=True, exist_ok=True)
 
-            config_path = project_path / "project_config.json"
-            course_name = project_id
-            if config_path.exists():
-                with open(config_path) as f:
-                    cfg = json.load(f)
-                    course_name = cfg.get("course_name", project_id)
-
-            # Collect HTML module files
+            # Sanity: require the content dir + at least one HTML page.
             html_files = sorted(content_dir.rglob("*.html"))
             if not html_files:
                 return json.dumps({
@@ -2787,66 +2801,91 @@ def _build_tool_registry() -> dict:
                     "content_dir": str(content_dir),
                 })
 
-            # Build imsmanifest.xml
-            resource_items = []
-            resource_defs = []
-            for idx, html_file in enumerate(html_files, 1):
-                rel_path = html_file.relative_to(content_dir)
-                res_id = f"RES_{idx:03d}"
-                item_id = f"ITEM_{idx:03d}"
-                title_text = html_file.parent.name.replace("_", " ").title()
+            config_path = project_path / "project_config.json"
+            course_name = project_id
+            course_title = project_id
+            if config_path.exists():
+                try:
+                    with open(config_path) as f:
+                        cfg = json.load(f)
+                    course_name = cfg.get("course_name", project_id)
+                    course_title = (
+                        cfg.get("course_title")
+                        or cfg.get("title")
+                        or course_name
+                    )
+                except (OSError, json.JSONDecodeError):
+                    pass
 
-                resource_items.append(
-                    f'      <item identifier="{item_id}" identifierref="{res_id}">'
-                    f'\n        <title>{title_text}</title>'
-                    f'\n      </item>'
-                )
-                resource_defs.append(
-                    f'    <resource identifier="{res_id}" type="webcontent" '
-                    f'href="{rel_path}">'
-                    f'\n      <file href="{rel_path}"/>'
-                    f'\n    </resource>'
-                )
+            # Optional: caller-provided objectives JSON used by the
+            # mature packager's LO-contract validator. Falls back to the
+            # packager's auto-discovery (content_dir/course.json).
+            objectives_path_kw = kwargs.get("objectives_path")
+            objectives_path = (
+                _Path(objectives_path_kw) if objectives_path_kw else None
+            )
+            skip_validation = bool(kwargs.get("skip_validation", False))
 
-            items_xml = "\n".join(resource_items)
-            resources_xml = "\n".join(resource_defs)
-
-            manifest_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<manifest identifier="{course_name}_manifest"
-  xmlns="http://www.imsglobal.org/xsd/imsccv1p2/imscp_v1p1"
-  xmlns:lom="http://ltsc.ieee.org/xsd/imsccv1p2/LOM/resource"
-  xmlns:lomimscc="http://ltsc.ieee.org/xsd/imsccv1p2/LOM/manifest">
-  <metadata>
-    <schema>IMS Common Cartridge</schema>
-    <schemaversion>1.2.0</schemaversion>
-    <lomimscc:lom>
-      <lomimscc:general>
-        <lomimscc:title>
-          <lomimscc:string language="en">{course_name}</lomimscc:string>
-        </lomimscc:title>
-      </lomimscc:general>
-    </lomimscc:lom>
-  </metadata>
-  <organizations>
-    <organization identifier="ORG_1" structure="rooted-hierarchy">
-      <item identifier="ROOT">
-        <title>{course_name}</title>
-{items_xml}
-      </item>
-    </organization>
-  </organizations>
-  <resources>
-{resources_xml}
-  </resources>
-</manifest>"""
-
-            # Create IMSCC ZIP package
             package_path = final_dir / f"{course_name}.imscc"
-            with zipfile.ZipFile(package_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                zf.writestr("imsmanifest.xml", manifest_xml)
-                for html_file in html_files:
-                    rel_path = html_file.relative_to(content_dir)
-                    zf.write(html_file, str(rel_path))
+
+            # Import the mature packager. The module lives under
+            # ``Courseforge/scripts/`` (no ``__init__.py``) so we prepend
+            # the directory to ``sys.path`` before importing. Resolve the
+            # directory relative to this module's real location (NOT
+            # ``_PROJECT_ROOT``, which tests may monkeypatch to a tmp
+            # workspace that doesn't ship the mature packager).
+            cf_scripts = (
+                _Path(__file__).resolve().parents[2]
+                / "Courseforge" / "scripts"
+            )
+            if str(cf_scripts) not in _sys.path:
+                _sys.path.insert(0, str(cf_scripts))
+            try:
+                import package_multifile_imscc as _pkg_mod  # noqa: E402
+            except ImportError as exc:
+                return json.dumps({
+                    "success": False,
+                    "error": f"Failed to import mature packager: {exc}",
+                    "project_id": project_id,
+                })
+
+            # Run in an executor so the (synchronous) packager does not
+            # block the event loop. SystemExit raised by the packager on
+            # LO-contract failure surfaces as a ``SystemExit`` we convert
+            # into a structured error response. Any other exception is
+            # surfaced the same way so the caller sees a normal JSON
+            # envelope rather than a crash.
+            try:
+                _pkg_mod.package_imscc(
+                    content_dir,
+                    package_path,
+                    course_name,
+                    course_title,
+                    objectives_path=objectives_path,
+                    skip_validation=skip_validation,
+                )
+            except SystemExit as exc:
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        "IMSCC packaging refused: per-week LO contract "
+                        "validation failed. See logs for per-page details."
+                    ),
+                    "exit_code": (
+                        exc.code if isinstance(exc.code, int) else 2
+                    ),
+                    "project_id": project_id,
+                })
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Mature packager raised for project %s: %s",
+                    project_id, exc,
+                )
+                return json.dumps({
+                    "success": False,
+                    "error": f"Mature packager failed: {exc}",
+                    "project_id": project_id,
+                })
 
             return json.dumps({
                 "success": True,
