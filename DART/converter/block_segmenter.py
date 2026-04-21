@@ -177,9 +177,19 @@ def segment_extracted_document(doc: "ExtractedDocument") -> List[RawBlock]:
     for figure in doc.figures:
         caption = figure.caption or ""
         alt = figure.alt_text or ""
-        descriptor = caption or alt or "(figure)"
-        normalised = _normalise_block_text(descriptor)
-        block_id = _compute_block_id(normalised, running_index)
+        # Descriptor picks the best available visible text (caption or
+        # alt-text). When neither is present we use a ``figure-<page>``
+        # hash seed so re-running the pipeline on the same PDF produces
+        # stable block IDs without emitting the literal "(figure)"
+        # string downstream (the template layer gates on empty raw.text
+        # to drop the placeholder figcaption — see Wave 17).
+        descriptor = caption or alt
+        if descriptor:
+            normalised = _normalise_block_text(descriptor)
+        else:
+            normalised = ""
+        hash_seed = normalised or f"figure-page-{figure.page}-{running_index}"
+        block_id = _compute_block_id(hash_seed, running_index)
         running_index += 1
         structured.append(
             RawBlock(

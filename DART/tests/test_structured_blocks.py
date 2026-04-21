@@ -270,6 +270,101 @@ class TestFigureTemplateStructured:
         assert "<figcaption" in html
         assert "Figure 1: Quarterly sales" in html
 
+    def test_figure_template_alt_missing_emits_role_presentation(self):
+        """Wave 17: populated src + missing alt -> alt="" role="presentation"."""
+        cb = ClassifiedBlock(
+            raw=RawBlock(
+                text="caption",
+                block_id="f2",
+                extractor_hint=BlockRole.FIGURE,
+            ),
+            role=BlockRole.FIGURE,
+            confidence=1.0,
+            attributes={
+                "image_path": "/static/fig2.png",
+                # No "alt" key at all
+                "caption": "Figure 2: Something",
+            },
+            classifier_source="extractor_hint",
+        )
+        html = render_block(cb)
+        assert '<img src="/static/fig2.png"' in html
+        assert 'alt=""' in html
+        assert 'role="presentation"' in html
+
+    def test_figure_template_never_emits_literal_figure_placeholder(self):
+        """Wave 17: the string "(figure)" must never leak into HTML."""
+        # Simulate what the segmenter produces when no caption / alt is
+        # available: empty raw.text, empty caption / alt attributes.
+        cb = ClassifiedBlock(
+            raw=RawBlock(
+                text="",  # Wave 17 empty descriptor
+                block_id="f3",
+                extractor_hint=BlockRole.FIGURE,
+            ),
+            role=BlockRole.FIGURE,
+            confidence=1.0,
+            attributes={
+                "image_path": "/static/fig3.png",
+                "alt": "",
+                "caption": "",
+            },
+            classifier_source="extractor_hint",
+        )
+        html = render_block(cb)
+        assert "(figure)" not in html
+        # Still emits a <figure> wrapper so schema.org microdata survives.
+        assert "<figure" in html
+        # No stray <figcaption> with placeholder content.
+        assert "<figcaption" not in html
+
+    def test_figure_template_empty_src_still_emits_figure_wrapper(self):
+        """Wave 17: missing image_path still emits graceful <figure>."""
+        cb = ClassifiedBlock(
+            raw=RawBlock(
+                text="",
+                block_id="f4",
+                extractor_hint=BlockRole.FIGURE,
+            ),
+            role=BlockRole.FIGURE,
+            confidence=1.0,
+            attributes={
+                "image_path": "",
+                "alt": "",
+                "caption": "Figure 4: Caption only.",
+            },
+            classifier_source="extractor_hint",
+        )
+        html = render_block(cb)
+        # No <img> when src is empty.
+        assert "<img" not in html
+        # Caption present.
+        assert "Figure 4: Caption only." in html
+        # Never the placeholder.
+        assert "(figure)" not in html
+
+    def test_figure_template_llm_backed_alt_text_renders(self):
+        """Wave 17: MockBackend alt-text surfaces through the template."""
+        cb = ClassifiedBlock(
+            raw=RawBlock(
+                text="",
+                block_id="f5",
+                extractor_hint=BlockRole.FIGURE,
+            ),
+            role=BlockRole.FIGURE,
+            confidence=1.0,
+            attributes={
+                "image_path": "/static/fig5.png",
+                # Alt populated as if AltTextGenerator(llm=MockBackend) ran.
+                "alt": "A chart showing quarterly revenue growth",
+                "caption": "Figure 5: Revenue.",
+            },
+            classifier_source="extractor_hint",
+        )
+        html = render_block(cb)
+        assert 'alt="A chart showing quarterly revenue growth"' in html
+        assert 'role="presentation"' not in html
+
 
 # ---------------------------------------------------------------------------
 # End-to-end
@@ -310,7 +405,7 @@ class TestExtractorToHtmlEndToEnd:
         monkeypatch.setattr(
             extractor_module,
             "_extract_figures",
-            lambda pdf_path, *, llm=None: [
+            lambda pdf_path, *, llm=None, **_: [
                 ExtractedFigure(
                     page=2,
                     bbox=(1.0, 2.0, 3.0, 4.0),
