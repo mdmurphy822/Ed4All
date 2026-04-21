@@ -39,7 +39,7 @@ import json
 import logging
 from typing import Dict, List, Optional
 
-from DART.converter.block_roles import BlockRole, ClassifiedBlock
+from DART.converter.block_roles import BlockRole, ClassifiedBlock, RawBlock
 from DART.converter.block_templates import render_block
 from DART.converter.cross_refs import resolve_cross_references
 from DART.templates.wcag22_css import WCAG22_CSS
@@ -108,10 +108,119 @@ def _split_metadata(
     return body, aside
 
 
+def _group_consecutive_lists(
+    body_blocks: List[ClassifiedBlock],
+) -> List[ClassifiedBlock]:
+    """Wave 21: fold runs of consecutive ``LIST_ITEM`` blocks into
+    synthesized ``LIST_UNORDERED`` / ``LIST_ORDERED`` blocks.
+
+    Rules:
+
+    * A run starts at the first ``LIST_ITEM`` and extends while the
+      next block is also ``LIST_ITEM`` **with the same** ``marker_type``.
+    * Runs break on: any non-``LIST_ITEM`` block, a ``marker_type``
+      change, or end of list.
+    * The synthesized group block carries:
+        - ``role`` = ``LIST_UNORDERED`` / ``LIST_ORDERED``
+        - ``attributes.items`` = ``[{text, marker, sub_items?}, ...]``
+        - ``raw`` cloned from the first item's ``raw`` so
+          ``data-dart-pages`` surfaces the run's first page.
+        - ``classifier_source`` = ``"heuristic+grouped"`` to distinguish
+          synthesized groups from naturally-classified blocks while
+          still routing through the heuristic data-dart-source enum.
+    * When a run contains exactly one item, the group is still emitted
+      as a one-item ``<ul>`` / ``<ol>`` (the plan calls this out
+      explicitly — never leave a stray ``<li>`` without a parent).
+
+    Stray ``LIST_ITEM`` blocks that somehow escape (runs shouldn't be
+    empty) are preserved as-is; the :func:`_tpl_list_item` fallback
+    template will render them defensively.
+    """
+    if not body_blocks:
+        return body_blocks
+
+    grouped: List[ClassifiedBlock] = []
+    run: List[ClassifiedBlock] = []
+    run_marker_type: Optional[str] = None
+
+    def _flush_run() -> None:
+        nonlocal run, run_marker_type
+        if not run:
+            return
+        marker_type = run_marker_type or "unordered"
+        role = (
+            BlockRole.LIST_ORDERED
+            if marker_type == "ordered"
+            else BlockRole.LIST_UNORDERED
+        )
+        items: List[dict] = []
+        for item_block in run:
+            attrs = item_block.attributes or {}
+            item = {
+                "text": attrs.get("text") or item_block.raw.text,
+                "marker": attrs.get("marker"),
+                "marker_type": attrs.get("marker_type") or marker_type,
+            }
+            if attrs.get("sub_items"):
+                item["sub_items"] = attrs["sub_items"]
+            items.append(item)
+
+        head = run[0]
+        # Clone the raw block so the synthesized group carries the
+        # first item's provenance (page, extractor, block_id) while
+        # not mutating the original. page_label / extra propagate so
+        # ``data-dart-pages`` stays correct.
+        group_raw = RawBlock(
+            text=head.raw.text,
+            block_id=head.raw.block_id,
+            page=head.raw.page,
+            bbox=head.raw.bbox,
+            extractor=head.raw.extractor,
+            neighbors=dict(head.raw.neighbors or {}),
+            extractor_hint=None,
+            extra=dict(head.raw.extra or {}),
+        )
+        grouped.append(
+            ClassifiedBlock(
+                raw=group_raw,
+                role=role,
+                confidence=head.confidence,
+                attributes={"items": items, "marker_type": marker_type},
+                classifier_source="heuristic+grouped",
+            )
+        )
+        run = []
+        run_marker_type = None
+
+    for block in body_blocks:
+        if block.role == BlockRole.LIST_ITEM:
+            mt = (block.attributes or {}).get("marker_type") or "unordered"
+            if run and mt != run_marker_type:
+                _flush_run()
+            run.append(block)
+            run_marker_type = mt
+        else:
+            _flush_run()
+            grouped.append(block)
+    _flush_run()
+    return grouped
+
+
 def _render_body(body_blocks: List[ClassifiedBlock]) -> str:
-    """Render the body, grouping consecutive bibliography entries."""
+    """Render the body, grouping consecutive bibliography entries.
+
+    Wave 21: also groups consecutive ``LIST_ITEM`` blocks into
+    ``LIST_UNORDERED`` / ``LIST_ORDERED`` synthesised blocks via
+    :func:`_group_consecutive_lists` before rendering so naked ``<p>``
+    bullet/numbered residue collapses into semantic ``<ul>`` / ``<ol>``
+    markup.
+    """
     if not body_blocks:
         return ""
+
+    # Wave 21: list grouping runs first so the bibliography grouping
+    # below sees the collapsed list blocks.
+    body_blocks = _group_consecutive_lists(body_blocks)
 
     pieces: List[str] = []
     buffer: List[ClassifiedBlock] = []
@@ -417,8 +526,14 @@ def assemble_html(
     # dart_markers gate's ``aria_sections`` + ``dart_semantic_classes``
     # critical checks always pass. The wrapper carries minimal provenance
     # so downstream consumers can trace it back to the document.
+    # Wave 21: treat <ul class="dart-section"> / <ol class="dart-section">
+    # as structural wrappers too, so a doc composed entirely of lists
+    # still passes the dart_markers gate without the fallback wrapper.
     has_structural = bool(body_blocks) and (
-        "<section" in body_html or "<article" in body_html
+        "<section" in body_html
+        or "<article" in body_html
+        or 'class="dart-section"' in body_html
+        or 'class="dart-section ' in body_html
     )
     if not has_structural:
         body_html = (

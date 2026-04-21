@@ -32,6 +32,17 @@ class BlockRole(Enum):
     PARAGRAPH = "paragraph"
     TOC_NAV = "toc_nav"
     PAGE_BREAK = "page_break"
+    # ---- Lists (Wave 21) --------------------------------------------
+    # LIST_ITEM is an intermediate role produced by the classifier for a
+    # single marker-prefixed block. The document assembler groups
+    # consecutive LIST_ITEM blocks of the same marker_type into a
+    # synthesized LIST_UNORDERED / LIST_ORDERED block with
+    # ``attributes.items = [{text, marker, sub_items}, ...]``. A stray
+    # LIST_ITEM that survives grouping still renders as a single-item
+    # ``<ul>`` so the output remains valid.
+    LIST_UNORDERED = "list_unordered"
+    LIST_ORDERED = "list_ordered"
+    LIST_ITEM = "list_item"
 
     # ---- Educational ------------------------------------------------
     LEARNING_OBJECTIVES = "learning_objectives"
