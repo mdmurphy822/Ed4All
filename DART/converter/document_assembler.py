@@ -1,17 +1,26 @@
-"""Phase 4 (Wave 12 minimal): document assembly.
+"""Phase 4 (Wave 13 assembler): document assembly.
 
-Wraps the per-block rendered HTML in the current DART document shell
-(skip link, ``<header>`` with ``<h1>``, ``<main>``, ``<footer>``) plus a
+Wraps the per-block rendered HTML in the DART document shell (skip link,
+``<header>`` with ``<h1>``, ``<main>``, ``<footer>``) plus a
 ``<aside role="complementary">`` metadata block populated from either
 the caller-supplied ``metadata`` dict or classifier-collected
 ``COPYRIGHT_LICENSE`` / ``AUTHOR_AFFILIATION`` / ``BIBLIOGRAPHIC_METADATA``
-blocks.
+/ ``KEYWORDS`` blocks.
 
-Wave 15 will replace this module with a decoration-heavy assembler that
-emits Dublin Core ``<meta>`` tags, schema.org JSON-LD, an accessibility
-summary, WCAG 2.2 AA CSS, and resolved cross-reference anchors. For
-Wave 12 the assembler stays intentionally thin so the foundation stays
-readable.
+Wave 13 changes vs. Wave 12:
+
+    * pulls the WCAG 2.2 AA CSS bundle from ``DART/templates/wcag22_css.py``
+      instead of carrying an inline string, so the rules are sharable
+      with ``gold_standard.html`` + future integration tests.
+    * groups consecutive ``BIBLIOGRAPHY_ENTRY`` blocks into a single
+      ``<ol role="doc-bibliography">`` wrapper so the DPUB-ARIA bibliography
+      role applies at the list level rather than per-entry.
+    * skips metadata-aside duplication for ``TITLE`` blocks: the
+      assembler already emits the canonical ``<h1>`` so inline title
+      blocks are moved to the aside to keep body semantics clean.
+
+Wave 15 will add Dublin Core ``<meta>`` tags + schema.org JSON-LD to
+``<head>`` + cross-reference anchor resolution.
 """
 
 from __future__ import annotations
@@ -22,13 +31,13 @@ from typing import Dict, List
 
 from DART.converter.block_roles import BlockRole, ClassifiedBlock
 from DART.converter.block_templates import render_block
+from DART.templates.wcag22_css import WCAG22_CSS
 
 logger = logging.getLogger(__name__)
 
 
-# Roles the assembler sweeps into the ``<aside>`` metadata block rather
-# than inline in ``<main>``. Wave 15 may move these into ``<head>``
-# Dublin Core / JSON-LD instead.
+# Roles swept into the metadata aside rather than inline in ``<main>``.
+# Wave 15 may promote these into ``<head>`` Dublin Core / JSON-LD.
 _METADATA_ASIDE_ROLES = {
     BlockRole.COPYRIGHT_LICENSE,
     BlockRole.AUTHOR_AFFILIATION,
@@ -37,25 +46,8 @@ _METADATA_ASIDE_ROLES = {
 }
 
 
-_DOC_CSS = """
-  body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; max-width: 50em; margin: 0 auto; padding: 1em; color: #1a1a1a; }
-  .skip-link { position: absolute; left: -9999px; top: auto; width: 1px; height: 1px; overflow: hidden; }
-  .skip-link:focus { position: static; width: auto; height: auto; }
-  h1 { font-size: 2em; border-bottom: 2px solid #333; padding-bottom: 0.3em; }
-  h2 { font-size: 1.5em; margin-top: 2em; border-bottom: 1px solid #ccc; padding-bottom: 0.2em; }
-  h3 { font-size: 1.25em; margin-top: 1.5em; }
-  section { margin-bottom: 1.5em; }
-  p { margin: 0.8em 0; }
-  aside[role="complementary"] { border-left: 3px solid #888; padding-left: 1em; margin-top: 2em; font-size: 0.95em; }
-  @media (prefers-color-scheme: dark) {
-    body { background: #1a1a1a; color: #e0e0e0; }
-    h1, h2 { border-color: #555; }
-  }
-  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
-"""
-
-
 def _safe_title(title: str) -> str:
+    """Pretty-print a filename-ish title for the ``<h1>`` / ``<title>``."""
     pretty = title.replace("-", " ").replace("_", " ").title()
     return html.escape(pretty)
 
@@ -63,7 +55,7 @@ def _safe_title(title: str) -> str:
 def _split_metadata(
     classified_blocks: List[ClassifiedBlock],
 ) -> tuple[List[ClassifiedBlock], List[ClassifiedBlock]]:
-    """Separate body blocks from metadata-aside blocks."""
+    """Separate body blocks from metadata-aside blocks, order-preserving."""
     body: List[ClassifiedBlock] = []
     aside: List[ClassifiedBlock] = []
     for block in classified_blocks:
@@ -75,9 +67,35 @@ def _split_metadata(
 
 
 def _render_body(body_blocks: List[ClassifiedBlock]) -> str:
+    """Render the body, grouping consecutive bibliography entries.
+
+    Bibliography entries are DPUB-ARIA ``doc-endnote`` list items, and
+    the canonical pattern puts the ``doc-bibliography`` role on the
+    surrounding ``<ol>``. This loop buffers consecutive entries, emits
+    the wrapping ``<ol>`` once, then resumes normal rendering.
+    """
     if not body_blocks:
         return ""
-    return "\n".join(render_block(block) for block in body_blocks)
+
+    pieces: List[str] = []
+    buffer: List[ClassifiedBlock] = []
+
+    def flush() -> None:
+        if not buffer:
+            return
+        inner = "\n".join(render_block(b) for b in buffer)
+        pieces.append(f'<ol role="doc-bibliography">\n{inner}\n</ol>')
+        buffer.clear()
+
+    for block in body_blocks:
+        if block.role == BlockRole.BIBLIOGRAPHY_ENTRY:
+            buffer.append(block)
+        else:
+            flush()
+            pieces.append(render_block(block))
+    flush()
+
+    return "\n".join(pieces)
 
 
 def _render_aside(
@@ -98,11 +116,17 @@ def _render_aside(
     parts: List[str] = ['<aside role="complementary" aria-label="Document metadata">']
 
     if metadata.get("authors"):
-        parts.append(f"<p><strong>Authors:</strong> {html.escape(str(metadata['authors']))}</p>")
+        parts.append(
+            f"<p><strong>Authors:</strong> {html.escape(str(metadata['authors']))}</p>"
+        )
     if metadata.get("copyright"):
-        parts.append(f"<p><strong>Copyright:</strong> {html.escape(str(metadata['copyright']))}</p>")
+        parts.append(
+            f"<p><strong>Copyright:</strong> {html.escape(str(metadata['copyright']))}</p>"
+        )
     if metadata.get("license"):
-        parts.append(f"<p><strong>License:</strong> {html.escape(str(metadata['license']))}</p>")
+        parts.append(
+            f"<p><strong>License:</strong> {html.escape(str(metadata['license']))}</p>"
+        )
 
     for block in aside_blocks:
         parts.append(render_block(block))
@@ -118,10 +142,10 @@ def assemble_html(
 ) -> str:
     """Assemble the final HTML document.
 
-    Wave 12 scope: single DOCTYPE + head + body skeleton, body renders
-    every classified block via the template registry, metadata blocks
-    (copyright, author affiliation, keywords, bibliographic metadata)
-    sweep into a trailing ``<aside role="complementary">``.
+    Wave 13 scope: single DOCTYPE + head + body skeleton, body renders
+    every classified block via the template registry (with bibliography
+    grouping), metadata blocks sweep into a trailing metadata aside, and
+    the WCAG 2.2 AA CSS bundle is injected in ``<style>``.
     """
     metadata = metadata or {}
     body_blocks, aside_blocks = _split_metadata(classified_blocks)
@@ -130,14 +154,14 @@ def assemble_html(
     aside_html = _render_aside(aside_blocks, metadata)
     safe_title = _safe_title(title)
 
-    # Wave 15 will inject Dublin Core meta tags + JSON-LD + WCAG 2.2 CSS.
+    # Wave 15 will inject Dublin Core meta tags + JSON-LD into ``<head>``.
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{safe_title}</title>
-  <style>{_DOC_CSS}  </style>
+  <style>{WCAG22_CSS}</style>
 </head>
 <body>
   <a href="#main-content" class="skip-link">Skip to main content</a>
@@ -155,4 +179,4 @@ def assemble_html(
 </html>"""
 
 
-__all__ = ["assemble_html"]
+__all__ = ("assemble_html",)
