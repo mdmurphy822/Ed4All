@@ -7,8 +7,8 @@ A real-world corpus run exposed residual leaked headings after rounds
        "This chapter covers the following topics:"
        "The functional syntax equivalent is as follows:"
   2. Author bylines:
-       "Hung-Nghiep Tran Atsuhiro Takasu"
-       "Cover design by Maria Keet"
+       "Ada-Lee Researcher Ben Otherwriter"
+       "Cover design by Author Name"
   3. (Ambiguous, kept per documented decision) formula / notation
      fragments:
        "C v \u2200R.D"
@@ -46,11 +46,11 @@ class TestHeadingFilterRejectsRound4Artifacts:
         assert _cgh._is_low_signal_heading(heading) is True
 
     def test_rejects_author_byline_two_names(self):
-        heading = "Hung-Nghiep Tran Atsuhiro Takasu"
+        heading = "Ada-Lee Researcher Ben Otherwriter"
         assert _cgh._is_low_signal_heading(heading) is True
 
     def test_rejects_author_byline_with_leadin(self):
-        heading = "Cover design by Maria Keet"
+        heading = "Cover design by Author Name"
         assert _cgh._is_low_signal_heading(heading) is True
 
     def test_rejects_author_byline_edited_by(self):
@@ -71,7 +71,7 @@ class TestHeadingFilterKeepsLegitimateHeadings:
     def test_keeps_formula_fragment_camelcase(self):
         heading = "FirstYearCourse SubClassOf isTaughtBy only Professor"
         # Not rejected: CamelCase identifiers + formal keywords look
-        # unusual but represent real chapter examples in Keet's book.
+        # unusual but represent real chapter examples in ontology textbooks.
         assert _cgh._is_low_signal_heading(heading) is False
 
     def test_keeps_title_case_with_common_nouns(self):

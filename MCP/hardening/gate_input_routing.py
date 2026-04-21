@@ -254,25 +254,84 @@ def _build_dart_markers(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
-    html = _first_html_path(phase_outputs)
-    if html and html.exists():
-        return {"html_path": str(html)}, []
-    return {}, ["html_path"]
+    """Wave 29: batch-aware DART markers resolution.
+
+    Pre-Wave-29 the builder only returned a single ``html_path``; when
+    the DART phase emitted multiple HTML files (batch corpora) only the
+    first file was validated. Now we surface the full list as
+    ``html_paths`` alongside a representative ``html_path`` so:
+
+    * the validator's single-file entrypoint still works (back-compat)
+    * an aggregating caller can walk ``html_paths`` to validate every
+      emitted file.
+
+    Reaches through a broader set of phase-output keys so staged copies
+    (``staging.html_paths``) and batch emits
+    (``dart_conversion.output_paths``) both surface.
+    """
+    all_paths = _all_html_paths(phase_outputs)
+    existing = [Path(p) for p in all_paths if Path(p).exists()]
+    if not existing:
+        # One last fallback: try the single html_path helper (walks
+        # content_dir when DART outputs are absent).
+        single = _first_html_path(phase_outputs)
+        if single and single.exists():
+            existing = [single]
+    if not existing:
+        return {}, ["html_path"]
+
+    inputs: Dict[str, Any] = {
+        "html_path": str(existing[0]),
+        "html_paths": [str(p) for p in existing],
+    }
+    return inputs, []
 
 
 def _build_assessment_quality(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
-    path = _locate(
+    """Wave 29: check file existence / non-empty before handing off.
+
+    Pre-Wave-29 the builder returned any string path the phase
+    surfaced, letting the validator crash with
+    ``json.JSONDecodeError: Expecting value: line 1 column 1 (char 0)``
+    when the path pointed at an empty or absent file (a common outcome
+    when ``--no-assessments`` was half-honoured, or when Trainforge
+    phase bailed early without writing the assessments file).
+
+    Now we:
+
+    * resolve the candidate path as before,
+    * verify it exists AND is non-empty,
+    * return ``(None, ['ASSESSMENTS_FILE_MISSING'])`` when it isn't so
+      the gate is marked skipped with a structured reason rather than
+      crashing on ``json.loads``.
+    """
+    path_str = _locate(
         phase_outputs,
+        "assessments_path",
         "assessment_path",
         "output_path",
         "assessment_id",  # trainforge fallback
     )
-    if not path:
-        return {}, ["assessment_path"]
-    return {"assessment_path": path}, []
+    if not path_str:
+        return {}, ["ASSESSMENTS_FILE_MISSING"]
+
+    try:
+        path = Path(path_str)
+        if not path.exists() or not path.is_file():
+            return {}, ["ASSESSMENTS_FILE_MISSING"]
+        try:
+            size = path.stat().st_size
+        except OSError:
+            size = 0
+        if size <= 0:
+            return {}, ["ASSESSMENTS_FILE_MISSING"]
+    except (OSError, ValueError, TypeError):
+        return {}, ["ASSESSMENTS_FILE_MISSING"]
+
+    return {"assessment_path": str(path)}, []
 
 
 def _build_bloom_alignment(
@@ -339,11 +398,29 @@ def _build_libv2_manifest(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
+    """Wave 29: derive ``manifest_path`` from ``course_dir`` when absent.
+
+    Pre-Wave-29 the builder only looked for an explicit ``manifest_path``
+    key in phase outputs. The ``libv2_archival`` phase emits
+    ``course_dir`` (the archived course root) and guarantees
+    ``manifest.json`` sits inside — so when ``manifest_path`` isn't
+    surfaced explicitly we derive it as ``course_dir/manifest.json``.
+    """
     manifest = _locate(phase_outputs, "manifest_path")
+    course_dir = _locate(phase_outputs, "course_dir")
+
+    if not manifest and course_dir:
+        try:
+            derived = Path(course_dir) / "manifest.json"
+            if derived.exists():
+                manifest = str(derived)
+        except (OSError, ValueError, TypeError):
+            pass
+
     if not manifest:
         return {}, ["manifest_path"]
+
     inputs: Dict[str, Any] = {"manifest_path": manifest}
-    course_dir = _locate(phase_outputs, "course_dir")
     if course_dir:
         inputs["course_dir"] = course_dir
     return inputs, []
@@ -388,6 +465,23 @@ def _build_assessment_objective_alignment(
                     break
         except (OSError, ValueError):
             pass
+
+    if not chunks:
+        # Wave 29: fall back to the LibV2-archived corpus when
+        # Trainforge didn't surface chunks_path directly. The
+        # libv2_archival phase emits ``course_dir`` (and sometimes
+        # ``course_slug``) for the archived course root; the
+        # canonical location is
+        # ``LibV2/courses/{slug}/corpus/chunks.jsonl`` per
+        # ``lib/libv2_storage.py``.
+        archive_dir = _locate(phase_outputs, "course_dir")
+        if archive_dir:
+            try:
+                candidate = Path(archive_dir) / "corpus" / "chunks.jsonl"
+                if candidate.exists():
+                    chunks = str(candidate)
+            except (OSError, ValueError, TypeError):
+                pass
 
     if chunks:
         inputs["chunks_path"] = chunks

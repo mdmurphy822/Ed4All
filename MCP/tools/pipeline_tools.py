@@ -202,10 +202,23 @@ async def create_textbook_pipeline(
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_id = f"TTC_{course_name}_{timestamp}"
 
+        # Wave 29 Defect 5: compute the canonical course code ONCE
+        # from ``course_name`` (the CLI-supplied / caller-supplied
+        # value) and pin it on the params dict. Every DecisionCapture
+        # instantiated anywhere in this run reads from this field
+        # instead of re-deriving from a PDF name, a workflow_id hash,
+        # or the workflow type. That keeps captures, archives, and
+        # CF/TF phase data tagged with a single consistent code —
+        # fixing the OLSR_SIM_01 four-codes-in-one-run observation.
+        from lib.decision_capture import normalize_course_code as _normalize_cc
+
+        canonical_cc = _normalize_cc(course_name)
+
         # Build workflow parameters
         params = {
             "pdf_paths": [str(p.resolve()) for p in pdfs],
             "course_name": course_name,
+            "canonical_course_code": canonical_cc,
             "objectives_path": str(Path(objectives_path).resolve()) if objectives_path else None,
             "duration_weeks": duration_weeks,
             "generate_assessments": generate_assessments,
@@ -780,6 +793,7 @@ def _raw_text_to_accessible_html(
     figures_dir: Optional[str] = None,
     llm: Optional[object] = None,
     capture: Optional[object] = None,
+    canonical_course_code: Optional[str] = None,
 ) -> str:
     """Wave 15+16+17 entry point: route raw pdftotext / PDF to DART.converter.
 
@@ -823,18 +837,34 @@ def _raw_text_to_accessible_html(
     # Wave 22 DC3: pipeline_run_attribution capture. One record per
     # _raw_text_to_accessible_html call so runs are replayable from
     # captures alone. When the caller doesn't supply a capture, we
-    # build a short-lived DARTDecisionCapture keyed on the PDF name
-    # (normalised to satisfy the schema course_id pattern — DC4).
+    # build a short-lived DARTDecisionCapture keyed on the canonical
+    # course code (Wave 29 Defect 5) so every capture in one run shares
+    # the same course_id. When the caller didn't provide one — legacy
+    # pathways that invoke the converter directly from a PDF without a
+    # workflow_state — we fall back to the Wave 22 DC4 behaviour of
+    # normalising the PDF stem, but log at DEBUG that we're on the
+    # legacy path (Wave 29 Defect 5 contract).
     _owns_capture = False
     if capture is None and source_pdf:
         try:
-            from lib.decision_capture import DARTDecisionCapture
-
-            from MCP.tools.dart_tools import normalize_course_code
+            from lib.decision_capture import (
+                DARTDecisionCapture,
+                normalize_course_code,
+            )
 
             _pdf_stem = Path(source_pdf).stem or "unknown"
+            if canonical_course_code:
+                _cc = canonical_course_code
+            else:
+                _cc = normalize_course_code(_pdf_stem)
+                logger.debug(
+                    "DC5 legacy fallback: no canonical_course_code supplied; "
+                    "deriving from PDF stem %s -> %s",
+                    _pdf_stem,
+                    _cc,
+                )
             capture = DARTDecisionCapture(
-                course_code=normalize_course_code(_pdf_stem),
+                course_code=_cc,
                 pdf_name=_pdf_stem,
             )
             _owns_capture = True
@@ -1931,12 +1961,18 @@ def _build_tool_registry() -> dict:
         # (``kwargs["figures_dir"]``) still wins when set explicitly.
         # The extractor gracefully degrades when optional deps are
         # missing so this never regresses the raw-text-only path.
+        # Wave 29 Defect 5: prefer the workflow-wide canonical course
+        # code (derived from ``params.course_name`` via
+        # :func:`normalize_course_code`) when the orchestrator threaded
+        # it through. Falls back to the PDF-stem-derived code inside
+        # ``_raw_text_to_accessible_html`` when absent (legacy path).
         html_content = _raw_text_to_accessible_html(
             raw_text,
             pretty_title,
             source_pdf=str(pdf),
             output_path=str(html_output),
             figures_dir=kwargs.get("figures_dir"),
+            canonical_course_code=kwargs.get("canonical_course_code"),
         )
         html_output.write_text(html_content, encoding="utf-8")
 
