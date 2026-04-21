@@ -209,6 +209,18 @@ agents:
       - bloom_verification
     max_instances: 5
 
+  # Wave 30 Gap 3: materialises instruction_pairs.jsonl +
+  # preference_pairs.jsonl in every textbook_to_course run by calling
+  # the existing Trainforge/synthesize_training.py entry point.
+  training-synthesizer:
+    source: Trainforge/synthesize_training.py
+    type: generator
+    capabilities:
+      - instruction_pair_synthesis
+      - preference_pair_generation
+      - training_corpus_export
+    max_instances: 1
+
   # =============================================================================
   # LIBV2 AGENTS
   # =============================================================================
