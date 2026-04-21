@@ -2938,6 +2938,17 @@ def _build_tool_registry() -> dict:
                         shutil.copy2(
                             quality_json, course_dir / "quality" / quality_json.name
                         )
+                    # Wave 19 (hotfix): archive ``{stem}_figures/`` sibling
+                    # so orchestrated / CLI runs keep figure image refs
+                    # intact. Mirrors the @mcp.tool() variant at L645.
+                    figures_dir_src = src.parent / f"{src.stem}_figures"
+                    if figures_dir_src.is_dir():
+                        figures_dir_dest = (
+                            course_dir / "source" / "html" / figures_dir_src.name
+                        )
+                        if figures_dir_dest.exists():
+                            shutil.rmtree(figures_dir_dest)
+                        shutil.copytree(figures_dir_src, figures_dir_dest)
 
         # --- Copy IMSCC package -------------------------------------------
         if imscc_path_str:
