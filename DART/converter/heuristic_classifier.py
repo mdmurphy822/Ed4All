@@ -139,8 +139,8 @@ _FOOTNOTE = re.compile(r"^(?:\*+|\[\d{1,3}\]|\(\d{1,3}\)|\d{1,3}\.?)\s+\S")
 #
 # pdftotext preserves list markers as literal characters at the start of
 # each item's block. Before Wave 21 these flowed straight through as
-# naked ``<p>•    Item`` paragraphs — 323 of them on the Bates textbook.
-# The classifier promotes each such block to ``LIST_ITEM`` with
+# naked ``<p>•    Item`` paragraphs — hundreds of them on a bullet-heavy
+# textbook. The classifier promotes each such block to ``LIST_ITEM`` with
 # ``attributes = {"marker", "marker_type", "text"}`` and the assembler
 # groups consecutive items into a single ``<ul>`` / ``<ol>``.
 
@@ -276,12 +276,13 @@ _INLINE_NUMBERED_SIBLINGS = re.compile(
 # Wave 25 Fix 4: CHAPTER_OPENER false-positive guard
 # ---------------------------------------------------------------------------
 #
-# Bates audit: 39 ``<article role="doc-chapter">`` emissions vs 12
-# real chapters. Activity prompts ("What are your reasons?",
-# "Determine which is a medium...", "Do you find the distinction
-# helpful?") were being promoted to CHAPTER_OPENER because they
-# happen to start with a capital letter + keyword + number in the
-# Chapter regex's permissive path.
+# Audit (corpus-agnostic): a textbook with many activity prompts can
+# emit far more ``<article role="doc-chapter">`` wrappers than real
+# chapters. Activity prompts ("What are your reasons?", "Determine
+# which is a medium...", "Do you find the distinction helpful?") were
+# being promoted to CHAPTER_OPENER because they happen to start with
+# a capital letter + keyword + number in the Chapter regex's
+# permissive path.
 
 # Interrogative / directive prompt starters. A block opening with any
 # of these is an activity prompt, not a chapter heading.
@@ -347,8 +348,8 @@ _LEADING_BARE_NUMBER_CHAPTER = re.compile(
 def _looks_like_activity_prompt(text: str) -> bool:
     """Return True when ``text`` opens with an activity-prompt starter.
 
-    Guards CHAPTER_OPENER promotion against Bates-style activity
-    prompts. Strong chapter-number patterns (``"Chapter 5:"``,
+    Guards CHAPTER_OPENER promotion against activity-prompt false
+    positives. Strong chapter-number patterns (``"Chapter 5:"``,
     ``"Part II"``, ``"5 Introduction..."``) override the guard — if
     the block starts with one of those, it's a real chapter even
     when the title happens to be a question.
@@ -561,7 +562,7 @@ class HeuristicClassifier:
         # for a page, any classified block whose text is a substring
         # of that chrome line must NOT be promoted to FOOTNOTE — it
         # would otherwise surface as a phantom footnote in the
-        # assembled HTML (see Bates leading-digit footer regression).
+        # assembled HTML (leading-digit running-footer regression).
         self._page_chrome = page_chrome
 
     async def classify(self, blocks: List[RawBlock]) -> List[ClassifiedBlock]:
@@ -723,8 +724,9 @@ class HeuristicClassifier:
                 # Wave 25 Fix 4: refuse CHAPTER_OPENER promotion when
                 # the block opens with an activity-prompt starter
                 # ("What are your reasons?", "Determine which...",
-                # "Do you find..."). Bates-style false positives
-                # inflated the chapter count from 12 → 39.
+                # "Do you find..."). On textbooks with many reflective
+                # activities these can otherwise inflate the chapter
+                # count by 3× or more.
                 # Wave 25 Fix 7: refuse CHAPTER_OPENER promotion when
                 # the block opens with a single-digit "N. " pattern
                 # that is in fact a numbered subsection heading
@@ -771,8 +773,9 @@ class HeuristicClassifier:
 
         # Wave 25 Fix 5: dotted-numeric heading ("4.8.1.1 Epistemological
         # basis", "1.7.1. Fully online learning", "2.3 Implementation
-        # notes"). 149 short <p> bodies on Bates match this shape;
-        # pre-Wave-25 they bled into naked paragraphs (h4 count: 0).
+        # notes"). On a dotted-numeric-heavy textbook dozens to
+        # hundreds of short <p> bodies match this shape; pre-Wave-25
+        # they bled into naked paragraphs (h4 count: 0).
         #
         # Runs regardless of text_spans availability. When PyMuPDF
         # layout data IS available, this rule still fires first — the
@@ -851,7 +854,7 @@ class HeuristicClassifier:
             # Wave 25 Fix 2: refuse FOOTNOTE promotion when the
             # block's text is a substring of the page's detected
             # chrome line — the leading-digit running-footer pattern
-            # ("{N} A.W. (Tony) Bates") trips the FOOTNOTE regex
+            # ("{N} <author-name>") trips the FOOTNOTE regex
             # because the leading integer looks like a footnote
             # marker. The chrome detector (Wave 25 Fix 1) normally
             # strips these upstream, but this guard catches the
@@ -903,7 +906,7 @@ class HeuristicClassifier:
         for ``block.page``.
 
         Used to refuse FOOTNOTE promotion on leading-digit running
-        footers ("{N} A.W. (Tony) Bates") that survived the chrome-
+        footers ("{N} <author-name>") that survived the chrome-
         strip pass. The comparison is normalised (lowercase,
         whitespace-collapsed) and treats the chrome line as a
         superstring — any block whose normalised text is contained
@@ -976,7 +979,8 @@ class HeuristicClassifier:
     # subsection heading ("1. Why this book?", "2. The audience for the
     # book") as its own block; the Wave 21 LIST_ITEM classifier grabs
     # them as list items and the assembler emits one single-item <ol>
-    # per heading (14 per-block single-ol wrappers on Bates). This
+    # per heading (observed: dozens of per-block single-ol wrappers on
+    # a textbook with numbered section headings). This
     # guard looks ahead to the next block — when the next block is a
     # long prose paragraph (>= 60 words), the candidate is NOT a list
     # item but a numbered section heading.

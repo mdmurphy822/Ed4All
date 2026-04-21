@@ -1,8 +1,8 @@
 """Wave 20: running header / footer / page-number chrome detection.
 
 pdftotext faithfully reproduces running headers and footers on every
-page. For a 584-page textbook like *Teaching in a Digital Age*, a two-
-line chrome (title + page number) produces ~1,168 spurious lines in the
+page. For a long textbook (hundreds of pages), a two-line chrome
+(title + page number) produces thousands of spurious lines in the
 content stream, which then bulk-segment into standalone ``<p>`` blocks,
 pollute block_templates output, and corrupt any downstream text index.
 
@@ -24,7 +24,7 @@ Design notes
   frequency-flagged candidate only when its bbox lives in the top 10%
   or bottom 10% of the page.
 * **Page-number extraction.** When a chrome line ends in digits
-  (``"Teaching in a Digital Age 164"``, ``"164"``, ``"Chapter 3 — 47"``),
+  (``"<Book Title> 164"``, ``"164"``, ``"Chapter 3 — 47"``),
   we split the fixed prefix from the variable page tail and remember
   ``{page_number: original_line}`` in ``page_number_lines`` so
   downstream block attribution (``data-dart-pages="164"``) can still
@@ -65,13 +65,12 @@ _TAIL_SCAN_LINES = 3
 
 # Regex — "text ending in digits" — captures the non-digit prefix and
 # the trailing integer so we can split a chrome line like
-# ``"Teaching in a Digital Age 164"`` into ``("Teaching in a Digital
-# Age", 164)``.
+# ``"<Book Title> 164"`` into ``("<Book Title>", 164)``.
 _TRAILING_DIGITS_RE = re.compile(r"^(.*?)(?:\s+)?(\d{1,4})\s*$")
 
 
 # Wave 25 Fix 1: mirror of the trailing-digits regex for the
-# even-page leading-digit footer pattern (``"{N} A.W. (Tony) Bates"``).
+# even-page leading-digit footer pattern (``"{N} <author-name>"``).
 # Captures the variable page-number head and the fixed residual. The
 # residual must be at least one non-digit char after the required
 # whitespace gap to avoid matching plain numbers.
@@ -168,7 +167,7 @@ def _strip_leading_digits(normalised: str) -> Tuple[str, Optional[int]]:
     """Split ``normalised`` into ``(residual, page_number)`` — leading form.
 
     Wave 25 Fix 1: even-page running footers like
-    ``"{N} A.W. (Tony) Bates"`` put the page number BEFORE the fixed
+    ``"{N} <author-name>"`` put the page number BEFORE the fixed
     text. This is the mirror of :func:`_strip_trailing_digits` —
     returns ``(residual, page_num)`` when the line starts with digits
     followed by whitespace + residual text, otherwise
@@ -269,8 +268,8 @@ def detect_page_chrome(
     # index so we can mutate the page text later.
     #
     # Wave 25 Fix 1: each candidate now records BOTH possible
-    # partitions — trailing-digit (``"Book Title 42"``) and leading-
-    # digit (``"42 A.W. Bates"``). The frequency counter then evaluates
+    # partitions — trailing-digit (``"<Book Title> 42"``) and leading-
+    # digit (``"42 <author-name>"``). The frequency counter then evaluates
     # each partition independently, so a document that uses odd-page
     # trailing-digit headers AND even-page leading-digit footers
     # detects both patterns simultaneously. The tuple stored is
@@ -293,7 +292,8 @@ def detect_page_chrome(
         sentinel for bare-number lines.
 
         The ``leading_key`` is keyed by the residual text AFTER the
-        leading integer (e.g. ``"a.w. (tony) bates"``). Bare numbers
+        leading integer (e.g. the author-name residual of
+        ``"42 J. Smith"`` is ``"j. smith"``). Bare numbers
         have no leading-digit residual, so ``leading_key`` is None
         for them — the trailing-digit path already handles that case
         via the sentinel.
@@ -316,7 +316,7 @@ def detect_page_chrome(
             else:
                 # Mark with a sentinel prefix so leading-keyed and
                 # trailing-keyed detections never collide in the
-                # shared counts dicts (e.g. ``"a.w. bates"`` could
+                # shared counts dicts (the residual text could
                 # coincidentally match a trailing-key prefix from
                 # some other line).
                 lead_key = f"__lead__:{lead_residual}"
@@ -431,8 +431,9 @@ def detect_page_chrome(
     # Wave 25 Fix 1: leading-digit keys carry a ``__lead__:`` sentinel
     # prefix; we store them stripped of the prefix in the public
     # ``headers`` / ``footers`` sets so downstream callers see the
-    # real residual text (``"a.w. (tony) bates"``). Internal matching
-    # during stripping uses the sentinel-prefixed form.
+    # real residual text (the author / fixed suffix after the page
+    # number). Internal matching during stripping uses the
+    # sentinel-prefixed form.
     def _display_form(key: str) -> Optional[str]:
         if key == "__page_number_only__":
             return None
@@ -586,7 +587,7 @@ def _confirm_chrome_by_bbox(
             confirmed.add(trailing_key)
         # Wave 25 Fix 1: also produce the leading-digit key so
         # bbox-layer confirmation upgrades leading-digit footers
-        # (``"{N} A.W. Bates"``) the same way it does trailing-digit
+        # (``"{N} <author-name>"``) the same way it does trailing-digit
         # headers.
         residual, lead_page = _strip_leading_digits(norm)
         if lead_page is not None and residual and len(residual) >= 3:
@@ -666,7 +667,7 @@ def strip_page_chrome(raw_pdftotext: str, chrome: PageChrome) -> str:
                 )
             ):
                 # Wave 25 Fix 1: leading-digit chrome line (``"{N}
-                # A.W. Bates"``) — residual matches an even-page
+                # <author-name>"``) — residual matches an even-page
                 # footer recorded in the chrome record.
                 drop = True
             elif key == "__page_number_only__" and chrome.page_number_lines:

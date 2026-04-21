@@ -1,11 +1,13 @@
 """Wave 25 Fix 7: numbered subheading followed by prose → SUBSECTION_HEADING.
 
-Audit: "1. Why this book?", "2. The audience for the book", "3. Why an
-'open' textbook?" on Bates — each on its own pdftotext block. The
-Wave-21 LIST_ITEM classifier grabs them; the grouper can't merge them
-across intervening prose; the stray-LIST_ITEM fallback emits a
-one-item ``<ol>`` per heading. 14 single-``<ol>`` + 28 single-``<ul>``
-wrappers total — a screen-reader reading-order catastrophe.
+Audit: numbered section-heading blocks (e.g. "1. Why this book?",
+"2. The audience for the book", "3. Why an 'open' textbook?") each
+arriving on their own pdftotext block. The Wave-21 LIST_ITEM
+classifier grabs them; the grouper can't merge them across
+intervening prose; the stray-LIST_ITEM fallback emits a one-item
+``<ol>`` per heading. Observed: dozens of single-``<ol>`` +
+single-``<ul>`` wrappers — a screen-reader reading-order
+catastrophe.
 
 Fix: peek at ``block.neighbors["next"]``. When it carries ≥ 60 words
 AND isn't itself a list item, the block is a numbered subsection

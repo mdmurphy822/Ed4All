@@ -6,7 +6,7 @@ at pipeline_tools.py:1360). Downstream consequence: every chunk parsed
 from the emitted pages carried ``learning_outcome_refs`` pointing at
 every objective, which inflated the ``derived-from-objective`` edge
 count from ~60 (the natural floor: chunks × ~1 LO each) to 896
-(64 chunks × ~14 LOs) on the OLSR_201 corpus.
+(64 chunks × ~14 LOs) on a real-world corpus.
 
 Post-remediation contract:
 

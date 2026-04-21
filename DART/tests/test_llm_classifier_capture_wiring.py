@@ -1,8 +1,9 @@
 """Wave 22 DC1 — LLMClassifier emits one decision per batch.
 
-Pre-Wave-22, every DART Claude call site was uninstrumented. A Bates
-run with dozens of Claude decisions produced two static boilerplate
-capture records from the MCP wrapper. Wave 22 DC1 threads an optional
+Pre-Wave-22, every DART Claude call site was uninstrumented. A full-
+textbook run with dozens of Claude decisions produced two static
+boilerplate capture records from the MCP wrapper. Wave 22 DC1 threads
+an optional
 ``capture`` kwarg through ``LLMClassifier``; when supplied, every
 batch emits one ``structure_detection`` decision with dynamic
 rationale (block-ID range, fallback fraction, average confidence,

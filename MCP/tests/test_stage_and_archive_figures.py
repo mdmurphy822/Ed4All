@@ -73,7 +73,7 @@ def test_stage_dart_outputs_copies_figures_dir(tmp_path, monkeypatch):
     from MCP.tools import pipeline_tools
     monkeypatch.setattr(pipeline_tools, "COURSEFORGE_INPUTS", cf_inputs)
 
-    html_path, figures_dir = _write_dart_bundle(src_dir, "bates")
+    html_path, figures_dir = _write_dart_bundle(src_dir, "textbook")
 
     tools = _bootstrap_tools()
     stage = tools["stage_dart_outputs"]
@@ -81,14 +81,14 @@ def test_stage_dart_outputs_copies_figures_dir(tmp_path, monkeypatch):
         stage(
             run_id="run-1",
             dart_html_paths=str(html_path),
-            course_name="Bates",
+            course_name="Textbook",
         )
     )
     result_doc = json.loads(result)
     assert result_doc["success"] is True
 
-    staged_html = cf_inputs / "run-1" / "bates.html"
-    staged_figs = cf_inputs / "run-1" / "bates_figures"
+    staged_html = cf_inputs / "run-1" / "textbook.html"
+    staged_figs = cf_inputs / "run-1" / "textbook_figures"
     assert staged_html.exists()
     assert staged_figs.is_dir()
     # Both images survive the copytree.

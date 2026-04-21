@@ -137,15 +137,15 @@ def source_router_fixture(tmp_path, monkeypatch):
         },
     ])
 
-    _write_synthesized(staging / "bates_design_synthesized.json", "bates_design", [
+    _write_synthesized(staging / "textbook_design_synthesized.json", "textbook_design", [
         {
             "section_id": "s1",
             "section_type": "content",
-            "section_title": "Teaching in a Digital Age",
+            "section_title": "Online Teaching Foundations",
             "page_range": [1, 5],
             "data": {
                 "paragraphs": [
-                    "Teaching in a digital age demands new pedagogy, new "
+                    "Online teaching foundations demand new pedagogy, new "
                     "assessment models, and new teacher competencies."
                 ]
             },
