@@ -152,6 +152,30 @@ _WAVE19_LEAF_ROLES = frozenset({
     BlockRole.KEYWORDS,
     BlockRole.BIBLIOGRAPHIC_METADATA,
 })
+# Note (Wave 21): LIST_ITEM is NOT listed as a leaf role because the
+# fallback template :func:`_tpl_list_item` defensively emits a
+# single-item ``<ul>`` / ``<ol>`` wrapper — wrappers carry the Wave 13
+# provenance contract. Grouped list items render inside
+# LIST_UNORDERED / LIST_ORDERED templates as attribute-free ``<li>``.
+
+
+# Wave 21: map Unicode bullet variants to a CSS-friendly class so
+# styling can distinguish "dot" (•) from "square" (▪) etc. while the
+# semantic markup stays ``<ul>`` regardless.
+_BULLET_CLASS_BY_CHAR = {
+    "\u2022": "list-dot",       # • BULLET
+    "\u00b7": "list-middot",    # · MIDDLE DOT
+    "\u25aa": "list-square",    # ▪ BLACK SMALL SQUARE
+    "\u25a0": "list-square",    # ■ BLACK SQUARE
+    "\u25a1": "list-square-open",  # □ WHITE SQUARE
+    "\u25cf": "list-disc",      # ● BLACK CIRCLE
+    "\u25e6": "list-circle",    # ◦ WHITE BULLET
+    "\u25cb": "list-circle",    # ○ WHITE CIRCLE
+    "\u25b8": "list-triangle",  # ▸ BLACK SMALL RIGHT-POINTING TRIANGLE
+    "\u25ba": "list-triangle",  # ► BLACK RIGHT-POINTING POINTER
+    "-": "list-dash",
+    "*": "list-asterisk",
+}
 
 
 def _stable_id(block: ClassifiedBlock, prefix: str) -> str:
@@ -419,6 +443,188 @@ def _tpl_page_break(block: ClassifiedBlock) -> str:
     return (
         f'<span class="page-break" role="doc-pagebreak" '
         f'aria-label="{_escape(label_text)}"></span>'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Wave 21: list templates
+# ---------------------------------------------------------------------------
+
+
+def _render_list_li(item, ordered_parent: bool) -> str:
+    """Render a single item as ``<li>{text}{<ul/ol>{sub_items}?}</li>``.
+
+    Item shape (from :mod:`DART.converter.heuristic_classifier`):
+
+    * ``text`` (required)
+    * ``marker`` — informational, not emitted directly; the ``<ul>`` /
+      ``<ol>`` semantic already encodes the bullet/number.
+    * ``marker_type`` — ``"unordered"`` / ``"ordered"``.
+    * ``sub_items`` (optional) — list of child items for nested lists.
+
+    When a caller hands in a bare string (legacy ``attributes.items =
+    ["foo", "bar"]`` shape from callers that predate the Wave 21
+    dict form), it renders as a plain ``<li>`` with no nesting. This
+    keeps the template compatible with the generic
+    :func:`_extract_list_items` helper used by pre-Wave-21 templates
+    (LEARNING_OBJECTIVES, KEY_TAKEAWAYS) + the xss invariants test.
+
+    Per the Wave 8 P2 rule, ``<li>`` never carries ``data-dart-*`` —
+    the enclosing ``<ul>`` / ``<ol>`` wrapper already does.
+    """
+    if isinstance(item, str):
+        return f"<li>{_escape(item)}</li>"
+    if not isinstance(item, dict):
+        return f"<li>{_escape(str(item))}</li>"
+    text = str(item.get("text") or "").strip()
+    sub_items = item.get("sub_items") or []
+    inner = _escape(text)
+
+    if sub_items and isinstance(sub_items, (list, tuple)):
+        # Determine child list type by scanning first nested marker_type.
+        first = sub_items[0] if sub_items else None
+        child_ordered = isinstance(first, dict) and first.get("marker_type") == "ordered"
+        child_tag = "ol" if child_ordered else "ul"
+        child_class = _bullet_class_for_items(sub_items, unordered=not child_ordered)
+        class_attr = f' class="{child_class}"' if child_class else ""
+        nested_lis = "".join(
+            _render_list_li(sub, ordered_parent=child_ordered) for sub in sub_items
+        )
+        inner = f"{inner}<{child_tag}{class_attr}>{nested_lis}</{child_tag}>"
+
+    return f"<li>{inner}</li>"
+
+
+def _bullet_class_for_items(items, *, unordered: bool) -> str:
+    """Pick a CSS-friendly list class when every item shares a bullet
+    variant. Returns an empty string when markers are mixed, the
+    items list is mixed string/dict, or the list is ordered (numbered
+    lists don't need bullet-variant classes).
+    """
+    if not unordered or not items:
+        return ""
+    markers = set()
+    for itm in items:
+        if not isinstance(itm, dict):
+            return ""
+        markers.add(itm.get("marker"))
+    markers.discard(None)
+    if len(markers) != 1:
+        return ""
+    marker = next(iter(markers))
+    if not isinstance(marker, str):
+        return ""
+    first_char = marker[:1]
+    return _BULLET_CLASS_BY_CHAR.get(first_char, "")
+
+
+def _tpl_list_unordered(block: ClassifiedBlock) -> str:
+    """``<ul class="dart-section ...">`` wrapper with ``<li>`` children.
+
+    Wave 21: emitted by the assembler's ``_group_consecutive_lists`` pass
+    which folds a run of consecutive ``LIST_ITEM`` classified blocks
+    (same ``marker_type``) into one synthesized ``LIST_UNORDERED`` block
+    with ``attributes.items = [{text, marker, sub_items?}, ...]``.
+
+    Per the Wave 19 P2 rule, the ``<ul>`` wrapper carries all
+    provenance attributes (``class="dart-section"``, ``data-dart-*``);
+    ``<li>`` children stay attribute-free. When every item in the list
+    shares the same bullet glyph, a style-hint class (``list-dot`` /
+    ``list-square`` / ...) is appended so CSS can reflect the author's
+    original marker choice while keeping the markup semantic.
+
+    Missing ``items`` (stray block fed straight to the template without
+    going through grouping) falls back to a single-item list keyed off
+    ``block.raw.text`` so the wrapper + provenance attrs still emit.
+    """
+    items = (block.attributes or {}).get("items") or []
+    if not items:
+        fallback_text = (block.raw.text or "").strip()
+        if not fallback_text:
+            return ""
+        items = [{"text": fallback_text, "marker_type": "unordered"}]
+    bullet_class = _bullet_class_for_items(items, unordered=True)
+    class_snippet = (
+        _section_class(bullet_class) if bullet_class else _section_class()
+    )
+    lis = "".join(_render_list_li(itm, ordered_parent=False) for itm in items)
+    return f"<ul {class_snippet} {_provenance_attrs(block)}>{lis}</ul>"
+
+
+def _tpl_list_ordered(block: ClassifiedBlock) -> str:
+    """``<ol class="dart-section">`` wrapper with ``<li>`` children.
+
+    Wave 21: emitted by the assembler's grouping pass for numbered /
+    alpha / roman list runs. When the first item's marker is not
+    ``"1."`` / ``"1)"`` / ``"a."`` / ``"a)"`` / ``"i."`` / ``"i)"``,
+    the wrapper emits a ``start="N"`` attribute so screen readers +
+    visual renderers preserve the authored numbering.
+
+    Mirrors the unordered template's provenance emission and
+    Wave 19 P2 leaf rule for ``<li>``.
+    """
+    items = (block.attributes or {}).get("items") or []
+    if not items:
+        fallback_text = (block.raw.text or "").strip()
+        if not fallback_text:
+            return ""
+        items = [{"text": fallback_text, "marker_type": "ordered"}]
+    # Derive ``start`` from the first marker when it's a non-default
+    # start value. We only emit start= when it demonstrably differs
+    # from 1 / a / i, to avoid cluttering the output.
+    start_attr = ""
+    first = items[0] if items else None
+    first_marker = first.get("marker") if isinstance(first, dict) else None
+    if isinstance(first_marker, str):
+        import re as _re
+        m = _re.match(r"^(\d+)", first_marker)
+        if m:
+            try:
+                val = int(m.group(1))
+                if val != 1:
+                    start_attr = f' start="{val}"'
+            except ValueError:  # pragma: no cover — regex guarantees int
+                pass
+    lis = "".join(_render_list_li(itm, ordered_parent=True) for itm in items)
+    return (
+        f"<ol {_section_class()}{start_attr} "
+        f"{_provenance_attrs(block)}>{lis}</ol>"
+    )
+
+
+def _tpl_list_item(block: ClassifiedBlock) -> str:
+    """Fallback: render a stray ``LIST_ITEM`` as a single-item ``<ul>``.
+
+    This template should almost never fire — the assembler's grouping
+    pass collapses consecutive ``LIST_ITEM`` blocks into
+    ``LIST_UNORDERED`` / ``LIST_ORDERED``. Emitting a valid ``<ul>`` +
+    ``<li>`` instead of a naked ``<li>`` keeps the HTML valid when a
+    stray item escapes grouping (e.g. a list of exactly one item
+    followed by a non-list block).
+    """
+    marker_type = (block.attributes or {}).get("marker_type") or "unordered"
+    text = (block.attributes or {}).get("text") or block.raw.text
+    item = {
+        "text": text,
+        "marker": (block.attributes or {}).get("marker"),
+        "marker_type": marker_type,
+    }
+    sub_items = (block.attributes or {}).get("sub_items")
+    if sub_items:
+        item["sub_items"] = sub_items
+    tag = "ol" if marker_type == "ordered" else "ul"
+    bullet_class = (
+        _bullet_class_for_items([item], unordered=True)
+        if marker_type != "ordered"
+        else ""
+    )
+    class_snippet = (
+        _section_class(bullet_class) if bullet_class else _section_class()
+    )
+    return (
+        f"<{tag} {class_snippet} {_provenance_attrs(block)}>"
+        f"{_render_list_li(item, ordered_parent=(marker_type == 'ordered'))}"
+        f"</{tag}>"
     )
 
 
@@ -1068,6 +1274,10 @@ TEMPLATE_REGISTRY: Dict[BlockRole, Callable[[ClassifiedBlock], str]] = {
     BlockRole.PARAGRAPH: _tpl_paragraph,
     BlockRole.TOC_NAV: _tpl_toc_nav,
     BlockRole.PAGE_BREAK: _tpl_page_break,
+    # Wave 21: lists
+    BlockRole.LIST_UNORDERED: _tpl_list_unordered,
+    BlockRole.LIST_ORDERED: _tpl_list_ordered,
+    BlockRole.LIST_ITEM: _tpl_list_item,
     # Educational
     BlockRole.LEARNING_OBJECTIVES: _tpl_learning_objectives,
     BlockRole.KEY_TAKEAWAYS: _tpl_key_takeaways,

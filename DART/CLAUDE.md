@@ -670,6 +670,105 @@ paths to match the Wave 8 contract:
 `data-dart-source` + `data-dart-block-id` presence; the page
 attribute remains optional (omitted when no page is known).
 
+## List detection (Wave 21)
+
+pdftotext output faithfully reproduces list markers (`•`, `·`, `▪`,
+`●`, `◦`, `○`, `▸`, `►`, `-`, `*`, `1.`, `1)`, `a.`, `a)`, `i.`,
+`(1)`) as literal leading characters on each item's block. Pre-Wave-21,
+those blocks flowed straight through into naked `<p>` elements —
+**323 bullet-marker + 114 numbered-item paragraphs** on the Bates
+textbook alone, zero `<ul>` wrappers in the output.
+
+Wave 21 promotes marker-led blocks to `LIST_ITEM` in the heuristic
+classifier and groups consecutive runs into synthesized
+`LIST_UNORDERED` / `LIST_ORDERED` blocks at the assembler layer.
+
+### Marker charset
+
+| Family | Characters |
+|--------|------------|
+| Unicode bullets | `•`, `·`, `▪`, `●`, `◦`, `○`, `▸`, `►`, `■`, `□`, `◼`, `◾` |
+| ASCII markers | `-`, `*` (only when followed by whitespace AND body starts with capital / digit) |
+| Numbered | `1.`, `1)`, `(1)`, `12.` |
+| Alphabetic | `a.`, `a)`, `b.`, `b)` |
+| Roman numeral | `i.`, `iv.`, `vii)` (lowercase / uppercase) |
+
+Detection lives in
+`DART/converter/heuristic_classifier.py::_match_list_marker` and fires
+after bibliography + chapter classification so existing
+higher-priority rules win. A guard drops long prose-like blocks that
+happen to start with a marker but carry no embedded sibling markers
+and look like multi-sentence prose.
+
+### Multi-item expansion
+
+pdftotext often fuses sibling list items onto one logical block
+(`"1. Foo. 2. Bar. 3. Baz."` or `"• Foo • Bar • Baz"`). The classifier
+runs a post-promotion expander (`_maybe_expand_numbered_run`) that
+splits such fused blocks into one `LIST_ITEM` per detected item.
+Ordered expansion requires ascending numbers within +1–+2 of each
+other; unordered expansion triggers whenever embedded unicode
+bullets appear after the first item body. Each expanded item
+receives a deterministic `block_id` suffix (`{original}#2`, `#3`)
+so downstream anchors stay unique.
+
+### Grouping rule
+
+`DART/converter/document_assembler.py::_group_consecutive_lists`
+folds a run of consecutive `LIST_ITEM` blocks into a single
+synthesized `LIST_UNORDERED` / `LIST_ORDERED` block with
+`attributes.items = [{text, marker, marker_type, sub_items?}, ...]`.
+A run breaks on any non-list block OR a `marker_type` change
+(unordered → ordered starts a new list). Single-item runs still
+emit a one-item `<ul>` / `<ol>` wrapper — we never leave a stray
+`<li>` without a parent.
+
+### Nesting heuristic (best-effort)
+
+When a single `RawBlock` carries multiple lines AND the trailing
+lines are indented (≥ 4 leading spaces) AND start with a marker
+themselves, those become `sub_items` on the parent item. In the
+current pipeline the segmenter whitespace-collapses blocks before
+the classifier sees them, so this path rarely fires end-to-end —
+it's retained so callers that feed raw multi-line blocks
+(tests, future waves that preserve layout) still get nested
+output.
+
+### Template output + attribute placement (Wave 19 P2 rule)
+
+The `<ul>` / `<ol>` **is** the dart-section component wrapper.
+It carries `class="dart-section"`, `data-dart-block-role`,
+`data-dart-block-id`, `data-dart-source`, `data-dart-pages`
+(propagated from the first item's page), and
+`data-dart-confidence`. `<li>` children are leaves and **never**
+carry `data-dart-*` attributes. When every item in an unordered
+list shares the same bullet glyph, a style-hint class
+(`list-dot` / `list-square` / `list-circle` / `list-triangle` /
+`list-dash` / `list-asterisk` / ...) is appended after
+`dart-section` so CSS can reflect the authored marker variant
+while the markup stays semantic. Ordered lists emit a `start="N"`
+attribute only when the first authored marker is not the
+default starting value (1 / a / i) — avoids clutter on the
+common 1-indexed case.
+
+### Stray LIST_ITEM fallback
+
+If a `LIST_ITEM` escapes grouping (shouldn't happen normally),
+`_tpl_list_item` emits a single-item `<ul>` / `<ol>` wrapper
+rather than a naked `<li>` — keeps the HTML valid.
+
+### Bates smoke reduction
+
+| Metric | Pre-Wave-21 | Post-Wave-21 |
+|--------|-------------|---------------|
+| Bullet-marker `<p>` residue | 323 | 11 |
+| Numbered-item `<p>` residue | 114 | 1 |
+| `<ul>` wrappers | 0 | 287 |
+| `<ol>` wrappers | 46 (bib + TOC only) | 137 |
+| `<li>` children | 206 | 1,692 |
+| HTML size | 1.53 MB | 1.47 MB |
+| `dart_markers` validator score | 1.0 | 1.0 |
+
 ## Page chrome detection (Wave 20)
 
 pdftotext faithfully reproduces **running headers / running footers /
