@@ -305,14 +305,63 @@ def _group_consecutive_lists(
     return grouped
 
 
+# Roles that close the currently-open chapter article because they
+# are not chapter body content. Bibliographies / TOC sit at document
+# scope, not inside a single chapter's prose. Metadata roles are
+# already routed to the <aside> by _split_metadata so they never
+# reach this list, but we still enumerate them defensively.
+_CHAPTER_TERMINATOR_ROLES = frozenset({
+    BlockRole.BIBLIOGRAPHY_ENTRY,
+    BlockRole.TOC_NAV,
+})
+
+
+def _split_chapter_opener(rendered: str) -> tuple[str, str]:
+    """Split a rendered CHAPTER_OPENER into ``(opener, closer)``.
+
+    The chapter-opener template produces a single string of the form
+    ``<article ...><header><h2>...</h2></header>{body}</article>``.
+    For Wave 29 article-body nesting we need to emit the opener
+    without its closing ``</article>`` tag, then re-emit the closing
+    tag once all the chapter's subsequent body blocks have rendered
+    inside.
+
+    The closer is fixed at ``</article>``. The opener is the rendered
+    string with the last ``</article>`` stripped. When the rendered
+    string has no ``</article>`` (should never happen — the template
+    always closes), we return the full string as opener + empty
+    closer so rendering stays defensive.
+    """
+    closer = "</article>"
+    if rendered.endswith(closer):
+        return rendered[: -len(closer)], closer
+    # Defensive: last-closer search in case whitespace or trailing
+    # characters drift.
+    idx = rendered.rfind(closer)
+    if idx == -1:
+        return rendered, ""
+    return rendered[:idx], closer
+
+
 def _render_body(body_blocks: List[ClassifiedBlock]) -> str:
     """Render the body, grouping consecutive bibliography entries.
 
-    Wave 21: also groups consecutive ``LIST_ITEM`` blocks into
+    Wave 21: groups consecutive ``LIST_ITEM`` blocks into
     ``LIST_UNORDERED`` / ``LIST_ORDERED`` synthesised blocks via
     :func:`_group_consecutive_lists` before rendering so naked ``<p>``
     bullet/numbered residue collapses into semantic ``<ul>`` / ``<ol>``
     markup.
+
+    Wave 29: nests subsequent body blocks INSIDE the opening
+    ``<article role="doc-chapter">`` wrapper until the next
+    CHAPTER_OPENER (or chapter-terminating block — bibliography,
+    TOC) is reached. Pre-Wave-29 the assembler closed every chapter
+    immediately after its header, leaving chapter body paragraphs
+    stranded as siblings of an empty ``<article>`` wrapper and
+    breaking both the ``role="doc-chapter"`` WCAG 1.3.1 contract and
+    the ``MCP/tools/_content_gen_helpers.py::parse_dart_html_files``
+    consumer that reads chapter prose from inside the article
+    element.
     """
     if not body_blocks:
         return ""
@@ -322,22 +371,63 @@ def _render_body(body_blocks: List[ClassifiedBlock]) -> str:
     body_blocks = _group_consecutive_lists(body_blocks)
 
     pieces: List[str] = []
-    buffer: List[ClassifiedBlock] = []
+    biblio_buffer: List[ClassifiedBlock] = []
+    chapter_closer: str = ""  # non-empty while a chapter article is open
 
-    def flush() -> None:
-        if not buffer:
+    def flush_biblio() -> None:
+        if not biblio_buffer:
             return
-        inner = "\n".join(render_block(b) for b in buffer)
+        inner = "\n".join(render_block(b) for b in biblio_buffer)
         pieces.append(f'<ol role="doc-bibliography">\n{inner}\n</ol>')
-        buffer.clear()
+        biblio_buffer.clear()
+
+    def close_open_chapter() -> None:
+        nonlocal chapter_closer
+        if chapter_closer:
+            pieces.append(chapter_closer)
+            chapter_closer = ""
 
     for block in body_blocks:
         if block.role == BlockRole.BIBLIOGRAPHY_ENTRY:
-            buffer.append(block)
-        else:
-            flush()
+            # Bibliography terminates any open chapter — it sits at
+            # document scope (Wave 29).
+            close_open_chapter()
+            biblio_buffer.append(block)
+            continue
+
+        # Any non-bibliography block breaks a biblio run.
+        flush_biblio()
+
+        if block.role == BlockRole.CHAPTER_OPENER:
+            # Close the previous chapter (if any) before opening the
+            # next. The opener is rendered without its closing tag;
+            # subsequent blocks will be emitted inside, then the
+            # closer is appended when we hit the next opener, a
+            # terminator block, or end-of-body.
+            close_open_chapter()
+            rendered = render_block(block)
+            opener, closer = _split_chapter_opener(rendered)
+            pieces.append(opener)
+            chapter_closer = closer
+            continue
+
+        if block.role in _CHAPTER_TERMINATOR_ROLES:
+            # Chapter-terminating structural block — close the chapter
+            # and emit the block at document scope.
+            close_open_chapter()
             pieces.append(render_block(block))
-    flush()
+            continue
+
+        # Default: render the block. If a chapter is currently open,
+        # the rendered HTML naturally sits between the unclosed
+        # <article>...<header>...</header> and the deferred
+        # </article>, so it becomes chapter body content.
+        pieces.append(render_block(block))
+
+    # End-of-body: flush any pending bibliography run and close any
+    # still-open chapter.
+    flush_biblio()
+    close_open_chapter()
 
     return "\n".join(pieces)
 

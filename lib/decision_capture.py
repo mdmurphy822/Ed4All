@@ -518,14 +518,29 @@ class DecisionCapture:
                     raise ValueError(
                         f"Decision validation failed (strict mode): {issues}"
                     )
-                logger.warning("Decision validation issues: %s", issues)
+                # Wave 29 Defect 4: the non-strict validation-issues
+                # path previously hit ``logger.warning`` on EVERY
+                # record, flooding stderr with hundreds of
+                # ``Decision validation issues: [...]`` lines on a
+                # normal run (≥ 90% of stderr in the first 30
+                # seconds of the OLSR_SIM_01 reproduction). Real
+                # errors got buried. The issues are still attached
+                # to the record's metadata so they're recoverable at
+                # save time (see ``_validation_issue_count`` +
+                # ``save``) — we just stop spamming stderr per-call.
+                # Strict mode still raises, so fail-closed callers
+                # are unaffected.
+                logger.debug("Decision validation issues: %s", issues)
                 record["metadata"]["validation_issues"] = issues
+                self._validation_issue_count = (
+                    getattr(self, "_validation_issue_count", 0) + 1
+                )
         except ImportError:
             pass  # Validation module not available
         except ValueError:
             raise  # Re-raise strict-mode failures
         except Exception as e:
-            logger.warning("Decision validation error: %s", e)
+            logger.debug("Decision validation error: %s", e)
 
     def _write_to_streams(self, record: Dict[str, Any]) -> None:
         """Write a decision record to all configured stream locations."""
@@ -719,6 +734,21 @@ class DecisionCapture:
         output_path = self.output_dir / filename
         legacy_output_path = self.legacy_output_dir / filename
 
+        # Wave 29 Defect 4: emit a single INFO-level summary line at
+        # capture close instead of the hundreds of WARNING lines per
+        # non-strict validation issue. Detail is still in the JSONL
+        # captures under ``metadata.validation_issues``; pass ``-v``
+        # to surface the per-record DEBUG lines.
+        issue_count = getattr(self, "_validation_issue_count", 0)
+        logger.info(
+            "Captured %d decisions (%d with validation issues — "
+            "run with -v for detail) [%s/%s]",
+            len(self.decisions),
+            issue_count,
+            self.tool,
+            self.phase,
+        )
+
         data = {
             "course_code": self.course_code,
             "phase": self.phase,
@@ -735,7 +765,8 @@ class DecisionCapture:
                 "total_decisions": len(self.decisions),
                 "total_prompts": len(self.prompts_responses),
                 "total_searches": len(self.web_searches),
-                "total_files": len(self.files_created)
+                "total_files": len(self.files_created),
+                "total_validation_issues": issue_count,
             }
         }
 
