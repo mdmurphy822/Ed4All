@@ -107,7 +107,10 @@ class TestSegmenter:
 
 def _classify_text(text: str) -> ClassifiedBlock:
     blocks = segment_pdftotext_output(text)
-    classified = HeuristicClassifier().classify(blocks)
+    # Wave 14: ``HeuristicClassifier.classify`` is async for symmetry with
+    # ``LLMClassifier``. Use the sync convenience helper here so the
+    # existing unit tests don't need to grow an event loop.
+    classified = HeuristicClassifier().classify_sync(blocks)
     assert len(classified) == 1
     return classified[0]
 
