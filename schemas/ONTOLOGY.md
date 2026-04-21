@@ -1306,7 +1306,6 @@ Eleven environment-variable flags gate opt-in behavior to preserve backward-comp
 | `TRAINFORGE_SOURCE_PROVENANCE` | Evidence arms emit `source_references[]` sourced from chunks' `source.source_references[]`. Off: arms emit the pre-provenance shape. |
 | `DECISION_VALIDATION_STRICT` | Fails closed on unknown `decision_type` values in decision captures. |
 | `DART_LLM_CLASSIFICATION` | DART's block classifier routes through Claude via `LLMClassifier` instead of heuristic regex. Requires an injected `LLMBackend`. |
-| `DART_LEGACY_CONVERTER` | Forces `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html` to use the legacy regex path. One-release safety fallback. |
 | `LOCAL_DISPATCHER_ALLOW_STUB` | Permits `LocalDispatcher` to emit a stubbed `PhaseOutput` when no `agent_tool` callable is wired in. Tests / dry-run only; production `--mode local` runs fail loudly without it set. |
 
 ### Always-emit provenance fields

@@ -86,16 +86,12 @@ USER REQUEST →
 ### Course Creation Agents
 | Agent | Purpose | When to Use |
 |-------|---------|-------------|
-| `exam-research` | Certification objective analysis | Analyzing exam/certification objectives |
 | `requirements-collector` | Course specification gathering | New course projects |
 | `course-outliner` | Course structure and learning objectives | Creating course framework |
 | `content-generator` | Educational content creation | Content development (1 file per agent) |
-| `educational-standards` | Pedagogical framework compliance | UDL, ADDIE, Bloom's alignment |
 | `quality-assurance` | Pattern prevention and validation | Quality gates |
 | `oscqr-course-evaluator` | Educational quality assessment | OSCQR evaluation |
 | `brightspace-packager` | IMSCC package generation | Final deployment |
-| `html-design-research` | HTML/CSS design pattern research | Template and design validation |
-| `objective-synthesizer` | Learning objective synthesis | Combining objectives from textbooks |
 | `textbook-ingestor` | Textbook content processing | Entry point for textbook materials |
 | `source-router` | Bind DART source blocks to Courseforge module pages | Source attribution for pipeline runs |
 
@@ -152,10 +148,9 @@ Task(content-generator, "Create all Week 1 content")  # NEVER DO THIS
 ├── schemas/                     # IMSCC and content schemas
 ├── imscc-standards/             # Brightspace/IMSCC technical specs
 ├── scripts/                     # Automation scripts
-│   ├── imscc-extractor/         # Universal IMSCC extraction (NEW)
-│   ├── dart-batch-processor/    # Automated DART conversion (NEW)
-│   ├── component-applier/       # Interactive component application (NEW)
-│   └── remediation-validator/   # Final quality validation (NEW)
+│   ├── imscc-extractor/         # Universal IMSCC extraction
+│   ├── component-applier/       # Interactive component application
+│   └── remediation-validator/   # Final quality validation
 ├── exports/                     # Generated course packages
 │   └── YYYYMMDD_HHMMSS_name/    # Timestamped project folders
 └── runtime/                     # Agent workspaces (auto-created)
@@ -368,7 +363,6 @@ Courseforge can import and remediate IMSCC packages from:
 | Script | Location | Purpose |
 |--------|----------|---------|
 | `imscc_extractor.py` | `scripts/imscc-extractor/` | Universal IMSCC parsing |
-| `dart_batch_processor.py` | `scripts/dart-batch-processor/` | Parallel DART conversion |
 | `component_applier.py` | `scripts/component-applier/` | Interactive component application |
 | `remediation_validator.py` | `scripts/remediation-validator/` | Final quality validation |
 

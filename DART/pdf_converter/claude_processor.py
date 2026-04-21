@@ -305,8 +305,8 @@ Return ONLY the JSON object, no other text.'''
                 against the template's as a baseline check (full
                 semantic comparison is deferred — see Wave 31 notes).
                 Today the parameter is accepted + stored but not yet
-                consumed in the prompt body; `wcag_enhancer.py` and a
-                future WCAGValidator patch are the planned consumers.
+                consumed in the prompt body; a future WCAGValidator
+                patch is the planned consumer.
 
         Returns:
             DocumentStructure with ordered, classified blocks.

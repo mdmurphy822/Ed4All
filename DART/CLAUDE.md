@@ -384,7 +384,6 @@ accidental anchors.
 | Env var | Effect |
 |---------|--------|
 | `DART_LLM_CLASSIFICATION=true` | Route classification through Claude via `LLMClassifier` instead of the heuristic regex path. Requires an injected `LLMBackend`. |
-| `DART_LEGACY_CONVERTER=true` | Force the legacy regex-driven `_raw_text_to_accessible_html_legacy` path in `MCP/tools/pipeline_tools.py`. One-release safety fallback; do not extend. |
 
 ### Entry point
 
@@ -826,7 +825,7 @@ what fires where.
 
 | Call site | Decision type | Trigger | Rationale signals |
 |-----------|---------------|---------|-------------------|
-| `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html` | `pipeline_run_attribution` | Once per pipeline run at function entry | backend, classifier_mode, raw_text length, title, output_path state, figures_dir state, llm injection state, legacy-flag state |
+| `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html` | `pipeline_run_attribution` | Once per pipeline run at function entry | backend, classifier_mode, raw_text length, title, output_path state, figures_dir state, llm injection state |
 | `DART/converter/llm_classifier.py::LLMClassifier._classify_batch` | `structure_detection` | One per batch (typical batch_size=20) | block-ID range, LLM vs heuristic-fallback counts, fallback fraction, avg confidence, low-confidence fraction, char prompt payload, model + max_tokens |
 | `DART/pdf_converter/alt_text_generator.py::AltTextGenerator.generate` | `alt_text_generation` (via `DARTDecisionCapture.log_alt_text_decision` + `log_decision`) | One per figure | page, bbox, image hash (first 12 chars of sha256), width×height, chosen source (claude / ocr / caption / generic), caption presence, alt-text length, long-description length, context length |
 | `MCP/tools/dart_tools.py::convert_pdf_multi_source` | `approach_selection` + `validation_result` | Once per call | multi-source synthesis details (legacy-path telemetry) |
