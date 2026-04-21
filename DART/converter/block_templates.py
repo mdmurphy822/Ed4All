@@ -159,15 +159,144 @@ def _tpl_paragraph(block: ClassifiedBlock) -> str:
     return f"<p {_provenance_attrs(block)}>{_escape(block.raw.text)}</p>"
 
 
+def _render_toc_entries(entries: list) -> str:
+    """Render a list of ``{level, title, page, anchor?}`` dicts as nested ``<ol>``.
+
+    Wave 18: when the extractor supplies structured TOC entries (via
+    ``doc.toc``), the segmenter passes them through as
+    ``block.attributes["entries"]``. Each entry carries:
+
+    * ``level`` (1-based)
+    * ``title``
+    * ``page`` (1-indexed, for display + fallback anchor)
+    * ``anchor`` (optional, ``#chap-N`` / ``#sec-N-M`` when known)
+
+    We emit a single top-level ``<ol>`` and push deeper levels as nested
+    ``<ol>`` children of the previous ``<li>``. Entries resolve to:
+
+    * ``#chap-{N}`` when the title starts with ``"Chapter N"`` (matches
+      the chapter-opener template's stable id).
+    * ``#sec-{N}-{M}`` when the title starts with ``"N.M "`` (matches
+      numbered section headings).
+    * Fallback: ``#page-{N}`` so at minimum the screen reader can jump
+      by page even when no block-level anchor exists.
+    """
+    if not entries:
+        return ""
+
+    import re as _re
+
+    def _href_for(entry: dict) -> str:
+        explicit = entry.get("anchor")
+        if isinstance(explicit, str) and explicit.strip():
+            return explicit.strip()
+        title = str(entry.get("title") or "")
+        chap = _re.match(r"^\s*Chapter\s+(\d+)\b", title, _re.IGNORECASE)
+        if chap:
+            return f"#chap-{chap.group(1)}"
+        sec = _re.match(r"^\s*(\d+)\.(\d+)\b", title)
+        if sec:
+            return f"#sec-{sec.group(1)}-{sec.group(2)}"
+        page = entry.get("page")
+        if page:
+            return f"#page-{page}"
+        return "#"
+
+    # Walk entries maintaining a level stack. Each level > 1 opens a
+    # nested ``<ol>`` inside the previous ``<li>``; drops close nested
+    # lists cleanly.
+    pieces: List[str] = []
+    level_stack: List[int] = []
+
+    def _close_to(target_level: int) -> None:
+        while level_stack and level_stack[-1] >= target_level:
+            pieces.append("</li></ol>")
+            level_stack.pop()
+
+    pieces.append("<ol>")
+    level_stack.append(1)
+    first = True
+    for entry in entries:
+        level = max(1, int(entry.get("level", 1)))
+        title = str(entry.get("title") or "")
+        href = _href_for(entry)
+
+        if first:
+            pieces.append(
+                f'<li><a href="{_escape(href)}">{_escape(title)}</a>'
+            )
+            first = False
+            # Depth 1 li is now "open" — track at level 1 in the stack.
+            level_stack[-1] = level
+            continue
+
+        if level > level_stack[-1]:
+            # Open a new nested ol inside the previous (still-open) li.
+            pieces.append("<ol>")
+            level_stack.append(level)
+            pieces.append(
+                f'<li><a href="{_escape(href)}">{_escape(title)}</a>'
+            )
+        elif level == level_stack[-1]:
+            # Close the previous li, open a new one at same level.
+            pieces.append("</li>")
+            pieces.append(
+                f'<li><a href="{_escape(href)}">{_escape(title)}</a>'
+            )
+        else:
+            # Dropping to a shallower level: close nested ols + the li
+            # we're now leaving, and open a new sibling at target.
+            while level_stack and level_stack[-1] > level:
+                pieces.append("</li></ol>")
+                level_stack.pop()
+            # Now close the current li at the target level.
+            pieces.append("</li>")
+            pieces.append(
+                f'<li><a href="{_escape(href)}">{_escape(title)}</a>'
+            )
+            if not level_stack:
+                level_stack.append(level)
+            else:
+                level_stack[-1] = level
+
+    # Close any still-open nested ols + the outermost one.
+    while level_stack:
+        pieces.append("</li></ol>")
+        level_stack.pop()
+
+    return "".join(pieces)
+
+
 def _tpl_toc_nav(block: ClassifiedBlock) -> str:
-    """``<nav role="navigation">`` wrapping an ordered TOC list."""
-    items = _extract_list_items(block)
-    items_html = _render_list_items(items) if items else f"<li>{_escape(block.raw.text)}</li>"
+    """``<nav role="doc-toc">`` wrapping a nested-ordered TOC list.
+
+    Wave 18: when the block carries structured ``entries`` in its
+    attributes (from :func:`DART.converter.block_segmenter.segment_extracted_document`
+    seeded by ``doc.toc``), we render them as a nested ``<ol>`` /
+    ``<li>`` tree with ``<a href="#...">`` anchors keyed by level.
+    Entries resolve to ``#chap-N`` / ``#sec-N-M`` when the matching
+    block emits those ids; otherwise fall back to ``#page-N``.
+
+    Backward-compat: when no ``entries`` attribute is present (legacy
+    callers), we fall back to the pre-Wave-18 flat ``<ol>`` rendering
+    of per-line text items.
+    """
     sid = _stable_id(block, "toc")
+    entries = block.attributes.get("entries") if block.attributes else None
+    if isinstance(entries, (list, tuple)) and entries:
+        list_html = _render_toc_entries(list(entries))
+    else:
+        items = _extract_list_items(block)
+        items_html = (
+            _render_list_items(items)
+            if items
+            else f"<li>{_escape(block.raw.text)}</li>"
+        )
+        list_html = f"<ol>{items_html}</ol>"
     return (
-        f'<nav role="navigation" aria-labelledby="{sid}-h" {_provenance_attrs(block)}>'
+        f'<nav role="doc-toc" aria-labelledby="{sid}-h" {_provenance_attrs(block)}>'
         f'<h2 id="{sid}-h">Contents</h2>'
-        f"<ol>{items_html}</ol>"
+        f"{list_html}"
         f"</nav>"
     )
 
@@ -525,8 +654,20 @@ def _tpl_table(block: ClassifiedBlock) -> str:
         thead_html = "".join(_render_table_row(r, tag="th") for r in header_row_list)
         tbody_html = "".join(_render_table_row(r, tag="td") for r in rows)
 
+    # Wave 18: surface the upstream extractor label on the <table> so
+    # debug consumers can see whether the block came from pdfplumber or
+    # PyMuPDF. Defaults to "pdfplumber" so legacy callers stay shape-
+    # compatible.
+    extractor_attr = ""
+    source_label = block.attributes.get("source")
+    if isinstance(source_label, str) and source_label.strip():
+        extractor_attr = (
+            f' data-dart-table-extractor="{_escape(source_label.strip())}"'
+        )
+
     return (
-        f'<table role="grid" aria-labelledby="{tid}-caption" {_provenance_attrs(block)}>'
+        f'<table role="grid" aria-labelledby="{tid}-caption" '
+        f"{_provenance_attrs(block)}{extractor_attr}>"
         f'<caption id="{tid}-caption">{_escape(title)}</caption>'
         f"<thead>{thead_html}</thead>"
         f"<tbody>{tbody_html}</tbody>"
