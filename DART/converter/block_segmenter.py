@@ -16,9 +16,12 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from typing import List
+from typing import TYPE_CHECKING, List
 
-from DART.converter.block_roles import RawBlock
+from DART.converter.block_roles import BlockRole, RawBlock
+
+if TYPE_CHECKING:  # pragma: no cover - type-only imports
+    from DART.converter.extractor import ExtractedDocument
 
 logger = logging.getLogger(__name__)
 
@@ -117,4 +120,95 @@ def segment_pdftotext_output(raw_text: str) -> List[RawBlock]:
     return blocks
 
 
-__all__ = ["segment_pdftotext_output"]
+def segment_extracted_document(doc: "ExtractedDocument") -> List[RawBlock]:
+    """Phase 1 Wave-16 entry point: ``ExtractedDocument`` -> ``List[RawBlock]``.
+
+    Produces the Wave 12 baseline paragraph blocks from ``doc.raw_text``
+    (via :func:`segment_pdftotext_output`) and then appends dedicated
+    structured blocks for every ``doc.tables`` entry and every
+    ``doc.figures`` entry. Structured blocks carry:
+
+    * ``extractor_hint`` set to the hinted :class:`BlockRole`
+      (``TABLE`` or ``FIGURE``), which downstream classifiers honour
+      by skipping text classification.
+    * ``extra`` populated with the structured payload (rows / header /
+      caption for tables; image_path / alt / caption for figures).
+    * ``extractor`` set to ``"pdfplumber"`` or ``"pymupdf"`` so
+      provenance attributes can distinguish structure-sourced blocks
+      from pdftotext prose.
+
+    Block IDs stay positional-hashed and unique across the combined
+    sequence so the downstream assembler never produces duplicate
+    ``id=`` attributes.
+    """
+    text_blocks = segment_pdftotext_output(doc.raw_text)
+
+    structured: List[RawBlock] = []
+    running_index = len(text_blocks)
+
+    for table in doc.tables:
+        header_text = " | ".join(" ".join(row) for row in table.header_rows if row)
+        body_preview = " | ".join(" ".join(row) for row in table.body_rows[:3] if row)
+        caption = table.caption or ""
+        text_summary = (caption + "\n" if caption else "") + (
+            header_text + "\n" + body_preview if (header_text or body_preview) else ""
+        )
+        if not text_summary.strip():
+            text_summary = caption or "(table)"
+        normalised = _normalise_block_text(text_summary)
+        block_id = _compute_block_id(normalised, running_index)
+        running_index += 1
+        structured.append(
+            RawBlock(
+                text=normalised,
+                block_id=block_id,
+                page=table.page,
+                bbox=table.bbox,
+                extractor="pdfplumber",
+                extractor_hint=BlockRole.TABLE,
+                extra={
+                    "header_rows": list(table.header_rows),
+                    "body_rows": list(table.body_rows),
+                    "caption": caption,
+                },
+            )
+        )
+
+    for figure in doc.figures:
+        caption = figure.caption or ""
+        alt = figure.alt_text or ""
+        descriptor = caption or alt or "(figure)"
+        normalised = _normalise_block_text(descriptor)
+        block_id = _compute_block_id(normalised, running_index)
+        running_index += 1
+        structured.append(
+            RawBlock(
+                text=normalised,
+                block_id=block_id,
+                page=figure.page,
+                bbox=figure.bbox,
+                extractor="pymupdf",
+                extractor_hint=BlockRole.FIGURE,
+                extra={
+                    "image_path": figure.image_path or "",
+                    "alt": alt,
+                    "caption": caption,
+                },
+            )
+        )
+
+    combined = text_blocks + structured
+
+    # Re-populate neighbour context across the combined sequence so
+    # classifiers that use neighbours (the LLM classifier's prompt
+    # builder) see the same window regardless of whether structured
+    # blocks are present.
+    for idx, block in enumerate(combined):
+        prev_text = combined[idx - 1].text if idx > 0 else ""
+        next_text = combined[idx + 1].text if idx + 1 < len(combined) else ""
+        block.neighbors = {"prev": prev_text, "next": next_text}
+
+    return combined
+
+
+__all__ = ["segment_extracted_document", "segment_pdftotext_output"]

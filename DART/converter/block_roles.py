@@ -84,6 +84,19 @@ class RawBlock:
     names which upstream extractor produced the text. ``neighbors`` is
     a convenience map carrying the ``prev`` and ``next`` sibling text,
     which the classifier uses for context disambiguation.
+
+    Wave 16 additions:
+
+    * ``extractor_hint`` — when the segmenter knows a block's role at
+      extraction time (pdfplumber table, PyMuPDF figure), it stamps
+      the hinted :class:`BlockRole` here so classifiers skip text
+      classification and emit the hinted role at confidence 1.0.
+    * ``extra`` — structured attributes from the extractor that the
+      classifier forwards into :attr:`ClassifiedBlock.attributes` (e.g.
+      ``header_rows`` / ``body_rows`` for a table; ``image_path`` /
+      ``alt`` / ``caption`` for a figure).
+
+    Both fields default to empty so pre-Wave-16 callers stay compatible.
     """
 
     text: str
@@ -92,6 +105,8 @@ class RawBlock:
     bbox: Optional[Tuple[float, float, float, float]] = None
     extractor: str = "pdftotext"
     neighbors: dict = field(default_factory=dict)
+    extractor_hint: Optional["BlockRole"] = None
+    extra: dict = field(default_factory=dict)
 
 
 @dataclass

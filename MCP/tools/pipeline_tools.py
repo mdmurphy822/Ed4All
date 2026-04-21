@@ -740,20 +740,30 @@ def _raw_text_to_accessible_html(
     raw_text: str,
     title: str,
     metadata: Optional[dict] = None,
+    *,
+    source_pdf: Optional[str] = None,
+    llm: Optional[object] = None,
 ) -> str:
-    """Wave 15 entry point: route raw pdftotext to DART.converter by default.
+    """Wave 15+16 entry point: route raw pdftotext / PDF to DART.converter.
 
     Flags:
 
     * ``DART_LEGACY_CONVERTER=true`` forces the pre-Wave-15 regex path
       (``_raw_text_to_accessible_html_legacy``) as a one-release safety
       fallback. Default — and the path exercised by end-to-end tests —
-      is the Wave 12-14 ontology-aware pipeline
+      is the Wave 12-15 ontology-aware pipeline
       (``DART.converter.convert_pdftotext_to_html``), which produces
       ``data-dart-block-role`` + Dublin Core + schema.org JSON-LD.
     * ``DART_LLM_CLASSIFICATION`` is respected transitively through
       ``DART.converter.default_classifier`` — when on AND a backend is
       provided, block classification goes through Claude.
+
+    Wave 16: when ``source_pdf`` is provided, the converter reaches the
+    full :func:`DART.converter.extractor.extract_document` path so
+    pdfplumber tables, PyMuPDF figures, and Tesseract OCR text all
+    survive into the HTML output. When ``source_pdf`` is ``None`` (the
+    legacy raw-text-only call shape), behaviour is unchanged from Wave
+    15 — the converter runs on ``raw_text`` alone.
 
     ``metadata`` carries Dublin Core fields (authors, date, language,
     rights, subject) that the new assembler emits as ``<meta>`` tags in
@@ -766,13 +776,68 @@ def _raw_text_to_accessible_html(
     if legacy_flag == "true":
         return _raw_text_to_accessible_html_legacy(raw_text, title)
 
-    # New path: delegate to the 4-phase pipeline. ``default_classifier``
-    # picks LLM vs heuristic based on ``DART_LLM_CLASSIFICATION``; the
-    # pipeline wraps every phase, so pipeline_tools stays a thin
-    # orchestrator.
+    # Wave 16 enriched path: when a source PDF is available, go through
+    # the dual-extraction layer so tables / figures / OCR contribute
+    # structured blocks. Wrap extractor failures in a fall-through so a
+    # broken optional extractor never blocks the raw-text conversion.
+    if source_pdf:
+        try:
+            from DART.converter import aconvert_pdftotext_to_html
+            from DART.converter.block_segmenter import (
+                segment_extracted_document,
+            )
+            from DART.converter.document_assembler import assemble_html
+            from DART.converter.extractor import extract_document
+            from DART.converter import default_classifier
+
+            doc = extract_document(source_pdf, llm=llm)
+            blocks = segment_extracted_document(doc)
+            classifier = default_classifier(llm=llm)
+            from DART.converter.heuristic_classifier import HeuristicClassifier
+
+            if isinstance(classifier, HeuristicClassifier):
+                classified = classifier.classify_sync(blocks)
+            else:
+                # Use the same loop-safe bridge as convert_pdftotext_to_html.
+                import asyncio
+
+                try:
+                    asyncio.get_running_loop()
+                    import threading
+
+                    result: list = []
+                    error: list = []
+
+                    def _runner():
+                        try:
+                            result.append(asyncio.run(classifier.classify(blocks)))
+                        except BaseException as exc:  # noqa: BLE001
+                            error.append(exc)
+
+                    thread = threading.Thread(target=_runner, daemon=True)
+                    thread.start()
+                    thread.join()
+                    if error:
+                        raise error[0]
+                    classified = result[0]
+                except RuntimeError:
+                    classified = asyncio.run(classifier.classify(blocks))
+            return assemble_html(classified, title, metadata or {})
+        except RuntimeError as exc:
+            logger.debug(
+                "Wave 16 extractor failed (%s); falling back to raw-text path",
+                exc,
+            )
+        except Exception as exc:  # noqa: BLE001 — never block on optional path
+            logger.debug(
+                "Wave 16 extractor raised unexpectedly (%s); falling back",
+                exc,
+            )
+
+    # Wave 15 path (raw text only): delegate to the 4-phase pipeline.
     from DART.converter import convert_pdftotext_to_html as _convert
 
-    return _convert(raw_text, title=title, metadata=metadata or {})
+    return _convert(raw_text, title=title, metadata=metadata or {}, llm=llm)
 
 
 def _raw_text_to_accessible_html_legacy(raw_text: str, title: str) -> str:
@@ -1484,7 +1549,15 @@ def _build_tool_registry() -> dict:
         # downstream objective extraction across the corpus.
         pretty_title = out_stem.replace("-", " ").replace("_", " ").strip()
         html_output = out_dir / f"{out_stem}_accessible.html"
-        html_content = _raw_text_to_accessible_html(raw_text, pretty_title)
+        # Pass ``source_pdf`` so Wave 16 extraction enrichment kicks in
+        # (pdfplumber tables + PyMuPDF figures + optional OCR). The
+        # extractor gracefully degrades when optional deps are missing
+        # so this never regresses the raw-text-only path.
+        html_content = _raw_text_to_accessible_html(
+            raw_text,
+            pretty_title,
+            source_pdf=str(pdf),
+        )
         html_output.write_text(html_content, encoding="utf-8")
 
         word_count = len(_re.findall(r"\b\w+\b", html_content))

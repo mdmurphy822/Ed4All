@@ -379,19 +379,20 @@ def _tpl_cross_reference(block: ClassifiedBlock) -> str:
 def _tpl_figure(block: ClassifiedBlock) -> str:
     """``<figure itemtype="schema.org/ImageObject">`` with optional ``<img>``.
 
-    When ``attributes.src`` is missing, the figure still renders with just
-    a caption — useful for text-only figure references that survived
-    pdftotext extraction.
+    Accepts both ``src`` (legacy) and ``image_path`` (Wave 16 structured
+    extractor output) for the image source. When no image source is
+    available, the figure still renders with just a caption — useful
+    for text-only figure references that survived pdftotext.
     """
     number = block.attributes.get("number")
     fig_id = f"fig-{number}" if number else f"fig-{block.raw.block_id}"
     caption = block.attributes.get("caption") or block.raw.text
-    src = block.attributes.get("src")
+    src = block.attributes.get("src") or block.attributes.get("image_path")
     alt = block.attributes.get("alt", "")
     img_html = ""
     if src:
         img_html = (
-            f'<img src="{_escape(src)}" alt="{_escape(alt)}" itemprop="url">'
+            f'<img src="{_escape(src)}" alt="{_escape(alt)}" itemprop="contentUrl">'
         )
     return (
         f'<figure id="{fig_id}" itemscope '
@@ -422,26 +423,74 @@ def _render_table_row(row: Iterable, tag: str = "td") -> str:
     return f"<tr>{cells}</tr>"
 
 
+def _render_table_head_row(row: Iterable) -> str:
+    """Render a header row with ``scope="col"`` on every ``<th>``."""
+    cells = "".join(
+        f'<th scope="col">{_escape(cell)}</th>' for cell in row
+    )
+    return f"<tr>{cells}</tr>"
+
+
+def _render_table_body_row(row: Iterable) -> str:
+    """Render a body row with ``scope="row"`` on the first cell only.
+
+    The first cell of each body row acts as a row header — this is the
+    standard screen-reader-friendly pattern for data tables where each
+    row represents a labelled record.
+    """
+    cells_list = list(row)
+    if not cells_list:
+        return "<tr></tr>"
+    first = cells_list[0]
+    rest = cells_list[1:]
+    head = f'<th scope="row">{_escape(first)}</th>'
+    tail = "".join(f"<td>{_escape(cell)}</td>" for cell in rest)
+    return f"<tr>{head}{tail}</tr>"
+
+
 def _tpl_table(block: ClassifiedBlock) -> str:
     """``<table role="grid">`` with caption, ``<thead>``, ``<tbody>``.
 
-    Accepts ``attributes.headers`` as a flat list (single header row) or
-    iterable of rows (multi-header). ``attributes.rows`` is an iterable
-    of row-iterables. Missing or empty collections render empty thead /
-    tbody rather than crashing.
+    Accepts both legacy and Wave-16 attribute shapes:
+
+    * Legacy: ``headers`` (flat list or list-of-rows) + ``rows``
+      (list-of-rows). Each row becomes a ``<tr>`` with ``<td>`` cells.
+    * Wave 16 (structured extractor): ``header_rows`` (list-of-rows) +
+      ``body_rows`` (list-of-rows). Header cells get ``scope="col"``;
+      the first body cell of every row gets ``scope="row"`` so screen
+      readers can associate row labels with every cell.
+
+    When the attributes carry no structure (older heuristic calls
+    without ``extra``), renders an empty ``<thead>`` / ``<tbody>`` and
+    keeps the caption — guarantees we never regress below the Wave 13
+    minimal shape.
     """
     tid = _stable_id(block, "tbl")
-    title = block.attributes.get("title") or block.attributes.get("caption") or block.raw.text
-    headers = block.attributes.get("headers") or []
-    rows = block.attributes.get("rows") or []
+    title = (
+        block.attributes.get("title")
+        or block.attributes.get("caption")
+        or block.raw.text
+    )
 
-    # Normalise headers: list of strings -> single header row.
-    if headers and not isinstance(headers[0], (list, tuple)):
-        header_rows: List = [headers]
+    # Prefer the Wave 16 ``header_rows`` / ``body_rows`` pair.
+    header_rows_attr = block.attributes.get("header_rows")
+    body_rows_attr = block.attributes.get("body_rows")
+
+    if header_rows_attr or body_rows_attr:
+        header_rows: List = list(header_rows_attr or [])
+        body_rows: List = list(body_rows_attr or [])
+        thead_html = "".join(_render_table_head_row(r) for r in header_rows if r)
+        tbody_html = "".join(_render_table_body_row(r) for r in body_rows if r)
     else:
-        header_rows = list(headers)
-    thead_html = "".join(_render_table_row(r, tag="th") for r in header_rows)
-    tbody_html = "".join(_render_table_row(r, tag="td") for r in rows)
+        # Legacy path: ``headers`` + ``rows``.
+        headers = block.attributes.get("headers") or []
+        rows = block.attributes.get("rows") or []
+        if headers and not isinstance(headers[0], (list, tuple)):
+            header_row_list: List = [headers]
+        else:
+            header_row_list = list(headers)
+        thead_html = "".join(_render_table_row(r, tag="th") for r in header_row_list)
+        tbody_html = "".join(_render_table_row(r, tag="td") for r in rows)
 
     return (
         f'<table role="grid" aria-labelledby="{tid}-caption" {_provenance_attrs(block)}>'
@@ -476,17 +525,39 @@ def _tpl_code_block(block: ClassifiedBlock) -> str:
 
 
 def _tpl_formula_math(block: ClassifiedBlock) -> str:
-    """``<math>`` with ``<annotation encoding="text/plain">`` fallback.
+    """``<math>`` with ``<semantics>`` + ``<annotation>`` fallback.
 
-    Wave 16 will fill real MathML. For now the ``<annotation>`` carries
-    the extracted plain-text form of the equation.
+    Wave 16: delegates to :mod:`DART.converter.mathml` so LaTeX-style
+    delimiters (``$...$``, ``\\(...\\)``, ``\\[...\\]``) and plain
+    equation-on-a-line patterns (``E = mc^2``) all route through the
+    same minimal-accessible MathML shape. The ``<annotation>`` arm
+    always carries the raw plain-text source so screen readers without
+    a MathML reader still narrate the formula.
+
+    Provenance attributes survive on the ``<math>`` wrapper so the
+    downstream validator can trace the block even inside a structural
+    element.
     """
+    from DART.converter.mathml import detect_formulas, render_mathml
+
+    # Prefer explicit attribute-carried body (LLM classifier can emit
+    # a clean ``{"body": "..."}``); fall back to the raw text.
+    explicit_body = block.attributes.get("body") or block.attributes.get("latex")
     fallback = block.attributes.get("fallback") or block.raw.text
-    return (
-        f'<math xmlns="http://www.w3.org/1998/Math/MathML" display="block" '
-        f"{_provenance_attrs(block)}>"
-        f'<annotation encoding="text/plain">{_escape(fallback)}</annotation>'
-        f"</math>"
+
+    if explicit_body:
+        body = str(explicit_body)
+    else:
+        detected = detect_formulas(block.raw.text or "")
+        body = detected[0].body if detected else (block.raw.text or "")
+
+    mathml = render_mathml(body, fallback=fallback, display="block")
+
+    # Inject provenance attributes onto the outer ``<math>``.
+    return mathml.replace(
+        'display="block">',
+        f'display="block" {_provenance_attrs(block)}>',
+        1,
     )
 
 
