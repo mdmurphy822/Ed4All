@@ -70,6 +70,14 @@ _TAIL_SCAN_LINES = 3
 _TRAILING_DIGITS_RE = re.compile(r"^(.*?)(?:\s+)?(\d{1,4})\s*$")
 
 
+# Wave 25 Fix 1: mirror of the trailing-digits regex for the
+# even-page leading-digit footer pattern (``"{N} A.W. (Tony) Bates"``).
+# Captures the variable page-number head and the fixed residual. The
+# residual must be at least one non-digit char after the required
+# whitespace gap to avoid matching plain numbers.
+_LEADING_DIGITS_RE = re.compile(r"^\s*(\d{1,4})\s+(\S.*?)\s*$")
+
+
 # Regex — lines starting with a heading marker that should never be
 # treated as chrome even when they happen to repeat.
 _HEADING_MARKER_RE = re.compile(
@@ -156,6 +164,29 @@ def _strip_trailing_digits(normalised: str) -> Tuple[str, Optional[int]]:
     return prefix, page
 
 
+def _strip_leading_digits(normalised: str) -> Tuple[str, Optional[int]]:
+    """Split ``normalised`` into ``(residual, page_number)`` — leading form.
+
+    Wave 25 Fix 1: even-page running footers like
+    ``"{N} A.W. (Tony) Bates"`` put the page number BEFORE the fixed
+    text. This is the mirror of :func:`_strip_trailing_digits` —
+    returns ``(residual, page_num)`` when the line starts with digits
+    followed by whitespace + residual text, otherwise
+    ``(normalised, None)``.
+    """
+    if not normalised:
+        return "", None
+    match = _LEADING_DIGITS_RE.match(normalised)
+    if not match:
+        return normalised, None
+    try:
+        page = int(match.group(1))
+    except (TypeError, ValueError):
+        return normalised, None
+    residual = (match.group(2) or "").strip()
+    return residual, page
+
+
 def _is_heading_marker(line: str) -> bool:
     """Return ``True`` when ``line`` looks like a chapter/section heading."""
     if not line:
@@ -236,59 +267,103 @@ def detect_page_chrome(
     # normalised + prefix-stripped form of the top-N and bottom-N
     # non-blank lines together with the raw line and its positional
     # index so we can mutate the page text later.
-    top_candidates: List[List[Tuple[str, str, int]]] = []
-    bottom_candidates: List[List[Tuple[str, str, int]]] = []
+    #
+    # Wave 25 Fix 1: each candidate now records BOTH possible
+    # partitions — trailing-digit (``"Book Title 42"``) and leading-
+    # digit (``"42 A.W. Bates"``). The frequency counter then evaluates
+    # each partition independently, so a document that uses odd-page
+    # trailing-digit headers AND even-page leading-digit footers
+    # detects both patterns simultaneously. The tuple stored is
+    # ``(tail_key, head_key, raw_line, idx)`` where either key may be
+    # ``None`` when that partition does not apply (line has no digits,
+    # or the residual is too short). Later counting logic iterates
+    # both keys per candidate.
+    top_candidates: List[List[Tuple[Optional[str], Optional[str], str, int]]] = []
+    bottom_candidates: List[List[Tuple[Optional[str], Optional[str], str, int]]] = []
+
+    def _derive_keys(raw_line: str) -> Tuple[Optional[str], Optional[str]]:
+        """Return ``(trailing_key, leading_key)`` for ``raw_line``.
+
+        Either element may be ``None`` when that partition yields no
+        usable chrome candidate (e.g. the line has no digits; the
+        residual is empty; the leading-digit residual is too short).
+
+        The ``trailing_key`` mirrors pre-Wave-25 behaviour — the
+        prefix (variable tail stripped) or the ``__page_number_only__``
+        sentinel for bare-number lines.
+
+        The ``leading_key`` is keyed by the residual text AFTER the
+        leading integer (e.g. ``"a.w. (tony) bates"``). Bare numbers
+        have no leading-digit residual, so ``leading_key`` is None
+        for them — the trailing-digit path already handles that case
+        via the sentinel.
+        """
+        norm = _normalise(raw_line)
+        if not norm:
+            return None, None
+        tail_prefix, _tail_page = _strip_trailing_digits(norm)
+        tail_key: Optional[str] = tail_prefix if tail_prefix else "__page_number_only__"
+        lead_residual, lead_page = _strip_leading_digits(norm)
+        lead_key: Optional[str]
+        if lead_page is None or not lead_residual:
+            lead_key = None
+        else:
+            # Guard: residual must be non-trivial (>= 3 chars) to
+            # avoid false positives like ``"5 X"`` (a lone letter).
+            # This matches the trailing-digit short-prefix guard.
+            if len(lead_residual) < 3:
+                lead_key = None
+            else:
+                # Mark with a sentinel prefix so leading-keyed and
+                # trailing-keyed detections never collide in the
+                # shared counts dicts (e.g. ``"a.w. bates"`` could
+                # coincidentally match a trailing-key prefix from
+                # some other line).
+                lead_key = f"__lead__:{lead_residual}"
+        return tail_key, lead_key
 
     for page_text in pages:
         non_blank = _page_non_blank_lines(page_text)
         top = non_blank[:_HEAD_SCAN_LINES]
         bottom = non_blank[-_TAIL_SCAN_LINES:] if non_blank else []
 
-        top_list: List[Tuple[str, str, int]] = []
+        top_list: List[Tuple[Optional[str], Optional[str], str, int]] = []
         for idx, raw_line in top:
-            norm = _normalise(raw_line)
-            if not norm:
+            tail_key, lead_key = _derive_keys(raw_line)
+            if tail_key is None and lead_key is None:
                 continue
-            prefix, _page_num = _strip_trailing_digits(norm)
-            # Use the prefix (numbered variable tail stripped) as the
-            # frequency key so "... Age 2" and "... Age 4" collapse.
-            # When the line is bare digits ("164"), the prefix is empty
-            # and we key on a sentinel so bare page numbers still count
-            # as repeating chrome.
-            key = prefix if prefix else "__page_number_only__"
-            top_list.append((key, raw_line, idx))
+            top_list.append((tail_key, lead_key, raw_line, idx))
         top_candidates.append(top_list)
 
-        bottom_list: List[Tuple[str, str, int]] = []
+        bottom_list: List[Tuple[Optional[str], Optional[str], str, int]] = []
         for idx, raw_line in bottom:
-            norm = _normalise(raw_line)
-            if not norm:
+            tail_key, lead_key = _derive_keys(raw_line)
+            if tail_key is None and lead_key is None:
                 continue
-            prefix, _page_num = _strip_trailing_digits(norm)
-            key = prefix if prefix else "__page_number_only__"
-            bottom_list.append((key, raw_line, idx))
+            bottom_list.append((tail_key, lead_key, raw_line, idx))
         bottom_candidates.append(bottom_list)
 
     # Count per-position. Keep separate counts for top vs bottom so a
     # line that only appears as a footer isn't wrongly classified as a
-    # header (and vice versa).
-    top_counts: Dict[str, int] = {}
-    for page_list in top_candidates:
-        seen_on_page: Set[str] = set()
-        for key, _raw, _idx in page_list:
-            if key in seen_on_page:
-                continue
-            seen_on_page.add(key)
-            top_counts[key] = top_counts.get(key, 0) + 1
+    # header (and vice versa). Both partitions (trailing / leading) are
+    # counted independently so even-page leading-digit footers land
+    # alongside odd-page trailing-digit headers.
+    def _accumulate(
+        page_lists: List[List[Tuple[Optional[str], Optional[str], str, int]]],
+    ) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for page_list in page_lists:
+            seen_on_page: Set[str] = set()
+            for tail_key, lead_key, _raw, _idx in page_list:
+                for key in (tail_key, lead_key):
+                    if not key or key in seen_on_page:
+                        continue
+                    seen_on_page.add(key)
+                    counts[key] = counts.get(key, 0) + 1
+        return counts
 
-    bottom_counts: Dict[str, int] = {}
-    for page_list in bottom_candidates:
-        seen_on_page = set()
-        for key, _raw, _idx in page_list:
-            if key in seen_on_page:
-                continue
-            seen_on_page.add(key)
-            bottom_counts[key] = bottom_counts.get(key, 0) + 1
+    top_counts = _accumulate(top_candidates)
+    bottom_counts = _accumulate(bottom_candidates)
 
     threshold = max(2, int(round(len(pages) * float(min_repeat_fraction))))
 
@@ -308,6 +383,18 @@ def detect_page_chrome(
     #     stays allowed because bare page numbers are legitimate chrome.
     def _is_valid_chrome_key(key: str, counts: Dict[str, int]) -> bool:
         if key == "__page_number_only__":
+            return True
+        # Wave 25 Fix 1: leading-digit keys carry a ``__lead__:``
+        # sentinel prefix — strip it for the guards so the residual
+        # is evaluated against the same rules as trailing-digit keys.
+        if key.startswith("__lead__:"):
+            body = key[len("__lead__:") :]
+            if _is_heading_marker(body):
+                return False
+            if len(body) >= _MAX_CHROME_LINE_LEN:
+                return False
+            if len(body) < 3:
+                return False
             return True
         if _is_heading_marker(key):
             return False
@@ -340,44 +427,76 @@ def detect_page_chrome(
 
     # Build the displayed headers/footers set and collect per-page
     # page-number mappings.
+    #
+    # Wave 25 Fix 1: leading-digit keys carry a ``__lead__:`` sentinel
+    # prefix; we store them stripped of the prefix in the public
+    # ``headers`` / ``footers`` sets so downstream callers see the
+    # real residual text (``"a.w. (tony) bates"``). Internal matching
+    # during stripping uses the sentinel-prefixed form.
+    def _display_form(key: str) -> Optional[str]:
+        if key == "__page_number_only__":
+            return None
+        if key.startswith("__lead__:"):
+            return key[len("__lead__:") :]
+        return key
+
     headers: Set[str] = set()
     for key in header_keys:
-        if key == "__page_number_only__":
-            continue
-        headers.add(key)
+        display = _display_form(key)
+        if display is not None:
+            headers.add(display)
 
     footers: Set[str] = set()
     for key in footer_keys:
-        if key == "__page_number_only__":
-            continue
-        footers.add(key)
+        display = _display_form(key)
+        if display is not None:
+            footers.add(display)
 
     page_number_lines: Dict[int, str] = {}
 
-    # Now strip: for every page, walk the stored (key, raw, idx) lists
-    # and clear each chrome-flagged line. Also extract the page number
-    # from a numbered chrome line.
+    # Now strip: for every page, walk the stored (tail_key, lead_key,
+    # raw, idx) lists and clear each chrome-flagged line. Also extract
+    # the page number from a numbered chrome line — the partition
+    # that matched determines whether we look at the head or tail.
     stripped_pages: List[str] = []
     for page_index, page_text in enumerate(pages):
         page_number_1based = page_index + 1
         lines = page_text.splitlines()
         to_clear: Set[int] = set()
 
-        for key, raw_line, idx in top_candidates[page_index]:
-            if key in header_keys:
-                to_clear.add(idx)
-                norm = _normalise(raw_line)
+        for tail_key, lead_key, raw_line, idx in top_candidates[page_index]:
+            matched_partition: Optional[str] = None
+            if tail_key is not None and tail_key in header_keys:
+                matched_partition = "tail"
+            elif lead_key is not None and lead_key in header_keys:
+                matched_partition = "lead"
+            if matched_partition is None:
+                continue
+            to_clear.add(idx)
+            norm = _normalise(raw_line)
+            if matched_partition == "tail":
                 _prefix, maybe_page = _strip_trailing_digits(norm)
-                if maybe_page is not None:
-                    page_number_lines.setdefault(page_number_1based, raw_line)
+            else:
+                _residual, maybe_page = _strip_leading_digits(norm)
+            if maybe_page is not None:
+                page_number_lines.setdefault(page_number_1based, raw_line)
 
-        for key, raw_line, idx in bottom_candidates[page_index]:
-            if key in footer_keys:
-                to_clear.add(idx)
-                norm = _normalise(raw_line)
+        for tail_key, lead_key, raw_line, idx in bottom_candidates[page_index]:
+            matched_partition = None
+            if tail_key is not None and tail_key in footer_keys:
+                matched_partition = "tail"
+            elif lead_key is not None and lead_key in footer_keys:
+                matched_partition = "lead"
+            if matched_partition is None:
+                continue
+            to_clear.add(idx)
+            norm = _normalise(raw_line)
+            if matched_partition == "tail":
                 _prefix, maybe_page = _strip_trailing_digits(norm)
-                if maybe_page is not None:
-                    page_number_lines.setdefault(page_number_1based, raw_line)
+            else:
+                _residual, maybe_page = _strip_leading_digits(norm)
+            if maybe_page is not None:
+                page_number_lines.setdefault(page_number_1based, raw_line)
 
         if to_clear:
             new_lines = [
@@ -462,9 +581,18 @@ def _confirm_chrome_by_bbox(
 
         norm = _normalise(text)
         prefix, _ = _strip_trailing_digits(norm)
-        key = prefix if prefix else "__page_number_only__"
-        if key in candidate_keys:
-            confirmed.add(key)
+        trailing_key = prefix if prefix else "__page_number_only__"
+        if trailing_key in candidate_keys:
+            confirmed.add(trailing_key)
+        # Wave 25 Fix 1: also produce the leading-digit key so
+        # bbox-layer confirmation upgrades leading-digit footers
+        # (``"{N} A.W. Bates"``) the same way it does trailing-digit
+        # headers.
+        residual, lead_page = _strip_leading_digits(norm)
+        if lead_page is not None and residual and len(residual) >= 3:
+            leading_key = f"__lead__:{residual}"
+            if leading_key in candidate_keys:
+                confirmed.add(leading_key)
 
     return confirmed
 
@@ -521,11 +649,25 @@ def strip_page_chrome(raw_pdftotext: str, chrome: PageChrome) -> str:
                 continue
             prefix, _page = _strip_trailing_digits(norm)
             key = prefix if prefix else "__page_number_only__"
+            # Wave 25 Fix 1: leading-digit residual (mirror of prefix).
+            residual, lead_page = _strip_leading_digits(norm)
             # Test against the same key forms stored in headers/footers
             # (prefixes, never the "__page_number_only__" sentinel —
             # that one we only match when explicitly a bare number).
             drop = False
             if prefix and (prefix in chrome.headers or prefix in chrome.footers):
+                drop = True
+            elif (
+                lead_page is not None
+                and residual
+                and len(residual) >= 3
+                and (
+                    residual in chrome.headers or residual in chrome.footers
+                )
+            ):
+                # Wave 25 Fix 1: leading-digit chrome line (``"{N}
+                # A.W. Bates"``) — residual matches an even-page
+                # footer recorded in the chrome record.
                 drop = True
             elif key == "__page_number_only__" and chrome.page_number_lines:
                 # Bare numbers were chrome: drop when the line is just

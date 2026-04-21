@@ -108,6 +108,104 @@ def _split_metadata(
     return body, aside
 
 
+# ---------------------------------------------------------------------------
+# Wave 25 Fix 3: chapter dedup
+# ---------------------------------------------------------------------------
+
+
+def _chapter_dedup_key(block: ClassifiedBlock) -> str:
+    """Stable dedup key for a CHAPTER_OPENER block.
+
+    The key is the first line of the block's text (lowercased, trimmed,
+    first 80 chars) — matches the plan's spec. A duplicate first-line
+    signals a duplicate chapter promotion (either a back-of-book recap
+    entry or an activity-prompt false positive that slipped past the
+    classifier guards).
+    """
+    attrs = block.attributes or {}
+    text = str(attrs.get("heading_text") or block.raw.text or "")
+    first_line = text.splitlines()[0] if text else ""
+    return first_line.strip().lower()[:80]
+
+
+def _derive_chapter_number(block: ClassifiedBlock) -> Optional[str]:
+    """Return the chapter number string as emitted into the article id.
+
+    Mirrors :func:`_chapter_number_from_block` (below) but kept as a
+    local helper to avoid forward-reference gymnastics.
+    """
+    attrs = block.attributes or {}
+    explicit = attrs.get("chapter_number") or attrs.get("number")
+    if explicit not in (None, ""):
+        return str(explicit)
+    import re as _re
+    for candidate in (
+        attrs.get("heading_text"),
+        block.raw.text,
+    ):
+        if not candidate:
+            continue
+        m = _re.search(r"\bchapter\s+(\d+)\b", str(candidate), _re.IGNORECASE)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _dedup_chapter_openers(
+    blocks: List[ClassifiedBlock],
+) -> List[ClassifiedBlock]:
+    """Drop second-and-later CHAPTER_OPENER blocks with duplicate keys.
+
+    Wave 25 Fix 3: audit found ``id="chap-1"`` appearing 2×,
+    ``id="chap-6"`` 3×, ``id="chap-12"`` 3× on Bates because the
+    CHAPTER_OPENER classifier promoted both the real chapter opener
+    AND the back-of-book recap entry. HTML validity breaks +
+    ``<a href="#chap-6">`` non-deterministically scrolls to whichever
+    wins the DOM race. We suppress duplicates — the first opener wins
+    and keeps its stable ``chap-{N}`` anchor; subsequent duplicates
+    fall through to PARAGRAPH so they stay in the text flow but
+    don't spawn duplicate anchors.
+
+    Dedup key matching runs on BOTH (a) first-line-of-heading text
+    AND (b) the derived chapter number (when present). Blocks whose
+    distinct titles would nonetheless resolve to the same
+    ``id="chap-N"`` anchor (e.g. one recap page referencing
+    ``"Chapter 12"`` that's actually about a different topic) are
+    caught by the chapter-number dedup.
+    """
+    seen_text: set = set()
+    seen_numbers: set = set()
+    result: List[ClassifiedBlock] = []
+    for block in blocks:
+        if block.role != BlockRole.CHAPTER_OPENER:
+            result.append(block)
+            continue
+        key = _chapter_dedup_key(block)
+        number = _derive_chapter_number(block)
+        duplicate = False
+        if key and key in seen_text:
+            duplicate = True
+        if number and number in seen_numbers:
+            duplicate = True
+        if duplicate:
+            result.append(
+                ClassifiedBlock(
+                    raw=block.raw,
+                    role=BlockRole.PARAGRAPH,
+                    confidence=block.confidence,
+                    attributes={},
+                    classifier_source=block.classifier_source,
+                )
+            )
+            continue
+        if key:
+            seen_text.add(key)
+        if number:
+            seen_numbers.add(number)
+        result.append(block)
+    return result
+
+
 def _group_consecutive_lists(
     body_blocks: List[ClassifiedBlock],
 ) -> List[ClassifiedBlock]:
@@ -515,6 +613,10 @@ def assemble_html(
     7. WCAG 2.2 AA ``<style>`` bundle
     """
     metadata = metadata or {}
+    # Wave 25 Fix 3: dedupe duplicate CHAPTER_OPENER blocks before
+    # body / aside split so the JSON-LD ``hasPart`` list + the emitted
+    # ``<article id="chap-N">`` anchors see the same deduped set.
+    classified_blocks = _dedup_chapter_openers(list(classified_blocks))
     body_blocks, aside_blocks = _split_metadata(classified_blocks)
 
     body_html = _render_body(body_blocks)

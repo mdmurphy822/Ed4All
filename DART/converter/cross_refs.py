@@ -253,6 +253,109 @@ def _augment_targets_with_links(
     return targets
 
 
+def _validate_toc_page_anchors(
+    html_text: str,
+    classified_blocks: List[ClassifiedBlock],
+) -> str:
+    """Wave 25 Fix 6: rewrite or disable orphan ``#page-N`` TOC links.
+
+    The TOC template emits ``<a href="#page-N">`` fallback anchors for
+    entries whose title doesn't match ``Chapter N`` / ``N.M ``. When
+    no PAGE_BREAK block is emitted for page N (most pages on Bates
+    are not TOC-referenced, but the TOC template still emitted a
+    ``#page-N`` fallback), the link dead-ends.
+
+    Remediation (first match wins):
+
+    1. Rewrite to the nearest in-body anchor on the same page —
+       prefer ``#chap-{N}`` when a chapter opens on that page,
+       else ``#sec-{X}-{Y}`` when a numbered section heading lands
+       there.
+    2. Fall back to demoting the link to a plain ``<span>`` with
+       ``aria-disabled="true"`` so screen readers don't announce it
+       as clickable.
+    """
+    if "#page-" not in html_text:
+        return html_text
+
+    # Build a map of page → first chap-N or sec-X-Y anchor on that
+    # page so we can rewrite orphan page links to meaningful targets.
+    anchor_by_page: Dict[int, str] = {}
+    for block in classified_blocks:
+        page = getattr(block.raw, "page", None)
+        if page is None:
+            continue
+        if block.role == BlockRole.CHAPTER_OPENER:
+            attrs = block.attributes or {}
+            number = attrs.get("chapter_number") or attrs.get("number")
+            if not number:
+                for candidate in (
+                    str(attrs.get("heading_text") or ""),
+                    str(block.raw.text or ""),
+                ):
+                    m = _CHAPTER_NUMBER_RE.search(candidate)
+                    if m:
+                        number = m.group(1)
+                        break
+            if number and page not in anchor_by_page:
+                anchor_by_page[page] = f"chap-{number}"
+        elif block.role == BlockRole.SECTION_HEADING:
+            attrs = block.attributes or {}
+            number = attrs.get("number") or attrs.get("section_number")
+            if number:
+                m = _NUMBER_DOT_RE.match(str(number))
+                if m and page not in anchor_by_page:
+                    anchor_by_page[page] = (
+                        f"sec-{m.group(1)}-{m.group(2)}"
+                    )
+            else:
+                heading = str(
+                    (block.attributes or {}).get("heading_text")
+                    or block.raw.text
+                    or ""
+                )
+                hm = re.match(r"^\s*(\d+)\.(\d+)\b", heading)
+                if hm and page not in anchor_by_page:
+                    anchor_by_page[page] = f"sec-{hm.group(1)}-{hm.group(2)}"
+
+    # Pages that have a PAGE_BREAK anchor emitted (``id="page-N"``)
+    # are valid targets — no rewrite needed.
+    emitted_page_anchors: set = set()
+    for match in re.finditer(r'id="page-(\d+)"', html_text):
+        try:
+            emitted_page_anchors.add(int(match.group(1)))
+        except ValueError:
+            pass
+
+    # Walk every ``<a href="#page-N">...</a>`` occurrence and rewrite
+    # or demote.
+    def _rewrite_link(m: re.Match) -> str:
+        prefix = m.group(1)
+        page_str = m.group(2)
+        suffix = m.group(3)
+        label = m.group(4)
+        try:
+            page = int(page_str)
+        except ValueError:
+            return m.group(0)
+        # Target exists → leave alone.
+        if page in emitted_page_anchors:
+            return m.group(0)
+        # Rewrite to nearest in-body anchor on the same page.
+        alt = anchor_by_page.get(page)
+        if alt:
+            return f'{prefix}#{alt}{suffix}{label}</a>'
+        # Fallback: demote to an aria-disabled span so screen
+        # readers don't announce it as a clickable link.
+        return f'<span aria-disabled="true">{label}</span>'
+
+    pattern = re.compile(
+        r'(<a\b[^>]*href=")#page-(\d+)("[^>]*>)(.*?)</a>',
+        re.DOTALL | re.IGNORECASE,
+    )
+    return pattern.sub(_rewrite_link, html_text)
+
+
 def resolve_cross_references(
     html_text: str,
     classified_blocks: List[ClassifiedBlock],
@@ -281,22 +384,30 @@ def resolve_cross_references(
     external (``uri``) links are left alone — prose wrappers handle
     those. This data-only extension never rewrites existing behaviour.
     """
-    if not html_text or not classified_blocks:
+    if not html_text:
         return html_text
 
-    targets = _collect_targets(classified_blocks)
-    if links:
-        targets = _augment_targets_with_links(targets, classified_blocks, links)
-    if not any(targets.values()):
-        return html_text
+    rewritten = html_text
+    if classified_blocks:
+        targets = _collect_targets(classified_blocks)
+        if links:
+            targets = _augment_targets_with_links(
+                targets, classified_blocks, links
+            )
+        if any(targets.values()):
+            # Split into [before, head, after] so we never rewrite inside <head>.
+            parts = _HEAD_TAIL_SPLIT.split(html_text, maxsplit=1)
+            if len(parts) == 3:
+                before, head, after = parts
+                rewritten = before + head + _resolve_in_body(after, targets)
+            else:
+                # Fallback: no <head> block found (partial document).
+                rewritten = _resolve_in_body(html_text, targets)
 
-    # Split into [before, head, after] so we never rewrite inside <head>.
-    parts = _HEAD_TAIL_SPLIT.split(html_text, maxsplit=1)
-    if len(parts) == 3:
-        before, head, after = parts
-        return before + head + _resolve_in_body(after, targets)
-    # Fallback: no <head> block found (partial document), rewrite the lot.
-    return _resolve_in_body(html_text, targets)
+    # Wave 25 Fix 6: post-pass to validate TOC ``#page-N`` anchors.
+    # Runs regardless of classified_blocks presence so orphan page
+    # links get demoted even when no other rewriting is needed.
+    return _validate_toc_page_anchors(rewritten, classified_blocks or [])
 
 
 __all__ = ["resolve_cross_references"]

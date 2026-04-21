@@ -61,6 +61,16 @@ _PAPER_SECTION_NUMBERED = re.compile(
     r"^\s*\d+(?:\.\d+){0,2}\s+([A-Z][A-Za-z\s,&:'\-]{2,80})\s*$"
 )
 
+
+# Wave 25 Fix 5: dotted-numeric subsection hierarchy. Matches
+# "4.8.1.1 Epistemological basis", "1.7.1. Fully online learning",
+# "8.4.1.4 Maintenance costs", etc. — 1 to 5 dot-separated segments
+# followed by whitespace + non-digit content. Capital-letter prefix
+# (A1.2) is also accepted ("A2.3 Appendix heading").
+_DOTTED_NUMERIC_HEADING = re.compile(
+    r"^\s*([A-Z]?\d+(?:\.\d+){1,4})\.?\s+(\S.*)$"
+)
+
 # Canonical paper / report section keywords. When a standalone block
 # matches one of these (case-insensitive, with optional colon), the
 # classifier promotes it to the corresponding structural role.
@@ -263,6 +273,117 @@ _INLINE_NUMBERED_SIBLINGS = re.compile(
 
 
 # ---------------------------------------------------------------------------
+# Wave 25 Fix 4: CHAPTER_OPENER false-positive guard
+# ---------------------------------------------------------------------------
+#
+# Bates audit: 39 ``<article role="doc-chapter">`` emissions vs 12
+# real chapters. Activity prompts ("What are your reasons?",
+# "Determine which is a medium...", "Do you find the distinction
+# helpful?") were being promoted to CHAPTER_OPENER because they
+# happen to start with a capital letter + keyword + number in the
+# Chapter regex's permissive path.
+
+# Interrogative / directive prompt starters. A block opening with any
+# of these is an activity prompt, not a chapter heading.
+_ACTIVITY_PROMPT_STARTERS = re.compile(
+    r"^\s*(?:"
+    r"what(?:\s|')|"        # "What are..." / "What's..."
+    r"how(?:\s|')|"
+    r"why(?:\s|')|"
+    r"which\b|"
+    r"where\b|"
+    r"when\b|"
+    r"do\s+you\b|"
+    r"have\s+you\b|"
+    r"are\s+you\b|"
+    r"can\s+you\b|"
+    r"could\s+you\b|"
+    r"would\s+you\b|"
+    r"should\s+you\b|"
+    r"consider\b|"
+    r"determine\b|"
+    r"reflect\b|"
+    r"think\b|"
+    r"discuss\b|"
+    r"try\b|"
+    r"imagine\b|"
+    r"decide\b|"
+    r"take\s+one\b|"
+    r"take\s+a\b|"
+    r"to\s+identify\b|"
+    r"to\s+explore\b|"
+    r"to\s+understand\b|"
+    r"to\s+analy[sz]e\b|"
+    r"if\s+you\b"
+    r")",
+    re.IGNORECASE,
+)
+
+# Secondary — pronoun + "you" / "your" anywhere in the first few
+# words. Used as a supplemental signal: a short prompt opening with
+# "Take one of your courses..." or "If you teach apprentices..." is
+# almost certainly an activity prompt even when the leading word
+# isn't in the starters list.
+_YOU_PRONOUN_RE = re.compile(
+    r"^\s*\S+\s+(?:you|your)\b", re.IGNORECASE
+)
+
+# Real chapter-number pattern. When the block starts with this shape,
+# it wins over the activity-prompt guard (rare edge case: chapter
+# whose title happens to be a question).
+_STRONG_CHAPTER_PATTERN = re.compile(
+    r"^\s*(?:chapter|part|section|unit|book|volume)\s+\d",
+    re.IGNORECASE,
+)
+
+# Bare-number leading pattern ("5 Introduction to digital pedagogy").
+# When present, the chapter-number shape wins over the activity
+# filter.
+_LEADING_BARE_NUMBER_CHAPTER = re.compile(
+    r"^\s*\d+\s+[A-Z]"
+)
+
+
+def _looks_like_activity_prompt(text: str) -> bool:
+    """Return True when ``text`` opens with an activity-prompt starter.
+
+    Guards CHAPTER_OPENER promotion against Bates-style activity
+    prompts. Strong chapter-number patterns (``"Chapter 5:"``,
+    ``"Part II"``, ``"5 Introduction..."``) override the guard — if
+    the block starts with one of those, it's a real chapter even
+    when the title happens to be a question.
+
+    The numbered-list leader (``"3. What are your reasons?"``) is
+    stripped before the activity-prompt check so fused prompt +
+    numbered-leader lines still trigger the guard. pdftotext
+    regularly emits activity prompts with leading ``"N. "`` numbering.
+    """
+    if not text:
+        return False
+    if _STRONG_CHAPTER_PATTERN.match(text):
+        return False
+    if _LEADING_BARE_NUMBER_CHAPTER.match(text):
+        return False
+    # Strip a leading "N. " / "N) " / "(N) " numbered marker so the
+    # activity-prompt check sees the real opening word.
+    stripped = re.sub(
+        r"^\s*(?:\d{1,3}[.)]|\(\d{1,3}\))\s+",
+        "",
+        text,
+    )
+    if _ACTIVITY_PROMPT_STARTERS.match(stripped):
+        return True
+    # Secondary signal: second-person pronoun in the opening bigram
+    # ("Take one of your...") + no chapter-number pattern = activity
+    # prompt. Only kicks in for reasonably short blocks to avoid
+    # demoting legitimate content that happens to reference "you" /
+    # "your" in its opening clause.
+    if len(stripped) < 250 and _YOU_PRONOUN_RE.match(stripped):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Support helpers
 # ---------------------------------------------------------------------------
 
@@ -422,6 +543,7 @@ class HeuristicClassifier:
         *,
         text_spans: Optional[list] = None,
         median_body_font_size: Optional[float] = None,
+        page_chrome: Optional[object] = None,
     ) -> None:
         self._text_spans = list(text_spans) if text_spans else []
         if median_body_font_size is not None:
@@ -434,6 +556,13 @@ class HeuristicClassifier:
             self._median_body_font_size = _median(self._text_spans)
         else:
             self._median_body_font_size = None
+        # Wave 25 Fix 2: belt-and-braces FOOTNOTE guard. When the
+        # page-chrome detector caught a running header/footer line
+        # for a page, any classified block whose text is a substring
+        # of that chrome line must NOT be promoted to FOOTNOTE — it
+        # would otherwise surface as a phantom footnote in the
+        # assembled HTML (see Bates leading-digit footer regression).
+        self._page_chrome = page_chrome
 
     async def classify(self, blocks: List[RawBlock]) -> List[ClassifiedBlock]:
         """Classify ``blocks`` into ``ClassifiedBlock`` instances.
@@ -591,12 +720,99 @@ class HeuristicClassifier:
                 and _LIST_MARKER_ORDERED.match(text)
                 and len(_INLINE_NUMBERED_SIBLINGS.findall(text)) >= 1
             ):
-                return self._make(
-                    block,
-                    BlockRole.CHAPTER_OPENER,
-                    0.90,
-                    attributes={"heading_text": heading_text},
+                # Wave 25 Fix 4: refuse CHAPTER_OPENER promotion when
+                # the block opens with an activity-prompt starter
+                # ("What are your reasons?", "Determine which...",
+                # "Do you find..."). Bates-style false positives
+                # inflated the chapter count from 12 → 39.
+                # Wave 25 Fix 7: refuse CHAPTER_OPENER promotion when
+                # the block opens with a single-digit "N. " pattern
+                # that is in fact a numbered subsection heading
+                # ("1. Why this book?" followed by 80 words of
+                # prose). The absence of the word "Chapter" + a
+                # long prose neighbour is the signal.
+                is_numbered_list_style = bool(
+                    text[0:1].isdigit()
+                    and _LIST_MARKER_ORDERED.match(text)
                 )
+                if _looks_like_activity_prompt(text):
+                    logger.debug(
+                        "chapter_opener_rejected: activity prompt '%s...'",
+                        text[:60],
+                    )
+                elif (
+                    is_numbered_list_style
+                    and not _STRONG_CHAPTER_PATTERN.match(text)
+                    and self._next_block_is_long_prose(block)
+                ):
+                    # Treat as numbered subsection heading — fall
+                    # through to the subheading emission below.
+                    logger.debug(
+                        "chapter_opener_rejected: numbered subheading '%s' prose_follows",
+                        text[:60],
+                    )
+                    return self._make(
+                        block,
+                        BlockRole.SUBSECTION_HEADING,
+                        0.70,
+                        attributes={
+                            "heading_text": heading_text,
+                            "level": 3,
+                            "numbered_marker": text.split(None, 1)[0],
+                        },
+                    )
+                else:
+                    return self._make(
+                        block,
+                        BlockRole.CHAPTER_OPENER,
+                        0.90,
+                        attributes={"heading_text": heading_text},
+                    )
+
+        # Wave 25 Fix 5: dotted-numeric heading ("4.8.1.1 Epistemological
+        # basis", "1.7.1. Fully online learning", "2.3 Implementation
+        # notes"). 149 short <p> bodies on Bates match this shape;
+        # pre-Wave-25 they bled into naked paragraphs (h4 count: 0).
+        #
+        # Runs regardless of text_spans availability. When PyMuPDF
+        # layout data IS available, this rule still fires first — the
+        # Wave-18 font-size heading promoter only lifts PARAGRAPH-
+        # classified blocks, so once we emit SUBSECTION_HEADING here
+        # the font-size pass is a no-op on these blocks.
+        #
+        # Must precede the LIST_ITEM path so "4.8.1.1 Epistemological
+        # basis" doesn't capture as a numbered list item.
+        dotted_match = _DOTTED_NUMERIC_HEADING.match(text)
+        if dotted_match and len(text) < 160:
+            number_part = dotted_match.group(1)
+            heading_text = dotted_match.group(2).strip()
+            # Count dots (dot-separated hierarchy depth). Level 1
+            # ("2.3") → h3; level 2 ("2.3.1") → h4; level 3+ → h5;
+            # capped at h6 for safety. Every dotted-numeric heading
+            # surfaces as SUBSECTION_HEADING (so the <hN> template
+            # routes via the Wave 25 level-aware emitter) regardless
+            # of level — matching pre-Wave-25 PAPER_SECTION_NUMBERED
+            # behaviour for 1-dot forms.
+            dot_count = number_part.count(".")
+            if dot_count == 1:
+                level = 3
+            elif dot_count == 2:
+                level = 4
+            elif dot_count >= 3:
+                level = min(6, 3 + dot_count - 1)
+            else:  # pragma: no cover — regex guarantees >= 1 dot
+                level = 3
+            role = BlockRole.SUBSECTION_HEADING
+            return self._make(
+                block,
+                role,
+                0.80,
+                attributes={
+                    "heading_text": heading_text,
+                    "level": level,
+                    "dotted_number": number_part,
+                },
+            )
 
         # Numbered paper section ("1 Introduction", "2.1 Related Work").
         paper_match = _PAPER_SECTION_NUMBERED.match(text)
@@ -632,7 +848,20 @@ class HeuristicClassifier:
 
         # Footnote marker (small prefix + short body).
         if _FOOTNOTE.match(text) and len(text) < 400:
-            return self._make(block, BlockRole.FOOTNOTE, 0.70)
+            # Wave 25 Fix 2: refuse FOOTNOTE promotion when the
+            # block's text is a substring of the page's detected
+            # chrome line — the leading-digit running-footer pattern
+            # ("{N} A.W. (Tony) Bates") trips the FOOTNOTE regex
+            # because the leading integer looks like a footnote
+            # marker. The chrome detector (Wave 25 Fix 1) normally
+            # strips these upstream, but this guard catches the
+            # rare case where a chrome line survives to the
+            # classifier (e.g. infrequent-enough to fall under the
+            # min_repeat_fraction threshold but clearly matching a
+            # detected pattern for the page). Falls through to
+            # PARAGRAPH when the guard fires.
+            if not self._matches_page_chrome(block, text):
+                return self._make(block, BlockRole.FOOTNOTE, 0.70)
 
         # Title-case short line subheading fallback, after low-signal filter.
         if (
@@ -666,8 +895,143 @@ class HeuristicClassifier:
         )
 
     # ------------------------------------------------------------------
+    # Wave 25 Fix 2: FOOTNOTE page-chrome guard
+    # ------------------------------------------------------------------
+
+    def _matches_page_chrome(self, block: RawBlock, text: str) -> bool:
+        """Return True when ``text`` matches a detected chrome line
+        for ``block.page``.
+
+        Used to refuse FOOTNOTE promotion on leading-digit running
+        footers ("{N} A.W. (Tony) Bates") that survived the chrome-
+        strip pass. The comparison is normalised (lowercase,
+        whitespace-collapsed) and treats the chrome line as a
+        superstring — any block whose normalised text is contained
+        in the chrome line's normalised form triggers the guard.
+
+        No-op when no page_chrome was attached to the classifier,
+        the block has no page, or the page has no recorded chrome
+        line (preserves legacy behaviour).
+        """
+        chrome = self._page_chrome
+        if chrome is None or block.page is None:
+            return False
+        # Lazy imports — keep the module-load graph unchanged for
+        # callers that don't use the guard path.
+        from DART.converter.page_chrome import (
+            _normalise,
+            _strip_leading_digits,
+            _strip_trailing_digits,
+        )
+
+        norm_text = _normalise(text)
+        if not norm_text:
+            return False
+
+        # Compute the block's leading-digit residual + trailing-digit
+        # prefix so we can compare against residual forms stored in
+        # chrome.headers / chrome.footers.
+        lead_residual, _lp = _strip_leading_digits(norm_text)
+        tail_prefix, _tp = _strip_trailing_digits(norm_text)
+
+        page_number_lines = getattr(chrome, "page_number_lines", None) or {}
+        raw_chrome_line = page_number_lines.get(block.page)
+        if raw_chrome_line:
+            norm_chrome = _normalise(raw_chrome_line)
+            if norm_chrome and (
+                norm_text == norm_chrome
+                or norm_text in norm_chrome
+                or norm_chrome in norm_text
+            ):
+                return True
+
+        # Fallback: compare against the full header/footer residual
+        # sets. Residuals are stored in the normalised + digit-stripped
+        # form, so we test against both the block's leading-digit
+        # residual and its trailing-digit prefix.
+        headers = getattr(chrome, "headers", set()) or set()
+        footers = getattr(chrome, "footers", set()) or set()
+        for candidate in (*headers, *footers):
+            if not candidate:
+                continue
+            if lead_residual and (
+                lead_residual == candidate or candidate in lead_residual
+            ):
+                return True
+            if tail_prefix and (
+                tail_prefix == candidate or candidate in tail_prefix
+            ):
+                return True
+            if norm_text == candidate or candidate in norm_text:
+                return True
+        return False
+
+    # ------------------------------------------------------------------
     # Wave 21 list-item detection + multi-item expansion
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Wave 25 Fix 7: LIST_ITEM → SUBSECTION_HEADING guard for numbered
+    # subheadings followed by prose. pdftotext often emits each
+    # subsection heading ("1. Why this book?", "2. The audience for the
+    # book") as its own block; the Wave 21 LIST_ITEM classifier grabs
+    # them as list items and the assembler emits one single-item <ol>
+    # per heading (14 per-block single-ol wrappers on Bates). This
+    # guard looks ahead to the next block — when the next block is a
+    # long prose paragraph (>= 60 words), the candidate is NOT a list
+    # item but a numbered section heading.
+    # ------------------------------------------------------------------
+
+    # Absolute threshold — when the next block carries >= this many
+    # words of prose, the current short block is almost certainly a
+    # heading rather than a list-item peer.
+    _HEADING_FOLLOWED_BY_PROSE_MIN_WORDS = 25
+
+    # Relative threshold — even shorter prose neighbours (e.g. ~15
+    # words) still qualify as "clearly prose" when the current block
+    # is dramatically shorter than its neighbour (at least 3× ratio).
+    _HEADING_RELATIVE_RATIO = 3.0
+    _HEADING_RELATIVE_MIN_NEXT_WORDS = 15
+
+    def _next_block_is_long_prose(self, block: RawBlock) -> bool:
+        """Return True when ``block.neighbors['next']`` looks like a
+        prose paragraph.
+
+        Used to distinguish a numbered subsection heading
+        ("ii. The audience for the book") from a real list item in
+        a short list.
+
+        Two pass-through tests — EITHER suffices:
+
+        1. **Absolute**: next block carries >= 25 words AND is not
+           itself a list-marker-led item.
+        2. **Relative**: next block is at least 3× the word count
+           of the current block AND carries >= 15 words.
+
+        Real list peers ("ii. First item", "iii. Second item")
+        fail both checks: the next block is another short list
+        item, not prose, and its length is comparable to the
+        current block's.
+        """
+        next_text = (block.neighbors or {}).get("next") or ""
+        if not next_text:
+            return False
+        stripped = next_text.strip()
+        if not stripped:
+            return False
+        if _match_list_marker(stripped) is not None:
+            # Next block is itself a list item → current block is
+            # peer-sibling in a list, not a heading.
+            return False
+        next_word_count = len(stripped.split())
+        if next_word_count >= self._HEADING_FOLLOWED_BY_PROSE_MIN_WORDS:
+            return True
+        current_word_count = len((block.text or "").split())
+        if current_word_count > 0 and next_word_count >= self._HEADING_RELATIVE_MIN_NEXT_WORDS:
+            ratio = next_word_count / current_word_count
+            if ratio >= self._HEADING_RELATIVE_RATIO:
+                return True
+        return False
 
     def _maybe_classify_list_item(
         self, block: RawBlock, text: str
@@ -711,6 +1075,31 @@ class HeuristicClassifier:
         if match is None:
             return None
         marker_type, marker, rest = match
+
+        # Wave 25 Fix 7: ordered markers with a prose neighbour are
+        # numbered subsection headings, not list items.
+        if marker_type == "ordered" and self._next_block_is_long_prose(block):
+            # Derive a heading level from the marker shape.
+            # Single-digit (1., 2., 3.) → h3; double-digit with dotted
+            # shape (1.7.) would already have matched the dotted-numeric
+            # regex upstream, so here we only see simple single-level
+            # markers.
+            level = 3
+            logger.debug(
+                "list_item_rejected: numbered subheading '%s' next_block_words=%d",
+                rest[:50],
+                len((block.neighbors or {}).get("next", "").split()),
+            )
+            return self._make(
+                block,
+                BlockRole.SUBSECTION_HEADING,
+                0.70,
+                attributes={
+                    "heading_text": rest,
+                    "level": level,
+                    "numbered_marker": marker,
+                },
+            )
 
         # Long-item sanity guard: reject when the rest is clearly a
         # wall of prose that happens to start with what looks like a

@@ -268,16 +268,27 @@ def _tpl_section_heading(block: ClassifiedBlock) -> str:
 
 
 def _tpl_subsection_heading(block: ClassifiedBlock) -> str:
-    """Leaf ``<h3>`` with id — no section wrapper, no data-dart-* attrs.
+    """Leaf ``<hN>`` with id — no section wrapper, no data-dart-* attrs.
 
     Wave 19: subsection headings are leaf nodes (Wave 8 P2 rule — attributes
     stop at the section/component wrapper level). The pre-Wave-13
     pipeline emitted just an ``<h3>`` here; reverting to that shape
     trims the ``<section>`` inflation the validator review surfaced.
+
+    Wave 25 Fix 5: the dotted-numeric heading promoter emits a
+    ``level`` attribute (3–6) derived from the hierarchy depth.
+    The template picks the matching heading tag (``h3``/``h4``/
+    ``h5``/``h6``) when present; legacy callers without ``level``
+    see the original ``<h3>`` output.
     """
     text = block.attributes.get("heading_text") or block.raw.text
     sid = _stable_id(block, "sub")
-    return f'<h3 id="{sid}">{_escape(text)}</h3>'
+    level = block.attributes.get("level")
+    if isinstance(level, int) and 3 <= level <= 6:
+        tag = f"h{level}"
+    else:
+        tag = "h3"
+    return f'<{tag} id="{sid}">{_escape(text)}</{tag}>'
 
 
 def _tpl_paragraph(block: ClassifiedBlock) -> str:
@@ -437,11 +448,22 @@ def _tpl_page_break(block: ClassifiedBlock) -> str:
     """Leaf ``<span role="doc-pagebreak">`` with ``aria-label``.
 
     Wave 19: no data-dart-* attributes — span is a leaf, not a wrapper.
+
+    Wave 25 Fix 6: when the block carries an integer ``page`` attribute
+    (emitted by the segmenter for TOC-referenced pages), the span
+    takes an ``id="page-N"`` anchor so TOC ``#page-N`` links can
+    resolve. Legacy blocks without the numeric page stay anchor-less.
     """
     page_label = block.attributes.get("page") or block.raw.page or block.raw.text or ""
     label_text = f"page {page_label}" if page_label else "page break"
+    id_attr = ""
+    # Only emit an id when we know the integer page number. This is
+    # what the TOC template writes into ``href="#page-N"``.
+    page_num = block.attributes.get("page") or block.raw.page
+    if isinstance(page_num, int) and page_num > 0:
+        id_attr = f' id="page-{page_num}"'
     return (
-        f'<span class="page-break" role="doc-pagebreak" '
+        f'<span class="page-break"{id_attr} role="doc-pagebreak" '
         f'aria-label="{_escape(label_text)}"></span>'
     )
 
