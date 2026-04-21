@@ -1,4 +1,4 @@
-"""Phase 4 (Wave 13 assembler): document assembly.
+"""Phase 4 (Wave 15 assembler): document assembly with ontology decoration.
 
 Wraps the per-block rendered HTML in the DART document shell (skip link,
 ``<header>`` with ``<h1>``, ``<main>``, ``<footer>``) plus a
@@ -7,43 +7,85 @@ the caller-supplied ``metadata`` dict or classifier-collected
 ``COPYRIGHT_LICENSE`` / ``AUTHOR_AFFILIATION`` / ``BIBLIOGRAPHIC_METADATA``
 / ``KEYWORDS`` blocks.
 
-Wave 13 changes vs. Wave 12:
+Wave 15 changes vs. Wave 13:
 
-    * pulls the WCAG 2.2 AA CSS bundle from ``DART/templates/wcag22_css.py``
-      instead of carrying an inline string, so the rules are sharable
-      with ``gold_standard.html`` + future integration tests.
-    * groups consecutive ``BIBLIOGRAPHY_ENTRY`` blocks into a single
-      ``<ol role="doc-bibliography">`` wrapper so the DPUB-ARIA bibliography
-      role applies at the list level rather than per-entry.
-    * skips metadata-aside duplication for ``TITLE`` blocks: the
-      assembler already emits the canonical ``<h1>`` so inline title
-      blocks are moved to the aside to keep body semantics clean.
+* emits Dublin Core ``<meta>`` tags in ``<head>`` from the caller-supplied
+  metadata dict (``title``, ``creator`` / ``authors``, ``date``,
+  ``language``, ``rights`` / ``license``, ``subject`` / ``keywords``).
+  Missing fields are silently omitted — no empty ``content=""`` tags.
+* emits a schema.org document-level ``<script type="application/ld+json">``
+  block whose ``@type`` derives from ``metadata["document_type"]``
+  (``arxiv`` -> ScholarlyArticle, ``textbook`` -> Book, default
+  CreativeWork). ``hasPart`` is synthesised from every
+  :class:`BlockRole.CHAPTER_OPENER` in the block list.
+* emits a second JSON-LD block carrying an accessibility summary
+  (``accessMode``, ``accessibilityFeature``, ``accessibilitySummary``)
+  that advertises the WCAG 2.2 AA feature set the templates implement.
+* runs :func:`DART.converter.cross_refs.resolve_cross_references` as the
+  last step so cross-document references ("See Chapter 2", "Figure 3.1",
+  "Section 2.1", "[3]") surface as real ``<a href="#...">`` anchors when
+  the targets exist.
 
-Wave 15 will add Dublin Core ``<meta>`` tags + schema.org JSON-LD to
-``<head>`` + cross-reference anchor resolution.
+Wave 13 groupings preserved: consecutive ``BIBLIOGRAPHY_ENTRY`` blocks
+wrap in a single ``<ol role="doc-bibliography">``; ``TITLE`` /
+``AUTHOR_AFFILIATION`` / ``COPYRIGHT_LICENSE`` / ``KEYWORDS`` /
+``BIBLIOGRAPHIC_METADATA`` blocks sweep into the metadata aside.
 """
 
 from __future__ import annotations
 
 import html
+import json
 import logging
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from DART.converter.block_roles import BlockRole, ClassifiedBlock
 from DART.converter.block_templates import render_block
+from DART.converter.cross_refs import resolve_cross_references
 from DART.templates.wcag22_css import WCAG22_CSS
 
 logger = logging.getLogger(__name__)
 
 
 # Roles swept into the metadata aside rather than inline in ``<main>``.
-# Wave 15 may promote these into ``<head>`` Dublin Core / JSON-LD.
 _METADATA_ASIDE_ROLES = {
     BlockRole.COPYRIGHT_LICENSE,
     BlockRole.AUTHOR_AFFILIATION,
     BlockRole.BIBLIOGRAPHIC_METADATA,
     BlockRole.KEYWORDS,
 }
+
+
+# Mapping from ``metadata["document_type"]`` to schema.org ``@type``.
+_SCHEMA_TYPE_BY_DOC_TYPE = {
+    "arxiv": "ScholarlyArticle",
+    "paper": "ScholarlyArticle",
+    "scholarly": "ScholarlyArticle",
+    "textbook": "Book",
+    "book": "Book",
+}
+
+_DEFAULT_SCHEMA_TYPE = "CreativeWork"
+
+
+_ACCESSIBILITY_SUMMARY = (
+    "This document follows WCAG 2.2 AA guidelines. Structural navigation via "
+    "semantic headings, ARIA landmarks, and DPUB-ARIA roles is provided. "
+    "Alternative text is emitted for figures where available. Reading order, "
+    "display transformability, and high-contrast support are supplied via the "
+    "bundled stylesheet."
+)
+
+_ACCESSIBILITY_FEATURES = [
+    "structuralNavigation",
+    "alternativeText",
+    "tableOfContents",
+    "readingOrder",
+    "displayTransformability",
+    "highContrastDisplay",
+]
+
+_ACCESSIBILITY_ACCESS_MODE = ["textual", "visual"]
 
 
 def _safe_title(title: str) -> str:
@@ -67,13 +109,7 @@ def _split_metadata(
 
 
 def _render_body(body_blocks: List[ClassifiedBlock]) -> str:
-    """Render the body, grouping consecutive bibliography entries.
-
-    Bibliography entries are DPUB-ARIA ``doc-endnote`` list items, and
-    the canonical pattern puts the ``doc-bibliography`` role on the
-    surrounding ``<ol>``. This loop buffers consecutive entries, emits
-    the wrapping ``<ol>`` once, then resumes normal rendering.
-    """
+    """Render the body, grouping consecutive bibliography entries."""
     if not body_blocks:
         return ""
 
@@ -102,12 +138,7 @@ def _render_aside(
     aside_blocks: List[ClassifiedBlock],
     metadata: Dict,
 ) -> str:
-    """Build a ``<aside role="complementary">`` metadata block.
-
-    Combines classifier-collected metadata blocks with any caller-supplied
-    ``metadata`` dict. Caller-supplied values win when both are present
-    for the same key since the caller has richer context.
-    """
+    """Build a ``<aside role="complementary">`` metadata block."""
     has_classified = bool(aside_blocks)
     has_caller = any(metadata.get(k) for k in ("copyright", "license", "authors"))
     if not has_classified and not has_caller:
@@ -135,6 +166,224 @@ def _render_aside(
     return "\n".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# Wave 15: head enrichment
+# ---------------------------------------------------------------------------
+
+
+def _pick(metadata: Dict, *keys: str) -> Optional[str]:
+    """Return the first truthy string value for any of ``keys`` in metadata."""
+    for k in keys:
+        value = metadata.get(k)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        # Allow non-string numerics by coercing, but skip bools to avoid
+        # "True" surfacing as a metadata value by accident.
+        if value not in (None, "", False) and not isinstance(value, bool):
+            return str(value)
+    return None
+
+
+def _coerce_author_list(metadata: Dict) -> List[str]:
+    """Return a cleaned list of author names from ``metadata``.
+
+    Accepts either ``authors`` (list or comma-joined string) or the
+    singular ``author`` / ``creator`` keys.
+    """
+    raw_authors = (
+        metadata.get("authors")
+        or metadata.get("author")
+        or metadata.get("creator")
+    )
+    if not raw_authors:
+        return []
+    if isinstance(raw_authors, str):
+        return [name.strip() for name in raw_authors.split(",") if name.strip()]
+    if isinstance(raw_authors, (list, tuple)):
+        return [str(a).strip() for a in raw_authors if str(a).strip()]
+    return [str(raw_authors).strip()]
+
+
+def _render_dublin_core(title: str, metadata: Dict) -> str:
+    """Emit Dublin Core ``<meta>`` tags from ``metadata``.
+
+    Skips any tag whose value is missing — no empty ``content=""`` tags.
+    Values are HTML-escaped via attribute quoting conventions.
+    """
+    pairs: List[tuple[str, Optional[str]]] = []
+
+    pairs.append(("DC.title", title))
+    authors = _coerce_author_list(metadata)
+    if authors:
+        pairs.append(("DC.creator", ", ".join(authors)))
+    pairs.append(("DC.date", _pick(metadata, "date", "datePublished", "iso_date")))
+    pairs.append((
+        "DC.language",
+        _pick(metadata, "language", "lang") or "en",
+    ))
+    pairs.append(("DC.rights", _pick(metadata, "rights", "license", "copyright")))
+    subject = _pick(metadata, "subject")
+    if not subject:
+        kws = metadata.get("keywords")
+        if isinstance(kws, (list, tuple)):
+            subject = ", ".join(str(k).strip() for k in kws if str(k).strip())
+        elif isinstance(kws, str) and kws.strip():
+            subject = kws.strip()
+    pairs.append(("DC.subject", subject))
+
+    tags: List[str] = []
+    for name, value in pairs:
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        tags.append(
+            f'  <meta name="{html.escape(name)}" content="{html.escape(str(value), quote=True)}">'
+        )
+    return "\n".join(tags)
+
+
+def _schema_type_for(metadata: Dict) -> str:
+    """Pick a schema.org ``@type`` based on ``metadata["document_type"]``."""
+    doc_type = metadata.get("document_type")
+    if isinstance(doc_type, str):
+        normalised = doc_type.strip().lower()
+        return _SCHEMA_TYPE_BY_DOC_TYPE.get(normalised, _DEFAULT_SCHEMA_TYPE)
+    return _DEFAULT_SCHEMA_TYPE
+
+
+_CHAPTER_NUMBER_IN_TEXT = __import__("re").compile(
+    r"\bchapter\s+(\d+)\b", __import__("re").IGNORECASE
+)
+
+
+def _chapter_number_from_block(block: ClassifiedBlock) -> Optional[str]:
+    """Return a chapter number as a string if we can derive one.
+
+    Order: explicit attribute -> heading_text scrape -> raw.text scrape.
+    This mirrors the chapter-opener template's id derivation so hasPart
+    URLs always match emitted ``id="chap-N"`` anchors.
+    """
+    attrs = block.attributes or {}
+    explicit = attrs.get("chapter_number") or attrs.get("number")
+    if explicit not in (None, ""):
+        return str(explicit)
+    for candidate in (
+        attrs.get("heading_text"),
+        block.raw.text,
+    ):
+        if not candidate:
+            continue
+        match = _CHAPTER_NUMBER_IN_TEXT.search(str(candidate))
+        if match:
+            return match.group(1)
+    return None
+
+
+def _chapter_parts(blocks: List[ClassifiedBlock]) -> List[Dict]:
+    """Build the ``hasPart`` list from ``CHAPTER_OPENER`` blocks.
+
+    Each entry carries ``name`` (heading text) and ``url`` (in-document
+    anchor). When a chapter block lacks a derivable number we fall back
+    to a positional index so the list stays non-empty but deterministic —
+    the ``hasPart`` URL then points at the template's ``block_id``-based
+    fallback id, which the chapter-opener template emits in the same
+    fallback case.
+    """
+    parts: List[Dict] = []
+    positional_index = 0
+    for block in blocks:
+        if block.role != BlockRole.CHAPTER_OPENER:
+            continue
+        positional_index += 1
+        attrs = block.attributes or {}
+        heading = (
+            attrs.get("heading_text")
+            or attrs.get("title")
+            or block.raw.text
+            or f"Chapter {positional_index}"
+        )
+        number = _chapter_number_from_block(block)
+        if number:
+            anchor = f"chap-{number}"
+        else:
+            # Mirror the template's _stable_id("chap") fallback shape.
+            anchor = f"chap-{block.raw.block_id}"
+        parts.append({
+            "@type": "Chapter",
+            "name": str(heading),
+            "url": f"#{anchor}",
+        })
+    return parts
+
+
+def _render_schema_document_jsonld(
+    title: str,
+    metadata: Dict,
+    body_blocks: List[ClassifiedBlock],
+) -> str:
+    """Return a document-level schema.org JSON-LD ``<script>`` block."""
+    schema_type = _schema_type_for(metadata)
+    payload: Dict = {
+        "@context": "https://schema.org",
+        "@type": schema_type,
+        "name": title,
+    }
+
+    authors = _coerce_author_list(metadata)
+    if authors:
+        payload["author"] = [
+            {"@type": "Person", "name": name} for name in authors
+        ]
+
+    date = _pick(metadata, "date", "datePublished", "iso_date")
+    if date:
+        payload["datePublished"] = date
+
+    lang = _pick(metadata, "language", "lang")
+    if lang:
+        payload["inLanguage"] = lang
+
+    license_value = _pick(metadata, "license", "license_url", "rights")
+    if license_value:
+        payload["license"] = license_value
+
+    parts = _chapter_parts(body_blocks)
+    if parts:
+        payload["hasPart"] = parts
+
+    return (
+        '<script type="application/ld+json">\n'
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
+        "</script>"
+    )
+
+
+def _render_accessibility_jsonld() -> str:
+    """Return the accessibility-summary JSON-LD ``<script>`` block.
+
+    Emission is unconditional — the accessibility summary advertises the
+    feature set the bundled templates and CSS provide, so callers don't
+    need to opt in.
+    """
+    payload = {
+        "@context": "https://schema.org",
+        "@type": "CreativeWork",
+        "accessMode": _ACCESSIBILITY_ACCESS_MODE,
+        "accessibilityFeature": _ACCESSIBILITY_FEATURES,
+        "accessibilityHazard": ["none"],
+        "accessibilitySummary": _ACCESSIBILITY_SUMMARY,
+    }
+    return (
+        '<script type="application/ld+json">\n'
+        f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
+        "</script>"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Top-level assembler
+# ---------------------------------------------------------------------------
+
+
 def assemble_html(
     classified_blocks: List[ClassifiedBlock],
     title: str,
@@ -142,10 +391,19 @@ def assemble_html(
 ) -> str:
     """Assemble the final HTML document.
 
-    Wave 13 scope: single DOCTYPE + head + body skeleton, body renders
-    every classified block via the template registry (with bibliography
-    grouping), metadata blocks sweep into a trailing metadata aside, and
-    the WCAG 2.2 AA CSS bundle is injected in ``<style>``.
+    Wave 15 scope: Dublin Core + schema.org document JSON-LD + accessibility
+    JSON-LD injected in ``<head>``; cross-reference resolution applied to
+    the emitted HTML as the last step.
+
+    The ``<head>`` ordering is:
+
+    1. ``<meta charset>``
+    2. ``<meta name="viewport">``
+    3. ``<title>``
+    4. Dublin Core ``<meta>`` block
+    5. Document-level schema.org JSON-LD
+    6. Accessibility summary JSON-LD
+    7. WCAG 2.2 AA ``<style>`` bundle
     """
     metadata = metadata or {}
     body_blocks, aside_blocks = _split_metadata(classified_blocks)
@@ -154,13 +412,24 @@ def assemble_html(
     aside_html = _render_aside(aside_blocks, metadata)
     safe_title = _safe_title(title)
 
-    # Wave 15 will inject Dublin Core meta tags + JSON-LD into ``<head>``.
-    return f"""<!DOCTYPE html>
+    dublin_core_html = _render_dublin_core(safe_title, metadata)
+    schema_html = _render_schema_document_jsonld(safe_title, metadata, body_blocks)
+    accessibility_html = _render_accessibility_jsonld()
+
+    head_extras: List[str] = []
+    if dublin_core_html:
+        head_extras.append(dublin_core_html)
+    head_extras.append(schema_html)
+    head_extras.append(accessibility_html)
+    head_extra_block = "\n".join(head_extras)
+
+    html_out = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{safe_title}</title>
+{head_extra_block}
   <style>{WCAG22_CSS}</style>
 </head>
 <body>
@@ -177,6 +446,12 @@ def assemble_html(
   </footer>
 </body>
 </html>"""
+
+    # Wave 15 cross-reference resolution — rewrite "See Chapter N",
+    # "Figure N.M", "Section N.M", "[N]" to real anchors when targets
+    # exist in the block list. Operates on the full document string but
+    # skips the ``<head>`` block internally.
+    return resolve_cross_references(html_out, classified_blocks)
 
 
 __all__ = ("assemble_html",)
