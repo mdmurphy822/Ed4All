@@ -342,7 +342,8 @@ class TestStructuralTemplates:
         out = render_block(
             _mk(BlockRole.TOC_NAV, "TOC", items=["Intro", "Methods", "Results"])
         )
-        assert '<nav role="navigation"' in out
+        # Wave 18 promotes TOC_NAV to the DPUB-ARIA ``doc-toc`` role.
+        assert '<nav role="doc-toc"' in out
         assert "<ol>" in out
         assert "<li>Intro</li>" in out
         assert "Contents" in out

@@ -43,8 +43,12 @@ from DART.converter.document_assembler import assemble_html
 from DART.converter.extractor import (
     ExtractedDocument,
     ExtractedFigure,
+    ExtractedLink,
+    ExtractedTOCEntry,
     ExtractedTable,
+    ExtractedTextSpan,
     extract_document,
+    median_body_font_size,
 )
 from DART.converter.heuristic_classifier import HeuristicClassifier
 from DART.converter.llm_classifier import LLMClassifier
@@ -53,6 +57,9 @@ from DART.converter.mathml import detect_formulas, render_mathml
 
 def default_classifier(
     llm: Optional[Any] = None,
+    *,
+    text_spans: Optional[list] = None,
+    median_body_font_size: Optional[float] = None,
 ) -> Union[LLMClassifier, HeuristicClassifier]:
     """Return the configured classifier for the current environment.
 
@@ -66,11 +73,21 @@ def default_classifier(
     This factory keeps callers flag-agnostic: set the env var once and
     every call-site picks up the new classifier, while unit tests that
     don't opt in keep the deterministic heuristic path.
+
+    Wave 18: ``text_spans`` / ``median_body_font_size`` flow into
+    :class:`HeuristicClassifier` so font-size heading promotion runs
+    when PyMuPDF layout info is available. The LLM classifier ignores
+    these kwargs — its prompt-based classification already uses text
+    context directly. Extra kwargs are only consumed when the resolved
+    classifier is the heuristic one.
     """
     flag = os.environ.get("DART_LLM_CLASSIFICATION", "").strip().lower()
     if flag == "true" and llm is not None:
         return LLMClassifier(llm=llm)
-    return HeuristicClassifier()
+    return HeuristicClassifier(
+        text_spans=text_spans,
+        median_body_font_size=median_body_font_size,
+    )
 
 
 def convert_pdftotext_to_html(
@@ -158,7 +175,10 @@ __all__ = [
     "ClassifiedBlock",
     "ExtractedDocument",
     "ExtractedFigure",
+    "ExtractedLink",
+    "ExtractedTOCEntry",
     "ExtractedTable",
+    "ExtractedTextSpan",
     "HeuristicClassifier",
     "LLMClassifier",
     "RawBlock",
@@ -169,6 +189,7 @@ __all__ = [
     "default_classifier",
     "detect_formulas",
     "extract_document",
+    "median_body_font_size",
     "render_block",
     "render_mathml",
     "segment_extracted_document",

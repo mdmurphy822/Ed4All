@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 from DART.converter.block_roles import BlockRole, ClassifiedBlock
 
@@ -216,9 +216,47 @@ def _resolve_in_body(body_html: str, targets: Dict[str, Set[str]]) -> str:
 _HEAD_TAIL_SPLIT = re.compile(r"(<head\b[^>]*>.*?</head>)", re.IGNORECASE | re.DOTALL)
 
 
+def _augment_targets_with_links(
+    targets: Dict[str, Set[str]],
+    classified_blocks: List[ClassifiedBlock],
+    links: list,
+) -> Dict[str, Set[str]]:
+    """Wave 18: fold PyMuPDF-surfaced internal links into the target set.
+
+    Each :class:`ExtractedLink` with ``dest_page`` set is a link whose
+    target is somewhere on that page. When the classified block list
+    carries a block anchored on that page, the link already resolves
+    via the page-scoped section / chapter anchors in ``targets``. This
+    pass is purely additive — it never removes existing entries.
+
+    The actual HTML rewrite of `<a>` tags with absolute page URIs is a
+    follow-up wave; here we just surface the data so the resolver has
+    visibility.
+    """
+    if not links:
+        return targets
+    # Build a set of page numbers where blocks exist. Any internal link
+    # whose dest_page matches is implicitly resolvable.
+    block_pages = {b.raw.page for b in classified_blocks if b.raw.page is not None}
+    resolved_pages: Set[str] = set()
+    for link in links:
+        dest = getattr(link, "dest_page", None)
+        if dest is None:
+            continue
+        if dest in block_pages:
+            resolved_pages.add(str(dest))
+    if resolved_pages:
+        # Stash under a new key so existing rewriters remain untouched
+        # but downstream consumers (and tests) can inspect.
+        targets = dict(targets)
+        targets["page"] = resolved_pages
+    return targets
+
+
 def resolve_cross_references(
     html_text: str,
     classified_blocks: List[ClassifiedBlock],
+    links: Optional[List] = None,
 ) -> str:
     """Return ``html_text`` with cross-references rewritten to anchors.
 
@@ -235,11 +273,20 @@ def resolve_cross_references(
 
     The ``<head>`` block is passed through unchanged so metadata /
     ``<title>`` text isn't accidentally rewritten.
+
+    Wave 18: optional ``links`` parameter accepts a list of
+    :class:`DART.converter.extractor.ExtractedLink`. Internal
+    (``goto``) links whose ``dest_page`` matches a classified block's
+    page are recorded in ``targets["page"]`` for downstream consumers;
+    external (``uri``) links are left alone — prose wrappers handle
+    those. This data-only extension never rewrites existing behaviour.
     """
     if not html_text or not classified_blocks:
         return html_text
 
     targets = _collect_targets(classified_blocks)
+    if links:
+        targets = _augment_targets_with_links(targets, classified_blocks, links)
     if not any(targets.values()):
         return html_text
 

@@ -254,16 +254,77 @@ shake out edge cases first.
   Tesseract per-word confidence. A separate `ocr_quality` field is
   follow-up work.
 
-## Ontology-aware pipeline (Waves 12–16)
+## Multi-extractor pipeline (Waves 12–18)
 
 Raw-text pdftotext conversion is now a 4-phase pipeline under
 `DART/converter/`, replacing the ~900-LOC regex monolith that used to
 live in `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html`.
 
-Wave 16 adds a dual-extraction pre-phase so pdfplumber tables,
-PyMuPDF figures, and Tesseract OCR text all survive into the HTML
-output — pdftotext is still the only hard dependency, every other
-extractor is optional and degrades gracefully.
+Wave 16 added a dual-extraction pre-phase so pdfplumber tables,
+PyMuPDF figures, and Tesseract OCR text survive into the HTML output.
+Wave 18 folds PyMuPDF in as a **full peer extractor**: every peer
+contributes different data, and a reconciliation layer picks the
+best source per data type. pdftotext remains the only hard
+dependency; every other extractor is optional and degrades
+gracefully.
+
+### Extractor peers (Wave 18)
+
+| Extractor | Contributes | Status |
+|-----------|-------------|--------|
+| **pdftotext** | `raw_text` (line/column prose) | Hard dep. |
+| **pdfplumber** | `tables` (structure / bordered tables) | Optional. Primary for tables. |
+| **PyMuPDF (fitz)** | `figures` (raster bytes + caption) | Optional. Wave 17. |
+| **PyMuPDF (fitz)** | `toc` (native outline / bookmarks) | Optional. Wave 18. |
+| **PyMuPDF (fitz)** | `pdf_metadata` (title / author / dates) | Optional. Wave 18. |
+| **PyMuPDF (fitz)** | `text_spans` (bbox + font size + bold/italic) | Optional. Wave 18. |
+| **PyMuPDF (fitz)** | `links` (URI + internal goto) | Optional. Wave 18. |
+| **PyMuPDF (fitz)** | `tables` (find_tables fallback) | Optional. Wave 18. |
+| **Tesseract** | `ocr_text` (scanned / image-only pages) | Optional. |
+
+Reconciliation rules:
+
+* **Tables** — pdfplumber wins when it returns non-empty. Only when
+  pdfplumber yields zero tables does PyMuPDF's `find_tables()` fill
+  in (textbook-style text-heavy PDFs rarely work for pdfplumber's
+  border-based detection). Each `ExtractedTable` carries a `source`
+  attribute (`"pdfplumber"` | `"pymupdf"`), threaded through the
+  `<table>` as `data-dart-table-extractor="..."` for debuggability.
+* **Headings (Wave 18 font-size promoter)** — when `text_spans` is
+  populated, the heuristic classifier promotes fallback `PARAGRAPH`
+  blocks whose dominant span renders at ≥ 1.5× the document's median
+  body font size to `SUBSECTION_HEADING`, and ≥ 1.9× to
+  `SECTION_HEADING`. Bold is a secondary tiebreaker that fires
+  between 1.15× and 1.5×. Promotion never overrides an explicit
+  regex-classified role — it only lifts fallback paragraphs.
+* **Metadata merge** — PyMuPDF's `doc.metadata` fills blanks in the
+  caller-supplied `metadata` dict (`title`, `authors`, `subject`,
+  `date`) but never overrides caller values. `creationDate` is
+  normalised from PDF-spec format (`D:YYYYMMDDHHmmSS±OFS`) to ISO
+  8601 (`YYYY-MM-DD`).
+* **TOC** — when `doc.toc` is non-empty, the segmenter prepends a
+  synthetic `TOC_NAV` block carrying the structured entries list.
+  The `TOC_NAV` template renders `<nav role="doc-toc">` with nested
+  `<ol>`/`<li>` keyed by level; entries link to `#chap-N` /
+  `#sec-N-M` when the title matches those patterns, else `#page-N`.
+* **Links** — external `uri` links stay out of scope (prose wraps
+  them client-side). Internal `goto` links are surfaced to the
+  cross-reference resolver as `targets["page"]` so page-scoped
+  anchors can resolve in later waves; existing rewriters
+  (`Chapter N`, `Figure N.M`, `Section N.M`, `[N]`) are untouched.
+
+### Wave 18 `ExtractedDocument` fields
+
+```
+toc:          list[ExtractedTOCEntry]  # {level, title, page}
+pdf_metadata: dict                     # normalised; ISO dates
+text_spans:   list[ExtractedTextSpan]  # {page, bbox, text, font_size, font_name, is_bold, is_italic}
+links:        list[ExtractedLink]      # {page, bbox, uri, dest_page}
+```
+
+All default empty so pre-Wave-18 callers stay compatible. When
+PyMuPDF is unavailable (import fails or the document won't open),
+every PyMuPDF-sourced field degrades to `[]` / `{}`.
 
 ### Phases
 
@@ -390,16 +451,31 @@ html = assemble_html(classified, title="My Book", metadata={})
 | `raw_text` | `str` | pdftotext output (required — the only hard dep). |
 | `source_pdf` | `str` | Source path. |
 | `pages_count` | `int` | Derived from form-feed markers when present. |
-| `tables` | `list[ExtractedTable]` | pdfplumber extractions; empty on failure. |
+| `tables` | `list[ExtractedTable]` | pdfplumber primary; PyMuPDF fallback when pdfplumber=[]. Each table carries `source` ∈ {`pdfplumber`, `pymupdf`} (Wave 18). |
 | `figures` | `list[ExtractedFigure]` | PyMuPDF extractions; empty on failure. |
 | `ocr_text` | `Optional[str]` | Populated only when Tesseract + PyMuPDF both available. |
+| `toc` | `list[ExtractedTOCEntry]` | PyMuPDF native outline (Wave 18). Empty when no outline. |
+| `pdf_metadata` | `dict` | Normalised from `doc.metadata` (Wave 18). Dates in ISO 8601. |
+| `text_spans` | `list[ExtractedTextSpan]` | PyMuPDF spans (Wave 18): font size + bbox + bold/italic flags. Used by the font-size heading promoter. |
+| `links` | `list[ExtractedLink]` | PyMuPDF hyperlinks (Wave 18). `uri` for external, `dest_page` for internal. |
 
-`ExtractedTable.{page, bbox, header_rows, body_rows, caption}` —
-header_rows / body_rows are lists of stringified cells.
+`ExtractedTable.{page, bbox, header_rows, body_rows, caption, source}` —
+header_rows / body_rows are lists of stringified cells; `source` defaults
+to `"pdfplumber"` for backward compat.
 
 `ExtractedFigure.{page, bbox, image_path, alt_text, caption}` — alt_text
 is populated only when an `LLMBackend` is injected into
 `extract_document(..., llm=...)`.
+
+`ExtractedTOCEntry.{level, title, page}` — native PDF bookmarks. Levels
+are 1-indexed.
+
+`ExtractedTextSpan.{page, bbox, text, font_size, font_name, is_bold, is_italic}`
+— used by `HeuristicClassifier(text_spans=..., median_body_font_size=...)`
+for font-size-based heading promotion.
+
+`ExtractedLink.{page, bbox, uri, dest_page}` — external URIs or internal
+1-indexed page targets.
 
 ### Wave 16 structured block integration
 

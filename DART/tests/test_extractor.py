@@ -326,6 +326,11 @@ class TestDataclassDefaults:
         assert doc.figures == []
         assert doc.ocr_text is None
         assert doc.pages_count == 0
+        # Wave 18: new optional fields default empty.
+        assert doc.toc == []
+        assert doc.pdf_metadata == {}
+        assert doc.text_spans == []
+        assert doc.links == []
 
     def test_extracted_table_defaults(self):
         tbl = ExtractedTable(page=1, bbox=(0.0, 0.0, 1.0, 1.0))
