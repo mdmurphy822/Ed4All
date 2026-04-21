@@ -193,9 +193,9 @@ libv2 eval compare <baseline.json> <comparison.json>     # Compare evaluation re
 libv2 validate indexes                                   # Validate index consistency
 ```
 
-### v0.2.0 ChunkFilter notes
+### ChunkFilter notes
 
-`ChunkFilter.content_type_label` performs strict enum validation when `TRAINFORGE_ENFORCE_CONTENT_TYPE=true` (Wave 5 Worker T); default remains lenient for legacy corpora. The canonical enum is defined in `../schemas/taxonomies/content_type.json`.
+`ChunkFilter.content_type_label` performs strict enum validation when `TRAINFORGE_ENFORCE_CONTENT_TYPE=true`; default remains lenient for legacy corpora. The canonical enum is defined in `../schemas/taxonomies/content_type.json`.
 
 ## File Formats
 
@@ -205,6 +205,35 @@ Extended metadata including:
 - `classification`: division, domain, subdomains, topics
 - `ontology_mappings`: ACM CCS and LCSH codes
 - `content_profile`: chunk counts, token counts, difficulty distribution
+- `features.source_provenance`: advisory bool — true when any archived chunk carries `source.source_references[]`. Lets retrieval callers fast-skip source-grounded queries on pre-provenance corpora.
+- `features.evidence_source_provenance`: advisory bool — true when any concept-graph edge carries `provenance.evidence.source_references[]`.
+
+Gated by `lib/validators/libv2_manifest.py::LibV2ManifestValidator` as the `libv2_manifest` gate on the `textbook_to_course` pipeline's `libv2_archival` phase. The validator runs critical-severity checks (JSON parse, schema match, on-disk artifact hash/size agreement) and warning-severity advisories (scaffold completeness, `source_provenance=false` gap flag).
+
+### Course Metadata (`course.json`)
+
+Canonical shape: `schemas/knowledge/course.schema.json`. Produced by `Trainforge/process_course.py::_build_course_json`. Validated before write.
+
+Required fields:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `course_code` | string | Stable identifier (e.g. `PHYS_101`). |
+| `title` | string | Course title from IMSCC manifest. |
+| `learning_outcomes[]` | array | Flat list of terminal + chapter LOs (terminal first). |
+
+Each `LearningOutcome`:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | Canonical LO ID, pattern `^[a-zA-Z]{2,}-\d{2,}$`. Trainforge emits lowercase; LibV2 matches case-insensitively. |
+| `statement` | string | One-sentence LO statement. |
+| `hierarchy_level` | enum | `terminal` or `chapter`. |
+| `bloom_level` | enum (optional) | `remember` / `understand` / `apply` / `analyze` / `evaluate` / `create`. |
+| `bloom_verb` | string (optional) | Primary verb detected in the statement. |
+| `key_concepts[]` | string (optional) | Slugified concept tags. |
+
+Consumed by `LibV2/tools/libv2/retrieval_scoring.py::load_course_outcomes` and `LibV2/tools/libv2/validator.py::validate_learning_outcomes`.
 
 ### Catalog Files
 - `master_catalog.json`: All courses with full metadata

@@ -232,9 +232,9 @@ for i in range(50):
 
 | Tool | Description |
 |------|-------------|
-| `create_course_project` | Initialize new course project |
+| `create_course_project` | Initialize a standalone (non-pipeline) course project. For `textbook_to_course` runs the canonical planners are pipeline-internal `extract_textbook_structure` + `plan_course_structure`. |
 | `generate_course_content` | Generate content for weeks |
-| `package_imscc` | Package course as IMSCC |
+| `package_imscc` | Package course as IMSCC. Runtime delegates to `Courseforge/scripts/package_multifile_imscc.py` (IMS CC v1.3 namespaces, per-week LO validation, `course_metadata.json` bundling). |
 | `intake_imscc_package` | Import existing IMSCC |
 | `remediate_course_content` | Fix content issues |
 | `get_courseforge_status` | Get project status |
@@ -247,12 +247,12 @@ Courseforge HTML pages include machine-readable metadata for downstream Trainfor
 
 This metadata follows priority extraction in Trainforge: JSON-LD > data-cf-* attributes > regex heuristics.
 
-### DART Source-Provenance Output (Wave 8)
+### DART Source-Provenance Output
 
 DART-produced HTML + synthesized JSON carry per-block source attribution so downstream consumers can trace every claim back to its PDF origin:
 - **`data-dart-*` attributes**: `data-dart-block-id`, `data-dart-source`, `data-dart-sources`, `data-dart-pages`, `data-dart-confidence`, `data-dart-strategy` on `<section>` + component wrappers. See `DART/CLAUDE.md` § "Source provenance" for the canonical attribute table + confidence scale.
 - **Per-block envelopes** in `*_synthesized.json` `data.contacts[]`, `data.rows[]`, `data.pair_provenance[]`: `{value, source, pages, confidence, method}` shape.
-- **Canonical shape**: `schemas/knowledge/source_reference.schema.json` (shared by Courseforge + Trainforge in Waves 9–11).
+- **Canonical shape**: `schemas/knowledge/source_reference.schema.json` (shared by Courseforge JSON-LD and Trainforge chunks + evidence arms).
 
 Priority extraction chain (extends the Courseforge chain above): JSON-LD > `data-cf-*` > `data-dart-*` > regex heuristics.
 
@@ -284,15 +284,23 @@ Priority extraction chain (extends the Courseforge chain above): JSON-LD > `data
 
 | Tool | Description |
 |------|-------------|
-| `create_textbook_pipeline_tool` | **DEPRECATED (Wave 7)**: Initialize textbook-to-course pipeline. Prefer `create_workflow(workflow_type="textbook_to_course", ...)` via `cli/commands/run.py`. |
 | `stage_dart_outputs` | Stage DART outputs for Courseforge |
 | `get_pipeline_status` | Check pipeline progress |
 | `validate_dart_markers` | Validate DART output markers |
-| `run_textbook_pipeline_tool` | **DEPRECATED (Wave 7)**: Execute full textbook pipeline. Prefer the workflow runner via `ed4all run textbook-to-course`. |
 | `archive_to_libv2` | Archive course artifacts to LibV2 |
-| `build_source_module_map` | **Pipeline-internal (Wave 9)**: router that maps DART source blocks to Courseforge pages. Wired into the dispatch registry (`MCP/tools/pipeline_tools.py::_build_tool_registry`) for the `source_mapping` phase of `textbook_to_course`, but intentionally **not** decorated with `@mcp.tool()` — not reachable from external MCP clients. |
 
-**Deprecated CLI surface**: `ed4all textbook-to-course` (top-level command at `cli/main.py`) is also **deprecated as of Wave 7** — emits a yellow warning at invocation and forwards to `create_textbook_pipeline`. Prefer `ed4all run textbook-to-course --corpus ... --course-name ...`.
+**Pipeline-internal registry-only tools** (wired into `MCP/tools/pipeline_tools.py::_build_tool_registry` for workflow-phase dispatch; intentionally **not** decorated with `@mcp.tool()` — not reachable from external MCP clients):
+
+| Tool | Phase | Purpose |
+|------|-------|---------|
+| `build_source_module_map` | `source_mapping` | TF-IDF-driven router that maps DART source blocks to Courseforge module pages. Output: `source_module_map.json`. |
+| `extract_textbook_structure` | `objective_extraction` | Runs `SemanticStructureExtractor` over every staged DART HTML file and merges per-file chapter/section hierarchies into a single `textbook_structure.json`. |
+| `plan_course_structure` | `course_planning` | Synthesizes canonical `TO-NN` / `CO-NN` learning objectives from the textbook structure and publishes `synthesized_objectives.json`. |
+
+**Deprecated surface**:
+
+- `create_textbook_pipeline_tool` / `run_textbook_pipeline_tool` (MCP tools) — superseded by `create_workflow(workflow_type="textbook_to_course", ...)` via `cli/commands/run.py`.
+- `ed4all textbook-to-course` (top-level CLI subcommand at `cli/main.py`) — emits a yellow warning at invocation. Prefer `ed4all run textbook-to-course --corpus ... --course-name ...`.
 
 ### Analysis Tools
 
@@ -394,25 +402,37 @@ tracker.set_status("W001", "content_generator", "Module_3.html", "IN_PROGRESS")
    └── Stage DART outputs to Courseforge inputs
 
 3. objective_extraction
-   └── Extract structure and synthesize learning objectives
+   └── Parse staged DART HTML into textbook_structure.json (chapters,
+       sections, content blocks); auto-scales duration_weeks to max(8,
+       chapters) when --weeks is unset.
 
-4. course_planning
-   └── Create course structure from objectives
+4. source_mapping
+   └── Map DART source blocks to Courseforge module pages; emits
+       source_module_map.json consumed by content_generation.
 
-5. content_generation
-   └── Generate course content modules (parallel batches of 10)
+5. course_planning
+   └── Synthesize canonical TO-NN / CO-NN learning objectives from
+       textbook_structure; emits synthesized_objectives.json.
 
-6. packaging
-   └── Package course as IMSCC
+6. content_generation
+   └── Generate course content modules (parallel batches of 10). Every
+       emitted sourceId must resolve against the DART staging manifest
+       (source_refs gate).
 
-7. trainforge_assessment (optional)
-   └── Generate assessments from IMSCC package
+7. packaging
+   └── Package course as IMSCC via the mature multi-file packager.
 
-8. libv2_archival
-   └── Archive course artifacts to LibV2
+8. trainforge_assessment (optional)
+   └── Generate assessments from the IMSCC package. Fails closed if any
+       assessment objective_id isn't covered by a chunk's
+       learning_outcome_refs.
 
-9. finalization
-   └── Final validation and training data export
+9. libv2_archival
+   └── Archive course artifacts to LibV2 (raw PDFs, DART HTML, IMSCC,
+       RAG corpus). Gated by libv2_manifest integrity checks.
+
+10. finalization
+   └── Final validation and training data export.
 ```
 
 ---
@@ -449,6 +469,7 @@ tracker.set_status("W001", "content_generator", "Module_3.html", "IN_PROGRESS")
 |-------|---------|
 | `textbook-stager` | Stage DART outputs for Courseforge |
 | `textbook-ingestor` | Parse DART HTML & extract objectives |
+| `source-router` | Bind DART source blocks to Courseforge module pages (TF-IDF + confidence scoring) |
 | `libv2-archivist` | Archive course artifacts to LibV2 |
 
 ### Trainforge Agents
@@ -471,9 +492,9 @@ Every decision rationale MUST:
 - Explain the "why" not just the "what"
 - Reference alternatives when applicable
 
-### LLM call-site instrumentation (Wave 22)
+### LLM call-site instrumentation
 
-Every new Claude / LLM call site MUST wire up a `DecisionCapture`
+Every Claude / LLM call site MUST wire up a `DecisionCapture`
 instance and emit at least one decision per call (per-batch when the
 call is batched). Static boilerplate rationales are forbidden —
 rationale must interpolate dynamic signals specific to the call
@@ -579,16 +600,28 @@ validation_gates:
 | `course_generation` | `content_structure` | ContentStructureValidator |
 | `course_generation` | `imscc_structure` | IMSCCValidator |
 | `course_generation` | `wcag_compliance` | WCAGValidator |
-| `course_generation` | `oscqr_score` | OSCQRValidator |
-| `course_generation` | `page_objectives` | PageObjectivesValidator (Wave 2) |
+| `course_generation` | `oscqr_score` | OSCQRValidator (warning) |
+| `course_generation` | `page_objectives` | PageObjectivesValidator |
+| `intake_remediation` | `imscc_parse` | IMSCCParseValidator |
+| `intake_remediation` | `wcag_compliance` | WCAGValidator |
 | `batch_dart` | `wcag_aa_compliance` | WCAGValidator |
-| `batch_dart` | `dart_markers` | DartMarkersValidator (Wave 6) |
-| `textbook_to_course` | `dart_markers` | DartMarkersValidator (Wave 6) |
-| `textbook_to_course` | `libv2_manifest` | LibV2ManifestValidator (Wave 23) |
-| `textbook_to_course` | `assessment_objective_alignment` | AssessmentObjectiveAlignmentValidator (Wave 24) |
+| `batch_dart` | `dart_markers` | DartMarkersValidator |
+| `textbook_to_course` | `dart_markers` | DartMarkersValidator |
+| `textbook_to_course` | `content_structure` | ContentStructureValidator (warning) |
+| `textbook_to_course` | `source_refs` | PageSourceRefValidator |
+| `textbook_to_course` | `imscc_structure` | IMSCCValidator (warning) |
+| `textbook_to_course` | `page_objectives` | PageObjectivesValidator |
+| `textbook_to_course` | `imscc_input_valid` | IMSCCValidator (pre-assessment) |
+| `textbook_to_course` | `assessment_quality` | AssessmentQualityValidator |
+| `textbook_to_course` | `assessment_objective_alignment` | AssessmentObjectiveAlignmentValidator |
+| `textbook_to_course` | `libv2_manifest` | LibV2ManifestValidator |
 | `rag_training` | `assessment_quality` | AssessmentQualityValidator |
-| `rag_training` | `bloom_alignment` | BloomAlignmentValidator |
-| `rag_training` | `leak_check` | LeakChecker |
+| `rag_training` | `bloom_alignment` | BloomAlignmentValidator (warning) |
+| `rag_training` | `leak_check` | LeakCheckValidator |
+| `rag_training` | `outcome_ref_integrity` | LeakCheckValidator (warning) |
+| `rag_training` | `content_fact_check` | ContentFactValidator (warning) |
+| `rag_training` | `question_quality` | QuestionQualityValidator |
+| `rag_training` | `final_quality` | FinalQualityValidator |
 
 ---
 
@@ -606,14 +639,14 @@ Location: `config/agents.yaml`
 
 ### workflows_meta.schema.json
 
-Meta-schema that validates `config/workflows.yaml` at load time (phase routing, gate shape, `inputs_from` references). Wave 6 Worker V.
+Meta-schema that validates `config/workflows.yaml` at load time (phase routing, gate shape, `inputs_from` references).
 Location: `schemas/config/workflows_meta.schema.json`
 
 ---
 
 ## Opt-In Behavior Flags
 
-Ten environment-variable toggles gate opt-in strict / stable-ID behavior. All default off to preserve backward compatibility with legacy corpora. See `schemas/ONTOLOGY.md` § 12 for landing wave and full rationale.
+Eleven environment-variable toggles gate opt-in strict / stable-ID / provenance behavior. All default off to preserve backward compatibility with legacy corpora. See `schemas/ONTOLOGY.md` § 12 for full rationale per flag.
 
 | Flag | When on |
 |------|---------|
@@ -623,10 +656,11 @@ Ten environment-variable toggles gate opt-in strict / stable-ID behavior. All de
 | `TRAINFORGE_VALIDATE_CHUNKS` | Enforces `schemas/knowledge/chunk_v4.schema.json` on every chunk write. |
 | `TRAINFORGE_ENFORCE_CONTENT_TYPE` | Constrains `content_type_label` to the canonical 8-value enum. |
 | `TRAINFORGE_STRICT_EVIDENCE` | Strips the FallbackProvenance arm from the evidence discriminator. |
-| `TRAINFORGE_SOURCE_PROVENANCE` | Evidence arms emit `source_references[]` (from chunks' Wave 10 refs). Off: arms emit pre-Wave-11 shape (backward compat). |
+| `TRAINFORGE_SOURCE_PROVENANCE` | Evidence arms emit `source_references[]` sourced from chunks' `source.source_references[]`. Off: arms emit the pre-provenance shape. |
 | `DECISION_VALIDATION_STRICT` | Fails closed on unknown `decision_type` values in decision captures. |
-| `DART_LLM_CLASSIFICATION` | DART's block classifier routes through Claude instead of heuristic regex. Requires an injected `LLMBackend`. |
-| `DART_LEGACY_CONVERTER` | Forces `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html` to use the pre-Wave-15 regex path. One-release safety fallback; default off. |
+| `DART_LLM_CLASSIFICATION` | DART's block classifier routes through Claude via `LLMClassifier` instead of heuristic regex. Requires an injected `LLMBackend`. |
+| `DART_LEGACY_CONVERTER` | Forces `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html` to use the pre-multi-extractor regex path. One-release safety fallback. |
+| `LOCAL_DISPATCHER_ALLOW_STUB` | Permits `LocalDispatcher` to emit a stubbed `PhaseOutput` (`status="ok"`) when no `agent_tool` callable was wired in. Tests / dry-run only. Default off so production `--mode local` runs fail loudly instead of silently succeeding with empty phase outputs. |
 
 ---
 
@@ -644,9 +678,11 @@ Validators under `lib/validators/` (see Active Gates above for wiring):
 - `lib/validators/page_objectives.py` — objective coverage per page.
 - `lib/validators/content_type.py` — content_type enum enforcement (gated).
 - `lib/validators/evidence.py` — per-rule evidence discriminator loader; strict mode drops FallbackProvenance.
-- `lib/validators/assessment_objective_alignment.py` — Wave 24 fail-loud gate keeping assessment `objective_id` aligned with chunk `learning_outcome_refs`.
+- `lib/validators/assessment_objective_alignment.py` — fail-loud gate keeping every assessment question's `objective_id` covered by at least one chunk's `learning_outcome_refs`.
+- `lib/validators/source_refs.py` — verifies every emitted Courseforge `sourceId` resolves against the DART staging manifest.
+- `lib/validators/libv2_manifest.py` — validates LibV2 manifest JSON, scaffold completeness, and on-disk artifact hash/size agreement.
 
-**Wave 24 canonical LO helper**: `lib/ontology/learning_objectives.py` owns the single source of truth for LO identity (`mint_lo_id`, `validate_lo_id`, `hierarchy_from_id`, `split_terminal_chapter`). Pattern `^[A-Z]{2,}-\\d{2,}$` (mirror of `schemas/knowledge/courseforge_jsonld_v1.schema.json`). `schemas/knowledge/course.schema.json` is the canonical shape for Trainforge-emitted `course.json`.
+**Canonical LO helper**: `lib/ontology/learning_objectives.py` owns the single source of truth for LO identity (`mint_lo_id`, `validate_lo_id`, `hierarchy_from_id`, `split_terminal_chapter`). Pattern `^[A-Z]{2,}-\\d{2,}$` mirrors `schemas/knowledge/courseforge_jsonld_v1.schema.json`. `schemas/knowledge/course.schema.json` is the canonical shape for Trainforge-emitted `course.json` consumed by LibV2.
 
 ---
 
