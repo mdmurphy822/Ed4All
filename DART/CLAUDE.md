@@ -253,3 +253,96 @@ shake out edge cases first.
 - **OCR-quality sub-signal** — OCR-only blocks score `0.2` regardless of
   Tesseract per-word confidence. A separate `ocr_quality` field is
   follow-up work.
+
+## Ontology-aware pipeline (Waves 12–15)
+
+Raw-text pdftotext conversion is now a 4-phase pipeline under
+`DART/converter/`, replacing the ~900-LOC regex monolith that used to
+live in `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html`.
+
+### Phases
+
+1. **Segment** (`block_segmenter.py`) — split raw pdftotext output into
+   `RawBlock` instances on blank-line / form-feed boundaries; compute
+   stable `block_id` hashes + neighbor context.
+2. **Classify** (`heuristic_classifier.py` or `llm_classifier.py`) —
+   assign exactly one `BlockRole` from the 35-value enum in
+   `block_roles.py`. Heuristic classifier is the offline default; LLM
+   classifier routes through Claude via `MCP/orchestrator/llm_backend.py`
+   for ambiguous blocks.
+3. **Template** (`block_templates.py`) — render each classified block
+   with DPUB-ARIA + schema.org + microdata. Every role has exactly one
+   registered template. `data-dart-block-role` / `data-dart-block-id` /
+   `data-dart-confidence` provenance attributes survive unchanged.
+4. **Assemble** (`document_assembler.py`) — wrap rendered blocks in the
+   full HTML document shell, inject Dublin Core / schema.org JSON-LD /
+   accessibility summary in `<head>`, run post-assembly cross-reference
+   resolution.
+
+### Wave 15 `<head>` enrichment
+
+The assembler emits in this order:
+
+1. `<meta charset>`, `<meta viewport>`, `<title>`
+2. Dublin Core `<meta name="DC.*">` tags derived from the caller's
+   `metadata` dict: `DC.title`, `DC.creator`, `DC.date`, `DC.language`
+   (defaults to `en`), `DC.rights`, `DC.subject`. Missing values are
+   silently omitted — no empty `content=""` tags.
+3. Document-level schema.org JSON-LD. `@type` switches on
+   `metadata["document_type"]`: `"arxiv"` → `ScholarlyArticle`,
+   `"textbook"` → `Book`, else `CreativeWork`. `hasPart` lists every
+   `CHAPTER_OPENER` block; URLs point at the article's `id="chap-N"`
+   anchor (same template emits that id).
+4. Accessibility summary JSON-LD with `accessMode`,
+   `accessibilityFeature`, `accessibilitySummary` advertising the
+   WCAG 2.2 AA feature set the bundled templates + CSS provide.
+5. WCAG 2.2 AA `<style>` bundle from `DART/templates/wcag22_css.py`.
+
+### Cross-reference resolution
+
+Runs as the last step in `assemble_html` (`DART/converter/cross_refs.py`).
+Rewrites in-text references into real anchors **only when the target
+exists in the classified block list**:
+
+| Phrase | Rewrite | Target source |
+|--------|---------|---------------|
+| `Chapter N` / `See Chapter N` | `<a href="#chap-N">` | `CHAPTER_OPENER` attribute or scraped from raw text |
+| `Figure N.M` | `<a href="#fig-N-M">` | `FIGURE.number` attribute |
+| `Section N.M` | `<a href="#sec-N-M">` | `SECTION_HEADING.number` or heading text scrape |
+| `[N]` citation marker | `<a href="#ref-N">` | `BIBLIOGRAPHY_ENTRY.number` or scraped `[N]` prefix |
+
+Orphan references (no matching target) are silently left as plain text —
+no broken links ever emitted. Already-linked spans
+(`<a>See Chapter 1</a>`) are not double-wrapped. The `<head>` block is
+passed through untouched so `<title>` / Dublin Core text never receives
+accidental anchors.
+
+### Toggles
+
+| Env var | Effect |
+|---------|--------|
+| `DART_LLM_CLASSIFICATION=true` | Route classification through Claude via `LLMClassifier` instead of the heuristic regex path. Requires an injected `LLMBackend`. |
+| `DART_LEGACY_CONVERTER=true` | Force the pre-Wave-15 regex-driven `_raw_text_to_accessible_html_legacy` path in `MCP/tools/pipeline_tools.py`. One-release safety fallback; do not extend. |
+
+### Entry point
+
+```python
+from DART.converter import convert_pdftotext_to_html
+
+html = convert_pdftotext_to_html(
+    raw_text,
+    title="My Book",
+    metadata={
+        "authors": "Jane Doe, John Smith",
+        "date": "2026-04-20",
+        "language": "en",
+        "rights": "CC BY 4.0",
+        "subject": "accessibility, WCAG",
+        "document_type": "textbook",
+    },
+)
+```
+
+`MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html` is now a
+thin orchestrator that delegates to this entry point unless the legacy
+flag is set.
