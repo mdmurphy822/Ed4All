@@ -649,21 +649,91 @@ Both `stage_dart_outputs` (MCP tool + registry variant) and
 alongside the HTML when present (backward-compat: missing dir silently
 skipped).
 
-### `data-dart-page` vs `data-dart-pages` — scope
+### `data-dart-pages` — scope (Wave 20 unification)
 
-Two distinct attributes, both legitimate:
+The Wave 19 pipeline emitted both `data-dart-page` (singular) from the
+converter path and `data-dart-pages` (plural) from the multi-source
+synthesis path. Wave 20 unifies on the **plural** form across both
+paths to match the Wave 8 contract:
 
-- `data-dart-page` (**singular**): emitted per block at the wrapper
-  level when the classifier has a single known page number
-  (Wave 12+ converter path).
-- `data-dart-pages` (**plural**): emitted by the multi-source
-  synthesis path (`DART/multi_source_interpreter.py`) as a range
-  (`"3-5"`) or comma-joined list (`"3,5,7"`) covering a section
-  `page_range`.
+- **Converter path** (`DART/converter/block_templates.py::_provenance_attrs`):
+  emits `data-dart-pages="N"` on every section / component wrapper
+  when the block has a known page. The value is drawn from
+  `raw.extra["page_label"]` when the page-chrome detector (Wave 20)
+  supplied a printed-page label for that page; otherwise falls back
+  to the physical form-feed-derived `raw.page`.
+- **Multi-source synthesis path** (`DART/multi_source_interpreter.py`):
+  emits `data-dart-pages` as a range (`"3-5"`) or comma-joined list
+  (`"3,5,7"`) covering a section `page_range`.
 
-Both attributes are accepted by `lib/validators/dart_markers.py`
-(only `data-dart-source` + `data-dart-block-id` presence is
-enforced; page attribution stays optional).
+`lib/validators/dart_markers.py` enforces only
+`data-dart-source` + `data-dart-block-id` presence; the page
+attribute remains optional (omitted when no page is known).
+
+## Page chrome detection (Wave 20)
+
+pdftotext faithfully reproduces **running headers / running footers /
+page numbers** as text lines in every page of its output. For a
+584-page textbook the result is ~500+ spurious content-polluting
+`<p>` blocks in the emitted HTML.
+
+`DART/converter/page_chrome.py` runs between pdftotext extraction and
+block segmentation to detect + strip that chrome.
+
+### Algorithm
+
+Primary signal: **frequency**. Split pdftotext output on form-feed,
+collect the top-3 and bottom-3 non-blank lines of every page, and
+count how often each normalised line (after stripping trailing
+digits) appears across pages. Any line above the configured
+`min_repeat_fraction` (default 0.3 = 30% of pages) is chrome.
+
+Secondary signal (when PyMuPDF `text_spans` are available): **bbox
+layout confirmation**. A frequency candidate whose bbox lives in the
+top 10% or bottom 10% of the page is upgraded to confirmed chrome.
+Spans are only used to upgrade — never to filter out a frequency
+hit — so the detector works end-to-end when PyMuPDF is missing.
+
+### Page-number extraction
+
+When a chrome line ends in digits (`"Teaching in a Digital Age 164"`,
+`"Chapter 3 — 47"`, or just `"164"`), the detector splits the fixed
+prefix from the variable page-number tail and remembers
+`{page_number_1_indexed: original_chrome_line}` on
+`PageChrome.page_number_lines`. The segmenter then stamps the
+extracted numeric label into every block on that page as
+`RawBlock.extra["page_label"]`, so `data-dart-pages` surfaces the
+book's printed page number (which is what downstream Courseforge +
+Trainforge citations need) rather than the PDF's physical page.
+
+### False-positive guards
+
+Applied after frequency thresholding:
+
+- **Long lines** (≥ 80 chars): never chrome — running headers are
+  short by convention.
+- **Heading markers** (`Chapter N`, `Section N.M`, `Part N`, etc.):
+  excluded even when they repeat — they're structural content.
+- **Short fixed-prefix with variable tail** (< 3 chars): excluded as
+  ambiguous (catches numbered-list bleed).
+- **Bare page numbers** (a lone `"164"` appearing on most pages):
+  legitimate chrome — detected via a page-number-only sentinel key.
+
+### Document-level signal
+
+`PageChrome` is returned on `ExtractedDocument.page_chrome` and
+surfaced into `{stem}_synthesized.json` under
+`document_provenance.page_chrome_detected` as
+`{headers: [...], footers: [...], pages_numbered: N}` for
+debuggability. Short documents (< 4 pages) return an empty
+`PageChrome` and no stripping occurs — there's not enough signal.
+
+### Downstream consumers
+
+- `data-dart-pages` on every section / component wrapper (see above).
+- Per-section `page_range: [first_page, last_page]` already emitted by
+  the synthesized sidecar; Wave 20 populates this from the newly-
+  reliable per-block `raw.page` via form-feed tracking.
 
 ### `doc-chapter` extractor path
 

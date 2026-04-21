@@ -90,13 +90,30 @@ def _provenance_attrs(block: ClassifiedBlock) -> str:
     """Emit DART provenance attributes common to every wrapper template.
 
     Includes: ``data-dart-block-role``, ``data-dart-block-id``, optional
-    ``data-dart-page``, ``data-dart-confidence``, and ``data-dart-source``
+    ``data-dart-pages``, ``data-dart-confidence``, and ``data-dart-source``
     (Wave 19 restoration). All values are safe-escaped (they derive from
     enums, ints, floats, or a 16-hex string produced by the segmenter).
+
+    Wave 20: the page attribute is now emitted in the plural form
+    ``data-dart-pages`` to align with the Wave 8 multi-source contract
+    (``DART/multi_source_interpreter.py`` has always emitted the plural
+    form). When the segmenter stamped ``extra["page_label"]`` from the
+    page-chrome detector, that label takes precedence over the raw
+    form-feed-derived page number (the chrome detector's extracted
+    page number is often the book's printed page, not the PDF's
+    physical page, and is what downstream consumers want to cite).
+    The attribute is omitted entirely when no page is known.
     """
     parts = [_role_attr(block), f'data-dart-block-id="{block.raw.block_id}"']
-    if block.raw.page is not None:
-        parts.append(f'data-dart-page="{block.raw.page}"')
+    page_label = ""
+    extra = getattr(block.raw, "extra", None) or {}
+    if isinstance(extra, dict):
+        page_label = str(extra.get("page_label") or "").strip()
+    page_value = page_label or (
+        str(block.raw.page) if block.raw.page is not None else ""
+    )
+    if page_value:
+        parts.append(f'data-dart-pages="{page_value}"')
     parts.append(f'data-dart-confidence="{block.confidence:.2f}"')
     parts.append(f'data-dart-source="{_data_dart_source_value(block)}"')
     return " ".join(parts)
