@@ -211,7 +211,7 @@ to keep HTML size bounded at textbook scale.
 | Attribute | Shape | Notes |
 |-----------|-------|-------|
 | `data-dart-block-id` | `"s3"` or `"s3_c0"` or 16-hex | Matches `block_id` in synthesized JSON |
-| `data-dart-source` | `pdftotext \| pdfplumber \| ocr \| synthesized \| claude_llm` | Primary source enum |
+| `data-dart-source` | `pdftotext \| pdfplumber \| pymupdf \| ocr \| synthesized \| claude_llm \| dart_converter` | Primary source enum. `dart_converter` added in Wave 19 as the default for heuristic-classifier blocks. |
 | `data-dart-sources` | Comma-joined list | Only emitted when multi-source |
 | `data-dart-pages` | `"3"` or `"3-5"` or `"3,5,7"` | Omitted when unknown |
 | `data-dart-confidence` | 2-decimal float | Omitted when `1.0` (the implicit default) |
@@ -582,3 +582,93 @@ accepts an optional `figures_dir: Optional[str]` kwarg for callers
 that need to override the sibling-dir derivation; currently only the
 Wave-16 dual-extraction path honours it (the legacy
 `PDFToAccessibleHTML` strategy ignores it).
+
+## Wave 19 contract restoration
+
+Waves 12–18 silently dropped parts of the pre-Wave-12 output contract
+that downstream consumers (Courseforge source-router, `dart_markers`
+gate, `semantic_structure_extractor`, `stage_dart_outputs`,
+`archive_to_libv2`) rely on. Wave 19 restores them:
+
+### `class="dart-document"` + `class="dart-section"` re-emit
+
+- The assembler stamps `class="dart-document"` on the `<main>` wrapper
+  (one per document).
+- Every top-level `<section>` / `<article>` / `<aside>` wrapper template
+  carries `class="dart-section"` — existing classes (`pullquote`,
+  `callout callout-info`, etc.) are preserved and prepended.
+- When a document classifies into only leaf blocks (no structural
+  wrappers fire), the assembler wraps the body in a fallback
+  `<section class="dart-section" aria-labelledby="main-content-heading">`
+  so the `dart_markers` gate's `aria_sections` + `dart_semantic_classes`
+  critical checks always pass.
+
+### `data-dart-source` source enum
+
+The `data-dart-source` attribute is now stamped on every wrapper.
+Routing (see `DART/converter/block_templates.py::_data_dart_source_value`):
+
+| classifier_source | upstream extractor | emitted value |
+|-------------------|--------------------|--------------|
+| `extractor_hint`  | `pdfplumber`       | `pdfplumber` |
+| `extractor_hint`  | `pymupdf`          | `pymupdf`    |
+| `extractor_hint`  | `pdftotext`        | `pdftotext`  |
+| `llm`             | *                  | `claude_llm` |
+| `heuristic` / default | *              | `dart_converter` |
+
+### Wave 8 P2 rule (re-enforced)
+
+Attributes stop at the **section / component wrapper level**. Never on
+every `<p>` / `<span>` / `<li>` / `<h3>` / `<cite>` / `<a>` /
+`<figcaption>` in prose — those are leaf nodes, and the enclosing
+wrapper carries the provenance. The canonical leaf-role set is
+`DART/converter/block_templates._WAVE19_LEAF_ROLES`. Reverting the
+Wave 17 inflation drops the Bates HTML size from ~1.9 MB to ~1.5 MB.
+
+### Sidecar emit
+
+`MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html` now emits
+two sidecars next to the HTML when `output_path` is provided (mirrors
+the figure-persistence tempdir guard):
+
+- `{stem}_synthesized.json` — per-section provenance sidecar in the
+  canonical shape (`sections[].section_id`, `section_title`,
+  `section_type`, `page_range`, `provenance{sources, strategy,
+  confidence}`, `data{text, block_roles, attributes, head_block_id}`).
+  Consumed by `_build_source_module_map` (the Courseforge
+  source-router). Built by `DART.converter.sidecars.build_synthesized_sidecar`.
+- `{stem}.quality.json` — WCAG + confidence aggregate sidecar.
+  Consumed by `archive_to_libv2` when populating
+  `{course}/quality/*.quality.json`. Built by
+  `DART.converter.sidecars.build_quality_sidecar`.
+
+### `{stem}_figures/` propagation
+
+Both `stage_dart_outputs` (MCP tool + registry variant) and
+`archive_to_libv2` now copy a sibling `{stem}_figures/` directory
+alongside the HTML when present (backward-compat: missing dir silently
+skipped).
+
+### `data-dart-page` vs `data-dart-pages` — scope
+
+Two distinct attributes, both legitimate:
+
+- `data-dart-page` (**singular**): emitted per block at the wrapper
+  level when the classifier has a single known page number
+  (Wave 12+ converter path).
+- `data-dart-pages` (**plural**): emitted by the multi-source
+  synthesis path (`DART/multi_source_interpreter.py`) as a range
+  (`"3-5"`) or comma-joined list (`"3,5,7"`) covering a section
+  `page_range`.
+
+Both attributes are accepted by `lib/validators/dart_markers.py`
+(only `data-dart-source` + `data-dart-block-id` presence is
+enforced; page attribution stays optional).
+
+### `doc-chapter` extractor path
+
+`lib/semantic_structure_extractor/semantic_structure_extractor.py`
+now recognises Wave 13+ DART's `<article role="doc-chapter">`
+wrappers as the primary chapter grouping signal, with the legacy
+`<h2>`-hierarchy heuristic retained as a graceful fallback for
+pre-Wave-13 DART HTML + generic third-party HTML.

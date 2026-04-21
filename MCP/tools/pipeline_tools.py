@@ -360,6 +360,26 @@ def register_pipeline_tools(mcp):
                 staged_entries.append({"path": html_path.name, "role": "content"})
                 logger.info(f"Staged: {html_path.name} -> {dest}")
 
+                # Wave 19: stage the sibling ``{stem}_figures/`` directory
+                # (persisted PyMuPDF figure bytes from Wave 17) so the
+                # Courseforge generator renders ``<img src>`` paths that
+                # actually resolve. Missing directory is silently skipped
+                # for backward compat with pre-Wave-17 outputs.
+                figures_dir_src = html_path.parent / f"{html_path.stem}_figures"
+                if figures_dir_src.is_dir():
+                    figures_dir_dest = staging_dir / figures_dir_src.name
+                    if figures_dir_dest.exists():
+                        shutil.rmtree(figures_dir_dest)
+                    shutil.copytree(figures_dir_src, figures_dir_dest)
+                    staged_files.append(str(figures_dir_dest))
+                    staged_entries.append({
+                        "path": figures_dir_src.name,
+                        "role": "figures_bundle",
+                    })
+                    logger.info(
+                        f"Staged figures dir: {figures_dir_src.name} -> {figures_dir_dest}"
+                    )
+
                 # Validate HTML structure
                 if html_path.suffix.lower() in ('.html', '.htm'):
                     try:
@@ -622,6 +642,20 @@ def register_pipeline_tools(mcp):
                                 quality_json,
                                 course_dir / "quality" / quality_json.name
                             )
+                        # Wave 19: archive ``{stem}_figures/`` sibling dir
+                        # when it exists so LibV2 stores the portable
+                        # bundle alongside the HTML.
+                        figures_dir_src = (
+                            html_file.parent / f"{html_file.stem}_figures"
+                        )
+                        if figures_dir_src.is_dir():
+                            figures_dir_dest = (
+                                course_dir / "source" / "html"
+                                / figures_dir_src.name
+                            )
+                            if figures_dir_dest.exists():
+                                shutil.rmtree(figures_dir_dest)
+                            shutil.copytree(figures_dir_src, figures_dir_dest)
 
             # Archive IMSCC package
             if imscc_path:
@@ -927,7 +961,16 @@ def _raw_text_to_accessible_html(
                     classified = result[0]
                 except RuntimeError:
                     classified = asyncio.run(classifier.classify(blocks))
-            return assemble_html(classified, title, merged_metadata)
+            html_out = assemble_html(classified, title, merged_metadata)
+            _emit_dart_sidecars_if_requested(
+                classified_blocks=classified,
+                html=html_out,
+                title=title,
+                output_path=output_path,
+                source_pdf=source_pdf,
+                metadata=merged_metadata,
+            )
+            return html_out
         except RuntimeError as exc:
             logger.debug(
                 "Wave 16 extractor failed (%s); falling back to raw-text path",
@@ -940,9 +983,114 @@ def _raw_text_to_accessible_html(
             )
 
     # Wave 15 path (raw text only): delegate to the 4-phase pipeline.
-    from DART.converter import convert_pdftotext_to_html as _convert
+    # Wave 19: inline the raw-text path so we can emit the sidecars
+    # alongside the HTML when ``output_path`` is set.
+    from DART.converter import (
+        HeuristicClassifier,
+        default_classifier,
+        segment_pdftotext_output,
+    )
+    from DART.converter.document_assembler import assemble_html
 
-    return _convert(raw_text, title=title, metadata=metadata or {}, llm=llm)
+    raw_blocks = segment_pdftotext_output(raw_text)
+    raw_classifier = default_classifier(llm=llm)
+    if isinstance(raw_classifier, HeuristicClassifier):
+        raw_classified = raw_classifier.classify_sync(raw_blocks)
+    else:
+        import asyncio as _asyncio
+
+        try:
+            _asyncio.get_running_loop()
+            import threading as _threading
+
+            raw_result: list = []
+            raw_error: list = []
+
+            def _raw_runner():
+                try:
+                    raw_result.append(
+                        _asyncio.run(raw_classifier.classify(raw_blocks))
+                    )
+                except BaseException as exc:  # noqa: BLE001
+                    raw_error.append(exc)
+
+            raw_thread = _threading.Thread(target=_raw_runner, daemon=True)
+            raw_thread.start()
+            raw_thread.join()
+            if raw_error:
+                raise raw_error[0]
+            raw_classified = raw_result[0]
+        except RuntimeError:
+            raw_classified = _asyncio.run(raw_classifier.classify(raw_blocks))
+
+    html_out = assemble_html(raw_classified, title, metadata or {})
+    _emit_dart_sidecars_if_requested(
+        classified_blocks=raw_classified,
+        html=html_out,
+        title=title,
+        output_path=output_path,
+        source_pdf=source_pdf,
+        metadata=metadata,
+    )
+    return html_out
+
+
+def _emit_dart_sidecars_if_requested(
+    *,
+    classified_blocks,
+    html: str,
+    title: str,
+    output_path: Optional[str],
+    source_pdf: Optional[str],
+    metadata: Optional[dict],
+) -> None:
+    """Wave 19: write ``*_synthesized.json`` + ``*.quality.json`` sidecars.
+
+    Preconditions: only emits when ``output_path`` is set (mirrors the
+    figure-persistence pattern — tempdir callers skip). Failures are
+    logged + swallowed so a sidecar write error never blocks the HTML
+    return path.
+    """
+    if not output_path:
+        return
+    try:
+        from DART.converter.sidecars import (
+            build_quality_sidecar,
+            build_synthesized_sidecar,
+        )
+
+        out_path = Path(output_path)
+        base = out_path.with_suffix("")
+
+        synth = build_synthesized_sidecar(
+            classified_blocks,
+            title=title,
+            source_pdf=source_pdf,
+            metadata=metadata or {},
+        )
+        synth_path = base.parent / f"{base.name}_synthesized.json"
+        synth_path.write_text(
+            json.dumps(synth, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+        quality = build_quality_sidecar(
+            html, title=title, source_pdf=source_pdf
+        )
+        quality_path = out_path.with_suffix(".quality.json")
+        quality_path.write_text(
+            json.dumps(quality, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        logger.debug(
+            "Wave 19 sidecars emitted: %s, %s",
+            synth_path,
+            quality_path,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Wave 19 sidecar emission failed (non-fatal): %s", exc
+        )
 
 
 def _raw_text_to_accessible_html_legacy(raw_text: str, title: str) -> str:
@@ -1722,6 +1870,19 @@ def _build_tool_registry() -> dict:
                 shutil.copy2(html_path, dest)
                 staged_files.append(str(dest))
                 staged_entries.append({"path": html_path.name, "role": "content"})
+
+                # Wave 19: also stage ``{stem}_figures/`` when present.
+                figures_dir_src = html_path.parent / f"{html_path.stem}_figures"
+                if figures_dir_src.is_dir():
+                    figures_dir_dest = staging_dir / figures_dir_src.name
+                    if figures_dir_dest.exists():
+                        shutil.rmtree(figures_dir_dest)
+                    shutil.copytree(figures_dir_src, figures_dir_dest)
+                    staged_files.append(str(figures_dir_dest))
+                    staged_entries.append({
+                        "path": figures_dir_src.name,
+                        "role": "figures_bundle",
+                    })
 
                 # Copy accompanying JSON if it exists (DART synthesized metadata).
                 json_path = html_path.with_suffix(".json")
