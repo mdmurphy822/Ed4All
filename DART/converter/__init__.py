@@ -34,11 +34,21 @@ from DART.converter.block_roles import (
     ClassifiedBlock,
     RawBlock,
 )
-from DART.converter.block_segmenter import segment_pdftotext_output
+from DART.converter.block_segmenter import (
+    segment_extracted_document,
+    segment_pdftotext_output,
+)
 from DART.converter.block_templates import TEMPLATE_REGISTRY, render_block
 from DART.converter.document_assembler import assemble_html
+from DART.converter.extractor import (
+    ExtractedDocument,
+    ExtractedFigure,
+    ExtractedTable,
+    extract_document,
+)
 from DART.converter.heuristic_classifier import HeuristicClassifier
 from DART.converter.llm_classifier import LLMClassifier
+from DART.converter.mathml import detect_formulas, render_mathml
 
 
 def default_classifier(
@@ -146,6 +156,9 @@ def _run_classifier_sync(classifier, blocks):
 __all__ = [
     "BlockRole",
     "ClassifiedBlock",
+    "ExtractedDocument",
+    "ExtractedFigure",
+    "ExtractedTable",
     "HeuristicClassifier",
     "LLMClassifier",
     "RawBlock",
@@ -154,6 +167,10 @@ __all__ = [
     "assemble_html",
     "convert_pdftotext_to_html",
     "default_classifier",
+    "detect_formulas",
+    "extract_document",
     "render_block",
+    "render_mathml",
+    "segment_extracted_document",
     "segment_pdftotext_output",
 ]

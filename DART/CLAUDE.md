@@ -254,11 +254,16 @@ shake out edge cases first.
   Tesseract per-word confidence. A separate `ocr_quality` field is
   follow-up work.
 
-## Ontology-aware pipeline (Waves 12–15)
+## Ontology-aware pipeline (Waves 12–16)
 
 Raw-text pdftotext conversion is now a 4-phase pipeline under
 `DART/converter/`, replacing the ~900-LOC regex monolith that used to
 live in `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html`.
+
+Wave 16 adds a dual-extraction pre-phase so pdfplumber tables,
+PyMuPDF figures, and Tesseract OCR text all survive into the HTML
+output — pdftotext is still the only hard dependency, every other
+extractor is optional and degrades gracefully.
 
 ### Phases
 
@@ -346,3 +351,111 @@ html = convert_pdftotext_to_html(
 `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html` is now a
 thin orchestrator that delegates to this entry point unless the legacy
 flag is set.
+
+### Wave 16 dual-extraction flow
+
+Raw pdftotext extraction is the baseline; `DART.converter.extractor`
+adds a structured-extraction layer that preserves tables, figures, and
+OCR content when upstream dependencies are available.
+
+```python
+from DART.converter import (
+    aconvert_pdftotext_to_html,
+    default_classifier,
+    extract_document,
+    segment_extracted_document,
+)
+from DART.converter.document_assembler import assemble_html
+
+# 1. Extract — pdftotext always, pdfplumber / PyMuPDF / Tesseract
+#    contribute additively when available.
+doc = extract_document("/path/to/book.pdf", llm=my_backend)  # llm optional
+
+# 2. Segment — combine prose blocks with hinted structured blocks.
+blocks = segment_extracted_document(doc)
+
+# 3. Classify — extractor hints short-circuit the classifier at
+#    confidence 1.0 so pdfplumber tables never get prose-classified.
+classifier = default_classifier(llm=my_backend)
+classified = classifier.classify_sync(blocks)  # or ``await classifier.classify``
+
+# 4. Assemble — same document assembler as the raw-text-only path.
+html = assemble_html(classified, title="My Book", metadata={})
+```
+
+`ExtractedDocument` shape:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `raw_text` | `str` | pdftotext output (required — the only hard dep). |
+| `source_pdf` | `str` | Source path. |
+| `pages_count` | `int` | Derived from form-feed markers when present. |
+| `tables` | `list[ExtractedTable]` | pdfplumber extractions; empty on failure. |
+| `figures` | `list[ExtractedFigure]` | PyMuPDF extractions; empty on failure. |
+| `ocr_text` | `Optional[str]` | Populated only when Tesseract + PyMuPDF both available. |
+
+`ExtractedTable.{page, bbox, header_rows, body_rows, caption}` —
+header_rows / body_rows are lists of stringified cells.
+
+`ExtractedFigure.{page, bbox, image_path, alt_text, caption}` — alt_text
+is populated only when an `LLMBackend` is injected into
+`extract_document(..., llm=...)`.
+
+### Wave 16 structured block integration
+
+`RawBlock` gained two optional fields: `extractor_hint: BlockRole`
+(the segmenter stamps this when the block was produced by a
+structured extractor) and `extra: dict` (the structured payload —
+header rows / body rows / image path / alt / caption). Both default
+to empty so pre-Wave-16 callers stay compatible.
+
+The classifier layer honours the hint:
+
+* `HeuristicClassifier` — emits the hinted role at confidence 1.0 and
+  forwards `extra` into `ClassifiedBlock.attributes`.
+* `LLMClassifier` — skips hinted blocks entirely (they never appear in
+  the prompt, so the backend is never asked to classify e.g. a table's
+  row text as prose). Hinted blocks carry
+  `classifier_source="extractor_hint"` in the output.
+
+### Wave 16 TABLE / FIGURE / FORMULA_MATH templates
+
+* **TABLE** — accepts both legacy (`headers` + `rows`) and structured
+  (`header_rows` + `body_rows`) attribute shapes. In the structured
+  path, `<thead>` cells carry `scope="col"` and the first cell of
+  every `<tbody>` row carries `scope="row"`.
+* **FIGURE** — accepts both `src` (legacy) and `image_path` (Wave 16)
+  for the image source. Emits `<figure>` + `<img alt>` +
+  `<figcaption>` with schema.org `ImageObject` microdata.
+* **FORMULA_MATH** — delegates to `DART.converter.mathml` so LaTeX
+  delimiters (`$...$`, `\(...\)`, `\[...\]`) and plain
+  equation-on-a-line patterns (`E = mc^2`) all render as:
+
+  ```html
+  <math xmlns="http://www.w3.org/1998/Math/MathML" display="block" ...>
+    <semantics>
+      <mtext>{raw_formula}</mtext>
+      <annotation encoding="text/plain">{fallback}</annotation>
+    </semantics>
+  </math>
+  ```
+
+  No LaTeX-to-MathML compilation — the `<annotation>` arm preserves
+  the raw source for assistive tech. Full LaTeX fidelity is out of
+  scope for this wave.
+
+### Wave 16 pipeline_tools plumbing
+
+`MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html` takes an
+optional `source_pdf` kwarg:
+
+* `source_pdf` omitted → raw-text-only path (Wave 15 behaviour).
+* `source_pdf` provided → routes through
+  `extract_document(source_pdf, llm=...)` so pdfplumber tables,
+  PyMuPDF figures, and OCR text contribute structured blocks. Any
+  extractor failure degrades back to the raw-text path — the dispatch
+  never blocks on an optional dep.
+
+`extract_and_convert_pdf` (the MCP pipeline tool) already passes
+`source_pdf` so end-to-end textbook runs pick up the enrichment
+automatically.
