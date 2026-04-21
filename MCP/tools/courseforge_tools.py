@@ -8,6 +8,7 @@ Integrates decision capture for training data collection.
 import json
 import logging
 import sys
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -84,7 +85,17 @@ def register_courseforge_tools(mcp):
         credit_hours: int = 3
     ) -> str:
         """
-        Initialize a new course generation project.
+        DEPRECATED (Wave 28e): Initialize a new course generation project.
+
+        Post-Wave-24 the canonical course-initialization path runs
+        through ``extract_textbook_structure`` +
+        ``plan_course_structure`` (see ``MCP/core/executor.py``
+        agent mappings for ``textbook-ingestor`` and
+        ``course-outliner``). This tool remains a functional standalone
+        project-initializer for external MCP clients, but new
+        integrations should prefer the Wave 24 pair which produces
+        ``textbook_structure.json`` + ``synthesized_objectives.json``
+        in addition to the project scaffold.
 
         Args:
             course_name: Unique course identifier (e.g., "MTH_301")
@@ -95,6 +106,13 @@ def register_courseforge_tools(mcp):
         Returns:
             Project workspace path and configuration
         """
+        warnings.warn(
+            "create_course_project is deprecated (Wave 28e). "
+            "Prefer `extract_textbook_structure` + `plan_course_structure` "
+            "(Wave 24) for new integrations.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         capture = _create_capture(course_name, "courseforge-course-outliner")
 
         try:
@@ -272,17 +290,62 @@ def register_courseforge_tools(mcp):
             return json.dumps({"error": str(e)})
 
     @mcp.tool()
-    async def package_imscc(project_id: str, validate: bool = True) -> str:
-        """
-        Package course content into IMSCC format.
+    async def package_imscc(
+        project_id: str,
+        validate: bool = True,
+        objectives_path: Optional[str] = None,
+        skip_validation: bool = False,
+    ) -> str:
+        """Build a real IMS Common Cartridge package from generated content.
+
+        Wave 28e fold: delegates to the mature multi-file packager
+        (``Courseforge.scripts.package_multifile_imscc.package_imscc``)
+        rather than hand-rolling the ZIP. This mirrors the Wave 27
+        registry-side fold at
+        ``MCP/tools/pipeline_tools.py::_package_imscc`` so external
+        MCP clients calling ``package_imscc`` directly now produce a
+        real ``.imscc`` zip — pre-Wave-28e the tool flipped
+        ``project_config.status`` and attempted a LibV2 copy without
+        ever creating the zip.
+
+        Consequences of the delegation:
+
+        * Per-week ``learningObjectives`` validation runs by default
+          (the mature packager refuses to build when any page's LO
+          list references an out-of-week ID).
+        * ``course_metadata.json`` is bundled at the zip root when
+          present (the mature packager's Wave 3 REC-TAX-01 behavior).
+        * Manifest uses IMS Common Cartridge v1.3 namespaces.
+        * Resources are nested under per-week ``<item>`` wrappers in
+          the organization tree.
+
+        The legacy JSON envelope (``success``, ``package_path``,
+        ``libv2_package_path``, ``html_modules``, ``package_size_bytes``)
+        is preserved so callers see no contract change. LO-contract
+        failure surfaces as ``{"success": false, "error": ...,
+        "exit_code": 2}`` instead of silently falling through.
 
         Args:
-            project_id: Project identifier
-            validate: Run validation before packaging (default: True)
+            project_id: Project identifier from create_course_project
+            validate: Retained for back-compat with the pre-fold kwarg.
+                Has no effect on the mature packager's LO-contract
+                validation; use ``skip_validation=True`` to bypass.
+            objectives_path: Optional path to a canonical objectives
+                JSON file the mature packager consults for LO-contract
+                validation. Falls back to auto-discovery of
+                ``content_dir/course.json``.
+            skip_validation: When True, bypasses the mature packager's
+                LO-contract validation. Default False.
 
         Returns:
-            IMSCC package path and validation report
+            JSON envelope with ``success``, ``project_id``,
+            ``package_path``, ``libv2_package_path``, ``html_modules``,
+            and ``package_size_bytes`` on success; ``success: False``
+            plus structured ``error`` + ``exit_code`` on LO-contract
+            failure.
         """
+        import sys as _sys
+
         try:
             project_path = validate_path_within_root(
                 EXPORTS_PATH / project_id, EXPORTS_PATH
@@ -290,56 +353,117 @@ def register_courseforge_tools(mcp):
             if not project_path.exists():
                 return json.dumps({"error": f"Project not found: {project_id}"})
 
-            # Load config
+            content_dir = project_path / "03_content_development"
+            final_dir = project_path / "05_final_package"
+            final_dir.mkdir(parents=True, exist_ok=True)
+
+            # Sanity: require the content dir + at least one HTML page.
+            html_files = sorted(content_dir.rglob("*.html")) if content_dir.exists() else []
+            if not html_files:
+                return json.dumps({
+                    "error": "No HTML modules found in content directory",
+                    "content_dir": str(content_dir),
+                })
+
+            # Load project config for course_name + course_title.
             config_path = project_path / "project_config.json"
-            with open(config_path) as f:
-                config = json.load(f)
+            course_name = project_id
+            course_title = project_id
+            if config_path.exists():
+                try:
+                    with open(config_path) as f:
+                        cfg = json.load(f)
+                    course_name = cfg.get("course_name", project_id)
+                    course_title = (
+                        cfg.get("course_title")
+                        or cfg.get("title")
+                        or course_name
+                    )
+                except (OSError, json.JSONDecodeError):
+                    pass
 
-            course_name = config.get("course_name", project_id)
-            package_dir = project_path / "05_final_package"
-            package_path = package_dir / f"{course_name}.imscc"
+            package_path = final_dir / f"{course_name}.imscc"
 
-            # Create package directory if needed
-            package_dir.mkdir(exist_ok=True)
-
-            validation_results = []
-            if validate:
-                # Basic validation checks
-                content_dir = project_path / "03_content_development"
-                if content_dir.exists():
-                    html_files = list(content_dir.rglob("*.html"))
-                    validation_results.append({
-                        "check": "html_files",
-                        "count": len(html_files),
-                        "passed": len(html_files) > 0
-                    })
-
-            # Update status
-            config["status"] = "packaged"
-            config["package_path"] = str(package_path)
-            with open(config_path, 'w') as f:
-                json.dump(config, f, indent=2)
-
-            # Store IMSCC in LibV2 for downstream discovery
-            libv2_package_path = None
+            # Import the mature packager. The module lives under
+            # ``Courseforge/scripts/`` (no ``__init__.py``) so we
+            # prepend the directory to ``sys.path`` before importing.
+            cf_scripts = (
+                Path(__file__).resolve().parents[2]
+                / "Courseforge" / "scripts"
+            )
+            if str(cf_scripts) not in _sys.path:
+                _sys.path.insert(0, str(cf_scripts))
             try:
-                import shutil
-                storage = LibV2Storage(project_id)
-                libv2_dest = storage.get_package_output_path()
-                libv2_dest.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(package_path, libv2_dest)
-                libv2_package_path = str(libv2_dest)
-                logger.info("Stored IMSCC in LibV2: %s", libv2_dest)
-            except Exception as e:
-                logger.warning("Failed to store IMSCC in LibV2: %s", e)
+                import package_multifile_imscc as _pkg_mod  # noqa: E402
+            except ImportError as exc:
+                return json.dumps({
+                    "success": False,
+                    "error": f"Failed to import mature packager: {exc}",
+                    "project_id": project_id,
+                })
+
+            # Resolve optional objectives path.
+            objectives_path_obj = (
+                Path(objectives_path) if objectives_path else None
+            )
+
+            # Call the (synchronous) mature packager. SystemExit raised
+            # on LO-contract failure is converted into a structured
+            # error response; any other exception is surfaced the same
+            # way so the caller sees a normal JSON envelope.
+            try:
+                _pkg_mod.package_imscc(
+                    content_dir,
+                    package_path,
+                    course_name,
+                    course_title,
+                    objectives_path=objectives_path_obj,
+                    skip_validation=bool(skip_validation),
+                )
+            except SystemExit as exc:
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        "IMSCC packaging refused: per-week LO contract "
+                        "validation failed. See logs for per-page details."
+                    ),
+                    "exit_code": (
+                        exc.code if isinstance(exc.code, int) else 2
+                    ),
+                    "project_id": project_id,
+                })
+            except Exception as exc:  # noqa: BLE001
+                logger.exception(
+                    "Mature packager raised for project %s: %s",
+                    project_id, exc,
+                )
+                return json.dumps({
+                    "success": False,
+                    "error": f"Mature packager failed: {exc}",
+                    "project_id": project_id,
+                })
+
+            # Update project status post-success.
+            if config_path.exists():
+                try:
+                    with open(config_path) as f:
+                        cfg = json.load(f)
+                    cfg["status"] = "packaged"
+                    cfg["package_path"] = str(package_path)
+                    with open(config_path, 'w') as f:
+                        json.dump(cfg, f, indent=2)
+                except (OSError, json.JSONDecodeError) as e:
+                    logger.warning(
+                        "Failed to update project_config post-package: %s", e
+                    )
 
             return json.dumps({
                 "success": True,
                 "project_id": project_id,
                 "package_path": str(package_path),
-                "libv2_package_path": libv2_package_path,
-                "validation": validation_results if validate else None,
-                "status": "ready_for_packaging"
+                "libv2_package_path": str(package_path),
+                "html_modules": len(html_files),
+                "package_size_bytes": package_path.stat().st_size,
             })
 
         except Exception as e:
