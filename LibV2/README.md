@@ -1,131 +1,28 @@
-# LibV2 - SLM Model Graph Repository
+# LibV2
 
-A large-scale repository for Small Language Model (SLM) training data, organizing processed educational content with semantic categorization across STEM and Arts domains.
+**A searchable archive of pedagogically structured course content.**
 
-## Overview
+LibV2 is the final stage of the Ed4All pipeline and the long-term home for everything it produces. Each archived course carries chunked content, a concept graph, learning outcomes, pedagogy metadata, quality reports, and the original source artefacts, classified under a division → domain → subdomain → topic hierarchy spanning STEM and Arts. Courses are retrieved with a BM25 + character-n-gram engine that supports metadata filters (concept tags, learning objectives, Bloom's levels, teaching role, content type, week) and returns a structured rationale explaining why each result was ranked where it was — a reference retrieval implementation, not a production vector store, and intentionally bounded to stay easy to understand and audit.
 
-LibV2 stores and organizes SLM model graphs produced by [TrainForge](../TrainForge). Each entry contains:
-- **Corpus**: Chunked pedagogical content (explanations, examples, exercises)
-- **Knowledge Graph**: Concept relationships and prerequisites
-- **Pedagogy Model**: Teaching patterns and sequences
-- **Training Specs**: ML training configurations
+## Quick example
 
-## Repository Structure
-
-```
-LibV2/
-├── courses/                     # Flat course storage
-│   └── [course-slug]/           # One directory per course
-├── catalog/                     # Derived indexes
-│   ├── master_catalog.json      # All courses with metadata
-│   ├── by_division/             # STEM.json, ARTS.json
-│   ├── by_domain/               # physics.json, etc.
-│   └── cross_references/        # Shared concepts
-├── docs/                        # Documentation
-└── tools/                       # Management CLI
-```
-
-LibV2's JSON Schema definitions and classification taxonomy now live at the
-project root under `/schemas/`:
-
-```
-<project-root>/schemas/
-├── library/
-│   ├── catalog_entry.schema.json
-│   └── course_manifest.schema.json
-└── taxonomies/
-    ├── taxonomy.json            # STEM/Arts hierarchy
-    └── pedagogy_framework.yaml
-```
-
-## Classification System
-
-### Divisions
-- **STEM**: Science, Technology, Engineering, Mathematics
-- **ARTS**: Arts & Humanities
-
-### STEM Domains
-- Physics, Chemistry, Biology, Mathematics
-- Computer Science, Engineering
-- Medicine, Environmental Science, Data Science
-
-### Hierarchy
-`Division → Domain → Subdomain → Topic → Subtopic`
-
-## Quick Start
-
-### Install CLI Tools
 ```bash
-cd tools
-pip install -e .
+# Courses land here automatically at the end of `ed4all run textbook-to-course`.
+# Retrieve content from the archive:
+python -m LibV2.tools.libv2.cli retrieve "your query" --limit 10
+
+# Filter by domain and chunk type:
+python -m LibV2.tools.libv2.cli retrieve "your query" \
+  --domain computer-science --chunk-type example --limit 10
+
+# Browse the catalog without loading any chunk content:
+python -m LibV2.tools.libv2.cli catalog list --division STEM
 ```
 
-### Import a Course
-```bash
-libv2 import /path/to/trainforge/output/course_name --domain physics --subdomain mechanics
-```
+## More
 
-### Query the Catalog
-```bash
-libv2 catalog list --division STEM
-libv2 catalog search --domain computer-science --difficulty intermediate
-```
-
-### Validate Repository
-```bash
-libv2 validate --all
-```
-
-### Rebuild Indexes
-```bash
-libv2 index rebuild
-```
-
-### Retrieve Content
-```bash
-# Simple query
-libv2 retrieve "learning objectives" --limit 10
-
-# With filters
-libv2 retrieve "Python functions" --domain computer-science --chunk-type example
-
-# Multi-query with decomposition (for complex queries)
-libv2 multi-retrieve "compare formative and summative assessment" --explain
-libv2 multi-retrieve "how does scaffolding improve learning" --no-decompose
-```
-
-## Course Structure
-
-Each course directory contains:
-```
-courses/[slug]/
-├── manifest.json        # Extended metadata
-├── corpus/
-│   ├── chunks.json      # Pedagogical units
-│   └── chunks.jsonl     # Streaming format
-├── graph/
-│   ├── concept_graph.json
-│   └── concept_graph.graphml
-├── pedagogy/
-│   └── pedagogy_model.json
-└── training_specs/
-    └── dataset_config.json
-```
-
-## Cross-Domain Content
-
-Courses spanning multiple domains use:
-- `primary_domain`: Main classification
-- `secondary_domains`: Additional relevant domains
-
-Example: Bioinformatics
-```json
-{
-  "primary_domain": "biology",
-  "secondary_domains": ["computer-science"]
-}
-```
+See [`LibV2/CLAUDE.md`](CLAUDE.md) for the storage model, classification taxonomy, retrieval API, and import/validation workflows. Query-based retrieval is the only supported access pattern — never read `chunks.json` files directly.
 
 ## License
 
-MIT License - See LICENSE file for details.
+MIT
