@@ -9,6 +9,7 @@ import json
 import logging
 import shutil
 import sys
+import warnings
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -316,10 +317,17 @@ def register_pipeline_tools(mcp):
     ) -> str:
         """Create and orchestrate a textbook-to-course pipeline.
 
-        NOTE: This tool is intended for internal / programmatic use.
-        End users should prefer the ``ed4all run textbook-to-course`` CLI,
-        which wraps creation + execution through ``PipelineOrchestrator``.
+        DEPRECATED (Wave 7): Prefer
+        ``create_workflow(workflow_type='textbook_to_course', ...)`` via
+        ``cli/commands/run.py`` or ``ed4all run textbook-to-course``.
         """
+        warnings.warn(
+            "create_textbook_pipeline_tool is deprecated (Wave 7). "
+            "Prefer `create_workflow(workflow_type='textbook_to_course', ...)` "
+            "via `cli/commands/run.py` or `ed4all run textbook-to-course`.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return await create_textbook_pipeline(
             pdf_paths, course_name, objectives_path, duration_weeks,
             generate_assessments, assessment_count, bloom_levels, priority
@@ -776,10 +784,18 @@ def register_pipeline_tools(mcp):
     async def run_textbook_pipeline_tool(workflow_id: str) -> str:
         """Execute a textbook-to-course pipeline that was previously created.
 
-        NOTE: This tool is intended for internal / programmatic use.
-        End users should prefer the ``ed4all run`` CLI, which combines
-        creation + execution through ``PipelineOrchestrator``.
+        DEPRECATED (Wave 7): Prefer
+        ``create_workflow(workflow_type='textbook_to_course', ...)`` via
+        ``cli/commands/run.py`` or ``ed4all run textbook-to-course``,
+        which wraps creation + execution through ``PipelineOrchestrator``.
         """
+        warnings.warn(
+            "run_textbook_pipeline_tool is deprecated (Wave 7). "
+            "Prefer `create_workflow(workflow_type='textbook_to_course', ...)` "
+            "via `cli/commands/run.py` or `ed4all run textbook-to-course`.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         return await run_textbook_pipeline(workflow_id)
 
 

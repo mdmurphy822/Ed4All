@@ -105,10 +105,11 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
 
     "extract_and_convert_pdf": {
         "required": ["pdf_path"],
-        "optional": ["course_code", "output_dir"],
+        "optional": ["course_code", "output_dir", "figures_dir"],
         "defaults": {
             "course_code": None,
             "output_dir": None,
+            "figures_dir": None,
         },
         "param_mapping": {
             "input": "pdf_path",
@@ -117,6 +118,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "pdf": "pdf_path",
             "course": "course_code",
             "output": "output_dir",
+            "figures": "figures_dir",
         },
         "description": "Extract sources from PDF and convert to accessible HTML via DART",
     },
@@ -142,7 +144,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "weeks": "duration_weeks",
             "credits": "credit_hours",
         },
-        "description": "Initialize a new course generation project",
+        "description": "[DEPRECATED — use extract_textbook_structure + plan_course_structure from Wave 24] Initialize a new course generation project",
     },
 
     "generate_course_content": {
