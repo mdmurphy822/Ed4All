@@ -139,3 +139,6 @@ state/GENERATION_PROGRESS.md
 
 # Examples output
 examples/output/
+
+# Planning artifacts — scratch docs, reviews, sub-plans; kept local-only
+plans/
