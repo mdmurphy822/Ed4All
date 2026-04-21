@@ -614,6 +614,7 @@ validation_gates:
 | `textbook_to_course` | `imscc_input_valid` | IMSCCValidator (pre-assessment) |
 | `textbook_to_course` | `assessment_quality` | AssessmentQualityValidator |
 | `textbook_to_course` | `assessment_objective_alignment` | AssessmentObjectiveAlignmentValidator |
+| `textbook_to_course` | `content_grounding` | ContentGroundingValidator (Wave 31) |
 | `textbook_to_course` | `libv2_manifest` | LibV2ManifestValidator |
 | `rag_training` | `assessment_quality` | AssessmentQualityValidator |
 | `rag_training` | `bloom_alignment` | BloomAlignmentValidator (warning) |

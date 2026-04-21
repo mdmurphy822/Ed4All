@@ -239,14 +239,33 @@ def _build_oscqr(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
 ) -> BuilderResult:
-    # OSCQRValidator is stubbed — just forward the discovered course_path.
-    course_path = _locate(phase_outputs, "course_dir", "project_path")
+    """Wave 31 OSCQRValidator: forward course_path / content_dir + course.json + imscc.
+
+    The Wave 31 implementation inspects the whole course artifact:
+    weekly HTML pages, course.json (for assessments), and optionally
+    the IMSCC package.
+    """
     inputs: Dict[str, Any] = {}
+    # Prefer content_dir from content_generation; fall back to course_dir
+    # from packaging/archival.
+    content_dir = _find_content_dir(phase_outputs)
+    if content_dir is not None:
+        inputs["content_dir"] = str(content_dir)
+    course_path = _locate(phase_outputs, "course_dir", "project_path")
     if course_path:
         inputs["course_path"] = course_path
+    # Forward IMSCC path when packaging has completed.
+    imscc = _locate(phase_outputs, "package_path", "imscc_path", "libv2_package_path")
+    if imscc:
+        inputs["imscc_path"] = imscc
+    # Explicit course.json path if the planner surfaced one.
+    cj = _locate(phase_outputs, "course_json_path", "synthesized_objectives_path")
+    if cj:
+        inputs["course_json_path"] = cj
+    # Objectives still flow through for downstream item alignment.
     objectives = workflow_params.get("objectives_path")
     if objectives:
-        inputs["objectives"] = objectives
+        inputs["objectives_path"] = objectives
     return inputs, []
 
 
@@ -612,6 +631,18 @@ def default_router() -> GateInputRouter:
         "lib.validators.assessment_objective_alignment.AssessmentObjectiveAlignmentValidator",
         _build_assessment_objective_alignment,
     )
+    # Wave 31: content grounding — verifies Courseforge content traces
+    # back to DART source blocks. The builder lives in the validator
+    # module so routing stays co-located with the check.
+    try:
+        from lib.validators.content_grounding import _build_content_grounding
+        r.register(
+            "lib.validators.content_grounding.ContentGroundingValidator",
+            _build_content_grounding,
+        )
+    except ImportError:  # pragma: no cover
+        # Keep router functional even when the validator import fails.
+        logger.warning("content_grounding validator import failed")
     return r
 
 

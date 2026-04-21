@@ -608,6 +608,21 @@ workflows:
               on_error: fail_closed
             description: Verify every emitted sourceId resolves against the DART staging manifest (Wave 9)
 
+          # Wave 31 — ContentGroundingValidator. Catches the "empty
+          # generated course" failure mode the ``OLSR_SIM_01`` sim
+          # produced: 48 weekly pages with < 80 words each, empty
+          # objectives lists, and copy-pasted activity prompts. Nothing
+          # caught that as "empty content" until this gate landed.
+          - gate_id: content_grounding
+            validator: lib.validators.content_grounding.ContentGroundingValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Verify every non-trivial paragraph in generated HTML is grounded in DART source (Wave 31)
+
       - name: packaging
         agents: [brightspace-packager]
         parallel: false
