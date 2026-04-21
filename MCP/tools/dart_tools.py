@@ -44,86 +44,15 @@ def _validate_dart_paths():
 _validate_dart_paths()
 
 
-# Wave 22 DC4: canonical course_code pattern from
-# schemas/events/decision_event.schema.json. The regex is strict
-# intentionally — downstream consumers (Brightspace packager, LibV2
-# archive layout, run-ID derivation) rely on the `{PREFIX}_{NNN}`
-# shape. Any PDF-derived name that doesn't already match is normalised
-# to a deterministic in-pattern value via ``normalize_course_code``.
-import hashlib as _hashlib
-import re as _re
-
-_COURSE_CODE_PATTERN = _re.compile(r"^[A-Z]{2,8}_[0-9]{3}$")
-
-
-def normalize_course_code(raw: str) -> str:
-    """Coerce a PDF-derived course code into the canonical schema pattern.
-
-    The canonical pattern is ``^[A-Z]{2,8}_[0-9]{3}$`` (2-8 uppercase
-    letters, underscore, 3 digits). PDF filenames like ``"Ed4All"`` or
-    ``"bates_teaching_digital_age"`` or ``"arxiv-2301.12345"`` do not
-    match out of the box, so pre-Wave-22 every DART capture carried a
-    ``course_id`` validation issue (556/1134 records on a recent run).
-
-    Normalisation strategy:
-
-    1. Uppercase + replace any non-alphanumeric with underscore.
-    2. Strip leading/trailing underscores + collapse repeats.
-    3. If the result already matches the pattern, return as-is.
-    4. Otherwise, split on ``_`` and use the first purely-alphabetic
-       chunk (truncated to 8 chars) as the prefix. If no alphabetic
-       chunk exists, use ``"PDF"`` as the fallback prefix.
-    5. Derive a deterministic 3-digit numeric suffix from the full raw
-       name via SHA-256 modulo 1000 so the same PDF always produces the
-       same course code. Zero-pad to 3 digits.
-
-    Examples
-    --------
-    >>> normalize_course_code("Ed4All")
-    'ED_...'  # 3-digit hash suffix, deterministic
-    >>> normalize_course_code("MTH_101")
-    'MTH_101'  # already canonical
-    """
-    raw = (raw or "").strip()
-    if not raw:
-        raw = "unknown"
-
-    # Phase 1: aggressive uppercase + underscore normalisation.
-    uppered = _re.sub(r"[^A-Za-z0-9]+", "_", raw).upper().strip("_")
-    uppered = _re.sub(r"_+", "_", uppered)
-
-    # Phase 2: early exit when already canonical.
-    if _COURSE_CODE_PATTERN.match(uppered):
-        return uppered
-
-    # Phase 3: pick a prefix from the first alphabetic chunk (≥2 chars).
-    chunks = [c for c in uppered.split("_") if c]
-    prefix = ""
-    for chunk in chunks:
-        alpha_only = _re.sub(r"[^A-Z]", "", chunk)
-        if len(alpha_only) >= 2:
-            prefix = alpha_only[:8]
-            break
-    if not prefix:
-        # No alphabetic chunk — fall back to a constant so the suffix
-        # carries all the disambiguating signal.
-        prefix = "PDF"
-    # Enforce 2-8 length window post-hoc (safety net against single-char
-    # alpha-only chunks sneaking through the len check above).
-    if len(prefix) < 2:
-        prefix = (prefix + "PDF")[:2]
-    prefix = prefix[:8]
-
-    # Phase 4: deterministic 3-digit suffix from a content hash.
-    suffix_int = int(_hashlib.sha256(raw.encode("utf-8")).hexdigest(), 16) % 1000
-    suffix = f"{suffix_int:03d}"
-
-    candidate = f"{prefix}_{suffix}"
-    if not _COURSE_CODE_PATTERN.match(candidate):
-        # Defensive: prefix may still be invalid (e.g. all digits after
-        # filtering). Drop back to the constant-prefix form.
-        candidate = f"PDF_{suffix}"
-    return candidate
+# Wave 22 DC4 / Wave 23 Sub-task B: ``normalize_course_code`` moved to
+# ``lib/decision_capture.py`` so the orchestrator-level capture can
+# share the same normaliser without a dependency inversion between
+# ``lib/`` and ``MCP/tools/``. Re-exported here for backward compat
+# with pre-Wave-23 callers that imported from this module.
+from lib.decision_capture import (  # noqa: F401
+    _COURSE_CODE_PATTERN,
+    normalize_course_code,
+)
 
 
 def _create_capture(course_code: str = "UNKNOWN", pdf_name: str = "unknown"):

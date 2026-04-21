@@ -71,6 +71,7 @@ except ImportError as _exc:
 try:
     from ..hardening.validation_gates import (  # noqa: F401
         GateConfig,
+        GateIssue,
         GateResult,
         GateSeverity,
         ValidationGateManager,
@@ -80,6 +81,17 @@ except ImportError as _exc:
     HARDENING_VALIDATION_GATES = False
     logging.getLogger(__name__).debug(
         "Hardening import failed (validation_gates): %s", _exc
+    )
+
+try:
+    from ..hardening.gate_input_routing import GateInputRouter, default_router
+    HARDENING_GATE_INPUT_ROUTING = True
+except ImportError as _exc:
+    HARDENING_GATE_INPUT_ROUTING = False
+    GateInputRouter = None  # type: ignore
+    default_router = None  # type: ignore
+    logging.getLogger(__name__).debug(
+        "Hardening import failed (gate_input_routing): %s", _exc
     )
 
 try:
@@ -300,6 +312,17 @@ class TaskExecutor:
         if HARDENING_VALIDATION_GATES:
             self.gate_manager = ValidationGateManager()
             logger.debug(f"[{self.run_id}] Validation gate manager initialized")
+
+        # Wave 23 Sub-task A: per-gate input router. Pre-Wave-23, gates
+        # received a generic ``{'artifacts': ..., 'results': ...}`` blob
+        # regardless of validator shape, so critical gates silently
+        # returned MISSING_INPUT issues and warning-severity gates
+        # silently passed. The router builds per-validator kwargs from
+        # the phase's accumulated outputs + workflow params.
+        self.gate_input_router = None
+        if HARDENING_GATE_INPUT_ROUTING and default_router is not None:
+            self.gate_input_router = default_router()
+            logger.debug(f"[{self.run_id}] Gate input router initialized")
 
         # Lock manager for cross-process resource locking (Wave 22 F1 fix:
         # was imported but never instantiated).
@@ -831,6 +854,8 @@ class TaskExecutor:
         tasks: List[Dict[str, Any]],
         gate_configs: Optional[List[Dict[str, Any]]] = None,
         max_concurrent: int = 5,
+        phase_outputs: Optional[Dict[str, Dict[str, Any]]] = None,
+        workflow_params: Optional[Dict[str, Any]] = None,
     ) -> Tuple[Dict[str, ExecutionResult], bool, Optional[List[Dict]]]:
         """
         Execute a workflow phase with checkpointing and validation gates.
@@ -916,10 +941,11 @@ class TaskExecutor:
                 self.checkpoint_manager.fail_phase(phase_name, "Poison pill detected")
             return results, False, None
 
-        # Run validation gates
+        # Run validation gates (Wave 23: per-gate input routing)
         gates_passed = True
         if gate_configs and self.gate_manager and HARDENING_VALIDATION_GATES:
-            # Gather artifacts from results for validation
+            # Build the fallback artifacts blob for validators not yet in
+            # the router registry (legacy / unknown paths).
             all_artifacts = []
             for result in results.values():
                 if hasattr(result, 'artifacts') and result.artifacts:
@@ -927,8 +953,16 @@ class TaskExecutor:
                 if result.result and isinstance(result.result, dict):
                     if 'artifacts' in result.result:
                         all_artifacts.extend(result.result['artifacts'])
+            fallback_inputs = {'artifacts': all_artifacts, 'results': results}
 
-            # Convert gate configs to GateConfig objects
+            # Accumulated phase outputs + workflow params feed the router.
+            # Callers (WorkflowRunner) pass these explicitly; legacy
+            # callers that don't get an empty blob → every gate without
+            # a builder route falls back to fallback_inputs.
+            _phase_outputs = phase_outputs or {}
+            _workflow_params = workflow_params or {}
+
+            gate_results_list = []
             parsed_gates = []
             for gc in gate_configs:
                 try:
@@ -942,23 +976,87 @@ class TaskExecutor:
                 except Exception as e:
                     logger.warning(f"[{self.run_id}] Invalid gate config: {e}")
 
-            if parsed_gates:
-                gates_passed, gate_results_list = self.gate_manager.run_phase_gates(
-                    phase_name=phase_name,
-                    gate_configs=parsed_gates,
-                    inputs={'artifacts': all_artifacts, 'results': results}
-                )
-                gate_results = [gr.to_dict() if hasattr(gr, 'to_dict') else gr for gr in gate_results_list]
+            for gate in parsed_gates:
+                # Per-gate input build.
+                inputs: Dict[str, Any]
+                missing: List[str] = []
+                if self.gate_input_router is not None and gate.validator_path:
+                    inputs, missing = self.gate_input_router.build(
+                        gate.validator_path, _phase_outputs, _workflow_params,
+                    )
+                else:
+                    inputs = dict(fallback_inputs)
 
-                # Log gate results
-                if self.capture:
-                    for gr in gate_results_list:
+                # If the builder flagged missing required inputs, mark
+                # the gate as skipped rather than silently passing.
+                if missing:
+                    reason = ", ".join(missing)
+                    logger.warning(
+                        f"[{self.run_id}] Gate {gate.gate_id} "
+                        f"({gate.validator_path}) skipped — missing inputs: "
+                        f"{reason}"
+                    )
+                    skipped_result = GateResult(
+                        gate_id=gate.gate_id,
+                        validator_name=gate.validator_path,
+                        validator_version="skipped",
+                        passed=True,
+                        score=None,
+                        issues=[GateIssue(
+                            severity="warning",
+                            code="GATE_SKIPPED_MISSING_INPUTS",
+                            message=(
+                                f"Gate skipped: builder could not resolve "
+                                f"required inputs ({reason}). This is a "
+                                "structured skip, not a silent pass — the "
+                                "gate did not run."
+                            ),
+                            suggestion=(
+                                "Ensure the phase's upstream outputs "
+                                "surface the required keys, or add a "
+                                "builder for this validator in "
+                                "MCP/hardening/gate_input_routing.py."
+                            ),
+                        )],
+                    )
+                    # Mark as skipped in a forward-compat way.
+                    try:
+                        skipped_result.waiver_info = {"skipped": "true", "reason": reason}
+                    except Exception:
+                        pass
+                    gate_results_list.append(skipped_result)
+                    continue
+
+                # Merge the router-produced inputs with fallback blob
+                # under non-colliding keys so legacy validators that
+                # look for 'artifacts' still find it.
+                merged_inputs: Dict[str, Any] = dict(fallback_inputs)
+                merged_inputs.update(inputs)
+
+                # Run the gate via the manager (handles waivers + errors)
+                result = self.gate_manager.run_gate(gate, merged_inputs)
+                gate_results_list.append(result)
+
+                # Honour severity / behavior-on-fail for gate ordering.
+                if not result.passed:
+                    if gate.severity == GateSeverity.CRITICAL:
+                        gates_passed = False
+
+            gate_results = [gr.to_dict() if hasattr(gr, 'to_dict') else gr for gr in gate_results_list]
+
+            # Log gate results
+            if self.capture:
+                for gr in gate_results_list:
+                    skipped = bool(getattr(gr, 'waiver_info', None) and isinstance(gr.waiver_info, dict) and gr.waiver_info.get('skipped') == 'true')
+                    if skipped:
+                        status = "SKIPPED"
+                    else:
                         status = "PASSED" if gr.passed else "FAILED"
-                        self.capture.log_decision(
-                            decision_type="validation_result",
-                            decision=f"Gate {gr.gate_id}: {status}",
-                            rationale=f"Score: {gr.score}, Issues: {len(gr.issues)}",
-                        )
+                    self.capture.log_decision(
+                        decision_type="validation_result",
+                        decision=f"Gate {gr.gate_id}: {status}",
+                        rationale=f"Score: {gr.score}, Issues: {len(gr.issues)}",
+                    )
 
         # Complete or fail checkpoint
         if self.checkpoint_manager:

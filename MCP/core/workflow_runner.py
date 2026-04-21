@@ -503,7 +503,13 @@ class WorkflowRunner:
             # Get validation gate configs from phase
             gate_configs = getattr(phase, "validation_gates", None)
 
-            # Execute the phase
+            # Execute the phase.
+            #
+            # Wave 23 Sub-task A: thread accumulated phase_outputs +
+            # workflow_params through to the executor so the per-gate
+            # input router can build validator-specific inputs. Without
+            # these, every gate received a generic artifacts blob and
+            # silently failed / skipped.
             results, gates_passed, gate_results = await self.executor.execute_phase(
                 workflow_id=workflow_id,
                 phase_name=phase_name,
@@ -511,6 +517,8 @@ class WorkflowRunner:
                 tasks=tasks,
                 gate_configs=gate_configs,
                 max_concurrent=getattr(phase, "max_concurrent", 5),
+                phase_outputs=phase_outputs,
+                workflow_params=workflow_params,
             )
 
             # Extract outputs from results
