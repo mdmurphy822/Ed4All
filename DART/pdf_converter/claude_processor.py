@@ -297,7 +297,16 @@ Return ONLY the JSON object, no other text.'''
 
         Args:
             raw_text: Raw text from pdftotext/OCR
-            gold_standard_template: HTML template showing target format (optional)
+            gold_standard_template: HTML template showing target format
+                (optional). **Currently unused** — reserved for future
+                gold-standard-template-guided prompting. The content of
+                ``DART/templates/gold_standard.html`` is a reference for
+                the WCAG / ARIA / schema.org scaffolding pattern; wiring
+                it into the live Claude prompt is deferred to a later
+                wave so prose content choices never leak into generated
+                output.
+                TODO(wave-31): wire into WCAGValidator semantic checks
+                or prompt-prefix injection with strict size bounds.
 
         Returns:
             DocumentStructure with ordered, classified blocks
