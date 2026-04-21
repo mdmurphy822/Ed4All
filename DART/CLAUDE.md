@@ -841,3 +841,52 @@ now recognises Wave 13+ DART's `<article role="doc-chapter">`
 wrappers as the primary chapter grouping signal, with the legacy
 `<h2>`-hierarchy heuristic retained as a graceful fallback for
 pre-Wave-13 DART HTML + generic third-party HTML.
+
+## Decision capture (Waves 12–21 wiring)
+
+Pre-Wave-22, every DART Claude call site was uninstrumented — a Bates
+run with dozens of per-block + per-figure Claude decisions produced
+two static 2-line boilerplate capture records from the MCP wrapper.
+Wave 22 DC1/DC3 threads a `DecisionCapture` instance through every
+Claude call site in the pipeline. The table below is the source of
+truth for what fires where.
+
+| Call site | Decision type | Trigger | Rationale signals |
+|-----------|---------------|---------|-------------------|
+| `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html` | `pipeline_run_attribution` | Once per pipeline run at function entry | backend, classifier_mode, raw_text length, title, output_path state, figures_dir state, llm injection state, legacy-flag state |
+| `DART/converter/llm_classifier.py::LLMClassifier._classify_batch` | `structure_detection` | One per batch (typical batch_size=20) | block-ID range, LLM vs heuristic-fallback counts, fallback fraction, avg confidence, low-confidence fraction, char prompt payload, model + max_tokens |
+| `DART/pdf_converter/alt_text_generator.py::AltTextGenerator.generate` | `alt_text_generation` (via `DARTDecisionCapture.log_alt_text_decision` + `log_decision`) | One per figure | page, bbox, image hash (first 12 chars of sha256), width×height, chosen source (claude / ocr / caption / generic), caption presence, alt-text length, long-description length, context length |
+| `MCP/tools/dart_tools.py::convert_pdf_multi_source` (pre-Wave-22) | `approach_selection` + `validation_result` | Once per call | multi-source synthesis details — static rationales retained for legacy-path telemetry |
+
+### Plumbing contract
+
+* `_raw_text_to_accessible_html(capture=...)` — optional kwarg. When
+  `None` (default) and `source_pdf` is provided, the function builds
+  a short-lived `DARTDecisionCapture` keyed on the normalised PDF
+  stem (Wave 22 DC4) and finalises it on exit. When the caller
+  supplies a capture, that capture is used for all emits (including
+  the per-batch LLM + per-figure alt-text records).
+* `default_classifier(llm=..., capture=...)` — forwards `capture`
+  into `LLMClassifier` when routing goes to the LLM path. The
+  heuristic classifier ignores `capture` (no Claude calls = nothing
+  to log).
+* `extract_document(pdf_path, *, llm=..., figures_dir=..., capture=...)` —
+  forwards `capture` into the figure-extraction loop, which hands
+  it to `AltTextGenerator(..., capture=capture)`.
+
+### Course-code normalisation (Wave 22 DC4)
+
+`MCP/tools/dart_tools.py::normalize_course_code` coerces any PDF
+filename into the canonical `^[A-Z]{2,8}_[0-9]{3}$` pattern so
+every DART capture's `course_id` field passes schema validation.
+Strategy: uppercase + underscore-normalise, pick the first
+≥2-char alphabetic chunk as prefix (truncated to 8), append a
+deterministic 3-digit SHA-256-based suffix. Same input always
+produces the same output.
+
+### Off-switch parity
+
+All capture emits are best-effort — a capture-emit exception is
+logged at DEBUG and swallowed so a capture regression never blocks
+the HTML return path. Tests that don't care about captures keep
+passing byte-for-byte (the `capture=None` default silently skips).
