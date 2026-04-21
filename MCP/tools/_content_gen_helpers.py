@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 # Project imports — mature Bloom/taxonomy helpers.
 from lib.ontology.bloom import detect_bloom_level
+from lib.ontology.learning_objectives import mint_lo_id
 from lib.ontology.slugs import canonical_slug
 
 # ---------------------------------------------------------------------------
@@ -56,6 +57,17 @@ _HEADING_RE = re.compile(
 _PARAGRAPH_RE = re.compile(r"(?is)<p[^>]*>(.*?)</p>")
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
+
+# Wave 24: DART Wave 13+ emits each chapter as <article role="doc-chapter">.
+# When present, parse_dart_html_files tags every topic with its chapter_id so
+# _group_topics_by_week can respect chapter boundaries when distributing
+# topics across weeks.
+_DOC_CHAPTER_ARTICLE_RE = re.compile(
+    r"(?is)<article\s+[^>]*?role\s*=\s*[\"']doc-chapter[\"'][^>]*>(.*?)</article>"
+)
+_ARTICLE_ID_RE = re.compile(
+    r"(?is)<article\s+[^>]*?id\s*=\s*[\"']([^\"']+)[\"']"
+)
 
 # Headings that almost certainly aren't real chapter/topic titles.
 # Matched case-insensitively and via substring against the normalized heading
@@ -662,13 +674,35 @@ def parse_dart_html_files(html_paths: List[Path]) -> List[Dict[str, Any]]:
         file_misconception_map[stem] = extract_misconceptions(whole_text)
         file_question_map[stem] = extract_self_check_questions(whole_text)
 
-        # Prefer DART-shaped <section> blocks; fall back to whole-document
-        # heading-boundary split when no <section> tags are present.
-        section_bodies = _SECTION_RE.findall(html)
-        if not section_bodies:
-            section_bodies = [html]
+        # Wave 24: locate <article role="doc-chapter"> wrappers first so we
+        # can tag each topic with its owning chapter. Sections outside any
+        # article (e.g. pre-Wave-13 DART output) get chapter_id=None.
+        chapter_spans: List[Tuple[int, int, str]] = []  # (start, end, chapter_id)
+        for idx, match in enumerate(_DOC_CHAPTER_ARTICLE_RE.finditer(html), start=1):
+            # Locate the article's own id= attribute, falling back to a
+            # synthesized chN based on position in the file.
+            opening = html[match.start():match.start() + 200]
+            id_match = _ARTICLE_ID_RE.search(opening)
+            ch_id = id_match.group(1) if id_match else f"ch{idx}"
+            chapter_spans.append((match.start(), match.end(), ch_id))
 
-        for section_body in section_bodies:
+        def _chapter_for_offset(offset: int) -> Optional[str]:
+            for start, end, ch_id in chapter_spans:
+                if start <= offset < end:
+                    return ch_id
+            return None
+
+        # Prefer DART-shaped <section> blocks; fall back to whole-document
+        # heading-boundary split when no <section> tags are present. When
+        # <section> is present we also capture its byte-offset so chapter
+        # assignment can map the section back to its article wrapper.
+        section_matches: List[Tuple[str, int]] = []  # (body, start_offset)
+        for m in _SECTION_RE.finditer(html):
+            section_matches.append((m.group(1), m.start()))
+        if not section_matches:
+            section_matches = [(html, 0)]
+
+        for section_body, section_offset in section_matches:
             heading_match = _HEADING_RE.search(section_body)
             heading_raw = heading_match.group(2) if heading_match else ""
             heading = _strip_tags(heading_raw) or f"Section from {stem}"
@@ -701,6 +735,9 @@ def parse_dart_html_files(html_paths: List[Path]) -> List[Dict[str, Any]]:
                 "key_terms": _extract_key_terms(full_text),
                 "source_file": stem,
                 "word_count": word_count,
+                # Wave 24: chapter_id from <article role="doc-chapter">;
+                # None when DART didn't emit doc-chapter wrappers.
+                "chapter_id": _chapter_for_offset(section_offset),
                 # Populated in the finalization pass below so every topic
                 # from the same source carries the file's extracted items.
                 "extracted_lo_statements": [],
@@ -862,12 +899,16 @@ def load_objectives_json(
 def synthesize_objectives_from_topics(
     topics: List[Dict[str, Any]],
     duration_weeks: int,
+    *,
+    max_terminal: int = 2,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """Generate canonical objectives from parsed DART topics.
 
     Output shape matches what ``generate_week`` consumes. IDs follow the
     JSON-LD schema's ``^[A-Z]{2,}-\\d{2,}$`` pattern: ``TO-NN`` for terminal,
-    ``CO-NN`` for chapter-level.
+    ``CO-NN`` for chapter-level (minted via
+    :func:`lib.ontology.learning_objectives.mint_lo_id`, the Wave 24
+    canonical helper — no more inline f-string magic).
 
     Content policy (NO placeholder generations):
       * Every emitted objective statement MUST come from the source corpus
@@ -879,6 +920,14 @@ def synthesize_objectives_from_topics(
         lists. The caller (``_generate_course_content``) handles that by
         emitting pages with an empty objectives array — schema-compliant,
         since ``learningObjectives`` is not required top-level.
+
+    Args:
+        topics: List of parsed DART topic dicts.
+        duration_weeks: Target course duration in weeks (used for Path B
+            heading grouping).
+        max_terminal: Terminal-outcome ceiling. Default 2 preserves the
+            historical behaviour; :func:`_plan_course_structure` can pass
+            a larger value when the corpus is rich enough.
     """
     if not topics:
         # Empty corpus → empty objective lists. No placeholder synthesis.
@@ -910,7 +959,6 @@ def synthesize_objectives_from_topics(
             for statement in statements:
                 level, verb = detect_bloom_level(statement)
                 entry: Dict[str, Any] = {
-                    "id": f"TO-{to_counter:02d}" if to_counter <= 2 else f"CO-{co_counter:02d}",
                     "statement": statement,
                     "key_concepts": [primary_term_slug] if primary_term_slug else [],
                 }
@@ -918,14 +966,13 @@ def synthesize_objectives_from_topics(
                     entry["bloom_level"] = level
                 if verb:
                     entry["bloom_verb"] = verb
-                # First two go to terminal (course-wide outcomes); the rest
-                # are chapter-level COs.
-                if to_counter <= 2:
-                    entry["id"] = f"TO-{to_counter:02d}"
+                # First ``max_terminal`` go to terminal; the rest are COs.
+                if to_counter <= max_terminal:
+                    entry["id"] = mint_lo_id("terminal", to_counter)
                     terminal.append(entry)
                     to_counter += 1
                 else:
-                    entry["id"] = f"CO-{co_counter:02d}"
+                    entry["id"] = mint_lo_id("chapter", co_counter)
                     chapter.append(entry)
                     co_counter += 1
         return (terminal, chapter)
@@ -942,18 +989,33 @@ def synthesize_objectives_from_topics(
         primary_heading = primary["heading"]
         primary_terms = primary.get("key_terms") or [primary_heading]
         level, verb = detect_bloom_level(primary_heading)
-        terminal_entry: Dict[str, Any] = {
-            "id": f"TO-{to_counter:02d}",
-            "statement": primary_heading,
-            "key_concepts": [canonical_slug(t) for t in primary_terms[:3]
-                             if canonical_slug(t)],
-        }
-        if level:
-            terminal_entry["bloom_level"] = level
-        if verb:
-            terminal_entry["bloom_verb"] = verb
-        terminal.append(terminal_entry)
-        to_counter += 1
+        # Terminals capped at max_terminal; overflow primaries become COs.
+        if to_counter <= max_terminal:
+            terminal_entry: Dict[str, Any] = {
+                "id": mint_lo_id("terminal", to_counter),
+                "statement": primary_heading,
+                "key_concepts": [canonical_slug(t) for t in primary_terms[:3]
+                                 if canonical_slug(t)],
+            }
+            if level:
+                terminal_entry["bloom_level"] = level
+            if verb:
+                terminal_entry["bloom_verb"] = verb
+            terminal.append(terminal_entry)
+            to_counter += 1
+        else:
+            primary_entry: Dict[str, Any] = {
+                "id": mint_lo_id("chapter", co_counter),
+                "statement": primary_heading,
+                "key_concepts": [canonical_slug(t) for t in primary_terms[:3]
+                                 if canonical_slug(t)],
+            }
+            if level:
+                primary_entry["bloom_level"] = level
+            if verb:
+                primary_entry["bloom_verb"] = verb
+            chapter.append(primary_entry)
+            co_counter += 1
 
         # One CO per additional heading in the week (chapter-level
         # objectives bind to the secondary sections the week covers).
@@ -962,7 +1024,7 @@ def synthesize_objectives_from_topics(
             sec_terms = secondary.get("key_terms") or [sec_heading]
             sec_level, sec_verb = detect_bloom_level(sec_heading)
             chapter_entry: Dict[str, Any] = {
-                "id": f"CO-{co_counter:02d}",
+                "id": mint_lo_id("chapter", co_counter),
                 "statement": sec_heading,
                 "key_concepts": [canonical_slug(t) for t in sec_terms[:3]
                                  if canonical_slug(t)],
@@ -977,12 +1039,64 @@ def synthesize_objectives_from_topics(
     return (terminal, chapter)
 
 
+def _page_roles_for_week(lo_count: int) -> Tuple[str, ...]:
+    """Return the canonical page-role tuple for a week with ``lo_count`` LOs.
+
+    Wave 24 HIGH-5 fix: pre-Wave-24, ``pipeline_tools.py`` hardcoded a
+    5-tuple (overview, content_01, application, self_check, summary) for
+    every week regardless of how many LOs the week carried. That meant a
+    1-LO week got 5 pages (mostly filler) and a 12-LO week also got 5
+    pages (one content page cramming 12 LOs). This helper scales the
+    content-page count with ``lo_count``:
+
+      * 1 ``overview`` page (always)
+      * ⌈lo_count / 2⌉ ``content_NN`` pages (min 1, max 6 content pages)
+      * 1 ``application`` page
+      * 1 ``self_check`` page
+      * 1 ``summary`` page
+
+    Total is clamped to [3, 10] — the floor keeps the 5-page test
+    fixtures that still depend on the old minimum alive; the ceiling
+    avoids pathologically-long weeks.
+    """
+    if lo_count < 0:
+        lo_count = 0
+    content_count = max(1, (lo_count + 1) // 2)
+    content_count = min(content_count, 6)
+
+    roles: List[str] = ["overview"]
+    for i in range(1, content_count + 1):
+        roles.append(f"content_{i:02d}")
+    roles.extend(["application", "self_check", "summary"])
+
+    # Floor: minimum 3 pages (overview + content + summary). Ceiling: 10.
+    if len(roles) < 3:
+        # Defensive — shouldn't hit given overview + 1 content + 3 tail = 5.
+        roles = ["overview", "content_01", "summary"]
+    if len(roles) > 10:
+        # Trim content_NN tail while preserving tail labels.
+        tail = ["application", "self_check", "summary"]
+        head = roles[: 10 - len(tail)]
+        roles = head + tail
+    return tuple(roles)
+
+
 def _group_topics_by_week(
     topics: List[Dict[str, Any]],
     duration_weeks: int,
+    *,
+    max_topics_per_week: int = 12,
 ) -> List[List[Dict[str, Any]]]:
     """Return a list of length ``duration_weeks``; each entry is the list
     of topics assigned to that week.
+
+    Wave 24: when DART emits ``<article role="doc-chapter">`` wrappers,
+    the parser tags every topic with a ``chapter_id``. We prefer to keep
+    all topics from the same chapter in the same week (so the week
+    aligns with a real textbook chapter). Chapters are only split across
+    weeks when they exceed ``max_topics_per_week``. When no chapter_ids
+    are present (pre-Wave-13 DART output) we fall back to the legacy
+    positional bucketing so older fixtures don't regress.
 
     Distribution is block-based: consecutive topics stay together in the
     same week, which mirrors how a textbook's chapter ordering maps to a
@@ -994,7 +1108,51 @@ def _group_topics_by_week(
     buckets: List[List[Dict[str, Any]]] = [[] for _ in range(duration_weeks)]
     if not topics:
         return buckets
-    # Topics per week, rounded up.
+
+    # Wave 24: prefer chapter-respecting grouping when chapter_ids are
+    # present on every topic. If any topic lacks a chapter_id, fall back
+    # to legacy positional bucketing so mixed corpora don't lose topics.
+    has_chapters = all(
+        bool(t.get("chapter_id")) for t in topics
+    )
+    if has_chapters:
+        # Preserve insertion order of chapters as they appear in the corpus.
+        chapter_order: List[str] = []
+        chapter_topics: Dict[str, List[Dict[str, Any]]] = {}
+        for t in topics:
+            cid = t["chapter_id"]
+            if cid not in chapter_topics:
+                chapter_order.append(cid)
+                chapter_topics[cid] = []
+            chapter_topics[cid].append(t)
+
+        # Flatten each chapter into week-sized pieces (splitting only
+        # when > max_topics_per_week). Then distribute pieces across
+        # ``duration_weeks`` buckets in order, never assigning two
+        # different chapters to the same bucket when buckets remain.
+        pieces: List[List[Dict[str, Any]]] = []
+        for cid in chapter_order:
+            ch_topics = chapter_topics[cid]
+            if len(ch_topics) <= max_topics_per_week:
+                pieces.append(ch_topics)
+            else:
+                # Split into ceil(len/max) pieces of roughly equal size.
+                step = max(1, (len(ch_topics) + max_topics_per_week - 1)
+                           // max_topics_per_week)
+                piece_count = (len(ch_topics) + step - 1) // step
+                for i in range(piece_count):
+                    pieces.append(ch_topics[i * step:(i + 1) * step])
+
+        # Assign pieces to buckets round-robin, one piece per bucket
+        # when possible. When pieces > duration_weeks, later pieces pile
+        # into the tail bucket (preserves all topics; better than dropping).
+        for idx, piece in enumerate(pieces):
+            week_idx = min(idx, duration_weeks - 1)
+            buckets[week_idx].extend(piece)
+        return buckets
+
+    # Legacy positional bucketing — retained for pre-Wave-13 DART output
+    # and non-DART HTML that doesn't carry chapter_ids.
     per_week = max(1, (len(topics) + duration_weeks - 1) // duration_weeks)
     for idx, topic in enumerate(topics):
         week_idx = min(idx // per_week, duration_weeks - 1)

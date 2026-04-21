@@ -58,22 +58,35 @@ def _build_workflow_params(
     *,
     corpus: Optional[str],
     course_name: Optional[str],
-    weeks: int,
+    weeks: Optional[int],
     no_assessments: bool,
     assessment_count: int,
     bloom_levels: str,
     priority: str,
     objectives_path: Optional[str],
 ) -> Dict[str, Any]:
-    """Build the params dict for a workflow from CLI inputs."""
+    """Build the params dict for a workflow from CLI inputs.
+
+    Wave 24 HIGH-6: when --weeks is unset and workflow is
+    textbook_to_course, we leave duration_weeks unset here and let
+    downstream phases auto-scale once textbook_structure is known.
+    Other workflows fall back to 12 (the historical default).
+    """
+    duration = weeks if weeks is not None else (
+        None if workflow == "textbook_to_course" else 12
+    )
     params: Dict[str, Any] = {
         "course_name": course_name,
-        "duration_weeks": weeks,
+        "duration_weeks": duration if duration is not None else 12,
         "generate_assessments": not no_assessments,
         "assessment_count": assessment_count,
         "bloom_levels": bloom_levels,
         "priority": priority,
     }
+    # Wave 24: record whether --weeks was explicitly set. Downstream
+    # phases (extract_textbook_structure / plan_course_structure) can
+    # read this from project_config.json and auto-scale if needed.
+    params["duration_weeks_explicit"] = weeks is not None
 
     if objectives_path:
         params["objectives_path"] = objectives_path
@@ -194,8 +207,12 @@ def _build_orchestrator(
 @click.option(
     "--weeks",
     type=int,
-    default=12,
-    help="Course duration in weeks (workflow-dependent)",
+    default=None,
+    help=(
+        "Course duration in weeks (workflow-dependent). When unset for "
+        "textbook-to-course, auto-scales to max(8, chapter_count) once the "
+        "textbook structure is known; otherwise defaults to 12."
+    ),
 )
 @click.option(
     "--no-assessments",
@@ -250,7 +267,7 @@ def run_command(
     mode: Optional[str],
     api_provider: Optional[str],
     model: Optional[str],
-    weeks: int,
+    weeks: Optional[int],
     no_assessments: bool,
     assessment_count: int,
     bloom_levels: str,
