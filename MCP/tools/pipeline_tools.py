@@ -1226,8 +1226,9 @@ def _raw_text_to_accessible_html_legacy(raw_text: str, title: str) -> str:
     0. **Soft-hyphen rejoin** — fold pdftotext word-break artifacts
        (``...adapting pre-trained language mo-\\nrelated`` → one line).
     1. **Running-header detection** — lines that appear ≥4 times
-       across the document (page headers/footers like
-       ``"x Teaching in a Digital Age xi"``) flagged for drop.
+       across the document (running headers/footers of the form
+       ``"<leading-page-num> <book-title-fragment> <trailing-page-num>"``)
+       flagged for drop.
     2. **Front-matter + TOC strip** — copyright/license/ISBN blocks
        move to a metadata region; dot-leader TOC entries
        (``"1.1 Foo . . . . . . 2"``) and numbered TOC lines drop.
@@ -2629,10 +2630,11 @@ def _build_tool_registry() -> dict:
                 )
                 # Per-week LO set: scope to this week's terminals + at most
                 # two chapter objectives round-robin assigned by week.
-                # Previously prepended ALL terminal_objectives to every week
-                # (investigation Issue 12 — inflated derived-from-objective
-                # edges from ~60 to 896 on OLSR_201). Now: each week gets
-                # only the terminal slice round-robin assigned to it.
+                # Earlier revisions prepended ALL terminal_objectives to
+                # every week, which over-connected the derived-from-
+                # objective edges in the KG (O(N*D) instead of O(N)).
+                # Now: each week gets only the terminal slice round-robin
+                # assigned to it.
                 week_chapter_cos = []
                 if chapter_objectives:
                     step = max(1, len(chapter_objectives) // max(1, duration_weeks))

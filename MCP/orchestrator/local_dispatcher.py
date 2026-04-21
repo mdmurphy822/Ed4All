@@ -23,12 +23,19 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from .worker_contracts import PhaseInput, PhaseOutput
 
 logger = logging.getLogger(__name__)
+
+# Env flag: set to "1" to allow the stub ``LocalDispatcher`` path to return
+# ``status="ok"`` without firing a real subagent. Default off so production
+# ``--mode local`` runs fail loudly instead of emitting empty phase outputs
+# while appearing to succeed. Tests set this to exercise the stub path.
+_ALLOW_STUB_ENV = "LOCAL_DISPATCHER_ALLOW_STUB"
 
 
 # Registry of known agent-spec directories. The dispatcher searches these
@@ -93,27 +100,60 @@ class LocalDispatcher:
     async def dispatch_phase(self, phase_input: PhaseInput) -> PhaseOutput:
         """Dispatch a single phase to a subagent and collect its PhaseOutput.
 
-        If ``agent_tool`` was not provided, returns a stub PhaseOutput that
-        records dispatch intent (status="ok", empty outputs). This keeps the
-        dispatcher useful in environments where the Agent tool isn't directly
-        callable (e.g., unit tests) without silently dropping work.
+        If ``agent_tool`` was not provided:
+
+        * When the env flag ``LOCAL_DISPATCHER_ALLOW_STUB`` is set, return
+          a stub ``PhaseOutput`` (``status="ok"``) so tests and dry-run
+          harnesses exercise the dispatch abstraction without a live
+          subagent pathway. Callers that rely on this behaviour — unit
+          tests, the ``--dry-run`` CLI preview — must opt in explicitly.
+        * Otherwise fail loudly (``status="fail"``) with a message that
+          tells operators to either wire a real ``agent_tool`` or switch
+          to ``--mode api``. Silent stubs used to let production runs
+          report success while producing no phase outputs.
         """
         self._dispatched.append(phase_input.phase_name)
 
         prompt = self._build_subagent_prompt(phase_input)
+        agent_type = self._resolve_agent_type(phase_input)
 
         if self.agent_tool is None:
-            logger.info(
-                "LocalDispatcher: no agent_tool wired; emitting stub PhaseOutput "
-                "for phase=%s (intended subagent_type=%s)",
-                phase_input.phase_name,
-                self._resolve_agent_type(phase_input),
+            allow_stub = os.environ.get(_ALLOW_STUB_ENV, "").strip().lower() in (
+                "1", "true", "yes", "on",
             )
+            if allow_stub:
+                logger.info(
+                    "LocalDispatcher: no agent_tool wired; "
+                    "LOCAL_DISPATCHER_ALLOW_STUB set — emitting stub "
+                    "PhaseOutput for phase=%s (subagent_type=%s)",
+                    phase_input.phase_name,
+                    agent_type,
+                )
+                return PhaseOutput(
+                    run_id=phase_input.run_id,
+                    phase_name=phase_input.phase_name,
+                    outputs={
+                        "dispatch_mode": "stub",
+                        "prompt_preview": prompt[:160],
+                    },
+                    status="ok",
+                )
+
+            err = (
+                "LocalDispatcher cannot dispatch phase "
+                f"{phase_input.phase_name!r} (subagent_type={agent_type!r}): "
+                "no agent_tool callable was wired into the dispatcher. "
+                "Either (a) inject an agent_tool at construction time, "
+                "(b) set LOCAL_DISPATCHER_ALLOW_STUB=1 to accept stubbed "
+                "phase output (tests / dry-run only), or (c) rerun with "
+                "--mode api so phases execute as Python coroutines."
+            )
+            logger.error(err)
             return PhaseOutput(
                 run_id=phase_input.run_id,
                 phase_name=phase_input.phase_name,
-                outputs={"dispatch_mode": "stub", "prompt_preview": prompt[:160]},
-                status="ok",
+                status="fail",
+                error=err,
             )
 
         subagent_request = {
