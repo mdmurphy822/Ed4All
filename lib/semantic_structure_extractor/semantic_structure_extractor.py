@@ -486,7 +486,29 @@ class SemanticStructureExtractor:
         soup: BeautifulSoup,
         hierarchy: HeadingHierarchy
     ) -> List[ChapterStructure]:
-        """Build chapter structure from heading hierarchy."""
+        """Build chapter structure from heading hierarchy.
+
+        Wave 19: first look for ``<article role="doc-chapter">`` wrappers
+        emitted by the Wave 13+ DART converter. When present, each
+        article becomes a chapter with its inner ``<h2>`` as the title
+        and inner ``<section>`` wrappers as sections. Falls back to the
+        legacy ``<h2>`` grouping heuristic when no doc-chapter articles
+        exist (pre-Wave-13 DART HTML, generic third-party HTML).
+        """
+        # Wave 19 primary path: DPUB-ARIA doc-chapter articles.
+        doc_chapter_articles = soup.find_all(
+            'article', attrs={'role': 'doc-chapter'}
+        )
+        if doc_chapter_articles:
+            chapters: List[ChapterStructure] = []
+            for idx, article in enumerate(doc_chapter_articles, start=1):
+                chapter = self._build_chapter_from_article(
+                    soup, article, idx
+                )
+                chapters.append(chapter)
+            return chapters
+
+        # Legacy heading-hierarchy path.
         chapters = []
         chapter_counter = 0
 
@@ -513,6 +535,150 @@ class SemanticStructureExtractor:
                 chapters.append(chapter)
 
         return chapters
+
+    def _build_chapter_from_article(
+        self,
+        soup: BeautifulSoup,
+        article: Tag,
+        chapter_num: int,
+    ) -> ChapterStructure:
+        """Build a chapter from a ``<article role="doc-chapter">`` wrapper.
+
+        Wave 19: DART's Wave 13+ converter emits every chapter as a
+        standalone article with the chapter heading inside a ``<header>``
+        block. We prefer the ``id`` attribute on the article itself
+        (``chap-{N}``) for the chapter id; falling back to a synthesized
+        ``ch{N}`` identifier when the article lacks an explicit id.
+        """
+        chapter_id = str(article.get('id') or f'ch{chapter_num}').strip()
+
+        # Title: the first <h2> or <h1> inside the article (Wave 13 uses h2).
+        heading_tag = article.find(['h1', 'h2'])
+        heading_text = None
+        heading_id = None
+        heading_level = 2
+        if heading_tag:
+            heading_text = heading_tag.get_text(strip=True) or None
+            heading_id = heading_tag.get('id')
+            try:
+                heading_level = int(heading_tag.name.lstrip('h'))
+            except ValueError:
+                heading_level = 2
+        if not heading_text:
+            heading_text = article.get('aria-label') or f'Chapter {chapter_num}'
+
+        # Explicit objectives: reuse the existing helper on the article.
+        explicit_objectives = self._extract_explicit_objectives(article)
+
+        # Content blocks that appear directly in the article, before any
+        # nested <section>. Treat the article like a chapter's own
+        # section_elem for _extract_chapter_content.
+        class _ArticleLike:
+            """Duck-typed shim so ``_extract_chapter_content`` walks the
+            article exactly like a ``<section>`` root.
+            """
+            def __init__(self, elem):
+                self._elem = elem
+
+            @property
+            def children(self):
+                return self._elem.children
+
+        content_blocks = self._extract_chapter_content(
+            _ArticleLike(article), None
+        )
+
+        # Build sections from every top-level <section> child inside the
+        # article. The heading hierarchy isn't consulted here — Wave 13's
+        # chapter article wraps its own section tree, so we walk the DOM
+        # directly.
+        sections: List[SectionStructure] = []
+        sec_counter = 0
+        for child in article.find_all('section', recursive=False):
+            sec_counter += 1
+            sections.append(
+                self._build_section_from_element(
+                    soup, child, chapter_id, sec_counter,
+                )
+            )
+        # When sections don't live as direct children (common — Wave 13
+        # emits the chapter article and lets the assembler sibling the
+        # section blocks), also pull any <section> following the article
+        # until the next <article role="doc-chapter"> or document end.
+        if not sections:
+            sibling = article.next_sibling
+            while sibling is not None:
+                if isinstance(sibling, Tag):
+                    if (
+                        sibling.name == 'article'
+                        and sibling.get('role') == 'doc-chapter'
+                    ):
+                        break
+                    if sibling.name == 'section':
+                        sec_counter += 1
+                        sections.append(
+                            self._build_section_from_element(
+                                soup, sibling, chapter_id, sec_counter,
+                            )
+                        )
+                sibling = sibling.next_sibling
+
+        return ChapterStructure(
+            id=chapter_id,
+            heading_level=heading_level,
+            heading_text=heading_text,
+            heading_id=heading_id,
+            explicit_objectives=explicit_objectives,
+            content_blocks=content_blocks,
+            sections=sections,
+        )
+
+    def _build_section_from_element(
+        self,
+        soup: BeautifulSoup,
+        section_elem: Tag,
+        parent_id: str,
+        section_num: int,
+    ) -> SectionStructure:
+        """Build a ``SectionStructure`` directly from a DOM ``<section>``.
+
+        Wave 19 DART output emits flat ``<section>`` wrappers rather
+        than nesting them under article children, so we read heading
+        info off the section itself.
+        """
+        section_id = f"{parent_id}_s{section_num}"
+        heading_tag = section_elem.find(
+            ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']
+        )
+        heading_text = (
+            heading_tag.get_text(strip=True) if heading_tag else ''
+        ) or ''
+        heading_id = heading_tag.get('id') if heading_tag else None
+        try:
+            heading_level = int(heading_tag.name.lstrip('h')) if heading_tag else 3
+        except ValueError:
+            heading_level = 3
+
+        content_blocks = self.block_classifier.classify_section(section_elem)
+        # Nested <section> children become subsections.
+        subsections: List[SectionStructure] = []
+        sub_counter = 0
+        for nested in section_elem.find_all('section', recursive=False):
+            sub_counter += 1
+            subsections.append(
+                self._build_section_from_element(
+                    soup, nested, section_id, sub_counter,
+                )
+            )
+
+        return SectionStructure(
+            id=section_id,
+            heading_level=heading_level,
+            heading_text=heading_text,
+            heading_id=heading_id,
+            content_blocks=content_blocks,
+            subsections=subsections,
+        )
 
     def _build_chapter(
         self,

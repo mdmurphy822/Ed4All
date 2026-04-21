@@ -119,10 +119,13 @@ class TestPipelineFlipEndToEnd:
         # Valid document shell.
         assert html_out.startswith("<!DOCTYPE html>")
         assert "<main id=\"main-content\"" in html_out
-        assert html_out.count("<h1>") == 1
+        # Wave 19: <h1> carries an id attribute — match ``<h1 `` (space).
+        assert html_out.count("<h1 ") == 1
 
-        # Wave 13 wrappers survive the flip.
-        assert '<article role="doc-chapter"' in html_out
+        # Wave 13 wrappers survive the flip. Wave 19: the class attribute
+        # now precedes the role attribute on the <article> open tag.
+        assert "<article " in html_out
+        assert 'role="doc-chapter"' in html_out
         # Bibliography entry wrapped in Wave 13 <ol role="doc-bibliography">.
         assert '<ol role="doc-bibliography">' in html_out
         assert 'role="doc-endnote"' in html_out

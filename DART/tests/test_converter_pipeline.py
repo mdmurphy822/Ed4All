@@ -188,7 +188,14 @@ class TestTemplateRegistry:
         for role in BlockRole:
             assert role in TEMPLATE_REGISTRY, f"missing template for {role}"
 
-    def test_every_template_emits_data_dart_block_role(self):
+    def test_every_wrapper_template_emits_data_dart_block_role(self):
+        """Wave 19: only wrapper templates (section/article/aside/figure/
+        table/pre/math/blockquote/nav/dl) carry ``data-dart-*`` attributes.
+        Leaf templates (paragraph/span/h1/h3/cite/a/li/figcaption/plain p)
+        strip them per the Wave 8 P2 attribute-scope rule.
+        """
+        from DART.converter.block_templates import _WAVE19_LEAF_ROLES
+
         for role in BlockRole:
             dummy = ClassifiedBlock(
                 raw=RawBlock(text="sample text", block_id="abc123"),
@@ -196,7 +203,14 @@ class TestTemplateRegistry:
                 confidence=0.5,
             )
             html_out = render_block(dummy)
-            assert f'data-dart-block-role="{role.value}"' in html_out
+            if role in _WAVE19_LEAF_ROLES:
+                # Leaf roles must NOT carry the block-role provenance.
+                assert f'data-dart-block-role="{role.value}"' not in html_out, (
+                    f"leaf {role.value} should not emit data-dart-block-role"
+                )
+            else:
+                # Wrapper roles keep the Wave 13 provenance contract.
+                assert f'data-dart-block-role="{role.value}"' in html_out
 
     def test_template_escapes_html(self):
         evil = "<script>alert(1)</script>"
@@ -231,8 +245,9 @@ class TestAssembler:
         assert '<html lang="en">' in html_out
         assert "<main id=\"main-content\"" in html_out
         assert "<header role=\"banner\">" in html_out
-        # Exactly one <h1> in the document shell.
-        assert html_out.count("<h1>") == 1
+        # Exactly one <h1> in the document shell. Wave 19 adds an id to
+        # the shell heading so ``<main aria-labelledby>`` can target it.
+        assert html_out.count("<h1 ") == 1
         assert html_out.count("</h1>") == 1
 
     def test_assembler_sweeps_metadata_into_aside(self):
@@ -276,12 +291,16 @@ class TestPipelineEndToEnd:
         html_out = convert_pdftotext_to_html(raw, "Test Doc")
         assert html_out.startswith("<!DOCTYPE html>")
         # Chapter opener renders as a DPUB-ARIA doc-chapter <article>.
-        assert '<article role="doc-chapter"' in html_out
+        # Wave 19: <article> carries ``class="dart-section"`` so the role
+        # attribute is no longer adjacent to the opening tag.
+        assert "<article " in html_out
+        assert 'role="doc-chapter"' in html_out
         # Body paragraph is present and escaped.
         assert "introductory paragraph" in html_out
-        # Provenance attributes present.
+        # Provenance attributes present on wrappers only; leaf <p> strips.
         assert 'data-dart-block-role="chapter_opener"' in html_out
-        assert 'data-dart-block-role="paragraph"' in html_out
+        # Wave 19: paragraphs are leaf nodes without data-dart-*.
+        assert 'data-dart-block-role="paragraph"' not in html_out
 
 
 # ---------------------------------------------------------------------------
@@ -300,9 +319,26 @@ def _mk(role: BlockRole, text: str = "Sample text", **attrs) -> ClassifiedBlock:
 
 
 def _assert_provenance(rendered: str, role: BlockRole) -> None:
-    """Every Wave 13 template must preserve the Wave 12 provenance contract."""
+    """Wave 19: wrapper templates preserve the provenance contract; leaf
+    templates strip all ``data-dart-*`` attributes per the P2 rule.
+    """
+    from DART.converter.block_templates import _WAVE19_LEAF_ROLES
+
+    if role in _WAVE19_LEAF_ROLES:
+        # Leaf role — verify no data-dart-* attributes leaked.
+        assert f'data-dart-block-role="{role.value}"' not in rendered, (
+            f"leaf {role.value} should not emit data-dart-block-role"
+        )
+        assert 'data-dart-block-id="blk000001"' not in rendered, (
+            f"leaf {role.value} should not emit data-dart-block-id"
+        )
+        return
     assert f'data-dart-block-role="{role.value}"' in rendered
     assert 'data-dart-block-id="blk000001"' in rendered
+    # Wave 19 addition: wrappers now also carry data-dart-source.
+    assert "data-dart-source=" in rendered, (
+        f"wrapper {role.value} should emit data-dart-source"
+    )
 
 
 @pytest.mark.unit
@@ -312,10 +348,13 @@ class TestStructuralTemplates:
         out = render_block(
             _mk(BlockRole.CHAPTER_OPENER, "Chapter 1", heading_text="Foundations")
         )
-        assert '<article role="doc-chapter"' in out
+        assert "<article " in out
+        assert 'role="doc-chapter"' in out
         assert 'itemtype="https://schema.org/Chapter"' in out
         assert 'itemprop="name"' in out
         assert "Foundations" in out
+        # Wave 19: outer <article> wrapper carries the ``dart-section`` class.
+        assert 'class="dart-section"' in out
         _assert_provenance(out, BlockRole.CHAPTER_OPENER)
 
     def test_section_heading_wraps_region_with_aria(self):
@@ -324,17 +363,25 @@ class TestStructuralTemplates:
         assert 'role="region"' in out
         assert 'aria-labelledby=' in out
         assert "<h2" in out
+        # Wave 19: section wrapper carries the ``dart-section`` class.
+        assert 'class="dart-section"' in out
         _assert_provenance(out, BlockRole.SECTION_HEADING)
 
     def test_subsection_heading_emits_h3(self):
+        """Wave 19: SUBSECTION is now a leaf ``<h3 id="...">``. No
+        ``<section>`` wrapper, no ``aria-labelledby``, no data-dart-*."""
         out = render_block(_mk(BlockRole.SUBSECTION_HEADING, "Baseline"))
         assert "<h3" in out
-        assert 'aria-labelledby=' in out
+        assert "Baseline" in out
+        # Leaf role — no data-dart-* attributes.
+        assert "data-dart-block-role" not in out
+        assert "data-dart-block-id" not in out
         _assert_provenance(out, BlockRole.SUBSECTION_HEADING)
 
     def test_paragraph_escapes_and_wraps(self):
         out = render_block(_mk(BlockRole.PARAGRAPH, "Hello <world>."))
-        assert out.startswith("<p ")
+        # Wave 19: paragraph is a leaf — plain ``<p>`` with no attrs.
+        assert out.startswith("<p>")
         assert "Hello &lt;world&gt;." in out
         _assert_provenance(out, BlockRole.PARAGRAPH)
 
@@ -580,7 +627,8 @@ class TestContentRichTemplates:
     def test_pullquote_uses_doc_pullquote_role(self):
         out = render_block(_mk(BlockRole.PULLQUOTE, "A striking phrase."))
         assert 'role="doc-pullquote"' in out
-        assert 'class="pullquote"' in out
+        # Wave 19: class list now includes the shared ``dart-section``.
+        assert 'class="dart-section pullquote"' in out
         assert "<blockquote>" in out
         _assert_provenance(out, BlockRole.PULLQUOTE)
 
@@ -593,7 +641,8 @@ class TestCalloutTemplates:
             _mk(BlockRole.CALLOUT_INFO, "Important info.", title="Note")
         )
         assert 'role="note"' in out
-        assert 'class="callout callout-info"' in out
+        # Wave 19: ``dart-section`` is prepended to callout classes.
+        assert 'class="dart-section callout callout-info"' in out
         assert 'class="sr-only">Information:' in out
         assert '<span aria-hidden="true">' in out
         _assert_provenance(out, BlockRole.CALLOUT_INFO)
@@ -603,14 +652,14 @@ class TestCalloutTemplates:
             _mk(BlockRole.CALLOUT_WARNING, "Heads up.", title="Caution")
         )
         assert 'role="doc-notice"' in out
-        assert 'class="callout callout-warning"' in out
+        assert 'class="dart-section callout callout-warning"' in out
         assert 'class="sr-only">Warning:' in out
         _assert_provenance(out, BlockRole.CALLOUT_WARNING)
 
     def test_callout_tip_uses_doc_tip(self):
         out = render_block(_mk(BlockRole.CALLOUT_TIP, "Pro tip.", title="Hint"))
         assert 'role="doc-tip"' in out
-        assert 'class="callout callout-tip"' in out
+        assert 'class="dart-section callout callout-tip"' in out
         assert 'class="sr-only">Tip:' in out
         _assert_provenance(out, BlockRole.CALLOUT_TIP)
 
@@ -619,7 +668,7 @@ class TestCalloutTemplates:
             _mk(BlockRole.CALLOUT_DANGER, "Severe warning.", title="Danger")
         )
         assert 'role="doc-notice"' in out
-        assert 'class="callout callout-danger"' in out
+        assert 'class="dart-section callout callout-danger"' in out
         assert 'class="sr-only">Danger:' in out
         _assert_provenance(out, BlockRole.CALLOUT_DANGER)
 
@@ -710,10 +759,19 @@ class TestTemplateInvariants:
             assert "alert(1)" in out.replace("&lt;", "<").replace("&gt;", ">") or \
                 "&lt;script&gt;" in out, role
 
-    def test_every_template_carries_block_id(self):
+    def test_every_wrapper_template_carries_block_id(self):
+        """Wave 19: wrapper templates keep ``data-dart-block-id``; leaf
+        templates strip it per the P2 attribute-scope rule."""
+        from DART.converter.block_templates import _WAVE19_LEAF_ROLES
+
         for role in BlockRole:
             out = render_block(_mk(role, "sample"))
-            assert 'data-dart-block-id="blk000001"' in out, role
+            if role in _WAVE19_LEAF_ROLES:
+                assert 'data-dart-block-id="blk000001"' not in out, (
+                    f"leaf {role.value} should not emit data-dart-block-id"
+                )
+            else:
+                assert 'data-dart-block-id="blk000001"' in out, role
 
 
 @pytest.mark.unit
@@ -754,8 +812,9 @@ class TestAssembledDocumentValidity:
         ]
         html_out = assemble_html(blocks, "Smoke Test", {})
 
-        # Exactly one <h1> + one </h1>.
-        assert html_out.count("<h1>") == 1
+        # Exactly one <h1> + one </h1>. Wave 19 adds an id attribute
+        # so the shell heading matches ``<h1 `` (space) — never ``<h1>``.
+        assert html_out.count("<h1 ") == 1
         assert html_out.count("</h1>") == 1
 
         # Bibliography wrapped in a single <ol role="doc-bibliography">.
