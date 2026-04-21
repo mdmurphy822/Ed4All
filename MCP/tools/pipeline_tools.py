@@ -3274,6 +3274,29 @@ def _build_tool_registry() -> dict:
             with open(assessments_path, "w", encoding="utf-8") as _f:
                 json.dump(assessment_doc, _f, indent=2, ensure_ascii=False)
 
+            # Wave 26: graft the assessment dimension onto quality_report.json
+            # so a reviewer can see which questions are broken without
+            # re-running validators. Best-effort: on any error we preserve
+            # the existing quality report unchanged.
+            try:
+                from Trainforge.generators.assessment_quality_report import (
+                    build_assessment_dimension,
+                )
+                qr_path = trainforge_dir / "quality" / "quality_report.json"
+                if qr_path.exists():
+                    with open(qr_path, encoding="utf-8") as _qrf:
+                        qr_doc = json.load(_qrf)
+                    dim = build_assessment_dimension(assessment_doc)
+                    if dim is not None:
+                        qr_doc["assessments"] = dim
+                        with open(qr_path, "w", encoding="utf-8") as _qrf:
+                            json.dump(qr_doc, _qrf, indent=2, ensure_ascii=False)
+            except Exception as _qr_err:
+                logger.warning(
+                    "Failed to graft assessment dimension onto "
+                    "quality_report.json: %s", _qr_err,
+                )
+
             if gen_capture is not None:
                 try:
                     gen_capture.log_decision(
