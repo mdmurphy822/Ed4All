@@ -112,6 +112,8 @@ training-captures/trainforge/*
 !training-captures/trainforge/.gitkeep
 training-captures/textbook-pipeline/*
 !training-captures/textbook-pipeline/.gitkeep
+training-captures/pipeline/*
+!training-captures/pipeline/.gitkeep
 
 # MCP runtime
 MCP/runtime/
