@@ -130,7 +130,13 @@ AGENT_TOOL_MAPPING = {
     # -------------------------------------------------------------------------
     # COURSEFORGE AGENTS
     # -------------------------------------------------------------------------
-    "course-outliner": "create_course_project",
+    # Wave 24: course-outliner now routes to plan_course_structure (real
+    # LO synthesis + persisting) instead of create_course_project (which
+    # only created subdirs + emitted {COURSE}_OBJ_N placeholders). The
+    # course_generation workflow still has a planning phase that uses
+    # this agent, so plan_course_structure is robust to missing textbook
+    # structure (falls back to whatever objectives JSON is supplied).
+    "course-outliner": "plan_course_structure",
     "requirements-collector": "get_courseforge_status",
     "content-generator": "generate_course_content",
     "brightspace-packager": "package_imscc",
@@ -140,8 +146,10 @@ AGENT_TOOL_MAPPING = {
     # -------------------------------------------------------------------------
     # PIPELINE AGENTS (Textbook-to-Course)
     # -------------------------------------------------------------------------
+    # Wave 24: textbook-ingestor now routes to extract_textbook_structure
+    # (real SemanticStructureExtractor dispatch) instead of create_course_project.
     "textbook-stager": "stage_dart_outputs",
-    "textbook-ingestor": "create_course_project",
+    "textbook-ingestor": "extract_textbook_structure",
     "source-router": "build_source_module_map",
 
     # -------------------------------------------------------------------------

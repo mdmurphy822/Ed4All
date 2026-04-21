@@ -2142,6 +2142,348 @@ def _build_tool_registry() -> dict:
         registry["create_course_project"] = _create_course_project
 
         # ============================================================================
+        # Wave 24: _extract_textbook_structure — replaces the textbook-ingestor's
+        # pre-Wave-24 stub dispatch (which routed to create_course_project and
+        # produced an empty skeleton). Runs SemanticStructureExtractor.extract()
+        # over every staged DART HTML file, merges per-file chapter/section
+        # hierarchies into a single textbook_structure.json, and publishes the
+        # path via phase_outputs.objective_extraction.textbook_structure_path.
+        # ============================================================================
+        async def _extract_textbook_structure(**kwargs):
+            """Extract textbook structure from staged DART HTML.
+
+            Called during the ``objective_extraction`` phase of
+            ``textbook_to_course``. Reads every HTML file under
+            ``staging_dir`` (the directory produced by the prior
+            ``staging`` phase), runs the mature
+            ``SemanticStructureExtractor`` over each, merges chapters
+            across files into a single unified structure, and writes
+            ``{project_path}/01_learning_objectives/textbook_structure.json``.
+
+            Required kwargs: ``course_name`` (used to mint / locate the
+            Courseforge export dir). Optional: ``staging_dir``,
+            ``duration_weeks``, ``objectives_path`` (threaded through to
+            project_config.json so downstream phases see them).
+            """
+            from lib.semantic_structure_extractor.semantic_structure_extractor import (
+                SemanticStructureExtractor,
+            )
+
+            course_name = kwargs.get("course_name", "")
+            if not course_name:
+                return json.dumps({
+                    "error": "extract_textbook_structure requires course_name",
+                })
+            duration_weeks = kwargs.get("duration_weeks", 12)
+            duration_explicit = bool(kwargs.get("duration_weeks_explicit", True))
+            objectives_path = kwargs.get("objectives_path") or ""
+            staging_kwarg = kwargs.get("staging_dir")
+
+            # Resolve or create the project path. We reuse the
+            # create_course_project layout so downstream phases (which
+            # accept project_id as an input) find the same structure.
+            project_id = f"PROJ-{course_name}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+            project_path = _PROJECT_ROOT / "Courseforge" / "exports" / project_id
+            project_path.mkdir(parents=True, exist_ok=True)
+            for subdir in ("00_template_analysis", "01_learning_objectives",
+                           "02_course_planning", "03_content_development",
+                           "04_quality_validation", "05_final_package",
+                           "agent_workspaces"):
+                (project_path / subdir).mkdir(exist_ok=True)
+
+            # Persist/refresh project_config.json so course_planning + later
+            # phases (content_generation, trainforge_assessment) see a real
+            # objectives_path once the planner emits synthesized_objectives.json.
+            config_path = project_path / "project_config.json"
+            config_data: Dict[str, Any] = {
+                "project_id": project_id,
+                "course_name": course_name,
+                "duration_weeks": int(duration_weeks) if duration_weeks else 12,
+                "credit_hours": kwargs.get("credit_hours", 3),
+                "created_at": datetime.now().isoformat(),
+                "status": "extracting_structure",
+            }
+            if objectives_path:
+                config_data["objectives_path"] = str(objectives_path)
+            config_path.write_text(
+                json.dumps(config_data, indent=2), encoding="utf-8",
+            )
+
+            # Locate staged HTML. Prefer the explicit kwarg from the
+            # workflow runner; fall back to the most-recent staging
+            # manifest under Courseforge/inputs/textbooks when absent.
+            staging_dir: Optional[Path] = None
+            if staging_kwarg:
+                staging_dir = Path(staging_kwarg)
+            if staging_dir is None or not staging_dir.exists():
+                # Fallback: the Courseforge inputs area.
+                cf_inputs = _PROJECT_ROOT / "Courseforge" / "inputs" / "textbooks"
+                if cf_inputs.exists():
+                    # Use the most recent subdir as staging.
+                    subdirs = sorted(
+                        (p for p in cf_inputs.iterdir() if p.is_dir()),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                    if subdirs:
+                        staging_dir = subdirs[0]
+
+            html_files: List[Path] = []
+            if staging_dir and staging_dir.exists():
+                html_files = sorted(staging_dir.rglob("*.html"))
+
+            # Run the extractor across every HTML file and merge.
+            extractor = SemanticStructureExtractor()
+            merged_chapters: List[Dict[str, Any]] = []
+            per_file_results: List[Dict[str, Any]] = []
+            extraction_errors: List[Dict[str, str]] = []
+            for html_path in html_files:
+                try:
+                    content = html_path.read_text(encoding="utf-8", errors="ignore")
+                    structure = extractor.extract(content, str(html_path), format="html")
+                    per_file_results.append({
+                        "source_file": str(html_path),
+                        "chapters_count": len(structure.get("chapters", [])),
+                    })
+                    for ch in structure.get("chapters", []) or []:
+                        if isinstance(ch, dict):
+                            # Preserve source_file for downstream routing.
+                            ch.setdefault("source_file", str(html_path))
+                            merged_chapters.append(ch)
+                except Exception as e:  # noqa: BLE001 - best-effort merge
+                    extraction_errors.append({
+                        "source_file": str(html_path),
+                        "error": str(e),
+                    })
+
+            # De-duplicate chapter IDs across files: append a disambiguator
+            # when two files emit the same synthesized ``chN`` id.
+            seen_ids: set = set()
+            for ch in merged_chapters:
+                base_id = str(ch.get("id") or "").strip() or "ch"
+                cand = base_id
+                ctr = 1
+                while cand in seen_ids:
+                    ctr += 1
+                    cand = f"{base_id}_{ctr}"
+                ch["id"] = cand
+                seen_ids.add(cand)
+
+            # Wave 24 HIGH-6: when --weeks wasn't explicit, scale to
+            # max(8, chapter_count) using the actual chapter count we
+            # just extracted. Updates project_config so the planner
+            # + content generator + trainforge_assessment all see the
+            # same autoscaled value.
+            if not duration_explicit and merged_chapters:
+                auto_weeks = max(8, len(merged_chapters))
+                duration_weeks = auto_weeks
+                config_data["duration_weeks"] = auto_weeks
+                config_path.write_text(
+                    json.dumps(config_data, indent=2), encoding="utf-8",
+                )
+
+            textbook_structure = {
+                "course_name": course_name,
+                "source_files": [str(p) for p in html_files],
+                "staging_dir": str(staging_dir) if staging_dir else "",
+                "chapter_count": len(merged_chapters),
+                "duration_weeks": duration_weeks,
+                "duration_weeks_autoscaled": bool(
+                    not duration_explicit and merged_chapters
+                ),
+                "chapters": merged_chapters,
+                "per_file_results": per_file_results,
+                "extraction_errors": extraction_errors,
+                "extracted_at": datetime.now().isoformat(),
+            }
+
+            structure_path = (
+                project_path / "01_learning_objectives" / "textbook_structure.json"
+            )
+            structure_path.write_text(
+                json.dumps(textbook_structure, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            return json.dumps({
+                "success": True,
+                "project_id": project_id,
+                "project_path": str(project_path),
+                "textbook_structure_path": str(structure_path),
+                "chapter_count": len(merged_chapters),
+                "duration_weeks": duration_weeks,
+                "duration_weeks_autoscaled": bool(
+                    not duration_explicit and merged_chapters
+                ),
+                "source_file_count": len(html_files),
+                "extraction_error_count": len(extraction_errors),
+            })
+
+        registry["extract_textbook_structure"] = _extract_textbook_structure
+
+        # ============================================================================
+        # Wave 24: _plan_course_structure — synthesize TO-NN / CO-NN objectives
+        # from the textbook structure (produced by _extract_textbook_structure)
+        # and persist them as synthesized_objectives.json. This replaces the
+        # pre-Wave-24 course_planning path which only called create_course_project
+        # and emitted {COURSE}_OBJ_N placeholders — a scheme disjoint from the
+        # TO-NN / CO-NN IDs actually emitted to HTML pages.
+        # ============================================================================
+        async def _plan_course_structure(**kwargs):
+            """Plan course structure: synthesize real LOs + persist.
+
+            Required kwargs: ``project_id`` or (``course_name`` +
+            implicit location). When a textbook_structure.json exists in
+            the project, chapters and sections drive the synthesizer;
+            otherwise we fall back to whatever staged HTML we can find.
+
+            Writes ``{project_path}/01_learning_objectives/synthesized_objectives.json``
+            with a canonical shape, populates
+            ``project_config.json::objectives_path`` so downstream
+            phases pick it up automatically, and returns the real TO/CO
+            IDs in ``objective_ids``.
+            """
+            from MCP.tools import _content_gen_helpers as _cgh
+
+            project_id = kwargs.get("project_id") or ""
+            course_name = kwargs.get("course_name") or ""
+
+            # Resolve project path. Prefer explicit project_id; otherwise
+            # the most recent export matching course_name.
+            project_path: Optional[Path] = None
+            if project_id:
+                cand = _PROJECT_ROOT / "Courseforge" / "exports" / project_id
+                if cand.exists():
+                    project_path = cand
+            if project_path is None and course_name:
+                exports_dir = _PROJECT_ROOT / "Courseforge" / "exports"
+                if exports_dir.exists():
+                    matches = sorted(
+                        (p for p in exports_dir.iterdir()
+                         if p.is_dir() and course_name.lower() in p.name.lower()),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                    if matches:
+                        project_path = matches[0]
+            if project_path is None:
+                return json.dumps({
+                    "error": "plan_course_structure could not locate project directory",
+                    "project_id": project_id,
+                    "course_name": course_name,
+                })
+            if not project_id:
+                project_id = project_path.name
+
+            # Load project config.
+            config_path = project_path / "project_config.json"
+            config_data: Dict[str, Any] = {}
+            if config_path.exists():
+                try:
+                    config_data = json.loads(config_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    config_data = {}
+            duration_weeks = int(
+                kwargs.get("duration_weeks") or config_data.get("duration_weeks") or 12
+            )
+            course_name = course_name or config_data.get("course_name") or project_id
+
+            # Prefer real topics from staged HTML when available.
+            staging_kwarg = kwargs.get("staging_dir") or config_data.get("staging_dir")
+            staging_dir = Path(staging_kwarg) if staging_kwarg else None
+            html_files = _cgh.collect_staged_html(staging_dir, COURSEFORGE_INPUTS)
+            topics = _cgh.parse_dart_html_files(html_files) if html_files else []
+
+            # If an objectives JSON already exists (supplied by the user),
+            # use it verbatim — the planner's job is to surface + persist,
+            # not to regenerate over user input.
+            supplied_objectives = (
+                kwargs.get("objectives_path") or config_data.get("objectives_path")
+            )
+            supplied_terminal, supplied_chapter = (
+                _cgh.load_objectives_json(supplied_objectives)
+            )
+
+            if supplied_terminal or supplied_chapter:
+                terminal = list(supplied_terminal)
+                chapter = list(supplied_chapter)
+                mint_method = "user_supplied_objectives_json"
+            else:
+                terminal, chapter = _cgh.synthesize_objectives_from_topics(
+                    topics, duration_weeks,
+                )
+                mint_method = "synthesize_objectives_from_topics"
+
+            # Detect textbook_structure_path to record provenance.
+            structure_path = (
+                project_path / "01_learning_objectives" / "textbook_structure.json"
+            )
+            generated_from = str(structure_path) if structure_path.exists() else ""
+
+            # Canonical on-disk shape.
+            lo_entries: List[Dict[str, Any]] = []
+            for to in terminal:
+                entry = dict(to)
+                entry["hierarchy_level"] = "terminal"
+                lo_entries.append(entry)
+            for co in chapter:
+                entry = dict(co)
+                entry["hierarchy_level"] = "chapter"
+                lo_entries.append(entry)
+
+            synthesized = {
+                "course_name": course_name,
+                "generated_from": generated_from,
+                "mint_method": mint_method,
+                "duration_weeks": duration_weeks,
+                "learning_outcomes": lo_entries,
+                # Preserve the split-by-hierarchy shape the content
+                # generator + CourseProcessor's load_objectives expect.
+                "terminal_objectives": [dict(t) for t in terminal],
+                "chapter_objectives": [{
+                    "chapter": f"Week {idx}",
+                    "objectives": [dict(c)],
+                } for idx, c in enumerate(chapter, start=1)],
+                "synthesized_at": datetime.now().isoformat(),
+            }
+            objectives_out_path = (
+                project_path / "01_learning_objectives" / "synthesized_objectives.json"
+            )
+            objectives_out_path.write_text(
+                json.dumps(synthesized, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+
+            # Thread the path back into project_config so
+            # _generate_course_content + Trainforge's CourseProcessor
+            # (_invoke_trainforge) pick it up automatically.
+            config_data["objectives_path"] = str(objectives_out_path)
+            config_data["synthesized_objectives_path"] = str(objectives_out_path)
+            config_data["course_name"] = course_name
+            config_data["duration_weeks"] = duration_weeks
+            config_data["project_id"] = project_id
+            config_data["status"] = "planned"
+            config_path.write_text(
+                json.dumps(config_data, indent=2), encoding="utf-8",
+            )
+
+            # Real TO/CO ids for downstream phase_outputs.
+            objective_ids = [str(e["id"]) for e in lo_entries if e.get("id")]
+
+            return json.dumps({
+                "success": True,
+                "project_id": project_id,
+                "project_path": str(project_path),
+                "synthesized_objectives_path": str(objectives_out_path),
+                "objective_ids": ",".join(objective_ids),
+                "terminal_count": len(terminal),
+                "chapter_count": len(chapter),
+                "mint_method": mint_method,
+            })
+
+        registry["plan_course_structure"] = _plan_course_structure
+
+        # ============================================================================
         # BLOCK: Worker α edits ONLY below this line through the next END marker.
         # Scope: _generate_course_content replacement. See plans/pipeline-execution-
         # fixes/contracts.md § "Courseforge content-generator contract".
@@ -2724,12 +3066,46 @@ def _build_tool_registry() -> dict:
                     "traceback": _traceback.format_exc(limit=4),
                 })
 
+            # Wave 24: thread objectives_path through to CourseProcessor
+            # so Trainforge synthesizes self.objectives, populates
+            # _build_valid_outcome_ids, and writes course.json. Before
+            # Wave 24 this argument was missing, so every chunk's
+            # learning_outcome_refs surfaced as broken.
+            project_dir_objectives = None
+            try:
+                cfg_path = project_dir / "project_config.json"
+                if cfg_path.exists():
+                    cfg_data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                    project_dir_objectives = (
+                        cfg_data.get("synthesized_objectives_path")
+                        or cfg_data.get("objectives_path")
+                    )
+            except (OSError, ValueError):
+                project_dir_objectives = None
+
+            # Legacy / no-textbook path: no objectives JSON. Fall back
+            # to CourseProcessor's pre-Wave-24 behavior (no course.json,
+            # empty valid_outcome_ids) with a single warning log so the
+            # gap is observable.
+            if not project_dir_objectives:
+                logger.warning(
+                    "[Wave 24] CourseProcessor invoked without an "
+                    "objectives_path (project %s). course.json will not "
+                    "be written; chunk learning_outcome_refs may surface "
+                    "as broken. Run plan_course_structure first to "
+                    "populate synthesized_objectives.json.",
+                    project_dir.name,
+                )
+
             processor = CourseProcessor(
                 imscc_path=str(imscc_path),
                 output_dir=str(trainforge_dir),
                 course_code=course_id,
                 division=division,
                 domain=domain,
+                objectives_path=(
+                    str(project_dir_objectives) if project_dir_objectives else None
+                ),
                 strict_mode=False,
             )
 
@@ -3433,9 +3809,21 @@ def _build_tool_registry() -> dict:
                 except (OSError, ValueError):
                     pass
 
-        # Assemble per-week keyword bags.
-        page_roles = ("overview", "content_01", "application",
-                      "self_check", "summary")
+        # Assemble per-week keyword bags. Wave 24 HIGH-5 fix: page roles
+        # now scale with the week's LO count via _page_roles_for_week.
+        # When objectives aren't loaded yet (source-router runs before
+        # course_planning in some paths), fall back to the legacy 5-tuple.
+        from MCP.tools._content_gen_helpers import _page_roles_for_week  # noqa: E402
+        # Derive a per-week LO count: prefer objective_statements when
+        # synthesized, else use structure chapters, else default to 4
+        # (yields the legacy 5-page shape via _page_roles_for_week).
+        if objective_statements:
+            base_lo_count = max(1, len(objective_statements) // max(1, duration_weeks))
+        elif structure_chapters:
+            base_lo_count = max(1, len(structure_chapters) // max(1, duration_weeks) + 1)
+        else:
+            base_lo_count = 4
+        page_roles = _page_roles_for_week(base_lo_count)
 
         # Prefer chapters / objective statements when available.
         topic_pool: list = []

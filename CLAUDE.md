@@ -585,6 +585,7 @@ validation_gates:
 | `batch_dart` | `dart_markers` | DartMarkersValidator (Wave 6) |
 | `textbook_to_course` | `dart_markers` | DartMarkersValidator (Wave 6) |
 | `textbook_to_course` | `libv2_manifest` | LibV2ManifestValidator (Wave 23) |
+| `textbook_to_course` | `assessment_objective_alignment` | AssessmentObjectiveAlignmentValidator (Wave 24) |
 | `rag_training` | `assessment_quality` | AssessmentQualityValidator |
 | `rag_training` | `bloom_alignment` | BloomAlignmentValidator |
 | `rag_training` | `leak_check` | LeakChecker |
@@ -643,6 +644,9 @@ Validators under `lib/validators/` (see Active Gates above for wiring):
 - `lib/validators/page_objectives.py` — objective coverage per page.
 - `lib/validators/content_type.py` — content_type enum enforcement (gated).
 - `lib/validators/evidence.py` — per-rule evidence discriminator loader; strict mode drops FallbackProvenance.
+- `lib/validators/assessment_objective_alignment.py` — Wave 24 fail-loud gate keeping assessment `objective_id` aligned with chunk `learning_outcome_refs`.
+
+**Wave 24 canonical LO helper**: `lib/ontology/learning_objectives.py` owns the single source of truth for LO identity (`mint_lo_id`, `validate_lo_id`, `hierarchy_from_id`, `split_terminal_chapter`). Pattern `^[A-Z]{2,}-\\d{2,}$` (mirror of `schemas/knowledge/courseforge_jsonld_v1.schema.json`). `schemas/knowledge/course.schema.json` is the canonical shape for Trainforge-emitted `course.json`.
 
 ---
 
