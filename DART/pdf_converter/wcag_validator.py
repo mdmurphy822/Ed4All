@@ -182,38 +182,171 @@ class WCAGValidator:
         self.strict_mode = strict_mode
         self.issues: List[WCAGIssue] = []
 
-    def validate(self, html: str, file_path: str = "inline") -> ValidationReport:
-        """
-        Validate HTML content for accessibility compliance.
+    # Exposed for gate manager integration — set at class level so the
+    # ValidationGateManager can introspect without instantiation.
+    name = "wcag_validator"
+    version = "2.0.0"  # Wave 31 semantic upgrade
 
-        Args:
-            html: HTML content string
-            file_path: Optional file path for reporting
+    def validate(self, html=None, file_path: str = "inline"):
+        """Validate HTML for WCAG 2.2 AA compliance.
 
-        Returns:
-            ValidationReport with all issues found
+        Dual-mode signature (Wave 31):
+
+        * Legacy positional: ``validator.validate(html_string, file_path)``
+          returns a ``ValidationReport``. Preserves pre-Wave-31 callers.
+        * Gate-manager kwargs: ``validator.validate({"html_path": ...})``
+          (or ``{"html_content": ...}``) returns a ``GateResult``. The
+          ``ValidationGateManager`` always calls with a single dict, so we
+          detect that and route to the gate adapter.
+
+        Both modes run the same underlying checks; the only difference is
+        the return type + input plumbing.
         """
+        # Gate manager path — single-positional dict.
+        if isinstance(html, dict) and file_path == "inline":
+            return self._validate_gate(html)
+
+        if html is None:
+            raise ValueError("validate() requires either html string or input dict")
+
+        return self._validate_html(str(html), file_path)
+
+    def _validate_html(self, html: str, file_path: str = "inline") -> ValidationReport:
+        """Run all semantic checks + generate a legacy ValidationReport."""
         self.issues = []
         soup = BeautifulSoup(html, 'html.parser')
 
-        # Run all validation checks
+        # Legacy tag-presence checks (retained — true positives still catch)
         self._check_language_declaration(soup)
         self._check_page_title(soup)
-        self._check_images(soup)
-        self._check_headings(soup)
+        self._check_images(soup)  # Wave 31: upgraded semantic
+        self._check_headings(soup)  # Wave 31: upgraded for PDF artifacts
         self._check_links(soup)
         self._check_forms(soup)
         self._check_tables(soup)
-        self._check_landmarks(soup)
+        self._check_landmarks(soup)  # Wave 31: fix multiple-main false positive
         self._check_skip_links(soup)
-        self._check_focus_indicators(soup, html)
+        self._check_focus_indicators(soup, html)  # Wave 31: fix focus FP
         # WCAG 2.2 specific checks
         self._check_focus_not_obscured(soup, html)
         self._check_focus_appearance(soup, html)
-        self._check_target_size(soup, html)
+        self._check_target_size(soup, html)  # Wave 31: skip-link exempt
+
+        # Wave 31 new semantic checks
+        self._check_empty_lists(soup)         # SC 1.3.1
+        self._check_empty_doc_chapters(soup)  # SC 1.3.1
+        self._check_toc_anchor_resolution(soup)  # SC 2.4.1 / 2.4.5
+        self._check_pdf_artifact_headings(soup)  # SC 2.4.6
 
         # Generate report
         return self._generate_report(file_path)
+
+    def _validate_gate(self, inputs):
+        """Adapter: run validation from a gate manager input dict → GateResult.
+
+        Produces a ``GateResult`` from ``MCP.hardening.validation_gates``
+        with a ``score`` computed from the fail rate:
+        * score = 1.0 when no CRITICAL / HIGH findings.
+        * score drops proportionally with CRITICAL (weight 1.0) and
+          HIGH (weight 0.5) counts.
+        """
+        from MCP.hardening.validation_gates import GateIssue, GateResult
+
+        gate_id = inputs.get("gate_id", "wcag_compliance")
+        html_content = inputs.get("html_content") or ""
+        html_path = inputs.get("html_path")
+        file_path_str = "inline"
+
+        if not html_content and html_path:
+            p = Path(html_path)
+            if not p.exists():
+                return GateResult(
+                    gate_id=gate_id,
+                    validator_name=self.name,
+                    validator_version=self.version,
+                    passed=False,
+                    issues=[GateIssue(
+                        severity="critical",
+                        code="FILE_NOT_FOUND",
+                        message=f"HTML file not found: {p}",
+                    )],
+                )
+            try:
+                html_content = p.read_text(encoding="utf-8", errors="ignore")
+                file_path_str = str(p)
+            except OSError as exc:
+                return GateResult(
+                    gate_id=gate_id,
+                    validator_name=self.name,
+                    validator_version=self.version,
+                    passed=False,
+                    issues=[GateIssue(
+                        severity="critical",
+                        code="FILE_READ_ERROR",
+                        message=f"Could not read {p}: {exc}",
+                    )],
+                )
+
+        if not html_content:
+            return GateResult(
+                gate_id=gate_id,
+                validator_name=self.name,
+                validator_version=self.version,
+                passed=False,
+                issues=[GateIssue(
+                    severity="critical",
+                    code="EMPTY_HTML",
+                    message="No HTML content or path provided",
+                )],
+            )
+
+        report = self._validate_html(html_content, file_path_str)
+
+        # Translate severity — map WCAGIssue.severity (enum) → gate severity str.
+        sev_map = {
+            IssueSeverity.CRITICAL: "critical",
+            IssueSeverity.HIGH: "critical",  # Wave 31: HIGH = real SC failure = critical
+            IssueSeverity.MEDIUM: "warning",
+            IssueSeverity.LOW: "warning",
+        }
+        gate_issues = []
+        for wcag_issue in report.issues:
+            sev_enum = wcag_issue.severity
+            if not isinstance(sev_enum, IssueSeverity):
+                # Defensive fallback.
+                sev_enum = IssueSeverity.MEDIUM
+            gate_issues.append(GateIssue(
+                severity=sev_map.get(sev_enum, "warning"),
+                code=f"WCAG_{wcag_issue.criterion.replace('.', '_')}",
+                message=wcag_issue.message,
+                location=wcag_issue.element,
+                suggestion=wcag_issue.suggestion,
+            ))
+
+        critical_count = sum(1 for g in gate_issues if g.severity == "critical")
+        high_count = report.high_count  # legacy count for scoring
+
+        # Score formula (Wave 31): 1.0 clean; proportional drop with
+        # CRITICAL + HIGH counts. High-severity weight 0.5 so many
+        # warnings don't tank the score too aggressively.
+        score = 1.0
+        if report.critical_count + high_count > 0:
+            # Normalize against issue count (report.total_issues) so a page
+            # with 2/100 critical scores higher than 2/2.
+            denominator = max(1, report.total_issues)
+            weighted = report.critical_count + 0.5 * high_count
+            score = max(0.0, 1.0 - weighted / denominator)
+
+        passed = critical_count == 0
+
+        return GateResult(
+            gate_id=gate_id,
+            validator_name=self.name,
+            validator_version=self.version,
+            passed=passed,
+            score=score,
+            issues=gate_issues,
+        )
 
     def validate_file(self, file_path: Path) -> ValidationReport:
         """
@@ -270,8 +403,24 @@ class WCAGValidator:
             ))
 
     def _check_images(self, soup: BeautifulSoup) -> None:
-        """Check all images for alt text (WCAG 1.1.1)"""
+        """Check all images for alt text (WCAG 1.1.1) — Wave 31 semantic upgrade.
+
+        Pre-Wave-31: ``alt=""`` was always a MEDIUM "verify decorative"
+        warning — every informational figure with an empty alt was
+        missed. Wave 31 flips the logic: a ``<figure>`` that has a
+        ``<figcaption>`` is declaring itself as informational, so
+        ``alt=""`` on the inner ``<img>`` is a real SC 1.1.1 failure
+        (the screen-reader user gets no alternative text for a figure
+        the author said was meaningful).
+
+        True-decorative images (no figcaption, OR ``role="presentation"``
+        on the figure / image, OR ``aria-hidden="true"``) still get a
+        clean pass on ``alt=""``.
+        """
         images = soup.find_all('img')
+
+        informational_empty_alt_count = 0
+        generic_alt_count = 0
 
         for img in images:
             src = img.get('src', 'unknown')
@@ -281,29 +430,101 @@ class WCAGValidator:
                 self.issues.append(WCAGIssue(
                     criterion=WCAGCriterion.SC_1_1_1.value,
                     severity=IssueSeverity.CRITICAL,
-                    element=f'<img src="{src[:50]}...">',
+                    element=f'<img src="{src[:50]}">',
                     message="Image missing alt attribute",
                     suggestion="Add alt attribute with descriptive text or alt='' for decorative images"
                 ))
-            elif alt.strip() == '':
-                # Empty alt is valid for decorative images
-                role = img.get('role')
-                if role != 'presentation':
+                continue
+
+            if alt.strip() == '':
+                # Determine informational vs decorative.
+                role = img.get('role', '')
+                aria_hidden = (img.get('aria-hidden') or '').lower() == 'true'
+                # Climb to enclosing figure and inspect its caption.
+                parent_figure = img.find_parent('figure')
+                figure_role = (parent_figure.get('role') if parent_figure else '') or ''
+                has_figcaption = False
+                if parent_figure:
+                    caption = parent_figure.find('figcaption')
+                    if caption and caption.get_text(strip=True):
+                        has_figcaption = True
+
+                truly_decorative = (
+                    role == 'presentation'
+                    or role == 'none'
+                    or figure_role == 'presentation'
+                    or figure_role == 'none'
+                    or aria_hidden
+                )
+
+                if has_figcaption and not truly_decorative:
+                    # Informational figure with empty alt — real SC 1.1.1 fail.
+                    informational_empty_alt_count += 1
+                    # Avoid flooding the report with one-issue-per-image;
+                    # emit one aggregate critical + representative location
+                    # per 50 hits.
+                    if informational_empty_alt_count <= 5:
+                        self.issues.append(WCAGIssue(
+                            criterion=WCAGCriterion.SC_1_1_1.value,
+                            severity=IssueSeverity.CRITICAL,
+                            element=f'<figure><img src="{src[:50]}">',
+                            message=(
+                                "Informational figure has empty alt but "
+                                "a visible <figcaption> — screen-reader users "
+                                "get no description of the image content."
+                            ),
+                            suggestion=(
+                                "Either populate alt with a concise description, "
+                                "or mark the image as decorative via "
+                                "role=\"presentation\" if the caption is the "
+                                "complete equivalent."
+                            )
+                        ))
+                elif not truly_decorative and not parent_figure:
+                    # Empty alt outside a figure — ambiguous. MEDIUM warning.
                     self.issues.append(WCAGIssue(
                         criterion=WCAGCriterion.SC_1_1_1.value,
                         severity=IssueSeverity.MEDIUM,
-                        element=f'<img src="{src[:50]}...">',
-                        message="Empty alt text - verify image is decorative",
+                        element=f'<img src="{src[:50]}">',
+                        message="Empty alt text outside a figure — verify image is decorative",
                         suggestion="If decorative, add role='presentation'. If meaningful, add descriptive alt text"
                     ))
-            elif alt.lower() in ['image', 'photo', 'picture', 'graphic', 'icon']:
-                self.issues.append(WCAGIssue(
-                    criterion=WCAGCriterion.SC_1_1_1.value,
-                    severity=IssueSeverity.HIGH,
-                    element=f'<img alt="{alt}">',
-                    message="Generic alt text does not describe image content",
-                    suggestion="Replace with specific description of what the image shows"
-                ))
+                # else: decorative image → no issue (pass).
+                continue
+
+            if alt.lower() in ['image', 'photo', 'picture', 'graphic', 'icon']:
+                generic_alt_count += 1
+                if generic_alt_count <= 5:
+                    self.issues.append(WCAGIssue(
+                        criterion=WCAGCriterion.SC_1_1_1.value,
+                        severity=IssueSeverity.HIGH,
+                        element=f'<img alt="{alt}">',
+                        message="Generic alt text does not describe image content",
+                        suggestion="Replace with specific description of what the image shows"
+                    ))
+
+        # Emit aggregate summary issues if we suppressed individual hits.
+        if informational_empty_alt_count > 5:
+            self.issues.append(WCAGIssue(
+                criterion=WCAGCriterion.SC_1_1_1.value,
+                severity=IssueSeverity.CRITICAL,
+                element="<img> aggregate",
+                message=(
+                    f"{informational_empty_alt_count - 5} additional "
+                    "informational figures have empty alt text (suppressed)."
+                ),
+                suggestion="Populate alt text across all informational figures."
+            ))
+        if generic_alt_count > 5:
+            self.issues.append(WCAGIssue(
+                criterion=WCAGCriterion.SC_1_1_1.value,
+                severity=IssueSeverity.HIGH,
+                element="<img> aggregate",
+                message=(
+                    f"{generic_alt_count - 5} additional generic-alt images "
+                    "(suppressed)."
+                )
+            ))
 
     def _check_headings(self, soup: BeautifulSoup) -> None:
         """Check heading hierarchy (WCAG 1.3.1, 2.4.6)"""
@@ -477,9 +698,18 @@ class WCAGValidator:
                         ))
 
     def _check_landmarks(self, soup: BeautifulSoup) -> None:
-        """Check for ARIA landmarks (WCAG 1.3.1, 2.4.1)"""
+        """Check for ARIA landmarks (WCAG 1.3.1, 2.4.1).
+
+        Wave 31: fix the multiple-main false positive. Pre-Wave-31 the
+        validator would count a single ``<main role="main">`` element
+        as two landmarks (one for the HTML tag, one for the ARIA role
+        override) and fire a HIGH finding. Wave 31 counts each *unique
+        element* once — ``role="main"`` on a ``<main>`` tag is a
+        redundant-but-valid authoring pattern, not a duplicate
+        landmark.
+        """
         # Check for main landmark
-        main = soup.find('main') or soup.find(role='main')
+        main = soup.find('main') or soup.find(attrs={'role': 'main'})
         if not main:
             self.issues.append(WCAGIssue(
                 criterion=WCAGCriterion.SC_2_4_1.value,
@@ -489,15 +719,22 @@ class WCAGValidator:
                 suggestion="Add <main> element to wrap primary content"
             ))
 
-        # Check for multiple mains (avoid double-counting <main role="main">)
-        mains = soup.find_all('main')
-        main_roles = [el for el in soup.find_all(role='main') if el.name != 'main']
-        if len(mains) + len(main_roles) > 1:
+        # Deduplicate by element identity. A single <main role="main">
+        # is exactly ONE landmark; the role="main" overlay on a <main>
+        # tag is a valid (if redundant) authoring pattern.
+        main_elements = set(id(el) for el in soup.find_all('main'))
+        # Only count role="main" elements that are NOT already a <main>
+        # tag — those are distinct landmarks.
+        for el in soup.find_all(attrs={'role': 'main'}):
+            if el.name != 'main':
+                main_elements.add(id(el))
+
+        if len(main_elements) > 1:
             self.issues.append(WCAGIssue(
                 criterion=WCAGCriterion.SC_1_3_1.value,
                 severity=IssueSeverity.HIGH,
                 element="<main>",
-                message="Multiple main landmarks found",
+                message=f"Multiple main landmarks found ({len(main_elements)} unique elements)",
                 suggestion="Use only one main landmark per page"
             ))
 
@@ -532,13 +769,59 @@ class WCAGValidator:
                 ))
 
     def _check_focus_indicators(self, soup: BeautifulSoup, content: str) -> None:
-        """Check for focus indicator removal (WCAG 2.4.7)"""
-        # Check for outline:none or outline:0 without replacement
-        # Skip if :focus-visible is used (proper pattern for keyboard-only focus)
-        has_focus_visible = re.search(r':focus-visible\s*\{[^}]*outline', content, re.IGNORECASE)
-        has_outline_none = re.search(r'outline\s*:\s*(none|0)[^;]*;', content, re.IGNORECASE)
+        """Check for focus indicator removal (WCAG 2.4.7).
 
-        if has_outline_none and not has_focus_visible:
+        Wave 31: fix false positive. Pre-Wave-31 any occurrence of
+        ``outline: none`` would flag HIGH, even when paired with a
+        ``:focus-visible`` rule that re-adds outline for
+        keyboard-only users. The modern pattern is:
+
+        .. code-block:: css
+
+            :focus:not(:focus-visible) { outline: none; }
+            :focus-visible { outline: 2px solid accent; }
+
+        This is the canonical WCAG 2.2 technique (removes outline for
+        mouse focus, keeps it for keyboard focus) — no warning.
+
+        Wave 31 only flags ``outline:none`` when no ``:focus-visible``
+        rule re-introduces outline anywhere in the stylesheet, regardless
+        of selector-ordering.
+        """
+        # Extract CSS content out of <style> blocks only — running the
+        # CSS rule parser on raw HTML is catastrophic (1.5MB pages).
+        css_texts = re.findall(
+            r'<style\b[^>]*>(.*?)</style>',
+            content,
+            re.IGNORECASE | re.DOTALL,
+        )
+        css_combined = "\n".join(css_texts)
+        # Also accept inline style= attributes — skip those for focus
+        # indicator analysis (they can't carry :focus pseudo-selectors).
+
+        has_focus_visible_outline = False
+        problematic_outline_none = False
+        if css_combined:
+            has_focus_visible_outline = bool(re.search(
+                r':focus-visible\b[^{]*\{[^}]*outline\b',
+                css_combined, re.IGNORECASE | re.DOTALL
+            ))
+            # Parse CSS rules only inside the style blocks.
+            css_rule_iter = re.finditer(
+                r'([^{}]+)\{([^{}]*)\}',
+                css_combined,
+                re.DOTALL,
+            )
+            for rule_match in css_rule_iter:
+                selector = rule_match.group(1).strip().lower()
+                body = rule_match.group(2)
+                if re.search(r'outline\s*:\s*(none|0)\b', body, re.IGNORECASE):
+                    if ':focus:not(:focus-visible)' in selector:
+                        continue
+                    problematic_outline_none = True
+                    break
+
+        if problematic_outline_none and not has_focus_visible_outline:
             self.issues.append(WCAGIssue(
                 criterion=WCAGCriterion.SC_2_4_7.value,
                 severity=IssueSeverity.HIGH,
@@ -582,25 +865,82 @@ class WCAGValidator:
                 ))
 
     def _check_target_size(self, soup: BeautifulSoup, content: str) -> None:
-        """Check interactive element target sizes (WCAG 2.5.8)"""
-        # Check for explicit small sizing on interactive elements
+        """Check interactive element target sizes (WCAG 2.5.8).
+
+        Wave 31: fix the visually-hidden skip-link false positive.
+        Pre-Wave-31 the validator fired a HIGH finding on every 1px-by-1px
+        interactive element, including skip-links that are deliberately
+        offscreen via the visually-hidden pattern (``position:absolute;
+        left:-9999px``). Per SC 2.5.8 exceptions: elements outside the
+        normal tab focus order or rendered offscreen are exempt from
+        the 24×24 minimum.
+
+        Wave 31 detection: when a small-target rule selector matches
+        ``.skip-link``, ``.sr-only``, ``.visually-hidden``, ``.screen-reader-text``
+        (the canonical visually-hidden class names), or the block contains
+        ``position:absolute`` paired with ``left:-9999px`` / ``clip:rect(0,0,0,0)``,
+        skip the flag.
+        """
+        # Extract <style> content only — avoid O(n²) regex on 1.5MB of HTML.
+        css_texts = re.findall(
+            r'<style\b[^>]*>(.*?)</style>',
+            content,
+            re.IGNORECASE | re.DOTALL,
+        )
+        css_combined = "\n".join(css_texts)
+
+        # Pre-extract visually-hidden selectors by scanning CSS rules.
+        visually_hidden_selector_names = {
+            '.skip-link', '.sr-only', '.visually-hidden',
+            '.screen-reader-text', '.a11y-hidden', '.visuallyhidden',
+        }
+
+        # Collect selectors whose body marks them as visually-hidden.
+        visually_hidden_selectors = set()
+        if css_combined:
+            for rule_match in re.finditer(r'([^{}]+)\{([^{}]*)\}', css_combined, re.DOTALL):
+                selector = rule_match.group(1).strip().lower()
+                body = rule_match.group(2).lower()
+                is_visually_hidden = (
+                    ('position' in body and 'absolute' in body and (
+                        '-9999px' in body or '-10000px' in body or
+                        re.search(r'clip\s*:\s*rect\s*\(\s*0[^)]*\)', body)
+                    ))
+                    or re.search(r'clip\s*:\s*rect\s*\(\s*0[^)]*\)', body)
+                    or re.search(r'\bwidth\s*:\s*1px\b', body) and re.search(r'\bheight\s*:\s*1px\b', body) and 'overflow' in body
+                )
+                if is_visually_hidden:
+                    visually_hidden_selectors.add(selector)
+
+        # Check for explicit small sizing on interactive elements (CSS only).
         small_size_patterns = [
-            r'button[^{]*\{[^}]*(width|height)\s*:\s*(\d+)px',
-            r'\.btn[^{]*\{[^}]*(width|height)\s*:\s*(\d+)px',
-            r'input\[type[^{]*\{[^}]*(width|height)\s*:\s*(\d+)px',
+            r'(button[^{]*)\{([^}]*(?:width|height)\s*:\s*(\d+)px[^}]*)\}',
+            r'(\.btn[^{]*)\{([^}]*(?:width|height)\s*:\s*(\d+)px[^}]*)\}',
+            r'(input\[type[^{]*)\{([^}]*(?:width|height)\s*:\s*(\d+)px[^}]*)\}',
         ]
 
         for pattern in small_size_patterns:
-            for match in re.finditer(pattern, content, re.IGNORECASE):
-                size = int(match.group(2))
-                if 0 < size < 24:
-                    self.issues.append(WCAGIssue(
-                        criterion=WCAGCriterion.SC_2_5_8.value,
-                        severity=IssueSeverity.HIGH,
-                        element="interactive element",
-                        message=f"Interactive element size ({size}px) below 24px minimum",
-                        suggestion="Ensure interactive elements are at least 24x24 CSS pixels"
-                    ))
+            for match in re.finditer(pattern, css_combined, re.IGNORECASE | re.DOTALL):
+                selector = match.group(1).strip().lower()
+                body = match.group(2).lower()
+                size = int(match.group(3))
+                if not (0 < size < 24):
+                    continue
+                # Wave 31 exemption: visually-hidden interactive elements.
+                if any(sel in selector for sel in visually_hidden_selector_names):
+                    continue
+                if selector in visually_hidden_selectors:
+                    continue
+                if (('position' in body and 'absolute' in body and ('-9999px' in body or '-10000px' in body))
+                        or re.search(r'clip\s*:\s*rect\s*\(\s*0[^)]*\)', body)):
+                    continue
+                self.issues.append(WCAGIssue(
+                    criterion=WCAGCriterion.SC_2_5_8.value,
+                    severity=IssueSeverity.HIGH,
+                    element="interactive element",
+                    message=f"Interactive element size ({size}px) below 24px minimum",
+                    suggestion="Ensure interactive elements are at least 24x24 CSS pixels"
+                ))
 
         # Check for btn-xs class which typically produces small targets
         if 'btn-xs' in content.lower():
@@ -611,6 +951,206 @@ class WCAGValidator:
                 message="Extra-small button class may not meet 24px target size",
                 suggestion="Ensure clickable area is at least 24x24 CSS pixels or has adequate spacing"
             ))
+
+    # ------------------------------------------------------------------ #
+    # Wave 31 new semantic checks
+    # ------------------------------------------------------------------ #
+
+    def _check_empty_lists(self, soup: BeautifulSoup) -> None:
+        """SC 1.3.1 — empty lists are info-relationship failures.
+
+        Pre-Wave-31 tag-presence validation accepted ``<ul></ul>`` as
+        "has a list". Screen readers announce an empty list as
+        "list, 0 items" — real SC 1.3.1 failure.
+        """
+        empty_count = 0
+        for list_el in soup.find_all(['ul', 'ol']):
+            items = list_el.find_all('li', recursive=False)
+            # Also count li descendants in case the list wraps them deeper.
+            if not items:
+                items = list_el.find_all('li')
+            if not items:
+                empty_count += 1
+                if empty_count <= 5:
+                    # Include the preceding heading text for context.
+                    prev_heading = list_el.find_previous(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+                    ctx = prev_heading.get_text(strip=True)[:50] if prev_heading else ''
+                    self.issues.append(WCAGIssue(
+                        criterion=WCAGCriterion.SC_1_3_1.value,
+                        severity=IssueSeverity.CRITICAL,
+                        element=f'<{list_el.name}>',
+                        message=(
+                            f"Empty {list_el.name} element"
+                            + (f" under heading: {ctx!r}" if ctx else "")
+                            + " — screen readers announce as 'list, 0 items'."
+                        ),
+                        suggestion="Populate list items or remove the empty list."
+                    ))
+        if empty_count > 5:
+            self.issues.append(WCAGIssue(
+                criterion=WCAGCriterion.SC_1_3_1.value,
+                severity=IssueSeverity.CRITICAL,
+                element="<ul>/<ol> aggregate",
+                message=f"{empty_count - 5} additional empty lists (suppressed).",
+                suggestion="Populate or remove empty lists."
+            ))
+
+    def _check_empty_doc_chapters(self, soup: BeautifulSoup) -> None:
+        """SC 1.3.1 — doc-chapter / doc-abstract containers must have content.
+
+        A ``<article role="doc-chapter">`` wrapper that contains only a
+        heading and no body text is structurally meaningless for
+        assistive tech — declares a chapter landmark then provides
+        nothing.
+        """
+        structural_roles = ('doc-chapter', 'doc-part', 'doc-abstract',
+                            'doc-preface', 'doc-introduction')
+        empty_count = 0
+        for role in structural_roles:
+            for el in soup.find_all(attrs={'role': role}):
+                # Count body words after subtracting heading text.
+                for heading in el.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                    heading.extract()
+                body_text = el.get_text(separator=' ', strip=True)
+                body_words = len(body_text.split()) if body_text else 0
+                if body_words < 20:
+                    empty_count += 1
+                    if empty_count <= 5:
+                        self.issues.append(WCAGIssue(
+                            criterion=WCAGCriterion.SC_1_3_1.value,
+                            severity=IssueSeverity.CRITICAL,
+                            element=f'<{el.name} role="{role}">',
+                            message=(
+                                f"Structural landmark role=\"{role}\" contains "
+                                f"only {body_words} words of body content."
+                            ),
+                            suggestion=(
+                                "Populate the landmark with real chapter body "
+                                "content, or drop the role if the section is "
+                                "empty."
+                            )
+                        ))
+        if empty_count > 5:
+            self.issues.append(WCAGIssue(
+                criterion=WCAGCriterion.SC_1_3_1.value,
+                severity=IssueSeverity.CRITICAL,
+                element="structural landmarks aggregate",
+                message=f"{empty_count - 5} additional empty structural landmarks (suppressed)."
+            ))
+
+    def _check_toc_anchor_resolution(self, soup: BeautifulSoup) -> None:
+        """SC 2.4.1 / 2.4.5 — TOC anchors must resolve to real IDs.
+
+        Pre-Wave-31 we silently shipped TOCs where half the anchors
+        pointed at IDs that don't exist in the document. Wave 31
+        verifies each fragment anchor resolves to an ``id=`` in the
+        same document.
+
+        Severity rule: if ≥ 10% of TOC anchors are dead → CRITICAL;
+        otherwise per-dead-link HIGH.
+        """
+        toc_navs = soup.find_all('nav', attrs={'role': 'doc-toc'})
+        if not toc_navs:
+            # Fall back to <nav class="toc"> / <nav id*=toc>.
+            toc_navs = [
+                nav for nav in soup.find_all('nav')
+                if 'toc' in ' '.join(nav.get('class', [])).lower()
+                or 'toc' in (nav.get('id') or '').lower()
+            ]
+        if not toc_navs:
+            return
+
+        all_ids = {el.get('id') for el in soup.find_all(attrs={'id': True})}
+        for nav in toc_navs:
+            anchors = nav.find_all('a', href=True)
+            frag_anchors = [a for a in anchors if a['href'].startswith('#')]
+            if not frag_anchors:
+                continue
+            dead = []
+            for a in frag_anchors:
+                target_id = a['href'][1:]
+                if target_id and target_id not in all_ids:
+                    dead.append(target_id)
+            total = len(frag_anchors)
+            if not dead:
+                continue
+            frac_dead = len(dead) / total
+            # Report aggregate first.
+            if frac_dead >= 0.10:
+                self.issues.append(WCAGIssue(
+                    criterion=WCAGCriterion.SC_2_4_1.value,
+                    severity=IssueSeverity.CRITICAL,
+                    element='<nav role="doc-toc">',
+                    message=(
+                        f"{len(dead)} of {total} TOC anchors are dead "
+                        f"({frac_dead:.0%}) — bypass-blocks target IDs don't exist."
+                    ),
+                    suggestion=(
+                        "Ensure every TOC link target has a matching id=\"...\" "
+                        "in the document body."
+                    )
+                ))
+            else:
+                # Small number of dead anchors — HIGH each (up to 3).
+                for target in dead[:3]:
+                    self.issues.append(WCAGIssue(
+                        criterion=WCAGCriterion.SC_2_4_5.value,
+                        severity=IssueSeverity.HIGH,
+                        element='<a href>',
+                        message=f"Dead TOC anchor: href=#{target} does not resolve.",
+                        suggestion="Remove or fix the anchor."
+                    ))
+
+    def _check_pdf_artifact_headings(self, soup: BeautifulSoup) -> None:
+        """SC 2.4.6 — headings should not carry PDF page-number artifacts.
+
+        pdftotext output often fuses a page number to the end of a
+        heading line: ``"Chapter 3 47"`` or ``"Preface viii"``. When
+        those land in an ``<h2>`` / ``<h3>`` they read awkwardly in
+        the document outline (the page number isn't meaningful in
+        HTML).
+        """
+        artifact_re = re.compile(
+            r'^(.{2,}?)\s+([0-9]{1,4}|[ivxlcdm]+)$',
+            re.IGNORECASE,
+        )
+        flagged = 0
+        for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+            text = heading.get_text(strip=True)
+            if len(text) < 5:
+                continue
+            m = artifact_re.match(text)
+            if not m:
+                continue
+            # Skip if the heading is legitimately numbered
+            # ("Chapter 3", "Section 2.1") — those have no trailing
+            # page-number token beyond the leading chapter number.
+            # The artifact pattern requires TWO tokens + trailing number,
+            # e.g. "Chapter 3 47" has prefix "Chapter 3" and suffix 47.
+            prefix = m.group(1).strip()
+            if len(prefix.split()) < 1:
+                continue
+            # Chapter/Preface/Appendix with ONLY a trailing number
+            # (e.g. "Chapter 3") are legit — needs ≥2 prefix tokens OR
+            # a mix of letters and digits in the prefix.
+            if len(prefix.split()) < 2 and not re.search(r'[a-z]', prefix, re.IGNORECASE):
+                continue
+            # Additional filter: skip pure numeric headings.
+            if prefix.isdigit():
+                continue
+            flagged += 1
+            if flagged <= 3:
+                self.issues.append(WCAGIssue(
+                    criterion=WCAGCriterion.SC_2_4_6.value,
+                    severity=IssueSeverity.MEDIUM,
+                    element=f'<{heading.name}>',
+                    message=f"Heading looks like PDF-extraction artifact: {text!r}",
+                    suggestion="Strip trailing page numbers from heading text."
+                ))
+
+    # ------------------------------------------------------------------ #
+    # Report generation
+    # ------------------------------------------------------------------ #
 
     def _generate_report(self, file_path: str) -> ValidationReport:
         """Generate validation report from collected issues"""

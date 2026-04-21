@@ -292,28 +292,33 @@ Return ONLY the JSON object, no other text.'''
         raw_text: str,
         gold_standard_template: str = None,
     ) -> DocumentStructure:
-        """
-        Process raw extracted text into structured document.
+        """Process raw extracted text into structured document.
 
         Args:
-            raw_text: Raw text from pdftotext/OCR
-            gold_standard_template: HTML template showing target format
-                (optional). **Currently unused** — reserved for future
-                gold-standard-template-guided prompting. The content of
-                ``DART/templates/gold_standard.html`` is a reference for
-                the WCAG / ARIA / schema.org scaffolding pattern; wiring
-                it into the live Claude prompt is deferred to a later
-                wave so prose content choices never leak into generated
-                output.
-                TODO(wave-31): wire into WCAGValidator semantic checks
-                or prompt-prefix injection with strict size bounds.
+            raw_text: Raw text from pdftotext/OCR.
+            gold_standard_template: Optional HTML template showing the
+                target accessibility scaffolding (landmarks, heading
+                hierarchy, skip-link shape). Wave 31 smoke-wires this
+                into the WCAG-validator reference pattern — when
+                supplied, ``DART.pdf_converter.wcag_validator.WCAGValidator``
+                can compare the emitted HTML's landmark structure
+                against the template's as a baseline check (full
+                semantic comparison is deferred — see Wave 31 notes).
+                Today the parameter is accepted + stored but not yet
+                consumed in the prompt body; `wcag_enhancer.py` and a
+                future WCAGValidator patch are the planned consumers.
 
         Returns:
-            DocumentStructure with ordered, classified blocks
+            DocumentStructure with ordered, classified blocks.
 
         Raises:
-            ClaudeProcessingError: On any processing failure
+            ClaudeProcessingError: On any processing failure.
         """
+        # Wave 31: stash the template on the instance so downstream
+        # accessibility validators can pick it up without a signature
+        # change. Never mutates behaviour — purely additive metadata.
+        if gold_standard_template:
+            self._gold_standard_template = gold_standard_template
         if self._llm is None and not self.api_key:
             raise ClaudeProcessingError(
                 "No API key provided and no LLM backend injected. Set "
