@@ -19,6 +19,7 @@
       "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create"]
     }
   },
+  "$ref": "#/$defs/CognitiveDomain",
   "type": "object",
   "properties": {
     "enum": {
