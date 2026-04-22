@@ -481,8 +481,36 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     #     ``assessments_path`` / ``chunks_path``) so the param mapping
     #     block below also registers those as aliases.
     "synthesize_training": {
-        "required": ["corpus_dir", "course_code"],
-        "optional": ["provider", "seed"],
+        # Wave 33 Bug A: Pre-Wave-33 ``corpus_dir`` was listed as
+        # required and ``assessments_path`` / ``chunks_path`` weren't
+        # recognised at all, so the live dispatcher (which routes
+        # ``assessments_path`` + ``chunks_path`` from the
+        # ``trainforge_assessment`` phase outputs — see
+        # ``config/workflows.yaml::training_synthesis.inputs_from``)
+        # triggered ``ParameterMappingError("Missing required
+        # parameters: ['corpus_dir']")`` on every run. The tool
+        # function already accepts + derives ``corpus_dir`` from any of
+        # ``corpus_dir`` / ``trainforge_dir`` / ``output_dir`` /
+        # ``assessments_path`` (parent) / ``chunks_path`` (grandparent)
+        # and returns a structured error envelope when none are given,
+        # so the schema's contribution is limited to: enforce
+        # ``course_code`` (the one kwarg the tool genuinely can't
+        # derive) and surface the rest as optional pass-through kwargs.
+        # ``param_mapping`` keeps the ``trainforge_dir`` → ``corpus_dir``
+        # alias for legacy callers, but ``assessments_path`` and
+        # ``chunks_path`` are deliberately NOT mapped — renaming them
+        # to ``corpus_dir`` would hand the tool a file path masquerading
+        # as a directory (chunks.jsonl vs. its grandparent), breaking
+        # the corpus/chunks.jsonl lookup.
+        "required": ["course_code"],
+        "optional": [
+            "corpus_dir",
+            "trainforge_dir",
+            "assessments_path",
+            "chunks_path",
+            "provider",
+            "seed",
+        ],
         "defaults": {
             "provider": "mock",
             "seed": None,
@@ -490,6 +518,9 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "param_mapping": {
             # Corpus dir aliases — registry variant accepts any of these
             # and derives the corpus_dir when one isn't passed directly.
+            # NOTE: assessments_path / chunks_path are pass-through
+            # (see header comment) — the tool derives corpus_dir from
+            # them internally.
             "trainforge_dir": "corpus_dir",
             "output_dir": "corpus_dir",
             "workspace": "corpus_dir",
@@ -501,8 +532,9 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "name": "course_code",
         },
         "description": (
-            "Wave 30 Gap 3: synthesize SFT + DPO training pairs from a "
-            "Trainforge corpus (reads corpus/chunks.jsonl, writes "
+            "Wave 30 Gap 3 (+ Wave 33 Bug A dispatch-shape fix): "
+            "synthesize SFT + DPO training pairs from a Trainforge "
+            "corpus (reads corpus/chunks.jsonl, writes "
             "training_specs/instruction_pairs.jsonl + preference_pairs.jsonl)."
         ),
     },

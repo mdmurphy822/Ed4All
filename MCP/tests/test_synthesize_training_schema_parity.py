@@ -45,12 +45,18 @@ def test_synthesize_training_has_schema():
         "gap that caused every training_synthesis dispatch to raise "
         "ParameterMappingError and trip the poison-pill detector."
     )
-    # Spot-check the canonical signature — required params mirror the
-    # @mcp.tool variant at MCP/tools/pipeline_tools.py:574 so both the
-    # MCP-tool and pipeline-dispatch code paths validate cleanly.
+    # Wave 33 Bug A: ``course_code`` is the only required kwarg the
+    # tool function can't derive on its own. ``corpus_dir`` /
+    # ``trainforge_dir`` / ``assessments_path`` / ``chunks_path`` are
+    # all optional pass-through kwargs; the tool function picks
+    # whichever is given and derives the corpus directory internally.
+    # See the schema header comment in tool_schemas.py for rationale.
     required = get_required_params("synthesize_training")
-    assert "corpus_dir" in required
     assert "course_code" in required
+    optional = schema.get("optional", [])
+    assert "corpus_dir" in optional
+    assert "assessments_path" in optional
+    assert "chunks_path" in optional
 
 
 def test_synthesize_training_param_aliases_cover_pipeline_shape():
