@@ -519,6 +519,45 @@ class TaskExecutor:
             try:
                 result = await self._invoke_tool(tool_name, task_params)
 
+                # Wave 33 Bug C: Inspect the tool envelope for an
+                # explicit failure signal before marking the task
+                # COMPLETE. Pre-Wave-33 any dict that parsed (including
+                # ``{"success": False, "error_code": "..."}``) was
+                # treated as success, so gate aggregation ran on the
+                # "12/12 complete" phase summary even when every task
+                # returned a permanent-error envelope — the
+                # ``content_generation`` phase routinely reported
+                # ``gates=pass`` on 48 empty-template pages.
+                #
+                # Treat ``success=False`` as a permanent failure: no
+                # retry (the tool already decided its own outcome),
+                # status=FAILED, error_code / error_message surfaced
+                # from the envelope into the ExecutionResult so
+                # downstream gate aggregation sees the failure.
+                if isinstance(result, dict) and result.get("success") is False:
+                    error_code = str(
+                        result.get("error_code") or "TOOL_REPORTED_FAILURE"
+                    )
+                    error_message = str(
+                        result.get("error_message")
+                        or result.get("error")
+                        or result.get("reason")
+                        or "Tool returned success=False envelope"
+                    )
+                    logger.warning(
+                        f"[{self.run_id}] Task {task_id} returned "
+                        f"success=False envelope ({error_code}): "
+                        f"{error_message}"
+                    )
+                    return ExecutionResult(
+                        task_id=task_id,
+                        status="FAILED",
+                        result=result,
+                        error=f"{error_code}: {error_message}",
+                        error_class=error_code,
+                        retry_count=retry_count,
+                    )
+
                 return ExecutionResult(
                     task_id=task_id,
                     status="COMPLETE",
@@ -702,7 +741,7 @@ class TaskExecutor:
 
                 if status == "IN_PROGRESS":
                     task["started_at"] = datetime.now().isoformat()
-                elif status in ("COMPLETE", "ERROR"):
+                elif status in ("COMPLETE", "ERROR", "FAILED", "TIMEOUT"):
                     task["completed_at"] = datetime.now().isoformat()
 
                 if result is not None:
@@ -718,7 +757,13 @@ class TaskExecutor:
 
         progress["completed"] = sum(1 for t in tasks if t.get("status") == "COMPLETE")
         progress["in_progress"] = sum(1 for t in tasks if t.get("status") == "IN_PROGRESS")
-        progress["failed"] = sum(1 for t in tasks if t.get("status") == "ERROR")
+        # Wave 33 Bug C: count "FAILED" and "TIMEOUT" alongside "ERROR"
+        # so the persisted workflow progress reflects tool envelopes
+        # with ``success=False``, not just raised exceptions.
+        progress["failed"] = sum(
+            1 for t in tasks
+            if t.get("status") in ("ERROR", "FAILED", "TIMEOUT")
+        )
 
         workflow["progress"] = progress
         workflow["updated_at"] = datetime.now().isoformat()
@@ -868,6 +913,9 @@ class TaskExecutor:
         max_concurrent: int = 5,
         phase_outputs: Optional[Dict[str, Dict[str, Any]]] = None,
         workflow_params: Optional[Dict[str, Any]] = None,
+        extract_phase_outputs_fn: Optional[
+            Callable[[str, Dict[str, "ExecutionResult"]], Dict[str, Any]]
+        ] = None,
     ) -> Tuple[Dict[str, ExecutionResult], bool, Optional[List[Dict]]]:
         """
         Execute a workflow phase with checkpointing and validation gates.
@@ -971,8 +1019,45 @@ class TaskExecutor:
             # Callers (WorkflowRunner) pass these explicitly; legacy
             # callers that don't get an empty blob → every gate without
             # a builder route falls back to fallback_inputs.
-            _phase_outputs = phase_outputs or {}
+            _phase_outputs = dict(phase_outputs or {})
             _workflow_params = workflow_params or {}
+
+            # Wave 33 Bug B: extract the current phase's outputs into
+            # ``_phase_outputs`` BEFORE running the gate router so
+            # builders can resolve inputs that come from THIS phase's
+            # just-produced results. Pre-Wave-33 the router only saw
+            # prior phases' outputs because ``_extract_phase_outputs``
+            # ran in ``WorkflowRunner.run_workflow`` AFTER
+            # ``execute_phase`` returned — the 6 gates annexed in
+            # sim-03 (``dart_markers``, ``source_refs``,
+            # ``page_objectives``, ``assessment_objective_alignment``,
+            # ``content_grounding``, ``libv2_manifest``) therefore
+            # logged "skipped — missing inputs: *" on every real run.
+            # Injecting the current phase's extraction here gives the
+            # router a single source of truth: it sees every phase's
+            # outputs up to and including the in-progress phase.
+            if extract_phase_outputs_fn is not None:
+                try:
+                    current_extracted = extract_phase_outputs_fn(
+                        phase_name, results,
+                    )
+                    if isinstance(current_extracted, dict) and current_extracted:
+                        # Merge into a phase-indexed block (same shape
+                        # as prior phase_outputs entries) AND surface
+                        # the same keys at the top level so builders
+                        # that lookup `phase_outputs[phase_name][key]`
+                        # AND builders that lookup by key across all
+                        # phases both resolve cleanly.
+                        merged_phase_block = dict(
+                            _phase_outputs.get(phase_name, {})
+                        )
+                        merged_phase_block.update(current_extracted)
+                        _phase_outputs[phase_name] = merged_phase_block
+                except Exception as exc:
+                    logger.warning(
+                        f"[{self.run_id}] Failed to extract current-phase "
+                        f"outputs for gate routing on {phase_name}: {exc}"
+                    )
 
             gate_results_list = []
             parsed_gates = []
@@ -1086,7 +1171,14 @@ class TaskExecutor:
         # Log phase completion
         if self.capture:
             completed = sum(1 for r in results.values() if r.status == "COMPLETE")
-            failed = sum(1 for r in results.values() if r.status in ("ERROR", "TIMEOUT"))
+            # Wave 33 Bug C: include the FAILED status so task
+            # envelopes with ``success=False`` surface in the phase
+            # summary rather than being silently lumped under
+            # "completed".
+            failed = sum(
+                1 for r in results.values()
+                if r.status in ("ERROR", "TIMEOUT", "FAILED")
+            )
             self.capture.log_decision(
                 decision_type="phase_completion",
                 decision=f"Phase {phase_name} completed: {completed} success, {failed} failed",
