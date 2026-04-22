@@ -3692,7 +3692,18 @@ def _build_tool_registry() -> dict:
                     doc = json.loads(sidecar.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     continue
-                slug = sidecar.stem.replace("_synthesized", "")
+                # Wave 36: match ContentGroundingValidator + Wave 35
+                # content-generator slug rules (lowercase + space→hyphen).
+                # Pre-Wave-36 a staging stem like ``XYZ_201_synthesized``
+                # emitted router refs as ``dart:XYZ_201#...`` while the
+                # validator + content-generator lowercased, so
+                # uppercase-named corpora silently failed the source_refs
+                # gate.
+                slug = (
+                    sidecar.stem.replace("_synthesized", "")
+                    .lower()
+                    .replace(" ", "-")
+                )
                 sections = doc.get("sections") or []
                 if not isinstance(sections, list):
                     continue
