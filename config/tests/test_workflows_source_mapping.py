@@ -88,6 +88,25 @@ class TestCoursePlanningUpdated:
         phase = textbook_phases["course_planning"]
         assert "source_mapping" in phase["depends_on"]
 
+    def test_course_planning_routes_duration_weeks_explicit(self, textbook_phases):
+        """Wave 40: the flag gates ``_plan_course_structure``'s
+        config-over-kwargs precedence. If the flag isn't routed, the
+        Python default ``True`` wins and the Wave 40 fix is dead
+        code on production workflow runs."""
+        phase = textbook_phases["course_planning"]
+        params = {entry["param"] for entry in phase["inputs_from"]}
+        assert "duration_weeks_explicit" in params, (
+            "course_planning must route duration_weeks_explicit from "
+            "workflow_params so the auto-scaled project_config.json "
+            "value is honored when --weeks was unset."
+        )
+        entry = next(
+            e for e in phase["inputs_from"]
+            if e["param"] == "duration_weeks_explicit"
+        )
+        assert entry["source"] == "workflow_params"
+        assert entry["key"] == "duration_weeks_explicit"
+
 
 class TestContentGenerationUpdated:
     def test_content_generation_receives_source_module_map(self, textbook_phases):
@@ -99,6 +118,21 @@ class TestContentGenerationUpdated:
         phase = textbook_phases["content_generation"]
         params = {entry["param"] for entry in phase["inputs_from"]}
         assert "staging_dir" in params
+
+    def test_content_generation_routes_duration_weeks_explicit(self, textbook_phases):
+        """Wave 40 companion: same reason as course_planning — without
+        the flag routed, ``_generate_course_content``'s config-over-
+        kwargs precedence falls back to the default ``True`` and
+        clobbers the auto-scaled project_config value."""
+        phase = textbook_phases["content_generation"]
+        params = {entry["param"] for entry in phase["inputs_from"]}
+        assert "duration_weeks_explicit" in params
+        entry = next(
+            e for e in phase["inputs_from"]
+            if e["param"] == "duration_weeks_explicit"
+        )
+        assert entry["source"] == "workflow_params"
+        assert entry["key"] == "duration_weeks_explicit"
 
     def test_source_refs_gate_wired_at_critical(self, textbook_phases):
         phase = textbook_phases["content_generation"]
