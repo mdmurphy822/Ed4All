@@ -832,6 +832,42 @@ class TestWave43SummaryRecapHelper:
         out = _summary_recap_paragraphs(modules)
         assert len(out) == 1
 
+    def test_short_paragraph_does_not_block_later_substantive_dupe_prefix(self):
+        """Wave 44 regression: pre-Wave-44 a short ineligible paragraph
+        added its 80-char prefix to the ``seen`` set BEFORE the 30-word
+        eligibility check. A later substantive paragraph sharing the
+        same opening text was then silently dropped, leaving the recap
+        empty on corpora where successive sections use a common lead-in
+        phrase (e.g. "In this chapter we examine...").
+        """
+        # Shared 80-char prefix on two paragraphs — first is short
+        # (ineligible), second is substantive (eligible).
+        prefix = "In this chapter we examine the key ideas and methods that"
+        assert len(prefix) >= 50  # shares 80-char key with the substantive one
+        short = prefix + " briefly."
+        long_body = prefix + " " + " ".join(["word"] * 40)
+        assert len(short.split()) < 30
+        assert len(long_body.split()) >= 30
+
+        modules = [
+            {
+                "title": "brief",
+                "sections": [
+                    {"heading": "h", "paragraphs": [short]},
+                ],
+            },
+            {
+                "title": "substantive",
+                "sections": [
+                    {"heading": "h", "paragraphs": [long_body]},
+                ],
+            },
+        ]
+        out = _summary_recap_paragraphs(modules)
+        # Must keep the substantive paragraph; pre-Wave-44 returned [].
+        assert len(out) == 1
+        assert len(out[0].split()) >= 30
+
 
 class TestWave43SummaryRecapEmit:
     """Integration tests: generate_week emits Chapter Recap on summary."""
