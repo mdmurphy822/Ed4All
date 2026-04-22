@@ -122,7 +122,18 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
 # After a phase completes, these fields are pulled from the result
 # and stored in workflow state under phase_outputs[phase_name].
 _LEGACY_PHASE_OUTPUT_KEYS: Dict[str, List[str]] = {
-    "dart_conversion": ["output_path", "output_paths", "success", "html_length"],
+    # Wave 32 Deliverable B: surface html_path + html_paths (router
+    # canonical keys) alongside the legacy output_path / output_paths
+    # aliases so the DartMarkersValidator gate builder picks them up
+    # without a router change. Pre-Wave-32 runs reported
+    # ``dart_markers skipped — missing inputs: html_path`` because
+    # ``_build_dart_markers`` looked for html_path but the phase only
+    # surfaced output_path.
+    "dart_conversion": [
+        "output_path", "output_paths",
+        "html_path", "html_paths",
+        "success", "html_length",
+    ],
     "staging": ["staging_dir", "staged_files", "file_count"],
     # Wave 24: objective_extraction no longer emits objective_ids; it
     # now emits textbook_structure_path + chapter_count + source_file_count
@@ -137,8 +148,19 @@ _LEGACY_PHASE_OUTPUT_KEYS: Dict[str, List[str]] = {
         "project_id", "synthesized_objectives_path",
         "objective_ids", "terminal_count", "chapter_count",
     ],
-    "content_generation": ["project_id", "content_paths", "weeks_prepared"],
-    "packaging": ["package_path", "libv2_package_path", "project_id"],
+    # Wave 32 Deliverable B: add page_paths + content_dir so the
+    # ContentGroundingValidator + PageObjectivesValidator builders
+    # can resolve inputs (pre-Wave-32 both gates silently skipped).
+    "content_generation": [
+        "project_id", "content_paths", "page_paths", "content_dir",
+        "weeks_prepared",
+    ],
+    # Wave 32 Deliverable B: surface imscc_path + content_dir so
+    # IMSCCValidator + PageObjectivesValidator builders pick them up.
+    "packaging": [
+        "package_path", "libv2_package_path", "imscc_path",
+        "content_dir", "project_id",
+    ],
     # Wave 24: surface chunks_path + assessments_path for the
     # assessment_objective_alignment gate input builder.
     "trainforge_assessment": [
@@ -754,11 +776,22 @@ class WorkflowRunner:
             paths = []
             for result in results.values():
                 if result.status == "COMPLETE" and isinstance(result.result, dict):
-                    path = result.result.get("output_path")
+                    path = (
+                        result.result.get("output_path")
+                        or result.result.get("html_path")
+                    )
                     if path:
                         paths.append(path)
             if paths:
-                extracted["output_paths"] = ",".join(paths)
+                joined = ",".join(paths)
+                extracted["output_paths"] = joined
+                # Wave 32 Deliverable B: alias as html_paths (router
+                # canonical key) so DartMarkersValidator gate builder
+                # picks it up without a router change.
+                extracted["html_paths"] = joined
+                # And surface a single representative html_path for
+                # validators that only accept the scalar form.
+                extracted.setdefault("html_path", paths[0])
 
         return extracted
 

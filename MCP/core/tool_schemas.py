@@ -460,6 +460,53 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "description": "Wave 24: Extract semantic structure from staged DART HTML into textbook_structure.json.",
     },
 
+    # Wave 30 Gap 3 / Wave 32 Deliverable A: register the
+    # synthesize_training schema so
+    # ``param_mapper.get_tool_schema("synthesize_training")`` stops
+    # returning None. Pre-Wave-32 the Wave-30 PR wired the tool into
+    # ``_build_tool_registry`` + ``AGENT_TOOL_MAPPING`` but missed this
+    # third location of the three-location wiring invariant, so at
+    # runtime the param mapper raised ``ParameterMappingError("Unknown
+    # tool: synthesize_training")`` on every dispatch, tripped the
+    # poison-pill detector, and the ``training_synthesis`` phase never
+    # produced ``instruction_pairs.jsonl`` / ``preference_pairs.jsonl``
+    # in real runs.
+    #
+    # Signature mirrors both callers:
+    #   * ``MCP/tools/pipeline_tools.py::synthesize_training`` (@mcp.tool
+    #     variant at L573) → (corpus_dir, course_code, provider, seed).
+    #   * ``MCP/tools/pipeline_tools.py::_synthesize_training`` (pipeline
+    #     registry variant at L2993) — accepts a wider alias surface
+    #     (``trainforge_dir`` / ``course_name`` / ``course_id`` /
+    #     ``assessments_path`` / ``chunks_path``) so the param mapping
+    #     block below also registers those as aliases.
+    "synthesize_training": {
+        "required": ["corpus_dir", "course_code"],
+        "optional": ["provider", "seed"],
+        "defaults": {
+            "provider": "mock",
+            "seed": None,
+        },
+        "param_mapping": {
+            # Corpus dir aliases — registry variant accepts any of these
+            # and derives the corpus_dir when one isn't passed directly.
+            "trainforge_dir": "corpus_dir",
+            "output_dir": "corpus_dir",
+            "workspace": "corpus_dir",
+            # Course code aliases — registry variant maps course_name /
+            # course_id onto course_code for decision capture.
+            "course_name": "course_code",
+            "course_id": "course_code",
+            "course": "course_code",
+            "name": "course_code",
+        },
+        "description": (
+            "Wave 30 Gap 3: synthesize SFT + DPO training pairs from a "
+            "Trainforge corpus (reads corpus/chunks.jsonl, writes "
+            "training_specs/instruction_pairs.jsonl + preference_pairs.jsonl)."
+        ),
+    },
+
     # Wave 24: Synthesize + persist real TO-NN/CO-NN objectives from
     # the textbook_structure (or supplied objectives_path).
     "plan_course_structure": {
@@ -721,6 +768,7 @@ TOOL_CATEGORIES = {
         "stage_dart_outputs",
         "extract_and_convert_pdf",
         "archive_to_libv2",
+        "synthesize_training",
     ],
 }
 
