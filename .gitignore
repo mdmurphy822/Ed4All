@@ -35,8 +35,18 @@ coverage.xml
 # =============================================================================
 # Ed4All - LibV2 Content (preserve structure, exclude data)
 # =============================================================================
+# Course directories under LibV2/courses/ contain user-specific content
+# (chunks.jsonl, graph/, quality/, retrieval/gold_queries.jsonl, ...). These
+# are intentionally not tracked so this repository stays course-agnostic.
+# Reference-retrieval fixtures live in
+# LibV2/tools/libv2/tests/test_eval_harness_retrieval.py; users curate their
+# own per-course gold queries locally (see docs/libv2/reference-retrieval.md
+# "Adding gold queries to your own corpus").
 LibV2/courses/*
 !LibV2/courses/.gitkeep
+# LibV2/catalog/cross_package_concepts.json is regenerated on demand via
+# ``libv2 cross-index`` against whatever courses a user has loaded locally;
+# we do not ship a course-specific snapshot.
 LibV2/catalog/*
 !LibV2/catalog/.gitkeep
 
@@ -102,6 +112,8 @@ training-captures/trainforge/*
 !training-captures/trainforge/.gitkeep
 training-captures/textbook-pipeline/*
 !training-captures/textbook-pipeline/.gitkeep
+training-captures/pipeline/*
+!training-captures/pipeline/.gitkeep
 
 # MCP runtime
 MCP/runtime/
@@ -129,3 +141,10 @@ state/GENERATION_PROGRESS.md
 
 # Examples output
 examples/output/
+
+# Planning artifacts — scratch docs, reviews, sub-plans; kept local-only
+plans/
+
+# Top-level inputs/ — corpus PDFs + local scratch; directory kept, contents ignored
+inputs/*
+!inputs/.gitkeep

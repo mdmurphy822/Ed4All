@@ -21,9 +21,9 @@ except ImportError:
     ValidationError = Exception
 
 # Schema paths
-DECISION_SCHEMA_PATH = SCHEMAS_DIR / "decision_event_schema.json"
-TRAINFORGE_SCHEMA_PATH = SCHEMAS_DIR / "trainforge_decision_schema.json"
-SESSION_SCHEMA_PATH = SCHEMAS_DIR / "session_annotation_schema.json"
+DECISION_SCHEMA_PATH = SCHEMAS_DIR / "events" / "decision_event.schema.json"
+TRAINFORGE_SCHEMA_PATH = SCHEMAS_DIR / "events" / "trainforge_decision.schema.json"
+SESSION_SCHEMA_PATH = SCHEMAS_DIR / "events" / "session_annotation.schema.json"
 
 # Cache loaded schemas
 _SCHEMA_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -101,7 +101,7 @@ def validate_decision(
     # instead of attempting HTTP fetches for relative filenames.
     from jsonschema import RefResolver
     store = {}
-    for schema_file in SCHEMAS_DIR.glob("*.json"):
+    for schema_file in SCHEMAS_DIR.rglob("*.json"):
         with open(schema_file) as sf:
             s = json.load(sf)
         # Map both the bare filename and any $id to the loaded schema

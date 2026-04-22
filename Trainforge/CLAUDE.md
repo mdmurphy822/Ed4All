@@ -33,7 +33,7 @@ package = parser.parse("/path/to/course.imscc")
 generator = AssessmentGenerator(capture=None)
 assessment = generator.generate(
     course_code="INT_101",
-    objective_ids=["LO-001", "LO-002"],
+    objective_ids=["TO-01", "TO-02"],
     bloom_levels=["understand", "apply"],
     question_count=10
 )
@@ -44,6 +44,10 @@ assessment = generator.generate(
 ## Decision Capture Protocol
 
 **CRITICAL**: All Claude decisions MUST be captured for training data.
+
+> **Strict-mode opt-in.** Set `DECISION_VALIDATION_STRICT=true` to fail-closed on unknown `decision_type` values. The canonical enum lives at `schemas/events/decision_event.schema.json` (52 values as of the current tree). Default remains lenient (unknown values pass with a warning).
+>
+> Canonical `decision_type` values for Trainforge call sites: `assessment_planning`, `question_type_selection`, `question_generation`, `distractor_generation`, `assessment_generation`. `assessment_planning` + `question_type_selection` are the per-run planning decisions; `question_generation` / `distractor_generation` fire per question; `assessment_generation` fires per assembled assessment.
 
 ### Required Captures
 
@@ -75,7 +79,7 @@ from lib.trainforge_capture import create_trainforge_capture
 with create_trainforge_capture("INT_101", "/path/to/INT_101.imscc") as capture:
     # Set learning objective context
     capture.set_learning_objective_context(
-        lo_id="INT101_D1_1.1",
+        lo_id="TO-01",
         bloom_target="understand"
     )
 
@@ -181,6 +185,17 @@ Trainforge extracts structured metadata from Courseforge HTML output using a pri
 | `content_type_label` | JSON-LD / data-cf-content-type | Section classification (explanation, example, procedure, etc.) |
 | `key_terms` | JSON-LD keyTerms | Structured term/definition pairs |
 | `misconceptions` | JSON-LD misconceptions | Common errors with corrections |
+| `run_id` | Active `DecisionCapture` | Provenance — emitted unconditionally on all chunks |
+| `created_at` | Active `DecisionCapture` | Provenance timestamp — emitted unconditionally |
+| `source.source_references[]` | Courseforge JSON-LD `sourceReferences` + `data-cf-source-ids` | Optional array of DART/Courseforge source references per the canonical `source_reference.schema.json` shape. JSON-LD refs carry authoritative roles (primary / contributing / corroborating); HTML-attr-only refs auto-role as `contributing`. Merged chunks (via `_merge_small_sections`) union refs across all merged sections with role-precedence preserved (first-seen wins, primary > contributing > corroborating). Absence = legacy corpus ("unknown") — never an error. |
+
+### Schemas and concept graph
+
+- **Canonical chunk contract**: `schemas/knowledge/chunk_v4.schema.json`. Includes optional `source.source_references[]`. Opt-in enforcement via `TRAINFORGE_VALIDATE_CHUNKS=true`; fails closed on shape drift.
+- **Concept graph**: 8 edge types — 3 taxonomic (`is-a`, `prerequisite`, `related-to`) + 5 pedagogical (`assesses`, `exemplifies`, `misconception-of`, `derived-from-objective`, `defined-by`). Concept nodes carry optional `occurrences[]` (sorted chunk-ID back-references) and optional `source_refs[]` — the SourceReference list copied from the first occurrence chunk's `source.source_references[]`. Per-rule evidence discriminator on `edges[].provenance`; strict mode via `TRAINFORGE_STRICT_EVIDENCE=true`. The five chunk-anchored evidence arms (`IsAEvidence`, `ExemplifiesEvidence`, `DerivedFromObjectiveEvidence`, `DefinedByEvidence`, `AssessesEvidence`) include optional `source_references[]` populated from the originating chunk when `TRAINFORGE_SOURCE_PROVENANCE=true`. The schema admits the field unconditionally; only the emit is gated, so strict validators stay consistent regardless of flag state.
+- **Misconception as first-class entity**: `schemas/knowledge/misconception.schema.json` — IDs follow `mc_[0-9a-f]{16}` (content hash).
+
+Full ontology map: `schemas/ONTOLOGY.md`. Root `CLAUDE.md` lists the complete opt-in flag set.
 
 ---
 
@@ -214,21 +229,48 @@ Trainforge extracts structured metadata from Courseforge HTML output using a pri
 All decisions are written to:
 ```
 training-captures/trainforge/{COURSE_CODE}/
-├── phase_content-extraction/
+├── phase_trainforge-content-analysis/
 │   └── decisions_YYYYMMDD_HHMMSS.jsonl
-├── phase_question-generation/
+├── phase_trainforge-question-generation/
 │   └── decisions_YYYYMMDD_HHMMSS.jsonl
-└── phase_validation/
+└── phase_trainforge-validation/
     └── decisions_YYYYMMDD_HHMMSS.jsonl
 ```
+
+The directory name is derived from the active `DecisionCapture.phase`, which must be one of the canonical hyphenated values in `schemas/events/decision_event.schema.json`. `CourseProcessor` uses `phase="trainforge-content-analysis"` (see `Trainforge/process_course.py`). Prior revisions used the underscore form `phase_content-extraction/`; under `DECISION_VALIDATION_STRICT=true` that value fails closed because it is not a canonical enum member.
 
 ### MCP Tools
 
 Available via Ed4All MCP server:
-- `analyze_imscc_content`: Analyze package for assessment opportunities
-- `generate_assessments`: Generate questions from content
-- `validate_assessment`: Validate generated assessments
-- `export_training_data`: Export captured data for training
+- `analyze_imscc_content`: Analyze package for assessment opportunities.
+- `generate_assessments`: Generate questions from content. Dispatches directly to `Trainforge.generators.assessment_generator.AssessmentGenerator` (the same generator used by the internal pipeline). On error — missing chunks, import failure, generator exception — returns a structured `{"error": ..., "cause": ...}` payload; never a placeholder-success response with templated `"Correct answer based on content"` strings.
+- `validate_assessment`: Validate generated assessments.
+- `export_training_data`: Export captured data for training.
+- `get_trainforge_status`: Trainforge processing status.
+
+---
+
+## Quality Report — `assessments` Dimension
+
+Alongside per-gate validation, `CourseProcessor._write_metadata` folds an `assessments` dimension into `quality_report.json` so a human reviewer sees WHICH question is broken, not just an aggregate score. Built by `Trainforge/generators/assessment_quality_report.py::build_assessment_dimension`, populated from the same validators wired to phase gates (`AssessmentQualityValidator`, `BloomAlignmentValidator`). Shape:
+
+```json
+{
+    "total_questions": 10,
+    "distinct_stems": 10,
+    "distinct_correct_answers": 9,
+    "distinct_stem_ratio": 1.0,
+    "distinct_correct_answer_ratio": 0.9,
+    "avg_distractor_entropy": 0.82,
+    "bloom_distribution_observed": {"remember": 3, "understand": 4},
+    "objective_coverage_ratio": 0.9,
+    "per_question_issues": [
+        {"question_id": "q-001", "issues": ["TOC_FRAGMENT_ANSWER"]}
+    ]
+}
+```
+
+`per_question_issues` surfaces: TOC fragments reported as answers, verb-less stems, templated distractors, stem near-duplicates, Bloom-level misalignment.
 
 ---
 

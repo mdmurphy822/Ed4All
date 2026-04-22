@@ -214,7 +214,16 @@ def register_trainforge_tools(mcp):
         imscc_path: str = ""
     ) -> str:
         """
-        Generate assessments from course content using RAG retrieval.
+        Generate assessments from course content using the canonical
+        :class:`AssessmentGenerator` path.
+
+        Wave 26 unification: this surface no longer hand-rolls question
+        payloads with placeholder strings (``"Correct answer based on
+        content"``). It dispatches directly to
+        :class:`Trainforge.generators.assessment_generator.AssessmentGenerator`,
+        the same generator used by the internal pipeline. That generator
+        performs content grounding, leak checking, and template-fallback
+        flagging.
 
         Args:
             course_id: Course identifier (e.g., INT_101)
@@ -227,20 +236,47 @@ def register_trainforge_tools(mcp):
                        Used as fallback when RAG corpus is unavailable.
 
         Returns:
-            Generated assessment data with question IDs and RAG-retrieved content
+            Generated assessment data with question IDs, Bloom distribution,
+            and source-chunk references from the real generator. On error
+            (no chunks, import failure, generator exception) returns a
+            structured ``{"error": ..., "cause": ...}`` payload — never a
+            placeholder-success response.
         """
         import time
         start_time = time.time()
 
+        # Verify the canonical generator is available. If not, surface a
+        # structured error — never fall back to placeholder content.
+        if not HAS_ASSESSMENT_GENERATOR:
+            return json.dumps({
+                "error": "AssessmentGenerator unavailable",
+                "cause": "import_failed",
+                "hint": (
+                    "Trainforge.generators.assessment_generator could not "
+                    "be imported. Verify Trainforge package is on the "
+                    "Python path."
+                ),
+            })
+
         try:
-            objectives = [o.strip() for o in objective_ids.split(",")]
-            levels = [l.strip() for l in bloom_levels.split(",")]
+            objectives = [o.strip() for o in objective_ids.split(",") if o.strip()]
+            levels = [l.strip() for l in bloom_levels.split(",") if l.strip()]
+
+            if not objectives:
+                return json.dumps({
+                    "error": "No objective IDs provided",
+                    "cause": "empty_objective_ids",
+                })
+            if not levels:
+                return json.dumps({
+                    "error": "No Bloom levels provided",
+                    "cause": "empty_bloom_levels",
+                })
 
             # Sanitize course_id to prevent path traversal
             safe_course_id = sanitize_path_component(course_id)
 
             session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-            assessment_id = f"ASM-{safe_course_id}-{session_id}"
 
             # Create output directory with path validation
             output_dir = validate_path_within_root(
@@ -264,11 +300,21 @@ def register_trainforge_tools(mcp):
                     rag = get_rag_for_course(course_slug)
                     if rag.has_corpus:
                         corpus_stats = rag.get_corpus_stats()
-                        logger.info(f"RAG initialized for {course_slug}: {corpus_stats.get('chunk_count', 0)} chunks")
+                        logger.info(
+                            "RAG initialized for %s: %d chunks",
+                            course_slug, corpus_stats.get('chunk_count', 0),
+                        )
                 except Exception as e:
-                    logger.warning(f"Could not initialize RAG for {course_slug}: {e}")
+                    logger.warning(
+                        "Could not initialize RAG for %s: %s",
+                        course_slug, e,
+                    )
 
-            # If RAG unavailable, try direct IMSCC content extraction
+            # If RAG unavailable, try direct IMSCC content extraction. The
+            # AssessmentGenerator consumes a list of chunk dicts with
+            # ``text`` + ``id``/``chunk_id`` keys; we normalize to that
+            # shape so the ContentExtractor hits real content instead of
+            # template fallbacks.
             imscc_content_chunks = []
             if not rag and imscc_path:
                 import zipfile
@@ -278,165 +324,110 @@ def register_trainforge_tools(mcp):
                         validate_path_within_root(imscc_file.resolve(), _PROJECT_ROOT)
                         with zipfile.ZipFile(imscc_file, 'r') as z:
                             if 'imsmanifest.xml' not in z.namelist():
-                                logger.warning("IMSCC at %s missing imsmanifest.xml", imscc_path)
+                                logger.warning(
+                                    "IMSCC at %s missing imsmanifest.xml",
+                                    imscc_path,
+                                )
                             for name in z.namelist():
                                 if name.endswith('.html'):
-                                    content = z.read(name).decode('utf-8', errors='ignore')
-                                    # Strip HTML tags for text content
-                                    import re
-                                    text = re.sub(r'<[^>]+>', ' ', content)
+                                    content = z.read(name).decode(
+                                        'utf-8', errors='ignore',
+                                    )
+                                    # Strip HTML for text-only fallback chunks.
+                                    import re as _re
+                                    text = _re.sub(r'<[^>]+>', ' ', content)
                                     text = ' '.join(text.split())
                                     if len(text) > 50:
                                         imscc_content_chunks.append({
+                                            "id": name,
+                                            "chunk_id": name,
+                                            "text": text[:4000],
                                             "source": name,
-                                            "content": text[:2000],
-                                            "word_count": len(text.split())
+                                            "word_count": len(text.split()),
                                         })
                         logger.info(
                             "Extracted %d content chunks from IMSCC %s",
-                            len(imscc_content_chunks), imscc_file.name
+                            len(imscc_content_chunks), imscc_file.name,
                         )
                     except (ValueError, zipfile.BadZipFile) as e:
-                        logger.warning("Failed to extract IMSCC content from %s: %s", imscc_path, e)
+                        logger.warning(
+                            "Failed to extract IMSCC content from %s: %s",
+                            imscc_path, e,
+                        )
                 elif imscc_path:
-                    logger.warning("IMSCC path not found or invalid: %s", imscc_path)
+                    logger.warning(
+                        "IMSCC path not found or invalid: %s", imscc_path,
+                    )
 
-            # Generate assessment using RAG-retrieved chunks
-            questions = []
-            rag_metrics = {
-                "total_chunks_retrieved": 0,
-                "total_chunks_used": 0,
-                "avg_retrieval_latency_ms": 0.0,
-                "retrieval_count": 0
-            }
+            # No chunks available and no RAG: error instead of generating
+            # placeholder questions.
+            if not rag and not imscc_content_chunks:
+                _finalize_capture(capture, status="error")
+                return json.dumps({
+                    "error": "No source content available for generation",
+                    "cause": "no_chunks",
+                    "hint": (
+                        "Provide a valid course_slug pointing to a "
+                        "LibV2-indexed course, or an imscc_path pointing "
+                        "to a valid IMSCC package."
+                    ),
+                })
 
-            questions_per_combo = max(1, question_count // (len(objectives) * len(levels)))
+            # Dispatch to the canonical generator. If we have a RAG
+            # bridge, pass it; otherwise hand the extracted IMSCC chunks
+            # directly so the generator's ContentExtractor can operate
+            # on real text.
+            generator = AssessmentGenerator(
+                capture=capture,
+                check_leaks=True,
+                rag=rag,
+            )
 
-            for obj_id in objectives:
-                for bloom_level in levels:
-                    if len(questions) >= question_count:
-                        break
+            try:
+                assessment_data = generator.generate(
+                    course_code=safe_course_id,
+                    objective_ids=objectives,
+                    bloom_levels=levels,
+                    question_count=question_count,
+                    source_chunks=(
+                        None if rag else imscc_content_chunks
+                    ),
+                )
+            except Exception as e:
+                logger.exception("AssessmentGenerator.generate failed")
+                _finalize_capture(capture, status="error")
+                return json.dumps({
+                    "error": f"AssessmentGenerator.generate() failed: {e}",
+                    "cause": "generator_exception",
+                })
 
-                    # Set LO context in legacy capture (new telemetry includes this in emit)
-                    if capture and hasattr(capture, 'set_learning_objective_context'):
-                        capture.set_learning_objective_context(
-                            lo_id=obj_id,
-                            bloom_target=bloom_level
-                        )
+            # Convert to serializable dict + augment with MCP-surface fields
+            assessment = assessment_data.to_dict()
+            assessment_id = assessment["assessment_id"]
 
-                    # Retrieve relevant chunks for this objective
-                    source_chunks = []
-                    if rag:
-                        try:
-                            chunks, metrics = rag.retrieve_for_objective(
-                                objective_text=obj_id,
-                                bloom_level=bloom_level,
-                                top_k=5
-                            )
-                            source_chunks = [c.to_dict() for c in chunks]
-
-                            # Log chunk retrieval
-                            if chunks:
-                                _log_chunk_retrieval(
-                                    capture,
-                                    query=obj_id,
-                                    chunks_retrieved=[{"chunk_id": c.chunk_id, "relevance_score": c.score, "token_count": c.tokens_estimate} for c in chunks],
-                                    chunks_used=[{"chunk_id": c.chunk_id, "relevance_score": c.score, "token_count": c.tokens_estimate} for c in chunks[:3]],
-                                    latency_ms=metrics.retrieval_latency_ms
-                                )
-
-                            # Update metrics
-                            rag_metrics["total_chunks_retrieved"] += metrics.chunks_retrieved
-                            rag_metrics["total_chunks_used"] += min(3, metrics.chunks_retrieved)
-                            rag_metrics["avg_retrieval_latency_ms"] += metrics.retrieval_latency_ms
-                            rag_metrics["retrieval_count"] += 1
-                        except Exception as e:
-                            logger.warning(f"RAG retrieval failed for {obj_id}: {e}")
-
-                    # Fallback: use IMSCC content chunks if RAG unavailable
-                    if not source_chunks and imscc_content_chunks:
-                        source_chunks = imscc_content_chunks[:5]
-
-                    # Generate questions for this objective/level combo
-                    for _ in range(questions_per_combo):
-                        if len(questions) >= question_count:
-                            break
-
-                        question_id = f"Q-{str(uuid.uuid4())[:8]}"
-                        question_gen_start = time.time()
-
-                        # Build question with content from chunks if available
-                        question_stem = f"Question about {obj_id}"
-                        correct_answer = "Correct answer based on content"
-
-                        if source_chunks and len(source_chunks) > 0:
-                            # Use chunk content to build more specific question
-                            first_chunk = source_chunks[0]
-                            chunk_text = first_chunk.get("text", "")[:500]
-                            question_stem = f"Based on the following content, {bloom_level} the key concepts:\n\n{chunk_text}"
-
-                        question = {
-                            "question_id": question_id,
-                            "objective_id": obj_id,
-                            "bloom_level": bloom_level,
-                            "question_type": "multiple_choice" if bloom_level in ["remember", "understand"] else "short_answer",
-                            "stem": question_stem,
-                            "correct_answer": correct_answer,
-                            "source_chunks": [c.get("chunk_id", "") for c in source_chunks[:3]],
-                            "status": "generated",
-                            "generation_latency_ms": (time.time() - question_gen_start) * 1000
-                        }
-                        questions.append(question)
-
-                        # Log question generation
-                        q_data = {
-                            "question_id": question_id,
-                            "question_type": question["question_type"],
-                            "question_stem": question_stem[:200],
-                            "correct_answer": correct_answer,
-                            "difficulty": "medium",
-                            "bloom_level": bloom_level
-                        }
-                        _log_question_generation(
-                            capture,
-                            question_data=q_data,
-                            source_chunks=[c.get("chunk_id", "") for c in source_chunks[:3]],
-                            rationale=f"Generated {question['question_type']} targeting {bloom_level} level for objective {obj_id}",
-                            latency_ms=question["generation_latency_ms"]
-                        )
-
-                if len(questions) >= question_count:
-                    break
-
-            # Calculate average retrieval latency
-            if rag_metrics["retrieval_count"] > 0:
-                rag_metrics["avg_retrieval_latency_ms"] /= rag_metrics["retrieval_count"]
-
-            # Build assessment
-            assessment = {
-                "assessment_id": assessment_id,
+            assessment.update({
                 "course_id": course_id,
                 "course_slug": course_slug,
-                "created_at": datetime.now().isoformat(),
-                "objectives_targeted": objectives,
-                "bloom_levels": levels,
                 "requested_count": question_count,
-                "actual_count": len(questions),
-                "questions": questions,
-                "rag_metrics": rag_metrics,
+                "actual_count": len(assessment.get("questions", [])),
                 "corpus_stats": corpus_stats,
                 "status": "generated",
-                "total_generation_time_ms": (time.time() - start_time) * 1000
-            }
+                "total_generation_time_ms": (time.time() - start_time) * 1000,
+                "generator_path": "AssessmentGenerator",
+            })
 
-            # Log assessment assembly
+            # Log assessment assembly (best-effort; no-ops if capture is None)
             _log_assessment_assembly(
                 capture,
                 assessment_id=assessment_id,
-                question_ids=[q["question_id"] for q in questions],
-                total_points=len(questions) * 2,
-                time_limit=len(questions) * 2,
-                rationale=f"Assembled {len(questions)} questions targeting {len(objectives)} objectives at {len(levels)} Bloom levels"
+                question_ids=[q["question_id"] for q in assessment["questions"]],
+                total_points=int(assessment.get("total_points", 0)),
+                time_limit=len(assessment["questions"]) * 2,
+                rationale=(
+                    f"Assembled {len(assessment['questions'])} questions "
+                    f"targeting {len(objectives)} objectives at "
+                    f"{len(levels)} Bloom levels via AssessmentGenerator"
+                ),
             )
 
             # Save assessment
@@ -450,17 +441,21 @@ def register_trainforge_tools(mcp):
             return json.dumps({
                 "success": True,
                 "assessment_id": assessment_id,
-                "question_count": len(questions),
+                "question_count": len(assessment["questions"]),
                 "output_path": str(assessment_path),
                 "rag_enabled": rag is not None,
                 "decision_capture_enabled": capture is not None,
-                "rag_metrics": rag_metrics,
+                "generator_path": "AssessmentGenerator",
                 "session_summary": session_summary,
-                "status": "generated"
+                "status": "generated",
             })
 
         except Exception as e:
-            return json.dumps({"error": str(e)})
+            logger.exception("generate_assessments failed unexpectedly")
+            return json.dumps({
+                "error": str(e),
+                "cause": "unexpected_exception",
+            })
 
     @mcp.tool()
     async def validate_assessment(assessment_id: str) -> str:

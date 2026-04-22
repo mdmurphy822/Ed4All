@@ -5,6 +5,32 @@ Defines error taxonomy for consistent error handling across tools.
 Provides machine-readable error codes for automated handling.
 
 Phase 0 Hardening - Requirement 7: MCP Contract Hardening
+
+Canonical tool error envelope (Wave 33 standard, reinforced Wave 37):
+
+    {
+        "success": false,
+        "error_code": "<string>",   // e.g. "CONTENT_GENERATION_EMPTY"
+        "error": "<string>",        // human-readable message
+        "error_message": "<string>" // optional alias, legacy callers
+    }
+
+The workflow runner (``MCP/core/executor.py::_execute_with_retries``)
+inspects ``result["success"]`` and maps ``False`` → ExecutionResult
+status ``FAILED`` with the ``error_code`` / ``error`` surfaced into
+the gate-aggregation summary.
+
+Legacy error shapes still in use across the tool surface (to be
+migrated incrementally):
+
+    {"error": "..."}                            # 15+ sites
+    {"success": false, "error": "..."}          # no error_code
+    {"error": "...", "cause": "..."}            # trainforge_tools
+
+New tools MUST emit the canonical shape. Use :func:`error_response`
+below (or :func:`processing_error` / :func:`input_error` / ... for
+the shortcut builders) to construct envelopes that round-trip through
+the runner + gate aggregator without divergence.
 """
 
 import json

@@ -34,6 +34,25 @@ STOPWORDS = {
 # Pattern for valid concept tags: lowercase, hyphenated, 1-4 words
 VALID_TAG_PATTERN = re.compile(r'^[a-z][a-z0-9]*(-[a-z0-9]+){0,3}$')
 
+
+def _resolve_project_schemas_dir(repo_root: Path) -> Path:
+    """Resolve the project-root /schemas/ directory from an arbitrary repo_root.
+
+    Ontology data (previously under ``LibV2/ontology/``) is now unified under
+    ``<project-root>/schemas/taxonomies/``. This helper resolves the location
+    regardless of whether the caller supplied a LibV2 directory or the
+    project root as ``repo_root``.
+    """
+    try:
+        from lib.paths import SCHEMAS_PATH  # type: ignore
+        if SCHEMAS_PATH.exists():
+            return SCHEMAS_PATH
+    except Exception:
+        pass
+    if (repo_root / "courses").exists() and (repo_root.parent / "schemas").exists():
+        return repo_root.parent / "schemas"
+    return repo_root / "schemas"
+
 # Patterns for clearly invalid content
 INVALID_PATTERNS = [
     re.compile(r'^#+\s'),          # Markdown headers
@@ -361,7 +380,7 @@ def analyze_course_concepts(
     Returns:
         VocabularyAnalysis
     """
-    taxonomy_path = repo_root / "ontology" / "taxonomy.json"
+    taxonomy_path = _resolve_project_schemas_dir(repo_root) / "taxonomies" / "taxonomy.json"
     vocab = ConceptVocabulary(taxonomy_path)
 
     chunks_path = course_dir / "corpus" / "chunks.json"
@@ -389,7 +408,7 @@ def clean_course_concepts(
     Returns:
         Statistics about the cleaning
     """
-    taxonomy_path = repo_root / "ontology" / "taxonomy.json"
+    taxonomy_path = _resolve_project_schemas_dir(repo_root) / "taxonomies" / "taxonomy.json"
     vocab = ConceptVocabulary(taxonomy_path)
 
     # Clean chunks

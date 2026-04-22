@@ -623,6 +623,62 @@ def check_write_facade(verbose: bool = False) -> CheckResult:
     return result
 
 
+def check_libv2_vendor_sync(verbose: bool = False) -> CheckResult:
+    """Verify LibV2/vendor/bloom_verbs.json matches the authoritative copy.
+
+    LibV2 is sandboxed from importing Ed4All's lib/ package (cross-package
+    caveat documented in LibV2/CLAUDE.md). Instead of reaching across the
+    package boundary, LibV2 reads a byte-identical vendored copy of
+    schemas/taxonomies/bloom_verbs.json at LibV2/vendor/bloom_verbs.json.
+
+    This check ensures the vendored copy has not drifted from the source.
+    """
+    import hashlib
+
+    start_time = time.time()
+    result = CheckResult(name="LibV2 Vendor Sync", passed=True, message="")
+
+    auth_path = PROJECT_ROOT / "schemas" / "taxonomies" / "bloom_verbs.json"
+    vendored_path = PROJECT_ROOT / "LibV2" / "vendor" / "bloom_verbs.json"
+
+    if not auth_path.exists():
+        result.errors.append(f"Authoritative schema missing: {auth_path}")
+        result.passed = False
+        result.message = "Authoritative bloom_verbs.json missing"
+        result.duration_seconds = time.time() - start_time
+        return result
+
+    if not vendored_path.exists():
+        result.errors.append(f"Vendored copy missing: {vendored_path}")
+        result.passed = False
+        result.message = "LibV2 vendored bloom_verbs.json missing"
+        result.duration_seconds = time.time() - start_time
+        return result
+
+    auth_hash = hashlib.sha256(auth_path.read_bytes()).hexdigest()
+    vendored_hash = hashlib.sha256(vendored_path.read_bytes()).hexdigest()
+
+    result.details["auth_sha256"] = auth_hash
+    result.details["vendored_sha256"] = vendored_hash
+
+    if auth_hash != vendored_hash:
+        result.errors.append(
+            f"Hash drift between {auth_path.name} and {vendored_path}: "
+            f"auth={auth_hash[:16]}... vendored={vendored_hash[:16]}..."
+        )
+        result.passed = False
+        result.message = "LibV2 vendored bloom_verbs.json has drifted"
+    else:
+        result.message = f"LibV2 vendored copy in sync (sha256={auth_hash[:16]}...)"
+
+    if verbose:
+        logger.info(f"  auth sha256:     {auth_hash}")
+        logger.info(f"  vendored sha256: {vendored_hash}")
+
+    result.duration_seconds = time.time() - start_time
+    return result
+
+
 # ============================================================================
 # MAIN RUNNER
 # ============================================================================
@@ -673,6 +729,7 @@ def run_integrity_checks(
         ("Tool Registry", lambda: check_tool_registry(verbose)),
         ("Hash Chains", lambda: check_hash_chains(runs_path, verbose)),
         ("Sample Finalization", lambda: check_sample_finalization(runs_path, verbose)),
+        ("LibV2 Vendor Sync", lambda: check_libv2_vendor_sync(verbose)),
     ]
 
     for name, check_func in checks:

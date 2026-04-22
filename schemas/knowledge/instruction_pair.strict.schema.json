@@ -1,0 +1,81 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:ed4all:schemas:instruction_pair_strict",
+  "title": "Instruction Pair (SFT, strict)",
+  "description": "Strict variant of instruction_pair.schema.json — identical shape except `content_type` must be a member of the ChunkType enum from schemas/taxonomies/content_type.json. REC-VOC-03 Phase 2. Gated at runtime by TRAINFORGE_ENFORCE_CONTENT_TYPE=true; the default (lenient) schema is preserved at instruction_pair.schema.json for backward-compat with free-string consumers.",
+  "type": "object",
+  "required": [
+    "prompt",
+    "completion",
+    "chunk_id",
+    "lo_refs",
+    "bloom_level",
+    "content_type",
+    "seed",
+    "decision_capture_id"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "prompt": {
+      "type": "string",
+      "minLength": 40,
+      "maxLength": 400,
+      "description": "The instruction a model must answer. Must not contain a verbatim span of 50+ consecutive characters from the source chunk text."
+    },
+    "completion": {
+      "type": "string",
+      "minLength": 50,
+      "maxLength": 600,
+      "description": "The target completion the model should produce."
+    },
+    "chunk_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Source chunk id from corpus/chunks.jsonl (e.g. sample_course_chunk_00042)."
+    },
+    "lo_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1},
+      "description": "Learning-outcome refs the source chunk maps to. Never empty: chunks without LO refs do not generate pairs."
+    },
+    "bloom_level": {
+      "type": "string",
+      "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create"]
+    },
+    "content_type": {
+      "type": "string",
+      "enum": [
+        "assessment_item",
+        "overview",
+        "summary",
+        "exercise",
+        "explanation",
+        "example"
+      ],
+      "description": "Content-type label from the source chunk. Must be a member of the ChunkType enum defined in schemas/taxonomies/content_type.json#/$defs/ChunkType. Enforced by lib.validators.content_type when TRAINFORGE_ENFORCE_CONTENT_TYPE=true."
+    },
+    "seed": {
+      "type": "integer",
+      "description": "Seed used for deterministic template selection and sampling. Same chunk + same seed -> identical pair."
+    },
+    "decision_capture_id": {
+      "type": "string",
+      "description": "event_id from the decision-capture log that records why this pair was synthesized. Resolves against the run's decisions JSONL.",
+      "minLength": 1
+    },
+    "template_id": {
+      "type": "string",
+      "description": "Id of the prompt template used (bloom-level x content-type). Optional but useful for debugging."
+    },
+    "provider": {
+      "type": "string",
+      "enum": ["mock", "anthropic"],
+      "description": "Which synthesis provider produced the pair."
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "v1"
+    }
+  }
+}

@@ -3,6 +3,15 @@ Claude-based text processor for PDF structure detection and ordering.
 
 Uses Claude API to review extracted PDF text, fix ordering issues,
 and detect document structure for WCAG-compliant HTML generation.
+
+Source-provenance note (Wave 8): this is the legacy DART path. Per P5
+decision, it emits only a minimal ``data-dart-source="claude_llm"`` stamp
+on top-level ``<section>`` wrappers (applied in
+``DART/pdf_converter/converter.py::_generate_html_from_structure``). For
+full per-block source attribution, page refs, and confidence envelopes,
+the multi-source interpreter (``DART/multi_source_interpreter.py``) is
+the primary source-provenance path. See
+``plans/source-provenance/design.md`` §"DART changes".
 """
 
 import hashlib
@@ -13,9 +22,12 @@ import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from MCP.orchestrator.llm_backend import LLMBackend
 
 
 class BlockType(str, Enum):
@@ -217,58 +229,101 @@ Return ONLY the JSON object, no other text.'''
         max_tokens: int = 16384,
         cache_dir: Optional[str] = None,
         enable_cache: bool = True,
+        llm: Optional["LLMBackend"] = None,
     ):
         """
         Initialize Claude processor.
 
         Args:
-            api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY env var)
+            api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY env var).
+                Ignored when ``llm`` is provided.
             model: Claude model to use
             max_tokens: Maximum tokens in response
             cache_dir: Directory for caching responses
             enable_cache: Whether to use caching
+            llm: Optional pre-built LLM backend (e.g., an
+                :class:`MCP.orchestrator.LLMBackend` instance). When provided,
+                the processor routes completions through it instead of
+                constructing an Anthropic client directly. Keeps existing
+                callers that pass ``api_key`` working unchanged.
         """
         self.api_key = api_key or os.environ.get('ANTHROPIC_API_KEY')
         self.model = model
         self.max_tokens = max_tokens
         self.cache = ResponseCache(cache_dir) if enable_cache else None
         self._client = None
+        self._llm = llm
 
     @property
     def client(self):
-        """Lazy initialization of Anthropic client."""
+        """Lazy initialization of Anthropic client.
+
+        Only used when no injected ``llm`` backend was supplied. New callers
+        should prefer ``llm=...`` in the constructor so that mode switching
+        (local / api / mock) works uniformly. This path is retained for
+        backward compatibility with direct-SDK callers.
+        """
         if self._client is None:
             try:
-                import anthropic
-                self._client = anthropic.Anthropic(api_key=self.api_key)
-            except ImportError:
+                from MCP.orchestrator.llm_backend import AnthropicBackend
+
+                self._client = AnthropicBackend(
+                    api_key=self.api_key,
+                    default_model=self.model,
+                )
+            except Exception as exc:  # noqa: BLE001
                 raise ClaudeProcessingError(
-                    "anthropic package not installed. Run: pip install anthropic"
-                ) from None
+                    f"Could not initialize LLM backend: {exc}"
+                ) from exc
         return self._client
+
+    def _complete(self, system: str, user: str) -> str:
+        """Route a completion through the injected backend or the legacy path."""
+        backend = self._llm if self._llm is not None else self.client
+        return backend.complete_sync(
+            system=system,
+            user=user,
+            model=self.model,
+            max_tokens=self.max_tokens,
+        )
 
     def process_text(
         self,
         raw_text: str,
         gold_standard_template: str = None,
     ) -> DocumentStructure:
-        """
-        Process raw extracted text into structured document.
+        """Process raw extracted text into structured document.
 
         Args:
-            raw_text: Raw text from pdftotext/OCR
-            gold_standard_template: HTML template showing target format (optional)
+            raw_text: Raw text from pdftotext/OCR.
+            gold_standard_template: Optional HTML template showing the
+                target accessibility scaffolding (landmarks, heading
+                hierarchy, skip-link shape). Wave 31 smoke-wires this
+                into the WCAG-validator reference pattern — when
+                supplied, ``DART.pdf_converter.wcag_validator.WCAGValidator``
+                can compare the emitted HTML's landmark structure
+                against the template's as a baseline check (full
+                semantic comparison is deferred — see Wave 31 notes).
+                Today the parameter is accepted + stored but not yet
+                consumed in the prompt body; a future WCAGValidator
+                patch is the planned consumer.
 
         Returns:
-            DocumentStructure with ordered, classified blocks
+            DocumentStructure with ordered, classified blocks.
 
         Raises:
-            ClaudeProcessingError: On any processing failure
+            ClaudeProcessingError: On any processing failure.
         """
-        if not self.api_key:
+        # Wave 31: stash the template on the instance so downstream
+        # accessibility validators can pick it up without a signature
+        # change. Never mutates behaviour — purely additive metadata.
+        if gold_standard_template:
+            self._gold_standard_template = gold_standard_template
+        if self._llm is None and not self.api_key:
             raise ClaudeProcessingError(
-                "No API key provided. Set ANTHROPIC_API_KEY environment variable "
-                "or pass api_key to ClaudeProcessor."
+                "No API key provided and no LLM backend injected. Set "
+                "ANTHROPIC_API_KEY, pass api_key=..., or inject an "
+                "LLMBackend via llm=... to ClaudeProcessor."
             )
 
         # Check cache first
@@ -287,16 +342,11 @@ Return ONLY the JSON object, no other text.'''
         # Build prompt
         user_prompt = self.USER_PROMPT_TEMPLATE.format(raw_text=raw_text)
 
-        # Call Claude API
+        # Call Claude via the LLM backend abstraction
         try:
-
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=self.max_tokens,
+            response_text = self._complete(
                 system=self.SYSTEM_PROMPT,
-                messages=[
-                    {"role": "user", "content": user_prompt}
-                ],
+                user=user_prompt,
             )
         except Exception as e:
             error_str = str(e).lower()
@@ -305,7 +355,6 @@ Return ONLY the JSON object, no other text.'''
             raise ClaudeAPIError(f"API error: {e}") from e
 
         # Parse response
-        response_text = response.content[0].text
         response_json = self._extract_json(response_text)
 
         # Cache successful response

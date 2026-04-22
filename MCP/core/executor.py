@@ -38,36 +38,86 @@ from lib.paths import STATE_PATH  # noqa: E402
 from .config import OrchestratorConfig  # noqa: E402
 from .param_mapper import ParameterMappingError, TaskParameterMapper  # noqa: E402
 
-# Phase 0 Hardening: Import hardening modules with graceful fallback
+# Phase 0 Hardening: Import hardening modules with graceful fallback.
+#
+# Wave 22 F1 fix: these modules live in ``MCP/hardening/``, not in
+# ``MCP/core/``. The historical relative imports (``from .error_classifier
+# import ...``) silently hit the ``except ImportError`` arm, flipped every
+# ``HARDENING_*`` flag to ``False``, and left the entire Phase 0 stack
+# as a no-op at runtime. Tests that imported ``MCP.hardening.*`` directly
+# did not catch the regression. Absolute imports from ``..hardening.*``
+# restore the wiring; ``except ImportError`` is retained defensively for
+# deployments that strip the hardening package, and a debug log makes
+# future silent regressions observable.
 try:
-    from .error_classifier import ErrorClass, ErrorClassifier, PoisonPillDetector
+    from ..hardening.error_classifier import (
+        ErrorClass,
+        ErrorClassifier,
+        PoisonPillDetector,
+        RetryPolicy,
+    )
     HARDENING_ERROR_CLASSIFIER = True
-except ImportError:
+except ImportError as _exc:
     HARDENING_ERROR_CLASSIFIER = False
     ErrorClass = None
+    RetryPolicy = None  # type: ignore[assignment]
+    logging.getLogger(__name__).debug(
+        "Hardening import failed (error_classifier): %s", _exc
+    )
 
 try:
-    from .checkpoint import CheckpointManager, PhaseCheckpoint  # noqa: F401
+    from ..hardening.checkpoint import CheckpointManager, PhaseCheckpoint  # noqa: F401
     HARDENING_CHECKPOINTS = True
-except ImportError:
+except ImportError as _exc:
     HARDENING_CHECKPOINTS = False
+    logging.getLogger(__name__).debug(
+        "Hardening import failed (checkpoint): %s", _exc
+    )
 
 try:
-    from .validation_gates import (  # noqa: F401
+    from ..hardening.validation_gates import (  # noqa: F401
         GateConfig,
+        GateIssue,
         GateResult,
         GateSeverity,
         ValidationGateManager,
     )
     HARDENING_VALIDATION_GATES = True
-except ImportError:
+except ImportError as _exc:
     HARDENING_VALIDATION_GATES = False
+    logging.getLogger(__name__).debug(
+        "Hardening import failed (validation_gates): %s", _exc
+    )
 
 try:
-    from .lockfile import LockfileManager  # noqa: F401
+    from ..hardening.gate_input_routing import GateInputRouter, default_router
+    HARDENING_GATE_INPUT_ROUTING = True
+except ImportError as _exc:
+    HARDENING_GATE_INPUT_ROUTING = False
+    GateInputRouter = None  # type: ignore
+    default_router = None  # type: ignore
+    logging.getLogger(__name__).debug(
+        "Hardening import failed (gate_input_routing): %s", _exc
+    )
+
+try:
+    from ..hardening.lockfile import LockfileManager  # noqa: F401
     HARDENING_LOCKFILE = True
-except ImportError:
+except ImportError as _exc:
     HARDENING_LOCKFILE = False
+    logging.getLogger(__name__).debug(
+        "Hardening import failed (lockfile): %s", _exc
+    )
+
+# Aggregate flag — True only when every Phase 0 hardening submodule
+# imported cleanly. Consumers / regression tests assert against this
+# single value rather than the four leaf flags.
+HARDENING_PHASE_0 = (
+    HARDENING_ERROR_CLASSIFIER
+    and HARDENING_CHECKPOINTS
+    and HARDENING_VALIDATION_GATES
+    and HARDENING_LOCKFILE
+)
 
 if TYPE_CHECKING:
     from lib.decision_capture import DecisionCapture
@@ -86,7 +136,13 @@ AGENT_TOOL_MAPPING = {
     # -------------------------------------------------------------------------
     # COURSEFORGE AGENTS
     # -------------------------------------------------------------------------
-    "course-outliner": "create_course_project",
+    # Wave 24: course-outliner now routes to plan_course_structure (real
+    # LO synthesis + persisting) instead of create_course_project (which
+    # only created subdirs + emitted {COURSE}_OBJ_N placeholders). The
+    # course_generation workflow still has a planning phase that uses
+    # this agent, so plan_course_structure is robust to missing textbook
+    # structure (falls back to whatever objectives JSON is supplied).
+    "course-outliner": "plan_course_structure",
     "requirements-collector": "get_courseforge_status",
     "content-generator": "generate_course_content",
     "brightspace-packager": "package_imscc",
@@ -96,8 +152,11 @@ AGENT_TOOL_MAPPING = {
     # -------------------------------------------------------------------------
     # PIPELINE AGENTS (Textbook-to-Course)
     # -------------------------------------------------------------------------
+    # Wave 24: textbook-ingestor now routes to extract_textbook_structure
+    # (real SemanticStructureExtractor dispatch) instead of create_course_project.
     "textbook-stager": "stage_dart_outputs",
-    "textbook-ingestor": "create_course_project",
+    "textbook-ingestor": "extract_textbook_structure",
+    "source-router": "build_source_module_map",
 
     # -------------------------------------------------------------------------
     # DART/REMEDIATION AGENTS (Multi-Source Synthesis)
@@ -118,6 +177,10 @@ AGENT_TOOL_MAPPING = {
     "rag-indexer": "analyze_imscc_content",
     "assessment-generator": "generate_assessments",
     "assessment-validator": "validate_assessment",
+    # Wave 30 Gap 3: wire the previously-unused synthesize_training CLI
+    # entry point as a first-class pipeline phase so textbook_to_course
+    # runs actually emit instruction + preference training pairs.
+    "training-synthesizer": "synthesize_training",
 
     # -------------------------------------------------------------------------
     # LIBV2 AGENTS
@@ -245,13 +308,32 @@ class TaskExecutor:
         # Error classifier for intelligent retry decisions
         self.error_classifier = None
         self.poison_detector = None
+        self.retry_policy = None
         if HARDENING_ERROR_CLASSIFIER:
             self.error_classifier = ErrorClassifier()
             self.poison_detector = PoisonPillDetector(
                 threshold=poison_pill_threshold,
                 window_seconds=300
             )
-            logger.debug(f"[{self.run_id}] Error classifier and poison detector initialized")
+            # Wave 36: wire the RetryPolicy so ``_execute_with_retries``
+            # actually sleeps between attempts on transient errors. The
+            # base_delay / max_delay / exponential_base are driven by
+            # the OrchestratorConfig fields, honoring the
+            # ``retry_delay_seconds`` knob that pre-Wave-36 was defined
+            # but never consulted.
+            base_delay = float(
+                getattr(self.config, "retry_delay_seconds", 5) or 5
+            )
+            self.retry_policy = RetryPolicy(
+                max_retries=self.max_retries,
+                base_delay_seconds=base_delay,
+                max_delay_seconds=max(300.0, base_delay * 60),
+                exponential_base=2.0,
+            )
+            logger.debug(
+                f"[{self.run_id}] Error classifier + poison detector + "
+                f"retry policy initialized (base_delay={base_delay}s)"
+            )
 
         # Checkpoint manager for crash recovery
         self.checkpoint_manager = None
@@ -267,6 +349,27 @@ class TaskExecutor:
         if HARDENING_VALIDATION_GATES:
             self.gate_manager = ValidationGateManager()
             logger.debug(f"[{self.run_id}] Validation gate manager initialized")
+
+        # Wave 23 Sub-task A: per-gate input router. Pre-Wave-23, gates
+        # received a generic ``{'artifacts': ..., 'results': ...}`` blob
+        # regardless of validator shape, so critical gates silently
+        # returned MISSING_INPUT issues and warning-severity gates
+        # silently passed. The router builds per-validator kwargs from
+        # the phase's accumulated outputs + workflow params.
+        self.gate_input_router = None
+        if HARDENING_GATE_INPUT_ROUTING and default_router is not None:
+            self.gate_input_router = default_router()
+            logger.debug(f"[{self.run_id}] Gate input router initialized")
+
+        # Lock manager for cross-process resource locking (Wave 22 F1 fix:
+        # was imported but never instantiated).
+        self.lock_manager = None
+        if HARDENING_LOCKFILE and self.run_path:
+            try:
+                self.lock_manager = LockfileManager(self.run_path)
+                logger.debug(f"[{self.run_id}] Lock manager initialized")
+            except Exception as e:
+                logger.warning(f"[{self.run_id}] Failed to init lock manager: {e}")
 
     def validate_tool_registry(self, fail_fast: bool = True) -> Dict[str, List[str]]:
         """
@@ -441,6 +544,45 @@ class TaskExecutor:
             try:
                 result = await self._invoke_tool(tool_name, task_params)
 
+                # Wave 33 Bug C: Inspect the tool envelope for an
+                # explicit failure signal before marking the task
+                # COMPLETE. Pre-Wave-33 any dict that parsed (including
+                # ``{"success": False, "error_code": "..."}``) was
+                # treated as success, so gate aggregation ran on the
+                # "12/12 complete" phase summary even when every task
+                # returned a permanent-error envelope — the
+                # ``content_generation`` phase routinely reported
+                # ``gates=pass`` on 48 empty-template pages.
+                #
+                # Treat ``success=False`` as a permanent failure: no
+                # retry (the tool already decided its own outcome),
+                # status=FAILED, error_code / error_message surfaced
+                # from the envelope into the ExecutionResult so
+                # downstream gate aggregation sees the failure.
+                if isinstance(result, dict) and result.get("success") is False:
+                    error_code = str(
+                        result.get("error_code") or "TOOL_REPORTED_FAILURE"
+                    )
+                    error_message = str(
+                        result.get("error_message")
+                        or result.get("error")
+                        or result.get("reason")
+                        or "Tool returned success=False envelope"
+                    )
+                    logger.warning(
+                        f"[{self.run_id}] Task {task_id} returned "
+                        f"success=False envelope ({error_code}): "
+                        f"{error_message}"
+                    )
+                    return ExecutionResult(
+                        task_id=task_id,
+                        status="FAILED",
+                        result=result,
+                        error=f"{error_code}: {error_message}",
+                        error_class=error_code,
+                        retry_count=retry_count,
+                    )
+
                 return ExecutionResult(
                     task_id=task_id,
                     status="COMPLETE",
@@ -514,6 +656,35 @@ class TaskExecutor:
                     decision=f"Retrying task {task_id} (attempt {attempt + 2})",
                     rationale=rationale,
                 )
+
+            # Wave 36: honor the configured retry backoff between
+            # attempts. Pre-Wave-36 the loop would re-dispatch
+            # immediately, which for rate-limited LLM calls meant we'd
+            # fire max_retries requests inside the provider's cooldown
+            # window and amplify the throttling. ``RetryPolicy`` is
+            # driven by the ErrorClassifier's classification of the
+            # most recent failure (transient → exponential, else fixed
+            # base_delay). Under pytest we short-circuit the sleep so
+            # the test suite doesn't stretch into minutes when
+            # exercising retry paths on the 30s default config.
+            if (
+                attempt < self.max_retries
+                and self.retry_policy
+                and self.error_classifier
+                and last_error is not None
+                and "PYTEST_CURRENT_TEST" not in os.environ
+            ):
+                # Re-classify the last observed error so the policy can
+                # pick the right curve. ``classify`` accepts an
+                # exception OR a pre-built ClassifiedError; we pass a
+                # synthetic RuntimeError carrying the message because
+                # the original exception may no longer be in scope.
+                classified = self.error_classifier.classify(
+                    RuntimeError(last_error), task_id,
+                )
+                delay = self.retry_policy.get_retry_delay(attempt, classified)
+                if delay > 0:
+                    await asyncio.sleep(delay)
 
         return ExecutionResult(
             task_id=task_id,
@@ -624,7 +795,7 @@ class TaskExecutor:
 
                 if status == "IN_PROGRESS":
                     task["started_at"] = datetime.now().isoformat()
-                elif status in ("COMPLETE", "ERROR"):
+                elif status in ("COMPLETE", "ERROR", "FAILED", "TIMEOUT"):
                     task["completed_at"] = datetime.now().isoformat()
 
                 if result is not None:
@@ -640,7 +811,13 @@ class TaskExecutor:
 
         progress["completed"] = sum(1 for t in tasks if t.get("status") == "COMPLETE")
         progress["in_progress"] = sum(1 for t in tasks if t.get("status") == "IN_PROGRESS")
-        progress["failed"] = sum(1 for t in tasks if t.get("status") == "ERROR")
+        # Wave 33 Bug C: count "FAILED" and "TIMEOUT" alongside "ERROR"
+        # so the persisted workflow progress reflects tool envelopes
+        # with ``success=False``, not just raised exceptions.
+        progress["failed"] = sum(
+            1 for t in tasks
+            if t.get("status") in ("ERROR", "FAILED", "TIMEOUT")
+        )
 
         workflow["progress"] = progress
         workflow["updated_at"] = datetime.now().isoformat()
@@ -745,6 +922,28 @@ class TaskExecutor:
                         completed_ids.add(task_id)
                     task["status"] = result.status
 
+            # Wave 38: stop the batch loop as soon as any task emits
+            # POISON_PILL so subsequent batches don't waste work.
+            # In-flight siblings inside the current batch have already
+            # completed (``asyncio.gather`` awaits them all), so this
+            # doesn't cancel mid-flight requests — that would require
+            # switching to ``asyncio.wait(FIRST_COMPLETED)`` + explicit
+            # task.cancel(), which risks partial-state artifacts on
+            # the tool side. The stop-next-batch behaviour is the safe
+            # minimum: CLAUDE.md promises poison detection halts the
+            # batch; pre-Wave-38 it only marked the offender and kept
+            # dispatching remaining runnables.
+            if any(
+                r.status == "POISON_PILL"
+                for r in results.values()
+                if not isinstance(r, Exception)
+            ):
+                logger.error(
+                    f"[{self.run_id}] Poison pill observed; "
+                    f"halting batch loop (remaining runnables skipped)"
+                )
+                break
+
         return results
 
     async def _execute_sequential(
@@ -788,6 +987,11 @@ class TaskExecutor:
         tasks: List[Dict[str, Any]],
         gate_configs: Optional[List[Dict[str, Any]]] = None,
         max_concurrent: int = 5,
+        phase_outputs: Optional[Dict[str, Dict[str, Any]]] = None,
+        workflow_params: Optional[Dict[str, Any]] = None,
+        extract_phase_outputs_fn: Optional[
+            Callable[[str, Dict[str, "ExecutionResult"]], Dict[str, Any]]
+        ] = None,
     ) -> Tuple[Dict[str, ExecutionResult], bool, Optional[List[Dict]]]:
         """
         Execute a workflow phase with checkpointing and validation gates.
@@ -873,10 +1077,11 @@ class TaskExecutor:
                 self.checkpoint_manager.fail_phase(phase_name, "Poison pill detected")
             return results, False, None
 
-        # Run validation gates
+        # Run validation gates (Wave 23: per-gate input routing)
         gates_passed = True
         if gate_configs and self.gate_manager and HARDENING_VALIDATION_GATES:
-            # Gather artifacts from results for validation
+            # Build the fallback artifacts blob for validators not yet in
+            # the router registry (legacy / unknown paths).
             all_artifacts = []
             for result in results.values():
                 if hasattr(result, 'artifacts') and result.artifacts:
@@ -884,8 +1089,53 @@ class TaskExecutor:
                 if result.result and isinstance(result.result, dict):
                     if 'artifacts' in result.result:
                         all_artifacts.extend(result.result['artifacts'])
+            fallback_inputs = {'artifacts': all_artifacts, 'results': results}
 
-            # Convert gate configs to GateConfig objects
+            # Accumulated phase outputs + workflow params feed the router.
+            # Callers (WorkflowRunner) pass these explicitly; legacy
+            # callers that don't get an empty blob → every gate without
+            # a builder route falls back to fallback_inputs.
+            _phase_outputs = dict(phase_outputs or {})
+            _workflow_params = workflow_params or {}
+
+            # Wave 33 Bug B: extract the current phase's outputs into
+            # ``_phase_outputs`` BEFORE running the gate router so
+            # builders can resolve inputs that come from THIS phase's
+            # just-produced results. Pre-Wave-33 the router only saw
+            # prior phases' outputs because ``_extract_phase_outputs``
+            # ran in ``WorkflowRunner.run_workflow`` AFTER
+            # ``execute_phase`` returned — the 6 gates annexed in
+            # sim-03 (``dart_markers``, ``source_refs``,
+            # ``page_objectives``, ``assessment_objective_alignment``,
+            # ``content_grounding``, ``libv2_manifest``) therefore
+            # logged "skipped — missing inputs: *" on every real run.
+            # Injecting the current phase's extraction here gives the
+            # router a single source of truth: it sees every phase's
+            # outputs up to and including the in-progress phase.
+            if extract_phase_outputs_fn is not None:
+                try:
+                    current_extracted = extract_phase_outputs_fn(
+                        phase_name, results,
+                    )
+                    if isinstance(current_extracted, dict) and current_extracted:
+                        # Merge into a phase-indexed block (same shape
+                        # as prior phase_outputs entries) AND surface
+                        # the same keys at the top level so builders
+                        # that lookup `phase_outputs[phase_name][key]`
+                        # AND builders that lookup by key across all
+                        # phases both resolve cleanly.
+                        merged_phase_block = dict(
+                            _phase_outputs.get(phase_name, {})
+                        )
+                        merged_phase_block.update(current_extracted)
+                        _phase_outputs[phase_name] = merged_phase_block
+                except Exception as exc:
+                    logger.warning(
+                        f"[{self.run_id}] Failed to extract current-phase "
+                        f"outputs for gate routing on {phase_name}: {exc}"
+                    )
+
+            gate_results_list = []
             parsed_gates = []
             for gc in gate_configs:
                 try:
@@ -899,23 +1149,87 @@ class TaskExecutor:
                 except Exception as e:
                     logger.warning(f"[{self.run_id}] Invalid gate config: {e}")
 
-            if parsed_gates:
-                gates_passed, gate_results_list = self.gate_manager.run_phase_gates(
-                    phase_name=phase_name,
-                    gate_configs=parsed_gates,
-                    inputs={'artifacts': all_artifacts, 'results': results}
-                )
-                gate_results = [gr.to_dict() if hasattr(gr, 'to_dict') else gr for gr in gate_results_list]
+            for gate in parsed_gates:
+                # Per-gate input build.
+                inputs: Dict[str, Any]
+                missing: List[str] = []
+                if self.gate_input_router is not None and gate.validator_path:
+                    inputs, missing = self.gate_input_router.build(
+                        gate.validator_path, _phase_outputs, _workflow_params,
+                    )
+                else:
+                    inputs = dict(fallback_inputs)
 
-                # Log gate results
-                if self.capture:
-                    for gr in gate_results_list:
+                # If the builder flagged missing required inputs, mark
+                # the gate as skipped rather than silently passing.
+                if missing:
+                    reason = ", ".join(missing)
+                    logger.warning(
+                        f"[{self.run_id}] Gate {gate.gate_id} "
+                        f"({gate.validator_path}) skipped — missing inputs: "
+                        f"{reason}"
+                    )
+                    skipped_result = GateResult(
+                        gate_id=gate.gate_id,
+                        validator_name=gate.validator_path,
+                        validator_version="skipped",
+                        passed=True,
+                        score=None,
+                        issues=[GateIssue(
+                            severity="warning",
+                            code="GATE_SKIPPED_MISSING_INPUTS",
+                            message=(
+                                f"Gate skipped: builder could not resolve "
+                                f"required inputs ({reason}). This is a "
+                                "structured skip, not a silent pass — the "
+                                "gate did not run."
+                            ),
+                            suggestion=(
+                                "Ensure the phase's upstream outputs "
+                                "surface the required keys, or add a "
+                                "builder for this validator in "
+                                "MCP/hardening/gate_input_routing.py."
+                            ),
+                        )],
+                    )
+                    # Mark as skipped in a forward-compat way.
+                    try:
+                        skipped_result.waiver_info = {"skipped": "true", "reason": reason}
+                    except Exception:
+                        pass
+                    gate_results_list.append(skipped_result)
+                    continue
+
+                # Merge the router-produced inputs with fallback blob
+                # under non-colliding keys so legacy validators that
+                # look for 'artifacts' still find it.
+                merged_inputs: Dict[str, Any] = dict(fallback_inputs)
+                merged_inputs.update(inputs)
+
+                # Run the gate via the manager (handles waivers + errors)
+                result = self.gate_manager.run_gate(gate, merged_inputs)
+                gate_results_list.append(result)
+
+                # Honour severity / behavior-on-fail for gate ordering.
+                if not result.passed:
+                    if gate.severity == GateSeverity.CRITICAL:
+                        gates_passed = False
+
+            gate_results = [gr.to_dict() if hasattr(gr, 'to_dict') else gr for gr in gate_results_list]
+
+            # Log gate results
+            if self.capture:
+                for gr in gate_results_list:
+                    skipped = bool(getattr(gr, 'waiver_info', None) and isinstance(gr.waiver_info, dict) and gr.waiver_info.get('skipped') == 'true')
+                    if skipped:
+                        status = "SKIPPED"
+                    else:
                         status = "PASSED" if gr.passed else "FAILED"
-                        self.capture.log_decision(
-                            decision_type="validation_result",
-                            decision=f"Gate {gr.gate_id}: {status}",
-                            rationale=f"Score: {gr.score}, Issues: {len(gr.issues)}",
-                        )
+                    self.capture.log_decision(
+                        decision_type="validation_result",
+                        decision=f"Gate {gr.gate_id}: {status}",
+                        rationale=f"Score: {gr.score}, Issues: {len(gr.issues)}",
+                    )
 
         # Complete or fail checkpoint
         if self.checkpoint_manager:
@@ -933,7 +1247,14 @@ class TaskExecutor:
         # Log phase completion
         if self.capture:
             completed = sum(1 for r in results.values() if r.status == "COMPLETE")
-            failed = sum(1 for r in results.values() if r.status in ("ERROR", "TIMEOUT"))
+            # Wave 33 Bug C: include the FAILED status so task
+            # envelopes with ``success=False`` surface in the phase
+            # summary rather than being silently lumped under
+            # "completed".
+            failed = sum(
+                1 for r in results.values()
+                if r.status in ("ERROR", "TIMEOUT", "FAILED")
+            )
             self.capture.log_decision(
                 decision_type="phase_completion",
                 decision=f"Phase {phase_name} completed: {completed} success, {failed} failed",

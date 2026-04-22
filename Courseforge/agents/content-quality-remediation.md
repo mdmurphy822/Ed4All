@@ -156,6 +156,7 @@ def generate_learning_objectives(content, bloom_level="application"):
     concepts = extract_key_concepts(content)
 
     # Map to Bloom's taxonomy verbs
+    # <!-- TODO(wave-future): load via lib.ontology.bloom.get_verbs_list() (canonical loader over schemas/taxonomies/bloom_verbs.json) at orchestrator templating layer -->
     bloom_verbs = {
         "remember": ["identify", "list", "define", "recognize"],
         "understand": ["explain", "describe", "summarize", "compare"],

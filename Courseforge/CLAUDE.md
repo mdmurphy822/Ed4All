@@ -86,17 +86,14 @@ USER REQUEST →
 ### Course Creation Agents
 | Agent | Purpose | When to Use |
 |-------|---------|-------------|
-| `exam-research` | Certification objective analysis | Analyzing exam/certification objectives |
 | `requirements-collector` | Course specification gathering | New course projects |
-| `course-outliner` | Course structure and learning objectives | Creating course framework |
+| `course-outliner` | Synthesize canonical `TO-NN` / `CO-NN` objectives from textbook structure; persist `synthesized_objectives.json`. Wave 24+ routes this agent to `plan_course_structure` (no longer just creates project dirs). | Creating course framework |
 | `content-generator` | Educational content creation | Content development (1 file per agent) |
-| `educational-standards` | Pedagogical framework compliance | UDL, ADDIE, Bloom's alignment |
 | `quality-assurance` | Pattern prevention and validation | Quality gates |
 | `oscqr-course-evaluator` | Educational quality assessment | OSCQR evaluation |
 | `brightspace-packager` | IMSCC package generation | Final deployment |
-| `html-design-research` | HTML/CSS design pattern research | Template and design validation |
-| `objective-synthesizer` | Learning objective synthesis | Combining objectives from textbooks |
 | `textbook-ingestor` | Textbook content processing | Entry point for textbook materials |
+| `source-router` | Bind DART source blocks to Courseforge module pages | Source attribution for pipeline runs |
 
 ### Intake & Remediation Agents (NEW)
 | Agent | Purpose | When to Use |
@@ -151,10 +148,9 @@ Task(content-generator, "Create all Week 1 content")  # NEVER DO THIS
 ├── schemas/                     # IMSCC and content schemas
 ├── imscc-standards/             # Brightspace/IMSCC technical specs
 ├── scripts/                     # Automation scripts
-│   ├── imscc-extractor/         # Universal IMSCC extraction (NEW)
-│   ├── dart-batch-processor/    # Automated DART conversion (NEW)
-│   ├── component-applier/       # Interactive component application (NEW)
-│   └── remediation-validator/   # Final quality validation (NEW)
+│   ├── imscc-extractor/         # Universal IMSCC extraction
+│   ├── component-applier/       # Interactive component application
+│   └── remediation-validator/   # Final quality validation
 ├── exports/                     # Generated course packages
 │   └── YYYYMMDD_HHMMSS_name/    # Timestamped project folders
 └── runtime/                     # Agent workspaces (auto-created)
@@ -243,25 +239,75 @@ Courseforge HTML pages embed machine-readable instructional design metadata for 
 
 | Attribute | Element | Purpose |
 |-----------|---------|---------|
-| `data-cf-objective-id` | `<li>` (objectives) | Learning objective identifier |
+| `data-cf-role` | `<body>` (template chrome) | Page role classification (e.g. `template-chrome`) |
+| `data-cf-objective-id` | `<li>` (objectives) | Learning objective identifier (canonical `TO-NN` / `CO-NN` pattern) |
 | `data-cf-bloom-level` | `<li>`, `.self-check`, `.activity-card` | Bloom's taxonomy level |
 | `data-cf-bloom-verb` | `<li>` (objectives) | Detected Bloom's verb |
+| `data-cf-bloom-range` | `<section>`, `<h2>` | Section-level Bloom level span (emit-only) |
 | `data-cf-cognitive-domain` | `<li>` (objectives) | Knowledge domain (factual/conceptual/procedural/metacognitive) |
 | `data-cf-content-type` | `<h2>`, `<h3>`, `.callout` | Section content classification |
+| `data-cf-teaching-role` | `<section>`, component wrappers | Pedagogical teaching role |
 | `data-cf-key-terms` | `<h2>`, `<h3>` | Comma-separated term slugs |
+| `data-cf-term` | key-term `<span>` | Individual term slug (emit-only) |
 | `data-cf-component` | `.flip-card`, `.self-check`, `.activity-card` | Interactive component type |
 | `data-cf-purpose` | `.flip-card`, `.self-check`, `.activity-card` | Pedagogical purpose |
 | `data-cf-objective-ref` | `.self-check`, `.activity-card` | Associated learning objective |
+| `data-cf-source-ids` | `<section>`, headings, component wrappers | DART `sourceId`(s) that ground this block. Shape: `dart:{slug}#{block_id}`. Carried through from DART's `data-dart-block-id` when source material is present; elided when no source grounding exists. |
+| `data-cf-source-primary` | `<section>`, headings, component wrappers | The primary `sourceId` for the block (subset of `data-cf-source-ids`) when one source dominates. |
+
+Attributes stop at the **section / component wrapper level** — never on every `<p>` / `<li>` / `<tr>` in prose.
+
+### Wave 35: ancestor-walkable grounding
+
+`ContentGroundingValidator` walks each non-trivial `<p>` / `<li>` /
+`<figcaption>` / `<blockquote>`'s ancestor chain to find the first
+`data-cf-source-ids` attribute. Three emit-side contracts keep that
+walk passing:
+
+1. **Content sections are wrapped in `<section data-cf-source-ids="…">`.**
+   `Courseforge/scripts/generate_course.py::_render_content_sections`
+   now wraps each h2/h3 + paragraph group in a `<section>` wrapper
+   carrying the section's resolved source-ids. Pre-Wave-35 the
+   attribute lived only on the `<h2>` (a DOM sibling of the `<p>`),
+   which the validator's ancestor walk couldn't reach.
+2. **`content_NN` pages inherit `content_01` grounding.**
+   `_page_refs_for` falls back from `content_NN` → `content_01` in
+   the `source_module_map`. The source-router only emits a single
+   per-week `content_01` entry; every generated content page in that
+   week shares the same DART source region, so the fallback is the
+   correct grounding (not a workaround).
+3. **Objectives `<section>` mirrors page-level source-ids.**
+   `ensure_objectives_on_page` scans the page body for the first
+   `<section data-cf-source-ids="…">` wrapper and stamps the same
+   ids onto the injected objectives section. Long synthesized LO
+   statements that exceed the 30-word non-trivial floor otherwise
+   flagged as ungrounded under the ancestor walk.
+
+DART-side slug contract (see `DART/CLAUDE.md`): the `dart:{slug}#{block_id}`
+slug uses `lowercase + space-to-hyphen` normalization (not
+`canonical_slug`'s underscore collapse), matching the validator's
+`_resolve_valid_block_ids` rule.
 
 ### JSON-LD Structured Metadata
 
 Each page includes a `<script type="application/ld+json">` block in `<head>` with:
-- `learningObjectives`: ID, statement, Bloom's level/verb, cognitive domain, assessment suggestions
-- `sections`: Heading, content type, Bloom's range, key terms with definitions
+- `learningObjectives`: ID (canonical `TO-NN` / `CO-NN`), statement, Bloom's level/verb, cognitive domain, assessment suggestions
+- `sections`: Heading, content type, Bloom's range, key terms with definitions, optional per-section `sourceReferences`
 - `misconceptions`: Common misconceptions with corrections
 - `suggestedAssessmentTypes`: Recommended question formats
+- `prerequisitePages`: Cross-page prerequisite refs
+- `sourceReferences`: Optional page-level DART source references (canonical `{sourceId, role, weight?, confidence?, pages?, extractor?}` shape). Page-level JSON-LD `role` is authoritative (`primary` / `contributing` / `corroborating`) and takes precedence over attribute-level roles.
 
-Context namespace: `https://ed4all.dev/ns/courseforge/v1`
+Canonical shape: `schemas/knowledge/courseforge_jsonld_v1.schema.json`. Context namespace: `https://ed4all.dev/ns/courseforge/v1`.
+
+### Learning Objective IDs
+
+Emitted LO IDs follow the pattern `^[A-Z]{2,}-\d{2,}$` from the canonical helper `lib/ontology/learning_objectives.py::mint_lo_id`:
+
+- `TO-NN` — terminal (course-wide) objective.
+- `CO-NN` — chapter-level objective.
+
+Synthesized objectives are persisted to `{project}/01_learning_objectives/synthesized_objectives.json` by the `plan_course_structure` phase in the `textbook_to_course` pipeline. Downstream Trainforge consumers match case-insensitively; the `TRAINFORGE_PRESERVE_LO_CASE` flag preserves the emit case.
 
 ---
 
@@ -341,14 +387,13 @@ Courseforge can import and remediate IMSCC packages from:
 ### Scripts for Course Generation
 | Script | Location | Purpose |
 |--------|----------|---------|
-| `generate_course.py` | `scripts/` | Multi-file weekly course generation with metadata enrichment |
-| `package_multifile_imscc.py` | `scripts/` | Package multi-file course output into IMSCC |
+| `generate_course.py` | `scripts/` | Multi-file weekly course generation. Emits page-level JSON-LD, `course_metadata.json`, prerequisite-page refs, `data-cf-teaching-role`, and `data-cf-source-ids` / page-level `sourceReferences` when DART source material is staged. |
+| `package_multifile_imscc.py` | `scripts/` | Packages multi-file output into IMSCC. Structural validation is on by default (per-week `learningObjectives` must resolve to the week's LO manifest). Auto-discovers `course.json` and bundles `course_metadata.json` at the zip root. Manifest uses IMS Common Cartridge v1.3 namespaces; resources are nested under per-week `<item>` wrappers in the organization tree. **This is the runtime target of the MCP `package_imscc` tool** — `MCP/tools/pipeline_tools.py::_package_imscc` imports and delegates here instead of hand-rolling a ZIP. |
 
 ### Scripts for Intake
 | Script | Location | Purpose |
 |--------|----------|---------|
 | `imscc_extractor.py` | `scripts/imscc-extractor/` | Universal IMSCC parsing |
-| `dart_batch_processor.py` | `scripts/dart-batch-processor/` | Parallel DART conversion |
 | `component_applier.py` | `scripts/component-applier/` | Interactive component application |
 | `remediation_validator.py` | `scripts/remediation-validator/` | Final quality validation |
 

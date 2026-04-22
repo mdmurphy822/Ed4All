@@ -12,6 +12,7 @@ from .content import ContentStructureValidator
 from .imscc import IMSCCParseValidator, IMSCCValidator
 from .leak_check import LeakCheckValidator
 from .oscqr import OSCQRValidator
+from .page_objectives import PageObjectivesValidator
 from .question_quality import QuestionQualityValidator
 
 __all__ = [
@@ -23,5 +24,6 @@ __all__ = [
     "FinalQualityValidator",
     "BloomAlignmentValidator",
     "LeakCheckValidator",
+    "PageObjectivesValidator",
     "QuestionQualityValidator",
 ]

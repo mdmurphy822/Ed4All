@@ -140,7 +140,8 @@ agents:
   # =============================================================================
 
   textbook-stager:
-    source: orchestrator/agents/textbook-stager.md
+    # Wave 28f: source .md removed — agent is implemented in-code by the
+    # staging phase dispatcher. No standalone agent spec file.
     type: utility
     capabilities:
       - file_staging
@@ -155,6 +156,19 @@ agents:
       - dart_html_parsing
       - structure_extraction
       - objective_synthesis
+    max_instances: 1
+
+  source-router:
+    # Wave 9: binds DART source blocks to Courseforge module pages.
+    # Output: source_module_map.json consumed by content-generator + the
+    # source_refs validation gate.
+    source: Courseforge/agents/source-router.md
+    type: source-attribution-router
+    capabilities:
+      - source_block_enumeration
+      - page_to_source_mapping
+      - tfidf_scoring
+      - confidence_scoring
     max_instances: 1
 
   # =============================================================================
@@ -195,6 +209,18 @@ agents:
       - quality_validation
       - bloom_verification
     max_instances: 5
+
+  # Wave 30 Gap 3: materialises instruction_pairs.jsonl +
+  # preference_pairs.jsonl in every textbook_to_course run by calling
+  # the existing Trainforge/synthesize_training.py entry point.
+  training-synthesizer:
+    source: Trainforge/synthesize_training.py
+    type: generator
+    capabilities:
+      - instruction_pair_synthesis
+      - preference_pair_generation
+      - training_corpus_export
+    max_instances: 1
 
   # =============================================================================
   # LIBV2 AGENTS

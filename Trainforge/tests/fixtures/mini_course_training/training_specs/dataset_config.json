@@ -1,0 +1,12 @@
+{
+  "format": "instruction-following",
+  "target_models": ["claude-opus-4-6", "claude-sonnet-4-6"],
+  "training_objectives": [
+    "mini_course_training_instruction",
+    "mini_course_training_reasoning"
+  ],
+  "statistics": {
+    "total_tokens": 589
+  },
+  "fixture_notes": "Pre-enriched fixture used by Trainforge.synthesize_training tests. Updated by the stage when run."
+}
