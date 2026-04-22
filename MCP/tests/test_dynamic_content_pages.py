@@ -137,6 +137,40 @@ class TestDynamicContentPageCount:
         )
         assert len(wd["content_modules"]) == 4
 
+    def test_more_los_than_topics_drops_topicless_positions(self):
+        """Wave 45 regression: when LO count > topic count, positions
+        with no topic previously emitted heading-only
+        ``paragraphs: []`` sections that failed
+        ContentGroundingValidator's AGGREGATE_EMPTY_PAGES critical
+        check. Post-Wave-45 those positions are dropped; only topic-
+        backed modules make it through. The LOs still appear on every
+        page via ``_render_objectives_section`` so no coverage is
+        lost."""
+        week_topics = [_mk_topic("The one real topic")]
+        week_objectives = [
+            _mk_obj("TO-01", "Describe A."),
+            _mk_obj("CO-01", "Describe B."),
+            _mk_obj("CO-02", "Describe C."),
+        ]
+        wd = _cgh.build_week_data(
+            week_num=1,
+            duration_weeks=1,
+            week_topics=week_topics,
+            week_objectives=week_objectives,
+            all_objectives=week_objectives,
+            course_code="BIO_101",
+        )
+        # Only the topic-backed module survives; the two topic-less
+        # positions are skipped rather than emitted as empty.
+        assert len(wd["content_modules"]) == 1
+        module = wd["content_modules"][0]
+        assert module["title"] == "The one real topic"
+        # Section must carry actual paragraphs, not an empty list.
+        section = module["sections"][0]
+        assert section.get("paragraphs"), (
+            "topic-backed module must carry non-empty paragraphs"
+        )
+
     def test_module_titles_come_from_source(self):
         """Every module title must be a real topic heading or LO
         statement (no fabricated prose)."""
