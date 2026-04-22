@@ -324,6 +324,37 @@ class PipelineOrchestrator:
         execution path. The dispatcher is consulted to emit orchestrator-level
         decision captures and (in later waves) to replace in-process phase
         execution entirely with subagent / coroutine dispatch.
+
+        ⚠  **Known architectural gap (Wave 38 code-review finding #2):**
+        ``WorkflowRunner.run_workflow`` → ``TaskExecutor.execute_phase`` →
+        ``_invoke_tool`` invokes the Python tool registry directly. It
+        does NOT call ``dispatcher.dispatch_phase``. That means:
+
+        * ``--mode local`` and ``--mode api`` execute the *same* code
+          path today — the mode choice only affects which dispatcher
+          receives ``before_run`` / ``after_run`` / ``on_error`` hooks.
+        * Wave 34's ``TaskMailbox`` bridge + ``ed4all mailbox watch``
+          CLI are reachable only via the dispatcher's ``dispatch_phase``
+          method, which is currently only exercised in unit tests
+          (``MCP/tests/test_local_dispatcher_*``, ``test_mailbox_bridge_smoke``).
+        * Subagent prompt construction
+          (``LocalDispatcher._build_subagent_prompt``) and the stub /
+          mailbox / injected ``agent_tool`` three-path selection are
+          dead code on the production run path.
+
+        Closing the gap means routing ``execute_phase`` — or the per-task
+        invocation inside it — through ``dispatcher.dispatch_phase``
+        when the dispatcher opts into task-level execution. That's a
+        non-trivial refactor because ``dispatch_phase`` is per-phase
+        and our phases routinely fan out to 10+ concurrent tasks
+        (content_generation, etc.). The clean design is either (a)
+        per-task dispatch via a new ``dispatcher.dispatch_task`` hook
+        or (b) folding the task-fan-out into the dispatcher. Either
+        way affects every existing ``TaskExecutor`` callsite + test.
+
+        Scope for a later wave: not blocking current pipeline runs
+        (the templated path produces real grounded content via the
+        in-process tool registry — see Wave 35 / sim-05 diagnostics).
         """
         state = self._load_workflow_state(workflow_id)
         if state is None:

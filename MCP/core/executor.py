@@ -922,6 +922,28 @@ class TaskExecutor:
                         completed_ids.add(task_id)
                     task["status"] = result.status
 
+            # Wave 38: stop the batch loop as soon as any task emits
+            # POISON_PILL so subsequent batches don't waste work.
+            # In-flight siblings inside the current batch have already
+            # completed (``asyncio.gather`` awaits them all), so this
+            # doesn't cancel mid-flight requests — that would require
+            # switching to ``asyncio.wait(FIRST_COMPLETED)`` + explicit
+            # task.cancel(), which risks partial-state artifacts on
+            # the tool side. The stop-next-batch behaviour is the safe
+            # minimum: CLAUDE.md promises poison detection halts the
+            # batch; pre-Wave-38 it only marked the offender and kept
+            # dispatching remaining runnables.
+            if any(
+                r.status == "POISON_PILL"
+                for r in results.values()
+                if not isinstance(r, Exception)
+            ):
+                logger.error(
+                    f"[{self.run_id}] Poison pill observed; "
+                    f"halting batch loop (remaining runnables skipped)"
+                )
+                break
+
         return results
 
     async def _execute_sequential(

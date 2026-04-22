@@ -39,6 +39,8 @@ pip install -e ".[full]"
 ed4all run textbook-to-course --corpus my_textbook.pdf --course-name MY_COURSE_101
 ```
 
+By default Ed4All runs in **local mode** — no API key required. To route through the Anthropic API instead, set `ANTHROPIC_API_KEY` and add `--mode api`.
+
 That single command runs the full pipeline — accessibility conversion, objective synthesis, course planning, module generation, IMSCC packaging, knowledge-graph building, and archival. The IMSCC file lands in `Courseforge/exports/`, and the searchable archive lands in `LibV2/courses/`.
 
 Other useful commands:
