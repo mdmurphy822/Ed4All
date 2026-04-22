@@ -68,22 +68,22 @@ def _build_workflow_params(
 ) -> Dict[str, Any]:
     """Build the params dict for a workflow from CLI inputs.
 
-    Wave 24 HIGH-6: when --weeks is unset and workflow is
-    textbook_to_course, we leave duration_weeks unset here and let
-    downstream phases auto-scale once textbook_structure is known.
-    Other workflows fall back to 12 (the historical default).
+    Wave 24 HIGH-6 / Wave 39: when --weeks is unset and workflow is
+    textbook_to_course, we omit duration_weeks entirely so downstream
+    phases auto-scale to max(8, chapter_count) once textbook_structure
+    is known. Other workflows fall back to 12 (the historical default).
     """
-    duration = weeks if weeks is not None else (
-        None if workflow == "textbook_to_course" else 12
-    )
     params: Dict[str, Any] = {
         "course_name": course_name,
-        "duration_weeks": duration if duration is not None else 12,
         "generate_assessments": not no_assessments,
         "assessment_count": assessment_count,
         "bloom_levels": bloom_levels,
         "priority": priority,
     }
+    if weeks is not None:
+        params["duration_weeks"] = weeks
+    elif workflow != "textbook_to_course":
+        params["duration_weeks"] = 12
     # Wave 24: record whether --weeks was explicitly set. Downstream
     # phases (extract_textbook_structure / plan_course_structure) can
     # read this from project_config.json and auto-scale if needed.
@@ -111,11 +111,17 @@ async def _create_textbook_workflow(
     """
     from MCP.tools.pipeline_tools import create_textbook_pipeline
 
+    # Wave 39 follow-up: propagate ``duration_weeks_explicit`` so the
+    # extractor's auto-scale branch fires on real runs when ``--weeks``
+    # was unset. Without this, omission of the key in params only
+    # affects ``--dry-run`` output while live runs silently fell back
+    # to the fixed 12-week default (PR #100 review finding).
     result = await create_textbook_pipeline(
         pdf_paths=params.get("pdf_paths", params.get("corpus", "")),
         course_name=params["course_name"],
         objectives_path=params.get("objectives_path"),
         duration_weeks=params.get("duration_weeks", 12),
+        duration_weeks_explicit=params.get("duration_weeks_explicit", True),
         generate_assessments=params.get("generate_assessments", True),
         assessment_count=params.get("assessment_count", 50),
         bloom_levels=params.get("bloom_levels", "remember,understand,apply,analyze"),

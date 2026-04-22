@@ -1630,8 +1630,19 @@ def build_week_data(
     # one per distinct source topic. Minimum 1 to preserve the 5-page
     # floor required by the integration-test contract.
     # ---------------------------------------------------------------- #
+    # Wave 42: drop topics that have no body paragraph with ≥30 words
+    # BEFORE content-page emission. parse_dart_html_files keeps a topic
+    # whose paragraphs total ≥30 words combined, but ContentGrounding-
+    # Validator counts per-paragraph non-trivial bodies (≥30 words
+    # each) via NON_TRIVIAL_WORD_FLOOR, so a topic with only short
+    # paragraphs emits an <h2>-only page and trips
+    # AGGREGATE_EMPTY_PAGES. Filter here so no content_module
+    # references such a topic.
+    renderable_topics = [
+        t for t in week_topics if _topic_has_non_trivial_paragraph(t)
+    ]
     content_modules = _build_content_modules_dynamic(
-        week_topics=week_topics,
+        week_topics=renderable_topics,
         week_objectives=week_objectives,
         week_title=week_title,
     )
@@ -1706,6 +1717,31 @@ def build_week_data(
     }
 
 
+# Wave 42: mirror ContentGroundingValidator.NON_TRIVIAL_WORD_FLOOR (=30).
+# Kept as a local constant instead of a cross-module import so content
+# generation doesn't take a runtime dependency on validators/.
+_NON_TRIVIAL_WORD_FLOOR = 30
+
+
+def _topic_has_non_trivial_paragraph(topic: Dict[str, Any]) -> bool:
+    """Return True when ``topic`` has at least one paragraph ≥30 words.
+
+    Wave 42 emission guard: parse_dart_html_files keeps topics whose
+    paragraphs total ≥30 words combined, but the grounding validator
+    counts paragraphs individually (see
+    ``lib/validators/content_grounding.py``). This helper lets
+    :func:`build_week_data` drop topics that would render as an
+    <h2>-only section — which both trip AGGREGATE_EMPTY_PAGES and fail
+    the critical invariant that content pages always carry body prose.
+    """
+    for para in topic.get("paragraphs") or []:
+        if not isinstance(para, str):
+            continue
+        if len(para.split()) >= _NON_TRIVIAL_WORD_FLOOR:
+            return True
+    return False
+
+
 def _build_content_modules_dynamic(
     week_topics: List[Dict[str, Any]],
     week_objectives: List[Dict[str, Any]],
@@ -1741,50 +1777,57 @@ def _build_content_modules_dynamic(
         topic = week_topics[i] if i < topic_count else None
         obj = week_objectives[i] if i < obj_count else None
 
-        # Title selection: prefer real topic heading; fall back to the
-        # LO statement (truncated) when no topic at this index.
-        if topic:
-            module_title = topic["heading"]
-        elif obj:
-            module_title = obj.get("statement") or week_title
-            module_title = module_title[:120]
-        else:
-            module_title = week_title
+        # Wave 45: when the week has more LOs than topics, positions
+        # i >= topic_count produce ``topic=None``. The pre-Wave-45
+        # policy emitted a heading-only section with
+        # ``paragraphs: []`` for those slots. Those pages fail
+        # ContentGroundingValidator's AGGREGATE_EMPTY_PAGES critical
+        # check because the validator counts paragraphs individually
+        # (30-word floor). Skip those positions entirely — the LO still
+        # appears on the week's objectives list (emitted on every page
+        # by ``_render_objectives_section``), so dropping the standalone
+        # page doesn't lose pedagogical coverage. The fallback module
+        # at the bottom preserves the minimum-one-module contract.
+        if topic is None:
+            continue
 
-        # Sections: built from the topic's paragraphs. If no topic at
-        # this index, emit a minimal section whose heading is the LO
-        # statement (source content).
-        if topic:
-            section_role = "definition" if i == 0 else "explanation"
-            sections = [_topic_to_section(topic, section_role=section_role)]
-        elif obj:
-            sections = [{
-                "heading": obj.get("statement", "")[:120] or week_title,
-                "level": 2,
-                "content_type": "explanation",
-                "paragraphs": [],
-                "key_terms": [],
-            }]
-        else:
-            # True empty corpus: emit a placeholder-free minimal section.
-            sections = [{
-                "heading": week_title,
-                "level": 2,
-                "content_type": "explanation",
-                "paragraphs": [],
-                "key_terms": [],
-            }]
+        module_title = topic["heading"]
 
-        # Per-module misconceptions come from the linked topic when present.
-        module_misconceptions = (
-            list(topic.get("extracted_misconceptions") or [])
-            if topic else []
-        )
+        # Sections: built from the topic's paragraphs.
+        section_role = "definition" if i == 0 else "explanation"
+        sections = [_topic_to_section(topic, section_role=section_role)]
+
+        # Per-module misconceptions come from the linked topic.
+        module_misconceptions = list(topic.get("extracted_misconceptions") or [])
 
         modules.append({
             "title": module_title,
             "sections": sections,
             "misconceptions": module_misconceptions,
+        })
+
+    # Wave 45: when every position was topic-less (e.g. a corpus with
+    # zero extracted topics for this week), fall through to a single
+    # minimal LO-backed module so the 5-page weekly floor is preserved
+    # and downstream consumers that expect at least one content page
+    # don't crash. The AGGREGATE_EMPTY_PAGES gate then flags the
+    # course for the user — correct behaviour for a genuinely empty
+    # source region.
+    if not modules:
+        obj = week_objectives[0] if week_objectives else None
+        fallback_heading = (
+            (obj.get("statement", "")[:120] if obj else week_title) or week_title
+        )
+        modules.append({
+            "title": fallback_heading,
+            "sections": [{
+                "heading": fallback_heading,
+                "level": 2,
+                "content_type": "explanation",
+                "paragraphs": [],
+                "key_terms": [],
+            }],
+            "misconceptions": [],
         })
 
     return modules

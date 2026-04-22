@@ -637,6 +637,87 @@ def _render_reflection(questions: List[str]) -> str:
     </div>"""
 
 
+def _summary_recap_paragraphs(
+    content_modules: List[Dict[str, Any]],
+    *,
+    max_paragraphs: int = 3,
+    max_chars_per_paragraph: int = 400,
+    max_total_words: int = 200,
+) -> List[str]:
+    """Select 1-3 substantive paragraphs from ``content_modules`` for the
+    summary page's Chapter Recap section.
+
+    Wave 43 fix for ``AGGREGATE_EMPTY_PAGES`` (ContentGroundingValidator):
+    pre-Wave-43 summary pages emitted only the Key Takeaways list (5-15
+    word <li>s) + reflection prompts, producing zero non-trivial
+    paragraphs per the validator's ``NON_TRIVIAL_WORD_FLOOR = 30``. On
+    corpora where summary is a meaningful fraction of total pages (e.g.
+    8/44 on the hifi_rag smoke run) that tripped
+    ``AGGREGATE_EMPTY_PAGES``.
+
+    Selection strategy:
+      * Walk ``content_modules`` in order, taking the first paragraph
+        from each module's first section.
+      * Skip paragraphs with < 30 words (validator's non-trivial floor).
+      * Cap each paragraph at ``max_chars_per_paragraph`` chars on a
+        word boundary (appends an ellipsis).
+      * Stop once ``max_paragraphs`` are collected or ``max_total_words``
+        is exceeded.
+
+    Returns an empty list when no topic paragraph clears the non-trivial
+    floor — caller falls back to the legacy shell so we never emit a
+    ``<h2>Chapter Recap</h2>`` with no body.
+    """
+    picked: List[str] = []
+    total_words = 0
+    seen: set = set()
+    for module in content_modules or []:
+        for section in module.get("sections", []) or []:
+            paragraphs = section.get("paragraphs") or []
+            if not paragraphs:
+                continue
+            raw = paragraphs[0]
+            if not isinstance(raw, str):
+                continue
+            para = raw.strip()
+            if not para:
+                continue
+            # Wave 44: check the 30-word eligibility floor BEFORE the
+            # dedupe-prefix reservation. Pre-Wave-44 a short ineligible
+            # paragraph added its 80-char prefix to ``seen`` and
+            # subsequent substantive paragraphs sharing the same
+            # opening text (common on textbooks where successive
+            # sections reuse lead-in phrasing like "In this chapter...")
+            # were then dropped as duplicates — leaving the recap empty
+            # and negating the Wave 43 fix on those corpora.
+            if len(para.split()) < 30:
+                # Validator would ignore this paragraph; skip so the
+                # recap only contains non-trivial prose.
+                continue
+            key = para[:80].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            # Cap length on a word boundary so the recap stays tight.
+            if len(para) > max_chars_per_paragraph:
+                truncated = para[:max_chars_per_paragraph]
+                last_space = truncated.rfind(" ")
+                if last_space > 0:
+                    truncated = truncated[:last_space]
+                para = truncated.rstrip(",.;:") + "..."
+            words = len(para.split())
+            if total_words + words > max_total_words and picked:
+                break
+            picked.append(para)
+            total_words += words
+            # Only take the first section of each module so we spread
+            # across topics rather than dumping one module's prose.
+            break
+        if len(picked) >= max_paragraphs:
+            break
+    return picked
+
+
 def _build_objectives_metadata(objectives: List[Dict]) -> List[Dict[str, Any]]:
     """Build structured objective metadata for JSON-LD from week objectives."""
     result = []
@@ -980,6 +1061,17 @@ def generate_week(
         week_data["objectives"], source_ids=overview_ids,
         source_primary=overview_primary,
     )
+    # Wave 41: wrap the overview body (non-objectives region) in a
+    # <section data-cf-source-ids="…"> so
+    # :class:`ContentGroundingValidator`'s ancestor walk finds grounding
+    # on every body <p>/<li>. The objectives <div> already carries its
+    # own grounding via _render_objectives; the extra <p> text +
+    # readings list would otherwise be DOM siblings of a sourceless
+    # <main>. No wrapper emitted when overview_ids is empty (preserves
+    # the test_no_map_no_emit back-compat contract).
+    overview_body_attrs = _source_attr_string(overview_ids, overview_primary)
+    if overview_body_attrs:
+        overview_body += f"\n    <section{overview_body_attrs}>"
     if week_data.get("overview_text"):
         for p in week_data["overview_text"]:
             overview_body += f"\n    <p>{p}</p>"
@@ -989,6 +1081,8 @@ def generate_week(
             overview_body += f"\n      <li>{r}</li>"
         overview_body += "\n    </ul>"
     overview_body += f"\n    <p><strong>Estimated time:</strong> {week_data.get('estimated_hours', '3-4')} hours</p>"
+    if overview_body_attrs:
+        overview_body += "\n    </section>"
 
     overview_meta = _build_page_metadata(
         course_code, week_num, "overview",
@@ -1043,10 +1137,22 @@ def generate_week(
         app_refs = _page_refs_for(source_module_map, week_num, app_page_id)
         app_ids = _refs_to_id_list(app_refs)
         app_primary = _refs_primary(app_refs)
-        app_body = "\n    <h2>Learning Activities</h2>"
+        # Wave 41: wrap the Learning Activities heading + any intro
+        # prose in a <section data-cf-source-ids="…"> so the ancestor
+        # walk finds grounding on the <h2> (and any future intro <p>).
+        # The .activity-card wrappers already carry per-card source-ids,
+        # but the opening <h2> would otherwise be a direct <main> child
+        # with no grounding ancestor.
+        app_body_attrs = _source_attr_string(app_ids, app_primary)
+        app_body = ""
+        if app_body_attrs:
+            app_body += f"\n    <section{app_body_attrs}>"
+        app_body += "\n    <h2>Learning Activities</h2>"
         app_body += _render_activities(
             week_data["activities"], source_ids=app_ids, source_primary=app_primary,
         )
+        if app_body_attrs:
+            app_body += "\n    </section>"
         app_meta = _build_page_metadata(
             course_code, week_num, "application",
             app_page_id,
@@ -1069,13 +1175,25 @@ def generate_week(
         sc_refs = _page_refs_for(source_module_map, week_num, sc_page_id)
         sc_ids = _refs_to_id_list(sc_refs)
         sc_primary = _refs_primary(sc_refs)
-        sc_body = "\n    <h2>Self-Check: Test Your Understanding</h2>"
+        # Wave 41: wrap the Self-Check heading + intro <p> in a
+        # <section data-cf-source-ids="…">. The .self-check item
+        # wrappers already carry source-ids, but the "Select the best
+        # answer…" intro paragraph would otherwise be a direct <main>
+        # child and flagged as ungrounded by
+        # :class:`ContentGroundingValidator`'s ancestor walk.
+        sc_body_attrs = _source_attr_string(sc_ids, sc_primary)
+        sc_body = ""
+        if sc_body_attrs:
+            sc_body += f"\n    <section{sc_body_attrs}>"
+        sc_body += "\n    <h2>Self-Check: Test Your Understanding</h2>"
         sc_body += "\n    <p>Select the best answer for each question. You will receive immediate feedback.</p>"
         sc_body += _render_self_check(
             week_data["self_check_questions"],
             source_ids=sc_ids,
             source_primary=sc_primary,
         )
+        if sc_body_attrs:
+            sc_body += "\n    </section>"
         sc_meta = _build_page_metadata(
             course_code, week_num, "assessment",
             sc_page_id,
@@ -1098,7 +1216,44 @@ def generate_week(
     summary_ids = _refs_to_id_list(summary_refs)
     summary_primary = _refs_primary(summary_refs)
     summary_heading_attrs = _source_attr_string(summary_ids, summary_primary)
-    summary_body = f"\n    <h2{summary_heading_attrs}>Key Takeaways</h2>"
+    # Wave 41: wrap the entire summary body (key takeaways list,
+    # reflection block, next-week preview) in a <section
+    # data-cf-source-ids="…">. Pre-Wave-41 only the <h2> carried
+    # grounding, leaving the <li> takeaways + preview <p> as direct
+    # <main> children with no grounding ancestor. The Wave 9 pattern
+    # (attributes on section / component wrappers only, never on raw
+    # <p>/<li>/<tr>) is preserved. No wrapper when summary_ids is
+    # empty (preserves the test_no_map_no_emit back-compat contract).
+    summary_body = ""
+    # Wave 43: prepend a "Chapter Recap" <section data-cf-source-ids="…">
+    # carrying 1-3 substantive paragraphs from the week's content_modules
+    # (same DART prose the content pages cite, so no new text synthesis).
+    # Summary pages previously emitted only Key Takeaways <li>s (5-15
+    # words each) + reflection prompts — zero non-trivial paragraphs per
+    # ContentGroundingValidator's NON_TRIVIAL_WORD_FLOOR = 30 — which
+    # tripped AGGREGATE_EMPTY_PAGES when summary was a meaningful
+    # fraction of total pages (8/44 on the hifi_rag smoke run).
+    #
+    # Only emit the recap when BOTH the page carries grounding
+    # (summary_heading_attrs non-empty) AND content_modules yields at
+    # least one paragraph clearing the non-trivial floor. Back-compat
+    # contracts: source_module_map=None → no data-cf-source-ids anywhere
+    # → no recap. Empty / paragraph-less content_modules → legacy shell
+    # unchanged (no <h2>Chapter Recap</h2> with no body).
+    if summary_heading_attrs:
+        recap_paragraphs = _summary_recap_paragraphs(
+            week_data.get("content_modules") or []
+        )
+        if recap_paragraphs:
+            summary_body += f"\n    <section{summary_heading_attrs}>"
+            summary_body += "\n    <h2>Chapter Recap</h2>"
+            for para in recap_paragraphs:
+                summary_body += f"\n    <p>{para}</p>"
+            summary_body += "\n    </section>"
+
+    if summary_heading_attrs:
+        summary_body += f"\n    <section{summary_heading_attrs}>"
+    summary_body += f"\n    <h2{summary_heading_attrs}>Key Takeaways</h2>"
     if week_data.get("key_takeaways"):
         summary_body += "\n    <ul>"
         for kt in week_data["key_takeaways"]:
@@ -1108,6 +1263,8 @@ def generate_week(
         summary_body += _render_reflection(week_data["reflection_questions"])
     if week_data.get("next_week_preview"):
         summary_body += f"\n    <h2>Looking Ahead</h2>\n    <p>{week_data['next_week_preview']}</p>"
+    if summary_heading_attrs:
+        summary_body += "\n    </section>"
 
     summary_meta = _build_page_metadata(
         course_code, week_num, "summary",

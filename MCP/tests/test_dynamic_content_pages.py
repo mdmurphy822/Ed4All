@@ -27,10 +27,20 @@ from MCP.tools import _content_gen_helpers as _cgh  # noqa: E402
 
 
 def _mk_topic(heading: str, source_file: str = "ch1") -> dict:
+    # Wave 42: fixture paragraph must hit the per-paragraph ≥30-word
+    # floor that build_week_data enforces before emission. Previously
+    # this fixture produced a 24-word first paragraph which would now
+    # (correctly) be filtered out as heading-only content.
     return {
         "heading": heading,
         "paragraphs": [
-            f"Body text for {heading}. " * 6,
+            (
+                f"Body text for {heading} explaining the concept in "
+                "sufficient depth to satisfy the grounding validator "
+                "non-trivial paragraph floor of thirty words each "
+                "required for content pages to be treated as real "
+                "body prose and not as an empty heading-only section."
+            ),
             "Second paragraph with additional detail.",
         ],
         "key_terms": [heading.split()[0]],
@@ -126,6 +136,40 @@ class TestDynamicContentPageCount:
             course_code="BIO_101",
         )
         assert len(wd["content_modules"]) == 4
+
+    def test_more_los_than_topics_drops_topicless_positions(self):
+        """Wave 45 regression: when LO count > topic count, positions
+        with no topic previously emitted heading-only
+        ``paragraphs: []`` sections that failed
+        ContentGroundingValidator's AGGREGATE_EMPTY_PAGES critical
+        check. Post-Wave-45 those positions are dropped; only topic-
+        backed modules make it through. The LOs still appear on every
+        page via ``_render_objectives_section`` so no coverage is
+        lost."""
+        week_topics = [_mk_topic("The one real topic")]
+        week_objectives = [
+            _mk_obj("TO-01", "Describe A."),
+            _mk_obj("CO-01", "Describe B."),
+            _mk_obj("CO-02", "Describe C."),
+        ]
+        wd = _cgh.build_week_data(
+            week_num=1,
+            duration_weeks=1,
+            week_topics=week_topics,
+            week_objectives=week_objectives,
+            all_objectives=week_objectives,
+            course_code="BIO_101",
+        )
+        # Only the topic-backed module survives; the two topic-less
+        # positions are skipped rather than emitted as empty.
+        assert len(wd["content_modules"]) == 1
+        module = wd["content_modules"][0]
+        assert module["title"] == "The one real topic"
+        # Section must carry actual paragraphs, not an empty list.
+        section = module["sections"][0]
+        assert section.get("paragraphs"), (
+            "topic-backed module must carry non-empty paragraphs"
+        )
 
     def test_module_titles_come_from_source(self):
         """Every module title must be a real topic heading or LO

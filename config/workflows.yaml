@@ -552,6 +552,15 @@ workflows:
           - param: duration_weeks
             source: workflow_params
             key: duration_weeks
+          # Wave 40: route ``duration_weeks_explicit`` so the planner
+          # honors the extractor's auto-scaled value in
+          # ``project_config.json`` when ``--weeks`` was unset. Without
+          # this, ``_plan_course_structure``'s precedence check sees
+          # the default ``True`` and clobbers the auto-scaled 8 with the
+          # stale routed ``duration_weeks=12`` from workflow_params.
+          - param: duration_weeks_explicit
+            source: workflow_params
+            key: duration_weeks_explicit
           - param: source_module_map_path
             source: phase_outputs
             phase: source_mapping
@@ -587,6 +596,16 @@ workflows:
             source: phase_outputs
             phase: staging
             output: staging_dir
+          # Wave 40: route ``duration_weeks_explicit`` for the same
+          # reason as ``course_planning`` — ``_generate_course_content``
+          # gates its ``project_config.duration_weeks`` precedence on
+          # this flag. Pre-Wave-40 the absence of the flag in kwargs
+          # let the default ``True`` clobber the auto-scaled value,
+          # producing 12 week directories on a corpus that extractor
+          # had auto-scaled to 8.
+          - param: duration_weeks_explicit
+            source: workflow_params
+            key: duration_weeks_explicit
 
         # Wave 32 Deliverable B: add page_paths + content_dir so the
         # ContentGroundingValidator + PageObjectivesValidator gate

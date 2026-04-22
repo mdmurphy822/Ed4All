@@ -251,7 +251,8 @@ async def create_textbook_pipeline(
     generate_assessments: bool = True,
     assessment_count: int = 50,
     bloom_levels: str = "remember,understand,apply,analyze",
-    priority: str = "normal"
+    priority: str = "normal",
+    duration_weeks_explicit: bool = True,
 ) -> str:
     """
     Create and orchestrate a textbook-to-course pipeline.
@@ -269,6 +270,12 @@ async def create_textbook_pipeline(
         assessment_count: Questions to generate (default: 50)
         bloom_levels: Target Bloom levels (default: remember,understand,apply,analyze)
         priority: Workflow priority (low/normal/high)
+        duration_weeks_explicit: Wave 39 follow-up. When ``False`` (the
+            caller did NOT pass ``--weeks``), the extractor phase
+            (``_extract_textbook_structure``) auto-scales
+            ``duration_weeks`` to ``max(8, chapter_count)`` once the
+            textbook structure is known. Defaults to ``True`` so legacy
+            callers keep the historical fixed-12 behaviour.
 
     Returns:
         JSON with workflow_id, run_id, and status
@@ -320,13 +327,21 @@ async def create_textbook_pipeline(
 
         canonical_cc = _normalize_cc(course_name)
 
-        # Build workflow parameters
+        # Build workflow parameters. Wave 39 follow-up: propagate the
+        # ``duration_weeks_explicit`` flag so ``_extract_textbook_structure``
+        # sees it via kwargs and auto-scales ``duration_weeks`` to
+        # ``max(8, chapter_count)`` when the CLI caller omitted
+        # ``--weeks``. Pre-Wave-39-follow-up, this function hard-coded
+        # ``duration_weeks=12`` into the workflow state regardless of
+        # intent, so the auto-scale branch in the extractor was
+        # effectively dead code on the real run path.
         params = {
             "pdf_paths": [str(p.resolve()) for p in pdfs],
             "course_name": course_name,
             "canonical_course_code": canonical_cc,
             "objectives_path": str(Path(objectives_path).resolve()) if objectives_path else None,
             "duration_weeks": duration_weeks,
+            "duration_weeks_explicit": bool(duration_weeks_explicit),
             "generate_assessments": generate_assessments,
             "assessment_count": assessment_count,
             "bloom_levels": [level.strip() for level in bloom_levels.split(",")],
@@ -2090,9 +2105,18 @@ def _build_tool_registry() -> dict:
                     config_data = json.loads(config_path.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     config_data = {}
-            duration_weeks = int(
-                kwargs.get("duration_weeks") or config_data.get("duration_weeks") or 12
-            )
+            # Wave 40: honor the auto-scaled duration_weeks persisted by
+            # _extract_textbook_structure. When the CLI didn't receive an
+            # explicit --weeks, the extractor already computed max(8, N) and
+            # wrote it to config; the stale kwargs value (default 12) must
+            # NOT shadow it. duration_weeks_explicit=False => config wins.
+            duration_explicit = bool(kwargs.get("duration_weeks_explicit", True))
+            if not duration_explicit and config_data.get("duration_weeks"):
+                duration_weeks = int(config_data["duration_weeks"])
+            else:
+                duration_weeks = int(
+                    kwargs.get("duration_weeks") or config_data.get("duration_weeks") or 12
+                )
             course_name = course_name or config_data.get("course_name") or project_id
 
             # Prefer real topics from staged HTML when available.
@@ -2230,7 +2254,16 @@ def _build_tool_registry() -> dict:
                 config = json.load(f)
 
             course_code = config.get("course_name") or project_id
-            duration_weeks = int(config.get("duration_weeks") or 12)
+            # Wave 40: honor the auto-scaled duration_weeks persisted by
+            # _extract_textbook_structure. Config is authoritative when the
+            # CLI's --weeks wasn't explicit; only a truly explicit kwarg may
+            # override the value the extractor committed to disk.
+            duration_explicit = bool(kwargs.get("duration_weeks_explicit", False))
+            kwarg_duration = kwargs.get("duration_weeks")
+            if duration_explicit and kwarg_duration:
+                duration_weeks = int(kwarg_duration)
+            else:
+                duration_weeks = int(config.get("duration_weeks") or kwarg_duration or 12)
             objectives_path = config.get("objectives_path") or kwargs.get("objectives_path")
 
             # ---------------------------------------------------------- #
