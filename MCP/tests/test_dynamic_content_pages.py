@@ -27,10 +27,20 @@ from MCP.tools import _content_gen_helpers as _cgh  # noqa: E402
 
 
 def _mk_topic(heading: str, source_file: str = "ch1") -> dict:
+    # Wave 42: fixture paragraph must hit the per-paragraph ≥30-word
+    # floor that build_week_data enforces before emission. Previously
+    # this fixture produced a 24-word first paragraph which would now
+    # (correctly) be filtered out as heading-only content.
     return {
         "heading": heading,
         "paragraphs": [
-            f"Body text for {heading}. " * 6,
+            (
+                f"Body text for {heading} explaining the concept in "
+                "sufficient depth to satisfy the grounding validator "
+                "non-trivial paragraph floor of thirty words each "
+                "required for content pages to be treated as real "
+                "body prose and not as an empty heading-only section."
+            ),
             "Second paragraph with additional detail.",
         ],
         "key_terms": [heading.split()[0]],
