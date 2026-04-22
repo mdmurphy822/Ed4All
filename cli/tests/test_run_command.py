@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from click.testing import CliRunner
 
+from cli.commands.run import _build_workflow_params
 from cli.main import cli
 
 
@@ -120,6 +121,49 @@ class TestValidation:
 # ``ed4all textbook-to-course`` top-level command. The Wave 7 replacement
 # is ``ed4all run textbook-to-course ...``; see the TestRunCommand
 # coverage above.
+
+
+class TestBuildWorkflowParamsDurationWeeks:
+    """Wave 39: ensure ``--weeks`` handling preserves auto-scale contract.
+
+    The textbook_to_course extractor auto-scales duration_weeks to
+    max(8, chapter_count) only when ``duration_weeks`` is absent and
+    ``duration_weeks_explicit`` is False. Prior to Wave 39 the CLI was
+    silently coercing an unset ``--weeks`` back to 12 for every
+    workflow, which broke that auto-scale path.
+    """
+
+    @staticmethod
+    def _base_kwargs():
+        return dict(
+            corpus=None,
+            course_name="TEST_101",
+            weeks=None,
+            no_assessments=False,
+            assessment_count=50,
+            bloom_levels="remember,understand,apply,analyze",
+            priority="normal",
+            objectives_path=None,
+        )
+
+    def test_textbook_to_course_omits_duration_when_weeks_unset(self):
+        kwargs = self._base_kwargs()
+        params = _build_workflow_params("textbook_to_course", **kwargs)
+        assert "duration_weeks" not in params
+        assert params["duration_weeks_explicit"] is False
+
+    def test_non_textbook_workflow_defaults_duration_to_12(self):
+        kwargs = self._base_kwargs()
+        params = _build_workflow_params("course_generation", **kwargs)
+        assert params["duration_weeks"] == 12
+        assert params["duration_weeks_explicit"] is False
+
+    def test_explicit_weeks_are_honoured_for_textbook(self):
+        kwargs = self._base_kwargs()
+        kwargs["weeks"] = 16
+        params = _build_workflow_params("textbook_to_course", **kwargs)
+        assert params["duration_weeks"] == 16
+        assert params["duration_weeks_explicit"] is True
 
 
 class TestResume:
