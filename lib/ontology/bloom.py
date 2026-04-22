@@ -45,6 +45,10 @@ __all__ = [
     "get_verb_objects",
     "get_all_verbs",
     "detect_bloom_level",
+    # Wave 48: schema-sourced cognitive domain
+    "COGNITIVE_DOMAINS",
+    "cognitive_domain_enum",
+    "bloom_to_cognitive_domain",
 ]
 
 
@@ -250,3 +254,135 @@ def detect_bloom_level(text: str) -> Tuple[Optional[str], Optional[str]]:
         if re.search(rf"\b{re.escape(verb)}\b", lowered):
             return (level, verb)
     return (None, None)
+
+
+# ---------------------------------------------------------------------------
+# Cognitive domain (Wave 48: schema-sourced)
+# ---------------------------------------------------------------------------
+#
+# The Bloom-level → cognitive-domain mapping used to be duplicated as a
+# hardcoded dict at two callsites (``Courseforge/scripts/generate_course.py``
+# ``BLOOM_TO_DOMAIN`` and ``MCP/tools/_content_gen_helpers.py``
+# ``_render_objectives_section``'s ``domain_map`` local). Wave 48 promotes
+# the mapping to ``schemas/taxonomies/cognitive_domain.json`` and routes both
+# callsites through :func:`bloom_to_cognitive_domain` so the two copies can
+# no longer drift.
+
+#: The authoritative 4-value cognitive-domain enum, frozen as a tuple for
+#: hashability / immutability. Must stay in sync with the schema enum
+#: (asserted at import time below).
+COGNITIVE_DOMAINS: Tuple[str, ...] = (
+    "factual",
+    "conceptual",
+    "procedural",
+    "metacognitive",
+)
+
+#: Fallback for unknown bloom levels — preserves pre-Wave-48 behavior at
+#: both callsites.
+_COGNITIVE_DOMAIN_FALLBACK: str = "conceptual"
+
+_COGNITIVE_DOMAIN_SCHEMA_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "schemas"
+    / "taxonomies"
+    / "cognitive_domain.json"
+)
+
+
+@lru_cache(maxsize=1)
+def _load_cognitive_domain_schema() -> Dict:
+    """Read ``schemas/taxonomies/cognitive_domain.json`` once and cache."""
+    if not _COGNITIVE_DOMAIN_SCHEMA_PATH.exists():
+        raise FileNotFoundError(
+            f"Cognitive-domain schema not found at "
+            f"{_COGNITIVE_DOMAIN_SCHEMA_PATH}. Expected canonical copy from "
+            "Wave 48."
+        )
+    with open(_COGNITIVE_DOMAIN_SCHEMA_PATH, encoding="utf-8") as f:
+        return json.load(f)
+
+
+@lru_cache(maxsize=1)
+def _load_bloom_to_domain_map() -> Dict[str, str]:
+    """Extract the ``bloom_level_to_domain`` mapping from the schema.
+
+    The schema publishes the mapping as the ``default`` on the
+    ``properties.bloom_level_to_domain`` node, mirroring the shape used by
+    ``bloom_verbs.json`` (per-level ``default`` arrays).
+    """
+    schema = _load_cognitive_domain_schema()
+    props = schema.get("properties") or {}
+    node = props.get("bloom_level_to_domain") or {}
+    default = node.get("default")
+    if not isinstance(default, dict) or not default:
+        raise ValueError(
+            "Malformed cognitive_domain.json: missing "
+            "properties.bloom_level_to_domain.default mapping."
+        )
+    # Sanity: every bloom level must map to a value in the enum.
+    enum_set = set(COGNITIVE_DOMAINS)
+    for level in BLOOM_LEVELS:
+        if level not in default:
+            raise ValueError(
+                f"cognitive_domain.json bloom_level_to_domain missing level "
+                f"{level!r}"
+            )
+        if default[level] not in enum_set:
+            raise ValueError(
+                f"cognitive_domain.json bloom_level_to_domain[{level!r}] = "
+                f"{default[level]!r} not in enum {sorted(enum_set)}"
+            )
+    return dict(default)
+
+
+def cognitive_domain_enum() -> Tuple[str, ...]:
+    """Return the canonical 4-value cognitive-domain tuple.
+
+    Suitable for validator enum checks and for tests that want to assert
+    the emit-side ``data-cf-cognitive-domain`` value is canonical.
+    """
+    return COGNITIVE_DOMAINS
+
+
+def bloom_to_cognitive_domain(bloom_level: Optional[str]) -> str:
+    """Return the cognitive knowledge-domain for a Bloom's cognitive-process
+    level.
+
+    Falls back to ``"conceptual"`` for unknown / missing levels, matching
+    pre-Wave-48 behavior at both migrated callsites (``generate_course.py``
+    objective emit + JSON-LD, ``_content_gen_helpers._render_objectives_section``
+    objective emit).
+
+    Examples:
+        >>> bloom_to_cognitive_domain("remember")
+        'factual'
+        >>> bloom_to_cognitive_domain("create")
+        'procedural'
+        >>> bloom_to_cognitive_domain("bogus")
+        'conceptual'
+        >>> bloom_to_cognitive_domain(None)
+        'conceptual'
+    """
+    if not bloom_level:
+        return _COGNITIVE_DOMAIN_FALLBACK
+    mapping = _load_bloom_to_domain_map()
+    return mapping.get(bloom_level, _COGNITIVE_DOMAIN_FALLBACK)
+
+
+# Import-time sanity: schema enum must match the module's expected tuple.
+# Runs once per process (``_load_cognitive_domain_schema`` is cached) so the
+# cost is a single JSON read.
+def _assert_cognitive_domain_enum_matches_schema() -> None:
+    schema = _load_cognitive_domain_schema()
+    defs = schema.get("$defs") or {}
+    node = defs.get("CognitiveDomain") or {}
+    schema_enum = tuple(node.get("enum") or ())
+    if schema_enum != COGNITIVE_DOMAINS:
+        raise RuntimeError(
+            "cognitive_domain.json $defs.CognitiveDomain.enum drift: "
+            f"schema={schema_enum!r} expected={COGNITIVE_DOMAINS!r}"
+        )
+
+
+_assert_cognitive_domain_enum_matches_schema()
