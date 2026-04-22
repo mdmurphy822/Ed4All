@@ -204,3 +204,122 @@ class TestContentBodyNotSkeletonOnly:
             "Expected at least one non-empty paragraph in content modules "
             "when a DART topic is bound to the week; got a skeleton only."
         )
+
+
+# ---------------------------------------------------------------------- #
+# Wave 42: drop topics with no body paragraphs before emission
+# ---------------------------------------------------------------------- #
+
+
+class TestDropEmptyTopicsBeforeEmission:
+    """Wave 42 regression: hifi_rag smoke showed 14/20 content pages
+    emitted as <h2>-only — topics whose paragraphs totaled ≥30 words
+    but had NO individual paragraph ≥30 words (the grounding
+    validator's per-paragraph floor). build_week_data must filter
+    those topics out so they never reach the content-page emitter.
+    """
+
+    def test_build_week_data_drops_topics_with_no_body_paragraphs(self):
+        # Substantive topic — one paragraph well over 30 words.
+        good_topic = {
+            "heading": "Substantive Topic",
+            "paragraphs": [
+                "This paragraph has clearly more than thirty distinct "
+                "words so that the grounding validator counts it as a "
+                "non-trivial body paragraph and the page is not flagged "
+                "as aggregate empty by the downstream content-grounding "
+                "gate logic during validation."
+            ],
+            "key_terms": ["topic"],
+            "source_file": "synth",
+            "word_count": 40,
+            "chapter_id": "chA",
+            "dart_block_ids": ["good_block"],
+            "extracted_lo_statements": [],
+            "extracted_misconceptions": [],
+            "extracted_questions": [],
+        }
+        # Heading-only-like topic — two short paragraphs each ≥40 chars
+        # (so parse_dart_html_files would keep it), but neither reaches
+        # the 30-word per-paragraph floor the validator requires.
+        short_topic = {
+            "heading": "Short Topic",
+            "paragraphs": [
+                "short first paragraph text here only.",
+                "short second paragraph text here only.",
+            ],
+            "key_terms": ["short"],
+            "source_file": "synth",
+            "word_count": 12,
+            "chapter_id": "chA",
+            "dart_block_ids": ["short_block"],
+            "extracted_lo_statements": [],
+            "extracted_misconceptions": [],
+            "extracted_questions": [],
+        }
+
+        wd = _cgh.build_week_data(
+            week_num=1,
+            duration_weeks=4,
+            week_topics=[good_topic, short_topic],
+            week_objectives=[],
+            all_objectives=[],
+            course_code="SYNTH_101",
+        )
+
+        titles = [m["title"] for m in wd["content_modules"]]
+        assert "Substantive Topic" in titles, (
+            "Expected the substantive topic to drive a content module."
+        )
+        assert "Short Topic" not in titles, (
+            "Topics with no paragraph ≥30 words must NOT emit a "
+            "content page (would render as <h2>-only and trip "
+            "AGGREGATE_EMPTY_PAGES)."
+        )
+        # Critical invariant: no content_module carries a heading-only
+        # section (i.e. every module has at least one non-trivial body
+        # paragraph, matching ContentGroundingValidator's floor).
+        for module in wd["content_modules"]:
+            has_body = any(
+                len(str(p).split()) >= 30
+                for s in module["sections"]
+                for p in (s.get("paragraphs") or [])
+            )
+            # When there are objectives at this index but no bound
+            # topic, modules may legitimately have empty paragraphs —
+            # but here we passed no objectives, so every surviving
+            # module must carry a real paragraph.
+            assert has_body, (
+                f"Module {module['title']!r} has no ≥30-word paragraph "
+                f"— would render as <h2>-only."
+            )
+
+    def test_parse_dart_html_files_skips_heading_only_sections(self):
+        html = """<!DOCTYPE html>
+<html lang="en"><body>
+<article id="chA" role="doc-chapter">
+  <section data-dart-block-id="sa_c0">
+    <h2>Heading Only Section</h2>
+  </section>
+  <section data-dart-block-id="sa_c1">
+    <h2>Real Content Section</h2>
+    <p>This paragraph carries substantially more than thirty distinct
+    words so that parse_dart_html_files keeps it as a topic and the
+    downstream content-grounding validator counts it as non-trivial
+    per the floor that governs aggregate empty-page detection.</p>
+  </section>
+</article>
+</body></html>
+"""
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "heading_only.html"
+            p.write_text(html, encoding="utf-8")
+            topics = _cgh.parse_dart_html_files([p])
+
+        headings = [t["heading"] for t in topics]
+        assert "Real Content Section" in headings, (
+            "Substantive section must still emit a topic."
+        )
+        assert "Heading Only Section" not in headings, (
+            "Heading-only sections (no <p> body) must NOT emit a topic."
+        )
