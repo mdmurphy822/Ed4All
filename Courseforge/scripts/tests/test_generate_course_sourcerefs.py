@@ -31,6 +31,7 @@ from generate_course import (  # noqa: E402
     _refs_primary,
     _refs_to_id_list,
     _source_attr_string,
+    _summary_recap_paragraphs,
     generate_course,
     generate_week,
 )
@@ -718,3 +719,254 @@ class TestWave41SummaryBodyWrap:
                 "have a data-cf-source-ids ancestor (Wave 41 grounding)."
             )
             assert "dart:science_of_learning#s5_p0" in ids
+
+
+# ---------------------------------------------------------------------- #
+# Wave 43 — summary pages emit a Chapter Recap <section> carrying 1-3
+# substantive <p>s from the week's content_modules so the summary page
+# contributes non-trivial paragraphs to ContentGroundingValidator's
+# AGGREGATE_EMPTY_PAGES count. Pre-Wave-43 summary pages emitted only
+# the Key Takeaways list (5-15-word <li>s) + reflection prompts -> 0
+# non-trivial paragraphs -> when summary was ≥~15% of total pages
+# (e.g. 8/44 on hifi_rag), AGGREGATE_EMPTY_PAGES tripped critical.
+# ---------------------------------------------------------------------- #
+
+
+# Long topic paragraph mirroring what DART produces — ≥30 words so the
+# validator's NON_TRIVIAL_WORD_FLOOR considers the rendered <p>, and ≥
+# a few distinctive phrases so the test can assert the recap is the
+# DART-sourced text rather than boilerplate.
+_RECAP_PARAGRAPH = (
+    "Retrieval-Augmented Generation blends parametric language models "
+    "with a non-parametric retrieval pass so the generator can ground "
+    "its answer in the freshest documents instead of relying only on "
+    "training-time weights, which materially reduces hallucination on "
+    "long-tail factual prompts."
+)
+
+
+class TestWave43SummaryRecapHelper:
+    """Unit tests on :func:`_summary_recap_paragraphs`."""
+
+    def test_picks_first_non_trivial_paragraph_per_module(self):
+        modules = [
+            {
+                "title": "POUR Principles",
+                "sections": [
+                    {"heading": "Definition",
+                     "paragraphs": [_RECAP_PARAGRAPH]},
+                ],
+            },
+            {
+                "title": "Contrast Ratios",
+                "sections": [
+                    {"heading": "Calculation",
+                     "paragraphs": [_RECAP_PARAGRAPH + " (module 2)"]},
+                ],
+            },
+        ]
+        out = _summary_recap_paragraphs(modules)
+        assert 1 <= len(out) <= 3
+        assert all(len(p.split()) >= 30 for p in out)
+
+    def test_skips_short_paragraphs_below_non_trivial_floor(self):
+        modules = [
+            {
+                "title": "X",
+                "sections": [
+                    {"heading": "h", "paragraphs": ["Short."]},
+                ],
+            },
+        ]
+        assert _summary_recap_paragraphs(modules) == []
+
+    def test_empty_content_modules_returns_empty(self):
+        assert _summary_recap_paragraphs([]) == []
+        assert _summary_recap_paragraphs(None) == []
+
+    def test_caps_total_words(self):
+        modules = [
+            {
+                "title": f"m{i}",
+                "sections": [
+                    {"heading": "h", "paragraphs": [_RECAP_PARAGRAPH]},
+                ],
+            }
+            for i in range(10)
+        ]
+        out = _summary_recap_paragraphs(modules, max_total_words=60)
+        total_words = sum(len(p.split()) for p in out)
+        # First paragraph (~35 words) lands whole; next would push over
+        # the 60-word cap, so the loop should break after 1-2 items.
+        assert total_words <= 100
+        assert 1 <= len(out) <= 2
+
+    def test_caps_paragraph_length(self):
+        long_para = " ".join(["word"] * 200)  # ~200 words, ~1000 chars
+        modules = [
+            {
+                "title": "X",
+                "sections": [
+                    {"heading": "h", "paragraphs": [long_para]},
+                ],
+            },
+        ]
+        out = _summary_recap_paragraphs(
+            modules, max_chars_per_paragraph=200, max_total_words=1000,
+        )
+        assert len(out) == 1
+        # Truncated + ellipsis; length cap ≤ 200 chars + a few trailing.
+        assert len(out[0]) <= 210
+        assert out[0].endswith("...")
+
+    def test_dedupes_identical_paragraphs(self):
+        modules = [
+            {
+                "title": f"m{i}",
+                "sections": [
+                    {"heading": "h", "paragraphs": [_RECAP_PARAGRAPH]},
+                ],
+            }
+            for i in range(3)
+        ]
+        out = _summary_recap_paragraphs(modules)
+        assert len(out) == 1
+
+
+class TestWave43SummaryRecapEmit:
+    """Integration tests: generate_week emits Chapter Recap on summary."""
+
+    @pytest.fixture
+    def week_with_topic_paragraphs(self, week_data):
+        """Week fixture whose content_modules carry a non-trivial
+        paragraph the recap helper can lift."""
+        week_data = dict(week_data)
+        week_data["content_modules"] = [
+            {
+                "title": "POUR Principles",
+                "sections": [
+                    {
+                        "heading": "Definition",
+                        "content_type": "definition",
+                        "paragraphs": [_RECAP_PARAGRAPH],
+                    },
+                ],
+            },
+        ]
+        return week_data
+
+    def test_summary_page_emits_recap_paragraphs_when_topics_present(
+        self, tmp_path, week_with_topic_paragraphs, populated_source_map,
+    ):
+        bs4 = pytest.importorskip("bs4")
+        out = tmp_path / "out"
+        generate_week(
+            week_with_topic_paragraphs, out, "SAMPLE_101",
+            source_module_map=populated_source_map,
+        )
+        html = (out / "week_03" / "week_03_summary.html").read_text()
+        # Chapter Recap heading must appear (distinct from Key Takeaways).
+        assert "<h2>Chapter Recap</h2>" in html
+        soup = bs4.BeautifulSoup(html, "html.parser")
+        # At least one <p> with ≥30 words, wrapped in a
+        # <section data-cf-source-ids="…"> ancestor.
+        non_trivial_ps = [
+            p for p in soup.find_all("p")
+            if len(p.get_text(separator=" ", strip=True).split()) >= 30
+        ]
+        assert non_trivial_ps, (
+            "Wave 43 recap must emit at least one non-trivial <p> "
+            "(≥30 words) on the summary page."
+        )
+        # Every non-trivial <p> must carry a source-ids ancestor — the
+        # whole point of this wave.
+        for p in non_trivial_ps:
+            ids = _ancestor_source_ids(p)
+            assert ids, (
+                "Wave 43 recap <p> must have a data-cf-source-ids "
+                "ancestor (AGGREGATE_EMPTY_PAGES fix)."
+            )
+            assert "dart:science_of_learning#s5_p0" in ids
+
+    def test_summary_page_no_recap_when_topics_empty(
+        self, tmp_path, week_data, populated_source_map,
+    ):
+        """Back-compat: empty / paragraph-less content_modules -> no
+        Chapter Recap heading (never emit <h2> with no body prose)."""
+        week_data = dict(week_data)
+        week_data["content_modules"] = []
+        out = tmp_path / "out"
+        generate_week(
+            week_data, out, "SAMPLE_101",
+            source_module_map=populated_source_map,
+        )
+        html = (out / "week_03" / "week_03_summary.html").read_text()
+        assert "<h2>Chapter Recap</h2>" not in html, (
+            "Recap heading must not appear when content_modules is empty "
+            "(legacy shell back-compat)."
+        )
+        # Legacy shell Key Takeaways + Reflection still render.
+        assert "Key Takeaways" in html
+
+    def test_summary_page_no_recap_when_paragraphs_too_short(
+        self, tmp_path, week_data, populated_source_map,
+    ):
+        """Topic paragraphs below the non-trivial floor -> no recap
+        emitted (prevents heading-only ungrounded section)."""
+        week_data = dict(week_data)
+        week_data["content_modules"] = [
+            {
+                "title": "Short",
+                "sections": [
+                    {"heading": "h", "paragraphs": ["Too short."]},
+                ],
+            },
+        ]
+        out = tmp_path / "out"
+        generate_week(
+            week_data, out, "SAMPLE_101",
+            source_module_map=populated_source_map,
+        )
+        html = (out / "week_03" / "week_03_summary.html").read_text()
+        assert "<h2>Chapter Recap</h2>" not in html
+
+    def test_summary_recap_grounded_ancestor_walk(
+        self, tmp_path, week_with_topic_paragraphs, populated_source_map,
+    ):
+        """Every non-trivial <p> or <li> on the summary page has an
+        ancestor carrying data-cf-source-ids (mirrors the validator's
+        grounding walk)."""
+        bs4 = pytest.importorskip("bs4")
+        out = tmp_path / "out"
+        generate_week(
+            week_with_topic_paragraphs, out, "SAMPLE_101",
+            source_module_map=populated_source_map,
+        )
+        html = (out / "week_03" / "week_03_summary.html").read_text()
+        soup = bs4.BeautifulSoup(html, "html.parser")
+        candidates = list(_non_trivial_candidates(soup))
+        assert candidates, (
+            "Summary page must contribute at least one non-trivial "
+            "<p>/<li> after Wave 43."
+        )
+        for el in candidates:
+            ids = _ancestor_source_ids(el)
+            assert ids, (
+                f"Summary <{el.name}> {el.get_text()[:60]!r} lacks a "
+                "data-cf-source-ids ancestor."
+            )
+
+    def test_summary_recap_no_emit_when_map_missing(
+        self, tmp_path, week_with_topic_paragraphs,
+    ):
+        """Back-compat: source_module_map=None -> no Chapter Recap (no
+        grounding ancestor available, so we must not emit ungrounded
+        prose on a page that otherwise had none)."""
+        out = tmp_path / "out"
+        generate_week(
+            week_with_topic_paragraphs, out, "SAMPLE_101",
+            source_module_map=None,
+        )
+        html = (out / "week_03" / "week_03_summary.html").read_text()
+        assert "<h2>Chapter Recap</h2>" not in html
+        assert "data-cf-source-ids" not in html

@@ -637,6 +637,79 @@ def _render_reflection(questions: List[str]) -> str:
     </div>"""
 
 
+def _summary_recap_paragraphs(
+    content_modules: List[Dict[str, Any]],
+    *,
+    max_paragraphs: int = 3,
+    max_chars_per_paragraph: int = 400,
+    max_total_words: int = 200,
+) -> List[str]:
+    """Select 1-3 substantive paragraphs from ``content_modules`` for the
+    summary page's Chapter Recap section.
+
+    Wave 43 fix for ``AGGREGATE_EMPTY_PAGES`` (ContentGroundingValidator):
+    pre-Wave-43 summary pages emitted only the Key Takeaways list (5-15
+    word <li>s) + reflection prompts, producing zero non-trivial
+    paragraphs per the validator's ``NON_TRIVIAL_WORD_FLOOR = 30``. On
+    corpora where summary is a meaningful fraction of total pages (e.g.
+    8/44 on the hifi_rag smoke run) that tripped
+    ``AGGREGATE_EMPTY_PAGES``.
+
+    Selection strategy:
+      * Walk ``content_modules`` in order, taking the first paragraph
+        from each module's first section.
+      * Skip paragraphs with < 30 words (validator's non-trivial floor).
+      * Cap each paragraph at ``max_chars_per_paragraph`` chars on a
+        word boundary (appends an ellipsis).
+      * Stop once ``max_paragraphs`` are collected or ``max_total_words``
+        is exceeded.
+
+    Returns an empty list when no topic paragraph clears the non-trivial
+    floor — caller falls back to the legacy shell so we never emit a
+    ``<h2>Chapter Recap</h2>`` with no body.
+    """
+    picked: List[str] = []
+    total_words = 0
+    seen: set = set()
+    for module in content_modules or []:
+        for section in module.get("sections", []) or []:
+            paragraphs = section.get("paragraphs") or []
+            if not paragraphs:
+                continue
+            raw = paragraphs[0]
+            if not isinstance(raw, str):
+                continue
+            para = raw.strip()
+            if not para:
+                continue
+            key = para[:80].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            if len(para.split()) < 30:
+                # Validator would ignore this paragraph; skip so the
+                # recap only contains non-trivial prose.
+                continue
+            # Cap length on a word boundary so the recap stays tight.
+            if len(para) > max_chars_per_paragraph:
+                truncated = para[:max_chars_per_paragraph]
+                last_space = truncated.rfind(" ")
+                if last_space > 0:
+                    truncated = truncated[:last_space]
+                para = truncated.rstrip(",.;:") + "..."
+            words = len(para.split())
+            if total_words + words > max_total_words and picked:
+                break
+            picked.append(para)
+            total_words += words
+            # Only take the first section of each module so we spread
+            # across topics rather than dumping one module's prose.
+            break
+        if len(picked) >= max_paragraphs:
+            break
+    return picked
+
+
 def _build_objectives_metadata(objectives: List[Dict]) -> List[Dict[str, Any]]:
     """Build structured objective metadata for JSON-LD from week objectives."""
     result = []
@@ -1144,6 +1217,32 @@ def generate_week(
     # <p>/<li>/<tr>) is preserved. No wrapper when summary_ids is
     # empty (preserves the test_no_map_no_emit back-compat contract).
     summary_body = ""
+    # Wave 43: prepend a "Chapter Recap" <section data-cf-source-ids="…">
+    # carrying 1-3 substantive paragraphs from the week's content_modules
+    # (same DART prose the content pages cite, so no new text synthesis).
+    # Summary pages previously emitted only Key Takeaways <li>s (5-15
+    # words each) + reflection prompts — zero non-trivial paragraphs per
+    # ContentGroundingValidator's NON_TRIVIAL_WORD_FLOOR = 30 — which
+    # tripped AGGREGATE_EMPTY_PAGES when summary was a meaningful
+    # fraction of total pages (8/44 on the hifi_rag smoke run).
+    #
+    # Only emit the recap when BOTH the page carries grounding
+    # (summary_heading_attrs non-empty) AND content_modules yields at
+    # least one paragraph clearing the non-trivial floor. Back-compat
+    # contracts: source_module_map=None → no data-cf-source-ids anywhere
+    # → no recap. Empty / paragraph-less content_modules → legacy shell
+    # unchanged (no <h2>Chapter Recap</h2> with no body).
+    if summary_heading_attrs:
+        recap_paragraphs = _summary_recap_paragraphs(
+            week_data.get("content_modules") or []
+        )
+        if recap_paragraphs:
+            summary_body += f"\n    <section{summary_heading_attrs}>"
+            summary_body += "\n    <h2>Chapter Recap</h2>"
+            for para in recap_paragraphs:
+                summary_body += f"\n    <p>{para}</p>"
+            summary_body += "\n    </section>"
+
     if summary_heading_attrs:
         summary_body += f"\n    <section{summary_heading_attrs}>"
     summary_body += f"\n    <h2{summary_heading_attrs}>Key Takeaways</h2>"
