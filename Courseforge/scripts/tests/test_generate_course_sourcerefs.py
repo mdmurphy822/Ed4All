@@ -832,6 +832,87 @@ class TestWave43SummaryRecapHelper:
         out = _summary_recap_paragraphs(modules)
         assert len(out) == 1
 
+    def test_skips_short_lead_in_picks_later_substantive_paragraph(self):
+        """Wave 46 regression: pre-Wave-46 the recap only evaluated
+        ``paragraphs[0]``. A module with a short lead-in sentence
+        followed by a substantive body paragraph was silently skipped
+        — the recap came up empty and AGGREGATE_EMPTY_PAGES returned
+        on summary-heavy runs. Post-Wave-46 the scanner walks the
+        section's paragraphs until it finds the first one that clears
+        the 30-word floor.
+        """
+        lead_in = "This section introduces the topic."  # 5 words
+        substantive = " ".join(["word"] * 40)  # 40 words, clears floor
+        assert len(lead_in.split()) < 30
+        assert len(substantive.split()) >= 30
+
+        modules = [
+            {
+                "title": "lead-in heavy module",
+                "sections": [
+                    {
+                        "heading": "Topic",
+                        "paragraphs": [lead_in, substantive],
+                    },
+                ],
+            },
+        ]
+        out = _summary_recap_paragraphs(modules)
+        # Post-Wave-46: the scanner skips the short lead-in and picks
+        # the 40-word body instead of returning [].
+        assert len(out) == 1
+        assert out[0] == substantive
+
+    def test_scans_multiple_short_paragraphs_before_substantive(self):
+        """Harder case: several short paragraphs before the
+        substantive one. Scanner must keep walking until it finds an
+        eligible paragraph or exhausts the section.
+        """
+        shorts = [
+            "First short sentence.",
+            "Another brief lead-in.",
+            "Still warming up here.",
+        ]
+        substantive = " ".join(["word"] * 40)
+        modules = [
+            {
+                "title": "m",
+                "sections": [
+                    {
+                        "heading": "h",
+                        "paragraphs": [*shorts, substantive],
+                    },
+                ],
+            },
+        ]
+        out = _summary_recap_paragraphs(modules)
+        assert len(out) == 1
+        assert out[0] == substantive
+
+    def test_section_with_only_short_paragraphs_emits_nothing(self):
+        """When every paragraph in the section falls below the floor,
+        the scanner must not pick anything from that module's section
+        (and the module's section loop should continue / break
+        normally to respect the one-paragraph-per-module invariant).
+        """
+        modules = [
+            {
+                "title": "all short",
+                "sections": [
+                    {
+                        "heading": "h",
+                        "paragraphs": [
+                            "Short one.",
+                            "Short two.",
+                            "Short three.",
+                        ],
+                    },
+                ],
+            },
+        ]
+        out = _summary_recap_paragraphs(modules)
+        assert out == []
+
     def test_short_paragraph_does_not_block_later_substantive_dupe_prefix(self):
         """Wave 44 regression: pre-Wave-44 a short ineligible paragraph
         added its 80-char prefix to the ``seen`` set BEFORE the 30-word
