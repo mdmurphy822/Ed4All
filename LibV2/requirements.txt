@@ -1,3 +1,12 @@
-# LibV2 core dependencies
-click>=8.0.0
-rich>=13.0.0
+# LibV2 standalone dependencies
+#
+# These are the minimal runtime deps for using LibV2's CLI + retrieval
+# tooling outside the main Ed4All monorepo install. If you installed the
+# full project via `pip install -e ".[full]"` from the repo root, these
+# are already satisfied by `pyproject.toml` and you do NOT need this file.
+#
+# Authoritative dependency declarations for the monorepo live in
+# `<repo-root>/pyproject.toml`. Keep any version ranges below compatible
+# with the base [project].dependencies block there.
+click>=8.0.0,<9.0.0
+rich>=13.0.0,<14.0.0
