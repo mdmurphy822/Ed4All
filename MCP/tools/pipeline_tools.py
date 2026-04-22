@@ -251,7 +251,8 @@ async def create_textbook_pipeline(
     generate_assessments: bool = True,
     assessment_count: int = 50,
     bloom_levels: str = "remember,understand,apply,analyze",
-    priority: str = "normal"
+    priority: str = "normal",
+    duration_weeks_explicit: bool = True,
 ) -> str:
     """
     Create and orchestrate a textbook-to-course pipeline.
@@ -269,6 +270,12 @@ async def create_textbook_pipeline(
         assessment_count: Questions to generate (default: 50)
         bloom_levels: Target Bloom levels (default: remember,understand,apply,analyze)
         priority: Workflow priority (low/normal/high)
+        duration_weeks_explicit: Wave 39 follow-up. When ``False`` (the
+            caller did NOT pass ``--weeks``), the extractor phase
+            (``_extract_textbook_structure``) auto-scales
+            ``duration_weeks`` to ``max(8, chapter_count)`` once the
+            textbook structure is known. Defaults to ``True`` so legacy
+            callers keep the historical fixed-12 behaviour.
 
     Returns:
         JSON with workflow_id, run_id, and status
@@ -320,13 +327,21 @@ async def create_textbook_pipeline(
 
         canonical_cc = _normalize_cc(course_name)
 
-        # Build workflow parameters
+        # Build workflow parameters. Wave 39 follow-up: propagate the
+        # ``duration_weeks_explicit`` flag so ``_extract_textbook_structure``
+        # sees it via kwargs and auto-scales ``duration_weeks`` to
+        # ``max(8, chapter_count)`` when the CLI caller omitted
+        # ``--weeks``. Pre-Wave-39-follow-up, this function hard-coded
+        # ``duration_weeks=12`` into the workflow state regardless of
+        # intent, so the auto-scale branch in the extractor was
+        # effectively dead code on the real run path.
         params = {
             "pdf_paths": [str(p.resolve()) for p in pdfs],
             "course_name": course_name,
             "canonical_course_code": canonical_cc,
             "objectives_path": str(Path(objectives_path).resolve()) if objectives_path else None,
             "duration_weeks": duration_weeks,
+            "duration_weeks_explicit": bool(duration_weeks_explicit),
             "generate_assessments": generate_assessments,
             "assessment_count": assessment_count,
             "bloom_levels": [level.strip() for level in bloom_levels.split(",")],
