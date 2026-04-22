@@ -1630,8 +1630,19 @@ def build_week_data(
     # one per distinct source topic. Minimum 1 to preserve the 5-page
     # floor required by the integration-test contract.
     # ---------------------------------------------------------------- #
+    # Wave 42: drop topics that have no body paragraph with ≥30 words
+    # BEFORE content-page emission. parse_dart_html_files keeps a topic
+    # whose paragraphs total ≥30 words combined, but ContentGrounding-
+    # Validator counts per-paragraph non-trivial bodies (≥30 words
+    # each) via NON_TRIVIAL_WORD_FLOOR, so a topic with only short
+    # paragraphs emits an <h2>-only page and trips
+    # AGGREGATE_EMPTY_PAGES. Filter here so no content_module
+    # references such a topic.
+    renderable_topics = [
+        t for t in week_topics if _topic_has_non_trivial_paragraph(t)
+    ]
     content_modules = _build_content_modules_dynamic(
-        week_topics=week_topics,
+        week_topics=renderable_topics,
         week_objectives=week_objectives,
         week_title=week_title,
     )
@@ -1704,6 +1715,31 @@ def build_week_data(
         "reflection_questions": reflection_questions,
         "misconceptions": _build_misconceptions_for_week(week_topics),
     }
+
+
+# Wave 42: mirror ContentGroundingValidator.NON_TRIVIAL_WORD_FLOOR (=30).
+# Kept as a local constant instead of a cross-module import so content
+# generation doesn't take a runtime dependency on validators/.
+_NON_TRIVIAL_WORD_FLOOR = 30
+
+
+def _topic_has_non_trivial_paragraph(topic: Dict[str, Any]) -> bool:
+    """Return True when ``topic`` has at least one paragraph ≥30 words.
+
+    Wave 42 emission guard: parse_dart_html_files keeps topics whose
+    paragraphs total ≥30 words combined, but the grounding validator
+    counts paragraphs individually (see
+    ``lib/validators/content_grounding.py``). This helper lets
+    :func:`build_week_data` drop topics that would render as an
+    <h2>-only section — which both trip AGGREGATE_EMPTY_PAGES and fail
+    the critical invariant that content pages always carry body prose.
+    """
+    for para in topic.get("paragraphs") or []:
+        if not isinstance(para, str):
+            continue
+        if len(para.split()) >= _NON_TRIVIAL_WORD_FLOOR:
+            return True
+    return False
 
 
 def _build_content_modules_dynamic(
