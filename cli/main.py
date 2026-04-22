@@ -48,6 +48,19 @@ except ImportError as _run_import_err:  # pragma: no cover
     )
 
 
+# Register Wave 34 'ed4all mailbox watch' command (outer-session watcher
+# for LocalDispatcher's TaskMailbox bridge).
+try:
+    from cli.commands import register_mailbox_command
+
+    register_mailbox_command(cli)
+except ImportError as _mbx_import_err:  # pragma: no cover
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "cli.commands.mailbox_watch unavailable: %s", _mbx_import_err
+    )
+
+
 # =============================================================================
 # VALIDATE-RUN COMMAND
 # =============================================================================
