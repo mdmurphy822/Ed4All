@@ -2105,9 +2105,18 @@ def _build_tool_registry() -> dict:
                     config_data = json.loads(config_path.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     config_data = {}
-            duration_weeks = int(
-                kwargs.get("duration_weeks") or config_data.get("duration_weeks") or 12
-            )
+            # Wave 40: honor the auto-scaled duration_weeks persisted by
+            # _extract_textbook_structure. When the CLI didn't receive an
+            # explicit --weeks, the extractor already computed max(8, N) and
+            # wrote it to config; the stale kwargs value (default 12) must
+            # NOT shadow it. duration_weeks_explicit=False => config wins.
+            duration_explicit = bool(kwargs.get("duration_weeks_explicit", True))
+            if not duration_explicit and config_data.get("duration_weeks"):
+                duration_weeks = int(config_data["duration_weeks"])
+            else:
+                duration_weeks = int(
+                    kwargs.get("duration_weeks") or config_data.get("duration_weeks") or 12
+                )
             course_name = course_name or config_data.get("course_name") or project_id
 
             # Prefer real topics from staged HTML when available.
@@ -2245,7 +2254,16 @@ def _build_tool_registry() -> dict:
                 config = json.load(f)
 
             course_code = config.get("course_name") or project_id
-            duration_weeks = int(config.get("duration_weeks") or 12)
+            # Wave 40: honor the auto-scaled duration_weeks persisted by
+            # _extract_textbook_structure. Config is authoritative when the
+            # CLI's --weeks wasn't explicit; only a truly explicit kwarg may
+            # override the value the extractor committed to disk.
+            duration_explicit = bool(kwargs.get("duration_weeks_explicit", False))
+            kwarg_duration = kwargs.get("duration_weeks")
+            if duration_explicit and kwarg_duration:
+                duration_weeks = int(kwarg_duration)
+            else:
+                duration_weeks = int(config.get("duration_weeks") or kwarg_duration or 12)
             objectives_path = config.get("objectives_path") or kwargs.get("objectives_path")
 
             # ---------------------------------------------------------- #
