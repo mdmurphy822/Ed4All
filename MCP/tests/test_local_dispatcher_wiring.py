@@ -1,15 +1,22 @@
-"""Wave 28: verify LocalDispatcher fails loudly when no agent_tool is wired.
+"""Wave 28 / 34: LocalDispatcher dispatch paths.
 
-Pre-Wave-28, ``LocalDispatcher.dispatch_phase`` returned ``status="ok"``
-with an empty ``outputs`` dict whenever no agent_tool callable was injected.
-That let production ``--mode local`` runs report success while producing no
-real phase output. The fix (Wave 28):
+Wave 28 fixed a silent-success bug: without an ``agent_tool`` callable and
+without ``LOCAL_DISPATCHER_ALLOW_STUB=1``, the dispatcher used to return
+``status="ok"`` with empty ``outputs``. Wave 34 changes the default path:
+with no ``agent_tool`` and no stub flag, the dispatcher writes the task
+spec to a ``TaskMailbox`` and blocks on completion from an outer
+Claude Code watcher session. With no watcher running the wait times out
+and the dispatcher surfaces a ``MAILBOX_TIMEOUT`` failure whose error
+message names the three recovery paths (run ``ed4all mailbox watch``,
+inject an ``agent_tool``, or rerun with ``--mode api``).
 
-  * Default path with no agent_tool AND no LOCAL_DISPATCHER_ALLOW_STUB env
-    flag → ``status="fail"`` with a descriptive error message.
-  * LOCAL_DISPATCHER_ALLOW_STUB=1 → opt-in stub path preserved for tests
-    and dry-run usage.
-  * Real agent_tool injected → unchanged (dispatches + parses JSON).
+Dispatch paths exercised here:
+
+  * No ``agent_tool`` + no stub flag + no watcher → ``status="fail"`` with
+    ``error_code=MAILBOX_TIMEOUT`` and all three recovery paths mentioned.
+  * ``LOCAL_DISPATCHER_ALLOW_STUB=1`` → stub ``PhaseOutput`` preserved
+    for tests / dry-run.
+  * Real ``agent_tool`` injected → mailbox bypassed entirely.
 """
 
 from __future__ import annotations
@@ -44,18 +51,25 @@ def _phase_input(phase_name: str = "content_generation") -> PhaseInput:
 
 class TestDefaultFailsLoud:
     @pytest.mark.asyncio
-    async def test_no_agent_tool_and_no_flag_fails_loud(
+    async def test_no_agent_tool_and_no_watcher_fails_loud(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
     ):
-        """Without agent_tool and without the opt-in env flag, dispatch
-        must return status=fail with a descriptive error — not silent OK."""
+        """Without agent_tool / stub-flag / watcher, dispatch must time
+        out on the mailbox and surface a MAILBOX_TIMEOUT failure — not a
+        silent OK."""
         monkeypatch.delenv("LOCAL_DISPATCHER_ALLOW_STUB", raising=False)
-        dispatcher = LocalDispatcher(project_root=tmp_path)
+        dispatcher = LocalDispatcher(
+            project_root=tmp_path,
+            mailbox_base_dir=tmp_path / "runs",
+            mailbox_timeout_seconds=0.1,
+            mailbox_poll_interval=0.02,
+        )
         result = await dispatcher.dispatch_phase(_phase_input())
         assert isinstance(result, PhaseOutput)
         assert result.status == "fail"
         assert result.error
-        assert "agent_tool" in result.error.lower()
+        assert "mailbox_timeout" in result.error.lower()
+        assert result.metrics.get("error_code") == "MAILBOX_TIMEOUT"
 
     @pytest.mark.asyncio
     async def test_fail_message_points_to_fix_options(
@@ -64,12 +78,18 @@ class TestDefaultFailsLoud:
         """Error message must mention the three recovery paths so an
         operator isn't stuck guessing."""
         monkeypatch.delenv("LOCAL_DISPATCHER_ALLOW_STUB", raising=False)
-        dispatcher = LocalDispatcher(project_root=tmp_path)
+        dispatcher = LocalDispatcher(
+            project_root=tmp_path,
+            mailbox_base_dir=tmp_path / "runs",
+            mailbox_timeout_seconds=0.1,
+            mailbox_poll_interval=0.02,
+        )
         result = await dispatcher.dispatch_phase(_phase_input())
         err = (result.error or "").lower()
-        # Either "--mode api" or "allow_stub" environment variable name
-        # must surface in the message.
-        assert "--mode api" in err or "local_dispatcher_allow_stub" in err
+        # All three recovery paths should be mentioned.
+        assert "--mode api" in err
+        assert "agent_tool" in err
+        assert "mailbox watch" in err
 
 
 class TestOptInStubPath:
@@ -121,7 +141,12 @@ class TestDispatchedListRecorded:
         """Even when dispatch fails, the attempt must appear in the
         tracked list so the orchestrator can report accurate run metrics."""
         monkeypatch.delenv("LOCAL_DISPATCHER_ALLOW_STUB", raising=False)
-        dispatcher = LocalDispatcher(project_root=tmp_path)
+        dispatcher = LocalDispatcher(
+            project_root=tmp_path,
+            mailbox_base_dir=tmp_path / "runs",
+            mailbox_timeout_seconds=0.1,
+            mailbox_poll_interval=0.02,
+        )
         await dispatcher.dispatch_phase(_phase_input(phase_name="p_alpha"))
         await dispatcher.dispatch_phase(_phase_input(phase_name="p_beta"))
         dispatched = await dispatcher.after_run(workflow_id="W1", result={})
