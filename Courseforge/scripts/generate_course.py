@@ -18,10 +18,12 @@ Usage:
 import argparse
 import html as html_mod
 import json
+import logging
+import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 # Ensure project root is importable so lib.ontology.bloom resolves when
 # this script is invoked from inside Courseforge/scripts/.
@@ -34,6 +36,89 @@ from lib.ontology.bloom import bloom_to_cognitive_domain as _bloom_to_cognitive_
 from lib.ontology.slugs import canonical_slug as _slugify  # noqa: E402
 from lib.ontology.taxonomy import validate_classification  # noqa: E402
 from lib.ontology.teaching_roles import map_role as _map_teaching_role  # noqa: E402
+
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Wave 50: content_type enum validation
+# ---------------------------------------------------------------------------
+#
+# The SectionContentType enum in schemas/taxonomies/content_type.json is the
+# single source of truth for values emitted on <h2>/<h3> via
+# data-cf-content-type (and mirrored into JSON-LD sections[].contentType).
+# ``_infer_content_type`` used to return a free string — any typo or new
+# heuristic branch could silently ship an ad-hoc value. We now validate the
+# return against this frozenset at the emit site.
+#
+# Enforcement: TRAINFORGE_ENFORCE_CONTENT_TYPE=truthy ("1","true","yes","on")
+# raises on miss; unset/falsy logs a WARNING and falls back to "explanation"
+# (the safest default in the enum). Mirrors the opt-in policy used by
+# lib/validators/content_type.py for Trainforge chunks. Callout paths at
+# ``_render_content_sections`` (~L548) still hardcode "application-note" /
+# "note" — that's the CalloutContentType enum (separate subtype); flagged as
+# a known ontology gap and deferred to a later wave.
+
+_CONTENT_TYPE_SCHEMA_PATH = (
+    _PROJECT_ROOT / "schemas" / "taxonomies" / "content_type.json"
+)
+_ENFORCE_CONTENT_TYPE_ENV = "TRAINFORGE_ENFORCE_CONTENT_TYPE"
+_ENFORCE_TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
+_CONTENT_TYPE_DEFAULT = "explanation"
+
+
+def _load_section_content_type_enum() -> FrozenSet[str]:
+    """Read SectionContentType enum straight from the taxonomy schema."""
+    with open(_CONTENT_TYPE_SCHEMA_PATH, encoding="utf-8") as f:
+        schema = json.load(f)
+    return frozenset(schema["$defs"]["SectionContentType"]["enum"])
+
+
+# Hardcoded mirror of schemas/taxonomies/content_type.json::$defs.SectionContentType.
+# A drift guard asserts equality at import time (below) so the two stay in sync.
+SECTION_CONTENT_TYPE_ENUM: FrozenSet[str] = frozenset({
+    "definition",
+    "example",
+    "procedure",
+    "comparison",
+    "exercise",
+    "overview",
+    "summary",
+    "explanation",
+})
+
+# Import-time drift guard: hardcoded constant must equal the taxonomy file.
+assert SECTION_CONTENT_TYPE_ENUM == _load_section_content_type_enum(), (
+    "SECTION_CONTENT_TYPE_ENUM in generate_course.py has drifted from "
+    f"{_CONTENT_TYPE_SCHEMA_PATH}::$defs.SectionContentType. Update both."
+)
+
+
+def _content_type_enforcement_enabled() -> bool:
+    """Read the enforcement env var each call so tests can toggle via setenv."""
+    return os.getenv(_ENFORCE_CONTENT_TYPE_ENV, "").strip().lower() in _ENFORCE_TRUTHY_VALUES
+
+
+def _validate_section_content_type(value: str) -> str:
+    """Validate a SectionContentType value at emit time.
+
+    On miss with TRAINFORGE_ENFORCE_CONTENT_TYPE truthy: raise ValueError.
+    Otherwise: WARN and fall back to "explanation" so emit still succeeds.
+    """
+    if value in SECTION_CONTENT_TYPE_ENUM:
+        return value
+    if _content_type_enforcement_enabled():
+        raise ValueError(
+            f"Unknown content type: {value!r}; expected one of "
+            f"{sorted(SECTION_CONTENT_TYPE_ENUM)}"
+        )
+    logger.warning(
+        "Unknown SectionContentType %r emitted by _infer_content_type; "
+        "falling back to %r. Set %s to raise instead.",
+        value, _CONTENT_TYPE_DEFAULT, _ENFORCE_CONTENT_TYPE_ENV,
+    )
+    return _CONTENT_TYPE_DEFAULT
 
 
 # ---------------------------------------------------------------------------
@@ -447,8 +532,13 @@ def _render_self_check(
     return "\n".join(blocks)
 
 
-def _infer_content_type(section: Dict) -> str:
-    """Infer a content type label for a section from its structure/heading."""
+def _infer_content_type_raw(section: Dict) -> str:
+    """Heuristic mapping from section structure/heading to a content type.
+
+    Wave 50: split out from ``_infer_content_type`` so the validator can
+    wrap the raw heuristic result. Tests can monkeypatch this to return a
+    bogus value and exercise the enforcement branch.
+    """
     heading = section.get("heading", "").lower()
     if section.get("flip_cards"):
         return "definition"
@@ -465,6 +555,17 @@ def _infer_content_type(section: Dict) -> str:
     if any(kw in heading for kw in ("summary", "recap", "takeaway")):
         return "summary"
     return "explanation"
+
+
+def _infer_content_type(section: Dict) -> str:
+    """Infer a content type label for a section from its structure/heading.
+
+    Wave 50: the heuristic result is validated against
+    ``SECTION_CONTENT_TYPE_ENUM`` before returning so ad-hoc strings can't
+    slip into shipped HTML / JSON-LD. See ``_validate_section_content_type``
+    for the enforcement-flag semantics.
+    """
+    return _validate_section_content_type(_infer_content_type_raw(section))
 
 
 def _render_content_sections(
