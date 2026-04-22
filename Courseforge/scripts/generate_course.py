@@ -689,6 +689,17 @@ def _summary_recap_paragraphs(
             # Wave 44 ordering invariant preserved: the word-count
             # check runs BEFORE the dedupe-prefix reservation so
             # short ineligible paragraphs never poison ``seen``.
+            #
+            # Wave 47 tightening: ``seen.add(key)`` now fires only
+            # AFTER the paragraph is actually appended to ``picked``.
+            # Pre-Wave-47 an eligible paragraph that failed the
+            # max-total-words budget check still reserved its 80-char
+            # prefix in ``seen`` (even though it was never emitted),
+            # so a later shorter paragraph from another module with
+            # the same prefix got incorrectly dropped as a duplicate.
+            # Reachable via Wave 46's short-lead-in-then-long flow:
+            # a long paragraph picked mid-scan but budget-rejected
+            # would block subsequent recap candidates near the cap.
             emitted_from_section = False
             for raw in paragraphs:
                 if emitted_from_section:
@@ -703,7 +714,6 @@ def _summary_recap_paragraphs(
                 key = para[:80].lower()
                 if key in seen:
                     continue
-                seen.add(key)
                 # Cap length on a word boundary so the recap stays tight.
                 if len(para) > max_chars_per_paragraph:
                     truncated = para[:max_chars_per_paragraph]
@@ -715,10 +725,19 @@ def _summary_recap_paragraphs(
                 if total_words + words > max_total_words and picked:
                     # Total-words cap hit — stop scanning this section
                     # and fall through to the outer module loop, which
-                    # will also break on the cap.
+                    # will also break on the cap. Do NOT reserve
+                    # ``key`` in ``seen`` — the paragraph was not
+                    # emitted, so dedup must not treat it as taken.
                     break
                 picked.append(para)
                 total_words += words
+                # Reserve the dedupe key only after the paragraph is
+                # confirmed emitted. This preserves the Wave 44
+                # short-lead-in guard (ineligible paragraphs never
+                # poisoned ``seen``) while closing the Wave 47 hole
+                # (budget-rejected eligible paragraphs no longer
+                # poison ``seen`` either).
+                seen.add(key)
                 emitted_from_section = True
             # Wave 43 invariant: only take one paragraph per module so
             # the recap spreads across topics instead of dumping a
