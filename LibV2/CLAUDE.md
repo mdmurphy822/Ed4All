@@ -27,7 +27,7 @@ LibV2 contains potentially millions of tokens. Full extraction will kill usage l
 |--------|-------------------|--------|
 | `retrieve "query" --limit 10` | ~5,000 | Normal |
 | `retrieve "query" --limit 50` | ~25,000 | Acceptable max |
-| Read one chunks.json | ~100,000+ | Session budget strain |
+| Read one chunks.jsonl | ~100,000+ | Session budget strain |
 | Load all chunks | ~1,000,000+ | SESSION FAILURE |
 
 ### ALWAYS Use Query-Based Retrieval
@@ -45,7 +45,7 @@ python -m tools.libv2.cli retrieve "query" \
 
 ### NEVER Do These
 
-1. **NEVER** read `chunks.json` files directly via Read tool
+1. **NEVER** read `chunks.jsonl` files directly via Read tool
 2. **NEVER** iterate through `courses/*/corpus/` directories
 3. **NEVER** use the `load_all_chunks()` function from `rag_poc.py`
 4. **NEVER** request "all content" or "entire corpus"
