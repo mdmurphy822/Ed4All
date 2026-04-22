@@ -421,9 +421,14 @@ workflows:
 
         # REC-CTR-05: Explicit output keys (was hardcoded in
         # MCP/core/workflow_runner.py::PHASE_OUTPUT_KEYS).
+        # Wave 32 Deliverable B: surface html_path + html_paths
+        # (router canonical keys) so DartMarkersValidator gate
+        # builder stops reporting ``missing inputs: html_path``.
         outputs:
           - output_path
           - output_paths
+          - html_path
+          - html_paths
           - success
           - html_length
 
@@ -583,9 +588,15 @@ workflows:
             phase: staging
             output: staging_dir
 
+        # Wave 32 Deliverable B: add page_paths + content_dir so the
+        # ContentGroundingValidator + PageObjectivesValidator gate
+        # builders pick them up. Pre-Wave-32 both gates silently
+        # skipped with ``missing inputs: page_paths / content_dir``.
         outputs:
           - project_id
           - content_paths
+          - page_paths
+          - content_dir
           - weeks_prepared
 
         validation_gates:
@@ -637,9 +648,14 @@ workflows:
             phase: objective_extraction
             output: project_id
 
+        # Wave 32 Deliverable B: surface imscc_path + content_dir so
+        # IMSCCValidator + PageObjectivesValidator builders stop
+        # reporting ``missing inputs: imscc_path / content_dir``.
         outputs:
           - package_path
           - libv2_package_path
+          - imscc_path
+          - content_dir
           - project_id
 
         validation_gates:

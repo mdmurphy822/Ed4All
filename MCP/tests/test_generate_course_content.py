@@ -280,6 +280,15 @@ class TestContentGenerationShape:
         policy, a corpus-less run emits overview + 1 content + application
         + summary (the self_check page is skipped because there are no
         real source questions to extract). No templates are fabricated.
+
+        Wave 32 Deliverable C: an empty-corpus run now surfaces a
+        structured ``CONTENT_GENERATION_EMPTY`` failure because every
+        emitted page is a template skeleton (< 30 body words). Pages
+        still land on disk for forensic inspection, and the error
+        envelope includes ``page_paths`` + ``content_dir`` + the
+        actionable error message so callers can triage. This replaces
+        the pre-Wave-32 behaviour of silently passing with ``gates=pass``
+        on template-only output.
         """
         tools, tmp_path, _ = pipeline_registry
         project_id = "PROJ-TESTPIPE-05"
@@ -290,12 +299,14 @@ class TestContentGenerationShape:
             staging_dir=str(tmp_path / "nonexistent"),
         ))
         payload = json.loads(result)
-        assert payload.get("success") is True
+        # Wave 32 Deliverable C: empty-corpus runs now fail loudly.
+        assert payload.get("success") is False
+        assert payload.get("error_code") == "CONTENT_GENERATION_EMPTY"
+        assert "page_paths" in payload
+        assert "content_dir" in payload
+        # Pages still written to disk for forensic inspection.
         week_01 = project_path / "03_content_development" / "week_01"
         html_files = list(week_01.glob("*.html"))
-        # Minimum 4 pages without a corpus. No self_check page is emitted
-        # (no real questions to extract; the builder refuses to fabricate
-        # a "Which of the following best describes X?" placeholder).
         assert len(html_files) >= 4
         names = {f.name for f in html_files}
         assert any("overview" in n for n in names)
