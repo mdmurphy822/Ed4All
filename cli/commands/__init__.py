@@ -2,10 +2,11 @@
 Ed4All CLI command subpackage.
 
 Commands defined here are attached to the top-level ``ed4all`` Click group
-in :mod:`cli.main`. Wave 7 adds the canonical ``ed4all run`` command; future
-waves will migrate legacy subcommands into this package.
+in :mod:`cli.main`. Wave 7 adds the canonical ``ed4all run`` command;
+Wave 34 adds the ``ed4all mailbox watch`` outer-session watcher.
 """
 
+from .mailbox_watch import register_mailbox_command
 from .run import register_run_command
 
-__all__ = ["register_run_command"]
+__all__ = ["register_run_command", "register_mailbox_command"]

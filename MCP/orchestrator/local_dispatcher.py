@@ -21,12 +21,15 @@ without coupling the capture machinery to this module.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from .task_mailbox import TaskMailbox
 from .worker_contracts import PhaseInput, PhaseOutput
 
 logger = logging.getLogger(__name__)
@@ -36,6 +39,12 @@ logger = logging.getLogger(__name__)
 # ``--mode local`` runs fail loudly instead of emitting empty phase outputs
 # while appearing to succeed. Tests set this to exercise the stub path.
 _ALLOW_STUB_ENV = "LOCAL_DISPATCHER_ALLOW_STUB"
+
+# Default timeout (seconds) for mailbox-brokered subagent tasks. The outer
+# Claude Code watcher script reads a task spec, dispatches a subagent via
+# the ``Agent`` tool, and writes the result back. 600s gives room for
+# content-generation-size tasks without pinning the dispatcher forever.
+_DEFAULT_MAILBOX_TIMEOUT = 600.0
 
 
 # Registry of known agent-spec directories. The dispatcher searches these
@@ -56,6 +65,9 @@ class LocalDispatcher:
         *,
         agent_tool: Optional[Callable[[Dict[str, Any]], Awaitable[str]]] = None,
         project_root: Optional[Path] = None,
+        mailbox_base_dir: Optional[Path] = None,
+        mailbox_timeout_seconds: float = _DEFAULT_MAILBOX_TIMEOUT,
+        mailbox_poll_interval: float = 0.25,
     ):
         """
         Args:
@@ -66,12 +78,26 @@ class LocalDispatcher:
             agent_tool: Async callable that invokes the MCP ``Agent`` tool
                 with a dict of ``{subagent_type, prompt, ...}`` and returns
                 the subagent's JSON response as a string. Injected so unit
-                tests can stub dispatch without a live server.
+                tests can stub dispatch without a live server. When present,
+                the dispatcher bypasses the mailbox bridge entirely.
             project_root: Project root for resolving agent spec paths.
+            mailbox_base_dir: Parent dir for ``TaskMailbox``. Defaults to
+                ``<project_root>/state/runs``. Tests pass a tmp_path.
+            mailbox_timeout_seconds: Max seconds to wait for an outer
+                watcher to complete a mailbox task. Default 600s.
+            mailbox_poll_interval: Poll cadence for
+                ``wait_for_completion`` (kept short in tests).
         """
         self.llm_factory = llm_factory
         self.agent_tool = agent_tool
         self.project_root = project_root or Path.cwd()
+        self.mailbox_base_dir = (
+            Path(mailbox_base_dir)
+            if mailbox_base_dir is not None
+            else self.project_root / "state" / "runs"
+        )
+        self.mailbox_timeout_seconds = float(mailbox_timeout_seconds)
+        self.mailbox_poll_interval = float(mailbox_poll_interval)
         self._dispatched: List[str] = []
 
     # ------------------------------------------------- orchestrator hooks
@@ -100,17 +126,20 @@ class LocalDispatcher:
     async def dispatch_phase(self, phase_input: PhaseInput) -> PhaseOutput:
         """Dispatch a single phase to a subagent and collect its PhaseOutput.
 
-        If ``agent_tool`` was not provided:
+        Three-path dispatch (Wave 34):
 
-        * When the env flag ``LOCAL_DISPATCHER_ALLOW_STUB`` is set, return
-          a stub ``PhaseOutput`` (``status="ok"``) so tests and dry-run
-          harnesses exercise the dispatch abstraction without a live
-          subagent pathway. Callers that rely on this behaviour — unit
-          tests, the ``--dry-run`` CLI preview — must opt in explicitly.
-        * Otherwise fail loudly (``status="fail"``) with a message that
-          tells operators to either wire a real ``agent_tool`` or switch
-          to ``--mode api``. Silent stubs used to let production runs
-          report success while producing no phase outputs.
+        1. ``agent_tool`` callable injected → call it directly. This is the
+           test-harness path and preserves existing Wave 28 wiring.
+        2. ``agent_tool`` missing AND ``LOCAL_DISPATCHER_ALLOW_STUB=1`` →
+           return a stub ``PhaseOutput`` so dry-run / unit tests exercise
+           dispatch without a real subagent pathway.
+        3. ``agent_tool`` missing AND stub flag off → write the task spec
+           to ``state/runs/{run_id}/mailbox/pending/{task_id}.json`` and
+           block on ``TaskMailbox.wait_for_completion``. An outer Claude
+           Code session (see ``ed4all mailbox watch``) claims the pending
+           task, dispatches a real subagent via the ``Agent`` tool, and
+           writes the result to ``completed/``. Timeout → ``status="fail"``
+           with ``error_code=MAILBOX_TIMEOUT``.
         """
         self._dispatched.append(phase_input.phase_name)
 
@@ -139,21 +168,11 @@ class LocalDispatcher:
                     status="ok",
                 )
 
-            err = (
-                "LocalDispatcher cannot dispatch phase "
-                f"{phase_input.phase_name!r} (subagent_type={agent_type!r}): "
-                "no agent_tool callable was wired into the dispatcher. "
-                "Either (a) inject an agent_tool at construction time, "
-                "(b) set LOCAL_DISPATCHER_ALLOW_STUB=1 to accept stubbed "
-                "phase output (tests / dry-run only), or (c) rerun with "
-                "--mode api so phases execute as Python coroutines."
-            )
-            logger.error(err)
-            return PhaseOutput(
-                run_id=phase_input.run_id,
-                phase_name=phase_input.phase_name,
-                status="fail",
-                error=err,
+            # Mailbox bridge path: hand the task off to an outer watcher.
+            return await self._dispatch_via_mailbox(
+                phase_input=phase_input,
+                prompt=prompt,
+                agent_type=agent_type,
             )
 
         subagent_request = {
@@ -173,6 +192,178 @@ class LocalDispatcher:
             )
 
         return self._parse_subagent_response(raw, phase_input)
+
+    async def _dispatch_via_mailbox(
+        self,
+        *,
+        phase_input: PhaseInput,
+        prompt: str,
+        agent_type: str,
+    ) -> PhaseOutput:
+        """Write a pending task to the mailbox and wait for an outer watcher
+        to complete it.
+
+        The completion envelope shape the watcher writes is:
+
+            {
+              "success": bool,
+              "result": <subagent_json_response_parsed_as_dict> | None,
+              "raw": <raw_string_if_available>,
+              "error": <string_if_success_false>,
+              "error_code": <classifier_tag_optional>
+            }
+
+        ``result`` is preferred: when present it is passed through
+        ``PhaseOutput.from_dict`` after run_id / phase_name defaults are
+        set. If only ``raw`` is present we parse it through
+        ``_parse_subagent_response`` so the watcher has a lightweight
+        fallback path.
+        """
+        mailbox = TaskMailbox(
+            run_id=phase_input.run_id, base_dir=self.mailbox_base_dir,
+        )
+
+        # Task id is phase-scoped so the same run can have multiple
+        # pending tasks for different phases. The uuid suffix prevents
+        # accidental collisions if the same phase runs twice (e.g. retry).
+        task_id = f"{phase_input.phase_name}-{uuid.uuid4().hex[:8]}"
+
+        task_spec = {
+            "subagent_type": agent_type,
+            "prompt": prompt,
+            "phase_input": phase_input.to_dict(),
+        }
+        try:
+            mailbox.put_pending(task_id, task_spec)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "LocalDispatcher: failed to write pending mailbox task for %s",
+                phase_input.phase_name,
+            )
+            return PhaseOutput(
+                run_id=phase_input.run_id,
+                phase_name=phase_input.phase_name,
+                status="fail",
+                error=f"mailbox put_pending failed: {exc}",
+            )
+
+        logger.info(
+            "LocalDispatcher: mailbox task %s queued for phase=%s (timeout=%.0fs)",
+            task_id,
+            phase_input.phase_name,
+            self.mailbox_timeout_seconds,
+        )
+
+        # Run the blocking wait in a thread so we don't stall the event
+        # loop. wait_for_completion uses short sleeps internally.
+        loop = asyncio.get_event_loop()
+        try:
+            envelope = await loop.run_in_executor(
+                None,
+                lambda: mailbox.wait_for_completion(
+                    task_id,
+                    timeout_seconds=self.mailbox_timeout_seconds,
+                    poll_interval=self.mailbox_poll_interval,
+                ),
+            )
+        except TimeoutError:
+            logger.error(
+                "LocalDispatcher: mailbox timeout for task=%s phase=%s",
+                task_id,
+                phase_input.phase_name,
+            )
+            return PhaseOutput(
+                run_id=phase_input.run_id,
+                phase_name=phase_input.phase_name,
+                status="fail",
+                error=(
+                    f"MAILBOX_TIMEOUT: no completion from outer watcher within "
+                    f"{self.mailbox_timeout_seconds:.0f}s for task {task_id!r}. "
+                    f"Recovery: run `ed4all mailbox watch --run-id "
+                    f"{phase_input.run_id}` in a Claude Code session, or inject "
+                    f"an agent_tool callable, or rerun with --mode api."
+                ),
+                metrics={"error_code": "MAILBOX_TIMEOUT", "mailbox_task_id": task_id},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "LocalDispatcher: mailbox read failed for %s", task_id
+            )
+            return PhaseOutput(
+                run_id=phase_input.run_id,
+                phase_name=phase_input.phase_name,
+                status="fail",
+                error=f"mailbox wait_for_completion failed: {exc}",
+                metrics={"mailbox_task_id": task_id},
+            )
+        finally:
+            # Completion envelope is read; prune the per-task files so the
+            # mailbox stays bounded across long runs.
+            try:
+                mailbox.cleanup(task_id)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "LocalDispatcher: cleanup failed for %s (non-fatal)",
+                    task_id,
+                )
+
+        return self._phase_output_from_envelope(envelope, phase_input, task_id)
+
+    def _phase_output_from_envelope(
+        self,
+        envelope: Dict[str, Any],
+        phase_input: PhaseInput,
+        task_id: str,
+    ) -> PhaseOutput:
+        """Convert a mailbox completion envelope into a ``PhaseOutput``."""
+        if not isinstance(envelope, dict):
+            return PhaseOutput(
+                run_id=phase_input.run_id,
+                phase_name=phase_input.phase_name,
+                status="fail",
+                error="mailbox envelope was not a JSON object",
+                metrics={"mailbox_task_id": task_id},
+            )
+
+        if not envelope.get("success", False):
+            err = envelope.get("error") or "outer watcher reported failure"
+            code = envelope.get("error_code")
+            metrics = {"mailbox_task_id": task_id}
+            if code:
+                metrics["error_code"] = code
+            return PhaseOutput(
+                run_id=phase_input.run_id,
+                phase_name=phase_input.phase_name,
+                status="fail",
+                error=str(err),
+                metrics=metrics,
+            )
+
+        # Prefer structured 'result' dict, fall back to raw JSON string.
+        result = envelope.get("result")
+        if isinstance(result, dict):
+            result.setdefault("run_id", phase_input.run_id)
+            result.setdefault("phase_name", phase_input.phase_name)
+            output = PhaseOutput.from_dict(result)
+            metrics = dict(output.metrics)
+            metrics.setdefault("mailbox_task_id", task_id)
+            output.metrics = metrics
+            return output
+
+        raw = envelope.get("raw")
+        if isinstance(raw, str):
+            return self._parse_subagent_response(raw, phase_input)
+
+        return PhaseOutput(
+            run_id=phase_input.run_id,
+            phase_name=phase_input.phase_name,
+            status="fail",
+            error=(
+                "mailbox envelope reported success but carried neither "
+                "'result' dict nor 'raw' JSON string"
+            ),
+            metrics={"mailbox_task_id": task_id},
+        )
 
     # --------------------------------------------------------------- utils
 
