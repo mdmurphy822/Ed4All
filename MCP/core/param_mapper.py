@@ -121,7 +121,21 @@ class TaskParameterMapper:
                 # This key is already a valid tool param name
                 tool_params[task_key] = task_value
             elif not self.strict:
-                # Pass through unmapped params in non-strict mode
+                # Pass through unmapped params in non-strict mode.
+                # Wave 37: surface the unknown key at WARNING level so
+                # a ``TypeError: unexpected keyword argument`` raised
+                # by the downstream tool is traceable in logs rather
+                # than only visible in the INFO-level retry message.
+                # Still pass through — strict mode drops silently, but
+                # changing non-strict to drop would regress callers
+                # that intentionally overload kwargs across retries.
+                logger.warning(
+                    "TaskParameterMapper: passing unknown param %r "
+                    "through to tool %r (not in required/optional/"
+                    "param_mapping). Expect a TypeError if the tool "
+                    "signature rejects it. Set strict=True to drop.",
+                    task_key, tool_name,
+                )
                 tool_params[task_key] = task_value
             # In strict mode, unmapped params are dropped
 

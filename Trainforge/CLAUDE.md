@@ -33,7 +33,7 @@ package = parser.parse("/path/to/course.imscc")
 generator = AssessmentGenerator(capture=None)
 assessment = generator.generate(
     course_code="INT_101",
-    objective_ids=["LO-001", "LO-002"],
+    objective_ids=["TO-01", "TO-02"],
     bloom_levels=["understand", "apply"],
     question_count=10
 )
@@ -79,7 +79,7 @@ from lib.trainforge_capture import create_trainforge_capture
 with create_trainforge_capture("INT_101", "/path/to/INT_101.imscc") as capture:
     # Set learning objective context
     capture.set_learning_objective_context(
-        lo_id="INT101_D1_1.1",
+        lo_id="TO-01",
         bloom_target="understand"
     )
 

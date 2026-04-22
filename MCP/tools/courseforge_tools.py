@@ -298,6 +298,16 @@ def register_courseforge_tools(mcp):
     ) -> str:
         """Build a real IMS Common Cartridge package from generated content.
 
+        ⚠  **Sync-parity with** ``MCP/tools/pipeline_tools.py::_package_imscc``
+        is required. Both wrappers delegate to
+        ``Courseforge.scripts.package_multifile_imscc.package_imscc``; the
+        MCP-decorated variant also updates
+        ``project_config.status``/``package_path`` post-success while the
+        registry variant skips that side-effect (pipeline phase tracking
+        happens in the workflow runner, not the tool). Keep the delegation
+        + envelope shape identical across both; extract a shared helper
+        in a later wave if the surface grows further.
+
         Wave 28e fold: delegates to the mature multi-file packager
         (``Courseforge.scripts.package_multifile_imscc.package_imscc``)
         rather than hand-rolling the ZIP. This mirrors the Wave 27

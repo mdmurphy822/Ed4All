@@ -171,10 +171,23 @@ class TaskMailbox:
 
         # The actual atomic move. On POSIX, ``os.replace`` atomically
         # overwrites the destination. Under concurrent claim attempts
-        # only one rename succeeds; the loser will then observe that
-        # ``pending`` is gone on its re-check.
+        # only one rename succeeds; the loser raises ``OSError`` because
+        # the ``pending`` file was already renamed by the winner.
+        # Wave 37: classify that as ``TaskClaimConflict`` (matches the
+        # pre-race branch semantics) so retry-aware callers can back
+        # off rather than treating it as a generic mailbox error.
         try:
             os.replace(pending, in_progress)
+        except FileNotFoundError as exc:
+            # Winner already moved the file; surface the conflict.
+            if in_progress.exists():
+                raise TaskClaimConflict(
+                    f"task {task_id!r} already claimed "
+                    f"(in_progress file exists after race)"
+                ) from exc
+            raise TaskNotFoundError(
+                f"task {task_id!r} disappeared during claim"
+            ) from exc
         except OSError as exc:
             raise MailboxError(
                 f"failed to claim {task_id}: {exc}"

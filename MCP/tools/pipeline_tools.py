@@ -2508,6 +2508,16 @@ def _build_tool_registry() -> dict:
         async def _package_imscc(**kwargs):
             """Build a real IMS Common Cartridge package from generated content.
 
+            ⚠  **Sync-parity with**
+            ``MCP/tools/courseforge_tools.py::package_imscc`` (the
+            ``@mcp.tool()`` variant) is required. Both wrappers delegate to
+            ``Courseforge.scripts.package_multifile_imscc.package_imscc``
+            and share the same JSON envelope shape. This registry variant
+            omits the `project_config.status`/`package_path` side-effects
+            that the MCP-decorated variant performs — phase tracking
+            happens in the workflow runner here. Keep both surfaces in
+            lockstep until a shared helper is extracted in a later wave.
+
             Wave 27 HIGH-2: delegates to the mature multi-file packager
             (``Courseforge.scripts.package_multifile_imscc.package_imscc``)
             rather than hand-rolling the ZIP. Consequences of the

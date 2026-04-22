@@ -186,6 +186,36 @@ Every leaf value that came from multi-source matching is wrapped in a
 (16-hex) when `TRAINFORGE_CONTENT_HASH_IDS=1` — both shapes validate
 against the canonical `sourceId` pattern `^dart:{slug}#{block_id}$`.
 
+### `dart:{slug}` normalization (canonical)
+
+The `{slug}` half of the sourceId is derived from the staged HTML's
+`path.stem` with a **gentle** transform:
+
+```
+slug = path.stem.lower().replace(" ", "-")
+```
+
+Underscores, hyphens, and digits pass through unchanged. This matches
+three coordinated consumers that ALL derive their "valid block ID
+universe" from the same `path.stem`:
+
+- `lib/validators/content_grounding.py::_resolve_valid_block_ids` —
+  `slug = html_path.stem.lower().replace(" ", "-")`.
+- `lib/validators/source_refs.py` — same rule.
+- `MCP/tools/pipeline_tools.py::_build_source_module_map` (Wave 9
+  source-router) — `slug = sidecar.stem.replace("_synthesized", "").lower().replace(" ", "-")`.
+- `MCP/tools/_content_gen_helpers.py::_topic_source_references`
+  (Wave 35 content-generator) — `slug = stem.lower().replace(" ", "-")`.
+
+Do **not** use `lib.ontology.slugs.canonical_slug` for sourceId slugs
+— it collapses underscores into one token, producing slugs like
+`batesteachingdigitalageaccessible` instead of
+`bates_teaching_digital_age_accessible`, and the validator's valid
+block-id set won't contain the collapsed form. `canonical_slug` is
+still the right helper for key-concept slugs (see Courseforge
+`_content_gen_helpers.synthesize_objectives_from_topics`), just not
+for the `dart:{slug}` portion of a sourceId.
+
 ### Confidence scale (canonical)
 
 | Value | Meaning |
