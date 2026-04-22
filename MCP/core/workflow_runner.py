@@ -553,6 +553,11 @@ class WorkflowRunner:
             # input router can build validator-specific inputs. Without
             # these, every gate received a generic artifacts blob and
             # silently failed / skipped.
+            # Wave 33 Bug B: hand the executor a way to extract the
+            # current phase's outputs BEFORE the gate router runs.
+            # Pre-Wave-33 extraction happened here (post-execute_phase)
+            # so gate builders never saw the current phase's keys and
+            # six gates silently skipped with "missing inputs: *".
             results, gates_passed, gate_results = await self.executor.execute_phase(
                 workflow_id=workflow_id,
                 phase_name=phase_name,
@@ -562,6 +567,7 @@ class WorkflowRunner:
                 max_concurrent=getattr(phase, "max_concurrent", 5),
                 phase_outputs=phase_outputs,
                 workflow_params=workflow_params,
+                extract_phase_outputs_fn=self._extract_phase_outputs,
             )
 
             # Extract outputs from results
@@ -577,12 +583,26 @@ class WorkflowRunner:
             all_results[phase_name] = {
                 "task_count": len(tasks),
                 "completed": sum(1 for r in results.values() if r.status == "COMPLETE"),
-                "failed": sum(1 for r in results.values() if r.status in ("ERROR", "TIMEOUT")),
+                # Wave 33 Bug C: count "FAILED" alongside "ERROR" and
+                # "TIMEOUT" so tool envelopes with ``success=False``
+                # surface in the phase summary instead of being
+                # silently counted as completed.
+                "failed": sum(
+                    1 for r in results.values()
+                    if r.status in ("ERROR", "TIMEOUT", "FAILED")
+                ),
                 "gates_passed": gates_passed,
             }
 
             # Check if phase failed
-            phase_failed = any(r.status in ("ERROR", "TIMEOUT") for r in results.values())
+            # Wave 33 Bug C: include "FAILED" status so phases that had
+            # every task return ``success=False`` envelopes stop the
+            # workflow instead of advancing with a stale "12/12
+            # complete" count.
+            phase_failed = any(
+                r.status in ("ERROR", "TIMEOUT", "FAILED")
+                for r in results.values()
+            )
             if phase_failed and not getattr(phase, "optional", False):
                 logger.error(f"Phase {phase_name} failed, stopping workflow")
                 final_status = "FAILED"
