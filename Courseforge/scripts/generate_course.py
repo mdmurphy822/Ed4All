@@ -980,6 +980,17 @@ def generate_week(
         week_data["objectives"], source_ids=overview_ids,
         source_primary=overview_primary,
     )
+    # Wave 41: wrap the overview body (non-objectives region) in a
+    # <section data-cf-source-ids="…"> so
+    # :class:`ContentGroundingValidator`'s ancestor walk finds grounding
+    # on every body <p>/<li>. The objectives <div> already carries its
+    # own grounding via _render_objectives; the extra <p> text +
+    # readings list would otherwise be DOM siblings of a sourceless
+    # <main>. No wrapper emitted when overview_ids is empty (preserves
+    # the test_no_map_no_emit back-compat contract).
+    overview_body_attrs = _source_attr_string(overview_ids, overview_primary)
+    if overview_body_attrs:
+        overview_body += f"\n    <section{overview_body_attrs}>"
     if week_data.get("overview_text"):
         for p in week_data["overview_text"]:
             overview_body += f"\n    <p>{p}</p>"
@@ -989,6 +1000,8 @@ def generate_week(
             overview_body += f"\n      <li>{r}</li>"
         overview_body += "\n    </ul>"
     overview_body += f"\n    <p><strong>Estimated time:</strong> {week_data.get('estimated_hours', '3-4')} hours</p>"
+    if overview_body_attrs:
+        overview_body += "\n    </section>"
 
     overview_meta = _build_page_metadata(
         course_code, week_num, "overview",
@@ -1043,10 +1056,22 @@ def generate_week(
         app_refs = _page_refs_for(source_module_map, week_num, app_page_id)
         app_ids = _refs_to_id_list(app_refs)
         app_primary = _refs_primary(app_refs)
-        app_body = "\n    <h2>Learning Activities</h2>"
+        # Wave 41: wrap the Learning Activities heading + any intro
+        # prose in a <section data-cf-source-ids="…"> so the ancestor
+        # walk finds grounding on the <h2> (and any future intro <p>).
+        # The .activity-card wrappers already carry per-card source-ids,
+        # but the opening <h2> would otherwise be a direct <main> child
+        # with no grounding ancestor.
+        app_body_attrs = _source_attr_string(app_ids, app_primary)
+        app_body = ""
+        if app_body_attrs:
+            app_body += f"\n    <section{app_body_attrs}>"
+        app_body += "\n    <h2>Learning Activities</h2>"
         app_body += _render_activities(
             week_data["activities"], source_ids=app_ids, source_primary=app_primary,
         )
+        if app_body_attrs:
+            app_body += "\n    </section>"
         app_meta = _build_page_metadata(
             course_code, week_num, "application",
             app_page_id,
@@ -1069,13 +1094,25 @@ def generate_week(
         sc_refs = _page_refs_for(source_module_map, week_num, sc_page_id)
         sc_ids = _refs_to_id_list(sc_refs)
         sc_primary = _refs_primary(sc_refs)
-        sc_body = "\n    <h2>Self-Check: Test Your Understanding</h2>"
+        # Wave 41: wrap the Self-Check heading + intro <p> in a
+        # <section data-cf-source-ids="…">. The .self-check item
+        # wrappers already carry source-ids, but the "Select the best
+        # answer…" intro paragraph would otherwise be a direct <main>
+        # child and flagged as ungrounded by
+        # :class:`ContentGroundingValidator`'s ancestor walk.
+        sc_body_attrs = _source_attr_string(sc_ids, sc_primary)
+        sc_body = ""
+        if sc_body_attrs:
+            sc_body += f"\n    <section{sc_body_attrs}>"
+        sc_body += "\n    <h2>Self-Check: Test Your Understanding</h2>"
         sc_body += "\n    <p>Select the best answer for each question. You will receive immediate feedback.</p>"
         sc_body += _render_self_check(
             week_data["self_check_questions"],
             source_ids=sc_ids,
             source_primary=sc_primary,
         )
+        if sc_body_attrs:
+            sc_body += "\n    </section>"
         sc_meta = _build_page_metadata(
             course_code, week_num, "assessment",
             sc_page_id,
@@ -1098,7 +1135,18 @@ def generate_week(
     summary_ids = _refs_to_id_list(summary_refs)
     summary_primary = _refs_primary(summary_refs)
     summary_heading_attrs = _source_attr_string(summary_ids, summary_primary)
-    summary_body = f"\n    <h2{summary_heading_attrs}>Key Takeaways</h2>"
+    # Wave 41: wrap the entire summary body (key takeaways list,
+    # reflection block, next-week preview) in a <section
+    # data-cf-source-ids="…">. Pre-Wave-41 only the <h2> carried
+    # grounding, leaving the <li> takeaways + preview <p> as direct
+    # <main> children with no grounding ancestor. The Wave 9 pattern
+    # (attributes on section / component wrappers only, never on raw
+    # <p>/<li>/<tr>) is preserved. No wrapper when summary_ids is
+    # empty (preserves the test_no_map_no_emit back-compat contract).
+    summary_body = ""
+    if summary_heading_attrs:
+        summary_body += f"\n    <section{summary_heading_attrs}>"
+    summary_body += f"\n    <h2{summary_heading_attrs}>Key Takeaways</h2>"
     if week_data.get("key_takeaways"):
         summary_body += "\n    <ul>"
         for kt in week_data["key_takeaways"]:
@@ -1108,6 +1156,8 @@ def generate_week(
         summary_body += _render_reflection(week_data["reflection_questions"])
     if week_data.get("next_week_preview"):
         summary_body += f"\n    <h2>Looking Ahead</h2>\n    <p>{week_data['next_week_preview']}</p>"
+    if summary_heading_attrs:
+        summary_body += "\n    </section>"
 
     summary_meta = _build_page_metadata(
         course_code, week_num, "summary",

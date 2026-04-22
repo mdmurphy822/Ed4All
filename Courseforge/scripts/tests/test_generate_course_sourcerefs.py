@@ -474,3 +474,247 @@ class TestGenerateCourseRoundTrip:
             assert "data-cf-source-ids" not in html
             meta = _extract_json_ld(html)
             assert "sourceReferences" not in meta
+
+
+# ---------------------------------------------------------------------- #
+# Wave 41 — ancestor-walkable grounding on overview / application /
+# self_check / summary page bodies. Mirrors the Wave 35 fix in
+# ``_render_content_sections`` so the ContentGroundingValidator's
+# ancestor walk finds ``data-cf-source-ids`` on every non-trivial body
+# <p>/<li>/<figcaption>/<blockquote>. Before Wave 41 these page bodies
+# emitted raw <h2> + <p> siblings of <main> with no grounding ancestor
+# — smoke test on hifi_rag.pdf flagged 10 ungrounded paragraphs across
+# these page types and scored 0.63 (< 1.0 threshold → gate FAILED).
+# ---------------------------------------------------------------------- #
+
+
+# Word count mirrors the validator's NON_TRIVIAL_WORD_FLOOR = 30: each
+# non-trivial <p>/<li> needs ≥ 30 words for the ancestor walk to even
+# consider it. We embed generous filler so each candidate element
+# clears the floor without depending on the helpers's shape.
+_NON_TRIVIAL_PARAGRAPH = (
+    "This sample paragraph deliberately contains enough substantive "
+    "educational prose to clear the thirty-word non-trivial threshold "
+    "that the content grounding validator enforces when walking "
+    "ancestors for the grounding attribute across every emitted page "
+    "of the generated course."
+)
+
+
+def _ancestor_source_ids(element):
+    """Mirror of :meth:`ContentGroundingValidator._find_source_ids`.
+
+    Walks the element + every parent in the BeautifulSoup tree, returning
+    the first ``data-cf-source-ids`` encountered (or ``None``).
+    """
+    cur = element
+    while cur is not None and hasattr(cur, "get"):
+        val = cur.get("data-cf-source-ids")
+        if val:
+            return val
+        cur = cur.parent
+    return None
+
+
+def _non_trivial_candidates(soup):
+    """Yield every non-trivial <p>/<li>/<figcaption>/<blockquote>.
+
+    Matches the candidate-set walk in ContentGroundingValidator.validate.
+    """
+    # Strip the nav/header/footer chrome first, same as the validator.
+    for tag in soup.find_all(["nav", "header", "footer"]):
+        tag.decompose()
+    for el in soup.find_all(["p", "li", "figcaption", "blockquote"]):
+        text = el.get_text(separator=" ", strip=True)
+        if len(text.split()) >= 30:
+            yield el
+
+
+class TestWave41OverviewBodyWrap:
+    @pytest.fixture
+    def week_with_long_overview(self, week_data):
+        """Week fixture with a long overview paragraph that clears the
+        non-trivial word floor so the ancestor walk evaluates it."""
+        week_data = dict(week_data)
+        week_data["overview_text"] = [_NON_TRIVIAL_PARAGRAPH]
+        return week_data
+
+    def test_overview_body_wrapped_with_source_ids(
+        self, tmp_path, week_with_long_overview, populated_source_map
+    ):
+        bs4 = pytest.importorskip("bs4")
+        out = tmp_path / "out"
+        generate_week(
+            week_with_long_overview, out, "SAMPLE_101",
+            source_module_map=populated_source_map,
+        )
+        html = (out / "week_03" / "week_03_overview.html").read_text()
+        soup = bs4.BeautifulSoup(html, "html.parser")
+        candidates = list(_non_trivial_candidates(soup))
+        assert candidates, (
+            "Overview page must emit at least one non-trivial <p>/<li> "
+            "for this test to be meaningful."
+        )
+        for el in candidates:
+            ids = _ancestor_source_ids(el)
+            assert ids, (
+                f"Overview <{el.name}> {el.get_text()[:60]!r} must have "
+                "a data-cf-source-ids ancestor (Wave 41 grounding)."
+            )
+            assert "dart:science_of_learning#s5_p0" in ids
+
+    def test_overview_no_wrap_when_map_empty(
+        self, tmp_path, week_with_long_overview
+    ):
+        """Back-compat: empty source map → no <section data-cf-source-ids>
+        wrapper should be emitted. Mirrors the Wave 35 / Wave 9 invariant
+        enforced by :class:`TestBackwardCompat`.
+
+        The fixture's overview_text contains the literal phrase
+        "data-cf-source-ids" as prose, so we check for the HTML
+        attribute pattern (``data-cf-source-ids="…"``) rather than the
+        bare token to avoid a false positive.
+        """
+        out = tmp_path / "out"
+        generate_week(
+            week_with_long_overview, out, "SAMPLE_101",
+            source_module_map=None,
+        )
+        html = (out / "week_03" / "week_03_overview.html").read_text()
+        assert not re.search(r'data-cf-source-ids="', html), (
+            "Overview page must not emit any data-cf-source-ids "
+            "attribute when the source_module_map is None (Wave 9 "
+            "back-compat contract)."
+        )
+        # And no <section> wrapper emitted by Wave 41 at all.
+        assert not re.search(
+            r'<section\s+data-cf-source-ids', html
+        ), "Wave 41 wrapper must not emit when source_module_map is None."
+
+
+class TestWave41ApplicationBodyWrap:
+    @pytest.fixture
+    def week_with_long_activity(self, week_data):
+        """Week fixture with an activity whose description is long enough
+        to produce at least one non-trivial candidate on the application
+        page body.
+        """
+        week_data = dict(week_data)
+        week_data["activities"] = [
+            {
+                "title": "Color Audit",
+                "description": _NON_TRIVIAL_PARAGRAPH,
+                "bloom_level": "apply",
+            },
+        ]
+        return week_data
+
+    def test_application_body_wrapped_with_source_ids(
+        self, tmp_path, week_with_long_activity, populated_source_map
+    ):
+        bs4 = pytest.importorskip("bs4")
+        out = tmp_path / "out"
+        generate_week(
+            week_with_long_activity, out, "SAMPLE_101",
+            source_module_map=populated_source_map,
+        )
+        html = (out / "week_03" / "week_03_application.html").read_text()
+        soup = bs4.BeautifulSoup(html, "html.parser")
+        candidates = list(_non_trivial_candidates(soup))
+        assert candidates, "Application page needs at least one non-trivial <p>/<li>."
+        for el in candidates:
+            ids = _ancestor_source_ids(el)
+            assert ids, (
+                f"Application <{el.name}> {el.get_text()[:60]!r} must "
+                "have a data-cf-source-ids ancestor (Wave 41 grounding)."
+            )
+            assert "dart:science_of_learning#s7_p0" in ids
+
+
+class TestWave41SelfCheckBodyWrap:
+    @pytest.fixture
+    def week_with_long_self_check(self, week_data):
+        """Self-check fixture with a question long enough that the emitted
+        <p>/<li> markup passes the 30-word threshold.
+        """
+        week_data = dict(week_data)
+        long_q = (
+            "Which POUR principle most directly covers alt text for "
+            "images, captions for audio, and transcripts for videos in "
+            "WCAG 2.2 AA content that must be accessible to users with "
+            "sensory disabilities?"
+        )
+        week_data["self_check_questions"] = [
+            {
+                "question": long_q,
+                "bloom_level": "remember",
+                "options": [
+                    {"text": "Perceivable", "correct": True, "feedback": "Yes"},
+                    {"text": "Operable", "correct": False, "feedback": "No"},
+                ],
+            }
+        ]
+        return week_data
+
+    def test_self_check_body_wrapped_with_source_ids(
+        self, tmp_path, week_with_long_self_check, populated_source_map
+    ):
+        bs4 = pytest.importorskip("bs4")
+        out = tmp_path / "out"
+        # Inject a populated self_check map entry with primary IDs so the
+        # body wrapper has something to emit (the default fixture has an
+        # empty primary list which would suppress the wrapper).
+        sm = json.loads(json.dumps(populated_source_map))
+        sm["week_03"]["week_03_self_check"] = {
+            "primary": ["dart:science_of_learning#s5_p2"],
+            "contributing": [],
+            "confidence": 0.8,
+        }
+        generate_week(
+            week_with_long_self_check, out, "SAMPLE_101",
+            source_module_map=sm,
+        )
+        html = (out / "week_03" / "week_03_self_check.html").read_text()
+        soup = bs4.BeautifulSoup(html, "html.parser")
+        candidates = list(_non_trivial_candidates(soup))
+        assert candidates, "Self-check page needs at least one non-trivial <p>/<li>."
+        for el in candidates:
+            ids = _ancestor_source_ids(el)
+            assert ids, (
+                f"Self-check <{el.name}> {el.get_text()[:60]!r} must "
+                "have a data-cf-source-ids ancestor (Wave 41 grounding)."
+            )
+            assert "dart:science_of_learning#s5_p2" in ids
+
+
+class TestWave41SummaryBodyWrap:
+    @pytest.fixture
+    def week_with_long_summary(self, week_data):
+        """Summary fixture with a long key-takeaway list item + preview so
+        the summary body carries non-trivial <p>/<li> children.
+        """
+        week_data = dict(week_data)
+        week_data["key_takeaways"] = [_NON_TRIVIAL_PARAGRAPH]
+        week_data["next_week_preview"] = _NON_TRIVIAL_PARAGRAPH
+        return week_data
+
+    def test_summary_body_wrapped_with_source_ids(
+        self, tmp_path, week_with_long_summary, populated_source_map
+    ):
+        bs4 = pytest.importorskip("bs4")
+        out = tmp_path / "out"
+        generate_week(
+            week_with_long_summary, out, "SAMPLE_101",
+            source_module_map=populated_source_map,
+        )
+        html = (out / "week_03" / "week_03_summary.html").read_text()
+        soup = bs4.BeautifulSoup(html, "html.parser")
+        candidates = list(_non_trivial_candidates(soup))
+        assert candidates, "Summary page needs at least one non-trivial <p>/<li>."
+        for el in candidates:
+            ids = _ancestor_source_ids(el)
+            assert ids, (
+                f"Summary <{el.name}> {el.get_text()[:60]!r} must "
+                "have a data-cf-source-ids ancestor (Wave 41 grounding)."
+            )
+            assert "dart:science_of_learning#s5_p0" in ids
