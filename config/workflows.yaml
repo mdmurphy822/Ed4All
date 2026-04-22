@@ -74,6 +74,15 @@ workflows:
               on_fail: block
               on_error: fail_closed
 
+          - gate_id: page_objectives
+            validator: lib.validators.page_objectives.PageObjectivesValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
       - name: validation
         agents: [oscqr-course-evaluator, quality-assurance]
         parallel: true
@@ -221,6 +230,20 @@ workflows:
         batch_timeout_minutes: 30
         description: Synthesize accessible HTML from combined extraction sources
 
+        # REC-CTR-06: DART markers gate ensures downstream LO-extraction + KG
+        # pipelines see the expected DART semantic classes. Silently-dropped
+        # markers previously degraded Trainforge/Courseforge pipelines.
+        validation_gates:
+          - gate_id: dart_markers
+            validator: lib.validators.dart_markers.DartMarkersValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Ensure DART HTML emits skip-link, role=main, aria-labelledby sections, and DART semantic classes
+
       - name: validation
         agents: [accessibility-remediation]
         parallel: true
@@ -306,9 +329,33 @@ workflows:
             severity: critical
             threshold:
               max_leaks: 0
+              # §4.7 corpus-wide boilerplate sub-check. Warning-only today;
+              # flips to blocking in the v1.0 severity pass (VERSIONING.md §3).
+              max_boilerplate_chunk_fraction: 0.10
+              boilerplate_ngram_tokens: 15
             behavior:
               on_fail: block
               on_error: fail_closed
+
+          - gate_id: outcome_ref_integrity
+            validator: lib.validators.leak_check.LeakCheckValidator
+            # Warning in v0.1.x — flips to `critical` in the follow-up PR
+            # once mini_course_clean/ runs green per VERSIONING.md §3.
+            severity: warning
+            threshold:
+              max_broken_refs: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+
+          - gate_id: content_fact_check
+            validator: lib.validators.content_facts.ContentFactValidator
+            severity: warning
+            threshold:
+              max_fact_flags: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
 
           - gate_id: question_quality
             validator: lib.validators.question_quality.QuestionQualityValidator
@@ -365,6 +412,38 @@ workflows:
         timeout_minutes: 90
         description: Convert PDF textbooks to accessible HTML via multi-source synthesis
 
+        # REC-CTR-05: Explicit parameter routing (was hardcoded in
+        # MCP/core/workflow_runner.py::PHASE_PARAM_ROUTING).
+        inputs_from:
+          - param: course_code
+            source: workflow_params
+            key: course_name
+
+        # REC-CTR-05: Explicit output keys (was hardcoded in
+        # MCP/core/workflow_runner.py::PHASE_OUTPUT_KEYS).
+        # Wave 32 Deliverable B: surface html_path + html_paths
+        # (router canonical keys) so DartMarkersValidator gate
+        # builder stops reporting ``missing inputs: html_path``.
+        outputs:
+          - output_path
+          - output_paths
+          - html_path
+          - html_paths
+          - success
+          - html_length
+
+        # REC-CTR-06: DART markers gate on textbook pipeline first phase.
+        validation_gates:
+          - gate_id: dart_markers
+            validator: lib.validators.dart_markers.DartMarkersValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Ensure DART HTML emits skip-link, role=main, aria-labelledby sections, and DART semantic classes
+
       - name: staging
         agents: [textbook-stager]
         parallel: false
@@ -373,21 +452,117 @@ workflows:
         timeout_minutes: 10
         description: Stage DART outputs to Courseforge inputs directory
 
+        inputs_from:
+          - param: run_id
+            source: workflow_params
+            key: run_id
+          - param: dart_html_paths
+            source: phase_outputs
+            phase: dart_conversion
+            output: output_paths
+          - param: course_name
+            source: workflow_params
+            key: course_name
+
+        outputs:
+          - staging_dir
+          - staged_files
+          - file_count
+
       - name: objective_extraction
         agents: [textbook-ingestor]
         parallel: false
         max_concurrent: 1
         depends_on: [staging]
         timeout_minutes: 60
-        description: Extract structure and synthesize learning objectives from textbook
+        description: Extract structure from staged DART HTML into textbook_structure.json (Wave 24)
+
+        inputs_from:
+          - param: course_name
+            source: workflow_params
+            key: course_name
+          - param: objectives_path
+            source: workflow_params
+            key: objectives_path
+          - param: duration_weeks
+            source: workflow_params
+            key: duration_weeks
+          # Wave 24 HIGH-6: when --weeks is unset, auto-scale to max(8, chapters).
+          - param: duration_weeks_explicit
+            source: workflow_params
+            key: duration_weeks_explicit
+          - param: staging_dir
+            source: phase_outputs
+            phase: staging
+            output: staging_dir
+
+        outputs:
+          - project_id
+          - project_path
+          - textbook_structure_path
+          - chapter_count
+          - duration_weeks
+          - source_file_count
+
+      - name: source_mapping
+        agents: [source-router]
+        parallel: false
+        max_concurrent: 1
+        depends_on: [objective_extraction]
+        timeout_minutes: 30
+        description: Map DART source blocks to Courseforge module pages (Wave 9)
+
+        inputs_from:
+          - param: project_id
+            source: phase_outputs
+            phase: objective_extraction
+            output: project_id
+          - param: staging_dir
+            source: phase_outputs
+            phase: staging
+            output: staging_dir
+          - param: textbook_structure_path
+            source: phase_outputs
+            phase: objective_extraction
+            output: textbook_structure_path
+
+        outputs:
+          - source_module_map_path
+          - source_chunk_ids
 
       - name: course_planning
         agents: [course-outliner]
         parallel: false
         max_concurrent: 1
-        depends_on: [objective_extraction]
+        depends_on: [source_mapping]
         timeout_minutes: 60
-        description: Create course structure from synthesized objectives
+        description: Synthesize real TO/CO objectives + persist synthesized_objectives.json (Wave 24)
+
+        inputs_from:
+          - param: project_id
+            source: phase_outputs
+            phase: objective_extraction
+            output: project_id
+          - param: course_name
+            source: workflow_params
+            key: course_name
+          - param: objectives_path
+            source: workflow_params
+            key: objectives_path
+          - param: duration_weeks
+            source: workflow_params
+            key: duration_weeks
+          - param: source_module_map_path
+            source: phase_outputs
+            phase: source_mapping
+            output: source_module_map_path
+
+        outputs:
+          - project_id
+          - synthesized_objectives_path
+          - objective_ids
+          - terminal_count
+          - chapter_count
 
       - name: content_generation
         agents: [content-generator]
@@ -399,6 +574,31 @@ workflows:
         batch_timeout_minutes: 30
         description: Generate course content modules
 
+        inputs_from:
+          - param: project_id
+            source: phase_outputs
+            phase: objective_extraction
+            output: project_id
+          - param: source_module_map_path
+            source: phase_outputs
+            phase: source_mapping
+            output: source_module_map_path
+          - param: staging_dir
+            source: phase_outputs
+            phase: staging
+            output: staging_dir
+
+        # Wave 32 Deliverable B: add page_paths + content_dir so the
+        # ContentGroundingValidator + PageObjectivesValidator gate
+        # builders pick them up. Pre-Wave-32 both gates silently
+        # skipped with ``missing inputs: page_paths / content_dir``.
+        outputs:
+          - project_id
+          - content_paths
+          - page_paths
+          - content_dir
+          - weeks_prepared
+
         validation_gates:
           - gate_id: content_structure
             validator: lib.validators.content.ContentStructureValidator
@@ -409,6 +609,31 @@ workflows:
               on_fail: warn
               on_error: warn
 
+          - gate_id: source_refs
+            validator: lib.validators.source_refs.PageSourceRefValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Verify every emitted sourceId resolves against the DART staging manifest (Wave 9)
+
+          # Wave 31 — ContentGroundingValidator. Catches the "empty
+          # generated course" failure mode the ``OLSR_SIM_01`` sim
+          # produced: 48 weekly pages with < 80 words each, empty
+          # objectives lists, and copy-pasted activity prompts. Nothing
+          # caught that as "empty content" until this gate landed.
+          - gate_id: content_grounding
+            validator: lib.validators.content_grounding.ContentGroundingValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Verify every non-trivial paragraph in generated HTML is grounded in DART source (Wave 31)
+
       - name: packaging
         agents: [brightspace-packager]
         parallel: false
@@ -416,6 +641,22 @@ workflows:
         depends_on: [content_generation]
         timeout_minutes: 45
         description: Package course as IMSCC
+
+        inputs_from:
+          - param: project_id
+            source: phase_outputs
+            phase: objective_extraction
+            output: project_id
+
+        # Wave 32 Deliverable B: surface imscc_path + content_dir so
+        # IMSCCValidator + PageObjectivesValidator builders stop
+        # reporting ``missing inputs: imscc_path / content_dir``.
+        outputs:
+          - package_path
+          - libv2_package_path
+          - imscc_path
+          - content_dir
+          - project_id
 
         validation_gates:
           - gate_id: imscc_structure
@@ -427,6 +668,15 @@ workflows:
               on_fail: warn
               on_error: warn
 
+          - gate_id: page_objectives
+            validator: lib.validators.page_objectives.PageObjectivesValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
       - name: trainforge_assessment
         agents: [assessment-generator]
         parallel: true
@@ -436,6 +686,38 @@ workflows:
         batch_timeout_minutes: 30
         description: Generate assessments from IMSCC course package
         optional: true  # Can be skipped via generate_assessments=false
+
+        inputs_from:
+          - param: course_id
+            source: workflow_params
+            key: course_name
+          - param: imscc_path
+            source: phase_outputs
+            phase: packaging
+            output: package_path
+          - param: bloom_levels
+            source: workflow_params
+            key: bloom_levels
+          - param: question_count
+            source: workflow_params
+            key: assessment_count
+          # Wave 24: real TO/CO objective_ids come from course_planning
+          # (previously pulled from objective_extraction, which emitted
+          # phantom {COURSE}_OBJ_N placeholders).
+          - param: objective_ids
+            source: phase_outputs
+            phase: course_planning
+            output: objective_ids
+
+        outputs:
+          - output_path
+          - assessments_path
+          - assessment_id
+          - question_count
+          # Wave 24: surface chunks_path so the
+          # assessment_objective_alignment gate builder can pair the
+          # assessments payload with the Trainforge chunks.jsonl.
+          - chunks_path
 
         validation_gates:
           - gate_id: imscc_input_valid
@@ -458,13 +740,109 @@ workflows:
               on_fail: block
               on_error: fail_closed
 
+          # Wave 24 scope 7: fail-loud gate that keeps assessment
+          # objective_ids aligned with chunk learning_outcome_refs. Before
+          # Wave 24, two disjoint LO schemes coexisted; if that failure
+          # mode ever resurfaces, this gate stops the pipeline before
+          # 896 phantom refs land in the training corpus.
+          - gate_id: assessment_objective_alignment
+            validator: lib.validators.assessment_objective_alignment.AssessmentObjectiveAlignmentValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Every assessment question's objective_id must appear in at least one chunk's learning_outcome_refs (Wave 24)
+
+      # Wave 30 Gap 3: training-pair synthesis. Pre-Wave-30,
+      # Trainforge/synthesize_training.py was never wired into any
+      # end-to-end run — every LibV2 course had zero SFT/DPO pairs
+      # so ``ed4all export-training ... --format dpo`` had nothing
+      # real to export. This phase reads the Trainforge corpus
+      # produced by ``trainforge_assessment`` and emits
+      # ``training_specs/instruction_pairs.jsonl`` +
+      # ``training_specs/preference_pairs.jsonl``. Optional: callers
+      # can skip it via ``generate_assessments=false`` (same gate
+      # that skips ``trainforge_assessment``).
+      - name: training_synthesis
+        agents: [training-synthesizer]
+        parallel: false
+        max_concurrent: 1
+        depends_on: [trainforge_assessment]
+        timeout_minutes: 30
+        description: Synthesize SFT + DPO training pairs from Trainforge chunks
+        optional: true
+
+        inputs_from:
+          - param: course_code
+            source: workflow_params
+            key: course_name
+          - param: assessments_path
+            source: phase_outputs
+            phase: trainforge_assessment
+            output: assessments_path
+          - param: chunks_path
+            source: phase_outputs
+            phase: trainforge_assessment
+            output: chunks_path
+
+        outputs:
+          - instruction_pairs_path
+          - preference_pairs_path
+          - instruction_pairs_count
+          - preference_pairs_count
+
       - name: libv2_archival
         agents: [libv2-archivist]
         parallel: false
         max_concurrent: 1
-        depends_on: [packaging, trainforge_assessment]
+        depends_on: [packaging, trainforge_assessment, training_synthesis]
         timeout_minutes: 30
         description: Archive all pipeline artifacts to LibV2 (raw PDFs, DART HTML, IMSCC, RAG corpus)
+
+        inputs_from:
+          - param: course_name
+            source: workflow_params
+            key: course_name
+          - param: domain
+            source: workflow_params
+            key: domain
+          - param: division
+            source: workflow_params
+            key: division
+          - param: pdf_paths
+            source: workflow_params
+            key: pdf_paths
+          - param: html_paths
+            source: phase_outputs
+            phase: dart_conversion
+            output: output_paths
+          - param: imscc_path
+            source: phase_outputs
+            phase: packaging
+            output: package_path
+
+        outputs:
+          - course_slug
+          - course_dir
+          - manifest_path
+
+        # Wave 23 Sub-task C: manifest integrity gate. Previously no
+        # gate ran here, so pipeline-built archives could silently
+        # violate the LibV2 scaffold contract downstream consumers
+        # assume (empty pedagogy/, missing course.json, checksum
+        # mismatches, etc.).
+        validation_gates:
+          - gate_id: libv2_manifest
+            validator: lib.validators.libv2_manifest.LibV2ManifestValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Validate LibV2 manifest JSON, schema, and on-disk artifact integrity
 
       - name: finalization
         agents: [brightspace-packager]
@@ -473,6 +851,21 @@ workflows:
         depends_on: [libv2_archival]
         timeout_minutes: 30
         description: Final validation and training data export
+
+        inputs_from:
+          - param: project_id
+            source: phase_outputs
+            phase: objective_extraction
+            output: project_id
+          - param: course_slug
+            source: phase_outputs
+            phase: libv2_archival
+            output: course_slug
+
+        outputs:
+          - project_id
+          - package_path
+          - course_slug
 
 # Default settings applied to all workflows
 defaults:

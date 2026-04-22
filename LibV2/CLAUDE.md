@@ -27,7 +27,7 @@ LibV2 contains potentially millions of tokens. Full extraction will kill usage l
 |--------|-------------------|--------|
 | `retrieve "query" --limit 10` | ~5,000 | Normal |
 | `retrieve "query" --limit 50` | ~25,000 | Acceptable max |
-| Read one chunks.json | ~100,000+ | Session budget strain |
+| Read one chunks.jsonl | ~100,000+ | Session budget strain |
 | Load all chunks | ~1,000,000+ | SESSION FAILURE |
 
 ### ALWAYS Use Query-Based Retrieval
@@ -45,7 +45,7 @@ python -m tools.libv2.cli retrieve "query" \
 
 ### NEVER Do These
 
-1. **NEVER** read `chunks.json` files directly via Read tool
+1. **NEVER** read `chunks.jsonl` files directly via Read tool
 2. **NEVER** iterate through `courses/*/corpus/` directories
 3. **NEVER** use the `load_all_chunks()` function from `rag_poc.py`
 4. **NEVER** request "all content" or "entire corpus"
@@ -134,9 +134,9 @@ Division (STEM/ARTS)
 |------|---------|
 | `courses/` | Course data (one subdir per course) |
 | `catalog/` | Derived indexes and search catalogs |
-| `ontology/` | Taxonomy definitions and mappings |
-| `schema/` | JSON Schema for validation |
 | `tools/` | Python CLI for management |
+| `../schemas/library/` | JSON Schemas (course_manifest, catalog_entry) — unified at project root |
+| `../schemas/taxonomies/` | Classification taxonomy + pedagogy framework — unified at project root |
 
 Each course directory (`courses/[slug]/`) contains:
 - `corpus/` — Chunked content (chunks.jsonl) for RAG retrieval
@@ -193,6 +193,10 @@ libv2 eval compare <baseline.json> <comparison.json>     # Compare evaluation re
 libv2 validate indexes                                   # Validate index consistency
 ```
 
+### ChunkFilter notes
+
+`ChunkFilter.content_type_label` performs strict enum validation when `TRAINFORGE_ENFORCE_CONTENT_TYPE=true`; default remains lenient for legacy corpora. The canonical enum is defined in `../schemas/taxonomies/content_type.json`.
+
 ## File Formats
 
 ### Course Manifest (`manifest.json`)
@@ -201,6 +205,35 @@ Extended metadata including:
 - `classification`: division, domain, subdomains, topics
 - `ontology_mappings`: ACM CCS and LCSH codes
 - `content_profile`: chunk counts, token counts, difficulty distribution
+- `features.source_provenance`: advisory bool — true when any archived chunk carries `source.source_references[]`. Lets retrieval callers fast-skip source-grounded queries on pre-provenance corpora.
+- `features.evidence_source_provenance`: advisory bool — true when any concept-graph edge carries `provenance.evidence.source_references[]`.
+
+Gated by `lib/validators/libv2_manifest.py::LibV2ManifestValidator` as the `libv2_manifest` gate on the `textbook_to_course` pipeline's `libv2_archival` phase. The validator runs critical-severity checks (JSON parse, schema match, on-disk artifact hash/size agreement) and warning-severity advisories (scaffold completeness, `source_provenance=false` gap flag).
+
+### Course Metadata (`course.json`)
+
+Canonical shape: `schemas/knowledge/course.schema.json`. Produced by `Trainforge/process_course.py::_build_course_json`. Validated before write.
+
+Required fields:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `course_code` | string | Stable identifier (e.g. `PHYS_101`). |
+| `title` | string | Course title from IMSCC manifest. |
+| `learning_outcomes[]` | array | Flat list of terminal + chapter LOs (terminal first). |
+
+Each `LearningOutcome`:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | Canonical LO ID, pattern `^[a-zA-Z]{2,}-\d{2,}$`. Trainforge emits lowercase; LibV2 matches case-insensitively. |
+| `statement` | string | One-sentence LO statement. |
+| `hierarchy_level` | enum | `terminal` or `chapter`. |
+| `bloom_level` | enum (optional) | `remember` / `understand` / `apply` / `analyze` / `evaluate` / `create`. |
+| `bloom_verb` | string (optional) | Primary verb detected in the statement. |
+| `key_concepts[]` | string (optional) | Slugified concept tags. |
+
+Consumed by `LibV2/tools/libv2/retrieval_scoring.py::load_course_outcomes` and `LibV2/tools/libv2/validator.py::validate_learning_outcomes`.
 
 ### Catalog Files
 - `master_catalog.json`: All courses with full metadata
@@ -220,7 +253,7 @@ Two standard classification systems are supported:
 - **ACM CCS**: ACM Computing Classification System (for CS content)
 - **LCSH**: Library of Congress Subject Headings (general)
 
-These are stored in `/ontology/` and referenced in course manifests.
+These are stored in `<project-root>/schemas/taxonomies/` and referenced in course manifests.
 
 ## When Helping Users
 

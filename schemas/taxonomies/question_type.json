@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/taxonomies/v1/question_type.schema.json",
+  "title": "Assessment Question Types",
+  "description": "Canonical union of question types supported across Trainforge and the Courseforge JSON-LD contract. Superset of the Trainforge question factory's 7-type list and the trainforge_decision schema's 9-type enum.",
+  "$comment": "Union of Trainforge/generators/question_factory.py:81-89 (7 values: multiple_choice, multiple_response, true_false, fill_in_blank, short_answer, essay, matching) and schemas/events/trainforge_decision.schema.json:64 (adds ordering, hotspot). Per REC-VOC-01.",
+  "$defs": {
+    "QuestionType": {
+      "type": "string",
+      "enum": [
+        "multiple_choice",
+        "multiple_response",
+        "true_false",
+        "short_answer",
+        "essay",
+        "matching",
+        "fill_in_blank",
+        "ordering",
+        "hotspot"
+      ]
+    }
+  },
+  "$ref": "#/$defs/QuestionType"
+}

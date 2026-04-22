@@ -10,9 +10,19 @@ Falls back to regex heuristics for non-Courseforge IMSCC packages.
 
 import json as json_mod
 import re
+import sys
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# Ensure project root is importable so lib.ontology.bloom resolves when
+# this module is executed from inside Trainforge/.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from lib.ontology.bloom import get_verbs_list as _get_canonical_verbs_list  # noqa: E402
 
 
 @dataclass
@@ -25,6 +35,32 @@ class ContentSection:
     components: List[str] = field(default_factory=list)  # flip-card, accordion, etc.
     content_type: Optional[str] = None  # from data-cf-content-type
     key_terms: List[str] = field(default_factory=list)  # from data-cf-key-terms
+    # REC-VOC-02 (Wave 2, Worker K): deterministic teaching_role emitted by
+    # Courseforge on flip-card/self-check/activity elements. When a section
+    # contains exactly one distinct data-cf-teaching-role value among its
+    # tagged children, ``teaching_role`` surfaces it; if multiple distinct
+    # values appear the field stays None and the consumer should fall back
+    # to the JSON-LD ``teachingRole`` array or the LLM classifier.
+    # ``teaching_roles`` always lists every distinct value seen for audit.
+    teaching_role: Optional[str] = None
+    teaching_roles: List[str] = field(default_factory=list)
+    # REC-JSL-03 (Wave 3, Worker M): learning-objective references harvested
+    # from ``data-cf-objective-ref`` attributes on ``.activity-card`` and
+    # ``.self-check`` elements within the section body. Courseforge emits
+    # these at generate_course.py:378,491. Multiple activities per section
+    # may cite different LOs; the list holds distinct values sorted
+    # deterministically. Downstream consumers (process_course._create_chunk)
+    # merge these into a chunk's ``learning_outcome_refs`` so the
+    # Activity→LO KG edge materializes.
+    objective_refs: List[str] = field(default_factory=list)
+    # Wave 10: ``data-cf-source-ids`` values harvested from the section body.
+    # Courseforge emits these on ``<section>`` / heading / component wrapper
+    # elements per Wave 9 (P2 decision: never on ``<p>``/``<li>``/``<tr>``).
+    # Stored as the raw ``sourceId`` strings (``dart:{slug}#{block_id}``);
+    # process_course.py converts them to full SourceReference dicts with an
+    # auto-role of ``contributing`` when JSON-LD doesn't supply the full
+    # shape. Sorted + deduplicated for deterministic downstream diffs.
+    source_references: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -54,10 +90,38 @@ class ParsedHTMLModule:
     misconceptions: List[Dict[str, str]] = field(default_factory=list)
     prerequisite_pages: List[str] = field(default_factory=list)
     suggested_assessment_types: List[str] = field(default_factory=list)
+    # REC-JSL-03 (Wave 3, Worker M): page-level union of every distinct
+    # ``data-cf-objective-ref`` value found anywhere in the HTML. Used as
+    # the fallback attachment set in process_course when a chunk cannot be
+    # mapped back to a specific section (the no-sections code path in
+    # _chunk_content). Populated even when ``sections`` is empty.
+    objective_refs: List[str] = field(default_factory=list)
+    # Wave 10: page-level aggregated source references. Each entry is a
+    # full ``SourceReference`` dict (per schemas/knowledge/source_reference
+    # .schema.json) — ``{sourceId, role, ...}``. Precedence:
+    #   1. JSON-LD ``sourceReferences`` (page-level + section-level) copied
+    #      verbatim (full shape when Courseforge is Wave 9+).
+    #   2. ``data-cf-source-ids`` HTML attributes (stringified sourceId
+    #      only) synthesised as ``{sourceId, role: 'contributing'}`` when
+    #      the sourceId isn't already represented in the JSON-LD set.
+    # Deduped by sourceId; first-seen wins on role collision so JSON-LD's
+    # authoritative role (primary / contributing / corroborating) is
+    # preserved over the HTML-attr fallback's default 'contributing'.
+    source_references: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class HTMLTextExtractor(HTMLParser):
-    """Extract text content from HTML."""
+    """Extract text content from HTML.
+
+    Skips:
+      - ``<script>`` and ``<style>`` subtrees (always).
+      - Any subtree rooted at an element carrying ``data-cf-role="template-chrome"``
+        (Worker Q). Courseforge marks repeated page chrome — header, footer,
+        skip link — with that attribute so the chunk text field doesn't
+        contain boilerplate that every page duplicates. The n-gram boilerplate
+        detector in ``Trainforge/rag/boilerplate_detector.py`` stays as
+        belt-and-suspenders for non-Courseforge IMSCC.
+    """
 
     def __init__(self):
         super().__init__()
@@ -65,6 +129,15 @@ class HTMLTextExtractor(HTMLParser):
         self.current_tag = None
         self.in_script = False
         self.in_style = False
+        # Worker Q: count of currently-open template-chrome ancestors. When
+        # nonzero, text data is discarded.
+        self._template_chrome_depth = 0
+
+    def _is_template_chrome(self, attrs) -> bool:
+        for name, value in attrs:
+            if name == "data-cf-role" and value == "template-chrome":
+                return True
+        return False
 
     def handle_starttag(self, tag, attrs):
         self.current_tag = tag
@@ -72,22 +145,53 @@ class HTMLTextExtractor(HTMLParser):
             self.in_script = True
         elif tag == 'style':
             self.in_style = True
+        if self._is_template_chrome(attrs):
+            self._template_chrome_depth += 1
 
     def handle_endtag(self, tag):
         if tag == 'script':
             self.in_script = False
         elif tag == 'style':
             self.in_style = False
+        # Close template-chrome scope when we see the matching end tag for
+        # a chrome-flagged element. html.parser doesn't give us the attrs on
+        # endtag, so we use a heuristic: template chrome is only emitted on
+        # a known small set of tags (`header`, `footer`, `a.skip-link`).
+        # The counter decrements on those tag names when we're inside a
+        # chrome region. For robustness this matches any end tag that
+        # corresponds to a currently-open chrome region.
+        if self._template_chrome_depth > 0 and tag in _CHROME_TAGS:
+            self._template_chrome_depth -= 1
         self.current_tag = None
 
+    def handle_startendtag(self, tag, attrs):
+        # Self-closing chrome elements (rare but possible, e.g., <br data-cf-role="template-chrome"/>)
+        # shouldn't leave the counter incremented.
+        if tag == 'script':
+            self.in_script = True
+            self.in_script = False
+        elif tag == 'style':
+            self.in_style = True
+            self.in_style = False
+        # Chrome self-closers are transient — no effect on depth.
+
     def handle_data(self, data):
-        if not self.in_script and not self.in_style:
-            text = data.strip()
-            if text:
-                self.text_parts.append(text)
+        if self.in_script or self.in_style:
+            return
+        if self._template_chrome_depth > 0:
+            return
+        text = data.strip()
+        if text:
+            self.text_parts.append(text)
 
     def get_text(self) -> str:
         return ' '.join(self.text_parts)
+
+
+# Tags that Courseforge's generate_course.py emits with
+# ``data-cf-role="template-chrome"``. Keeping this narrow avoids
+# under-counting end tags in complex nested chrome.
+_CHROME_TAGS = {"header", "footer", "a", "div", "nav", "aside"}
 
 
 class HTMLContentParser:
@@ -102,15 +206,10 @@ class HTMLContentParser:
             print(f"LO: {obj.text}")
     """
 
-    # Bloom's taxonomy verbs by level
-    BLOOM_VERBS = {
-        "remember": ["define", "list", "recall", "identify", "recognize", "name", "state"],
-        "understand": ["explain", "describe", "summarize", "interpret", "classify", "compare"],
-        "apply": ["apply", "demonstrate", "implement", "solve", "use", "execute"],
-        "analyze": ["analyze", "differentiate", "examine", "compare", "contrast", "organize"],
-        "evaluate": ["evaluate", "assess", "critique", "judge", "justify", "argue"],
-        "create": ["create", "design", "develop", "construct", "produce", "formulate"]
-    }
+    # Bloom's taxonomy verbs by level.
+    # Source of truth: schemas/taxonomies/bloom_verbs.json (loaded via
+    # lib.ontology.bloom). Migrated in Wave 1.2 / Worker H (REC-BL-01).
+    BLOOM_VERBS = _get_canonical_verbs_list()
 
     # Interactive component patterns
     COMPONENT_PATTERNS = {
@@ -169,6 +268,24 @@ class HTMLContentParser:
         prerequisite_pages = json_ld.get("prerequisitePages", []) if json_ld else []
         suggested_assessments = json_ld.get("suggestedAssessmentTypes", []) if json_ld else []
 
+        # REC-JSL-03 (Wave 3, Worker M): page-level union of every distinct
+        # data-cf-objective-ref in the raw HTML. Covers activities/self-checks
+        # that live outside any section (e.g., pages without headings) so the
+        # no-sections chunk code path in process_course still materializes
+        # the Activity→LO KG edge.
+        page_obj_ref_matches = re.findall(
+            r'data-cf-objective-ref="([^"]*)"', html_content
+        )
+        page_obj_refs = sorted({r for r in page_obj_ref_matches if r})
+
+        # Wave 10: page-level source_references aggregated with precedence
+        # JSON-LD (full shape) > data-cf-source-ids (sourceId strings
+        # auto-roled as 'contributing'). First-seen wins on sourceId
+        # collision so JSON-LD's authoritative role is preserved.
+        page_source_refs = self._build_page_source_refs(
+            json_ld, sections, html_content
+        )
+
         return ParsedHTMLModule(
             title=title,
             word_count=word_count,
@@ -181,7 +298,69 @@ class HTMLContentParser:
             misconceptions=misconceptions,
             prerequisite_pages=prerequisite_pages,
             suggested_assessment_types=suggested_assessments,
+            objective_refs=page_obj_refs,
+            source_references=page_source_refs,
         )
+
+    def _build_page_source_refs(
+        self,
+        json_ld: Optional[Dict[str, Any]],
+        sections: List[ContentSection],
+        html_content: str,
+    ) -> List[Dict[str, Any]]:
+        """Wave 10: Aggregate page-level source_references with precedence.
+
+        Precedence:
+          1. JSON-LD page-level ``sourceReferences`` (full SourceReference
+             shape — sourceId, role, optional weight/confidence/pages/
+             extractor) copied verbatim.
+          2. JSON-LD section-level ``sourceReferences`` (same shape) —
+             appended after page-level.
+          3. ``data-cf-source-ids`` values from HTML attributes (strings
+             only) synthesised as ``{sourceId, role: 'contributing'}`` and
+             appended last.
+
+        First-seen wins on sourceId collision so JSON-LD's authoritative
+        role survives over the HTML-attr fallback. Returns an empty list
+        when no refs are found (pre-Wave-9 corpus) — consumers treat
+        absence as "unknown", never an error.
+        """
+        refs: List[Dict[str, Any]] = []
+        seen: set = set()
+
+        def _add(entry: Dict[str, Any]) -> None:
+            sid = entry.get("sourceId")
+            if not isinstance(sid, str) or not sid:
+                return
+            if sid in seen:
+                return
+            seen.add(sid)
+            refs.append(dict(entry))
+
+        # 1. Page-level JSON-LD sourceReferences
+        if isinstance(json_ld, dict):
+            for entry in json_ld.get("sourceReferences", []) or []:
+                if isinstance(entry, dict):
+                    _add(entry)
+            # 2. Section-level JSON-LD sourceReferences
+            for sec in json_ld.get("sections", []) or []:
+                if not isinstance(sec, dict):
+                    continue
+                for entry in sec.get("sourceReferences", []) or []:
+                    if isinstance(entry, dict):
+                        _add(entry)
+
+        # 3. HTML data-cf-source-ids fallback — synthesised 'contributing'
+        all_html_ids: List[str] = []
+        for raw in re.findall(r'data-cf-source-ids="([^"]*)"', html_content):
+            for piece in raw.split(","):
+                piece = piece.strip()
+                if piece:
+                    all_html_ids.append(piece)
+        for sid in all_html_ids:
+            _add({"sourceId": sid, "role": "contributing"})
+
+        return refs
 
     def _extract_json_ld(self, html: str) -> Optional[Dict[str, Any]]:
         """Extract the first JSON-LD block with Courseforge context from HTML."""
@@ -246,6 +425,50 @@ class HTMLContentParser:
             if kt_match:
                 key_terms = [t.strip() for t in kt_match.group(1).split(",") if t.strip()]
 
+            # REC-VOC-02 (Wave 2, Worker K): scan section body for
+            # data-cf-teaching-role attributes on flip-card/self-check/
+            # activity components. Courseforge emits these deterministically
+            # from (component, purpose) pairs via lib.ontology.teaching_roles.
+            tr_matches = re.findall(
+                r'data-cf-teaching-role="([^"]*)"', section_html
+            )
+            distinct_roles = sorted({r for r in tr_matches if r})
+            teaching_role = distinct_roles[0] if len(distinct_roles) == 1 else None
+
+            # REC-JSL-03 (Wave 3, Worker M): scan section body for
+            # data-cf-objective-ref attributes on .activity-card and
+            # .self-check elements. Courseforge emits these from
+            # generate_course.py:378,491 when a curriculum JSON entry
+            # includes an ``objective_ref``. Deduplicated, deterministic
+            # sort so downstream diffs stay stable across runs.
+            obj_ref_matches = re.findall(
+                r'data-cf-objective-ref="([^"]*)"', section_html
+            )
+            distinct_obj_refs = sorted({r for r in obj_ref_matches if r})
+
+            # Wave 10: scan section body + heading attrs for
+            # ``data-cf-source-ids`` (comma-separated list of DART
+            # sourceIds). Courseforge Wave 9 emits these on <section>,
+            # headings, and component wrappers (.flip-card, .self-check,
+            # .activity-card, .discussion-prompt, .objectives) per the P2
+            # scope decision. Each attribute value can list multiple ids
+            # separated by commas; split + trim + deduplicate, preserving
+            # a sorted order so downstream diffs stay stable.
+            source_id_matches: List[str] = []
+            for src in re.findall(r'data-cf-source-ids="([^"]*)"', attrs_str):
+                source_id_matches.append(src)
+            for src in re.findall(r'data-cf-source-ids="([^"]*)"', section_html):
+                source_id_matches.append(src)
+            distinct_source_ids: List[str] = []
+            seen_ids: set = set()
+            for raw in source_id_matches:
+                for piece in raw.split(","):
+                    piece = piece.strip()
+                    if piece and piece not in seen_ids:
+                        seen_ids.add(piece)
+                        distinct_source_ids.append(piece)
+            distinct_source_ids.sort()
+
             sections.append(ContentSection(
                 heading=heading_text,
                 level=level,
@@ -254,6 +477,10 @@ class HTMLContentParser:
                 components=components,
                 content_type=content_type,
                 key_terms=key_terms,
+                teaching_role=teaching_role,
+                teaching_roles=distinct_roles,
+                objective_refs=distinct_obj_refs,
+                source_references=distinct_source_ids,
             ))
 
         return sections

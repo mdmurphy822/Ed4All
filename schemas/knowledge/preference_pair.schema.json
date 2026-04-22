@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:ed4all:schemas:preference_pair",
+  "title": "Preference Pair (DPO)",
+  "description": "Single preference training example (chosen vs rejected) emitted by Trainforge's synthesize_training stage. One JSONL line per pair. Rejected responses are drawn from explicit misconceptions in the chunk when present, or synthesized from a deterministic distractor rule otherwise.",
+  "type": "object",
+  "required": [
+    "prompt",
+    "chosen",
+    "rejected",
+    "chunk_id",
+    "lo_refs",
+    "seed",
+    "decision_capture_id"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "prompt": {
+      "type": "string",
+      "minLength": 40,
+      "maxLength": 400,
+      "description": "The shared question posed to both chosen and rejected. Must not contain a verbatim 50+-char span from the source chunk text."
+    },
+    "chosen": {
+      "type": "string",
+      "minLength": 50,
+      "maxLength": 600,
+      "description": "The preferred completion (grounded in chunk content)."
+    },
+    "rejected": {
+      "type": "string",
+      "minLength": 50,
+      "maxLength": 600,
+      "description": "The dispreferred completion. Encodes a misconception or a rule-synthesized wrong answer. Must differ from chosen with token-Jaccard delta >= 0.3."
+    },
+    "misconception_id": {
+      "type": ["string", "null"],
+      "description": "Stable id for the misconception encoded in the rejected answer, when the rejected answer was drawn from an explicit misconception. Null when the rejected answer was rule-synthesized."
+    },
+    "chunk_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "lo_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "seed": {
+      "type": "integer"
+    },
+    "decision_capture_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "rejected_source": {
+      "type": "string",
+      "enum": ["misconception", "rule_synthesized"],
+      "description": "Provenance of the rejected completion."
+    },
+    "provider": {
+      "type": "string",
+      "enum": ["mock", "anthropic"]
+    },
+    "schema_version": {
+      "type": "string",
+      "const": "v1"
+    }
+  }
+}

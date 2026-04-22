@@ -11,6 +11,53 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
+# Wave 26: TOC / page-number / chapter-heading blocklist. These patterns
+# identify key-term candidates that are actually table-of-contents
+# fragments rather than real course terminology. They are applied BEFORE
+# a KeyTerm is appended in :meth:`ContentExtractor.extract_key_terms`.
+_TOC_THREE_INTS = re.compile(r"\b\d+\b.*\b\d+\b.*\b\d+\b", re.DOTALL)
+# Dotted numeric followed (anywhere later) by a bare integer, e.g.
+# "1.1 Structural changes ... 14" — characteristic of TOC lines with
+# page numbers.
+_TOC_DOTTED_PLUS_INT = re.compile(r"\b\d+\.\d+\b.*\b\d+\b", re.DOTALL)
+# Leading bare integer (e.g. "42 The ..."), ".", ")", or ":" afterwards.
+_TOC_LEADING_INT = re.compile(r"^\s*\d+[\.\)\:]\s*")
+# Leading "Chapter 3", "Section 4", etc. — TOC title prefixes with a
+# number directly following.
+_TOC_TITLE_PREFIX = re.compile(
+    r"^\s*(Contents|Chapter|Section|Part|Appendix)\s+\d+\b",
+    re.IGNORECASE,
+)
+# Standalone bare-integer term like "42".
+_BARE_INTEGER_ONLY = re.compile(r"^\s*\d+\s*$")
+
+
+def _is_toc_fragment(term_text: str) -> bool:
+    """Return True if ``term_text`` looks like a TOC/page-number fragment.
+
+    Wave 26: Applied to the candidate term text (group 1 of a regex match)
+    BEFORE that text becomes a ``KeyTerm.term``. Real terminology never
+    matches these patterns.
+    """
+    if not term_text:
+        return True
+    # Length cap: genuine term strings are short. Long run-on matches
+    # (200+ chars) are invariably paragraph fragments the regex swept in.
+    if len(term_text) > 200:
+        return True
+    if _BARE_INTEGER_ONLY.match(term_text):
+        return True
+    if _TOC_LEADING_INT.match(term_text):
+        return True
+    if _TOC_TITLE_PREFIX.match(term_text):
+        return True
+    if _TOC_DOTTED_PLUS_INT.search(term_text):
+        return True
+    # Three standalone integers is a strong TOC signal (page runs).
+    if _TOC_THREE_INTS.search(term_text):
+        return True
+    return False
+
 
 @dataclass
 class KeyTerm:
@@ -216,6 +263,12 @@ class ContentExtractor:
 
         Prefers structured key_terms from chunk metadata when available,
         falls back to regex pattern matching.
+
+        Wave 26: rejects TOC fragments + page-number patterns via
+        :func:`_is_toc_fragment`. When a chunk's candidate terms are all
+        rejected the chunk is tagged with a ``EMPTY_TERMS_TOC_CHUNK``
+        diagnostic in its ``metadata_diagnostics`` list so downstream
+        generators can skip or fall back to chunk-text sampling.
         """
         # Check if any chunks have structured key_terms metadata
         metadata_result = self.extract_from_metadata(chunks)
@@ -231,6 +284,10 @@ class ContentExtractor:
             text = _strip_html(raw_text)
             concept_tags = chunk.get("concept_tags", [])
 
+            # Track candidates at this chunk to detect all-rejected state
+            candidates_seen = 0
+            candidates_accepted = 0
+
             # Strategy 1: Definition patterns
             for pattern in self.DEFINITION_PATTERNS:
                 for match in pattern.finditer(text):
@@ -238,9 +295,14 @@ class ContentExtractor:
                     definition = match.group(2).strip()
                     if len(term) < 3 or len(definition) < 10:
                         continue
+                    candidates_seen += 1
+                    # Wave 26: reject TOC-fragment terms
+                    if _is_toc_fragment(term):
+                        continue
                     term_key = term.lower()
                     if term_key not in seen_terms:
                         seen_terms.add(term_key)
+                        candidates_accepted += 1
                         terms.append(KeyTerm(
                             term=term,
                             definition=definition,
@@ -257,6 +319,11 @@ class ContentExtractor:
             for bold_match in bold_matches:
                 term = bold_match.group(1).strip()
                 if len(term) < 2 or term.lower() in seen_terms:
+                    continue
+                candidates_seen += 1
+                # Wave 26: reject TOC fragments in bold/strong terms too —
+                # textbooks often bold chapter headings.
+                if _is_toc_fragment(term):
                     continue
                 # Get surrounding sentence context
                 pos = bold_match.start()
@@ -276,6 +343,7 @@ class ContentExtractor:
                         break
                 if context and len(definition) > 10:
                     seen_terms.add(term.lower())
+                    candidates_accepted += 1
                     terms.append(KeyTerm(
                         term=term,
                         definition=definition,
@@ -288,10 +356,14 @@ class ContentExtractor:
                 tag_lower = tag.lower().replace("-", " ").replace("_", " ")
                 if tag_lower in seen_terms:
                     continue
+                candidates_seen += 1
+                if _is_toc_fragment(tag_lower):
+                    continue
                 # Find sentence containing the tag
                 for sentence in _split_sentences(text):
                     if tag_lower in sentence.lower():
                         seen_terms.add(tag_lower)
+                        candidates_accepted += 1
                         terms.append(KeyTerm(
                             term=tag.replace("-", " ").replace("_", " ").title(),
                             definition=sentence,
@@ -299,6 +371,14 @@ class ContentExtractor:
                             context_sentence=sentence,
                         ))
                         break
+
+            # Wave 26 diagnostic: all candidates were rejected as TOC
+            # fragments. Tag the chunk so downstream callers can see that
+            # key-term extraction yielded nothing for a reason.
+            if candidates_seen > 0 and candidates_accepted == 0:
+                diagnostics = chunk.setdefault("metadata_diagnostics", [])
+                if "EMPTY_TERMS_TOC_CHUNK" not in diagnostics:
+                    diagnostics.append("EMPTY_TERMS_TOC_CHUNK")
 
         return terms
 

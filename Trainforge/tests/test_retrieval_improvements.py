@@ -146,3 +146,59 @@ class TestExtractQueryConcepts:
         from Trainforge.rag.libv2_bridge import TrainforgeRAG
         result = TrainforgeRAG._extract_query_concepts("cognitive load theory")
         assert "cognitive load" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# Worker J back-compat — RetrievalResult.to_dict preserves pre-Worker-J
+# shape when include_rationale=False (default).  Production callers in
+# Trainforge/rag/libv2_bridge.py (RAGBridge.retrieve, multi_query_retrieve,
+# retrieve_for_objective, retrieve_with_fallback) read results via
+# attribute access (r.chunk_id, r.text, r.score, r.source, r.concept_tags,
+# etc.) or to_dict() — this test pins the shape so future changes can't
+# silently break those consumers.
+# ---------------------------------------------------------------------------
+
+class TestWorkerJBackCompat:
+    """Worker J must not change the public retriever result shape when
+    rationale is disabled."""
+
+    EXPECTED_RESULT_KEYS = {
+        "chunk_id", "text", "score", "course_slug", "domain", "chunk_type",
+        "difficulty", "concept_tags", "source", "tokens_estimate",
+        "learning_outcome_refs", "bloom_level",
+    }
+
+    def test_retrieval_result_backcompat_dict_shape(self):
+        """When include_rationale=False (the default), to_dict() output
+        must contain ONLY the pre-Worker-J keys — no 'rationale' leak."""
+        from libv2.retriever import RetrievalResult
+
+        rr = RetrievalResult(
+            chunk_id="c1", text="t", score=1.0, course_slug="s",
+            domain="d", chunk_type="explanation", difficulty="foundational",
+            concept_tags=["a"], source={"module_id": "m"},
+        )
+        # Worker J's RetrievalResult adds an optional `rationale` field which
+        # defaults to None.  to_dict() must omit the key in that case.
+        d = rr.to_dict()
+        assert set(d.keys()) == self.EXPECTED_RESULT_KEYS
+        assert "rationale" not in d
+
+    def test_attribute_access_unchanged(self):
+        """Production callers access r.chunk_id, r.text, r.score, etc.
+        directly — those attribute names are load-bearing."""
+        from libv2.retriever import RetrievalResult
+
+        rr = RetrievalResult(
+            chunk_id="c1", text="t", score=1.0, course_slug="s",
+            domain="d", chunk_type="ct", difficulty=None,
+            concept_tags=[], source={},
+        )
+        # These are the specific attributes RAGBridge uses; if any disappear
+        # the production consumer breaks.
+        for attr in (
+            "chunk_id", "text", "score", "course_slug", "domain",
+            "chunk_type", "difficulty", "concept_tags", "source",
+            "tokens_estimate", "learning_outcome_refs", "bloom_level",
+        ):
+            assert hasattr(rr, attr), f"missing attribute {attr}"

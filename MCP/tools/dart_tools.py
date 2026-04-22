@@ -44,11 +44,28 @@ def _validate_dart_paths():
 _validate_dart_paths()
 
 
+# Wave 22 DC4 / Wave 23 Sub-task B: ``normalize_course_code`` moved to
+# ``lib/decision_capture.py`` so the orchestrator-level capture can
+# share the same normaliser without a dependency inversion between
+# ``lib/`` and ``MCP/tools/``. Re-exported here for backward compat
+# with pre-Wave-23 callers that imported from this module.
+from lib.decision_capture import (  # noqa: F401
+    _COURSE_CODE_PATTERN,
+    normalize_course_code,
+)
+
+
 def _create_capture(course_code: str = "UNKNOWN", pdf_name: str = "unknown"):
-    """Create a capture session for DART operations."""
+    """Create a capture session for DART operations.
+
+    Wave 22 DC4: ``course_code`` is normalised to the canonical
+    ``^[A-Z]{2,8}_[0-9]{3}$`` pattern so DART captures stop carrying
+    the ``course_id`` validation issue downstream consumers have been
+    papering over.
+    """
     try:
         from lib.decision_capture import DARTDecisionCapture
-        return DARTDecisionCapture(course_code, pdf_name)
+        return DARTDecisionCapture(normalize_course_code(course_code), pdf_name)
     except ImportError:
         return None
 
@@ -422,18 +439,33 @@ def register_dart_tools(mcp):
         pdf_path: str,
         course_code: Optional[str] = None,
         output_dir: Optional[str] = None,
+        figures_dir: Optional[str] = None,
     ) -> str:
         """
         Full DART pipeline: extract sources from PDF and convert to accessible HTML.
 
-        This wraps the complete DART workflow for use in the textbook-to-course
-        pipeline. It handles PDF source extraction (pdftotext, pdfplumber, OCR)
-        and multi-source synthesis in a single call.
+        Wave 22 F2 fix: folded this variant to route through the
+        Wave-15+ ``_raw_text_to_accessible_html`` entry point (the
+        same path the pipeline-registry variant at
+        ``MCP/tools/pipeline_tools.py::_extract_and_convert_pdf``
+        already uses). Pre-Wave-22 this tool routed through the
+        legacy ``PDFToAccessibleHTML`` converter as its Strategy-2
+        fallback, ignored ``figures_dir``, emitted no Wave-19
+        sidecars, and routinely failed the ``dart_markers`` gate.
+
+        Wave 28f: the one-release ``DART_LEGACY_CONVERTER`` rollback
+        knob was removed. If pdftotext is unavailable this tool
+        returns an error rather than silently degrading.
 
         Args:
             pdf_path: Path to the PDF file to convert
             course_code: Optional course code for output organization
             output_dir: Optional output directory (defaults to DART/output/)
+            figures_dir: Optional directory for persisted figure images
+                (Wave 17). When unset and the Wave-16 dual-extraction path
+                is taken, the pipeline auto-derives a sibling
+                ``{stem}_figures/`` directory next to the output HTML so
+                ``<img src>`` references stay portable.
 
         Returns:
             JSON with output_path (HTML), success status, and metadata
@@ -456,19 +488,35 @@ def register_dart_tools(mcp):
             out_dir = Path(output_dir) if output_dir else DART_PATH / "output"
             out_dir.mkdir(parents=True, exist_ok=True)
 
+            # Validate figures_dir path if provided
+            if figures_dir:
+                try:
+                    validate_path_within_root(Path(figures_dir), ALLOWED_ROOT)
+                except PathTraversalError as e:
+                    return json.dumps(
+                        {"error": f"Security error in figures_dir: {e}"}
+                    )
+
             # Import DART modules
             sys.path.insert(0, str(DART_PATH))
             code = course_code or pdf.stem
+            out_stem = pdf.stem
 
-            # Strategy 1: If a pre-extracted combined JSON exists, use multi-source synthesis
+            # Strategy 1: If a pre-extracted combined JSON exists, use
+            # multi-source synthesis (legacy Wave-8 path — source of
+            # truth for the older batch_output workflow). Output
+            # filename is keyed on the PDF basename to match the
+            # pipeline-registry variant.
             combined_dir = DART_PATH / "batch_output" / "combined"
             combined_json_path = combined_dir / f"{code}_combined.json"
 
             if combined_json_path.exists():
                 try:
                     from multi_source_interpreter import convert_single_pdf
-                    html_output = out_dir / f"{code}_synthesized.html"
-                    result = convert_single_pdf(str(combined_json_path), str(html_output))
+                    html_output = out_dir / f"{out_stem}_synthesized.html"
+                    result = convert_single_pdf(
+                        str(combined_json_path), str(html_output)
+                    )
 
                     elapsed = (datetime.now() - start_time).total_seconds()
                     return json.dumps({
@@ -478,31 +526,79 @@ def register_dart_tools(mcp):
                         "method": "multi_source_synthesis",
                         "campus_code": code,
                         "elapsed_seconds": round(elapsed, 2),
-                        "html_length": result.get("html_length", 0) if isinstance(result, dict) else 0,
+                        "html_length": (
+                            result.get("html_length", 0)
+                            if isinstance(result, dict)
+                            else 0
+                        ),
                     })
                 except ImportError:
                     pass  # Fall through to Strategy 2
 
-            # Strategy 2: Use pdf_converter for direct PDF-to-HTML conversion
-            try:
-                from pdf_converter.converter import PDFToAccessibleHTML
-                converter = PDFToAccessibleHTML()
-                result = converter.convert(str(pdf), str(out_dir))
+            # Strategy 2: Extract via pdftotext and route through the
+            # Wave-15+ ``_raw_text_to_accessible_html`` entry point. This
+            # is the same path used by
+            # ``MCP/tools/pipeline_tools.py::_extract_and_convert_pdf``
+            # so both surfaces produce dart_markers-compliant HTML and
+            # emit Wave-19 sidecars.
+            import re as _re
+            import subprocess
 
-                elapsed = (datetime.now() - start_time).total_seconds()
+            raw_text = ""
+            pdftotext_ok = False
+            try:
+                proc = subprocess.run(
+                    ["pdftotext", "-layout", str(pdf), "-"],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                )
+                raw_text = proc.stdout
+                pdftotext_ok = bool(raw_text.strip())
+            except (subprocess.SubprocessError, FileNotFoundError):
+                pdftotext_ok = False
+
+            if not pdftotext_ok:
                 return json.dumps({
-                    "success": result.success,
-                    "output_path": result.html_path,
-                    "method": "pdf_converter",
-                    "pages_processed": result.pages_processed,
-                    "elapsed_seconds": round(elapsed, 2),
-                    "error": result.error if not result.success else None,
+                    "error": (
+                        "pdftotext unavailable or returned empty text. "
+                        "Install poppler-utils (pdftotext) to enable the "
+                        "DART converter."
+                    ),
                 })
-            except ImportError:
-                return json.dumps({
-                    "error": "DART modules not available. "
-                    "Neither multi_source_interpreter nor pdf_converter could be imported.",
-                })
+
+            # Wave-15+ path — same as the pipeline registry variant so
+            # the MCP-tool surface and the registry surface stay in
+            # parity (F2 audit requirement).
+            from MCP.tools.pipeline_tools import (
+                _raw_text_to_accessible_html,
+            )
+
+            pretty_title = (
+                out_stem.replace("-", " ").replace("_", " ").strip()
+            )
+            html_output = out_dir / f"{out_stem}_accessible.html"
+            html_content = _raw_text_to_accessible_html(
+                raw_text,
+                pretty_title,
+                source_pdf=str(pdf),
+                output_path=str(html_output),
+                figures_dir=figures_dir,
+            )
+            html_output.write_text(html_content, encoding="utf-8")
+
+            word_count = len(_re.findall(r"\b\w+\b", html_content))
+            elapsed = (datetime.now() - start_time).total_seconds()
+
+            return json.dumps({
+                "success": True,
+                "output_path": str(html_output),
+                "method": "pdftotext_to_html",
+                "word_count": word_count,
+                "html_length": len(html_content),
+                "elapsed_seconds": round(elapsed, 2),
+                "campus_code": code,
+            })
 
         except Exception as e:
             logger.error(f"extract_and_convert_pdf failed: {e}")

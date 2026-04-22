@@ -72,6 +72,115 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+# Wave 23 Sub-task B: ``normalize_course_code`` is the shared
+# course-code coercer introduced in Wave 22 DC4. Originally it lived
+# in ``MCP/tools/dart_tools.py`` for DART-specific capture setup.
+# Wave 23 promotes it to the shared decision-capture module so the
+# orchestrator-level ``PipelineOrchestrator._get_executor`` can use
+# the same normalisation without importing from a sibling MCP tool
+# module (avoiding a dependency inversion between ``lib/`` and
+# ``MCP/tools/``).  ``MCP/tools/dart_tools.py`` re-exports this name
+# for backward compat.
+#
+# Canonical pattern: ``^[A-Z]{2,8}_[0-9]{3}$`` (2-8 uppercase letters,
+# underscore, 3 digits). Raw course-code strings without the required
+# prefix_NNN format (e.g. a product name like ``"Ed4All"`` or a
+# long slug-style filename) don't match out of the box, so captures
+# previously carried a ``course_id`` validation issue (observed at
+# ~50% of records on a recent run). Normalisation strategy:
+#
+# 1. Uppercase + replace any non-alphanumeric with underscore.
+# 2. Strip leading/trailing underscores + collapse repeats.
+# 3. If the result already matches the pattern, return as-is.
+# 4. Otherwise, split on ``_`` and use the first purely-alphabetic
+#    chunk (truncated to 8 chars) as the prefix. If no alphabetic
+#    chunk exists, use ``"PDF"`` as the fallback prefix.
+# 5. Derive a deterministic 3-digit numeric suffix from the full raw
+#    name via SHA-256 modulo 1000 so the same PDF always produces the
+#    same course code.
+import re as _re_norm
+
+_COURSE_CODE_PATTERN = _re_norm.compile(r"^[A-Z]{2,8}_[0-9]{3}$")
+
+
+def normalize_course_code(raw: str) -> str:
+    """Coerce a raw course code / PDF name into ``^[A-Z]{2,8}_[0-9]{3}$``.
+
+    Examples
+    --------
+    >>> normalize_course_code("MTH_101")
+    'MTH_101'
+    >>> normalize_course_code("Ed4All")  # doctest: +ELLIPSIS
+    'ED_...'
+    """
+    raw = (raw or "").strip()
+    if not raw:
+        raw = "unknown"
+
+    uppered = _re_norm.sub(r"[^A-Za-z0-9]+", "_", raw).upper().strip("_")
+    uppered = _re_norm.sub(r"_+", "_", uppered)
+
+    if _COURSE_CODE_PATTERN.match(uppered):
+        return uppered
+
+    chunks = [c for c in uppered.split("_") if c]
+    prefix = ""
+    for chunk in chunks:
+        alpha_only = _re_norm.sub(r"[^A-Z]", "", chunk)
+        if len(alpha_only) >= 2:
+            prefix = alpha_only[:8]
+            break
+    if not prefix:
+        prefix = "PDF"
+    if len(prefix) < 2:
+        prefix = (prefix + "PDF")[:2]
+    prefix = prefix[:8]
+
+    suffix_int = int(hashlib.sha256(raw.encode("utf-8")).hexdigest(), 16) % 1000
+    suffix = f"{suffix_int:03d}"
+    candidate = f"{prefix}_{suffix}"
+    if not _COURSE_CODE_PATTERN.match(candidate):
+        candidate = f"PDF_{suffix}"
+    return candidate
+
+
+# ADR-001 Contract 3 + REC-CTR-04 (Worker G wave 1.1): decision-type registry.
+#
+# Source of truth is ``schemas/events/decision_event.schema.json``. The
+# ``ALLOWED_DECISION_TYPES`` tuple is loaded at module-import time from the
+# schema's ``properties.decision_type.enum`` via :func:`lib.validation.load_schema`.
+#
+# Convention: add a new type to the schema in the same PR that first uses it
+# in production. New types are ``snake_case`` and tool-prefixed when ambiguous.
+#
+# The registry is advisory by default (warn-only on unknown types), preserving
+# backward compat for legacy callers across the tree that may still emit
+# free-string types not yet catalogued in the schema. Fail-closed enforcement
+# is opt-in via the ``DECISION_VALIDATION_STRICT=true`` environment variable
+# (see :meth:`DecisionCapture._validate_record`).
+#
+# On schema-load failure we fall back to a minimal tuple so this module still
+# imports cleanly in environments where the schema file is not reachable
+# (e.g., packaging edge cases, minimal test harnesses).
+try:
+    from .validation import load_schema as _load_schema
+    _decision_schema = _load_schema("decision_event")
+    ALLOWED_DECISION_TYPES: tuple = tuple(
+        _decision_schema["properties"]["decision_type"]["enum"]
+    )
+except Exception as _e:  # pragma: no cover - defensive fallback
+    logger.warning(
+        "Failed to load decision_event schema for ALLOWED_DECISION_TYPES: %s; "
+        "falling back to minimal tuple",
+        _e,
+    )
+    ALLOWED_DECISION_TYPES: tuple = (
+        "instruction_pair_synthesis",
+        "preference_pair_generation",
+        "typed_edge_inference",
+    )
+
+
 @dataclass
 class MLFeatures:
     """Categorical fields for ML training."""
@@ -378,19 +487,60 @@ class DecisionCapture:
         return record
 
     def _validate_record(self, record: Dict[str, Any]) -> None:
-        """Validate a decision record, adding issues to metadata if found."""
+        """Validate a decision record (REC-CTR-04 Worker G).
+
+        Behavior matrix:
+
+        * ``VALIDATE_DECISIONS`` unset/false -> no-op. Preserves backward
+          compat for callers that explicitly opted out of validation entirely.
+        * ``VALIDATE_DECISIONS`` truthy + ``DECISION_VALIDATION_STRICT`` unset
+          -> warn-only. Validation issues are appended to
+          ``record["metadata"]["validation_issues"]`` and the record IS still
+          written by the caller. This is the historical default.
+        * ``VALIDATE_DECISIONS`` truthy + ``DECISION_VALIDATION_STRICT=true``
+          -> fail-closed. Validation failures raise ``ValueError`` and the
+          record is NOT written (the caller must handle the exception).
+
+        Opt-in strict mode is the reconciliation target for REC-CTR-04. The
+        env-var gate preserves backward compat: callers relying on loose
+        behavior do not break on this PR landing.
+        """
         if not VALIDATE_DECISIONS:
             return
+
+        strict = os.getenv("DECISION_VALIDATION_STRICT", "").lower() == "true"
+
         try:
             from .validation import validate_decision
             is_valid, issues = validate_decision(record, self.tool)
             if not is_valid:
-                logger.warning("Decision validation issues: %s", issues)
+                if strict:
+                    raise ValueError(
+                        f"Decision validation failed (strict mode): {issues}"
+                    )
+                # Wave 29 Defect 4: the non-strict validation-issues
+                # path previously hit ``logger.warning`` on EVERY
+                # record, flooding stderr with hundreds of
+                # ``Decision validation issues: [...]`` lines on a
+                # normal run (≥ 90% of stderr in the first 30
+                # seconds of the OLSR_SIM_01 reproduction). Real
+                # errors got buried. The issues are still attached
+                # to the record's metadata so they're recoverable at
+                # save time (see ``_validation_issue_count`` +
+                # ``save``) — we just stop spamming stderr per-call.
+                # Strict mode still raises, so fail-closed callers
+                # are unaffected.
+                logger.debug("Decision validation issues: %s", issues)
                 record["metadata"]["validation_issues"] = issues
+                self._validation_issue_count = (
+                    getattr(self, "_validation_issue_count", 0) + 1
+                )
         except ImportError:
             pass  # Validation module not available
+        except ValueError:
+            raise  # Re-raise strict-mode failures
         except Exception as e:
-            logger.warning("Decision validation error: %s", e)
+            logger.debug("Decision validation error: %s", e)
 
     def _write_to_streams(self, record: Dict[str, Any]) -> None:
         """Write a decision record to all configured stream locations."""
@@ -584,6 +734,21 @@ class DecisionCapture:
         output_path = self.output_dir / filename
         legacy_output_path = self.legacy_output_dir / filename
 
+        # Wave 29 Defect 4: emit a single INFO-level summary line at
+        # capture close instead of the hundreds of WARNING lines per
+        # non-strict validation issue. Detail is still in the JSONL
+        # captures under ``metadata.validation_issues``; pass ``-v``
+        # to surface the per-record DEBUG lines.
+        issue_count = getattr(self, "_validation_issue_count", 0)
+        logger.info(
+            "Captured %d decisions (%d with validation issues — "
+            "run with -v for detail) [%s/%s]",
+            len(self.decisions),
+            issue_count,
+            self.tool,
+            self.phase,
+        )
+
         data = {
             "course_code": self.course_code,
             "phase": self.phase,
@@ -600,7 +765,8 @@ class DecisionCapture:
                 "total_decisions": len(self.decisions),
                 "total_prompts": len(self.prompts_responses),
                 "total_searches": len(self.web_searches),
-                "total_files": len(self.files_created)
+                "total_files": len(self.files_created),
+                "total_validation_issues": issue_count,
             }
         }
 

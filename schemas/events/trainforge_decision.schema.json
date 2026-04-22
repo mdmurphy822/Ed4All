@@ -1,0 +1,217 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:ed4all:schemas:trainforge_decision_schema",
+  "title": "Trainforge Assessment Decision Schema",
+  "description": "Extends decision_event_schema for assessment-based RAG training on IMSCC packages",
+  "allOf": [
+    {"$ref": "decision_event.schema.json"},
+    {
+      "properties": {
+        "assessment_context": {
+          "type": "object",
+          "description": "Assessment-specific context for Trainforge operations",
+          "required": ["imscc_source"],
+          "properties": {
+            "imscc_source": {
+              "type": "string",
+              "description": "Path to source IMSCC package"
+            },
+            "learning_objective_id": {
+              "type": "string",
+              "description": "Learning objective being assessed (e.g., INT101_D1_1.1)"
+            },
+            "bloom_target": {
+              "type": "string",
+              "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create"],
+              "description": "Target Bloom's taxonomy level for assessment"
+            },
+            "source_chunks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "chunk_id": {"type": "string"},
+                  "content_hash": {"type": "string"},
+                  "relevance_score": {"type": "number"},
+                  "token_count": {"type": "integer"},
+                  "source_file": {"type": "string"}
+                }
+              },
+              "description": "Content chunks used for generation"
+            },
+            "domain": {
+              "type": "string",
+              "description": "Domain from learning objective structure"
+            },
+            "domain_weight": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 100,
+              "description": "Weight of this domain in assessment"
+            }
+          }
+        },
+        "question_data": {
+          "type": "object",
+          "description": "Generated question data",
+          "properties": {
+            "question_id": {
+              "type": "string",
+              "description": "Unique question identifier"
+            },
+            "question_type": {
+              "type": "string",
+              "enum": ["multiple_choice", "true_false", "short_answer", "essay", "matching", "fill_in_blank", "ordering", "hotspot"],
+              "description": "Type of assessment question"
+            },
+            "question_stem": {
+              "type": "string",
+              "description": "The question text"
+            },
+            "correct_answer": {
+              "type": "string",
+              "description": "The correct answer"
+            },
+            "distractors": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "text": {"type": "string"},
+                  "misconception_targeted": {"type": "string"},
+                  "plausibility_score": {"type": "number"}
+                }
+              },
+              "description": "Incorrect options with targeted misconceptions"
+            },
+            "explanation": {
+              "type": "string",
+              "description": "Explanation for the correct answer"
+            },
+            "difficulty": {
+              "type": "string",
+              "enum": ["easy", "medium", "hard"],
+              "description": "Difficulty level"
+            },
+            "points": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Point value for question"
+            },
+            "time_estimate_seconds": {
+              "type": "integer",
+              "description": "Estimated time to answer"
+            },
+            "rubric": {
+              "type": "object",
+              "description": "Scoring rubric for open-ended questions",
+              "properties": {
+                "criteria": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {"type": "string"},
+                      "weight": {"type": "number"},
+                      "levels": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "score": {"type": "number"},
+                            "description": {"type": "string"}
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "rag_metrics": {
+          "type": "object",
+          "description": "RAG retrieval and generation metrics",
+          "properties": {
+            "chunks_retrieved": {
+              "type": "integer",
+              "description": "Number of chunks retrieved from index"
+            },
+            "chunks_used": {
+              "type": "integer",
+              "description": "Number of chunks actually used in generation"
+            },
+            "retrieval_latency_ms": {
+              "type": "number",
+              "description": "Time to retrieve content"
+            },
+            "generation_latency_ms": {
+              "type": "number",
+              "description": "Time to generate question"
+            },
+            "context_token_count": {
+              "type": "integer",
+              "description": "Total tokens in context"
+            },
+            "embedding_model": {
+              "type": "string",
+              "description": "Embedding model used for retrieval"
+            },
+            "similarity_threshold": {
+              "type": "number",
+              "description": "Minimum similarity score for chunk inclusion"
+            }
+          }
+        },
+        "alignment_check": {
+          "type": "object",
+          "description": "Learning objective alignment validation",
+          "properties": {
+            "lo_coverage_score": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "How well question covers learning objective"
+            },
+            "bloom_alignment_score": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "How well question matches target Bloom level"
+            },
+            "content_alignment_score": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "How well question aligns with source content"
+            },
+            "passed": {
+              "type": "boolean",
+              "description": "Whether alignment check passed"
+            },
+            "issues": {
+              "type": "array",
+              "items": {"type": "string"},
+              "description": "List of alignment issues found"
+            }
+          }
+        },
+        "revision_chain": {
+          "type": "array",
+          "description": "History of revisions to this question",
+          "items": {
+            "type": "object",
+            "properties": {
+              "revision_number": {"type": "integer"},
+              "timestamp": {"type": "string", "format": "date-time"},
+              "reason": {"type": "string"},
+              "changes_made": {"type": "array", "items": {"type": "string"}},
+              "validator_feedback": {"type": "string"}
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -3,10 +3,10 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Quantum Agents - Sultanow, Tehrani, Dutta, Buchanan &amp; Khan</title>
-    <meta name="description" content="This paper explores the intersection of quantum computing and agentic AI by examining how quantum technologies can enhance the capabilities of autonomous agents.">
-    <meta name="keywords" content="Quantum Agents, Quantum ML, Agentic AI, Quantum Computing">
-    <meta name="author" content="Eldar Sultanow, Madjid Tehrani, Siddhant Dutta, William J Buchanan, Muhammad Shahbaz Khan">
+    <title>Sample Technical Paper &mdash; Reference Template</title>
+    <meta name="description" content="Reference template demonstrating DART's WCAG 2.2 AA HTML scaffolding. Content is synthetic placeholder prose; the structure is the point.">
+    <meta name="keywords" content="sample keyword, reference template, accessible document">
+    <meta name="author" content="Alice Sample, Bob Example, Carol Placeholder">
     <style>
         :root {
             --bg-color: #ffffff;
@@ -47,9 +47,7 @@
             }
         }
 
-        * {
-            box-sizing: border-box;
-        }
+        * { box-sizing: border-box; }
 
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -83,13 +81,8 @@
             padding-bottom: 0.5rem;
         }
 
-        h3 {
-            font-size: 1.4rem;
-        }
-
-        h4 {
-            font-size: 1.2rem;
-        }
+        h3 { font-size: 1.4rem; }
+        h4 { font-size: 1.2rem; }
 
         p {
             margin-bottom: 1rem;
@@ -107,23 +100,12 @@
         }
 
         /* WCAG 2.2 2.4.7, 2.4.13 Focus Appearance - 3px outline exceeds minimum */
-        :focus {
-            outline: 3px solid var(--link-color);
-            outline-offset: 2px;
-        }
-        :focus:not(:focus-visible) {
-            outline: none;
-        }
-        :focus-visible {
-            outline: 3px solid var(--link-color);
-            outline-offset: 2px;
-        }
+        :focus { outline: 3px solid var(--link-color); outline-offset: 2px; }
+        :focus:not(:focus-visible) { outline: none; }
+        :focus-visible { outline: 3px solid var(--link-color); outline-offset: 2px; }
 
         /* WCAG 2.2 2.4.11/2.4.12 Focus Not Obscured */
-        *:focus {
-            scroll-margin-top: 80px;
-            scroll-margin-bottom: 80px;
-        }
+        *:focus { scroll-margin-top: 80px; scroll-margin-bottom: 80px; }
 
         /* WCAG 2.2 2.5.8 Target Size (Minimum) - 24x24 CSS pixels */
         a:not(p a):not(li a):not(td a):not(figcaption a),
@@ -212,9 +194,7 @@
             padding-left: 2rem;
         }
 
-        li {
-            margin-bottom: 0.5rem;
-        }
+        li { margin-bottom: 0.5rem; }
 
         .definition {
             background-color: var(--blockquote-bg);
@@ -234,9 +214,7 @@
             overflow-x: auto;
         }
 
-        .algorithm h4 {
-            margin-top: 0;
-        }
+        .algorithm h4 { margin-top: 0; }
 
         .figure {
             margin: 2rem 0;
@@ -249,17 +227,9 @@
             font-size: 0.95rem;
         }
 
-        .references {
-            font-size: 0.9rem;
-        }
-
-        .references ol {
-            padding-left: 2rem;
-        }
-
-        .references li {
-            margin-bottom: 0.75rem;
-        }
+        .references { font-size: 0.9rem; }
+        .references ol { padding-left: 2rem; }
+        .references li { margin-bottom: 0.75rem; }
 
         .toc {
             background-color: var(--blockquote-bg);
@@ -278,13 +248,8 @@
             padding-left: 0;
         }
 
-        .toc li {
-            margin-bottom: 0.3rem;
-        }
-
-        .toc a {
-            text-decoration: none;
-        }
+        .toc li { margin-bottom: 0.3rem; }
+        .toc a { text-decoration: none; }
 
         .skip-link {
             position: absolute;
@@ -296,82 +261,73 @@
             z-index: 100;
         }
 
-        .skip-link:focus {
-            top: 0;
-        }
+        .skip-link:focus { top: 0; }
 
         @media (max-width: 600px) {
-            body {
-                padding: 1rem;
-                font-size: 15px;
-            }
-
-            h1 {
-                font-size: 1.8rem;
-            }
-
-            h2 {
-                font-size: 1.5rem;
-            }
-
-            table {
-                font-size: 0.85rem;
-            }
-
-            th, td {
-                padding: 0.5rem;
-            }
+            body { padding: 1rem; font-size: 15px; }
+            h1 { font-size: 1.8rem; }
+            h2 { font-size: 1.5rem; }
+            table { font-size: 0.85rem; }
+            th, td { padding: 0.5rem; }
         }
 
         @media print {
-            body {
-                max-width: none;
-                padding: 0;
-            }
-
-            .pdf-download, .skip-link {
-                display: none;
-            }
+            body { max-width: none; padding: 0; }
+            .pdf-download, .skip-link { display: none; }
         }
     </style>
+    <script type="application/ld+json">
+    {
+        "@context": "https://schema.org",
+        "@type": "ScholarlyArticle",
+        "name": "Sample Technical Paper \u2014 Reference Template",
+        "author": [
+            {"@type": "Person", "name": "Alice Sample"},
+            {"@type": "Person", "name": "Bob Example"},
+            {"@type": "Person", "name": "Carol Placeholder"}
+        ],
+        "datePublished": "2026-01-01",
+        "inLanguage": "en",
+        "keywords": "sample keyword, reference template, accessible document",
+        "accessibilityFeature": [
+            "alternativeText", "readingOrder", "structuralNavigation",
+            "tableOfContents", "ARIA"
+        ],
+        "accessibilityHazard": "none",
+        "accessMode": ["textual", "visual"],
+        "accessibilitySummary": "Semantic HTML5 with ARIA landmarks, skip link, heading hierarchy, scoped tables, and reduced-motion/dark-mode support."
+    }
+    </script>
 </head>
 <body>
     <a href="#main-content" class="skip-link">Skip to main content</a>
 
     <div class="pdf-download" role="complementary" aria-label="Download options">
-        <a href="2506.01536v1 (1).pdf" download aria-label="Download original PDF document">
-            Download Original PDF (2506.01536v1)
+        <a href="sample-paper.pdf" download aria-label="Download original PDF document">
+            Download Original PDF (placeholder)
         </a>
     </div>
 
     <main id="main-content" role="main">
         <article>
             <header>
-                <h1>Quantum Agents</h1>
+                <h1>Sample Technical Paper &mdash; Reference Template</h1>
                 <p class="authors">
-                    <strong>Eldar Sultanow</strong>, <strong>Madjid Tehrani</strong>, <strong>Siddhant Dutta</strong>,
-                    <strong>William J Buchanan</strong>, and <strong>Muhammad Shahbaz Khan</strong>
+                    <strong>Alice Sample</strong>, <strong>Bob Example</strong>, and <strong>Carol Placeholder</strong>
                 </p>
                 <p class="metadata">
-                    arXiv:2506.01536v1 [quant-ph] 2 Jun 2025<br>
-                    2010 Mathematics Subject Classification: Primary 81P68, 68T42; Secondary 68Q12, 68T05<br>
-                    Keywords: Quantum Agents, Quantum ML, Agentic AI
+                    arXiv:0000.00000 [cs.PL] 1 Jan 2026<br>
+                    Keywords: sample keyword, reference template, accessible document
                 </p>
             </header>
 
             <section class="abstract" aria-labelledby="abstract-heading">
                 <h2 id="abstract-heading">Abstract</h2>
                 <p>
-                    This paper explores the intersection of quantum computing and agentic AI by examining how quantum
-                    technologies can enhance the capabilities of autonomous agents, and, conversely, how agentic AI can
-                    support the advancement of quantum systems. We analyze both directions of this synergy and present
-                    conceptual and technical foundations for future quantum-agentic platforms. Our work introduces a
-                    formal definition of quantum agents and outlines potential architectures that integrate quantum
-                    computing with agent-based systems. As a proof-of-concept, we develop and evaluate three quantum
-                    agent prototypes that demonstrate the feasibility of our proposed framework. Furthermore, we discuss
-                    use cases from both perspectives, including quantum-enhanced decision-making, quantum planning and
-                    optimization, and AI-driven orchestration of quantum workflows. By bridging these fields, we aim to
-                    chart a path toward scalable, intelligent, and adaptive quantum-agentic ecosystems.
+                    Lorem ipsum dolor sit amet, consectetur adipiscing elit. This paragraph stands in for
+                    the real abstract and exists only to exercise the <code>.abstract</code> CSS rule and
+                    the <code>aria-labelledby</code> wiring on the surrounding <code>&lt;section&gt;</code>.
+                    Downstream consumers should treat every word here as placeholder text.
                 </p>
             </section>
 
@@ -379,17 +335,8 @@
                 <h2 id="toc-heading">Table of Contents</h2>
                 <ul>
                     <li><a href="#section-1">1. Introduction</a></li>
-                    <li><a href="#section-2">2. Background and Related Work</a></li>
-                    <li><a href="#section-3">3. From Quantum to Agents: Enhancing Agency with Quantum Computing</a></li>
-                    <li><a href="#section-4">4. From Agents to Quantum: Enabling Quantum Systems through Agency</a></li>
-                    <li><a href="#section-5">5. Defining Quantum Agents</a></li>
-                    <li><a href="#section-6">6. Operational Modes: Quantum as a Tool vs. Quantum as a Decision Layer</a></li>
-                    <li><a href="#section-7">7. Maturity Model in Definition of Quantum Agents</a></li>
-                    <li><a href="#section-8">8. Architectures for Quantum-Agentic Platforms</a></li>
-                    <li><a href="#section-9">9. Use Cases and Applications</a></li>
-                    <li><a href="#section-10">10. Prototype Quantum Agents: Demonstration of Early Capabilities</a></li>
-                    <li><a href="#section-11">11. Challenges and Open Questions</a></li>
-                    <li><a href="#section-12">12. Conclusion and Outlook</a></li>
+                    <li><a href="#section-2">2. Method</a></li>
+                    <li><a href="#section-3">3. Results</a></li>
                     <li><a href="#references">References</a></li>
                 </ul>
             </nav>
@@ -397,720 +344,133 @@
             <section id="section-1" aria-labelledby="heading-1">
                 <h2 id="heading-1">1. Introduction</h2>
                 <p>
-                    The convergence of quantum computing and artificial intelligence (AI) is opening up unprecedented
-                    opportunities across computational science. In this work, we focus on the emerging concept of
-                    <em>quantum agents</em>&mdash;intelligent systems that integrate the principles of quantum computing
-                    with agentic AI, aiming to harness the strengths of both paradigms.
+                    Placeholder prose introducing a placeholder topic. The purpose of this section is to
+                    demonstrate a top-level <code>&lt;section&gt;</code> with an <code>aria-labelledby</code>
+                    pointer at its <code>&lt;h2&gt;</code>. Per WCAG 2.2 AA, every section that needs a
+                    programmatic label uses this pattern.
                 </p>
                 <p>
-                    Two complementary perspectives guide our exploration. First, we investigate how quantum technologies
-                    can enhance the capabilities of agentic AI systems. Quantum algorithms offer potential speedup for
-                    key agentic tasks such as search, optimization, learning, and simulation. These improvements could
-                    enable agents to operate more efficiently in complex, uncertain environments. Second, we explore how
-                    agentic AI methods can support quantum computing&mdash;by managing complex quantum workflows,
-                    optimizing quantum circuit compilation, or orchestrating hybrid quantum-classical systems.
-                </p>
-                <p>
-                    To structure this interdisciplinary field, we propose a formal definition of quantum agents, grounded
-                    in both quantum information theory and AI agency principles. We then introduce a set of conceptual
-                    architectures for quantum-agentic platforms that integrate quantum processors with agent-based
-                    reasoning frameworks.
-                </p>
-                <p>
-                    The paper outlines a range of use cases from both directions: from quantum-enhanced reinforcement
-                    learning and planning to AI-driven control of quantum experiments. We conclude with a discussion of
-                    the challenges, open questions, and future directions for research in this rapidly evolving domain.
+                    A second paragraph in the same section shows paragraph spacing, justified text, and the
+                    baseline reading flow. See <a href="#section-2">Section 2</a> for an internal anchor
+                    link; the link style is exercised by this reference sentence.
                 </p>
             </section>
 
             <section id="section-2" aria-labelledby="heading-2">
-                <h2 id="heading-2">2. Background and Related Work</h2>
-                <p>
-                    The convergence of quantum computing and artificial intelligence (AI) has catalyzed the emergence of
-                    quantum agents&mdash;autonomous systems that leverage quantum resources to enhance decision-making,
-                    learning, and interaction capabilities. This section reviews seminal and contemporary works that have
-                    shaped the quantum agents' conceptual and practical development.
-                </p>
+                <h2 id="heading-2">2. Method</h2>
 
-                <h3 id="heading-2-1">2.1. Foundational Models of Quantum Agents</h3>
+                <h3 id="heading-2-1">2.1. Definition Block</h3>
                 <p>
-                    Early conceptualizations of quantum agents laid the groundwork for integrating quantum computation
-                    into agent-based systems. Klusch's Quantum Computational Agents (QCA) model extended traditional
-                    intelligent agents by incorporating quantum processing capabilities, enabling functionalities such as
-                    quantum addressing and the execution of quantum instructions within a master-slave architecture. This
-                    pioneering work highlighted the potential of hybrid quantum-classical systems in agent design.
-                </p>
-
-                <h3 id="heading-2-2">2.2. Quantum Reinforcement Learning and Speed-Up</h3>
-                <p>
-                    Empirical studies have demonstrated the advantages of quantum resources in reinforcement learning (RL).
-                    Saggio et al. implemented a learning protocol using a programmable integrated nanophotonic processor,
-                    where the agent's interaction with the environment was mediated through quantum channels. The results
-                    indicated a systematic quantum advantage, with the agent achieving faster learning compared to classical
-                    counterparts. This experiment underscores the potential of quantum communication to enhance learning
-                    efficiency in agentic systems.
-                </p>
-
-                <h3 id="heading-2-3">2.3. Memory Efficiency and Energetic Advantages</h3>
-                <p>
-                    Quantum processing can confer significant benefits in memory efficiency and energy consumption for
-                    adaptive agents. Elliott et al. introduced a framework where quantum agents could encode and compress
-                    historical information more efficiently than classical agents, particularly in non-Markovian environments
-                    requiring long-term memory retention. Additionally, Thompson et al. explored the thermodynamic implications
-                    of quantum processing in agents executing complex, adaptive strategies, demonstrating that quantum agents
-                    could achieve lower energy dissipation during decision-making processes compared to classical counterparts.
-                </p>
-
-                <h3 id="heading-2-4">2.4. Advancements in Quantum Multi-Agent Reinforcement Learning</h3>
-                <p>
-                    Recent research has focused on scaling quantum reinforcement learning to multi-agent systems. Yun et al.
-                    proposed a Quantum Multi-Agent Reinforcement Learning (QMARL) framework utilizing variational quantum
-                    circuits, enabling centralized training with decentralized execution. This approach addresses challenges
-                    in scalability and coordination among multiple quantum agents, demonstrating improved performance over
-                    classical multi-agent reinforcement learning methods.
-                </p>
-
-                <h3 id="heading-2-5">2.5. Comprehensive Surveys and Future Directions</h3>
-                <p>
-                    Comprehensive surveys have synthesized the current state and future prospects of quantum artificial
-                    intelligence. These works emphasize the importance of developing standardized benchmarks, scalable
-                    architectures, and robust evaluation metrics for quantum agents.
-                </p>
-
-                <h3 id="heading-2-6">2.6. Agentic Quantum Computing at Kipu Quantum</h3>
-                <p>
-                    A recent industrial perspective on the convergence of quantum computing and agent-based AI is provided
-                    by Kipu Quantum, spearheaded by Solano. Their approach, termed <em>Agentic Quantum Computing</em> (AQC),
-                    emphasizes the bidirectional enhancement of AI and quantum computing: quantum computing augments reasoning
-                    and agency in AI, while AI&mdash;especially generative models and agent frameworks&mdash;accelerates the
-                    application readiness of quantum algorithms.
-                </p>
-                <p>
-                    Kipu Quantum's architecture combines generative AI models (such as transformers and large language models)
-                    with quantum-advantage algorithms within the PLANQK platform. Their agents coordinate classical and quantum
-                    resources, executing hybrid algorithms on commercial quantum hardware from IBM, D-Wave, QuEra, and others.
-                </p>
-                <p>
-                    One of Kipu's most notable innovations is <em>ChatQPT</em>, an agent designed to assess whether a
-                    natural-language prompt requires quantum-advantage execution&mdash;specifically for higher-order
-                    unconstrained binary optimization (HUBO) problems.
-                </p>
-
-                <h3 id="heading-2-7">2.7. Implications for Quantum-Agentic Systems</h3>
-                <p>
-                    The reviewed literature collectively underscores the transformative potential of quantum agents in
-                    various domains, including scientific discovery, autonomous systems, and secure communications. The
-                    integration of quantum resources into agent architectures promises enhancements in learning efficiency,
-                    memory management, and energy consumption. However, realizing this potential necessitates addressing
-                    challenges related to scalability, interoperability, and the development of standardized frameworks
-                    for quantum-agentic systems.
-                </p>
-            </section>
-
-            <section id="section-3" aria-labelledby="heading-3">
-                <h2 id="heading-3">3. From Quantum to Agents: Enhancing Agency with Quantum Computing</h2>
-                <p>
-                    Quantum computing offers unique advantages for solving problems that are computationally intensive or
-                    intractable for classical systems. By integrating quantum capabilities into agentic architectures, we
-                    can significantly expand the scope, speed, and intelligence of autonomous systems. In this section, we
-                    explore three key areas where quantum computing can enhance agency: search and optimization, reinforcement
-                    learning, and simulation-based decision-making.
-                </p>
-
-                <h3 id="heading-3-1">3.1. Quantum Search and Optimization in Agent Systems</h3>
-                <p>
-                    Many agentic tasks, such as complex scheduling, high-dimensional resource allocation, or constraint
-                    satisfaction under uncertainty, require efficient search and optimization. Classical agents often rely
-                    on heuristic or approximate methods due to the combinatorial explosion of possible solutions. Quantum
-                    computing introduces new paradigms that offer potential speedup and performance gains in these domains.
-                </p>
-                <p>
-                    Grover's algorithm and the family of Grover-based search approaches, for example, may offer a quadratic
-                    speedup for unstructured search problems, potentially allowing agents to locate target solutions with
-                    fewer evaluations. More generally, Quantum Approximate Optimization Algorithms (QAOA) and their variants,
-                    along with quantum annealing techniques, have been proposed as candidates to address complex combinatorial
-                    optimization tasks, such as scheduling, vehicle routing, or energy distribution.
-                </p>
-                <p>
-                    By integrating quantum search modules into agentic reasoning cycles, agents can evaluate and refine
-                    action plans more effectively&mdash;especially in dynamic or multi-agent environments where decision
-                    spaces are large and rapidly evolving.
-                </p>
-
-                <h3 id="heading-3-2">3.2. Quantum Reinforcement Learning</h3>
-                <p>
-                    Reinforcement learning (RL) is central to agentic behavior, where agents learn optimal policies through
-                    trial and error. Quantum reinforcement learning (QRL) explores how quantum computation can accelerate or
-                    generalize the RL paradigm.
-                </p>
-                <p>
-                    In model-free QRL, quantum-enhanced policy evaluation and value function estimation can improve learning
-                    efficiency, particularly in environments with high-dimensional or continuous state spaces. Hybrid architectures
-                    combine classical perception and actuation with quantum components for exploration and reward evaluation,
-                    enabling agents to converge faster to optimal strategies.
-                </p>
-                <p>
-                    Model-based QRL further leverages quantum simulation to construct and evaluate internal models of the
-                    environment, supporting better foresight and planning. Recent research also explores quantum-inspired RL
-                    algorithms that use entanglement and superposition to encode exploration strategies not easily achievable
-                    classically.
-                </p>
-
-                <h3 id="heading-3-3">3.3. Quantum Simulation for Decision-Making Agents</h3>
-                <p>
-                    Decision-making agents often require internal simulations of their environment to predict outcomes and
-                    assess potential actions. Quantum simulation provides a powerful framework for modeling complex physical
-                    systems, including those governed by quantum mechanics, nonlinear dynamics, or stochastic processes.
-                </p>
-                <p>
-                    For agents in domains such as chemistry, materials science, or quantum control, quantum simulators offer
-                    access to predictive models that are infeasible to compute classically. This allows agents to reason more
-                    effectively about molecular structures, reaction pathways, or sensor responses at the quantum level.
-                </p>
-                <p>
-                    Moreover, quantum simulation enables probabilistic sampling of multiple futures in parallel. Agents can
-                    use these simulated outcomes to perform robust scenario analysis, optimize under uncertainty, or select
-                    actions with the highest expected utility.
-                </p>
-            </section>
-
-            <section id="section-4" aria-labelledby="heading-4">
-                <h2 id="heading-4">4. From Agents to Quantum: Enabling Quantum Systems through Agency</h2>
-                <p>
-                    As quantum technologies mature, their complexity and operational demands grow rapidly. Agentic AI offers
-                    a scalable and intelligent interface to manage, automate, and optimize quantum systems. In this section,
-                    we explore how agents can support and accelerate the deployment of quantum computing&mdash;from managing
-                    intricate workflows to designing circuits and orchestrating hybrid systems.
-                </p>
-
-                <h3 id="heading-4-1">4.1. AI Agents for Quantum Workflow Management</h3>
-                <p>
-                    Operating quantum systems involves multiple interdependent tasks: calibration, scheduling, execution,
-                    data handling, error tracking, and result interpretation. These tasks are typically performed manually
-                    or through rigid scripts, making the process inefficient and error-prone. AI agents can bring autonomy
-                    and intelligence to quantum workflow management.
-                </p>
-                <p>
-                    A unique offer of agentic systems would be preserving the context of jobs along the stack (like properties
-                    of problems in question, algorithms used and hardware parameters) to make the most optimal and coherent
-                    choices. Such agents could be used to monitor system status and trigger recalibrations when performance
-                    metrics degrade, adaptively schedule quantum jobs between different QPUs based on hardware availability
-                    and real-time properties, and manage queue priorities for cloud users.
-                </p>
-                <p>
-                    Integrating agents into quantum software stacks (for example, Qiskit, Cirq and PennyLane) would enable
-                    dynamic, context-aware control over end-to-end quantum execution pipelines.
-                </p>
-
-                <h3 id="heading-4-2">4.2. Automated Quantum Circuit Design and Optimization</h3>
-                <p>
-                    Designing quantum circuits is a non-trivial task, often requiring deep expertise in quantum logic, gate
-                    synthesis, and noise-aware compilation. AI agents equipped with domain knowledge and optimization
-                    capabilities can significantly streamline this process.
-                </p>
-                <p>
-                    Agents can generate circuit templates based on high-level problem specifications, apply transformations
-                    to reduce gate counts, and adapt circuits to specific hardware constraints (such as qubit connectivity
-                    and coherence times). By incorporating contextual intent, the system can iteratively refine circuits,
-                    optimizing for performance metrics such as fidelity, circuit depth, and execution time.
-                </p>
-
-                <h3 id="heading-4-3">4.3. Orchestration of Hybrid Quantum-Classical Systems</h3>
-                <p>
-                    Most near-term quantum applications follow a hybrid model, combining classical computing with quantum
-                    subroutines. Examples include variational quantum algorithms, quantum machine learning workflows, and
-                    hybrid solvers. Orchestrating these workflows requires intelligent coordination of classical and quantum
-                    resources, real-time decision-making, and data-dependent branching logic.
-                </p>
-                <p>
-                    AI agents are ideally suited to this role. They can manage hybrid task graphs, optimize data flow between
-                    classical and quantum modules, and make runtime adjustments based on intermediate results or hardware
-                    conditions.
-                </p>
-            </section>
-
-            <section id="section-5" aria-labelledby="heading-5">
-                <h2 id="heading-5">5. Defining Quantum Agents</h2>
-                <p>
-                    As the fields of quantum computing and agentic AI begin to converge, a clear and rigorous definition
-                    of quantum agents becomes essential. Such a definition provides a foundation for system design,
-                    benchmarking, and theoretical exploration.
-                </p>
-
-                <h3 id="heading-5-1">5.1. Anatomy of a Quantum Agent</h3>
-                <p>
-                    The classical agent paradigm is typically organized into three core components: <strong>perception</strong>,
-                    <strong>processing</strong>, and <strong>action</strong>. This structure provides a natural blueprint
-                    for the design of quantum agents. In the quantum context, each component is extended or reinterpreted
-                    to exploit the capabilities of quantum information processing.
-                </p>
-                <p>
-                    <strong>Perception:</strong> A quantum agent perceives its environment through both classical and quantum
-                    channels. Perception may include data streams from classical sensors, quantum measurements (e.g., projective
-                    measurements or POVMs), or direct access to quantum states via entangled inputs or quantum sensor arrays.
-                </p>
-                <p>
-                    <strong>Processing:</strong> The reasoning and decision-making core of a quantum agent integrates quantum
-                    algorithms with classical control logic. This may involve hybrid quantum-classical cycles, where the agent
-                    uses variational algorithms (e.g., QAOA, VQE) to solve subproblems and reinforcement learning schemes to
-                    adapt policies.
-                </p>
-                <p>
-                    <strong>Action:</strong> The action component allows the quantum agent to interact with its environment.
-                    This includes initiating quantum operations (e.g., circuit execution on remote QPUs), controlling experimental
-                    setups (e.g., qubit calibration or laser tuning), or triggering communication protocols such as quantum
-                    teleportation or QKD.
-                </p>
-
-                <h3 id="heading-5-2">5.2. Core Properties and Formal Definition</h3>
-                <p>
-                    A quantum agent is an autonomous system that integrates quantum computation or quantum information
-                    processing into its perception&ndash;decision&ndash;action loop. Unlike conventional agents, quantum
-                    agents possess access to quantum resources which based on the quantum mechanical principles of superposition
-                    and entanglement can make use of quantum parallelism to enhance or enable their cognitive and operational
-                    abilities.
+                    The block below demonstrates the <code>.definition</code> component used for boxed
+                    formal definitions. It uses <code>role="region"</code> plus <code>aria-labelledby</code>
+                    so assistive tech can announce it as a landmark region.
                 </p>
 
                 <div class="definition" role="region" aria-labelledby="definition-heading">
-                    <h4 id="definition-heading">Formal Definition: Quantum Agent</h4>
+                    <h4 id="definition-heading">Formal Definition: Placeholder Term</h4>
                     <p>
-                        A <strong>quantum agent</strong> is an autonomous system characterized by the tuple
-                        (<em>Q</em>, <em>C</em>, <em>M</em>, <em>P</em>, <em>A</em>), where:
+                        A <strong>placeholder term</strong> is any symbol whose denotation is left
+                        unspecified for the purposes of this reference document. It is characterised by
+                        the tuple (<em>X</em>, <em>Y</em>, <em>Z</em>):
                     </p>
                     <ul>
-                        <li><strong>Q</strong> is a set of quantum processing resources or devices (e.g., quantum processors,
-                        annealers, or simulators), along with associated quantum assembly based instructions or circuits used
-                        to operate them.</li>
-                        <li><strong>C</strong> is the classical control logic interfacing with Q.</li>
-                        <li><strong>M</strong> is a hybrid memory subsystem comprising classical memory and, where applicable,
-                        quantum memory for intermediate state storage, subject to quantum mechanical constraints such as the
-                        no-cloning theorem.</li>
-                        <li><strong>P</strong> is a perception module receiving quantum or classical input from the environment.</li>
-                        <li><strong>A</strong> is an action module executing outputs, possibly involving quantum communication
-                        or control.</li>
+                        <li><strong>X</strong> is the first abstract component.</li>
+                        <li><strong>Y</strong> is the second abstract component.</li>
+                        <li><strong>Z</strong> is the third abstract component.</li>
                     </ul>
                 </div>
 
-                <h3 id="heading-5-3">5.3. Comparison with Classical Agents</h3>
+                <h3 id="heading-2-2">2.2. Algorithm Block</h3>
                 <p>
-                    Quantum agents differ from classical agents not only in the hardware they use, but also in the nature
-                    of the computations they perform and the kinds of problems they can solve more efficiently. Key
-                    distinctions include:
-                </p>
-                <ul>
-                    <li><strong>Computation:</strong> Classical agents rely on Boolean logic and deterministic or probabilistic
-                    Turing machines; quantum agents utilize unitary transformations and quantum probability amplitudes.</li>
-                    <li><strong>Learning and Adaptation:</strong> Quantum agents can exploit quantum-enhanced learning techniques,
-                    such as amplitude amplification in exploration or quantum kernel methods in classification.</li>
-                    <li><strong>Memory and Representation:</strong> Quantum agents may store and manipulate information using
-                    quantum bits (qubits), allowing exponential state space representation compared to classical bitstrings.</li>
-                    <li><strong>Interaction with Environment:</strong> Quantum agents may perform or interpret quantum measurements,
-                    interact with quantum environments, or communicate using quantum channels.</li>
-                </ul>
-
-                <h3 id="heading-5-4">5.4. Design Criteria for Quantum Agentic Systems</h3>
-                <ol>
-                    <li><strong>Quantum-Classical Integration:</strong> Seamless communication between classical and quantum
-                    modules is essential, including latency-aware data exchange and error propagation handling.</li>
-                    <li><strong>Modularity and Abstraction:</strong> System components should follow modular interfaces to
-                    allow flexible reuse and abstraction over underlying hardware.</li>
-                    <li><strong>Resource Awareness:</strong> Quantum agents must reason under constraints such as limited
-                    qubit count, coherence time, or access to remote QPUs.</li>
-                    <li><strong>Explainability and Debugging:</strong> Developers require tools to inspect, trace, and explain
-                    the behavior of quantum agents in interpretable terms.</li>
-                    <li><strong>Scalability and Learning:</strong> Quantum agents should generalize from experience and scale
-                    across increasingly complex environments.</li>
-                    <li><strong>Security and Trustworthiness:</strong> Quantum agents interacting in open or adversarial
-                    environments must implement secure protocols and demonstrate verifiable behavior.</li>
-                </ol>
-            </section>
-
-            <section id="section-6" aria-labelledby="heading-6">
-                <h2 id="heading-6">6. Operational Modes: Quantum as a Tool vs. Quantum as a Decision Layer</h2>
-                <p>
-                    In agentic quantum systems, the technical role of quantum computing can vary substantially depending on
-                    system architecture. We distinguish two fundamental operational modes: (1) <em>Quantum-assisted agency</em>,
-                    in which the agent uses quantum resources to augment perception, reasoning, or action; and (2)
-                    <em>Quantum-centric control</em>, where the quantum layer itself performs decision-making and directs
-                    agentic behavior.
+                    The block below demonstrates the <code>.algorithm</code> component &mdash; a monospaced
+                    code-style region suitable for pseudocode.
                 </p>
 
-                <h3 id="heading-6-1">6.1. Quantum-Assisted Agency: Agents Using Quantum as a Subsystem</h3>
-                <p>
-                    In this mode, the agent maintains control over the decision loop and uses quantum subsystems as specialized
-                    computational accelerators or perception modules. This involves:
-                </p>
-                <ul>
-                    <li><strong>Quantum Perception:</strong> The agent invokes quantum sensing routines or performs quantum
-                    measurements to extract information from the environment.</li>
-                    <li><strong>Quantum Reasoning:</strong> The agent offloads computationally hard subroutines to quantum
-                    processing units (QPUs).</li>
-                    <li><strong>Quantum Action:</strong> The agent may trigger quantum communication, perform quantum control
-                    actions, or command quantum mechanical actuators.</li>
-                </ul>
+                <div class="algorithm" role="region" aria-labelledby="algorithm-heading">
+                    <h4 id="algorithm-heading">Algorithm 1: Placeholder Procedure</h4>
+                    <pre><code>input: sequence X
+output: transformed sequence Y
+for each x in X:
+    y &larr; transform(x)
+    append y to Y
+return Y</code></pre>
+                </div>
 
-                <h3 id="heading-6-2">6.2. Quantum-Centric Control: Quantum Mesh as Decision Substrate</h3>
+                <h3 id="heading-2-3">2.3. Table Block</h3>
                 <p>
-                    In contrast, some architectures position quantum systems&mdash;such as entangled meshes or variational
-                    quantum processors&mdash;as autonomous or semi-autonomous decision substrates. This includes:
-                </p>
-                <ul>
-                    <li><strong>Distributed Quantum Decision-Making:</strong> In a quantum mesh or network of entangled nodes,
-                    decision-making can emerge from the structure and evolution of the entangled state itself.</li>
-                    <li><strong>Quantum-Intrinsic Policies:</strong> In variational quantum agents, policy functions may be
-                    implicitly encoded in a quantum state and updated through feedback and training.</li>
-                    <li><strong>Measurement-Driven Action:</strong> Actions are determined directly by the measurement outcomes
-                    of quantum processes.</li>
-                </ul>
-
-                <h3 id="heading-6-3">6.3. Blurring the Boundary: Hybrid Control and Shared Agency</h3>
-                <p>
-                    In practice, many quantum-agentic systems will operate in a hybrid regime where agency is distributed
-                    across classical and quantum components. <strong>Shared agency</strong> emerges when classical agents
-                    define high-level goals or constraints, while quantum systems explore, evaluate, or realize possible
-                    solutions.
-                </p>
-            </section>
-
-            <section id="section-7" aria-labelledby="heading-7">
-                <h2 id="heading-7">7. Maturity Model in Definition of Quantum Agents</h2>
-                <p>
-                    The growth of agentic AI must be aligned with the evolution of quantum hardware. We adopt the US Department
-                    of Energy's quantum development timeline as the primary reference for calibrating the maturity levels of
-                    our quantum agent model against projected hardware capabilities.
+                    The table below demonstrates the accessible-table pattern: <code>&lt;caption&gt;</code>
+                    for the programmatic description, <code>scope="col"</code> on every header cell, and
+                    <code>scope="row"</code> on the first cell of each body row.
                 </p>
 
-                <table role="table" aria-labelledby="table-1-caption">
-                    <caption id="table-1-caption">Table 1: Timeline and breakthroughs required to progress quantum agents through maturity levels, aligned with eras in quantum computing.</caption>
+                <table>
+                    <caption>Table 1. Placeholder comparison of three sample options.</caption>
                     <thead>
                         <tr>
-                            <th scope="col">Quantum Computing Era</th>
-                            <th scope="col">Timeframe</th>
-                            <th scope="col">Breakthroughs Needed</th>
-                            <th scope="col">Quantum Agent Maturity Level</th>
+                            <th scope="col">Option</th>
+                            <th scope="col">Property A</th>
+                            <th scope="col">Property B</th>
                         </tr>
                     </thead>
                     <tbody>
                         <tr>
-                            <td>NISQ Devices and Quantum Error Correction (QEC) Demos</td>
-                            <td>0&ndash;5 years</td>
-                            <td>Demonstration of 10&times; suppression in logical error rates; Early QEC implementations; Efficient near-term algorithms; Hardware-aware algorithm development</td>
-                            <td>Level 1: NISQ-Optimized Decision Agents</td>
+                            <th scope="row">Option 1</th>
+                            <td>Value A1</td>
+                            <td>Value B1</td>
                         </tr>
                         <tr>
-                            <td>Small Error-Corrected Quantum Computers</td>
-                            <td>5&ndash;10 years</td>
-                            <td>Validation of logical DiVincenzo criteria; Development of quantum interconnects; Scale to 1,000+ physical qubits; Mid-circuit readout</td>
-                            <td>Level 2: Hybrid QML Policy Agents</td>
+                            <th scope="row">Option 2</th>
+                            <td>Value A2</td>
+                            <td>Value B2</td>
                         </tr>
                         <tr>
-                            <td>Large Fault-Tolerant Quantum Computers</td>
-                            <td>10&ndash;20 years</td>
-                            <td>Scaling to 10,000+ physical qubits; Secure quantum co-processors; In-circuit quantum memory recall; Quantum-classical transformer compiler</td>
-                            <td>Level 3: Domain-Aware Adaptive Agents</td>
-                        </tr>
-                        <tr>
-                            <td>Very Large Fault-Tolerant Systems</td>
-                            <td>20+ years</td>
-                            <td>Negligible logical error at any depth; Fully autonomous quantum systems with cross-node entanglement; Self-optimizing quantum clouds</td>
-                            <td>Level 4: Fully Quantum-Native Agent</td>
+                            <th scope="row">Option 3</th>
+                            <td>Value A3</td>
+                            <td>Value B3</td>
                         </tr>
                     </tbody>
                 </table>
 
+                <h3 id="heading-2-4">2.4. Figure Block</h3>
                 <p>
-                    <strong>Level 1 (NISQ-Optimized):</strong> A normal agent that uses Quantum Resilient Cryptography,
-                    either by applying Post Quantum Cryptography (PQC) for its duties or Quantum cryptography.
+                    The figure below demonstrates the <code>&lt;figure&gt;</code> + <code>&lt;figcaption&gt;</code>
+                    pattern. When an <code>LLMBackend</code> is injected, alt text is generated; otherwise
+                    the template emits <code>alt=""</code> with <code>role="presentation"</code> as a
+                    decorative fallback.
                 </p>
-                <p>
-                    <strong>Level 2 (Hybrid QML Policy):</strong> Uses Hybrid Quantum Machine Learning to evaluate the
-                    explainability of agentic AI behavior and its adherence to Responsible AI.
-                </p>
-                <p>
-                    <strong>Level 3 (Domain-Aware Adaptive):</strong> Integrates Quantum Transformers and history-dependent
-                    (non-Markovian) simulation directly into reasoning and decision-making processes.
-                </p>
-                <p>
-                    <strong>Level 4 (Fully Quantum-Native):</strong> A multisensory, quantum-native autonomous system that
-                    operates on fault-tolerant quantum hardware and integrates quantum artificial intelligence across all
-                    stages of perception, cognition, and memory.
-                </p>
+
+                <figure class="figure">
+                    <img src="placeholder.png" alt="" role="presentation">
+                    <figcaption class="figure-caption">
+                        Figure 1. Placeholder figure caption describing a synthetic diagram.
+                    </figcaption>
+                </figure>
             </section>
 
-            <section id="section-8" aria-labelledby="heading-8">
-                <h2 id="heading-8">8. Architectures for Quantum-Agentic Platforms</h2>
+            <section id="section-3" aria-labelledby="heading-3">
+                <h2 id="heading-3">3. Results</h2>
                 <p>
-                    To realize the full potential of quantum agents, we need robust system architectures that tightly integrate
-                    quantum processing units (QPUs) with agentic reasoning components.
+                    Placeholder results paragraph. A real paper would summarise findings here; the
+                    reference template only needs one paragraph to exercise the section-level layout at
+                    the end of the body flow.
                 </p>
 
-                <h3 id="heading-8-1">8.1. System Models and Communication Interfaces</h3>
-                <p>
-                    A quantum-agentic system typically comprises three interacting layers: (1) the <strong>quantum computation
-                    layer</strong>, (2) the <strong>agentic decision layer</strong>, and (3) the <strong>environment interface
-                    layer</strong>. Communication between these layers is primarily classical, involving control signals,
-                    coordination logic, and measurement results. However, in distributed quantum-agentic systems, quantum
-                    communication channels may be used between agents.
-                </p>
-
-                <h3 id="heading-8-2">8.2. Quantum Memory, Control, and Sensing in Agents</h3>
-                <p>
-                    A critical architectural challenge is how agents store and manage quantum information. Quantum memory
-                    components must maintain coherence over relevant timescales while remaining accessible for computation
-                    and control. Control systems in quantum agents must operate at multiple levels&mdash;from low-level gate
-                    operations to high-level behavioral planning.
-                </p>
-
-                <h3 id="heading-8-3">8.3. Security and Fault Tolerance in Quantum Agents</h3>
-                <p>
-                    Robustness and trustworthiness are essential for agentic systems, particularly in high-stakes domains.
-                    To ensure secure communication, security protocols should incorporate established quantum key distribution
-                    schemes such as BB84, B92, SARG04, or entanglement-based protocols such as E91 and BBM92 which provide
-                    information-theoretic security based on quantum mechanics laws.
-                </p>
-                <p>
-                    Fault tolerance in quantum agents requires hybrid error correction strategies. While physical qubits are
-                    susceptible to decoherence and gate errors, logical qubits protected by quantum error correction codes
-                    (QECC) offer a path toward stable computation.
-                </p>
-            </section>
-
-            <section id="section-9" aria-labelledby="heading-9">
-                <h2 id="heading-9">9. Use Cases and Applications</h2>
-                <p>
-                    Quantum agents offer transformative potential across diverse domains where intelligence, autonomy, and
-                    quantum processing converge.
-                </p>
-
-                <h3 id="heading-9-1">9.1. Scientific Discovery and Simulation</h3>
-                <p>
-                    Scientific discovery is increasingly data-driven and computationally intensive. Quantum agents can act
-                    as intelligent co-explorers in scientific workflows, accelerating hypothesis testing, simulation, and
-                    model generation. In quantum chemistry and materials science, quantum agents can orchestrate simulations
-                    of molecular structures or solid-state systems.
-                </p>
-
-                <h3 id="heading-9-2">9.2. Autonomous Systems in Quantum Environments</h3>
-                <p>
-                    In environments where quantum systems must operate autonomously&mdash;such as in space-based platforms,
-                    quantum networking, or remote laboratories&mdash;quantum agents serve as critical enablers of resilience,
-                    adaptability, and autonomy.
-                </p>
-
-                <h3 id="heading-9-3">9.3. Secure and Adaptive Systems in Finance, Defense, and Logistics</h3>
-                <p>
-                    Quantum agents can enhance security and adaptability in high-stakes domains such as finance, defense,
-                    and logistics. In finance, quantum agents can support risk modeling, portfolio optimization, and fraud
-                    detection. In defense, quantum agents can orchestrate secure communication channels using quantum key
-                    distribution (QKD). In logistics, quantum agents can dynamically plan and reconfigure global transportation
-                    routes using quantum optimization methods.
-                </p>
-            </section>
-
-            <section id="section-10" aria-labelledby="heading-10">
-                <h2 id="heading-10">10. Prototype Quantum Agents: Demonstration of Early Capabilities</h2>
-                <p>
-                    To assess the viability of quantum-agentic systems in the NISQ era, we developed three prototype agents
-                    that implement distinct quantum reasoning workflows. These prototypes align with Level 1 and Level 2 of
-                    our proposed maturity model.
-                </p>
-
-                <h3 id="heading-10-1">10.1. Agent 1: Minimal Quantum Agent Using Grover's Algorithm</h3>
-                <p>
-                    A proof-of-concept agent capable of action selection via Grover-based amplitude amplification, demonstrating
-                    basic search-based decision-making. The environment consists of four possible actions, encoded as two-qubit
-                    basis states |00&rang; to |11&rang;. The agent is tasked with identifying the correct action, predefined
-                    as |10&rang;, through quantum amplitude amplification.
-                </p>
-
-                <div class="algorithm" role="region" aria-labelledby="algo-1">
-                    <h4 id="algo-1">Algorithm 1: Quantum Agent Using Grover Search</h4>
-                    <ol>
-                        <li>Define the correct action as bitstring a* = 10</li>
-                        <li>Initialize 2-qubit quantum register in state |00&rang;</li>
-                        <li>Apply Hadamard gate on each qubit to prepare uniform superposition</li>
-                        <li>Construct oracle O such that O|a*&rang; = &minus;|a*&rang;</li>
-                        <li>Apply oracle gate: U<sub>f</sub> &larr; Oracle</li>
-                        <li>Apply Grover diffuser gate: D</li>
-                        <li>Measure the quantum state in the computational basis</li>
-                        <li>Record measurement outcomes and select the most frequent bitstring</li>
-                        <li>Return selected bitstring as agent's chosen action</li>
-                    </ol>
-                </div>
-
-                <h3 id="heading-10-2">10.2. Agent 2: Quantum Multi-Armed Bandit Agent Using Variational Policy Circuits</h3>
-                <p>
-                    A reinforcement-learning prototype that uses a hybrid classical-quantum loop to learn optimal policies
-                    using variational quantum circuits. The objective is to identify and exploit the arm with the highest
-                    expected reward among a set of four, using a gradient-trained quantum policy.
-                </p>
-                <p>
-                    The agent's policy is encoded in a fixed, parameterized quantum circuit acting on two qubits. Four trainable
-                    rotation angles are updated via gradient descent. The output distribution defines the sampling probability
-                    over four discrete actions.
-                </p>
-
-                <h3 id="heading-10-3">10.3. Agent 3: Adaptive Quantum Image Encryption Agent</h3>
-                <p>
-                    A perceptual agent that adapts its quantum encryption strategy (XOR, QFT, or scrambling) using entropy
-                    feedback via a policy circuit. A quantum agent in this context refers to a quantum-aware system that
-                    actively learns to select encryption strategies, manage keys, and adapt security operations based on
-                    feedback from its environment.
-                </p>
-                <p>
-                    <strong>Agent Functionalities in Intelligent Cryptography:</strong>
-                </p>
-                <ol>
-                    <li><strong>Adaptive Basis and Key Selection:</strong> The agent learns to choose initial quantum states
-                    and measurement bases based on image characteristics.</li>
-                    <li><strong>Encryption Strategy Optimization:</strong> The agent dynamically selects among multiple
-                    encryption primitives.</li>
-                    <li><strong>Reward-Driven Reinforcement Learning:</strong> The agent receives feedback in the form of
-                    decryption success, histogram uniformity, and correlation metrics.</li>
-                    <li><strong>Context-Aware Encryption Personalization:</strong> Tailors encryption strength according
-                    to the image domain.</li>
-                    <li><strong>Quantum Key Lifecycle Management:</strong> Autonomously manages key generation and QKD
-                    channel selection.</li>
-                </ol>
-            </section>
-
-            <section id="section-11" aria-labelledby="heading-11">
-                <h2 id="heading-11">11. Challenges and Open Questions</h2>
-                <p>
-                    While the concept of quantum agents holds significant promise, its realization comes with substantial
-                    technical, conceptual, and practical challenges.
-                </p>
-
-                <h3 id="heading-11-1">11.1. Scalability and Resource Constraints</h3>
-                <p>
-                    Quantum computing remains limited by hardware constraints such as qubit count, coherence time, gate
-                    fidelity, and error rates. These limitations directly impact the feasibility of integrating quantum
-                    processing into agentic loops.
-                </p>
-                <p>
-                    <strong>Open questions include:</strong> How can agents effectively orchestrate computation between
-                    quantum and classical subsystems? What frameworks enable modular and scalable integration as quantum
-                    hardware evolves?
-                </p>
-
-                <h3 id="heading-11-2">11.2. Agent Evaluation in Quantum Contexts</h3>
-                <p>
-                    Traditional metrics for evaluating agents&mdash;such as performance, learning speed, robustness, and
-                    adaptability&mdash;may not fully capture the behavior of quantum agents. Quantum computations are
-                    probabilistic by nature, and many relevant metrics differ from those in classical AI.
-                </p>
-                <p>
-                    <strong>Key open questions include:</strong> What are meaningful benchmarks for quantum agents? How
-                    do we isolate the contribution of quantum components from overall system behavior?
-                </p>
-
-                <h3 id="heading-11-3">11.3. Interoperability and Standards</h3>
-                <p>
-                    As quantum agents evolve, interoperability becomes critical for integration across platforms, hardware
-                    backends, and AI frameworks. Currently, there is no unified abstraction layer for quantum-agentic systems.
-                </p>
-                <p>
-                    <strong>Important open questions include:</strong> What abstraction layers can decouple agent logic
-                    from quantum hardware? How can we define standard interfaces for quantum reasoning modules?
-                </p>
-            </section>
-
-            <section id="section-12" aria-labelledby="heading-12">
-                <h2 id="heading-12">12. Conclusion and Outlook</h2>
-                <p>
-                    Quantum agents represent a promising fusion of two transformative paradigms: quantum computing and
-                    agentic artificial intelligence. By combining quantum-enhanced computation with autonomous decision-making,
-                    these systems open up new frontiers in scientific discovery, secure autonomy, and intelligent control.
-                </p>
-
-                <h3 id="heading-12-1">12.1. The Future of Quantum-Agentic Intelligence</h3>
-                <p>
-                    The coming decade will likely witness the transition of quantum agents from conceptual prototypes to
-                    applied systems in real-world environments. We envision quantum-agentic intelligence evolving along
-                    three parallel trajectories:
-                </p>
-                <ul>
-                    <li><strong>Cognitive Expansion:</strong> Agents will gain the ability to reason with uncertainty,
-                    simulate quantum phenomena, and make decisions that exploit quantum-enhanced optimization and learning.</li>
-                    <li><strong>Operational Autonomy:</strong> Quantum systems will become increasingly autonomous&mdash;capable
-                    of self-calibration, fault adaptation, and mission execution without human intervention.</li>
-                    <li><strong>Systemic Integration:</strong> Quantum agents will operate within larger multi-agent ecosystems,
-                    integrating with cloud services, edge devices, and classical AI systems.</li>
-                </ul>
-
-                <h3 id="heading-12-2">12.2. Research Roadmap</h3>
-                <p>
-                    In order to realize the vision of quantum-agentic systems, coordinated research is required across
-                    multiple domains:
-                </p>
-                <ol>
-                    <li><strong>Foundational Theory:</strong> Develop formal models and complexity analyses for quantum-agentic
-                    behaviors.</li>
-                    <li><strong>Benchmarking and Evaluation:</strong> Establish standardized metrics, testbeds, and datasets
-                    for evaluating quantum agents.</li>
-                    <li><strong>Hardware&ndash;Software Co-Design:</strong> Design agent-friendly quantum hardware and co-optimize
-                    control protocols.</li>
-                    <li><strong>Tooling and Abstractions:</strong> Build high-level frameworks and development tools that
-                    abstract quantum complexity.</li>
-                    <li><strong>Application Pilots:</strong> Deploy quantum agents in domain-specific pilots to test feasibility
-                    and performance.</li>
-                    <li><strong>Ethical and Societal Implications:</strong> Investigate the broader implications of autonomous
-                    quantum systems.</li>
-                </ol>
-                <p>
-                    By aligning efforts across academia, industry, and policy, we can accelerate the emergence of quantum-agentic
-                    intelligence as a robust, ethical, and scalable foundation for next-generation autonomous systems.
-                </p>
+                <aside role="doc-footnote" aria-label="Footnote 1">
+                    <p>
+                        <sup>1</sup> Placeholder footnote demonstrating the <code>role="doc-footnote"</code>
+                        DPUB-ARIA pattern.
+                    </p>
+                </aside>
             </section>
 
             <section id="references" class="references" aria-labelledby="references-heading">
                 <h2 id="references-heading">References</h2>
                 <ol>
-                    <li>Matthias Klusch. Toward quantum computational agents. <em>DFKI</em>, 2003.</li>
-                    <li>Valeria Saggio, Bastian E Asenbeck, Andreas Hamann, et al. Experimental quantum speed-up in reinforcement learning agents. <em>Nature</em>, 591(7849):229&ndash;233, 2021.</li>
-                    <li>Thomas J Elliott, Mile Gu, Andrew JP Garner, et al. Quantum adaptive agents with efficient long-term memories. <em>Physical Review X</em>, 12(1):011007, 2022.</li>
-                    <li>Jayne Thompson, Paul M Riechers, Andrew JP Garner, et al. Energetic advantages for quantum agents in online execution of complex strategies. <em>arXiv preprint arXiv:2503.19896</em>, 2025.</li>
-                    <li>Won Joon Yun, Yunseok Kwak, Jae Pyoung Kim, et al. Quantum multi-agent reinforcement learning via variational quantum circuit design. <em>arXiv preprint arXiv:2203.10443</em>, 2022.</li>
-                    <li>A. Author and B. Author. Quantum artificial intelligence: A brief survey. <em>K&uuml;nstliche Intelligenz</em>, 2024.</li>
-                    <li>Enrique Solano. Agentic quantum computing at Kipu Quantum. <em>LinkedIn post</em>, 2024.</li>
-                    <li>Lov K Grover. Quantum mechanics helps in searching for a needle in a haystack. <em>Physical Review Letters</em>, 79(2):325, 1997.</li>
-                    <li>Austin Gilliam, Stefan Woerner, and Constantin Gonciulea. Grover adaptive search for constrained polynomial binary optimization. <em>Quantum</em>, 5:428, 2021.</li>
-                    <li>Naphan Benchasattabuse et al. Amplitude amplification for optimization via subdivided phase oracle. In <em>IEEE QCE 2022</em>, pages 22&ndash;30. IEEE, 2022.</li>
-                    <li>David Biron et al. Generalized Grover search algorithm for arbitrary initial amplitude distribution. <em>Lecture Notes in Computer Science</em>, pages 140&ndash;147, 1999.</li>
-                    <li>Edward Farhi, Jeffrey Goldstone, and Sam Gutmann. A quantum approximate optimization algorithm, 2014.</li>
-                    <li>Kostas Blekos et al. A review on quantum approximate optimization algorithm and its variants. <em>Physics Reports</em>, 1068:1&ndash;66, 2024.</li>
-                    <li>Arnab Das and Bikas K Chakrabarti. <em>Quantum annealing and related optimization methods</em>, volume 679. Springer, 2005.</li>
-                    <li>Ansis Rosmanis. Hybrid quantum-classical search algorithms. <em>ACM Transactions on Quantum Computing</em>, 5(2):1&ndash;18, 2024.</li>
-                    <li>Xiaoyu Guo, Takahiro Muta, and Jianjun Zhao. Quantum circuit ansatz: Patterns of abstraction and reuse, 2024.</li>
-                    <li>Junhan Qin. Review of ansatz designing techniques for variational quantum algorithms, 2022.</li>
-                    <li>Roeland Wiersema et al. Exploring entanglement and optimization within the Hamiltonian variational ansatz. <em>PRX Quantum</em>, 1:020319, Dec 2020.</li>
-                    <li>Laura Clinton et al. Towards near-term quantum simulation of materials. <em>Nature Communications</em>, 15(1):211, 2024.</li>
-                    <li>Richard P Feynman. Simulating physics with computers. <em>International Journal of Theoretical Physics</em>, 1982.</li>
-                    <li>Luca Erhart et al. Coupled cluster method tailored with quantum computing. <em>Physical Review Research</em>, 6(2):023230, 2024.</li>
-                    <li>Yunheng Zou et al. El agente: An autonomous agent for quantum chemistry, 2025.</li>
-                    <li>U.S. Department of Energy. Quantum information science applications roadmap. Technical report, October 2024.</li>
-                    <li>Xinyi Hou et al. Model context protocol (MCP): Landscape, security threats, and future research directions. <em>arXiv preprint arXiv:2503.23278</em>, 2025.</li>
-                    <li>Muhammad Shahbaz Khan et al. Chaotic quantum encryption to secure image data in post quantum consumer technology. <em>IEEE Transactions on Consumer Electronics</em>, 2024.</li>
-                    <li>Krishnaram Kenthapadi et al. Generative AI meets responsible AI: Practical challenges and opportunities. In <em>ACM SIGKDD 2023</em>, pages 5805&ndash;5806, 2023.</li>
-                    <li>Nikhil Khatri et al. Quixer: A quantum transformer model. <em>arXiv preprint arXiv:2406.04305</em>, 2024.</li>
-                    <li>Hui Zhang and Qinglin Zhao. A survey of quantum transformers. <em>arXiv preprint arXiv:2504.03192</em>, 2025.</li>
-                    <li>Andr&aacute;s Gily&eacute;n et al. Quantum singular value transformation and beyond. In <em>STOC 2019</em>, pages 193&ndash;204, 2019.</li>
-                    <li>Avin Seneviratne et al. Polynomial time and space quantum algorithm for non-Markovian quantum dynamics, 2024.</li>
-                    <li>Erik Recio-Armengol et al. Single-shot quantum machine learning. <em>Physical Review A</em>, 111(4):042420, 2025.</li>
-                    <li>Alissa Wilms et al. Quantum reinforcement learning of classical rare dynamics. <em>arXiv preprint arXiv:2504.16258</em>, 2025.</li>
-                    <li>Junyu Liu et al. Towards provably efficient quantum algorithms for large-scale machine-learning models. <em>Nature Communications</em>, 15(1):434, 2024.</li>
-                    <li>Zihan Chen et al. A survey of scaling in large language model reasoning, 2025.</li>
-                    <li>Gilles Brassard et al. Quantum amplitude amplification and estimation, 2002.</li>
-                    <li>Seyed Shakib Vedaie et al. Quantum multiple kernel learning. <em>arXiv preprint arXiv:2011.09694</em>, 2020.</li>
-                    <li>Carlo A Trugenberger. Probabilistic quantum memories. <em>Physical Review Letters</em>, 87(6):067901, 2001.</li>
-                    <li>Charles H Bennett and Gilles Brassard. Quantum cryptography: Public key distribution and coin tossing. <em>Theoretical Computer Science</em>, 560:7&ndash;11, 2014.</li>
-                    <li>Charles H Bennett. Quantum cryptography using any two nonorthogonal states. <em>Physical Review Letters</em>, 68(21):3121, 1992.</li>
-                    <li>Valerio Scarani et al. Quantum cryptography protocols robust against photon number splitting attacks. <em>Physical Review Letters</em>, 92(5):057901, 2004.</li>
-                    <li>Artur K Ekert. Quantum cryptography based on Bell's theorem. <em>Physical Review Letters</em>, 67(6):661, 1991.</li>
-                    <li>Charles H Bennett et al. Quantum cryptography without Bell's theorem. <em>Physical Review Letters</em>, 68(5):557, 1992.</li>
-                    <li>Howard Barnum et al. Authentication of quantum messages. In <em>IEEE FOCS 2002</em>, pages 449&ndash;458. IEEE, 2002.</li>
-                    <li>Petros Wallden et al. Quantum digital signatures with quantum-key-distribution components. <em>Physical Review A</em>, 91(4):042304, 2015.</li>
-                    <li>Chen-Xun Weng et al. Beating the fault-tolerance bound with a quantum solution. <em>Research</em>, 6:0272, 2023.</li>
+                    <li id="ref-1">Jane Doe and John Smith. A placeholder reference. <em>Journal of Samples</em>, 1(1):1&ndash;10, 2026.</li>
+                    <li id="ref-2">Alice Author, Bob Researcher, and Carol Scholar. Another placeholder reference. <em>Conference on Examples</em>, pages 1&ndash;8, 2026.</li>
+                    <li id="ref-3">Dave Demo. A single-author placeholder reference. <em>arXiv:0000.00000</em>, 2026.</li>
+                    <li id="ref-4">Eve Example. A preprint placeholder reference. Technical report, Placeholder Institute, 2026.</li>
+                    <li id="ref-5">Frank Fictional and Grace Generic. Placeholder proceedings reference. In <em>Proceedings of Sample Venue</em>, pages 1&ndash;5, 2026.</li>
                 </ol>
             </section>
 
@@ -1118,11 +478,9 @@
                 <hr>
                 <h2>Author Affiliations</h2>
                 <ul>
-                    <li><strong>Eldar Sultanow</strong> &ndash; Capgemini, Nuremberg, Germany (eldar.sultanow@capgemini.com)</li>
-                    <li><strong>Madjid G. Tehrani</strong> &ndash; George Washington University, Washington, DC 20052, USA (madjid_tehrani@gwu.edu)</li>
-                    <li><strong>Siddhant Dutta</strong> &ndash; SVKM's Dwarkadas J. Sanghvi College of Engineering, Mumbai, India (forsomethingnewsid@gmail.com)</li>
-                    <li><strong>William J Buchanan</strong> &ndash; Edinburgh Napier University, Edinburgh, UK (b.buchanan@napier.ac.uk)</li>
-                    <li><strong>Muhammad Shahbaz Khan</strong> &ndash; Edinburgh Napier University, Edinburgh, UK (M.Khan2@napier.ac.uk)</li>
+                    <li><strong>Alice Sample</strong> &ndash; Placeholder Institute, Sample City (alice@example.org)</li>
+                    <li><strong>Bob Example</strong> &ndash; Example University, Example City (bob@example.org)</li>
+                    <li><strong>Carol Placeholder</strong> &ndash; Placeholder Lab, Placeholder City (carol@example.org)</li>
                 </ul>
             </footer>
         </article>

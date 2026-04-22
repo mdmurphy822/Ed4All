@@ -105,10 +105,11 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
 
     "extract_and_convert_pdf": {
         "required": ["pdf_path"],
-        "optional": ["course_code", "output_dir"],
+        "optional": ["course_code", "output_dir", "figures_dir"],
         "defaults": {
             "course_code": None,
             "output_dir": None,
+            "figures_dir": None,
         },
         "param_mapping": {
             "input": "pdf_path",
@@ -117,6 +118,7 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "pdf": "pdf_path",
             "course": "course_code",
             "output": "output_dir",
+            "figures": "figures_dir",
         },
         "description": "Extract sources from PDF and convert to accessible HTML via DART",
     },
@@ -142,7 +144,15 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "weeks": "duration_weeks",
             "credits": "credit_hours",
         },
-        "description": "Initialize a new course generation project",
+        "description": "[DEPRECATED — use extract_textbook_structure + plan_course_structure from Wave 24] Initialize a new course generation project",
+        # Wave 37: machine-readable deprecation flag so operators /
+        # audit tooling can surface the status without string-matching
+        # the description. New integrations should route through
+        # ``extract_textbook_structure`` + ``plan_course_structure``
+        # (pipeline-internal) or ``textbook_to_course`` via the unified
+        # CLI; this entry remains registered for external MCP clients
+        # that already depend on it.
+        "deprecated": True,
     },
 
     "generate_course_content": {
@@ -412,16 +422,228 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     },
 
     "archive_to_libv2": {
-        "required": ["course_name", "domain"],
-        "optional": ["division", "pdf_paths", "html_paths", "imscc_path", "assessment_path", "subdomains"],
+        "required": ["course_name"],
+        "optional": ["domain", "division", "pdf_paths", "html_paths", "imscc_path", "assessment_path", "subdomains"],
         "defaults": {
             "division": "STEM",
+            "domain": "general",
         },
         "param_mapping": {
             "course_id": "course_name",
             "name": "course_name",
         },
         "description": "Archive pipeline artifacts to LibV2 repository",
+    },
+
+    "build_source_module_map": {
+        "required": ["project_id"],
+        "optional": ["staging_dir", "textbook_structure_path", "course_name"],
+        "defaults": {},
+        "param_mapping": {},
+        "description": "Wave 9 source_mapping phase stub: writes an empty source_module_map.json so content-generator falls through to the LO-only backward-compat path.",
+    },
+
+    # Wave 24: Replace textbook-ingestor's create_course_project dispatch
+    # with a real SemanticStructureExtractor call.
+    "extract_textbook_structure": {
+        "required": ["course_name"],
+        "optional": [
+            "staging_dir", "duration_weeks", "duration_weeks_explicit",
+            "objectives_path", "credit_hours",
+        ],
+        "defaults": {
+            "duration_weeks": 12,
+            "duration_weeks_explicit": True,
+            "credit_hours": 3,
+        },
+        "param_mapping": {
+            "course": "course_name",
+            "name": "course_name",
+            "course_code": "course_name",
+            "objectives": "objectives_path",
+            "objectives_file": "objectives_path",
+            "weeks": "duration_weeks",
+            "duration": "duration_weeks",
+        },
+        "description": "Wave 24: Extract semantic structure from staged DART HTML into textbook_structure.json.",
+    },
+
+    # Wave 30 Gap 3 / Wave 32 Deliverable A: register the
+    # synthesize_training schema so
+    # ``param_mapper.get_tool_schema("synthesize_training")`` stops
+    # returning None. Pre-Wave-32 the Wave-30 PR wired the tool into
+    # ``_build_tool_registry`` + ``AGENT_TOOL_MAPPING`` but missed this
+    # third location of the three-location wiring invariant, so at
+    # runtime the param mapper raised ``ParameterMappingError("Unknown
+    # tool: synthesize_training")`` on every dispatch, tripped the
+    # poison-pill detector, and the ``training_synthesis`` phase never
+    # produced ``instruction_pairs.jsonl`` / ``preference_pairs.jsonl``
+    # in real runs.
+    #
+    # Signature mirrors both callers:
+    #   * ``MCP/tools/pipeline_tools.py::synthesize_training`` (@mcp.tool
+    #     variant at L573) → (corpus_dir, course_code, provider, seed).
+    #   * ``MCP/tools/pipeline_tools.py::_synthesize_training`` (pipeline
+    #     registry variant at L2993) — accepts a wider alias surface
+    #     (``trainforge_dir`` / ``course_name`` / ``course_id`` /
+    #     ``assessments_path`` / ``chunks_path``) so the param mapping
+    #     block below also registers those as aliases.
+    "synthesize_training": {
+        # Wave 33 Bug A: Pre-Wave-33 ``corpus_dir`` was listed as
+        # required and ``assessments_path`` / ``chunks_path`` weren't
+        # recognised at all, so the live dispatcher (which routes
+        # ``assessments_path`` + ``chunks_path`` from the
+        # ``trainforge_assessment`` phase outputs — see
+        # ``config/workflows.yaml::training_synthesis.inputs_from``)
+        # triggered ``ParameterMappingError("Missing required
+        # parameters: ['corpus_dir']")`` on every run. The tool
+        # function already accepts + derives ``corpus_dir`` from any of
+        # ``corpus_dir`` / ``trainforge_dir`` / ``output_dir`` /
+        # ``assessments_path`` (parent) / ``chunks_path`` (grandparent)
+        # and returns a structured error envelope when none are given,
+        # so the schema's contribution is limited to: enforce
+        # ``course_code`` (the one kwarg the tool genuinely can't
+        # derive) and surface the rest as optional pass-through kwargs.
+        # ``param_mapping`` keeps the ``trainforge_dir`` → ``corpus_dir``
+        # alias for legacy callers, but ``assessments_path`` and
+        # ``chunks_path`` are deliberately NOT mapped — renaming them
+        # to ``corpus_dir`` would hand the tool a file path masquerading
+        # as a directory (chunks.jsonl vs. its grandparent), breaking
+        # the corpus/chunks.jsonl lookup.
+        "required": ["course_code"],
+        "optional": [
+            "corpus_dir",
+            "trainforge_dir",
+            "assessments_path",
+            "chunks_path",
+            "provider",
+            "seed",
+        ],
+        "defaults": {
+            "provider": "mock",
+            "seed": None,
+        },
+        "param_mapping": {
+            # Corpus dir aliases — registry variant accepts any of these
+            # and derives the corpus_dir when one isn't passed directly.
+            # NOTE: assessments_path / chunks_path are pass-through
+            # (see header comment) — the tool derives corpus_dir from
+            # them internally.
+            "trainforge_dir": "corpus_dir",
+            "output_dir": "corpus_dir",
+            "workspace": "corpus_dir",
+            # Course code aliases — registry variant maps course_name /
+            # course_id onto course_code for decision capture.
+            "course_name": "course_code",
+            "course_id": "course_code",
+            "course": "course_code",
+            "name": "course_code",
+        },
+        "description": (
+            "Wave 30 Gap 3 (+ Wave 33 Bug A dispatch-shape fix): "
+            "synthesize SFT + DPO training pairs from a Trainforge "
+            "corpus (reads corpus/chunks.jsonl, writes "
+            "training_specs/instruction_pairs.jsonl + preference_pairs.jsonl)."
+        ),
+    },
+
+    # Wave 24: Synthesize + persist real TO-NN/CO-NN objectives from
+    # the textbook_structure (or supplied objectives_path).
+    "plan_course_structure": {
+        "required": [],
+        "optional": [
+            "project_id", "course_name", "duration_weeks",
+            "objectives_path", "staging_dir", "source_module_map_path",
+        ],
+        "defaults": {
+            "duration_weeks": 12,
+        },
+        "param_mapping": {
+            "project": "project_id",
+            "course": "course_name",
+            "name": "course_name",
+            "course_code": "course_name",
+            "objectives": "objectives_path",
+            "objectives_file": "objectives_path",
+            "weeks": "duration_weeks",
+            "duration": "duration_weeks",
+        },
+        "description": "Wave 24: Plan course structure — synthesize TO/CO objectives from textbook structure and persist synthesized_objectives.json.",
+    },
+
+    # =========================================================================
+    # PIPELINE TOOLS - Additional (status/markers)
+    # Added by pipeline-plumbing remediation to close MCP audit Q1 (latent
+    # PR #45 failure mode for tools present as @mcp.tool() + reachable from
+    # agent mappings but missing TOOL_SCHEMAS entries). Required-param lists
+    # match each tool's @mcp.tool() decorator signature in MCP/tools/*.py.
+    # Wave 28f: create_textbook_pipeline_tool + run_textbook_pipeline_tool
+    # (Wave 7 deprecated wrappers) were removed entirely — external MCP
+    # clients now route through the workflow API.
+    # =========================================================================
+    "get_pipeline_status": {
+        "required": ["workflow_id"],
+        "optional": [],
+        "defaults": {},
+        "param_mapping": {
+            "workflow": "workflow_id",
+            "id": "workflow_id",
+        },
+        "description": "Get status of a textbook-to-course pipeline",
+    },
+
+    "validate_dart_markers": {
+        "required": ["html_path"],
+        "optional": [],
+        "defaults": {},
+        "param_mapping": {
+            "input": "html_path",
+            "file": "html_path",
+            "path": "html_path",
+        },
+        "description": "Validate that an HTML file has required DART accessibility markers",
+    },
+
+    # =========================================================================
+    # ANALYSIS TOOLS (3)
+    # =========================================================================
+    "analyze_training_data": {
+        "required": [],
+        "optional": [],
+        "defaults": {},
+        "param_mapping": {},
+        "description": "Analyze captured training data quality and distribution",
+    },
+
+    "get_quality_distribution": {
+        "required": [],
+        "optional": ["min_quality"],
+        "defaults": {
+            "min_quality": "developing",
+        },
+        "param_mapping": {
+            "quality": "min_quality",
+            "threshold": "min_quality",
+        },
+        "description": "Get quality distribution with filtering preview",
+    },
+
+    "preview_export_filter": {
+        "required": [],
+        "optional": ["min_quality", "min_confidence", "require_accepted", "deduplicate"],
+        "defaults": {
+            "min_quality": "developing",
+            "min_confidence": 0.0,
+            "require_accepted": False,
+            "deduplicate": True,
+        },
+        "param_mapping": {
+            "quality": "min_quality",
+            "confidence": "min_confidence",
+            "accepted_only": "require_accepted",
+            "dedupe": "deduplicate",
+        },
+        "description": "Preview how many records would be exported with given filters",
     },
 
 }
@@ -586,6 +808,7 @@ TOOL_CATEGORIES = {
         "stage_dart_outputs",
         "extract_and_convert_pdf",
         "archive_to_libv2",
+        "synthesize_training",
     ],
 }
 

@@ -1,0 +1,549 @@
+"""Wave 15: post-assembly cross-reference resolution.
+
+Rewrites in-text references to chapters, figures, sections, and citations
+into real ``<a href="#...">`` anchors, but only when the target anchor
+actually exists in the classified block list. Orphan references are left
+as plain text so missing targets never surface as dead links.
+
+The resolver runs as the last step inside
+:func:`DART.converter.document_assembler.assemble_html`, operating on the
+already-assembled HTML string plus the list of classified blocks (which
+is the source of truth for what IDs exist: ``chap-N`` from
+``CHAPTER_OPENER`` attributes, ``fig-N-M`` from ``FIGURE`` attributes,
+``sec-N-M`` from ``SECTION_HEADING`` / ``SUBSECTION_HEADING`` attributes,
+and ``ref-N`` from ``BIBLIOGRAPHY_ENTRY`` attributes).
+
+Design rules (per wave spec):
+
+* **Skip inside existing anchors.** Already-linked spans
+  (``<a>See Chapter 1</a>``) are not double-wrapped. We detect them by
+  segmenting the HTML at ``<a ... /a>`` boundaries and only running the
+  rewriter on the non-anchor chunks.
+* **Silently skip orphans.** References whose targets are not present in
+  the block list remain untouched — no warnings, no broken links.
+* **No new dependencies.** Pure regex substitution over the emitted
+  HTML string.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from typing import Dict, List, Optional, Set
+
+from DART.converter.block_roles import BlockRole, ClassifiedBlock
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Target collection
+# ---------------------------------------------------------------------------
+
+# Chapter heading attributes often carry ``chapter_number`` or ``number``;
+# fall back to the assembler's stable id convention (``chap-{N}``) when
+# the attribute is missing but the heading text encodes it.
+_CHAPTER_NUMBER_RE = re.compile(r"\bchapter\s+(\d+)\b", re.IGNORECASE)
+# Numbered figure / section attribute shapes: "3.2" or "3-2".
+_NUMBER_DOT_RE = re.compile(r"^\s*(\d+)[\.\-](\d+)\s*$")
+
+
+def _collect_targets(blocks: List[ClassifiedBlock]) -> Dict[str, Set[str]]:
+    """Walk ``blocks`` and build a map of reference-kind -> target-id set.
+
+    Keys are ``"chapter"``, ``"figure"``, ``"section"``, ``"citation"``
+    so the rewriter can look up only the targets it cares about per
+    match kind.
+    """
+    targets: Dict[str, Set[str]] = {
+        "chapter": set(),
+        "figure": set(),
+        "section": set(),
+        "citation": set(),
+    }
+
+    for block in blocks:
+        attrs = block.attributes or {}
+
+        if block.role == BlockRole.CHAPTER_OPENER:
+            # Prefer explicit attribute, fall back to heading text scrape
+            # AND the raw block text (heuristic classifier may have
+            # stripped the "Chapter N:" prefix into heading_text).
+            number = (
+                attrs.get("chapter_number")
+                or attrs.get("number")
+            )
+            if not number:
+                candidates = [
+                    str(attrs.get("heading_text") or ""),
+                    str(block.raw.text or ""),
+                ]
+                for candidate in candidates:
+                    m = _CHAPTER_NUMBER_RE.search(candidate)
+                    if m:
+                        number = m.group(1)
+                        break
+            if number:
+                targets["chapter"].add(str(number))
+
+        elif block.role == BlockRole.FIGURE:
+            number = attrs.get("number")
+            if number:
+                m = _NUMBER_DOT_RE.match(str(number))
+                if m:
+                    targets["figure"].add(f"{m.group(1)}-{m.group(2)}")
+                else:
+                    # Single-number figure ("Figure 3") still reaches a
+                    # ``fig-3`` anchor emitted by the template.
+                    targets["figure"].add(str(number).strip())
+
+        elif block.role in (BlockRole.SECTION_HEADING, BlockRole.SUBSECTION_HEADING):
+            number = attrs.get("number") or attrs.get("section_number")
+            if number:
+                m = _NUMBER_DOT_RE.match(str(number))
+                if m:
+                    targets["section"].add(f"{m.group(1)}-{m.group(2)}")
+                else:
+                    targets["section"].add(str(number).strip())
+            # Also scrape "2.1" / "2-1" from heading_text or raw text so
+            # headings classified without an explicit number attribute
+            # still register their canonical ID.
+            heading = str(attrs.get("heading_text") or block.raw.text or "")
+            hm = re.match(r"^\s*(\d+)\.(\d+)\b", heading)
+            if hm:
+                targets["section"].add(f"{hm.group(1)}-{hm.group(2)}")
+
+        elif block.role == BlockRole.BIBLIOGRAPHY_ENTRY:
+            number = attrs.get("number") or attrs.get("ref_id")
+            if not number:
+                # Scrape "[N]" or "(N)" from the raw bibliography text —
+                # the heuristic classifier doesn't populate the number
+                # attribute even when the regex matched.
+                match = re.match(r"^\s*[\[\(](\d{1,3})[\]\)]\s+", block.raw.text or "")
+                if match:
+                    number = match.group(1)
+            if number:
+                targets["citation"].add(str(number).strip())
+
+    return targets
+
+
+# ---------------------------------------------------------------------------
+# Rewriters
+# ---------------------------------------------------------------------------
+
+# Match phrases while excluding anything already inside an anchor.
+# We strip out anchors via _split_on_anchors() before running these.
+_CHAPTER_RE = re.compile(r"\b(See\s+)?Chapter\s+(\d+)\b")
+_FIGURE_RE = re.compile(r"\bFigure\s+(\d+)[\.\-](\d+)\b")
+_SECTION_RE = re.compile(r"\bSection\s+(\d+)[\.\-](\d+)\b")
+_CITATION_RE = re.compile(r"\[(\d+)\]")
+
+
+def _rewrite_chunk(chunk: str, targets: Dict[str, Set[str]]) -> str:
+    """Rewrite reference phrases in a non-anchor HTML chunk."""
+
+    def _sub_chapter(match: re.Match[str]) -> str:
+        prefix = match.group(1) or ""
+        number = match.group(2)
+        if number not in targets["chapter"]:
+            return match.group(0)
+        anchor = f'<a href="#chap-{number}">Chapter {number}</a>'
+        return f"{prefix}{anchor}"
+
+    def _sub_figure(match: re.Match[str]) -> str:
+        n, m = match.group(1), match.group(2)
+        key = f"{n}-{m}"
+        # Permit "Figure 3" single-number form in the target set too.
+        if key not in targets["figure"] and n not in targets["figure"]:
+            return match.group(0)
+        # Separator preserved (either '.' or '-' in the source text).
+        sep = match.group(0)[len(f"Figure {n}")]  # char between groups
+        return f'<a href="#fig-{key}">Figure {n}{sep}{m}</a>'
+
+    def _sub_section(match: re.Match[str]) -> str:
+        n, m = match.group(1), match.group(2)
+        key = f"{n}-{m}"
+        if key not in targets["section"]:
+            return match.group(0)
+        sep = match.group(0)[len(f"Section {n}")]
+        return f'<a href="#sec-{key}">Section {n}{sep}{m}</a>'
+
+    def _sub_citation(match: re.Match[str]) -> str:
+        number = match.group(1)
+        if number not in targets["citation"]:
+            return match.group(0)
+        return f'<a href="#ref-{number}">[{number}]</a>'
+
+    chunk = _CHAPTER_RE.sub(_sub_chapter, chunk)
+    chunk = _FIGURE_RE.sub(_sub_figure, chunk)
+    chunk = _SECTION_RE.sub(_sub_section, chunk)
+    chunk = _CITATION_RE.sub(_sub_citation, chunk)
+    return chunk
+
+
+# ---------------------------------------------------------------------------
+# Anchor-aware segmentation
+# ---------------------------------------------------------------------------
+
+# Capture-group regex: chunk between anchors (may be empty) or a full anchor
+# element (anchor text included). Running the rewriter only on the non-
+# anchor chunks avoids double-wrapping links that already exist.
+_ANCHOR_SEGMENT = re.compile(r"(<a\b[^>]*>.*?</a>)", re.IGNORECASE | re.DOTALL)
+
+
+def _resolve_in_body(body_html: str, targets: Dict[str, Set[str]]) -> str:
+    """Apply the rewriters to every non-anchor chunk of ``body_html``."""
+    segments = _ANCHOR_SEGMENT.split(body_html)
+    rewritten: List[str] = []
+    for segment in segments:
+        if not segment:
+            rewritten.append(segment)
+            continue
+        # If this chunk itself is a full <a>...</a> element, leave it.
+        if segment.startswith("<a") and segment.lower().startswith("<a") \
+                and segment.endswith("</a>"):
+            rewritten.append(segment)
+        else:
+            rewritten.append(_rewrite_chunk(segment, targets))
+    return "".join(rewritten)
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+
+_HEAD_TAIL_SPLIT = re.compile(r"(<head\b[^>]*>.*?</head>)", re.IGNORECASE | re.DOTALL)
+
+
+def _augment_targets_with_links(
+    targets: Dict[str, Set[str]],
+    classified_blocks: List[ClassifiedBlock],
+    links: list,
+) -> Dict[str, Set[str]]:
+    """Wave 18: fold PyMuPDF-surfaced internal links into the target set.
+
+    Each :class:`ExtractedLink` with ``dest_page`` set is a link whose
+    target is somewhere on that page. When the classified block list
+    carries a block anchored on that page, the link already resolves
+    via the page-scoped section / chapter anchors in ``targets``. This
+    pass is purely additive — it never removes existing entries.
+
+    The actual HTML rewrite of `<a>` tags with absolute page URIs is a
+    follow-up wave; here we just surface the data so the resolver has
+    visibility.
+    """
+    if not links:
+        return targets
+    # Build a set of page numbers where blocks exist. Any internal link
+    # whose dest_page matches is implicitly resolvable.
+    block_pages = {b.raw.page for b in classified_blocks if b.raw.page is not None}
+    resolved_pages: Set[str] = set()
+    for link in links:
+        dest = getattr(link, "dest_page", None)
+        if dest is None:
+            continue
+        if dest in block_pages:
+            resolved_pages.add(str(dest))
+    if resolved_pages:
+        # Stash under a new key so existing rewriters remain untouched
+        # but downstream consumers (and tests) can inspect.
+        targets = dict(targets)
+        targets["page"] = resolved_pages
+    return targets
+
+
+def _validate_toc_page_anchors(
+    html_text: str,
+    classified_blocks: List[ClassifiedBlock],
+) -> str:
+    """Wave 25 Fix 6: rewrite or disable orphan ``#page-N`` TOC links.
+
+    The TOC template emits ``<a href="#page-N">`` fallback anchors for
+    entries whose title doesn't match ``Chapter N`` / ``N.M ``. When
+    no PAGE_BREAK block is emitted for page N (most pages are not
+    TOC-referenced, but the TOC template still emitted a
+    ``#page-N`` fallback), the link dead-ends.
+
+    Remediation (first match wins):
+
+    1. Rewrite to the nearest in-body anchor on the same page —
+       prefer ``#chap-{N}`` when a chapter opens on that page,
+       else ``#sec-{X}-{Y}`` when a numbered section heading lands
+       there.
+    2. Fall back to demoting the link to a plain ``<span>`` with
+       ``aria-disabled="true"`` so screen readers don't announce it
+       as clickable.
+    """
+    if "#page-" not in html_text:
+        return html_text
+
+    # Build a map of page → first chap-N or sec-X-Y anchor on that
+    # page so we can rewrite orphan page links to meaningful targets.
+    anchor_by_page: Dict[int, str] = {}
+    for block in classified_blocks:
+        page = getattr(block.raw, "page", None)
+        if page is None:
+            continue
+        if block.role == BlockRole.CHAPTER_OPENER:
+            attrs = block.attributes or {}
+            number = attrs.get("chapter_number") or attrs.get("number")
+            if not number:
+                for candidate in (
+                    str(attrs.get("heading_text") or ""),
+                    str(block.raw.text or ""),
+                ):
+                    m = _CHAPTER_NUMBER_RE.search(candidate)
+                    if m:
+                        number = m.group(1)
+                        break
+            if number and page not in anchor_by_page:
+                anchor_by_page[page] = f"chap-{number}"
+        elif block.role == BlockRole.SECTION_HEADING:
+            attrs = block.attributes or {}
+            number = attrs.get("number") or attrs.get("section_number")
+            if number:
+                m = _NUMBER_DOT_RE.match(str(number))
+                if m and page not in anchor_by_page:
+                    anchor_by_page[page] = (
+                        f"sec-{m.group(1)}-{m.group(2)}"
+                    )
+            else:
+                heading = str(
+                    (block.attributes or {}).get("heading_text")
+                    or block.raw.text
+                    or ""
+                )
+                hm = re.match(r"^\s*(\d+)\.(\d+)\b", heading)
+                if hm and page not in anchor_by_page:
+                    anchor_by_page[page] = f"sec-{hm.group(1)}-{hm.group(2)}"
+
+    # Pages that have a PAGE_BREAK anchor emitted (``id="page-N"``)
+    # are valid targets — no rewrite needed.
+    emitted_page_anchors: set = set()
+    for match in re.finditer(r'id="page-(\d+)"', html_text):
+        try:
+            emitted_page_anchors.add(int(match.group(1)))
+        except ValueError:
+            pass
+
+    # Walk every ``<a href="#page-N">...</a>`` occurrence and rewrite
+    # or demote.
+    def _rewrite_link(m: re.Match) -> str:
+        prefix = m.group(1)
+        page_str = m.group(2)
+        suffix = m.group(3)
+        label = m.group(4)
+        try:
+            page = int(page_str)
+        except ValueError:
+            return m.group(0)
+        # Target exists → leave alone.
+        if page in emitted_page_anchors:
+            return m.group(0)
+        # Rewrite to nearest in-body anchor on the same page.
+        alt = anchor_by_page.get(page)
+        if alt:
+            return f'{prefix}#{alt}{suffix}{label}</a>'
+        # Fallback: demote to an aria-disabled span so screen
+        # readers don't announce it as a clickable link.
+        return f'<span aria-disabled="true">{label}</span>'
+
+    pattern = re.compile(
+        r'(<a\b[^>]*href=")#page-(\d+)("[^>]*>)(.*?)</a>',
+        re.DOTALL | re.IGNORECASE,
+    )
+    return pattern.sub(_rewrite_link, html_text)
+
+
+def _validate_toc_section_anchors(
+    html_text: str,
+    classified_blocks: List[ClassifiedBlock],
+) -> str:
+    """Wave 30 Gap 2: rewrite or disable orphan ``#sec-X-Y`` TOC links.
+
+    Mirrors ``_validate_toc_page_anchors`` for section-level anchors.
+    The TOC renderer emits ``<a href="#sec-X-Y">`` for entries whose
+    title starts with ``"X.Y "`` — those links are dead whenever no
+    matching ``id="sec-X-Y"`` landed in the body (heading promoter
+    didn't fire, classifier chose a non-numeric role, dotted-numeric
+    rule missed an alphabetic prefix, etc.).
+
+    Valid targets come from two sources:
+
+    * ``id="sec-..."`` attributes literally present in the rendered
+      HTML (covers the Wave 30 heading-promoter output + every
+      classified block the assembler has already stamped).
+    * ``classified_blocks`` with a dotted-numeric hierarchy — the
+      in-text cross-reference resolver (``_resolve_in_body``) emits
+      ``<a href="#sec-N-M">`` links for these before this pass
+      runs, so we must treat them as valid targets even when the
+      HTML fragment under test doesn't include the matching section
+      wrapper (common in narrow unit tests + during end-to-end
+      assembly before the section element is injected into the
+      final string).
+
+    Remediation (first match wins, matches the Wave 25 page-anchor
+    pattern exactly):
+
+    1. Target exists in body OR is backed by a classified block
+       with matching numeric hierarchy → pass through unchanged.
+    2. Rewrite to the chapter anchor when ``#sec-X-Y`` has no
+       matching section but ``#chap-X`` exists, so the TOC entry
+       still lands a reader on the right chapter.
+    3. Fall back to demoting the link to ``<span aria-disabled="true">``
+       so assistive tech does not announce it as clickable.
+    """
+    if "#sec-" not in html_text:
+        return html_text
+
+    # Collect every ``id="sec-..."`` that actually lives in the body.
+    emitted_section_ids: set = set()
+    for match in re.finditer(r'id="(sec-[A-Za-z0-9\-]+)"', html_text):
+        emitted_section_ids.add(match.group(1))
+
+    # Fold in classified-block-backed section ids so the in-text
+    # cross-reference resolver's ``<a href="#sec-N-M">`` output isn't
+    # demoted just because the test HTML doesn't carry the target
+    # wrapper. A block counts when its role is SECTION_HEADING /
+    # SUBSECTION_HEADING AND it carries a dotted-numeric hierarchy
+    # attribute.
+    for block in classified_blocks:
+        if block.role not in (
+            BlockRole.SECTION_HEADING,
+            BlockRole.SUBSECTION_HEADING,
+        ):
+            continue
+        attrs = block.attributes or {}
+        number: Optional[str] = None
+        for key in ("dotted_number", "section_number", "number"):
+            raw_val = attrs.get(key)
+            if raw_val is None:
+                continue
+            candidate = str(raw_val).strip().rstrip(".")
+            if candidate and re.match(
+                r"^[A-Za-z]?\d+(?:\.\d+){0,5}$", candidate
+            ):
+                number = candidate
+                break
+        if number is None:
+            continue
+        emitted_section_ids.add("sec-" + number.replace(".", "-"))
+
+    # Build page-level chap fallback (same convention as the page-anchor
+    # pass). If a section lives on the same page as a chapter opener,
+    # prefer the chap anchor over a dead-end link.
+    anchor_by_page: Dict[int, str] = {}
+    for block in classified_blocks:
+        page = getattr(block.raw, "page", None)
+        if page is None:
+            continue
+        if block.role == BlockRole.CHAPTER_OPENER:
+            attrs = block.attributes or {}
+            number = attrs.get("chapter_number") or attrs.get("number")
+            if not number:
+                for candidate in (
+                    str(attrs.get("heading_text") or ""),
+                    str(block.raw.text or ""),
+                ):
+                    m = _CHAPTER_NUMBER_RE.search(candidate)
+                    if m:
+                        number = m.group(1)
+                        break
+            if number and page not in anchor_by_page:
+                anchor_by_page[page] = f"chap-{number}"
+
+    # Also: leading chapter number X in a dotted anchor sec-X-Y maps
+    # back to chap-X. Used as a last-ditch chapter fallback when the
+    # classified-blocks scan didn't surface a same-page chapter.
+    emitted_chap_ids: set = set()
+    for match in re.finditer(r'id="(chap-\d+)"', html_text):
+        emitted_chap_ids.add(match.group(1))
+
+    def _rewrite_link(m: re.Match) -> str:
+        prefix = m.group(1)
+        target = m.group(2)
+        suffix = m.group(3)
+        label = m.group(4)
+        # Target exists (by HTML id OR classified-block backing) → leave alone.
+        if target in emitted_section_ids:
+            return m.group(0)
+        # Chapter-fallback: if the section anchor is sec-X-Y and
+        # chap-X exists, rewrite to chap-X.
+        chap_match = re.match(r"sec-(\d+)-", target)
+        if chap_match:
+            chap_candidate = f"chap-{chap_match.group(1)}"
+            if chap_candidate in emitted_chap_ids:
+                return f'{prefix}#{chap_candidate}{suffix}{label}</a>'
+        # Fallback: demote to an aria-disabled span so screen readers
+        # don't announce the dead link as clickable.
+        return f'<span aria-disabled="true">{label}</span>'
+
+    pattern = re.compile(
+        r'(<a\b[^>]*href=")#(sec-[A-Za-z0-9\-]+)("[^>]*>)(.*?)</a>',
+        re.DOTALL | re.IGNORECASE,
+    )
+    return pattern.sub(_rewrite_link, html_text)
+
+
+def resolve_cross_references(
+    html_text: str,
+    classified_blocks: List[ClassifiedBlock],
+    links: Optional[List] = None,
+) -> str:
+    """Return ``html_text`` with cross-references rewritten to anchors.
+
+    Behaviour (all guarded):
+
+    * ``See Chapter N`` / ``Chapter N`` -> ``<a href="#chap-N">Chapter N</a>``
+      only when a ``CHAPTER_OPENER`` with number ``N`` exists.
+    * ``Figure N.M`` (or ``Figure N-M``) -> ``<a href="#fig-N-M">...</a>``
+      only when a ``FIGURE`` with that number exists.
+    * ``Section N.M`` -> ``<a href="#sec-N-M">...</a>`` only when a
+      matching section heading exists.
+    * ``[N]`` -> ``<a href="#ref-N">[N]</a>`` only when a
+      ``BIBLIOGRAPHY_ENTRY`` with that number exists.
+
+    The ``<head>`` block is passed through unchanged so metadata /
+    ``<title>`` text isn't accidentally rewritten.
+
+    Wave 18: optional ``links`` parameter accepts a list of
+    :class:`DART.converter.extractor.ExtractedLink`. Internal
+    (``goto``) links whose ``dest_page`` matches a classified block's
+    page are recorded in ``targets["page"]`` for downstream consumers;
+    external (``uri``) links are left alone — prose wrappers handle
+    those. This data-only extension never rewrites existing behaviour.
+    """
+    if not html_text:
+        return html_text
+
+    rewritten = html_text
+    if classified_blocks:
+        targets = _collect_targets(classified_blocks)
+        if links:
+            targets = _augment_targets_with_links(
+                targets, classified_blocks, links
+            )
+        if any(targets.values()):
+            # Split into [before, head, after] so we never rewrite inside <head>.
+            parts = _HEAD_TAIL_SPLIT.split(html_text, maxsplit=1)
+            if len(parts) == 3:
+                before, head, after = parts
+                rewritten = before + head + _resolve_in_body(after, targets)
+            else:
+                # Fallback: no <head> block found (partial document).
+                rewritten = _resolve_in_body(html_text, targets)
+
+    # Wave 25 Fix 6: post-pass to validate TOC ``#page-N`` anchors.
+    # Runs regardless of classified_blocks presence so orphan page
+    # links get demoted even when no other rewriting is needed.
+    rewritten = _validate_toc_page_anchors(rewritten, classified_blocks or [])
+    # Wave 30 Gap 2: same treatment for ``#sec-X-Y`` TOC anchors —
+    # dead section links get rewritten to the nearest chapter anchor
+    # or demoted to aria-disabled spans. Runs AFTER the page-anchor
+    # pass so their remediation outputs (``<span aria-disabled>``) are
+    # not re-matched here (the section pattern requires ``<a ... #sec-``).
+    return _validate_toc_section_anchors(rewritten, classified_blocks or [])
+
+
+__all__ = ["resolve_cross_references"]

@@ -178,7 +178,19 @@ class ContentProfiler:
         ],
     }
 
-    # Bloom's taxonomy verb patterns for difficulty estimation
+    # Bloom's taxonomy verb patterns for difficulty estimation.
+    #
+    # TODO(wave-future): consolidate BLOOM_PATTERNS once pattern-taxonomy
+    # schema exists. This is the canonical tracking site (Wave 28f
+    # deduped — the sibling copy at
+    # `lib/semantic_structure_extractor/semantic_structure_extractor.py`
+    # points here). Two blockers prevent straight migration to
+    # `schemas/taxonomies/bloom_verbs.json`:
+    #   1. This file's verbs are coupled with BLOOM_DIFFICULTY_WEIGHTS
+    #      below — loading from the schema requires untangling the
+    #      verb list from the difficulty-weight mapping.
+    #   2. The sibling copy uses regex alternations (not plain verb
+    #      lists), so migration needs a pattern-schema layer.
     BLOOM_PATTERNS: Dict[str, List[str]] = {
         'remember': ['define', 'list', 'recall', 'identify', 'name', 'state', 'label', 'match', 'recognize'],
         'understand': ['explain', 'describe', 'summarize', 'classify', 'compare', 'interpret', 'discuss'],

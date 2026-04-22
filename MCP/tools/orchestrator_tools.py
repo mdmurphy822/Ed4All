@@ -66,6 +66,26 @@ async def create_workflow_impl(
         if not isinstance(workflow_params, dict):
             return json.dumps({"error": "params must be a JSON object, not array or scalar"})
 
+        # Wave 29 Defect 5: pin a canonical course code onto the params
+        # if one wasn't already supplied. The Trainforge / Courseforge
+        # / DART captures minted downstream read from this single
+        # source of truth so one run == one course code everywhere.
+        if workflow_params.get("course_name") and not workflow_params.get(
+            "canonical_course_code"
+        ):
+            try:
+                from lib.decision_capture import (
+                    normalize_course_code as _normalize_cc,
+                )
+
+                workflow_params["canonical_course_code"] = _normalize_cc(
+                    str(workflow_params["course_name"])
+                )
+            except Exception as _exc:  # noqa: BLE001 — best-effort
+                logger.debug(
+                    "DC5 canonical_course_code derivation failed: %s", _exc
+                )
+
         workflow = {
             "id": workflow_id,
             "type": workflow_type,

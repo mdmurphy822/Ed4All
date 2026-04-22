@@ -1,0 +1,343 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ed4all.dev/schemas/knowledge/concept_graph_semantic.schema.json",
+  "title": "Concept Graph (Semantic)",
+  "description": "Typed-edge concept graph emitted alongside concept_graph.json. Edges carry a type (prerequisite | is-a | related-to) and per-edge provenance. See docs/concept-graph/typed-edges.md for rule descriptions and precedence.",
+  "type": "object",
+  "required": ["kind", "generated_at", "nodes", "edges"],
+  "additionalProperties": true,
+  "properties": {
+    "kind": {
+      "type": "string",
+      "const": "concept_semantic"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "rule_versions": {
+      "type": "object",
+      "description": "Map of rule name -> version integer for the rules that fired in this run.",
+      "additionalProperties": {"type": "integer", "minimum": 1}
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id"],
+        "additionalProperties": true,
+        "properties": {
+          "id": {"type": "string"},
+          "label": {"type": "string"},
+          "frequency": {"type": "integer", "minimum": 0},
+          "run_id": {
+            "type": "string",
+            "description": "Pipeline run that produced this node (REC-PRV-01, Worker P Wave 4.1). Sourced from the active DecisionCapture instance's run_id. Always populated on new runs; legacy nodes without this field still validate."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO 8601 UTC timestamp when the node was emitted (REC-PRV-01, Worker P Wave 4.1). Equal to the artifact-level generated_at for a given run. Always populated on new runs; legacy nodes without this field still validate."
+          },
+          "course_id": {
+            "type": "string",
+            "description": "When TRAINFORGE_SCOPE_CONCEPT_IDS=true, concept ID format becomes '{course_id}:{slug}' and this field carries the scoping course_id. Default behavior: concept IDs are flat slugs, course_id absent."
+          },
+          "occurrences": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Chunk IDs that reference this concept (REC-LNK-01, Worker S Wave 5.1). Populated from chunk->concept inverted index at graph-build time. Sorted for deterministic output. Stable across re-chunks only when TRAINFORGE_CONTENT_HASH_IDS=true (Worker N's flag); position-based chunk IDs invalidate entries on re-chunk. Legacy nodes without this field still validate (optional)."
+          },
+          "source_refs": {
+            "type": "array",
+            "items": {"$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json"},
+            "description": "Wave 10: optional array of DART/Courseforge source references for this concept. Populated at graph-build time by copying source.source_references[] from occurrences[0] (the first chunk by sorted-ID ordering from Wave 5). Absence = 'unknown' (pre-Wave-9 corpora, or a concept whose first occurrence chunk carries no source refs). Lets consumers answer 'what source(s) introduce this concept' without a two-hop chunk dereference."
+          }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "$comment": "REC-LNK-04 (Wave 5.2, Worker U): edges may cross node-type namespaces (federation-by-convention). Legacy taxonomic edges (is-a, prerequisite, related-to) connect concept node IDs. New pedagogical edge types reference heterogeneous endpoints by ID namespace: concept IDs (flat slug or '{course_id}:{slug}'), LO IDs (e.g. 'TO-NN', 'CO-NN', lowercased), chunk IDs (raw chunk.id strings), misconception IDs ('mc_[0-9a-f]{16}' per schemas/knowledge/misconception.schema.json), and question IDs. Consumers resolve endpoints by ID-namespace prefix; no new node types are added to the concept-graph schema itself.",
+      "items": {
+        "type": "object",
+        "required": ["source", "target", "type", "provenance"],
+        "additionalProperties": true,
+        "properties": {
+          "source": {"type": "string"},
+          "target": {"type": "string"},
+          "type": {
+            "type": "string",
+            "enum": [
+              "prerequisite",
+              "is-a",
+              "related-to",
+              "assesses",
+              "exemplifies",
+              "misconception-of",
+              "derived-from-objective",
+              "defined-by"
+            ]
+          },
+          "confidence": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "weight": {
+            "type": "number"
+          },
+          "provenance": {
+            "$comment": "REC-PRV-02 (Wave 6, Worker W): per-rule evidence sub-schemas with a oneOf discriminator keyed by the `rule` field. Each specific arm binds rule={rule_name} to evidence={matching $def}. The final FallbackProvenance arm matches any rule that isn't one of the 8 known rules (and allows evidence to be absent or any shape) — preserving backward-compat with legacy graphs and future rules. The arms are mutually exclusive by virtue of the `rule` const, so oneOf validation is unambiguous. Strict validation is opt-in via TRAINFORGE_STRICT_EVIDENCE=true (see lib/validators/evidence.py::get_schema): strip the fallback arm before validating. Each specific evidence $def sets additionalProperties:false to enforce shape when in strict mode; lenient mode passes through the fallback arm if a known-rule edge's evidence shape drifts.",
+            "oneOf": [
+              {"$ref": "#/$defs/IsAProvenance"},
+              {"$ref": "#/$defs/PrerequisiteProvenance"},
+              {"$ref": "#/$defs/RelatedProvenance"},
+              {"$ref": "#/$defs/AssessesProvenance"},
+              {"$ref": "#/$defs/ExemplifiesProvenance"},
+              {"$ref": "#/$defs/MisconceptionOfProvenance"},
+              {"$ref": "#/$defs/DerivedFromObjectiveProvenance"},
+              {"$ref": "#/$defs/DefinedByProvenance"},
+              {"$ref": "#/$defs/FallbackProvenance"}
+            ]
+          },
+          "run_id": {
+            "type": "string",
+            "description": "Pipeline run that produced this edge (REC-PRV-01, Worker P Wave 4.1). Sourced from the active DecisionCapture instance's run_id. Always populated on new runs; legacy edges without this field still validate."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO 8601 UTC timestamp when the edge was emitted (REC-PRV-01, Worker P Wave 4.1). Equal to the artifact-level generated_at for a given run. Always populated on new runs; legacy edges without this field still validate."
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "IsAEvidence": {
+      "type": "object",
+      "description": "Evidence emitted by rule is_a_from_key_terms (Trainforge/rag/inference_rules/is_a_from_key_terms.py). Captures which chunk supplied the definition, the child term, a trimmed excerpt of the definition, and the regex pattern that matched. Wave 11 adds optional source_references[] (chunk-anchored provenance copied from the chunk's source.source_references[] when TRAINFORGE_SOURCE_PROVENANCE=true).",
+      "required": ["chunk_id", "term", "definition_excerpt", "pattern"],
+      "additionalProperties": false,
+      "properties": {
+        "chunk_id": {"type": "string"},
+        "term": {"type": "string"},
+        "definition_excerpt": {"type": "string"},
+        "pattern": {"type": "string"},
+        "source_references": {
+          "type": "array",
+          "items": {"$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json"},
+          "description": "Wave 11: optional array of DART/Courseforge source references copied from the originating chunk's source.source_references[]. Populated only when TRAINFORGE_SOURCE_PROVENANCE=true; absent on legacy corpora and when the source chunk carries no refs. Schema admits the field unconditionally so strict validators don't change behavior based on the flag."
+        }
+      }
+    },
+    "PrerequisiteEvidence": {
+      "type": "object",
+      "description": "Evidence emitted by rule prerequisite_from_lo_order (Trainforge/rag/inference_rules/prerequisite_from_lo_order.py). Records the first-LO skew that justified the directed prerequisite: the (source, target) concept pair's earliest LO id + positional index in course.learning_outcomes.",
+      "required": ["target_first_lo", "target_first_lo_position", "source_first_lo", "source_first_lo_position"],
+      "additionalProperties": false,
+      "properties": {
+        "target_first_lo": {"type": "string"},
+        "target_first_lo_position": {"type": "integer", "minimum": 0},
+        "source_first_lo": {"type": "string"},
+        "source_first_lo_position": {"type": "integer", "minimum": 0}
+      }
+    },
+    "RelatedEvidence": {
+      "type": "object",
+      "description": "Evidence emitted by rule related_from_cooccurrence (Trainforge/rag/inference_rules/related_from_cooccurrence.py). Records the co-occurrence weight that cleared the configurable threshold.",
+      "required": ["cooccurrence_weight", "threshold"],
+      "additionalProperties": false,
+      "properties": {
+        "cooccurrence_weight": {"type": "integer", "minimum": 0},
+        "threshold": {"type": "integer", "minimum": 0}
+      }
+    },
+    "AssessesEvidence": {
+      "type": "object",
+      "description": "Evidence emitted by rule assesses_from_question_lo (Trainforge/rag/inference_rules/assesses_from_question_lo.py). Materializes the explicit question->LO reference; optional source_chunk_id when the question carries a chunk pointer. Wave 11 adds optional source_references[] (copied from the referenced chunk's source.source_references[] when TRAINFORGE_SOURCE_PROVENANCE=true and source_chunk_id resolves to a chunk).",
+      "required": ["question_id", "objective_id"],
+      "additionalProperties": false,
+      "properties": {
+        "question_id": {"type": "string"},
+        "objective_id": {"type": "string"},
+        "source_chunk_id": {"type": "string"},
+        "source_references": {
+          "type": "array",
+          "items": {"$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json"},
+          "description": "Wave 11: optional array of DART/Courseforge source references copied from the referenced chunk's source.source_references[]. Populated only when TRAINFORGE_SOURCE_PROVENANCE=true, source_chunk_id is set, and the resolved chunk carries refs."
+        }
+      }
+    },
+    "ExemplifiesEvidence": {
+      "type": "object",
+      "description": "Evidence emitted by rule exemplifies_from_example_chunks (Trainforge/rag/inference_rules/exemplifies_from_example_chunks.py). content_type discriminates which signal fired: 'content_type_label' (JSON-LD / data-cf-content-type) or 'chunk_type' (structural classification). Wave 11 adds optional source_references[] (copied from the example chunk's source.source_references[] when TRAINFORGE_SOURCE_PROVENANCE=true).",
+      "required": ["chunk_id", "concept_slug", "content_type"],
+      "additionalProperties": false,
+      "properties": {
+        "chunk_id": {"type": "string"},
+        "concept_slug": {"type": "string"},
+        "content_type": {"type": "string", "enum": ["content_type_label", "chunk_type"]},
+        "source_references": {
+          "type": "array",
+          "items": {"$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json"},
+          "description": "Wave 11: optional array of DART/Courseforge source references copied from the originating chunk's source.source_references[]. Populated only when TRAINFORGE_SOURCE_PROVENANCE=true."
+        }
+      }
+    },
+    "MisconceptionOfEvidence": {
+      "type": "object",
+      "description": "Evidence emitted by rule misconception_of_from_misconception_ref (Trainforge/rag/inference_rules/misconception_of_from_misconception_ref.py). Materializes the explicit misconception->concept pointer from the first-class Misconception entity.",
+      "required": ["misconception_id", "concept_id"],
+      "additionalProperties": false,
+      "properties": {
+        "misconception_id": {"type": "string"},
+        "concept_id": {"type": "string"}
+      }
+    },
+    "DerivedFromObjectiveEvidence": {
+      "type": "object",
+      "description": "Evidence emitted by rule derived_from_lo_ref (Trainforge/rag/inference_rules/derived_from_lo_ref.py). Materializes the chunk->LO reference that already exists on the chunk via learning_outcome_refs. Wave 11 adds optional source_references[] (copied from the chunk's source.source_references[] when TRAINFORGE_SOURCE_PROVENANCE=true).",
+      "required": ["chunk_id", "objective_id"],
+      "additionalProperties": false,
+      "properties": {
+        "chunk_id": {"type": "string"},
+        "objective_id": {"type": "string"},
+        "source_references": {
+          "type": "array",
+          "items": {"$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json"},
+          "description": "Wave 11: optional array of DART/Courseforge source references copied from the originating chunk's source.source_references[]. Populated only when TRAINFORGE_SOURCE_PROVENANCE=true."
+        }
+      }
+    },
+    "DefinedByEvidence": {
+      "type": "object",
+      "description": "Evidence emitted by rule defined_by_from_first_mention (Trainforge/rag/inference_rules/defined_by_from_first_mention.py). first_mention_position is always 0 (the first entry after sort-ASC on occurrences[]) — emitted for forward-compat in case the rule later supports non-first picks. Wave 11 adds optional source_references[] (copied from the first-mention chunk's source.source_references[] when TRAINFORGE_SOURCE_PROVENANCE=true).",
+      "required": ["chunk_id", "concept_slug", "first_mention_position"],
+      "additionalProperties": false,
+      "properties": {
+        "chunk_id": {"type": "string"},
+        "concept_slug": {"type": "string"},
+        "first_mention_position": {"type": "integer", "minimum": 0},
+        "source_references": {
+          "type": "array",
+          "items": {"$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json"},
+          "description": "Wave 11: optional array of DART/Courseforge source references copied from the first-mention chunk's source.source_references[]. Populated only when TRAINFORGE_SOURCE_PROVENANCE=true and the chunks list is available for lookup."
+        }
+      }
+    },
+    "IsAProvenance": {
+      "type": "object",
+      "description": "Provenance arm for edges emitted by rule is_a_from_key_terms. Binds rule const + versioned evidence shape.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "is_a_from_key_terms"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/IsAEvidence"}
+      }
+    },
+    "PrerequisiteProvenance": {
+      "type": "object",
+      "description": "Provenance arm for edges emitted by rule prerequisite_from_lo_order.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "prerequisite_from_lo_order"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/PrerequisiteEvidence"}
+      }
+    },
+    "RelatedProvenance": {
+      "type": "object",
+      "description": "Provenance arm for edges emitted by rule related_from_cooccurrence.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "related_from_cooccurrence"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/RelatedEvidence"}
+      }
+    },
+    "AssessesProvenance": {
+      "type": "object",
+      "description": "Provenance arm for edges emitted by rule assesses_from_question_lo.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "assesses_from_question_lo"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/AssessesEvidence"}
+      }
+    },
+    "ExemplifiesProvenance": {
+      "type": "object",
+      "description": "Provenance arm for edges emitted by rule exemplifies_from_example_chunks.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "exemplifies_from_example_chunks"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/ExemplifiesEvidence"}
+      }
+    },
+    "MisconceptionOfProvenance": {
+      "type": "object",
+      "description": "Provenance arm for edges emitted by rule misconception_of_from_misconception_ref.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "misconception_of_from_misconception_ref"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/MisconceptionOfEvidence"}
+      }
+    },
+    "DerivedFromObjectiveProvenance": {
+      "type": "object",
+      "description": "Provenance arm for edges emitted by rule derived_from_lo_ref.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "derived_from_lo_ref"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/DerivedFromObjectiveEvidence"}
+      }
+    },
+    "DefinedByProvenance": {
+      "type": "object",
+      "description": "Provenance arm for edges emitted by rule defined_by_from_first_mention.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "defined_by_from_first_mention"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/DefinedByEvidence"}
+      }
+    },
+    "FallbackProvenance": {
+      "type": "object",
+      "description": "Lenient fallback arm of the provenance oneOf. Matches any edge whose rule is NOT one of the 8 modeled rules (mutually exclusive by the `not:enum` discriminator). Evidence may be absent or any shape — preserving backward-compat with legacy graphs and with future rules not yet modeled as a specific $def. Strip this arm from the oneOf when strict validation is required (see lib/validators/evidence.py::get_schema(strict=True) or TRAINFORGE_STRICT_EVIDENCE=true). The strict-stripped schema then rejects any edge whose rule is unknown OR whose evidence shape drifts from its modeled $def.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {
+          "type": "string",
+          "not": {
+            "enum": [
+              "is_a_from_key_terms",
+              "prerequisite_from_lo_order",
+              "related_from_cooccurrence",
+              "assesses_from_question_lo",
+              "exemplifies_from_example_chunks",
+              "misconception_of_from_misconception_ref",
+              "derived_from_lo_ref",
+              "defined_by_from_first_mention"
+            ]
+          }
+        },
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"type": "object", "additionalProperties": true}
+      }
+    }
+  }
+}

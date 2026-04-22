@@ -2,7 +2,7 @@
 """
 PDF Accessibility Converter - Convenience CLI Script
 
-Convert PDF documents to WCAG 2.1 AA compliant accessible HTML.
+Convert PDF documents to WCAG 2.2 AA compliant accessible HTML.
 
 Usage:
     python convert.py input.pdf [options]

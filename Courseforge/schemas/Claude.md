@@ -24,11 +24,8 @@ Assessment integration schemas for native Brightspace tools:
 - Discussion forum configuration schemas
 - Gradebook integration specifications
 
-### `/accessibility/`
-WCAG 2.2 AA compliance schemas and validation rules:
-- Accessibility markup requirements
-- Screen reader compatibility specifications
-- Keyboard navigation standards
+### Accessibility (migrated)
+WCAG 2.2 AA compliance schemas now live at `/schemas/compliance/wcag22_compliance.schema.json` in the unified project-root schema tree. Accessibility markup requirements, screen reader compatibility specifications, and keyboard navigation standards are validated via that canonical location.
 
 ## Usage Guidelines
 

@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Set
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
+from lib.validators.bloom import detect_bloom_level
 
 ASSESSMENT_PLACEHOLDER_PATTERNS = [
     re.compile(r"Correct answer based on content", re.IGNORECASE),
@@ -44,11 +45,49 @@ ASSESSMENT_PLACEHOLDER_PATTERNS = [
 ]
 
 
+# Wave 26 real-failure-mode thresholds
+STEM_DIVERSITY_THRESHOLD = 0.7
+CORRECT_ANSWER_DIVERSITY_THRESHOLD = 0.6
+DISTRACTOR_TEMPLATE_MAX_RATIO = 0.30
+# TOC fragment: three standalone integers inline ("1.1 Something 14 1.7 ...")
+_TOC_THREE_INTS_RE = re.compile(r"\b\d+\b\s+\S+.*\b\d+\b.*\b\d+\b", re.DOTALL)
+_CHAPTER_HEADING_RE = re.compile(r"\b\d+\.\d+\b")
+_INTEGER_TOKEN_RE = re.compile(r"\b\d+\b")
+
+
+def _strip_html_text(s: str) -> str:
+    """Helper: strip HTML tags and normalize whitespace."""
+    if not s:
+        return ""
+    return re.sub(r"<[^>]+>", "", s).strip()
+
+
+def _looks_like_toc_fragment(answer_text: str) -> bool:
+    """Return True if answer_text looks like a raw TOC fragment.
+
+    Matches when the string contains either:
+      - Three standalone integers inline (page numbers), OR
+      - Is > 500 chars AND has >= 3 integers AND >= 2 dotted-numeric
+        headings like ``1.1`` / ``4.2``.
+    """
+    if not answer_text:
+        return False
+    text = _strip_html_text(answer_text)
+    if _TOC_THREE_INTS_RE.search(text):
+        return True
+    if len(text) > 500:
+        int_count = len(_INTEGER_TOKEN_RE.findall(text))
+        heading_count = len(_CHAPTER_HEADING_RE.findall(text))
+        if int_count >= 3 and heading_count >= 2:
+            return True
+    return False
+
+
 class AssessmentQualityValidator:
     """Validates individual assessment quality."""
 
     name = "assessment_quality"
-    version = "1.1.0"
+    version = "1.2.0"
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         """Validate assessment quality.
@@ -100,9 +139,12 @@ class AssessmentQualityValidator:
 
         questions = data["questions"]
 
-        # Check each question
+        # Check each question (per-question issues)
         for q in questions:
             issues.extend(self._check_question(q))
+
+        # Wave 26: cross-question real-failure-mode checks
+        issues.extend(self._check_cross_question_failures(questions))
 
         # Check objective coverage
         target_objectives = inputs.get("learning_objectives", [])
@@ -111,16 +153,21 @@ class AssessmentQualityValidator:
                 self._check_objective_coverage(questions, target_objectives)
             )
 
-        # Compute score
+        # Compute score. Critical issues (Wave 26) hard-fail the gate and
+        # deduct the most aggressively; legacy "error" severity remains for
+        # placeholder regex hits to preserve back-compat score behavior.
+        critical_count = sum(1 for i in issues if i.severity == "critical")
         error_count = sum(1 for i in issues if i.severity == "error")
         warning_count = sum(1 for i in issues if i.severity == "warning")
         score = max(
             0.0,
             1.0
+            - critical_count * 0.15
             - error_count * 0.15
             - warning_count * 0.05,
         )
-        passed = score >= min_score
+        # Wave 26: any critical flips passed to False regardless of score.
+        passed = score >= min_score and critical_count == 0
 
         return GateResult(
             gate_id=gate_id,
@@ -210,6 +257,46 @@ class AssessmentQualityValidator:
                     )
                     break
 
+        # Wave 26: TOC-fragment correct answer check (critical). Applies to
+        # correct_answer (fill-in-blank / T/F) AND to any MCQ choice flagged
+        # is_correct. Catches raw TOC text like
+        # "1.1 Structural changes in the economy 14 1.7 From the periphery".
+        candidates: List[str] = []
+        if correct_answer:
+            candidates.append(correct_answer)
+        for c in q.get("choices", []):
+            if c.get("is_correct"):
+                candidates.append(_strip_html_text(c.get("text", "")))
+        for cand in candidates:
+            if _looks_like_toc_fragment(cand):
+                issues.append(
+                    GateIssue(
+                        severity="critical",
+                        code="TOC_FRAGMENT_ANSWER",
+                        message=(
+                            f"{q_id}: correct answer looks like a raw TOC "
+                            f"fragment (page numbers + chapter headings): "
+                            f"'{cand[:120]}{'...' if len(cand) > 120 else ''}'"
+                        ),
+                    )
+                )
+                break
+
+        # Wave 26: verb-less stem (warning). T/F questions are allowed one
+        # verb-less stem per-assessment — the cross-question pass enforces
+        # that cap. Here we just record the finding per question.
+        if text and detect_bloom_level(text) is None:
+            issues.append(
+                GateIssue(
+                    severity="warning",
+                    code="VERB_LESS_STEM",
+                    message=(
+                        f"{q_id}: stem has no detectable Bloom verb: "
+                        f"'{text[:80]}{'...' if len(text) > 80 else ''}'"
+                    ),
+                )
+            )
+
         # Check for placeholder in feedback
         feedback = re.sub(r"<[^>]+>", "", q.get("feedback", "")).strip()
         if feedback:
@@ -223,6 +310,151 @@ class AssessmentQualityValidator:
                         )
                     )
                     break
+
+        return issues
+
+    def _check_cross_question_failures(
+        self, questions: List[Dict[str, Any]]
+    ) -> List[GateIssue]:
+        """Wave 26: cross-question real-failure-mode checks.
+
+        Emits critical issues for:
+          - LOW_STEM_DIVERSITY: distinct stem ratio < STEM_DIVERSITY_THRESHOLD
+          - LOW_ANSWER_DIVERSITY: distinct correct-answer ratio
+            < CORRECT_ANSWER_DIVERSITY_THRESHOLD
+          - TEMPLATED_DISTRACTORS: a single distractor string appears on
+            >= 30% of questions
+
+        The per-question VERB_LESS_STEM warnings are capped at 1 per
+        assessment (allowing a single T/F-style verb-less stem); anything
+        above the cap is escalated here.
+        """
+        issues: List[GateIssue] = []
+        total = len(questions)
+        if total == 0:
+            return issues
+
+        # 1. Distinct-stem ratio
+        stems = []
+        for q in questions:
+            s = _strip_html_text(q.get("stem", "")).lower()
+            if s:
+                stems.append(s)
+        if stems:
+            distinct_ratio = len(set(stems)) / len(stems)
+            if distinct_ratio < STEM_DIVERSITY_THRESHOLD:
+                issues.append(
+                    GateIssue(
+                        severity="critical",
+                        code="LOW_STEM_DIVERSITY",
+                        message=(
+                            f"Distinct stem ratio {distinct_ratio:.2f} "
+                            f"below threshold {STEM_DIVERSITY_THRESHOLD} "
+                            f"({len(set(stems))}/{len(stems)} unique)"
+                        ),
+                    )
+                )
+
+        # 2. Distinct correct-answer ratio
+        correct_answers: List[str] = []
+        for q in questions:
+            ca = q.get("correct_answer")
+            if ca:
+                correct_answers.append(_strip_html_text(ca).lower())
+                continue
+            for c in q.get("choices", []):
+                if c.get("is_correct"):
+                    correct_answers.append(
+                        _strip_html_text(c.get("text", "")).lower()
+                    )
+                    break
+        if correct_answers:
+            distinct_answer_ratio = (
+                len(set(correct_answers)) / len(correct_answers)
+            )
+            if distinct_answer_ratio < CORRECT_ANSWER_DIVERSITY_THRESHOLD:
+                issues.append(
+                    GateIssue(
+                        severity="critical",
+                        code="LOW_ANSWER_DIVERSITY",
+                        message=(
+                            f"Distinct correct-answer ratio "
+                            f"{distinct_answer_ratio:.2f} below threshold "
+                            f"{CORRECT_ANSWER_DIVERSITY_THRESHOLD} "
+                            f"({len(set(correct_answers))}/"
+                            f"{len(correct_answers)} unique)"
+                        ),
+                    )
+                )
+
+        # 3. Templated distractors: any single distractor appearing on
+        # >= 30% of questions is a template leak.
+        distractor_counts: Counter = Counter()
+        q_has_distractor: Counter = Counter()
+        for q in questions:
+            seen_in_q: Set[str] = set()
+            for c in q.get("choices", []):
+                if c.get("is_correct"):
+                    continue
+                d = _strip_html_text(c.get("text", "")).lower()
+                if d and d not in seen_in_q:
+                    seen_in_q.add(d)
+                    distractor_counts[d] += 1
+            for d in seen_in_q:
+                q_has_distractor[d] += 1
+        # We count per-question occurrences (q_has_distractor) so a
+        # distractor repeated within the same question only counts once.
+        questions_with_choices = sum(
+            1 for q in questions if q.get("choices")
+        )
+        if questions_with_choices > 0:
+            threshold = DISTRACTOR_TEMPLATE_MAX_RATIO * questions_with_choices
+            for template_text, occurrences in q_has_distractor.items():
+                if occurrences >= threshold and occurrences >= 2:
+                    ratio = occurrences / questions_with_choices
+                    issues.append(
+                        GateIssue(
+                            severity="critical",
+                            code="TEMPLATED_DISTRACTORS",
+                            message=(
+                                f"Distractor template repeated on "
+                                f"{occurrences}/{questions_with_choices} "
+                                f"({ratio:.0%}) of questions: "
+                                f"'{template_text[:80]}"
+                                f"{'...' if len(template_text) > 80 else ''}'"
+                            ),
+                        )
+                    )
+
+        # 4. Verb-less cap: allow at most one verb-less stem per assessment
+        # (T/F exception). Escalate the rest if needed.
+        verbless_q_ids: List[str] = []
+        tf_verbless_q_ids: List[str] = []
+        for q in questions:
+            s = _strip_html_text(q.get("stem", ""))
+            if not s:
+                continue
+            if detect_bloom_level(s) is None:
+                q_id = q.get("question_id", "unknown")
+                if q.get("question_type") == "true_false":
+                    tf_verbless_q_ids.append(q_id)
+                else:
+                    verbless_q_ids.append(q_id)
+        # Allow a single exception total. If both T/F-verbless and
+        # non-T/F-verbless exist beyond the budget, escalate a critical.
+        total_verbless = len(verbless_q_ids) + len(tf_verbless_q_ids)
+        if total_verbless > 1 and len(verbless_q_ids) >= 1:
+            issues.append(
+                GateIssue(
+                    severity="critical",
+                    code="PERVASIVE_VERBLESS_STEMS",
+                    message=(
+                        f"{total_verbless} questions have verb-less stems "
+                        f"(of {total} total). Single-exception rule "
+                        f"exhausted."
+                    ),
+                )
+            )
 
         return issues
 

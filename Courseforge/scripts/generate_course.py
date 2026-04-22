@@ -12,28 +12,141 @@ and Courseforge HTML templates. Each week produces:
   - discussion.html (forum prompt with guidelines)
 
 Usage:
-    python generate_course.py DIGPED_101_course_data.json output_dir/
+    python generate_course.py SAMPLE_101_course_data.json output_dir/
 """
 
+import argparse
 import html as html_mod
 import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+# Ensure project root is importable so lib.ontology.bloom resolves when
+# this script is invoked from inside Courseforge/scripts/.
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from lib.ontology.bloom import get_verbs_list as _get_canonical_verbs_list  # noqa: E402
+from lib.ontology.slugs import canonical_slug as _slugify  # noqa: E402
+from lib.ontology.taxonomy import validate_classification  # noqa: E402
+from lib.ontology.teaching_roles import map_role as _map_teaching_role  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Canonical-objectives loading & per-week LO resolution
+# ---------------------------------------------------------------------------
+#
+# The content-generation input (``<course>_course_data.json``) historically
+# invented week-local objective IDs like ``W07-CO-01`` on each week's page,
+# and those IDs were independently numbered ``01..04`` per week. Trainforge
+# strips the ``W0N-`` prefix when normalizing ``learning_outcome_refs``, so
+# every week's chunks collapsed onto the same four canonical IDs
+# (``CO-01..CO-04``) and 24 of 28 declared outcomes ended up uncovered.
+#
+# The canonical source of truth is the ``inputs/exam-objectives/`` JSON
+# (Terminal Objectives ``TO-*`` plus per-chapter Chapter Objectives
+# ``CO-*`` grouped by ``chapter`` strings like ``"Week 3-4: Visual Design"``).
+# When a caller passes ``--objectives <path>`` to ``generate_course.py`` we
+# replace each week's objectives with the canonical subset for that week:
+# every Terminal Objective plus every Chapter Objective whose chapter-range
+# covers the week. The emitted JSON-LD then references globally-unique,
+# canonical IDs that Trainforge can resolve against ``course.json``.
+
+_WEEK_RANGE_RE = re.compile(r"[Ww]eek\s+(\d+)(?:\s*-\s*(\d+))?")
+
+
+def _co_to_generator_format(co: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a canonical objective dict (from the objectives JSON) to the
+    shape this script's renderers consume.
+
+    The objectives JSON uses ``bloomLevel`` (camelCase); the renderer expects
+    ``bloom_level`` (snake_case). ``key_concepts`` is left untouched.
+    """
+    out: Dict[str, Any] = {
+        "id": co["id"],
+        "statement": co["statement"],
+    }
+    bloom = co.get("bloomLevel") or co.get("bloom_level")
+    if bloom:
+        out["bloom_level"] = bloom
+    verb = co.get("bloomVerb") or co.get("bloom_verb")
+    if verb:
+        out["bloom_verb"] = verb
+    key_concepts = co.get("keyConcepts") or co.get("key_concepts")
+    if key_concepts:
+        out["key_concepts"] = key_concepts
+    prereqs = co.get("prerequisiteObjectives") or co.get("prerequisite_objectives")
+    if prereqs:
+        out["prerequisite_objectives"] = prereqs
+    return out
+
+
+def load_canonical_objectives(objectives_path: Path) -> Dict[str, Any]:
+    """Load the canonical objectives JSON (e.g. ``SAMPLE_101_objectives.json``)
+    and return a structure keyed for per-week LO resolution.
+
+    Returns a dict with keys:
+        ``terminal_objectives``: list of TO dicts in generator format.
+        ``week_to_chapter_objectives``: ``{int week_num: [CO dicts]}``.
+
+    Chapter mapping uses the same regex Trainforge uses in
+    ``Trainforge.process_course.load_objectives`` so the two stay in sync.
+    """
+    with open(objectives_path) as f:
+        data = json.load(f)
+
+    terminal = [_co_to_generator_format(o) for o in data.get("terminal_objectives", [])]
+
+    week_to_cos: Dict[int, List[Dict[str, Any]]] = {}
+    for chapter in data.get("chapter_objectives", []):
+        chapter_name = chapter.get("chapter", "")
+        m = _WEEK_RANGE_RE.search(chapter_name)
+        if not m:
+            continue
+        start = int(m.group(1))
+        end = int(m.group(2)) if m.group(2) else start
+        cos = [_co_to_generator_format(o) for o in chapter.get("objectives", [])]
+        for w in range(start, end + 1):
+            week_to_cos.setdefault(w, []).extend(cos)
+
+    return {
+        "terminal_objectives": terminal,
+        "week_to_chapter_objectives": week_to_cos,
+    }
+
+
+def resolve_week_objectives(
+    week_num: int, canonical: Dict[str, Any]
+) -> List[Dict[str, Any]]:
+    """Return the canonical LO list (TOs plus week-specific COs) for a week.
+
+    If no chapter objectives cover ``week_num`` (e.g. course-overview pages
+    keyed at ``week_num=0`` or a gap between declared chapters) we return
+    only the terminal objectives, which always apply across the course.
+    """
+    terminal = canonical.get("terminal_objectives", []) or []
+    chapter_cos = canonical.get("week_to_chapter_objectives", {}).get(week_num, []) or []
+    # Preserve order (TOs first, then COs) and deduplicate by ID in case a
+    # CO appears in more than one chapter range.
+    seen: set = set()
+    result: List[Dict[str, Any]] = []
+    for o in list(terminal) + list(chapter_cos):
+        if o["id"] in seen:
+            continue
+        seen.add(o["id"])
+        result.append(o)
+    return result
 
 # ---------------------------------------------------------------------------
 # Bloom's taxonomy detection
 # ---------------------------------------------------------------------------
 
-BLOOM_VERBS: Dict[str, List[str]] = {
-    "remember": ["define", "list", "recall", "identify", "recognize", "name", "state"],
-    "understand": ["explain", "describe", "summarize", "interpret", "classify", "compare"],
-    "apply": ["apply", "demonstrate", "implement", "solve", "use", "execute"],
-    "analyze": ["analyze", "differentiate", "examine", "compare", "contrast", "organize"],
-    "evaluate": ["evaluate", "assess", "critique", "judge", "justify", "argue"],
-    "create": ["create", "design", "develop", "construct", "produce", "formulate"],
-}
+# Source of truth: schemas/taxonomies/bloom_verbs.json (loaded via
+# lib.ontology.bloom). Migrated in Wave 1.2 / Worker H (REC-BL-01).
+BLOOM_VERBS: Dict[str, List[str]] = _get_canonical_verbs_list()
 
 # Cognitive domain inference from content type / Bloom's level
 BLOOM_TO_DOMAIN: Dict[str, str] = {
@@ -59,10 +172,9 @@ def detect_bloom_level(objective_text: str) -> Tuple[Optional[str], Optional[str
     return None, None
 
 
-def _slugify(text: str) -> str:
-    """Convert text to a lowercase-hyphenated slug."""
-    slug = re.sub(r"[^a-z0-9\s-]", "", text.lower())
-    return re.sub(r"\s+", "-", slug).strip("-")
+# `_slugify` is imported at the top of the module from
+# ``lib.ontology.slugs.canonical_slug`` per REC-ID-03 (Wave 4, Worker Q). The
+# alias preserves the local callers' ``_slugify(...)`` spelling.
 
 
 # ---------------------------------------------------------------------------
@@ -179,24 +291,56 @@ def _wrap_page(title: str, course_code: str, week_num: int, body_html: str,
   <style>{COURSEFORGE_CSS}</style>{json_ld}
 </head>
 <body>
-  <a href="#main-content" class="skip-link">Skip to main content</a>
-  <header role="banner">
-    <p>{course_code}: Foundations of Digital Pedagogy &mdash; Week {week_num}</p>
+  <a href="#main-content" class="skip-link" data-cf-role="template-chrome">Skip to main content</a>
+  <header role="banner" data-cf-role="template-chrome">
+    <p>{course_code} &mdash; Week {week_num}</p>
   </header>
   <main id="main-content" role="main">
     <h1>{safe_title}</h1>
 {body_html}
   </main>
-  <footer role="contentinfo">
-    <p>&copy; 2026 {course_code}: Foundations of Digital Pedagogy. All rights reserved.</p>
+  <footer role="contentinfo" data-cf-role="template-chrome">
+    <p>&copy; 2026 {course_code}. All rights reserved.</p>
   </footer>
 {extra_js}
 </body>
 </html>"""
 
 
-def _render_objectives(objectives: List[Dict]) -> str:
-    """Render a learning objectives box with data-cf-* metadata attributes."""
+def _source_attr_string(
+    source_ids: Optional[List[str]],
+    source_primary: Optional[str] = None,
+) -> str:
+    """Render the ``data-cf-source-ids`` / ``data-cf-source-primary`` attrs.
+
+    Wave 9 source-provenance emit surface (P2 decision: section / heading /
+    component wrappers only; no per-``<p>`` / ``<li>`` / ``<tr>`` bloat).
+    Callers pass the sourceId list for the enclosing element; an empty or
+    None list produces an empty string so the renderer stays identical to
+    legacy behavior for non-textbook workflows.
+    """
+    if not source_ids:
+        return ""
+    joined = ",".join(html_mod.escape(sid) for sid in source_ids if sid)
+    out = f' data-cf-source-ids="{joined}"'
+    if source_primary:
+        out += f' data-cf-source-primary="{html_mod.escape(source_primary)}"'
+    return out
+
+
+def _render_objectives(
+    objectives: List[Dict],
+    *,
+    source_ids: Optional[List[str]] = None,
+    source_primary: Optional[str] = None,
+) -> str:
+    """Render a learning objectives box with data-cf-* metadata attributes.
+
+    Wave 9: when ``source_ids`` is non-empty, the enclosing
+    ``.objectives`` wrapper carries ``data-cf-source-ids`` (and optionally
+    ``data-cf-source-primary``) so downstream consumers can tie the block
+    back to a DART source region.
+    """
     items = []
     for o in objectives:
         bloom_level = o.get("bloom_level")
@@ -215,9 +359,9 @@ def _render_objectives(objectives: List[Dict]) -> str:
             f'      <li{attrs}><strong>{o["id"]}:</strong> {html_mod.escape(o["statement"])}</li>'
         )
     items_html = "\n".join(items)
+    wrapper_source_attrs = _source_attr_string(source_ids, source_primary)
     return f"""
-    <div class="objectives" role="region" aria-label="Learning Objectives"
-         data-cf-objectives-count="{len(objectives)}">
+    <div class="objectives" role="region" aria-label="Learning Objectives"{wrapper_source_attrs}>
       <h2>Learning Objectives</h2>
       <p>After completing this module, you will be able to:</p>
       <ul>
@@ -228,6 +372,9 @@ def _render_objectives(objectives: List[Dict]) -> str:
 
 def _render_flip_cards(terms: List[Dict]) -> str:
     """Render a grid of flip cards for key terms with data-cf-* metadata."""
+    # REC-VOC-02: deterministic teaching_role from (component, purpose) pair.
+    fc_role = _map_teaching_role("flip-card", "term-definition")
+    fc_role_attr = f' data-cf-teaching-role="{fc_role}"' if fc_role else ""
     cards = []
     for _i, t in enumerate(terms):
         front = html_mod.escape(t["term"])
@@ -235,7 +382,7 @@ def _render_flip_cards(terms: List[Dict]) -> str:
         term_slug = _slugify(t["term"])
         cards.append(f"""
       <div class="flip-card" tabindex="0" role="button" aria-label="Flip card: {front}"
-           data-cf-component="flip-card" data-cf-purpose="term-definition"
+           data-cf-component="flip-card" data-cf-purpose="term-definition"{fc_role_attr}
            data-cf-term="{term_slug}">
         <div class="flip-card-inner">
           <div class="flip-card-front">{front}</div>
@@ -245,8 +392,19 @@ def _render_flip_cards(terms: List[Dict]) -> str:
     return f'    <div class="flip-card-grid">{"".join(cards)}\n    </div>'
 
 
-def _render_self_check(questions: List[Dict]) -> str:
-    """Render self-check quiz questions with JS feedback and data-cf-* metadata."""
+def _render_self_check(
+    questions: List[Dict],
+    *,
+    source_ids: Optional[List[str]] = None,
+    source_primary: Optional[str] = None,
+) -> str:
+    """Render self-check quiz questions with JS feedback and data-cf-* metadata.
+
+    Wave 9: each ``.self-check`` wrapper carries ``data-cf-source-ids``
+    derived from the per-question ``source_references`` when declared, or
+    the page-level ``source_ids`` otherwise. Emit happens at the wrapper
+    level only (P2 decision).
+    """
     blocks = []
     for i, q in enumerate(questions, 1):
         opts = []
@@ -263,12 +421,24 @@ def _render_self_check(questions: List[Dict]) -> str:
         # Build data-cf-* attributes for the self-check
         bloom = q.get("bloom_level", "remember")
         obj_ref = q.get("objective_ref", "")
+        # REC-VOC-02: deterministic teaching_role from (component, purpose) pair.
+        sc_role = _map_teaching_role("self-check", "formative-assessment")
+        sc_role_attr = f' data-cf-teaching-role="{sc_role}"' if sc_role else ""
         sc_attrs = (
             f' data-cf-component="self-check" data-cf-purpose="formative-assessment"'
+            f'{sc_role_attr}'
             f' data-cf-bloom-level="{bloom}"'
         )
         if obj_ref:
             sc_attrs += f' data-cf-objective-ref="{html_mod.escape(obj_ref)}"'
+        q_refs = q.get("source_references")
+        if q_refs:
+            q_ids = _refs_to_id_list(q_refs)
+            q_primary = _refs_primary(q_refs)
+        else:
+            q_ids = source_ids
+            q_primary = source_primary
+        sc_attrs += _source_attr_string(q_ids, q_primary)
         blocks.append(f"""
     <div class="self-check"{sc_attrs}>
       <h3>Question {i}</h3>
@@ -298,8 +468,21 @@ def _infer_content_type(section: Dict) -> str:
     return "explanation"
 
 
-def _render_content_sections(sections: List[Dict]) -> str:
-    """Render content sections with h2/h3 headings, data-cf-* metadata, and paragraphs."""
+def _render_content_sections(
+    sections: List[Dict],
+    *,
+    source_ids: Optional[List[str]] = None,
+    source_primary: Optional[str] = None,
+) -> str:
+    """Render content sections with h2/h3 headings, data-cf-* metadata, and paragraphs.
+
+    Wave 9 source-provenance (P2 decision): when a per-section source
+    override is declared on ``section["source_references"]`` (list of
+    SourceReference dicts), that section's heading carries its own
+    ``data-cf-source-ids``. Otherwise the page-level ``source_ids`` are
+    used for every heading that doesn't override. Never emitted on
+    per-``<p>`` / ``<li>`` / ``<tr>`` children.
+    """
     parts = []
     for section in sections:
         heading = html_mod.escape(section["heading"])
@@ -319,6 +502,30 @@ def _render_content_sections(sections: List[Dict]) -> str:
         if bloom_range:
             h_attrs += f' data-cf-bloom-range="{bloom_range}"'
 
+        # Wave 9: per-section source override takes precedence over
+        # page-level ids. Falls back to page ids when the section doesn't
+        # declare its own mapping.
+        section_refs = section.get("source_references")
+        if section_refs:
+            section_ids = _refs_to_id_list(section_refs)
+            section_primary = _refs_primary(section_refs)
+        else:
+            section_ids = source_ids
+            section_primary = source_primary
+        section_attrs = _source_attr_string(section_ids, section_primary)
+        h_attrs += section_attrs
+
+        # Wave 35: wrap every h2/h3 + paragraph group in a <section>
+        # carrying the same data-cf-source-ids so
+        # :class:`ContentGroundingValidator` can walk each <p>'s
+        # ancestors to find the grounding attribute. Pre-Wave-35 the
+        # attribute lived only on the <h2>, which is a sibling of the
+        # <p> in the DOM — validator's ancestor walk missed it and
+        # flagged every body paragraph as ungrounded. Section-wrapping
+        # preserves the Wave 9 invariant (attributes live on section /
+        # heading / component wrappers, never on raw <p>/<li>/<tr>).
+        if section_attrs:
+            parts.append(f"    <section{section_attrs}>")
         parts.append(f"    <{tag}{h_attrs}>{heading}</{tag}>")
         for para in section.get("paragraphs", []):
             # Apply key-term markup
@@ -367,21 +574,49 @@ def _render_content_sections(sections: List[Dict]) -> str:
                     "".join(f"<td>{cell}</td>" for cell in row) +
                     "</tr>")
             parts.append("      </tbody></table>")
+        # Wave 35: close the grounding <section> wrapper we may have
+        # opened above the heading. No-op when no source_refs were in
+        # play — pre-Wave-35 sections had no wrapper and we keep that
+        # back-compat for non-textbook workflows.
+        if section_attrs:
+            parts.append("    </section>")
     return "\n".join(parts)
 
 
-def _render_activities(activities: List[Dict]) -> str:
-    """Render activity cards with data-cf-* metadata."""
+def _render_activities(
+    activities: List[Dict],
+    *,
+    source_ids: Optional[List[str]] = None,
+    source_primary: Optional[str] = None,
+) -> str:
+    """Render activity cards with data-cf-* metadata.
+
+    Wave 9: per-activity ``source_references`` override the page-level
+    ``source_ids`` when present. Emit site is the ``.activity-card``
+    wrapper only (P2 decision).
+    """
     parts = []
+    # REC-VOC-02: deterministic teaching_role from (component, purpose) pair.
+    act_role = _map_teaching_role("activity", "practice")
+    act_role_attr = f' data-cf-teaching-role="{act_role}"' if act_role else ""
     for i, act in enumerate(activities, 1):
         bloom = act.get("bloom_level", "apply")
         obj_ref = act.get("objective_ref", "")
         act_attrs = (
             f' data-cf-component="activity" data-cf-purpose="practice"'
+            f'{act_role_attr}'
             f' data-cf-bloom-level="{bloom}"'
         )
         if obj_ref:
             act_attrs += f' data-cf-objective-ref="{html_mod.escape(obj_ref)}"'
+        act_refs = act.get("source_references")
+        if act_refs:
+            act_ids = _refs_to_id_list(act_refs)
+            act_primary = _refs_primary(act_refs)
+        else:
+            act_ids = source_ids
+            act_primary = source_primary
+        act_attrs += _source_attr_string(act_ids, act_primary)
         parts.append(f"""
     <div class="activity-card"{act_attrs}>
       <h3>Activity {i}: {html_mod.escape(act["title"])}</h3>
@@ -439,8 +674,46 @@ def _build_objectives_metadata(objectives: List[Dict]) -> List[Dict[str, Any]]:
     return result
 
 
+def _collect_section_roles(section: Dict) -> List[str]:
+    """Collect deterministic teachingRole values for components inside a section.
+
+    Walks the section's flip_cards / self_check / activities children (if
+    present) and maps each (component, purpose) pair via
+    `lib.ontology.teaching_roles.map_role`. Returns a sorted list (stable
+    for diff-friendly JSON-LD output). Empty list when no tagged
+    components are found.
+
+    Sections today commonly carry only ``flip_cards`` inline, but we
+    defensively handle ``self_check`` and ``activities`` so future
+    structural changes don't silently drop role coverage.
+    """
+    roles: Set[str] = set()
+    if section.get("flip_cards"):
+        r = _map_teaching_role("flip-card", "term-definition")
+        if r:
+            roles.add(r)
+    for _q in section.get("self_check", []) or []:
+        r = _map_teaching_role("self-check", "formative-assessment")
+        if r:
+            roles.add(r)
+            break  # one entry is enough to cover the section
+    for _a in section.get("activities", []) or []:
+        r = _map_teaching_role("activity", "practice")
+        if r:
+            roles.add(r)
+            break
+    return sorted(roles)
+
+
 def _build_sections_metadata(sections: List[Dict]) -> List[Dict[str, Any]]:
-    """Build structured section metadata for JSON-LD."""
+    """Build structured section metadata for JSON-LD.
+
+    Wave 9 addition (source provenance): each section may carry a
+    ``source_references`` key (list of
+    :class:`schemas/knowledge/source_reference.schema.json` SourceReference
+    objects). When present and non-empty, emitted as ``sourceReferences``
+    on the section entry. Absent / empty → elided for backward compat.
+    """
     result = []
     for section in sections:
         content_type = section.get("content_type") or _infer_content_type(section)
@@ -454,9 +727,18 @@ def _build_sections_metadata(sections: List[Dict]) -> List[Dict[str, Any]]:
                 {"term": t["term"], "definition": t["definition"]}
                 for t in section["flip_cards"]
             ]
+        # REC-VOC-02: deterministic teaching_role array collected from
+        # tagged components inside the section (stable, diff-friendly order).
+        teaching_roles = _collect_section_roles(section)
+        if teaching_roles:
+            entry["teachingRole"] = teaching_roles
         bloom_range = section.get("bloom_range")
         if bloom_range:
             entry["bloomRange"] = [bloom_range] if isinstance(bloom_range, str) else bloom_range
+        # Wave 9: section-level source attribution (override pattern).
+        section_refs = section.get("source_references")
+        if section_refs:
+            entry["sourceReferences"] = list(section_refs)
         result.append(entry)
     return result
 
@@ -467,8 +749,28 @@ def _build_page_metadata(
     sections: Optional[List[Dict]] = None,
     misconceptions: Optional[List[Dict]] = None,
     suggested_assessments: Optional[List[str]] = None,
+    classification: Optional[Dict] = None,
+    prerequisite_pages: Optional[List[str]] = None,
+    source_references: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    """Build the JSON-LD metadata dict for a single page."""
+    """Build the JSON-LD metadata dict for a single page.
+
+    Wave 2 additions (REC-TAX-01 + REC-JSL-02):
+      * ``classification``: when non-empty, the course-level taxonomy
+        block is inherited on every page's JSON-LD (``classification``
+        key). Validated upstream in :func:`generate_course`.
+      * ``prerequisite_pages``: when non-empty, emits the
+        ``prerequisitePages`` array matching
+        ``schemas/knowledge/courseforge_jsonld_v1.schema.json`` §58-62.
+
+    Wave 9 addition (source provenance):
+      * ``source_references``: optional list of SourceReference dicts
+        (per ``schemas/knowledge/source_reference.schema.json``). Emitted
+        as top-level ``sourceReferences`` when non-empty. Mirrors the
+        ``prerequisite_pages`` elision pattern — empty / None → key
+        omitted so the page still validates against the schema for
+        non-textbook workflows (course_generation).
+    """
     meta: Dict[str, Any] = {
         "@context": "https://ed4all.dev/ns/courseforge/v1",
         "@type": "CourseModule",
@@ -485,14 +787,181 @@ def _build_page_metadata(
         meta["misconceptions"] = misconceptions
     if suggested_assessments:
         meta["suggestedAssessmentTypes"] = suggested_assessments
+    if classification:
+        meta["classification"] = classification
+    if prerequisite_pages:
+        meta["prerequisitePages"] = list(prerequisite_pages)
+    if source_references:
+        meta["sourceReferences"] = list(source_references)
     return meta
 
 
-def generate_week(week_data: Dict, output_dir: Path, course_code: str):
-    """Generate all files for a single week."""
+def _refs_to_id_list(refs: Optional[List[Dict[str, Any]]]) -> List[str]:
+    """Return the sourceId list implied by a SourceReference array.
+
+    Shape matches ``schemas/knowledge/source_reference.schema.json``:
+    every entry has a ``sourceId`` key. Missing / malformed entries are
+    skipped silently — emit-side validation is the source-refs gate's
+    job, not the renderer's.
+    """
+    if not refs:
+        return []
+    ids: List[str] = []
+    for ref in refs:
+        if isinstance(ref, dict):
+            sid = ref.get("sourceId")
+            if isinstance(sid, str) and sid:
+                ids.append(sid)
+    return ids
+
+
+def _refs_primary(refs: Optional[List[Dict[str, Any]]]) -> Optional[str]:
+    """Return the single dominant sourceId when one exists.
+
+    A ref with ``role == "primary"`` wins; when multiple primaries exist
+    (or none) we return None so callers can skip the
+    ``data-cf-source-primary`` attribute. Keeps the attribute honest —
+    only emitted when routing produced an unambiguous dominant source.
+    """
+    if not refs:
+        return None
+    primary_ids = [
+        ref.get("sourceId")
+        for ref in refs
+        if isinstance(ref, dict)
+        and ref.get("role") == "primary"
+        and isinstance(ref.get("sourceId"), str)
+        and ref.get("sourceId")
+    ]
+    if len(primary_ids) == 1:
+        return primary_ids[0]
+    return None
+
+
+def _page_refs_for(
+    source_module_map: Optional[Dict[str, Dict[str, Dict[str, Any]]]],
+    week_num: int,
+    page_id: str,
+) -> Optional[List[Dict[str, Any]]]:
+    """Look up the SourceReference list for a given (week, page) pair.
+
+    ``source_module_map`` follows the Wave 9 shape emitted by the
+    ``source-router`` agent::
+
+        {
+          "week_03": {
+            "content_01": {
+              "primary":      ["dart:slug#s5_p2"],
+              "contributing": ["dart:slug#s4_p0"],
+              "confidence":   0.85
+            },
+            ...
+          }
+        }
+
+    The function normalizes the ``primary`` / ``contributing`` lists into
+    a SourceReference array. When the page is absent or the map is empty,
+    returns ``None`` so the renderer elides all source-ref output for
+    that page (backward-compat path).
+    """
+    if not source_module_map:
+        return None
+    week_key = f"week_{week_num:02d}"
+    week_entries = source_module_map.get(week_key)
+    if not isinstance(week_entries, dict):
+        return None
+    # Map may key by either the full page_id or a short key; prefer exact
+    # match on the emitted page_id, fall back to stripping the week prefix,
+    # then (Wave 35) to the short form with the slug suffix dropped so
+    # content_NN_the_skills_in_a_digital_age matches the router's
+    # content_NN entry.
+    entry = week_entries.get(page_id)
+    if entry is None:
+        short_key = page_id
+        prefix = f"week_{week_num:02d}_"
+        if short_key.startswith(prefix):
+            short_key = short_key[len(prefix):]
+        entry = week_entries.get(short_key)
+        if entry is None:
+            # Drop the slug suffix: content_NN_<slug> → content_NN.
+            slug_match = re.match(
+                r"^(content_\d{2}|overview|application|self_check|summary)(?:_.*)?$",
+                short_key,
+            )
+            if slug_match:
+                entry = week_entries.get(slug_match.group(1))
+        if entry is None and short_key.startswith("content_"):
+            # Wave 35: router only emits a single ``content_01`` entry
+            # per week; content_02..10 share the same DART source
+            # region. Fall back to content_01 so every generated
+            # content page inherits the week's grounding.
+            entry = week_entries.get("content_01")
+    if not isinstance(entry, dict):
+        return None
+
+    refs: List[Dict[str, Any]] = []
+    confidence = entry.get("confidence")
+    for sid in entry.get("primary") or []:
+        if isinstance(sid, str) and sid:
+            ref: Dict[str, Any] = {"sourceId": sid, "role": "primary"}
+            if isinstance(confidence, (int, float)):
+                ref["confidence"] = float(confidence)
+            refs.append(ref)
+    for sid in entry.get("contributing") or []:
+        if isinstance(sid, str) and sid:
+            ref = {"sourceId": sid, "role": "contributing"}
+            if isinstance(confidence, (int, float)):
+                ref["confidence"] = float(confidence)
+            refs.append(ref)
+    return refs or None
+
+
+def generate_week(
+    week_data: Dict,
+    output_dir: Path,
+    course_code: str,
+    canonical_objectives: Optional[Dict[str, Any]] = None,
+    classification: Optional[Dict] = None,
+    prerequisite_map: Optional[Dict[str, List[str]]] = None,
+    source_module_map: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
+):
+    """Generate all files for a single week.
+
+    When ``canonical_objectives`` is provided (from
+    :func:`load_canonical_objectives`), the week's ``objectives`` are
+    overridden with the canonical TOs plus the Chapter Objectives declared
+    for that week. This ensures emitted ``learningObjectives`` JSON-LD
+    references globally-unique canonical IDs (e.g. ``CO-05``) instead of
+    invented week-local IDs (``W03-CO-01``) that all collapse to the same
+    four IDs after Trainforge's week-prefix normalization.
+
+    Wave 2 additions (REC-TAX-01 + REC-JSL-02):
+      * ``classification`` — course-level taxonomy block inherited on every
+        page's JSON-LD (no-op when ``None``).
+      * ``prerequisite_map`` — optional ``{page_id: [prereq_page_id, ...]}``
+        map; non-empty entries surface as ``prerequisitePages`` arrays on
+        the matching page's JSON-LD.
+
+    Wave 9 addition (source provenance):
+      * ``source_module_map`` — optional ``{week_key: {page_id: entry}}``
+        map produced by the ``source-router`` agent. Populates JSON-LD
+        ``sourceReferences[]`` and ``data-cf-source-ids`` attributes on
+        each page's HTML. Absent / empty → no source attribution emitted;
+        backward-compat for non-textbook workflows.
+    """
     week_num = week_data["week_number"]
     week_dir = output_dir / f"week_{week_num:02d}"
     week_dir.mkdir(parents=True, exist_ok=True)
+    prereq_lookup = prerequisite_map or {}
+
+    # Override week objectives with canonical, week-specific LOs when a
+    # canonical objectives registry is supplied. Falls back to the week's
+    # declared objectives for backward compatibility with older callers.
+    if canonical_objectives is not None:
+        resolved = resolve_week_objectives(week_num, canonical_objectives)
+        if resolved:
+            week_data = dict(week_data)
+            week_data["objectives"] = resolved
 
     # Remove old monolithic module.html
     old = week_dir / "module.html"
@@ -503,7 +972,14 @@ def generate_week(week_data: Dict, output_dir: Path, course_code: str):
     week_misconceptions = week_data.get("misconceptions", [])
 
     # 1. Overview
-    overview_body = _render_objectives(week_data["objectives"])
+    overview_page_id = f"week_{week_num:02d}_overview"
+    overview_refs = _page_refs_for(source_module_map, week_num, overview_page_id)
+    overview_ids = _refs_to_id_list(overview_refs)
+    overview_primary = _refs_primary(overview_refs)
+    overview_body = _render_objectives(
+        week_data["objectives"], source_ids=overview_ids,
+        source_primary=overview_primary,
+    )
     if week_data.get("overview_text"):
         for p in week_data["overview_text"]:
             overview_body += f"\n    <p>{p}</p>"
@@ -516,8 +992,11 @@ def generate_week(week_data: Dict, output_dir: Path, course_code: str):
 
     overview_meta = _build_page_metadata(
         course_code, week_num, "overview",
-        f"week_{week_num:02d}_overview",
+        overview_page_id,
         objectives=week_data["objectives"],
+        classification=classification,
+        prerequisite_pages=prereq_lookup.get(overview_page_id),
+        source_references=overview_refs,
     )
     overview_html = _wrap_page(
         f"Week {week_num} Overview: {week_data['title']}",
@@ -529,16 +1008,26 @@ def generate_week(week_data: Dict, output_dir: Path, course_code: str):
     # 2. Content modules
     for ci, content in enumerate(week_data.get("content_modules", []), 1):
         slug = re.sub(r"[^a-z0-9]+", "_", content["title"].lower()).strip("_")[:40]
-        content_body = _render_content_sections(content["sections"])
+        page_id = f"week_{week_num:02d}_content_{ci:02d}_{slug}"
+        page_refs = _page_refs_for(source_module_map, week_num, page_id)
+        page_ids_list = _refs_to_id_list(page_refs)
+        page_primary = _refs_primary(page_refs)
+        content_body = _render_content_sections(
+            content["sections"],
+            source_ids=page_ids_list,
+            source_primary=page_primary,
+        )
         extra_js = FLIP_CARD_JS if any(
             s.get("flip_cards") for s in content["sections"]
         ) else ""
-        page_id = f"week_{week_num:02d}_content_{ci:02d}_{slug}"
         content_meta = _build_page_metadata(
             course_code, week_num, "content", page_id,
             objectives=week_data["objectives"],
             sections=content["sections"],
             misconceptions=content.get("misconceptions", week_misconceptions),
+            classification=classification,
+            prerequisite_pages=prereq_lookup.get(page_id),
+            source_references=page_refs,
         )
         content_html = _wrap_page(
             f"Week {week_num}: {content['title']}",
@@ -550,13 +1039,22 @@ def generate_week(week_data: Dict, output_dir: Path, course_code: str):
 
     # 3. Application / Activities
     if week_data.get("activities"):
+        app_page_id = f"week_{week_num:02d}_application"
+        app_refs = _page_refs_for(source_module_map, week_num, app_page_id)
+        app_ids = _refs_to_id_list(app_refs)
+        app_primary = _refs_primary(app_refs)
         app_body = "\n    <h2>Learning Activities</h2>"
-        app_body += _render_activities(week_data["activities"])
+        app_body += _render_activities(
+            week_data["activities"], source_ids=app_ids, source_primary=app_primary,
+        )
         app_meta = _build_page_metadata(
             course_code, week_num, "application",
-            f"week_{week_num:02d}_application",
+            app_page_id,
             objectives=week_data["objectives"],
             suggested_assessments=["short_answer", "essay"],
+            classification=classification,
+            prerequisite_pages=prereq_lookup.get(app_page_id),
+            source_references=app_refs,
         )
         app_html = _wrap_page(
             f"Week {week_num}: Application &amp; Activities",
@@ -567,14 +1065,25 @@ def generate_week(week_data: Dict, output_dir: Path, course_code: str):
 
     # 4. Self-check
     if week_data.get("self_check_questions"):
+        sc_page_id = f"week_{week_num:02d}_self_check"
+        sc_refs = _page_refs_for(source_module_map, week_num, sc_page_id)
+        sc_ids = _refs_to_id_list(sc_refs)
+        sc_primary = _refs_primary(sc_refs)
         sc_body = "\n    <h2>Self-Check: Test Your Understanding</h2>"
         sc_body += "\n    <p>Select the best answer for each question. You will receive immediate feedback.</p>"
-        sc_body += _render_self_check(week_data["self_check_questions"])
+        sc_body += _render_self_check(
+            week_data["self_check_questions"],
+            source_ids=sc_ids,
+            source_primary=sc_primary,
+        )
         sc_meta = _build_page_metadata(
             course_code, week_num, "assessment",
-            f"week_{week_num:02d}_self_check",
+            sc_page_id,
             objectives=week_data["objectives"],
             suggested_assessments=["multiple_choice", "true_false"],
+            classification=classification,
+            prerequisite_pages=prereq_lookup.get(sc_page_id),
+            source_references=sc_refs,
         )
         sc_html = _wrap_page(
             f"Week {week_num}: Self-Check Quiz",
@@ -584,7 +1093,12 @@ def generate_week(week_data: Dict, output_dir: Path, course_code: str):
         (week_dir / f"week_{week_num:02d}_self_check.html").write_text(sc_html, encoding="utf-8")
 
     # 5. Summary
-    summary_body = "\n    <h2>Key Takeaways</h2>"
+    summary_page_id = f"week_{week_num:02d}_summary"
+    summary_refs = _page_refs_for(source_module_map, week_num, summary_page_id)
+    summary_ids = _refs_to_id_list(summary_refs)
+    summary_primary = _refs_primary(summary_refs)
+    summary_heading_attrs = _source_attr_string(summary_ids, summary_primary)
+    summary_body = f"\n    <h2{summary_heading_attrs}>Key Takeaways</h2>"
     if week_data.get("key_takeaways"):
         summary_body += "\n    <ul>"
         for kt in week_data["key_takeaways"]:
@@ -597,8 +1111,11 @@ def generate_week(week_data: Dict, output_dir: Path, course_code: str):
 
     summary_meta = _build_page_metadata(
         course_code, week_num, "summary",
-        f"week_{week_num:02d}_summary",
+        summary_page_id,
         objectives=week_data["objectives"],
+        classification=classification,
+        prerequisite_pages=prereq_lookup.get(summary_page_id),
+        source_references=summary_refs,
     )
     summary_html = _wrap_page(
         f"Week {week_num}: Summary &amp; Reflection",
@@ -610,8 +1127,13 @@ def generate_week(week_data: Dict, output_dir: Path, course_code: str):
     # 6. Discussion
     if week_data.get("discussion"):
         disc = week_data["discussion"]
+        disc_page_id = f"week_{week_num:02d}_discussion"
+        disc_refs = _page_refs_for(source_module_map, week_num, disc_page_id)
+        disc_ids = _refs_to_id_list(disc_refs)
+        disc_primary = _refs_primary(disc_refs)
+        disc_attrs = _source_attr_string(disc_ids, disc_primary)
         disc_body = f"""
-    <div class="discussion-prompt">
+    <div class="discussion-prompt"{disc_attrs}>
       <h2>Discussion Forum</h2>
       <p>{disc["prompt"]}</p>
       <h3>Guidelines</h3>
@@ -623,8 +1145,11 @@ def generate_week(week_data: Dict, output_dir: Path, course_code: str):
     </div>"""
         disc_meta = _build_page_metadata(
             course_code, week_num, "discussion",
-            f"week_{week_num:02d}_discussion",
+            disc_page_id,
             objectives=week_data["objectives"],
+            classification=classification,
+            prerequisite_pages=prereq_lookup.get(disc_page_id),
+            source_references=disc_refs,
         )
         disc_html = _wrap_page(
             f"Week {week_num}: Discussion",
@@ -638,24 +1163,216 @@ def generate_week(week_data: Dict, output_dir: Path, course_code: str):
     return len(files), [f.name for f in sorted(files)]
 
 
-def generate_course(course_data_path: str, output_dir: str):
-    """Generate a full course from a JSON data file."""
+def generate_course(
+    course_data_path: str,
+    output_dir: str,
+    objectives_path: Optional[str] = None,
+    classification: Optional[Dict] = None,
+    source_module_map_path: Optional[str] = None,
+):
+    """Generate a full course from a JSON data file.
+
+    Args:
+        course_data_path: Path to the course data JSON (per-week content,
+            activities, self-checks, etc.).
+        output_dir: Directory to write the generated ``week_XX/`` folders.
+        objectives_path: Optional path to the canonical objectives JSON
+            (e.g. ``Courseforge/inputs/exam-objectives/SAMPLE_101_objectives.json``).
+            When provided, each page's ``learningObjectives`` JSON-LD is
+            emitted using canonical CO / TO IDs resolved from the week
+            mapping declared in the objectives JSON. Pass ``None`` to
+            preserve the previous behaviour and use whatever ``objectives``
+            list the course data JSON provides for each week.
+        classification: Optional course-level subject-taxonomy block
+            (Wave 2 REC-TAX-01). Overrides any ``classification`` key
+            declared in the course data JSON. When non-empty, the block
+            is validated against ``schemas/taxonomies/taxonomy.json``
+            BEFORE any files are written — fail-closed. Non-empty
+            classification triggers emission of:
+              * ``course_metadata.json`` at ``output_dir`` root, and
+              * a ``classification`` key on every page's JSON-LD.
+        source_module_map_path: Optional path to a Wave 9
+            ``source_module_map.json`` produced by the ``source-router``
+            agent. Shape: ``{week_key: {page_id: {primary: [...],
+            contributing: [...], confidence: 0.x}}}``. Populates
+            ``sourceReferences[]`` in JSON-LD and ``data-cf-source-ids``
+            on HTML wrappers. Absent / empty → no provenance emit
+            (backward compat).
+    """
     data = json.loads(Path(course_data_path).read_text())
     out = Path(output_dir)
     course_code = data.get("course_code", "COURSE_101")
 
+    # Resolve effective classification: CLI/caller arg wins over course-data JSON.
+    effective_classification = classification
+    if effective_classification is None:
+        effective_classification = data.get("classification") or None
+
+    # Fail-closed validation: a non-empty classification block must match
+    # the authoritative taxonomy before ANY file is written.
+    if effective_classification:
+        errors = validate_classification(effective_classification)
+        if errors:
+            raise ValueError(
+                "Invalid classification for course "
+                f"{course_code}: {'; '.join(errors)}"
+            )
+
+    # Optional prerequisite map: {page_id: [prereq_page_id, ...]}.
+    # Sourced from course data; empty/missing → no prerequisitePages emitted.
+    prerequisite_map = data.get("prerequisite_map") or {}
+
+    # Wave 9: optional source-routing map. Prefer explicit CLI path, then
+    # course-data override, then no map at all (backward-compat path).
+    source_module_map: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None
+    if source_module_map_path:
+        map_path = Path(source_module_map_path)
+        if map_path.exists():
+            source_module_map = json.loads(map_path.read_text(encoding="utf-8"))
+    elif isinstance(data.get("source_module_map"), dict):
+        source_module_map = data.get("source_module_map")
+
+    canonical = None
+    if objectives_path:
+        canonical = load_canonical_objectives(Path(objectives_path))
+        tos = len(canonical.get("terminal_objectives", []))
+        cos = sum(len(v) for v in canonical.get("week_to_chapter_objectives", {}).values())
+        print(
+            f"Loaded canonical objectives: {tos} terminal objective(s), "
+            f"{cos} chapter-objective week-slot assignment(s) across weeks "
+            f"{sorted(canonical['week_to_chapter_objectives'].keys())}"
+        )
+
     total_files = 0
     for week in data["weeks"]:
-        count, files = generate_week(week, out, course_code)
+        count, files = generate_week(
+            week, out, course_code,
+            canonical_objectives=canonical,
+            classification=effective_classification,
+            prerequisite_map=prerequisite_map,
+            source_module_map=source_module_map,
+        )
         total_files += count
         print(f"  Week {week['week_number']:2d}: {count} files - {', '.join(files)}")
+
+    # Emit course-level classification stub (REC-TAX-01). Only emitted when
+    # classification is populated — preserves backward compat for existing
+    # pipelines that never declared a taxonomy.
+    if effective_classification:
+        out.mkdir(parents=True, exist_ok=True)
+        stub = {
+            "course_code": course_code,
+            "course_title": data.get("course_title") or data.get("title") or course_code,
+            "classification": {
+                "division": effective_classification.get("division"),
+                "primary_domain": effective_classification.get("primary_domain"),
+                "subdomains": list(effective_classification.get("subdomains") or []),
+                "topics": list(effective_classification.get("topics") or []),
+            },
+            "ontology_mappings": {
+                "acm_ccs": list(
+                    (data.get("ontology_mappings") or {}).get("acm_ccs") or []
+                ),
+                "lcsh": list(
+                    (data.get("ontology_mappings") or {}).get("lcsh") or []
+                ),
+            },
+        }
+        stub_path = out / "course_metadata.json"
+        stub_path.write_text(json.dumps(stub, indent=2) + "\n", encoding="utf-8")
+        print(f"Wrote course classification stub: {stub_path}")
 
     print(f"\nTotal: {total_files} files generated")
     return total_files
 
 
+def _build_cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Generate Courseforge HTML pages from structured course data."
+    )
+    parser.add_argument("course_data", help="Path to <course>_course_data.json")
+    parser.add_argument("output_dir", help="Output directory for generated week folders")
+    parser.add_argument(
+        "--objectives",
+        default=None,
+        help=(
+            "Optional path to the canonical objectives JSON "
+            "(e.g. inputs/exam-objectives/<COURSE>_objectives.json). When "
+            "provided, emitted learningObjectives JSON-LD uses canonical CO/TO "
+            "IDs resolved per-week rather than the week-local IDs that the "
+            "course-data file may carry. This is the recommended mode; it "
+            "fixes the defect where every week's pages reference the same "
+            "four LOs after Trainforge's week-prefix normalization."
+        ),
+    )
+    # ---------------------------------------------------------------- #
+    # Wave 2 REC-TAX-01 classification flags. When both --division and
+    # --primary-domain are provided, a course_metadata.json stub is
+    # written at the output_dir root and a ``classification`` block is
+    # inherited on every page's JSON-LD. The block is validated against
+    # schemas/taxonomies/taxonomy.json (fail-closed). CLI flags override
+    # any ``classification`` declared in the course-data JSON.
+    # ---------------------------------------------------------------- #
+    parser.add_argument(
+        "--division",
+        default=None,
+        choices=["STEM", "ARTS"],
+        help="Classification division (REC-TAX-01). Pair with --primary-domain.",
+    )
+    parser.add_argument(
+        "--primary-domain",
+        default=None,
+        help=(
+            "Classification primary domain slug (REC-TAX-01), e.g. "
+            "computer-science. Required when --division is set."
+        ),
+    )
+    parser.add_argument(
+        "--subdomains",
+        default="",
+        help=(
+            "Comma-separated subdomain slugs under the declared domain "
+            "(REC-TAX-01), e.g. software-engineering,algorithms."
+        ),
+    )
+    parser.add_argument(
+        "--source-module-map",
+        default=None,
+        help=(
+            "Wave 9: optional path to source_module_map.json produced by the "
+            "source-router agent. Populates sourceReferences[] in JSON-LD and "
+            "data-cf-source-ids on HTML wrappers. Absent → no provenance emit."
+        ),
+    )
+    return parser
+
+
+def _build_classification_from_args(args: argparse.Namespace) -> Optional[Dict]:
+    """Assemble a classification dict from CLI flags, or None when absent.
+
+    Returns ``None`` when neither ``--division`` nor ``--primary-domain`` is
+    set, leaving the course-data JSON's ``classification`` (if any) as the
+    source. Returns a populated dict when ``--division`` and ``--primary-domain``
+    are both provided.
+    """
+    if not (args.division and args.primary_domain):
+        return None
+    subs = [s.strip() for s in (args.subdomains or "").split(",") if s.strip()]
+    return {
+        "division": args.division,
+        "primary_domain": args.primary_domain,
+        "subdomains": subs,
+        "topics": [],
+    }
+
+
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: python generate_course.py <course_data.json> <output_dir>")
-        sys.exit(1)
-    generate_course(sys.argv[1], sys.argv[2])
+    args = _build_cli_parser().parse_args()
+    classification = _build_classification_from_args(args)
+    generate_course(
+        args.course_data,
+        args.output_dir,
+        objectives_path=args.objectives,
+        classification=classification,
+        source_module_map_path=args.source_module_map,
+    )

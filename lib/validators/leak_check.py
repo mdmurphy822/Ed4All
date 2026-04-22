@@ -116,6 +116,29 @@ class LeakCheckValidator:
                         )
                     )
 
+        # Optional corpus-wide boilerplate sub-check (§4.7). When the caller
+        # passes a ``chunks`` list (Trainforge rag_training wiring), flag any
+        # repeated n-gram span that appears in more than
+        # ``max_boilerplate_chunk_fraction`` of chunks. Warning-only — does
+        # not block until the v1.0 flip (VERSIONING.md §1.6).
+        corpus_chunks = inputs.get("chunks") or []
+        boilerplate_threshold = inputs.get("max_boilerplate_chunk_fraction", 0.10)
+        if corpus_chunks:
+            boiler_leaks = checker.check_corpus_boilerplate(
+                corpus_chunks,
+                n=inputs.get("boilerplate_ngram_tokens", 15),
+                threshold=boilerplate_threshold,
+            )
+            for leak in boiler_leaks:
+                issues.append(
+                    GateIssue(
+                        severity="warning",
+                        code="LEAK_CORPUS_BOILERPLATE",
+                        message=f"corpus: {leak.message} — span: {(leak.matched_text or '')[:120]}",
+                        location=leak.location,
+                    )
+                )
+
         # Score: 1.0 if no leaks, decreasing with each leak
         if len(questions) > 0:
             leak_ratio = total_leaks / len(questions)

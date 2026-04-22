@@ -8,8 +8,8 @@ Read-modify-write pass that enriches chunks with relational metadata:
 
 Usage:
     python -m Trainforge.align_chunks \
-        --corpus Trainforge/output/digped_101 \
-        --objectives Courseforge/inputs/exam-objectives/DIGPED_101_objectives.json \
+        --corpus Trainforge/output/sample_101 \
+        --objectives Courseforge/inputs/exam-objectives/SAMPLE_101_objectives.json \
         --llm-provider mock
 """
 
@@ -20,7 +20,10 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from MCP.orchestrator.llm_backend import LLMBackend
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -184,6 +187,101 @@ def load_objectives(objectives_path: Path) -> List[Outcome]:
             ))
 
     return outcomes
+
+
+WEEK_SCOPED_ID_RE = re.compile(r"^w\d{2}-[a-z]{2}-\d{2,3}$", re.IGNORECASE)
+
+
+def build_outcome_hierarchy(objectives_path: Path) -> Tuple[Dict[str, str], set]:
+    """Return (parent_map, course_level_ids) from a dual-emission objectives file.
+
+    parent_map maps every week-scoped ID (``w01-co-02``) to its course-level
+    parent ID (``co-02``). When the objectives file pre-dates the dual-ID
+    contract and carries no ``week_scoped_ids`` entries, parent_map is empty;
+    week-scoped refs on chunks will then surface as orphans in the quality
+    report (§2.1 orphan rule).
+    """
+    with open(objectives_path) as f:
+        doc = json.load(f)
+
+    parent_map: Dict[str, str] = {}
+    course_level: set = set()
+
+    for to in doc.get("terminal_objectives", []):
+        parent_id = (to.get("id") or "").lower()
+        if parent_id:
+            course_level.add(parent_id)
+        for ws in to.get("week_scoped_ids", []) or []:
+            if ws and parent_id:
+                parent_map[ws.lower()] = parent_id
+
+    for ch in doc.get("chapter_objectives", []):
+        for obj in ch.get("objectives", []):
+            parent_id = (obj.get("id") or "").lower()
+            if parent_id:
+                course_level.add(parent_id)
+            for ws in obj.get("week_scoped_ids", []) or []:
+                if ws and parent_id:
+                    parent_map[ws.lower()] = parent_id
+
+    return parent_map, course_level
+
+
+def partition_outcome_refs(
+    chunks: List[Dict[str, Any]],
+    parent_map: Dict[str, str],
+    course_level_ids: set,
+) -> int:
+    """Split every chunk's learning_outcome_refs into course-level and pedagogical.
+
+    Week-scoped IDs (``w0X-co-YY``) move from ``learning_outcome_refs`` into
+    ``pedagogical_scope_refs``, each entry carrying its resolved parent or
+    ``parent_id: null`` when the parent link is missing. The function returns
+    the count of orphan refs encountered across the corpus — this is the
+    number written to ``integrity.orphan_week_scoped_refs`` in the quality
+    report (§2.1).
+
+    Design choice (Option 2 from the plan): preserve-and-surface. We never
+    silently drop week-scoped refs, never synthesise a parent ID, never raise.
+    """
+    orphan_count = 0
+    for chunk in chunks:
+        existing = chunk.get("learning_outcome_refs", []) or []
+        course_refs: List[str] = []
+        scope_refs: List[Dict[str, Any]] = []
+        seen_scope_ids: set = set()
+
+        for ref in existing:
+            ref_lc = ref.lower()
+            if WEEK_SCOPED_ID_RE.match(ref_lc):
+                if ref_lc in seen_scope_ids:
+                    continue
+                seen_scope_ids.add(ref_lc)
+                parent = parent_map.get(ref_lc)
+                if parent:
+                    scope_refs.append({
+                        "id": ref_lc,
+                        "parent_id": parent,
+                        "status": "resolved",
+                    })
+                    if parent not in course_refs:
+                        course_refs.append(parent)
+                else:
+                    scope_refs.append({
+                        "id": ref_lc,
+                        "parent_id": None,
+                        "status": "orphan",
+                    })
+                    orphan_count += 1
+            else:
+                if ref_lc not in course_refs:
+                    course_refs.append(ref_lc)
+
+        chunk["learning_outcome_refs"] = course_refs
+        if scope_refs:
+            chunk["pedagogical_scope_refs"] = scope_refs
+
+    return orphan_count
 
 
 # ---------------------------------------------------------------------------
@@ -367,13 +465,88 @@ def _mock_role(chunk: Dict, concept_first_seen: Dict[str, int]) -> str:
     return "introduce"
 
 
+def _deterministic_role(chunk: Dict) -> Tuple[Optional[str], Optional[str]]:
+    """Try to resolve teaching_role deterministically from explicit metadata.
+
+    Precedence:
+      1. ``chunk["teaching_role_attr"]`` — surfaced by
+         ``Trainforge/parsers/html_content_parser.py`` from a
+         ``data-cf-teaching-role`` attribute on a flip-card / self-check /
+         activity element (Courseforge REC-VOC-02 emit path).
+      2. ``chunk["source"]["teaching_role"]`` — when the chunker propagates
+         the parser's per-section role directly onto the chunk's source dict.
+      3. ``chunk["source"]["section_teaching_roles"]`` — JSON-LD-derived
+         section roles, used only when exactly one role is declared
+         (ambiguous multi-value sections fall through).
+
+    Returns ``(role, provenance)`` on success, ``(None, None)`` otherwise.
+    Callers treat ``None`` as "no deterministic signal, continue to
+    heuristic/LLM classifier".
+    """
+    # 1. Explicit per-chunk attribute
+    attr_role = chunk.get("teaching_role_attr")
+    if isinstance(attr_role, str) and attr_role in VALID_ROLES:
+        return attr_role, "attr"
+
+    source = chunk.get("source", {}) or {}
+    if isinstance(source, dict):
+        # 2. Chunker-propagated parser role
+        src_role = source.get("teaching_role")
+        if isinstance(src_role, str) and src_role in VALID_ROLES:
+            return src_role, "source"
+
+        # 3. JSON-LD section roles — unambiguous single-value case only
+        section_roles = source.get("section_teaching_roles") or []
+        if isinstance(section_roles, list) and len(section_roles) == 1:
+            candidate = section_roles[0]
+            if isinstance(candidate, str) and candidate in VALID_ROLES:
+                return candidate, "jsonld"
+
+    return None, None
+
+
 def classify_teaching_roles(
     chunks: List[Dict],
     llm_provider: str = "mock",
     llm_model: str = "claude-haiku-4-5-20251001",
     verbose: bool = False,
+    llm: Optional["LLMBackend"] = None,
 ) -> None:
-    """Mutate chunks in-place to add teaching_role field."""
+    """Mutate chunks in-place to add teaching_role field.
+
+    Precedence (REC-VOC-02, Wave 2):
+      1. Deterministic signal from Courseforge-emitted metadata
+         (``data-cf-teaching-role`` / JSON-LD ``teachingRole``). Skip all
+         downstream classifiers.
+      2. Existing deterministic heuristic (``_heuristic_role``).
+      3. LLM classifier (anthropic) or mock fallback.
+    The LLM path is preserved as-is for legacy IMSCCs that don't carry
+    the deterministic attribute.
+
+    Args:
+        chunks: Chunks to classify in-place.
+        llm_provider: ``"anthropic"`` to invoke the LLM for ambiguous chunks,
+            anything else to stick with the mock/heuristic path.
+        llm_model: Model identifier passed to the backend.
+        verbose: Print per-chunk classifications.
+        llm: Optional pre-built :class:`LLMBackend` instance. When provided,
+            overrides the ``llm_provider`` path and routes LLM calls through
+            the injected backend — enabling local / api / mock swap-in.
+    """
+    # Belt-and-suspenders: catch schema drift against the canonical
+    # teaching_role enum. Soft-imports so standalone Trainforge installs
+    # (without the repo root on sys.path) still work.
+    try:
+        from lib.ontology.teaching_roles import get_valid_roles as _canonical_valid_roles
+        if VALID_ROLES != _canonical_valid_roles():
+            print(
+                "  WARNING: teaching_role schema drift: "
+                f"align_chunks.VALID_ROLES={VALID_ROLES} vs "
+                f"schemas/taxonomies/teaching_role.json={_canonical_valid_roles()}"
+            )
+    except Exception:
+        pass  # standalone install without repo-level lib on sys.path
+
     # Build concept_first_seen for mock/heuristic fallback
     concept_first_seen: Dict[str, int] = {}
     for chunk in chunks:
@@ -382,34 +555,55 @@ def classify_teaching_roles(
             if tag not in concept_first_seen:
                 concept_first_seen[tag] = pos
 
+    deterministic_count = 0
     heuristic_count = 0
     llm_count = 0
     ambiguous_chunks = []
 
     for chunk in chunks:
+        # 1. Deterministic metadata (Courseforge REC-VOC-02 emit path)
+        det_role, det_source = _deterministic_role(chunk)
+        if det_role:
+            chunk["teaching_role"] = det_role
+            chunk["teaching_role_source"] = det_source
+            deterministic_count += 1
+            if verbose:
+                print(f"  {chunk['id']}: role={det_role} (deterministic:{det_source})")
+            continue
+
+        # 2. Existing heuristic
         role = _heuristic_role(chunk)
         if role:
             chunk["teaching_role"] = role
+            chunk["teaching_role_source"] = "heuristic"
             heuristic_count += 1
             if verbose:
                 print(f"  {chunk['id']}: role={role} (heuristic)")
         else:
             ambiguous_chunks.append(chunk)
 
-    # Handle ambiguous chunks
-    if llm_provider == "anthropic" and ambiguous_chunks:
-        _classify_with_llm(ambiguous_chunks, concept_first_seen, llm_model, verbose)
+    # 3. Handle ambiguous chunks via LLM or mock fallback.
+    # Injected LLMBackend takes precedence over provider-string path.
+    use_llm = llm is not None or llm_provider == "anthropic"
+    if use_llm and ambiguous_chunks:
+        _classify_with_llm(
+            ambiguous_chunks, concept_first_seen, llm_model, verbose, llm=llm
+        )
+        for chunk in ambiguous_chunks:
+            chunk.setdefault("teaching_role_source", "llm")
         llm_count = len(ambiguous_chunks)
     else:
         # Mock: use heuristic fallback
         for chunk in ambiguous_chunks:
             role = _mock_role(chunk, concept_first_seen)
             chunk["teaching_role"] = role
+            chunk["teaching_role_source"] = "mock"
             if verbose:
                 print(f"  {chunk['id']}: role={role} (mock)")
 
-    print(f"  Teaching roles: {heuristic_count} heuristic, "
-          f"{llm_count or len(ambiguous_chunks)} {'LLM' if llm_provider == 'anthropic' else 'mock'}")
+    print(f"  Teaching roles: {deterministic_count} deterministic, "
+          f"{heuristic_count} heuristic, "
+          f"{llm_count or len(ambiguous_chunks)} {'LLM' if use_llm else 'mock'}")
 
 
 def _classify_with_llm(
@@ -417,17 +611,29 @@ def _classify_with_llm(
     concept_first_seen: Dict[str, int],
     model: str,
     verbose: bool,
+    llm: Optional["LLMBackend"] = None,
 ) -> None:
-    """Classify ambiguous chunks using Claude API in batches."""
-    try:
-        import anthropic
-    except ImportError:
-        print("  WARNING: anthropic package not installed, falling back to mock")
-        for chunk in chunks:
-            chunk["teaching_role"] = _mock_role(chunk, concept_first_seen)
-        return
+    """Classify ambiguous chunks using an LLM backend in batches.
 
-    client = anthropic.Anthropic()
+    Prefers an injected :class:`LLMBackend`. When none is provided, lazily
+    builds an :class:`AnthropicBackend` from the environment. The Anthropic
+    SDK is never imported at module scope — it's loaded via the orchestrator
+    backend module, which is the only place ``import anthropic`` lives.
+    """
+    if llm is None:
+        try:
+            from MCP.orchestrator.llm_backend import AnthropicBackend
+
+            llm = AnthropicBackend(default_model=model)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"  WARNING: could not initialize LLM backend ({exc}), "
+                "falling back to mock"
+            )
+            for chunk in chunks:
+                chunk["teaching_role"] = _mock_role(chunk, concept_first_seen)
+            return
+
     batch_size = 12
 
     for batch_start in range(0, len(chunks), batch_size):
@@ -458,12 +664,12 @@ def _classify_with_llm(
         )
 
         try:
-            response = client.messages.create(
+            text = llm.complete_sync(
+                system="",
+                user=prompt,
                 model=model,
                 max_tokens=1024,
-                messages=[{"role": "user", "content": prompt}],
             )
-            text = response.content[0].text
 
             # Extract JSON array from response
             match = re.search(r"\[.*\]", text, re.DOTALL)
@@ -580,8 +786,19 @@ def match_learning_outcomes(
 # Quality report update
 # ---------------------------------------------------------------------------
 
-def update_quality_report(corpus_dir: Path, chunks: List[Dict]) -> None:
-    """Update quality_report.json with alignment field coverage metrics."""
+def update_quality_report(
+    corpus_dir: Path,
+    chunks: List[Dict],
+    valid_outcome_ids: Optional[set] = None,
+    orphan_week_scoped_refs: int = 0,
+) -> None:
+    """Update quality_report.json with alignment field coverage metrics.
+
+    ``learning_outcome_refs_coverage`` measures *referential integrity* under
+    METRICS_SEMANTIC_VERSION=2: a chunk counts only if at least one of its
+    ``learning_outcome_refs`` resolves to ``valid_outcome_ids``. When the
+    caller doesn't pass a valid-ID set, the metric falls back to presence.
+    """
     report_path = corpus_dir / "quality" / "quality_report.json"
     if not report_path.exists():
         return
@@ -594,7 +811,21 @@ def update_quality_report(corpus_dir: Path, chunks: List[Dict]) -> None:
     # Alignment-specific metrics
     prereq_coverage = sum(1 for c in chunks if c.get("prereq_concepts")) / total
     role_coverage = sum(1 for c in chunks if c.get("teaching_role")) / total
-    outcome_coverage = sum(1 for c in chunks if c.get("learning_outcome_refs")) / total
+
+    if valid_outcome_ids is not None:
+        outcome_coverage = sum(
+            1 for c in chunks
+            if any(r in valid_outcome_ids for r in c.get("learning_outcome_refs", []))
+        ) / total
+        broken_refs = [
+            {"chunk_id": c["id"], "ref": r}
+            for c in chunks
+            for r in c.get("learning_outcome_refs", [])
+            if r not in valid_outcome_ids
+        ]
+    else:
+        outcome_coverage = sum(1 for c in chunks if c.get("learning_outcome_refs")) / total
+        broken_refs = []
 
     # Role consistency: check for type/role mismatches
     role_mismatches = 0
@@ -616,6 +847,13 @@ def update_quality_report(corpus_dir: Path, chunks: List[Dict]) -> None:
         "teaching_role_consistency": round(role_consistency, 3),
         "teaching_role_distribution": dict(role_dist),
     }
+
+    # Referential-integrity findings live under ``integrity`` alongside the
+    # base-pass integrity block (see process_course.py _generate_quality_report).
+    integrity = report.setdefault("integrity", {})
+    existing_broken = integrity.get("broken_refs", [])
+    integrity["broken_refs"] = existing_broken + broken_refs
+    integrity["orphan_week_scoped_refs"] = orphan_week_scoped_refs
 
     # Recompute overall score including alignment
     base_score = report.get("overall_quality_score", 0.0)
@@ -721,10 +959,19 @@ def main(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
         )
 
     # --- Field 3: learning_outcome_refs ---
+    orphan_count = 0
     if "learning_outcome_refs" in fields:
         if not args.objectives:
             print("\n[3/3] Skipping learning_outcome_refs (no --objectives provided)")
         else:
+            # Partition first: move any week-scoped IDs (w01-co-02) onto the
+            # chunk's pedagogical_scope_refs field with parent links. Orphans
+            # are preserved with parent_id: null per §2.1.
+            parent_map, course_level_ids = build_outcome_hierarchy(Path(args.objectives))
+            orphan_count = partition_outcome_refs(chunks, parent_map, course_level_ids)
+            if orphan_count:
+                print(f"  Orphan week-scoped refs surfaced: {orphan_count}")
+
             print("\n[3/3] Matching learning_outcome_refs...")
             match_learning_outcomes(
                 chunks, Path(args.objectives), verbose=args.verbose,
@@ -743,7 +990,18 @@ def main(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
             chunk.pop("_position", None)
 
         write_corpus(corpus_dir, chunks)
-        update_quality_report(corpus_dir, chunks)
+        # Pass the valid-ID set and orphan count through so the updated
+        # quality_report reflects referential integrity (§1.1) + §2.1 orphan
+        # surfacing.
+        valid_ids: Optional[set] = None
+        if args.objectives and "learning_outcome_refs" in fields:
+            parent_map, course_level_ids = build_outcome_hierarchy(Path(args.objectives))
+            valid_ids = set(course_level_ids) | set(parent_map.keys())
+        update_quality_report(
+            corpus_dir, chunks,
+            valid_outcome_ids=valid_ids,
+            orphan_week_scoped_refs=orphan_count,
+        )
         print(f"\n  Written to {corpus_dir / 'corpus'}")
     else:
         print("\n  [DRY RUN] No files written")

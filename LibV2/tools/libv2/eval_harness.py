@@ -329,6 +329,159 @@ def run_course_evaluation(
     return report
 
 
+def evaluate_retrieval(
+    course_slug: str,
+    repo_root: Path,
+    gold_queries_path: Optional[Path] = None,
+    include_rationale: bool = True,
+    metadata_scoring: bool = True,
+    k_values: tuple = (1, 5, 10),
+    retrieval_limit: int = 10,
+    output_path: Optional[Path] = None,
+) -> Dict:
+    """Run hand-curated gold queries against retrieve_chunks and compute
+    recall@k + MRR + per-query rationale.
+
+    This wraps the lower-level ``RetrievalEvaluator`` so Worker J's reference
+    retrieval implementation has a single entry point for the
+    ``libv2 retrieval-eval`` CLI.  Gold queries live at
+    ``LibV2/courses/<slug>/retrieval/gold_queries.jsonl`` by default (one
+    JSON record per line).  Each record shape:
+
+        {"id": str, "query": str, "relevant_chunk_ids": [str],
+         "kind": "hand-curated" | "lo-derived", "notes": str (optional)}
+
+    Returns a dict with per-query entries and aggregate metrics
+    (MRR, recall@1, recall@5, recall@10).  Writes the report JSON to
+    ``output_path`` if provided, else to
+    ``LibV2/courses/<slug>/retrieval/evaluation_results.json``.
+
+    Deterministic: pure function of gold_queries + course contents.
+    """
+    repo_root = Path(repo_root)
+    if gold_queries_path is None:
+        gold_queries_path = (
+            repo_root / "courses" / course_slug / "retrieval" / "gold_queries.jsonl"
+        )
+    if not gold_queries_path.exists():
+        raise FileNotFoundError(f"Gold queries file not found: {gold_queries_path}")
+
+    # Load gold queries (JSONL, one record per line)
+    queries: List[Dict] = []
+    with open(gold_queries_path) as f:
+        for line_num, line in enumerate(f, 1):
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            try:
+                queries.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"{gold_queries_path}:{line_num} — invalid JSON: {e}"
+                ) from e
+
+    if not queries:
+        raise ValueError(f"No gold queries found in {gold_queries_path}")
+
+    per_query: List[Dict] = []
+    latencies: List[float] = []
+
+    for q in queries:
+        qid = q.get("id") or q.get("query_id") or ""
+        qtext = q.get("query") or q.get("query_text") or ""
+        relevant = [str(r) for r in (q.get("relevant_chunk_ids") or [])]
+        relevant_set = set(relevant)
+        if not qtext or not relevant:
+            continue
+
+        t0 = time.perf_counter()
+        results = retrieve_chunks(
+            repo_root=repo_root,
+            query=qtext,
+            course_slug=course_slug,
+            limit=retrieval_limit,
+            include_rationale=include_rationale,
+            metadata_scoring=metadata_scoring,
+        )
+        t1 = time.perf_counter()
+        latency_ms = (t1 - t0) * 1000
+        latencies.append(latency_ms)
+
+        retrieved_ids = [r.chunk_id for r in results]
+        retrieved_set = set(retrieved_ids)
+        matched = list(relevant_set & retrieved_set)
+
+        # Rank-of-first-relevant
+        rank_of_first_relevant: Optional[int] = None
+        for rank, cid in enumerate(retrieved_ids, start=1):
+            if cid in relevant_set:
+                rank_of_first_relevant = rank
+                break
+        reciprocal_rank = (1.0 / rank_of_first_relevant) if rank_of_first_relevant else 0.0
+
+        # Recall@k = fraction of relevant chunks found in top-k
+        recall_at_k: Dict[int, float] = {}
+        for k in k_values:
+            found = len(relevant_set & set(retrieved_ids[:k]))
+            recall_at_k[k] = found / len(relevant_set) if relevant_set else 0.0
+
+        entry = {
+            "id": qid,
+            "query": qtext,
+            "kind": q.get("kind"),
+            "notes": q.get("notes"),
+            "relevant_chunk_ids": relevant,
+            "retrieved_chunk_ids": retrieved_ids,
+            "matched_chunk_ids": matched,
+            "rank_of_first_relevant": rank_of_first_relevant,
+            "reciprocal_rank": round(reciprocal_rank, 4),
+            **{f"recall_at_{k}": round(recall_at_k[k], 4) for k in k_values},
+            "latency_ms": round(latency_ms, 2),
+        }
+        if include_rationale:
+            # Include rationale for the top-ranked result only (keeps the
+            # report small; full per-result rationale is accessible via the
+            # retrieve CLI).
+            entry["top_result_rationale"] = results[0].rationale if results else None
+        per_query.append(entry)
+
+    # Aggregate
+    n = len(per_query)
+    aggregate: Dict[str, float] = {
+        "mrr": round(sum(q["reciprocal_rank"] for q in per_query) / n, 4) if n else 0.0,
+        "total_queries": n,
+        "avg_latency_ms": round(sum(latencies) / len(latencies), 2) if latencies else 0.0,
+    }
+    for k in k_values:
+        key = f"recall_at_{k}"
+        aggregate[key] = round(sum(q[key] for q in per_query) / n, 4) if n else 0.0
+
+    report = {
+        "course_slug": course_slug,
+        "eval_timestamp": datetime.now().isoformat(),
+        "gold_queries_path": str(gold_queries_path),
+        "aggregate": aggregate,
+        "per_query": per_query,
+        "config": {
+            "retrieval_limit": retrieval_limit,
+            "include_rationale": include_rationale,
+            "metadata_scoring": metadata_scoring,
+            "k_values": list(k_values),
+        },
+    }
+
+    # Write
+    if output_path is None:
+        output_path = (
+            repo_root / "courses" / course_slug / "retrieval" / "evaluation_results.json"
+        )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w") as f:
+        json.dump(report, f, indent=2)
+
+    return report
+
+
 def compare_reports(
     report1_path: Path,
     report2_path: Path,
