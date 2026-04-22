@@ -145,6 +145,14 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "credits": "credit_hours",
         },
         "description": "[DEPRECATED — use extract_textbook_structure + plan_course_structure from Wave 24] Initialize a new course generation project",
+        # Wave 37: machine-readable deprecation flag so operators /
+        # audit tooling can surface the status without string-matching
+        # the description. New integrations should route through
+        # ``extract_textbook_structure`` + ``plan_course_structure``
+        # (pipeline-internal) or ``textbook_to_course`` via the unified
+        # CLI; this entry remains registered for external MCP clients
+        # that already depend on it.
+        "deprecated": True,
     },
 
     "generate_course_content": {

@@ -2508,6 +2508,16 @@ def _build_tool_registry() -> dict:
         async def _package_imscc(**kwargs):
             """Build a real IMS Common Cartridge package from generated content.
 
+            ⚠  **Sync-parity with**
+            ``MCP/tools/courseforge_tools.py::package_imscc`` (the
+            ``@mcp.tool()`` variant) is required. Both wrappers delegate to
+            ``Courseforge.scripts.package_multifile_imscc.package_imscc``
+            and share the same JSON envelope shape. This registry variant
+            omits the `project_config.status`/`package_path` side-effects
+            that the MCP-decorated variant performs — phase tracking
+            happens in the workflow runner here. Keep both surfaces in
+            lockstep until a shared helper is extracted in a later wave.
+
             Wave 27 HIGH-2: delegates to the mature multi-file packager
             (``Courseforge.scripts.package_multifile_imscc.package_imscc``)
             rather than hand-rolling the ZIP. Consequences of the
@@ -3692,7 +3702,18 @@ def _build_tool_registry() -> dict:
                     doc = json.loads(sidecar.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     continue
-                slug = sidecar.stem.replace("_synthesized", "")
+                # Wave 36: match ContentGroundingValidator + Wave 35
+                # content-generator slug rules (lowercase + space→hyphen).
+                # Pre-Wave-36 a staging stem like ``XYZ_201_synthesized``
+                # emitted router refs as ``dart:XYZ_201#...`` while the
+                # validator + content-generator lowercased, so
+                # uppercase-named corpora silently failed the source_refs
+                # gate.
+                slug = (
+                    sidecar.stem.replace("_synthesized", "")
+                    .lower()
+                    .replace(" ", "-")
+                )
                 sections = doc.get("sections") or []
                 if not isinstance(sections, list):
                     continue

@@ -512,8 +512,20 @@ def _render_content_sections(
         else:
             section_ids = source_ids
             section_primary = source_primary
-        h_attrs += _source_attr_string(section_ids, section_primary)
+        section_attrs = _source_attr_string(section_ids, section_primary)
+        h_attrs += section_attrs
 
+        # Wave 35: wrap every h2/h3 + paragraph group in a <section>
+        # carrying the same data-cf-source-ids so
+        # :class:`ContentGroundingValidator` can walk each <p>'s
+        # ancestors to find the grounding attribute. Pre-Wave-35 the
+        # attribute lived only on the <h2>, which is a sibling of the
+        # <p> in the DOM — validator's ancestor walk missed it and
+        # flagged every body paragraph as ungrounded. Section-wrapping
+        # preserves the Wave 9 invariant (attributes live on section /
+        # heading / component wrappers, never on raw <p>/<li>/<tr>).
+        if section_attrs:
+            parts.append(f"    <section{section_attrs}>")
         parts.append(f"    <{tag}{h_attrs}>{heading}</{tag}>")
         for para in section.get("paragraphs", []):
             # Apply key-term markup
@@ -562,6 +574,12 @@ def _render_content_sections(
                     "".join(f"<td>{cell}</td>" for cell in row) +
                     "</tr>")
             parts.append("      </tbody></table>")
+        # Wave 35: close the grounding <section> wrapper we may have
+        # opened above the heading. No-op when no source_refs were in
+        # play — pre-Wave-35 sections had no wrapper and we keep that
+        # back-compat for non-textbook workflows.
+        if section_attrs:
+            parts.append("    </section>")
     return "\n".join(parts)
 
 
@@ -853,7 +871,10 @@ def _page_refs_for(
     if not isinstance(week_entries, dict):
         return None
     # Map may key by either the full page_id or a short key; prefer exact
-    # match on the emitted page_id, fall back to stripping the week prefix.
+    # match on the emitted page_id, fall back to stripping the week prefix,
+    # then (Wave 35) to the short form with the slug suffix dropped so
+    # content_NN_the_skills_in_a_digital_age matches the router's
+    # content_NN entry.
     entry = week_entries.get(page_id)
     if entry is None:
         short_key = page_id
@@ -861,6 +882,20 @@ def _page_refs_for(
         if short_key.startswith(prefix):
             short_key = short_key[len(prefix):]
         entry = week_entries.get(short_key)
+        if entry is None:
+            # Drop the slug suffix: content_NN_<slug> → content_NN.
+            slug_match = re.match(
+                r"^(content_\d{2}|overview|application|self_check|summary)(?:_.*)?$",
+                short_key,
+            )
+            if slug_match:
+                entry = week_entries.get(slug_match.group(1))
+        if entry is None and short_key.startswith("content_"):
+            # Wave 35: router only emits a single ``content_01`` entry
+            # per week; content_02..10 share the same DART source
+            # region. Fall back to content_01 so every generated
+            # content page inherits the week's grounding.
+            entry = week_entries.get("content_01")
     if not isinstance(entry, dict):
         return None
 

@@ -327,12 +327,18 @@ class TestCourseforgeEmitsDataCfSourceIds:
         )
 
     def test_course_slug_derived_from_source_stem(self, pipeline_registry):
-        """Course slug tracks the staged DART file stem (canonical_slug)."""
+        """Course slug tracks the staged DART file stem.
+
+        Wave 35: the emitted slug now preserves underscores (lowercase
+        + space-to-hyphen only) so it matches the slug the
+        ``ContentGroundingValidator`` + Wave 9 source-router build when
+        they read the staged HTML's ``path.stem``. Pre-Wave-35 used
+        :func:`canonical_slug`, which collapsed ``XYZ_201`` to
+        ``xyz201`` and diverged from the validator's ``xyz_201``.
+        """
         tools, tmp_path, staging_root = pipeline_registry
         project_id = "PROJ-27-EMIT-04"
         project_path = _make_project(tmp_path, project_id)
-        # Filename with mixed case + underscore — expect the canonical
-        # slug result ("xyz201" — canonical_slug drops the underscore).
         _stage_dart(
             staging_root, "WF-27-04",
             _DART_HTML_WITH_BLOCK_IDS.replace(
@@ -348,14 +354,14 @@ class TestCourseforgeEmitsDataCfSourceIds:
         ))
 
         week_01 = project_path / "03_content_development" / "week_01"
-        # Confirm the slug "xyz201" derived via canonical_slug is used.
+        # The validator-compatible slug is "xyz_201" (underscore kept).
         found = False
         for html_file in week_01.glob("*content*.html"):
             body = html_file.read_text(encoding="utf-8")
-            if "dart:xyz201#" in body:
+            if "dart:xyz_201#" in body:
                 found = True
                 break
-        assert found, "Expected source slug derived from XYZ_201 filename"
+        assert found, "Expected source slug 'xyz_201' derived from XYZ_201 filename"
 
     def test_source_id_pattern_validates_schema(self, pipeline_registry):
         """Emitted sourceIds match the source_reference schema pattern."""

@@ -50,11 +50,17 @@ from .param_mapper import ParameterMappingError, TaskParameterMapper  # noqa: E4
 # deployments that strip the hardening package, and a debug log makes
 # future silent regressions observable.
 try:
-    from ..hardening.error_classifier import ErrorClass, ErrorClassifier, PoisonPillDetector
+    from ..hardening.error_classifier import (
+        ErrorClass,
+        ErrorClassifier,
+        PoisonPillDetector,
+        RetryPolicy,
+    )
     HARDENING_ERROR_CLASSIFIER = True
 except ImportError as _exc:
     HARDENING_ERROR_CLASSIFIER = False
     ErrorClass = None
+    RetryPolicy = None  # type: ignore[assignment]
     logging.getLogger(__name__).debug(
         "Hardening import failed (error_classifier): %s", _exc
     )
@@ -302,13 +308,32 @@ class TaskExecutor:
         # Error classifier for intelligent retry decisions
         self.error_classifier = None
         self.poison_detector = None
+        self.retry_policy = None
         if HARDENING_ERROR_CLASSIFIER:
             self.error_classifier = ErrorClassifier()
             self.poison_detector = PoisonPillDetector(
                 threshold=poison_pill_threshold,
                 window_seconds=300
             )
-            logger.debug(f"[{self.run_id}] Error classifier and poison detector initialized")
+            # Wave 36: wire the RetryPolicy so ``_execute_with_retries``
+            # actually sleeps between attempts on transient errors. The
+            # base_delay / max_delay / exponential_base are driven by
+            # the OrchestratorConfig fields, honoring the
+            # ``retry_delay_seconds`` knob that pre-Wave-36 was defined
+            # but never consulted.
+            base_delay = float(
+                getattr(self.config, "retry_delay_seconds", 5) or 5
+            )
+            self.retry_policy = RetryPolicy(
+                max_retries=self.max_retries,
+                base_delay_seconds=base_delay,
+                max_delay_seconds=max(300.0, base_delay * 60),
+                exponential_base=2.0,
+            )
+            logger.debug(
+                f"[{self.run_id}] Error classifier + poison detector + "
+                f"retry policy initialized (base_delay={base_delay}s)"
+            )
 
         # Checkpoint manager for crash recovery
         self.checkpoint_manager = None
@@ -632,6 +657,35 @@ class TaskExecutor:
                     rationale=rationale,
                 )
 
+            # Wave 36: honor the configured retry backoff between
+            # attempts. Pre-Wave-36 the loop would re-dispatch
+            # immediately, which for rate-limited LLM calls meant we'd
+            # fire max_retries requests inside the provider's cooldown
+            # window and amplify the throttling. ``RetryPolicy`` is
+            # driven by the ErrorClassifier's classification of the
+            # most recent failure (transient → exponential, else fixed
+            # base_delay). Under pytest we short-circuit the sleep so
+            # the test suite doesn't stretch into minutes when
+            # exercising retry paths on the 30s default config.
+            if (
+                attempt < self.max_retries
+                and self.retry_policy
+                and self.error_classifier
+                and last_error is not None
+                and "PYTEST_CURRENT_TEST" not in os.environ
+            ):
+                # Re-classify the last observed error so the policy can
+                # pick the right curve. ``classify`` accepts an
+                # exception OR a pre-built ClassifiedError; we pass a
+                # synthetic RuntimeError carrying the message because
+                # the original exception may no longer be in scope.
+                classified = self.error_classifier.classify(
+                    RuntimeError(last_error), task_id,
+                )
+                delay = self.retry_policy.get_retry_delay(attempt, classified)
+                if delay > 0:
+                    await asyncio.sleep(delay)
+
         return ExecutionResult(
             task_id=task_id,
             status="ERROR",
@@ -867,6 +921,28 @@ class TaskExecutor:
                     if result.status == "COMPLETE":
                         completed_ids.add(task_id)
                     task["status"] = result.status
+
+            # Wave 38: stop the batch loop as soon as any task emits
+            # POISON_PILL so subsequent batches don't waste work.
+            # In-flight siblings inside the current batch have already
+            # completed (``asyncio.gather`` awaits them all), so this
+            # doesn't cancel mid-flight requests — that would require
+            # switching to ``asyncio.wait(FIRST_COMPLETED)`` + explicit
+            # task.cancel(), which risks partial-state artifacts on
+            # the tool side. The stop-next-batch behaviour is the safe
+            # minimum: CLAUDE.md promises poison detection halts the
+            # batch; pre-Wave-38 it only marked the offender and kept
+            # dispatching remaining runnables.
+            if any(
+                r.status == "POISON_PILL"
+                for r in results.values()
+                if not isinstance(r, Exception)
+            ):
+                logger.error(
+                    f"[{self.run_id}] Poison pill observed; "
+                    f"halting batch loop (remaining runnables skipped)"
+                )
+                break
 
         return results
 

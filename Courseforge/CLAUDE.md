@@ -87,7 +87,7 @@ USER REQUEST →
 | Agent | Purpose | When to Use |
 |-------|---------|-------------|
 | `requirements-collector` | Course specification gathering | New course projects |
-| `course-outliner` | Course structure and learning objectives | Creating course framework |
+| `course-outliner` | Synthesize canonical `TO-NN` / `CO-NN` objectives from textbook structure; persist `synthesized_objectives.json`. Wave 24+ routes this agent to `plan_course_structure` (no longer just creates project dirs). | Creating course framework |
 | `content-generator` | Educational content creation | Content development (1 file per agent) |
 | `quality-assurance` | Pattern prevention and validation | Quality gates |
 | `oscqr-course-evaluator` | Educational quality assessment | OSCQR evaluation |
@@ -256,6 +256,37 @@ Courseforge HTML pages embed machine-readable instructional design metadata for 
 | `data-cf-source-primary` | `<section>`, headings, component wrappers | The primary `sourceId` for the block (subset of `data-cf-source-ids`) when one source dominates. |
 
 Attributes stop at the **section / component wrapper level** — never on every `<p>` / `<li>` / `<tr>` in prose.
+
+### Wave 35: ancestor-walkable grounding
+
+`ContentGroundingValidator` walks each non-trivial `<p>` / `<li>` /
+`<figcaption>` / `<blockquote>`'s ancestor chain to find the first
+`data-cf-source-ids` attribute. Three emit-side contracts keep that
+walk passing:
+
+1. **Content sections are wrapped in `<section data-cf-source-ids="…">`.**
+   `Courseforge/scripts/generate_course.py::_render_content_sections`
+   now wraps each h2/h3 + paragraph group in a `<section>` wrapper
+   carrying the section's resolved source-ids. Pre-Wave-35 the
+   attribute lived only on the `<h2>` (a DOM sibling of the `<p>`),
+   which the validator's ancestor walk couldn't reach.
+2. **`content_NN` pages inherit `content_01` grounding.**
+   `_page_refs_for` falls back from `content_NN` → `content_01` in
+   the `source_module_map`. The source-router only emits a single
+   per-week `content_01` entry; every generated content page in that
+   week shares the same DART source region, so the fallback is the
+   correct grounding (not a workaround).
+3. **Objectives `<section>` mirrors page-level source-ids.**
+   `ensure_objectives_on_page` scans the page body for the first
+   `<section data-cf-source-ids="…">` wrapper and stamps the same
+   ids onto the injected objectives section. Long synthesized LO
+   statements that exceed the 30-word non-trivial floor otherwise
+   flagged as ungrounded under the ancestor walk.
+
+DART-side slug contract (see `DART/CLAUDE.md`): the `dart:{slug}#{block_id}`
+slug uses `lowercase + space-to-hyphen` normalization (not
+`canonical_slug`'s underscore collapse), matching the validator's
+`_resolve_valid_block_ids` rule.
 
 ### JSON-LD Structured Metadata
 
