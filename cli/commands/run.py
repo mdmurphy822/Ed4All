@@ -111,11 +111,17 @@ async def _create_textbook_workflow(
     """
     from MCP.tools.pipeline_tools import create_textbook_pipeline
 
+    # Wave 39 follow-up: propagate ``duration_weeks_explicit`` so the
+    # extractor's auto-scale branch fires on real runs when ``--weeks``
+    # was unset. Without this, omission of the key in params only
+    # affects ``--dry-run`` output while live runs silently fell back
+    # to the fixed 12-week default (PR #100 review finding).
     result = await create_textbook_pipeline(
         pdf_paths=params.get("pdf_paths", params.get("corpus", "")),
         course_name=params["course_name"],
         objectives_path=params.get("objectives_path"),
         duration_weeks=params.get("duration_weeks", 12),
+        duration_weeks_explicit=params.get("duration_weeks_explicit", True),
         generate_assessments=params.get("generate_assessments", True),
         assessment_count=params.get("assessment_count", 50),
         bloom_levels=params.get("bloom_levels", "remember,understand,apply,analyze"),

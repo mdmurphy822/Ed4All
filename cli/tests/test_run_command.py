@@ -166,6 +166,134 @@ class TestBuildWorkflowParamsDurationWeeks:
         assert params["duration_weeks_explicit"] is True
 
 
+class TestCreateTextbookWorkflowFlagPropagation:
+    """Wave 39 follow-up: verify the runtime path honours the
+    ``duration_weeks_explicit`` flag, not just the dry-run output.
+
+    PR #100 review finding: Wave 39's initial fix omitted
+    ``duration_weeks`` from the dry-run params but
+    ``_create_textbook_workflow`` still forwarded a fixed 12 to
+    ``create_textbook_pipeline`` via the ``.get(..., 12)`` default.
+    Real runs therefore never hit the extractor's auto-scale branch,
+    creating a plan/runtime mismatch.
+    """
+
+    @pytest.mark.asyncio
+    async def test_runtime_propagates_explicit_false_when_weeks_unset(self):
+        from cli.commands import run as run_mod
+
+        params = _build_workflow_params(
+            "textbook_to_course",
+            corpus="my.pdf",
+            course_name="PROPAGATE_101",
+            weeks=None,
+            no_assessments=False,
+            assessment_count=50,
+            bloom_levels="remember,understand,apply,analyze",
+            priority="normal",
+            objectives_path=None,
+        )
+        assert params["duration_weeks_explicit"] is False
+        assert "duration_weeks" not in params
+
+        captured: dict = {}
+
+        async def _fake_create_textbook_pipeline(**kwargs):
+            captured.update(kwargs)
+            return json.dumps({"success": True, "workflow_id": "WF-TEST"})
+
+        with patch(
+            "MCP.tools.pipeline_tools.create_textbook_pipeline",
+            new=_fake_create_textbook_pipeline,
+        ):
+            result = await run_mod._create_textbook_workflow(params)
+
+        assert result["success"] is True
+        # The runtime path must forward the explicit flag. Pre-fix it
+        # was dropped and every textbook run got the hard-coded 12.
+        assert captured.get("duration_weeks_explicit") is False
+        # ``duration_weeks`` still defaults to 12 as the nominal value;
+        # the extractor reads it + the flag together and decides to
+        # override when the flag is False.
+        assert captured.get("duration_weeks") == 12
+
+    @pytest.mark.asyncio
+    async def test_runtime_propagates_explicit_true_when_weeks_set(self):
+        from cli.commands import run as run_mod
+
+        params = _build_workflow_params(
+            "textbook_to_course",
+            corpus="my.pdf",
+            course_name="PROPAGATE_102",
+            weeks=14,
+            no_assessments=False,
+            assessment_count=50,
+            bloom_levels="remember,understand,apply,analyze",
+            priority="normal",
+            objectives_path=None,
+        )
+        assert params["duration_weeks_explicit"] is True
+        assert params["duration_weeks"] == 14
+
+        captured: dict = {}
+
+        async def _fake_create_textbook_pipeline(**kwargs):
+            captured.update(kwargs)
+            return json.dumps({"success": True, "workflow_id": "WF-TEST"})
+
+        with patch(
+            "MCP.tools.pipeline_tools.create_textbook_pipeline",
+            new=_fake_create_textbook_pipeline,
+        ):
+            await run_mod._create_textbook_workflow(params)
+
+        assert captured.get("duration_weeks_explicit") is True
+        assert captured.get("duration_weeks") == 14
+
+
+class TestCreateTextbookPipelinePropagatesFlag:
+    """Wave 39 follow-up: ``create_textbook_pipeline`` must surface
+    ``duration_weeks_explicit`` into the workflow state's ``params``
+    so ``_extract_textbook_structure`` sees it via kwargs.
+    """
+
+    @pytest.mark.asyncio
+    async def test_explicit_flag_flows_into_workflow_state(self, tmp_path, monkeypatch):
+        from MCP.tools import pipeline_tools
+        from MCP.tools.pipeline_tools import create_textbook_pipeline
+
+        # Create a PDF inside a tmp root and point PROJECT_ROOT at it
+        # so the path-escape guard inside ``create_textbook_pipeline``
+        # accepts our synthetic fixture.
+        pdf = tmp_path / "book.pdf"
+        pdf.write_bytes(b"%PDF-1.4 stub")
+        monkeypatch.setattr(pipeline_tools, "PROJECT_ROOT", tmp_path)
+
+        captured: dict = {}
+
+        async def _fake_create_workflow_impl(**kwargs):
+            captured.update(kwargs)
+            return json.dumps({"success": True, "workflow_id": "WF-IMPL"})
+
+        with patch(
+            "MCP.tools.orchestrator_tools.create_workflow_impl",
+            new=_fake_create_workflow_impl,
+        ):
+            raw = await create_textbook_pipeline(
+                pdf_paths=str(pdf),
+                course_name="FLOWTEST_101",
+                duration_weeks=12,
+                duration_weeks_explicit=False,
+            )
+
+        result = json.loads(raw)
+        # success=True means the fake responded, so captured is populated.
+        assert result.get("success") is True, result
+        forwarded = json.loads(captured["params"])
+        assert forwarded.get("duration_weeks_explicit") is False
+        assert forwarded.get("duration_weeks") == 12
+
+
 class TestResume:
     def test_resume_invokes_orchestrator(self):
         runner = CliRunner()
