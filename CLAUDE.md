@@ -429,11 +429,18 @@ tracker.set_status("W001", "content_generator", "Module_3.html", "IN_PROGRESS")
        assessment objective_id isn't covered by a chunk's
        learning_outcome_refs.
 
-9. libv2_archival
+9. training_synthesis (optional)
+   └── Synthesize instruction + preference training pairs from the
+       generated chunks + assessments. Routes via the
+       `training-synthesizer` agent (tool: `synthesize_training`).
+       Optional phase: skipped when no `ANTHROPIC_API_KEY` or when
+       `--skip-training` is passed on the CLI.
+
+10. libv2_archival
    └── Archive course artifacts to LibV2 (raw PDFs, DART HTML, IMSCC,
        RAG corpus). Gated by libv2_manifest integrity checks.
 
-10. finalization
+11. finalization
    └── Final validation and training data export.
 ```
 
@@ -482,6 +489,7 @@ tracker.set_status("W001", "content_generator", "Module_3.html", "IN_PROGRESS")
 | `rag-indexer` | Build vector embeddings & index |
 | `assessment-generator` | Generate questions & distractors |
 | `assessment-validator` | Validate quality & Bloom's alignment |
+| `training-synthesizer` | Synthesize instruction + preference training pairs from chunks + assessments (routes to `synthesize_training`). |
 
 ---
 
@@ -597,34 +605,36 @@ validation_gates:
 
 ### Active Gates
 
-| Workflow | Gate | Validator |
-|----------|------|-----------|
-| `course_generation` | `content_structure` | ContentStructureValidator |
-| `course_generation` | `imscc_structure` | IMSCCValidator |
-| `course_generation` | `wcag_compliance` | WCAGValidator |
-| `course_generation` | `oscqr_score` | OSCQRValidator (warning) |
-| `course_generation` | `page_objectives` | PageObjectivesValidator |
-| `intake_remediation` | `imscc_parse` | IMSCCParseValidator |
-| `intake_remediation` | `wcag_compliance` | WCAGValidator |
-| `batch_dart` | `wcag_aa_compliance` | WCAGValidator |
-| `batch_dart` | `dart_markers` | DartMarkersValidator |
-| `textbook_to_course` | `dart_markers` | DartMarkersValidator |
-| `textbook_to_course` | `content_structure` | ContentStructureValidator (warning) |
-| `textbook_to_course` | `source_refs` | PageSourceRefValidator |
-| `textbook_to_course` | `imscc_structure` | IMSCCValidator (warning) |
-| `textbook_to_course` | `page_objectives` | PageObjectivesValidator |
-| `textbook_to_course` | `imscc_input_valid` | IMSCCValidator (pre-assessment) |
-| `textbook_to_course` | `assessment_quality` | AssessmentQualityValidator |
-| `textbook_to_course` | `assessment_objective_alignment` | AssessmentObjectiveAlignmentValidator |
-| `textbook_to_course` | `content_grounding` | ContentGroundingValidator (Wave 31) |
-| `textbook_to_course` | `libv2_manifest` | LibV2ManifestValidator |
-| `rag_training` | `assessment_quality` | AssessmentQualityValidator |
-| `rag_training` | `bloom_alignment` | BloomAlignmentValidator (warning) |
-| `rag_training` | `leak_check` | LeakCheckValidator |
-| `rag_training` | `outcome_ref_integrity` | LeakCheckValidator (warning) |
-| `rag_training` | `content_fact_check` | ContentFactValidator (warning) |
-| `rag_training` | `question_quality` | QuestionQualityValidator |
-| `rag_training` | `final_quality` | FinalQualityValidator |
+Source of truth: `config/workflows.yaml::validation_gates`. Phase column below shows the phase at which each gate fires; severity in parentheses (`critical` when unmarked).
+
+| Workflow | Phase | Gate | Validator |
+|----------|-------|------|-----------|
+| `course_generation` | `content_generation` | `content_structure` | ContentStructureValidator |
+| `course_generation` | `packaging` | `imscc_structure` | IMSCCValidator |
+| `course_generation` | `packaging` | `page_objectives` | PageObjectivesValidator |
+| `course_generation` | `validation` | `wcag_compliance` | WCAGValidator |
+| `course_generation` | `validation` | `oscqr_score` | OSCQRValidator (warning) |
+| `intake_remediation` | `parsing` | `imscc_parse` | IMSCCParseValidator |
+| `intake_remediation` | `validation` | `wcag_compliance` | WCAGValidator |
+| `batch_dart` | `multi_source_synthesis` | `dart_markers` | DartMarkersValidator |
+| `batch_dart` | `validation` | `wcag_aa_compliance` | WCAGValidator |
+| `textbook_to_course` | `dart_conversion` | `dart_markers` | DartMarkersValidator |
+| `textbook_to_course` | `content_generation` | `content_structure` | ContentStructureValidator (warning) |
+| `textbook_to_course` | `content_generation` | `source_refs` | PageSourceRefValidator |
+| `textbook_to_course` | `content_generation` | `content_grounding` | ContentGroundingValidator (Wave 31) |
+| `textbook_to_course` | `packaging` | `imscc_structure` | IMSCCValidator (warning) |
+| `textbook_to_course` | `packaging` | `page_objectives` | PageObjectivesValidator |
+| `textbook_to_course` | `trainforge_assessment` | `imscc_input_valid` | IMSCCValidator (pre-assessment) |
+| `textbook_to_course` | `trainforge_assessment` | `assessment_quality` | AssessmentQualityValidator |
+| `textbook_to_course` | `trainforge_assessment` | `assessment_objective_alignment` | AssessmentObjectiveAlignmentValidator |
+| `textbook_to_course` | `libv2_archival` | `libv2_manifest` | LibV2ManifestValidator |
+| `rag_training` | `assessment_generation` | `assessment_quality` | AssessmentQualityValidator |
+| `rag_training` | `assessment_generation` | `bloom_alignment` | BloomAlignmentValidator (warning) |
+| `rag_training` | `assessment_generation` | `leak_check` | LeakCheckValidator |
+| `rag_training` | `assessment_generation` | `outcome_ref_integrity` | LeakCheckValidator (warning) |
+| `rag_training` | `assessment_generation` | `content_fact_check` | ContentFactValidator (warning) |
+| `rag_training` | `assessment_generation` | `question_quality` | QuestionQualityValidator |
+| `rag_training` | `validation` | `final_quality` | FinalQualityValidator |
 
 ---
 

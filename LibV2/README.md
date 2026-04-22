@@ -21,7 +21,7 @@ python -m LibV2.tools.libv2.cli catalog list --division STEM
 
 ## More
 
-See [`LibV2/CLAUDE.md`](CLAUDE.md) for the storage model, classification taxonomy, retrieval API, and import/validation workflows. Query-based retrieval is the only supported access pattern — never read `chunks.json` files directly.
+See [`LibV2/CLAUDE.md`](CLAUDE.md) for the storage model, classification taxonomy, retrieval API, and import/validation workflows. Query-based retrieval is the only supported access pattern — never read `chunks.jsonl` files directly.
 
 ## License
 
