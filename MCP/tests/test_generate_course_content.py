@@ -347,3 +347,57 @@ class TestContentGenerationShape:
         body = overview.read_text(encoding="utf-8")
         assert "sourceReferences" in body
         assert "dart:photosynthesis" in body
+
+
+# ---------------------------------------------------------------------- #
+# Wave 40: duration_weeks precedence — config's auto-scaled value must
+# beat stale kwargs. Regression for Wave 39 smoke-test bug where the
+# content generator emitted 12 week dirs despite config recording 8.
+# ---------------------------------------------------------------------- #
+
+
+class TestDurationWeeksPrecedence:
+    def test_config_autoscaled_wins_when_kwargs_not_explicit(
+        self, pipeline_registry,
+    ):
+        """Wave 40: kwargs duration_weeks_explicit=False → config's 8 drives output."""
+        tools, tmp_path, staging_root = pipeline_registry
+        project_id = "PROJ-TESTPIPE-WAVE40-A"
+        project_path = _make_project(tmp_path, project_id, duration_weeks=8)
+        staging_dir = _stage_dart(staging_root, "WF-WAVE40-A")
+
+        result = asyncio.run(tools["generate_course_content"](
+            project_id=project_id,
+            staging_dir=str(staging_dir),
+            duration_weeks=12,
+            duration_weeks_explicit=False,
+        ))
+        payload = json.loads(result)
+        assert payload.get("success") is True, payload
+        # Auto-scaled config (8) beats stale kwargs (12).
+        assert payload["weeks_prepared"] == 8
+
+        content_dir = project_path / "03_content_development"
+        week_dirs = sorted(
+            p.name for p in content_dir.iterdir() if p.is_dir() and p.name.startswith("week_")
+        )
+        assert week_dirs == [f"week_{i:02d}" for i in range(1, 9)], week_dirs
+        assert "week_09" not in week_dirs
+
+    def test_kwargs_wins_when_duration_explicit(self, pipeline_registry):
+        """Wave 40: duration_weeks_explicit=True → kwargs value still drives output."""
+        tools, tmp_path, staging_root = pipeline_registry
+        project_id = "PROJ-TESTPIPE-WAVE40-B"
+        project_path = _make_project(tmp_path, project_id, duration_weeks=8)
+        staging_dir = _stage_dart(staging_root, "WF-WAVE40-B")
+
+        result = asyncio.run(tools["generate_course_content"](
+            project_id=project_id,
+            staging_dir=str(staging_dir),
+            duration_weeks=3,
+            duration_weeks_explicit=True,
+        ))
+        payload = json.loads(result)
+        assert payload.get("success") is True, payload
+        # Explicit kwargs (3) beats config (8).
+        assert payload["weeks_prepared"] == 3

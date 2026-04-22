@@ -236,3 +236,83 @@ def test_project_location_by_course_name(planner_fixture):
     ))
     assert result["success"]
     assert result["project_id"] == fx["project_id"]
+
+
+# ---------------------------------------------------------------------- #
+# Wave 40: duration_weeks precedence — auto-scaled config must beat stale
+# kwargs when duration_weeks_explicit=False. Regression for the Wave 39
+# smoke-test bug where the planner rewrote the auto-scaled 8 back to the
+# kwargs default of 12, fanning out into 12 emitted week dirs instead of 8.
+# ---------------------------------------------------------------------- #
+
+
+def _seed_autoscaled_config(project_dir: Path, auto_weeks: int = 8) -> None:
+    """Overwrite project_config.json to mimic a post-extractor auto-scaled state."""
+    (project_dir / "project_config.json").write_text(
+        json.dumps({
+            "project_id": project_dir.name,
+            "course_name": "TESTCOURSE_101",
+            "duration_weeks": auto_weeks,
+            "duration_weeks_autoscaled": True,
+            "credit_hours": 3,
+        }, indent=2),
+        encoding="utf-8",
+    )
+
+
+def test_autoscaled_config_wins_when_duration_not_explicit(planner_fixture):
+    """Wave 40: duration_weeks_explicit=False → config's 8 wins over stale kwargs 12."""
+    fx = planner_fixture
+    _seed_autoscaled_config(fx["project_dir"], auto_weeks=8)
+    _write_dart_html(
+        fx["staging_dir"] / "book.html",
+        ["Topic One", "Topic Two"],
+    )
+    result = asyncio.run(_call(
+        project_id=fx["project_id"],
+        staging_dir=str(fx["staging_dir"]),
+        duration_weeks=12,
+        duration_weeks_explicit=False,
+    ))
+    assert result["success"]
+
+    cfg = json.loads(
+        (fx["project_dir"] / "project_config.json").read_text(encoding="utf-8")
+    )
+    assert cfg["duration_weeks"] == 8, (
+        f"stale kwargs (12) clobbered auto-scaled config (8): {cfg['duration_weeks']}"
+    )
+
+    objectives = json.loads(
+        Path(result["synthesized_objectives_path"]).read_text(encoding="utf-8")
+    )
+    assert objectives["duration_weeks"] == 8
+
+
+def test_explicit_duration_kwargs_wins(planner_fixture):
+    """Wave 40: duration_weeks_explicit=True → kwargs value still wins."""
+    fx = planner_fixture
+    _seed_autoscaled_config(fx["project_dir"], auto_weeks=8)
+    _write_dart_html(
+        fx["staging_dir"] / "book.html",
+        ["Topic One", "Topic Two"],
+    )
+    result = asyncio.run(_call(
+        project_id=fx["project_id"],
+        staging_dir=str(fx["staging_dir"]),
+        duration_weeks=12,
+        duration_weeks_explicit=True,
+    ))
+    assert result["success"]
+
+    cfg = json.loads(
+        (fx["project_dir"] / "project_config.json").read_text(encoding="utf-8")
+    )
+    assert cfg["duration_weeks"] == 12, (
+        f"explicit kwargs should win over auto-scaled config, got {cfg['duration_weeks']}"
+    )
+
+    objectives = json.loads(
+        Path(result["synthesized_objectives_path"]).read_text(encoding="utf-8")
+    )
+    assert objectives["duration_weeks"] == 12
