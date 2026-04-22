@@ -30,6 +30,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from lib.ontology.bloom import get_verbs_list as _get_canonical_verbs_list  # noqa: E402
+from lib.ontology.bloom import bloom_to_cognitive_domain as _bloom_to_cognitive_domain  # noqa: E402
 from lib.ontology.slugs import canonical_slug as _slugify  # noqa: E402
 from lib.ontology.taxonomy import validate_classification  # noqa: E402
 from lib.ontology.teaching_roles import map_role as _map_teaching_role  # noqa: E402
@@ -148,15 +149,12 @@ def resolve_week_objectives(
 # lib.ontology.bloom). Migrated in Wave 1.2 / Worker H (REC-BL-01).
 BLOOM_VERBS: Dict[str, List[str]] = _get_canonical_verbs_list()
 
-# Cognitive domain inference from content type / Bloom's level
-BLOOM_TO_DOMAIN: Dict[str, str] = {
-    "remember": "factual",
-    "understand": "conceptual",
-    "apply": "procedural",
-    "analyze": "conceptual",
-    "evaluate": "metacognitive",
-    "create": "procedural",
-}
+# Wave 48: schema-sourced cognitive domain — the bloom_level → knowledge-domain
+# mapping now lives in schemas/taxonomies/cognitive_domain.json and is loaded
+# via lib.ontology.bloom.bloom_to_cognitive_domain (imported above as
+# _bloom_to_cognitive_domain). Pre-Wave-48 this file held a local
+# BLOOM_TO_DOMAIN dict that could drift from the identical copy in
+# MCP/tools/_content_gen_helpers.py::_render_objectives_section.
 
 
 def detect_bloom_level(objective_text: str) -> Tuple[Optional[str], Optional[str]]:
@@ -347,7 +345,8 @@ def _render_objectives(
         bloom_verb = o.get("bloom_verb")
         if not bloom_level:
             bloom_level, bloom_verb = detect_bloom_level(o["statement"])
-        domain = BLOOM_TO_DOMAIN.get(bloom_level, "conceptual") if bloom_level else ""
+        # Wave 48: schema-sourced cognitive domain
+        domain = _bloom_to_cognitive_domain(bloom_level) if bloom_level else ""
         attrs = f' data-cf-objective-id="{html_mod.escape(o["id"])}"'
         if bloom_level:
             attrs += f' data-cf-bloom-level="{bloom_level}"'
@@ -761,7 +760,8 @@ def _build_objectives_metadata(objectives: List[Dict]) -> List[Dict[str, Any]]:
         bloom_verb = o.get("bloom_verb")
         if not bloom_level:
             bloom_level, bloom_verb = detect_bloom_level(o["statement"])
-        domain = BLOOM_TO_DOMAIN.get(bloom_level, "conceptual") if bloom_level else "conceptual"
+        # Wave 48: schema-sourced cognitive domain
+        domain = _bloom_to_cognitive_domain(bloom_level)
         key_concepts = [_slugify(c) for c in o.get("key_concepts", []) if _slugify(c)]
         entry: Dict[str, Any] = {
             "id": o["id"],
