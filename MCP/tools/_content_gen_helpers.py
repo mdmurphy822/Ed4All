@@ -56,6 +56,13 @@ _SECTION_RE = re.compile(
 _HEADING_RE = re.compile(
     r"(?is)<(h[1-6])[^>]*>(.*?)</\1>"
 )
+# Wave 35: full-document heading fallback — we need both the start offset
+# and the tag name so the scan-by-boundary pass can tie each paragraph
+# back to the nearest enclosing <h2>/<h3>. ``_HEADING_BOUNDARY_RE``
+# matches the opening tag only; the closing tag's offset is derived.
+_HEADING_OPEN_RE = re.compile(
+    r"(?is)<h([2-3])[^>]*>(.*?)</h\1>"
+)
 _PARAGRAPH_RE = re.compile(r"(?is)<p[^>]*>(.*?)</p>")
 _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
@@ -748,6 +755,160 @@ def extract_self_check_questions(full_text: str) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _build_article_block_id_map(html: str) -> List[Tuple[int, int, str]]:
+    """Return (start, end, block_id) tuples for every ``<article …
+    data-dart-block-id="…">`` in ``html``. Used by the heading-fallback
+    parser to ground each topic on the enclosing chapter's block id
+    when paragraphs live outside ``<section>`` wrappers (Wave 35).
+    """
+    spans: List[Tuple[int, int, str]] = []
+    for match in re.finditer(r"(?is)<article[^>]*>", html):
+        block_id_match = _DATA_DART_BLOCK_ID_RE.search(match.group(0))
+        if not block_id_match:
+            continue
+        block_id = block_id_match.group(1).strip()
+        close_idx = html.find("</article>", match.end())
+        close_end = close_idx + len("</article>") if close_idx >= 0 else len(html)
+        spans.append((match.start(), close_end, block_id))
+    return spans
+
+
+def _article_block_for_offset(
+    article_spans: List[Tuple[int, int, str]], offset: int,
+) -> str:
+    for start, end, block_id in article_spans:
+        if start <= offset < end:
+            return block_id
+    return ""
+
+
+def _parse_html_heading_fallback(
+    html: str,
+    stem: str,
+    chapter_for_offset,
+) -> List[Dict[str, Any]]:
+    """Section-boundary fallback for DART HTML where paragraphs live
+    outside ``<section>`` wrappers.
+
+    Wave 35: on the Bates corpus DART emits ``<section
+    data-dart-block-id="…">`` tags that hold only a heading, while the
+    1000+ ``<p>`` tags sit directly inside ``<main>``/``<article>``
+    between consecutive sections. The primary section-based parser
+    returned zero topics on those files, which fired the Wave 32
+    CONTENT_GENERATION_EMPTY guard. This fallback walks every
+    ``<section>`` opening tag, harvests its block id + heading, and
+    grabs the paragraphs between ``</section>`` and the next
+    ``<section>`` (or the end of the document) as the topic body. When
+    no ``<section>`` tags are present we fall back to a plain
+    ``<h2>``/``<h3>`` boundary scan — block-id grounding is then
+    unavailable, but at least the content_nonempty guard clears.
+    """
+    fallback_topics: List[Dict[str, Any]] = []
+    article_spans = _build_article_block_id_map(html)
+
+    section_opens = list(re.finditer(r"(?is)<section([^>]*)>", html))
+    if section_opens:
+        boundaries: List[Tuple[int, int, str, str]] = []
+        for match in section_opens:
+            opening_tag = match.group(0)
+            block_id_match = _DATA_DART_BLOCK_ID_RE.search(opening_tag)
+            block_id = (
+                block_id_match.group(1).strip() if block_id_match else ""
+            )
+            close_idx = html.find("</section>", match.end())
+            close_end = close_idx + len("</section>") if close_idx >= 0 else match.end()
+            inside_body = (
+                html[match.end():close_idx] if close_idx >= 0 else ""
+            )
+            heading_match = _HEADING_RE.search(inside_body)
+            heading_raw = heading_match.group(2) if heading_match else ""
+            heading = _strip_tags(heading_raw)
+            boundaries.append((match.start(), close_end, heading, block_id))
+        # close_idx/close_end captured above per iteration.
+        boundaries.append((len(html), len(html), "", ""))
+
+        for i in range(len(boundaries) - 1):
+            sec_start, sec_close_end, heading, block_id = boundaries[i]
+            next_sec_start = boundaries[i + 1][0]
+            body_slice = html[sec_close_end:next_sec_start]
+            paragraphs_raw = _PARAGRAPH_RE.findall(body_slice)
+            paragraphs: List[str] = []
+            for para in paragraphs_raw:
+                clean = _strip_tags(para)
+                if len(clean) >= 40:
+                    paragraphs.append(clean)
+            if not paragraphs:
+                continue
+            full_text = " ".join(paragraphs)
+            word_count = len(full_text.split())
+            if word_count < 30:
+                continue
+            if _is_low_signal_heading(heading):
+                continue
+            # Prefer the section's own block id; fall back to the
+            # enclosing article's block id when the section didn't
+            # carry one (keeps per-paragraph grounding non-empty).
+            resolved_block_id = block_id or _article_block_for_offset(
+                article_spans, sec_start,
+            )
+            fallback_topics.append({
+                "heading": (heading[:120] or f"Section from {stem}"),
+                "paragraphs": paragraphs,
+                "key_terms": _extract_key_terms(full_text),
+                "source_file": stem,
+                "word_count": word_count,
+                "chapter_id": chapter_for_offset(sec_start),
+                "dart_block_ids": [resolved_block_id] if resolved_block_id else [],
+                "extracted_lo_statements": [],
+                "extracted_misconceptions": [],
+                "extracted_questions": [],
+            })
+        if fallback_topics:
+            return fallback_topics
+
+    # No <section> tags — scan headings directly. Source grounding
+    # is unavailable but at least we emit non-empty pages.
+    heading_spans: List[Tuple[int, int, str]] = []
+    for match in _HEADING_OPEN_RE.finditer(html):
+        heading_text = _strip_tags(match.group(2))
+        heading_spans.append((match.start(), match.end(), heading_text))
+    if not heading_spans:
+        return fallback_topics
+    heading_spans.append((len(html), len(html), ""))
+    for i in range(len(heading_spans) - 1):
+        start, end, heading = heading_spans[i]
+        next_start = heading_spans[i + 1][0]
+        body_slice = html[end:next_start]
+        paragraphs_raw = _PARAGRAPH_RE.findall(body_slice)
+        paragraphs: List[str] = []
+        for para in paragraphs_raw:
+            clean = _strip_tags(para)
+            if len(clean) >= 40:
+                paragraphs.append(clean)
+        if not paragraphs:
+            continue
+        full_text = " ".join(paragraphs)
+        word_count = len(full_text.split())
+        if word_count < 30:
+            continue
+        if _is_low_signal_heading(heading):
+            continue
+        article_block_id = _article_block_for_offset(article_spans, start)
+        fallback_topics.append({
+            "heading": heading[:120] or f"Section from {stem}",
+            "paragraphs": paragraphs,
+            "key_terms": _extract_key_terms(full_text),
+            "source_file": stem,
+            "word_count": word_count,
+            "chapter_id": chapter_for_offset(start),
+            "dart_block_ids": [article_block_id] if article_block_id else [],
+            "extracted_lo_statements": [],
+            "extracted_misconceptions": [],
+            "extracted_questions": [],
+        })
+    return fallback_topics
+
+
 def parse_dart_html_files(html_paths: List[Path]) -> List[Dict[str, Any]]:
     """Parse staged DART HTML files into a flat list of topic dicts.
 
@@ -825,6 +986,7 @@ def parse_dart_html_files(html_paths: List[Path]) -> List[Dict[str, Any]]:
         if not section_matches:
             section_matches = [("", html, 0)]
 
+        topics_before_file = len(topics)
         for opening_tag, section_body, section_offset in section_matches:
             heading_match = _HEADING_RE.search(section_body)
             heading_raw = heading_match.group(2) if heading_match else ""
@@ -881,6 +1043,16 @@ def parse_dart_html_files(html_paths: List[Path]) -> List[Dict[str, Any]]:
                 "extracted_misconceptions": [],
                 "extracted_questions": [],
             })
+
+        # Wave 35: when the section-based pass added nothing for this
+        # file (DART emitted heading-only <section> tags with the real
+        # paragraphs floating in <main>), fall back to a
+        # heading-boundary scan over the whole HTML so we still ground
+        # Courseforge pages in the source material.
+        if len(topics) == topics_before_file:
+            topics.extend(
+                _parse_html_heading_fallback(html, stem, _chapter_for_offset)
+            )
 
     # De-duplicate topics that share a normalized heading (case- and
     # whitespace-insensitive). Keeps the first occurrence, which tends
@@ -1670,8 +1842,13 @@ def _topic_source_references(
     Slug normalization differs between the two halves of the
     ``dart:{slug}#{block_id}`` shape:
 
-    * Document slug — uses :func:`canonical_slug` on the source file
-      stem to match the way DART / Wave 9 source-router mint slugs.
+    * Document slug — Wave 35 switched from :func:`canonical_slug`
+      (which collapses underscores into one token) to a gentler
+      lowercase + space-to-hyphen transform that matches the
+      :class:`ContentGroundingValidator` and Wave 9 source-router.
+      Pre-Wave-35 emitted slugs like ``batesteachingdigitalageaccessible``
+      couldn't resolve against validator-visible staged HTML whose
+      stem was ``bates_teaching_digital_age_accessible``.
     * Block ID — uses a gentler lowercase + pattern-filter so DART's
       native ``s3_c0`` / 16-hex IDs survive unchanged (the
       ``canonical_slug`` helper would collapse underscores and break
@@ -1684,9 +1861,9 @@ def _topic_source_references(
     if not block_ids:
         return []
     stem = topic.get("source_file") or ""
-    slug = canonical_slug(stem)
-    if not slug:
+    if not stem:
         return []
+    slug = stem.lower().replace(" ", "-")
     refs: List[Dict[str, Any]] = []
     for idx, block_id in enumerate(block_ids):
         # The source_reference schema requires block_id to match
@@ -1798,6 +1975,8 @@ _OBJECTIVES_SENTINEL = 'id="objectives"'
 
 def _render_objectives_section(
     objectives: List[Dict[str, Any]],
+    source_ids: Optional[List[str]] = None,
+    source_primary: Optional[str] = None,
 ) -> str:
     """Render a ``<section id="objectives">`` block with per-objective
     ``data-cf-objective-id`` / ``data-cf-bloom-*`` attributes.
@@ -1805,6 +1984,11 @@ def _render_objectives_section(
     Mirrors the reference_week_01 fixture shape so every emitted page
     has a discoverable objectives surface (the ``page_objectives`` gate
     scans for ``data-cf-objective-id`` on every page, not just overview).
+
+    Wave 35: optional ``source_ids`` stamp ``data-cf-source-ids`` on the
+    outer ``<section>`` so :class:`ContentGroundingValidator`'s ancestor
+    walk can ground the ``<li>`` items (some synthesized LO statements
+    exceed the 30-word non-trivial floor).
     """
     if not objectives:
         return ""
@@ -1842,9 +2026,18 @@ def _render_objectives_section(
             f'{_html.escape(statement)}</li>'
         )
     items_html = "\n".join(items)
+    source_attrs = ""
+    if source_ids:
+        joined = ",".join(_html.escape(sid) for sid in source_ids if sid)
+        if joined:
+            source_attrs = f' data-cf-source-ids="{joined}"'
+            if source_primary:
+                source_attrs += (
+                    f' data-cf-source-primary="{_html.escape(source_primary)}"'
+                )
     return (
-        '\n    <section id="objectives" class="objectives" '
-        'aria-labelledby="objectives-heading">\n'
+        f'\n    <section id="objectives" class="objectives" '
+        f'aria-labelledby="objectives-heading"{source_attrs}>\n'
         '      <h2 id="objectives-heading" data-cf-content-type="overview">'
         'Learning Objectives</h2>\n'
         '      <ul>\n'
@@ -1865,12 +2058,33 @@ def ensure_objectives_on_page(
     metadata, insert the block right after the page's ``<h1>``. Needed
     so Wave 2's ``page_objectives`` gate + the integration test's per-page
     ``data-cf-objective-id`` check both pass across all 5 pages.
+
+    Wave 35: when the page body carries a ``<section
+    data-cf-source-ids="…">`` wrapper (emitted by
+    ``_render_content_sections`` on content pages), mirror those ids
+    onto the injected objectives ``<section>`` so
+    :class:`ContentGroundingValidator`'s ancestor walk finds grounding
+    on long LO statements. No-op on pages without page-level grounding.
     """
     if _OBJECTIVES_SENTINEL in html_text:
         return html_text
     if "data-cf-objective-id" in html_text:
         return html_text
-    section = _render_objectives_section(objectives)
+    src_match = re.search(
+        r'(?is)<section[^>]*\bdata-cf-source-ids\s*=\s*"([^"]+)"[^>]*>',
+        html_text,
+    )
+    src_ids: Optional[List[str]] = None
+    src_primary: Optional[str] = None
+    if src_match:
+        src_ids = [s.strip() for s in src_match.group(1).split(",") if s.strip()]
+        primary_match = re.search(
+            r'(?is)data-cf-source-primary\s*=\s*"([^"]+)"',
+            src_match.group(0),
+        )
+        if primary_match:
+            src_primary = primary_match.group(1).strip()
+    section = _render_objectives_section(objectives, source_ids=src_ids, source_primary=src_primary)
     if not section:
         return html_text
     return _H1_INSIDE_MAIN_RE.sub(
