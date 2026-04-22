@@ -676,44 +676,60 @@ def _summary_recap_paragraphs(
             paragraphs = section.get("paragraphs") or []
             if not paragraphs:
                 continue
-            raw = paragraphs[0]
-            if not isinstance(raw, str):
-                continue
-            para = raw.strip()
-            if not para:
-                continue
-            # Wave 44: check the 30-word eligibility floor BEFORE the
-            # dedupe-prefix reservation. Pre-Wave-44 a short ineligible
-            # paragraph added its 80-char prefix to ``seen`` and
-            # subsequent substantive paragraphs sharing the same
-            # opening text (common on textbooks where successive
-            # sections reuse lead-in phrasing like "In this chapter...")
-            # were then dropped as duplicates — leaving the recap empty
-            # and negating the Wave 43 fix on those corpora.
-            if len(para.split()) < 30:
-                # Validator would ignore this paragraph; skip so the
-                # recap only contains non-trivial prose.
-                continue
-            key = para[:80].lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            # Cap length on a word boundary so the recap stays tight.
-            if len(para) > max_chars_per_paragraph:
-                truncated = para[:max_chars_per_paragraph]
-                last_space = truncated.rfind(" ")
-                if last_space > 0:
-                    truncated = truncated[:last_space]
-                para = truncated.rstrip(",.;:") + "..."
-            words = len(para.split())
-            if total_words + words > max_total_words and picked:
+            # Wave 46: scan through the section's paragraphs until we
+            # find the first one that clears the non-trivial floor.
+            # Pre-Wave-46 we only evaluated ``paragraphs[0]``; modules
+            # whose first paragraph was a short lead-in sentence
+            # ("In this section we examine…") were skipped even when
+            # later paragraphs carried substantive prose. On
+            # lead-in-heavy corpora that silently reintroduced empty
+            # summaries and pushed AGGREGATE_EMPTY_PAGES back into
+            # play — the exact failure mode Wave 43 was meant to fix.
+            #
+            # Wave 44 ordering invariant preserved: the word-count
+            # check runs BEFORE the dedupe-prefix reservation so
+            # short ineligible paragraphs never poison ``seen``.
+            emitted_from_section = False
+            for raw in paragraphs:
+                if emitted_from_section:
+                    break
+                if not isinstance(raw, str):
+                    continue
+                para = raw.strip()
+                if not para:
+                    continue
+                if len(para.split()) < 30:
+                    continue
+                key = para[:80].lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                # Cap length on a word boundary so the recap stays tight.
+                if len(para) > max_chars_per_paragraph:
+                    truncated = para[:max_chars_per_paragraph]
+                    last_space = truncated.rfind(" ")
+                    if last_space > 0:
+                        truncated = truncated[:last_space]
+                    para = truncated.rstrip(",.;:") + "..."
+                words = len(para.split())
+                if total_words + words > max_total_words and picked:
+                    # Total-words cap hit — stop scanning this section
+                    # and fall through to the outer module loop, which
+                    # will also break on the cap.
+                    break
+                picked.append(para)
+                total_words += words
+                emitted_from_section = True
+            # Wave 43 invariant: only take one paragraph per module so
+            # the recap spreads across topics instead of dumping a
+            # single module's prose. Break the section loop after a
+            # successful pick — subsequent sections in the same
+            # module are skipped.
+            if emitted_from_section:
                 break
-            picked.append(para)
-            total_words += words
-            # Only take the first section of each module so we spread
-            # across topics rather than dumping one module's prose.
-            break
         if len(picked) >= max_paragraphs:
+            break
+        if total_words >= max_total_words:
             break
     return picked
 
