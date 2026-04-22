@@ -122,6 +122,160 @@ def _validate_section_content_type(value: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Wave 49: JSON-LD page-metadata schema validation at emit time
+# ---------------------------------------------------------------------------
+#
+# ``_wrap_page`` serializes ``page_metadata`` into a
+# ``<script type="application/ld+json">`` block on every generated page.
+# Pre-Wave-49 nothing validated the payload at emit time — malformed
+# JSON-LD (missing required fields, null ``bloomLevel`` where required,
+# out-of-enum ``contentType``, ``Misconception`` missing ``correction``,
+# ...) shipped silently and was either handled defensively by Trainforge
+# or misclassified the resulting chunk. The canonical shape lives in
+# ``schemas/knowledge/courseforge_jsonld_v1.schema.json``; Wave 49 wires
+# up ``Draft202012Validator`` right before the ``json.dumps`` call.
+#
+# Enforcement mirrors the Wave 50 ``TRAINFORGE_ENFORCE_CONTENT_TYPE``
+# pattern. ``COURSEFORGE_ENFORCE_JSONLD_SCHEMA`` truthy ("1","true",
+# "yes","on") raises ``ValueError`` on a schema miss; unset/falsy logs
+# a WARNING and lets emit proceed — the default, so legacy corpora
+# with known schema quirks (flagged post-Wave-49 in the PR body) don't
+# block CI on the day this lands.
+
+_JSONLD_SCHEMA_PATH = (
+    _PROJECT_ROOT / "schemas" / "knowledge" / "courseforge_jsonld_v1.schema.json"
+)
+_JSONLD_SOURCE_REF_SCHEMA_PATH = (
+    _PROJECT_ROOT / "schemas" / "knowledge" / "source_reference.schema.json"
+)
+_JSONLD_TAXONOMY_FILES = (
+    "bloom_verbs.json",
+    "module_type.json",
+    "content_type.json",
+    "cognitive_domain.json",
+    "question_type.json",
+)
+_ENFORCE_JSONLD_SCHEMA_ENV = "COURSEFORGE_ENFORCE_JSONLD_SCHEMA"
+
+
+def _build_jsonld_validator():
+    """Build a ``Draft202012Validator`` wired to resolve the sibling
+    ``$ref``s used by ``courseforge_jsonld_v1.schema.json`` (taxonomies +
+    source_reference). Returns ``None`` if ``jsonschema`` / ``referencing``
+    aren't importable (the module still loads, but emit-time validation
+    becomes a no-op — tests cover this path).
+    """
+    try:
+        from jsonschema import Draft202012Validator
+        from referencing import Registry, Resource
+    except ImportError:
+        return None
+
+    with open(_JSONLD_SCHEMA_PATH, encoding="utf-8") as f:
+        page_schema = json.load(f)
+    with open(_JSONLD_SOURCE_REF_SCHEMA_PATH, encoding="utf-8") as f:
+        srcref_schema = json.load(f)
+
+    resources = [
+        (page_schema["$id"], Resource.from_contents(page_schema)),
+        (srcref_schema["$id"], Resource.from_contents(srcref_schema)),
+    ]
+    tax_dir = _PROJECT_ROOT / "schemas" / "taxonomies"
+    for name in _JSONLD_TAXONOMY_FILES:
+        with open(tax_dir / name, encoding="utf-8") as f:
+            tax = json.load(f)
+        resources.append((tax["$id"], Resource.from_contents(tax)))
+    registry = Registry().with_resources(resources)
+    return Draft202012Validator(page_schema, registry=registry), page_schema
+
+
+# Import-time load: the schema must exist and parse. We deliberately fail
+# loudly via ImportError rather than silently fall back to "no validation"
+# — the whole point of Wave 49 is to catch malformed emits.
+if not _JSONLD_SCHEMA_PATH.exists():
+    raise ImportError(
+        f"Courseforge JSON-LD schema not found at {_JSONLD_SCHEMA_PATH}. "
+        "This file is required for emit-time validation (Wave 49). "
+        "Check that schemas/knowledge/courseforge_jsonld_v1.schema.json "
+        "is present in the repo."
+    )
+
+try:
+    with open(_JSONLD_SCHEMA_PATH, encoding="utf-8") as _f:
+        _JSONLD_SCHEMA: Optional[Dict[str, Any]] = json.load(_f)
+except (OSError, json.JSONDecodeError) as _err:
+    raise ImportError(
+        f"Failed to load Courseforge JSON-LD schema at {_JSONLD_SCHEMA_PATH}: "
+        f"{_err}"
+    ) from _err
+
+_JSONLD_VALIDATOR_CACHE: Optional[Any] = None
+
+
+def _get_jsonld_validator():
+    """Lazy-cached module-level validator. Built once on first use."""
+    global _JSONLD_VALIDATOR_CACHE
+    if _JSONLD_VALIDATOR_CACHE is None:
+        built = _build_jsonld_validator()
+        if built is None:
+            return None
+        _JSONLD_VALIDATOR_CACHE = built[0]
+    return _JSONLD_VALIDATOR_CACHE
+
+
+def _jsonld_enforcement_enabled() -> bool:
+    """Read the enforcement env var each call so tests can toggle via setenv."""
+    return os.getenv(_ENFORCE_JSONLD_SCHEMA_ENV, "").strip().lower() in _ENFORCE_TRUTHY_VALUES
+
+
+def _validate_page_jsonld(metadata: Dict[str, Any], page_id: str) -> None:
+    """Validate a page's JSON-LD metadata against
+    ``courseforge_jsonld_v1.schema.json`` at emit time.
+
+    Behaviour:
+      * Valid payload -> return None, emit proceeds unchanged.
+      * ValidationError with ``COURSEFORGE_ENFORCE_JSONLD_SCHEMA`` truthy
+        -> raise ``ValueError(f"page_id={page_id} failed JSON-LD schema: {error}")``.
+        Fail-closed path for strict CI runs.
+      * ValidationError with the flag unset/falsy -> log a WARNING via
+        the module logger and return None (default; preserves back-compat
+        for existing corpora with known schema quirks).
+
+    The validator is cached module-wide, so repeated calls are cheap.
+    """
+    validator = _get_jsonld_validator()
+    if validator is None:
+        # jsonschema / referencing not importable; no-op so emit still
+        # succeeds on thinly-dependencied environments. Production envs
+        # have jsonschema pinned via pyproject.toml; the branch exists
+        # purely to keep tests deterministic when deps are missing.
+        return
+
+    errors = list(validator.iter_errors(metadata))
+    if not errors:
+        return
+
+    # Report the first error (the most specific / useful one) so logs
+    # aren't swamped on pages with multiple issues. The ValidationError
+    # repr is typically long (path + validator keyword + offending value);
+    # render a compact message.
+    first = errors[0]
+    path = ".".join(str(p) for p in first.absolute_path) if first.absolute_path else "(root)"
+    detail = f"{path}: {first.message}"
+
+    if _jsonld_enforcement_enabled():
+        raise ValueError(
+            f"page_id={page_id} failed JSON-LD schema: {detail}"
+        )
+
+    logger.warning(
+        "JSON-LD schema validation failed for page_id=%s: %s. "
+        "Set %s to raise instead.",
+        page_id, detail, _ENFORCE_JSONLD_SCHEMA_ENV,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Canonical-objectives loading & per-week LO resolution
 # ---------------------------------------------------------------------------
 #
@@ -356,10 +510,17 @@ def _wrap_page(title: str, course_code: str, week_num: int, body_html: str,
     Args:
         page_metadata: Optional structured metadata dict rendered as JSON-LD
                        in <head> for downstream Trainforge extraction.
+
+    Wave 49: when ``page_metadata`` is present, the payload is validated
+    against ``schemas/knowledge/courseforge_jsonld_v1.schema.json`` right
+    before serialization. See :func:`_validate_page_jsonld` for the env
+    flag + fail-closed / warn semantics.
     """
     safe_title = html_mod.escape(title)
     json_ld = ""
     if page_metadata:
+        page_id = page_metadata.get("pageId") or "<unknown>"
+        _validate_page_jsonld(page_metadata, page_id)
         json_ld = (
             '\n  <script type="application/ld+json">\n'
             + json.dumps(page_metadata, indent=2, ensure_ascii=False)
