@@ -137,6 +137,112 @@ def _graph_has_evidence_refs(graph: object) -> bool:
     return False
 
 
+# Wave 32 Deliverable C: phase-level empty-content guard for
+# content_generation. Runs inline at the end of _generate_course_content
+# so a dispatcher that returned zero real body content fails the phase
+# loudly rather than passing with ``gates=pass`` on template skeletons.
+# Reuses the Wave 31 ContentGroundingValidator's 30-word floor for
+# behavioural consistency with the content_grounding gate — this check
+# catches the strict "every page is an empty skeleton" failure mode the
+# gate considers a warning when partial (< 25 %). Independent of the
+# gate: gates require routing + inputs to fire, and when routing skips
+# we want a phase-level guarantee that the dispatcher produced at least
+# one non-trivial page.
+_CONTENT_BODY_TAGS = ("p", "li", "blockquote", "figcaption")
+_CONTENT_NONTRIVIAL_WORD_FLOOR = 30
+
+
+def _check_content_nonempty(page_paths: list) -> "Optional[str]":
+    """Return an error message when every emitted page is an empty template.
+
+    Parses each page and counts words in body-text tags
+    (``<p>``/``<li>``/``<blockquote>``/``<figcaption>``) inside
+    ``<main>`` (or the document body when no main wrapper exists).
+    Returns ``None`` when at least one page clears
+    :data:`_CONTENT_NONTRIVIAL_WORD_FLOOR` words — otherwise returns an
+    actionable error string that mentions the LOCAL_DISPATCHER_ALLOW_STUB
+    bypass and the missing agent_tool wiring.
+
+    Contract:
+      * Empty ``page_paths`` → returns ``None`` (nothing to check —
+        upstream already bailed out with an error when it mattered).
+      * Unreadable / missing files are counted as empty.
+    """
+    if not page_paths:
+        return None
+
+    try:
+        from bs4 import BeautifulSoup  # type: ignore
+    except ImportError:  # pragma: no cover — bs4 is a hard dep in this repo
+        # Without BeautifulSoup we can't reliably parse body content, so
+        # fall back to a plain word-count heuristic on the raw file.
+        def _plain_word_count(text: str) -> int:
+            import re as _re_inner
+            return len(_re_inner.findall(r"\b\w+\b", text))
+
+        for p in page_paths:
+            try:
+                raw = Path(p).read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            if _plain_word_count(raw) >= _CONTENT_NONTRIVIAL_WORD_FLOOR * 2:
+                return None
+        return (
+            "CONTENT_GENERATION_EMPTY: All "
+            f"{len(page_paths)} generated pages have <"
+            f"{_CONTENT_NONTRIVIAL_WORD_FLOOR} body words each. "
+            "This indicates the content-gen dispatcher produced template "
+            "skeletons without filling them. Likely cause: --mode local "
+            "dispatcher not wired to an actual agent_tool. See "
+            "LOCAL_DISPATCHER_ALLOW_STUB for the bypass."
+        )
+
+    total = len(page_paths)
+    nonempty = 0
+    for p in page_paths:
+        try:
+            raw = Path(p).read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        try:
+            soup = BeautifulSoup(raw, "html.parser")
+        except Exception:  # noqa: BLE001
+            continue
+        # Scope to <main> when present; otherwise the whole body.
+        scope = soup.find("main")
+        if scope is None:
+            scope = soup.find(attrs={"role": "main"})
+        if scope is None:
+            scope = soup.body or soup
+        # Strip nav/header/footer from the scope so their paragraphs
+        # don't pollute the count (mirrors ContentGroundingValidator).
+        for tag in scope.find_all(["nav", "header", "footer"]):
+            tag.decompose()
+        for el in scope.find_all(_CONTENT_BODY_TAGS):
+            text = el.get_text(separator=" ", strip=True)
+            if len(text.split()) >= _CONTENT_NONTRIVIAL_WORD_FLOOR:
+                nonempty += 1
+                break
+        else:
+            continue
+        # Early exit once we see any non-trivial page — the phase
+        # guarantee is "at least one page with real content".
+        if nonempty >= 1:
+            return None
+
+    if nonempty >= 1:
+        return None
+    return (
+        "CONTENT_GENERATION_EMPTY: All "
+        f"{total} generated pages have <"
+        f"{_CONTENT_NONTRIVIAL_WORD_FLOOR} body words each. "
+        "This indicates the content-gen dispatcher produced template "
+        "skeletons without filling them. Likely cause: --mode local "
+        "dispatcher not wired to an actual agent_tool. See "
+        "LOCAL_DISPATCHER_ALLOW_STUB for the bypass."
+    )
+
+
 async def create_textbook_pipeline(
     pdf_paths: str,
     course_name: str,
@@ -1438,9 +1544,13 @@ def _build_tool_registry() -> dict:
                 from multi_source_interpreter import convert_single_pdf
                 html_output = out_dir / f"{out_stem}_synthesized.html"
                 convert_single_pdf(str(combined_json), str(html_output))
+                # Wave 32 Deliverable B: surface html_path alongside
+                # output_path (legacy alias) so DartMarkersValidator
+                # gate builder picks it up as a canonical key.
                 return json.dumps({
                     "success": True,
                     "output_path": str(html_output),
+                    "html_path": str(html_output),
                     "method": "multi_source_synthesis",
                 })
             except ImportError:
@@ -1462,9 +1572,12 @@ def _build_tool_registry() -> dict:
                 from pdf_converter.converter import PDFToAccessibleHTML
                 converter = PDFToAccessibleHTML()
                 conv_result = converter.convert(str(pdf), str(out_dir))
+                # Wave 32 Deliverable B: mirror html_path alongside
+                # output_path (router canonical key).
                 return json.dumps({
                     "success": conv_result.success,
                     "output_path": conv_result.html_path,
+                    "html_path": conv_result.html_path,
                     "method": "pdf_converter",
                 })
             except Exception as e2:
@@ -1530,9 +1643,13 @@ def _build_tool_registry() -> dict:
 
         word_count = len(_re.findall(r"\b\w+\b", html_content))
 
+        # Wave 32 Deliverable B: surface html_path alongside the
+        # legacy output_path alias so the DartMarkersValidator gate
+        # builder stops reporting ``missing inputs: html_path``.
         return json.dumps({
             "success": True,
             "output_path": str(html_output),
+            "html_path": str(html_output),
             "method": "pdftotext_to_html",
             "word_count": word_count,
             "html_length": len(html_content),
@@ -2334,11 +2451,51 @@ def _build_tool_registry() -> dict:
                         # Never let decision capture crash emission.
                         pass
 
+            # Wave 32 Deliverable C: fail the phase when every
+            # generated page is an empty template skeleton. Pre-Wave-32
+            # ``content_generation`` silently passed even when the
+            # dispatcher returned zero actual body content — each page
+            # carried only ``<h1>Week N</h1><h2>Overview</h2>`` with no
+            # paragraphs ≥ 30 words. The counts showed 12/12 complete
+            # and gates rubber-stamped it. This check reuses the same
+            # ``NON_TRIVIAL_WORD_FLOOR`` (30) as the Wave 31
+            # ContentGroundingValidator for behavioural consistency:
+            # parse every emitted page, count body words in
+            # ``<p>/<li>/<blockquote>/<figcaption>`` within ``<main>``
+            # (or the document body when no main wrapper is present),
+            # and fail the phase when zero pages clear the floor.
+            empty_error = _check_content_nonempty(generated_files)
+            if empty_error is not None:
+                return json.dumps({
+                    "success": False,
+                    "error_code": "CONTENT_GENERATION_EMPTY",
+                    "error": empty_error,
+                    "project_id": project_id,
+                    "page_paths": generated_files,
+                    "content_dir": str(content_dir),
+                    "weeks_prepared": weeks_prepared,
+                })
+
+            # Wave 32 Deliverable B: surface page_paths + content_dir so
+            # downstream gate input routing picks them up. Pre-Wave-32
+            # ``content_paths`` landed as a plain list in phase_outputs,
+            # but the router's builders inspect ``content_paths`` only
+            # when it's a comma-joined ``str`` and otherwise flag
+            # ``page_paths`` / ``content_dir`` as missing — every live
+            # re-sim showed ``content_grounding`` + ``page_objectives``
+            # silently skipping with ``missing inputs: *``. The fix is
+            # purely on the emit side: surface the list as
+            # ``page_paths`` (the router's canonical key) and also
+            # surface ``content_paths`` as a comma-joined str for the
+            # legacy parsers (_all_html_paths, _find_content_dir).
+            content_paths_str = ",".join(generated_files)
             return json.dumps({
                 "success": True,
                 "project_id": project_id,
                 "weeks_prepared": weeks_prepared,
-                "content_paths": generated_files,
+                "content_paths": content_paths_str,
+                "page_paths": generated_files,
+                "content_dir": str(content_dir),
                 "source_sections": len(topics),
                 "content_selection": (
                     "source-grounded" if topics else "synthesized"
@@ -2477,11 +2634,18 @@ def _build_tool_registry() -> dict:
                     "project_id": project_id,
                 })
 
+            # Wave 32 Deliverable B: surface imscc_path + content_dir
+            # alongside the legacy package_path / libv2_package_path
+            # aliases so the IMSCCValidator + PageObjectivesValidator
+            # gate builders stop reporting ``missing inputs:
+            # imscc_path / content_dir``.
             return json.dumps({
                 "success": True,
                 "project_id": project_id,
                 "package_path": str(package_path),
                 "libv2_package_path": str(package_path),
+                "imscc_path": str(package_path),
+                "content_dir": str(content_dir),
                 "html_modules": len(html_files),
                 "package_size_bytes": package_path.stat().st_size,
             })
