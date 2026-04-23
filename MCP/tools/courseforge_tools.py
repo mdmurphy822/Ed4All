@@ -19,7 +19,6 @@ _PROJECT_ROOT = _MCP_DIR.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.libv2_storage import LibV2Storage  # noqa: E402
 from lib.paths import COURSEFORGE_PATH  # noqa: E402
 from lib.secure_paths import (  # noqa: E402
     safe_extract_zip,

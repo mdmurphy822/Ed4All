@@ -32,7 +32,6 @@ from generate_course import (  # noqa: E402
     _infer_content_type,
 )
 
-
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _CONTENT_TYPE_SCHEMA = (
     _PROJECT_ROOT / "schemas" / "taxonomies" / "content_type.json"

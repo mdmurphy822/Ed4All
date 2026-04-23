@@ -25,8 +25,6 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 # Project root (Ed4All/). This file lives at
 # Ed4All/Trainforge/tests/test_activity_objective_ref.py → parents[2].
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -35,7 +33,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from Trainforge.parsers.html_content_parser import HTMLContentParser  # noqa: E402
 from Trainforge.process_course import CourseProcessor  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -15,13 +15,10 @@ These tests cover the fix:
 
 from __future__ import annotations
 
-import io
 import json
 import sys
 import zipfile
 from pathlib import Path
-
-import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:

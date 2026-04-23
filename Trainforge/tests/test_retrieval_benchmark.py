@@ -24,7 +24,6 @@ from Trainforge.rag.retrieval_benchmark import (
     write_benchmark,
 )
 
-
 FIXTURE = PROJECT_ROOT / "Trainforge" / "tests" / "fixtures" / "mini_course_summaries"
 
 

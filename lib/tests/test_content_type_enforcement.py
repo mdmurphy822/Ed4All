@@ -17,7 +17,6 @@ for env-var gated behavior.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 import pytest
 
@@ -29,7 +28,6 @@ from lib.validators.content_type import (
     validate_chunk_type,
     validate_section_content_type,
 )
-
 
 ENV_VAR = "TRAINFORGE_ENFORCE_CONTENT_TYPE"
 

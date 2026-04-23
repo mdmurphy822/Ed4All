@@ -17,12 +17,10 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
-import pytest
 from click.testing import CliRunner
 
-from cli.main import cli
 from cli.commands.run import _any_gate_failed
-
+from cli.main import cli
 
 # --------------------------------------------------------------------- #
 # Fake OrchestratorResult helper
