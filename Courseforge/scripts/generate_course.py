@@ -32,6 +32,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from lib.ontology.bloom import bloom_to_cognitive_domain as _bloom_to_cognitive_domain  # noqa: E402
+from lib.ontology.bloom import detect_bloom_level  # noqa: E402
 from lib.ontology.bloom import get_verbs_list as _get_canonical_verbs_list  # noqa: E402
 from lib.ontology.slugs import canonical_slug as _slugify  # noqa: E402
 from lib.ontology.taxonomy import validate_classification  # noqa: E402
@@ -395,17 +396,11 @@ BLOOM_VERBS: Dict[str, List[str]] = _get_canonical_verbs_list()
 # MCP/tools/_content_gen_helpers.py::_render_objectives_section.
 
 
-def detect_bloom_level(objective_text: str) -> Tuple[Optional[str], Optional[str]]:
-    """Detect Bloom's taxonomy level and verb from objective text.
-
-    Returns (bloom_level, bloom_verb) or (None, None) if not detected.
-    """
-    text_lower = objective_text.lower().strip()
-    for level, verbs in BLOOM_VERBS.items():
-        for verb in verbs:
-            if text_lower.startswith(verb) or f" {verb} " in text_lower:
-                return level, verb
-    return None, None
+# Wave 55: detect_bloom_level is imported from lib.ontology.bloom at the top
+# of the module. The pre-Wave-55 local implementation used
+# ``startswith() + f" {verb} " in text_lower`` matching, which missed verbs
+# at end-of-text (no trailing space) or immediately followed by punctuation,
+# and iterated levels in a different order than the canonical matcher.
 
 
 # `_slugify` is imported at the top of the module from
