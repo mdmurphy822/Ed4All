@@ -104,6 +104,26 @@
           "items": { "type": "string" },
           "description": "Concept slugs associated with this objective."
         },
+        "targetedConcepts": {
+          "type": "array",
+          "description": "Wave 57: Bloom-qualified LO→concept edges. Each entry binds a canonical concept slug to the cognitive demand at which this LO targets it (inherited from the parent LO's bloomLevel). Emitted only when both keyConcepts and bloomLevel are populated. Enables KG consumers to materialize LO--[bloomLevel]-->concept edges directly rather than inferring from chunk co-occurrence. Concept slugs here are a subset of keyConcepts; the two stay in sync by construction.",
+          "items": {
+            "type": "object",
+            "required": ["concept", "bloomLevel"],
+            "additionalProperties": false,
+            "properties": {
+              "concept": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Canonical concept slug (output of lib.ontology.slugs.canonical_slug)."
+              },
+              "bloomLevel": {
+                "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel",
+                "description": "Bloom's taxonomy level at which this LO targets the concept. Inherited from the parent LO at emit time."
+              }
+            }
+          }
+        },
         "assessmentSuggestions": {
           "type": "array",
           "items": { "$ref": "https://ed4all.dev/ns/taxonomies/v1/question_type.schema.json#/$defs/QuestionType" },
