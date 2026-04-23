@@ -55,10 +55,11 @@ logger = logging.getLogger(__name__)
 # Enforcement: TRAINFORGE_ENFORCE_CONTENT_TYPE=truthy ("1","true","yes","on")
 # raises on miss; unset/falsy logs a WARNING and falls back to "explanation"
 # (the safest default in the enum). Mirrors the opt-in policy used by
-# lib/validators/content_type.py for Trainforge chunks. Callout paths at
-# ``_render_content_sections`` (~L548) still hardcode "application-note" /
-# "note" — that's the CalloutContentType enum (separate subtype); flagged as
-# a known ontology gap and deferred to a later wave.
+# lib/validators/content_type.py for Trainforge chunks. Wave 56 extends the
+# same enforcement to callouts via ``_validate_callout_content_type`` so the
+# CalloutContentType enum ("application-note", "note") is also gated at
+# emit time — a single env-var toggle now covers both section and callout
+# emit sites.
 
 _CONTENT_TYPE_SCHEMA_PATH = (
     _PROJECT_ROOT / "schemas" / "taxonomies" / "content_type.json"
@@ -66,6 +67,7 @@ _CONTENT_TYPE_SCHEMA_PATH = (
 _ENFORCE_CONTENT_TYPE_ENV = "TRAINFORGE_ENFORCE_CONTENT_TYPE"
 _ENFORCE_TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
 _CONTENT_TYPE_DEFAULT = "explanation"
+_CALLOUT_CONTENT_TYPE_DEFAULT = "note"
 
 
 def _load_section_content_type_enum() -> FrozenSet[str]:
@@ -73,6 +75,13 @@ def _load_section_content_type_enum() -> FrozenSet[str]:
     with open(_CONTENT_TYPE_SCHEMA_PATH, encoding="utf-8") as f:
         schema = json.load(f)
     return frozenset(schema["$defs"]["SectionContentType"]["enum"])
+
+
+def _load_callout_content_type_enum() -> FrozenSet[str]:
+    """Read CalloutContentType enum straight from the taxonomy schema."""
+    with open(_CONTENT_TYPE_SCHEMA_PATH, encoding="utf-8") as f:
+        schema = json.load(f)
+    return frozenset(schema["$defs"]["CalloutContentType"]["enum"])
 
 
 # Hardcoded mirror of schemas/taxonomies/content_type.json::$defs.SectionContentType.
@@ -88,10 +97,23 @@ SECTION_CONTENT_TYPE_ENUM: FrozenSet[str] = frozenset({
     "explanation",
 })
 
-# Import-time drift guard: hardcoded constant must equal the taxonomy file.
+# Hardcoded mirror of schemas/taxonomies/content_type.json::$defs.CalloutContentType.
+# Emitted on ``<div class="callout">`` via ``data-cf-content-type``. Separate
+# from SectionContentType per REC-VOC-03 — callouts are not section children
+# in the section-heading heuristic sense, so they have their own vocabulary.
+CALLOUT_CONTENT_TYPE_ENUM: FrozenSet[str] = frozenset({
+    "application-note",
+    "note",
+})
+
+# Import-time drift guards: hardcoded constants must equal the taxonomy file.
 assert SECTION_CONTENT_TYPE_ENUM == _load_section_content_type_enum(), (
     "SECTION_CONTENT_TYPE_ENUM in generate_course.py has drifted from "
     f"{_CONTENT_TYPE_SCHEMA_PATH}::$defs.SectionContentType. Update both."
+)
+assert CALLOUT_CONTENT_TYPE_ENUM == _load_callout_content_type_enum(), (
+    "CALLOUT_CONTENT_TYPE_ENUM in generate_course.py has drifted from "
+    f"{_CONTENT_TYPE_SCHEMA_PATH}::$defs.CalloutContentType. Update both."
 )
 
 
@@ -119,6 +141,35 @@ def _validate_section_content_type(value: str) -> str:
         value, _CONTENT_TYPE_DEFAULT, _ENFORCE_CONTENT_TYPE_ENV,
     )
     return _CONTENT_TYPE_DEFAULT
+
+
+def _validate_callout_content_type(value: str) -> str:
+    """Validate a CalloutContentType value at emit time.
+
+    Wave 56: mirrors ``_validate_section_content_type`` for callouts. The
+    callout emit site at ``_render_content_sections`` used to hardcode
+    ``"application-note"`` / ``"note"`` without validation — any typo or
+    new callout subtype could silently ship an ad-hoc value outside the
+    taxonomy. The same ``TRAINFORGE_ENFORCE_CONTENT_TYPE`` env var gates
+    enforcement so a single toggle covers both sections and callouts.
+
+    On miss with the flag truthy: raise ValueError. Otherwise: WARN and
+    fall back to ``"note"`` (the neutral callout, safer than
+    ``"application-note"`` which implies a warning).
+    """
+    if value in CALLOUT_CONTENT_TYPE_ENUM:
+        return value
+    if _content_type_enforcement_enabled():
+        raise ValueError(
+            f"Unknown callout content type: {value!r}; expected one of "
+            f"{sorted(CALLOUT_CONTENT_TYPE_ENUM)}"
+        )
+    logger.warning(
+        "Unknown CalloutContentType %r emitted by _render_content_sections; "
+        "falling back to %r. Set %s to raise instead.",
+        value, _CALLOUT_CONTENT_TYPE_DEFAULT, _ENFORCE_CONTENT_TYPE_ENV,
+    )
+    return _CALLOUT_CONTENT_TYPE_DEFAULT
 
 
 # ---------------------------------------------------------------------------
@@ -800,7 +851,9 @@ def _render_content_sections(
         if section.get("callout"):
             c = section["callout"]
             cls = f'callout {c.get("type", "")}'.strip()
-            callout_type = "application-note" if c.get("type") == "callout-warning" else "note"
+            callout_type = _validate_callout_content_type(
+                "application-note" if c.get("type") == "callout-warning" else "note"
+            )
             parts.append(
                 f'    <div class="{cls}" role="region"'
                 f' aria-label="{html_mod.escape(c.get("label", "Note"))}"'
