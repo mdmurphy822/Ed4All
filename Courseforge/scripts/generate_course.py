@@ -1081,6 +1081,18 @@ def _build_objectives_metadata(objectives: List[Dict]) -> List[Dict[str, Any]]:
         }
         if key_concepts:
             entry["keyConcepts"] = key_concepts
+            # Wave 57: emit Bloom-qualified LO→concept edges. Every keyConcept
+            # gets paired with the parent LO's bloomLevel so downstream KG
+            # consumers can materialize `LO --[bloomLevel]--> concept` edges
+            # directly, without re-inferring cognitive demand via chunk co-
+            # occurrence. Elided when bloom_level is null (no signal to tag
+            # the edge with) so schema validators stay happy without a
+            # nullable edge type.
+            if bloom_level:
+                entry["targetedConcepts"] = [
+                    {"concept": slug, "bloomLevel": bloom_level}
+                    for slug in key_concepts
+                ]
         # Include assessment suggestions based on Bloom's level
         if bloom_level and bloom_level in BLOOM_VERBS:
             from_bloom = {
