@@ -16,7 +16,6 @@ itself is verified here.
 from __future__ import annotations
 
 import asyncio
-import json
 import sys
 import threading
 import time

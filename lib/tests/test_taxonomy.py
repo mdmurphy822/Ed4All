@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 
 def test_load_taxonomy_basic():
     """Loader returns a dict with the canonical top-level keys."""

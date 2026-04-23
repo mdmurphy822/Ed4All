@@ -24,8 +24,9 @@ def _render_minimal_page() -> str:
     # generate_week against a minimal week_data fixture to exercise the
     # same shell in-situ. We don't need the full generator — a quick
     # end-to-end emission suffices.
-    from generate_course import generate_week  # noqa: E402
     import tempfile
+
+    from generate_course import generate_week  # noqa: E402
 
     week_data = {
         "week_number": 3,

@@ -23,7 +23,6 @@ import pytest
 
 from lib.decision_capture import normalize_course_code
 
-
 # --------------------------------------------------------------------- #
 # Normalisation helpers (preserved from Wave 22 DC4)
 # --------------------------------------------------------------------- #
@@ -225,6 +224,7 @@ def test_extract_and_convert_pdf_threads_canonical_course_code():
     ``canonical_course_code`` from kwargs so the orchestrator's
     threaded value overrides PDF-stem derivation."""
     import inspect
+
     from MCP.tools import pipeline_tools
 
     src = inspect.getsource(pipeline_tools._build_tool_registry)

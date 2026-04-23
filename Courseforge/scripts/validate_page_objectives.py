@@ -28,7 +28,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # Reuse the canonical resolver so the two emit/validate sides never drift.
 _HERE = Path(__file__).resolve().parent

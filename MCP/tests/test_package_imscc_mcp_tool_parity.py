@@ -35,7 +35,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from MCP.tools import courseforge_tools  # noqa: E402
 
-
 COURSE_CODE = "WAVE28E_101"
 
 

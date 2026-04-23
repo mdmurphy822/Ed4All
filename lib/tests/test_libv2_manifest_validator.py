@@ -17,7 +17,6 @@ import pytest
 
 from lib.validators.libv2_manifest import LibV2ManifestValidator
 
-
 # ---------------------------------------------------------------------- #
 # Fixtures
 # ---------------------------------------------------------------------- #

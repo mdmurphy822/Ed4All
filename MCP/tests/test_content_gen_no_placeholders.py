@@ -29,7 +29,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from MCP.tools import _content_gen_helpers as _cgh  # noqa: E402
 
-
 # ---------------------------------------------------------------------- #
 # Banned phrases — the exact templates the user directive called out.
 # ---------------------------------------------------------------------- #

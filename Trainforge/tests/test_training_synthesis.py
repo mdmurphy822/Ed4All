@@ -29,19 +29,18 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Trainforge.generators.instruction_factory import (
-    synthesize_instruction_pair,
+    COMPLETION_MAX,
+    COMPLETION_MIN,
+    MAX_VERBATIM_SPAN,
     PROMPT_MAX,
     PROMPT_MIN,
-    COMPLETION_MIN,
-    COMPLETION_MAX,
-    MAX_VERBATIM_SPAN,
+    synthesize_instruction_pair,
 )
 from Trainforge.generators.preference_factory import (
-    synthesize_preference_pair,
     JACCARD_DELTA_MIN,
+    synthesize_preference_pair,
 )
 from Trainforge.synthesize_training import run_synthesis
-
 
 FIXTURE_ROOT = Path(__file__).resolve().parent / "fixtures" / "mini_course_training"
 SCHEMAS_ROOT = PROJECT_ROOT / "schemas"

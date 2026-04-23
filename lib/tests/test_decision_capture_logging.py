@@ -10,7 +10,6 @@ at capture close.
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -85,6 +84,7 @@ def test_validation_issue_fires_at_debug_level(mock_storage, caplog, monkeypatch
 
     # Force reload of constants flag since it's cached on import.
     import importlib
+
     import lib.constants
     importlib.reload(lib.constants)
     import lib.decision_capture as dc_module
@@ -117,6 +117,7 @@ def test_strict_mode_still_raises(mock_storage, monkeypatch):
     monkeypatch.setenv("VALIDATE_DECISIONS", "true")
 
     import importlib
+
     import lib.constants
     importlib.reload(lib.constants)
     import lib.decision_capture as dc_module
@@ -178,6 +179,7 @@ def test_validation_issue_count_tracked_internally(mock_storage, monkeypatch):
     monkeypatch.setenv("VALIDATE_DECISIONS", "true")
 
     import importlib
+
     import lib.constants
     importlib.reload(lib.constants)
     import lib.decision_capture as dc_module

@@ -38,7 +38,6 @@ from validate_page_objectives import (  # noqa: E402
     validate_page,
 )
 
-
 # Canonical fixture: a four-week course with two "Week 1-2" COs and two
 # "Week 3-4" COs plus two terminal objectives. This mirrors the shape of
 # ``<COURSE>_objectives.json`` on a smaller scale and is deliberately
