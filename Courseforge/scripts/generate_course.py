@@ -33,6 +33,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from lib.ontology.bloom import bloom_to_cognitive_domain as _bloom_to_cognitive_domain  # noqa: E402
 from lib.ontology.bloom import detect_bloom_level  # noqa: E402
+from lib.ontology.bloom import detect_bloom_verbs as _detect_bloom_verbs  # noqa: E402
 from lib.ontology.bloom import get_verbs_list as _get_canonical_verbs_list  # noqa: E402
 from lib.ontology.slugs import canonical_slug as _slugify  # noqa: E402
 from lib.ontology.taxonomy import validate_classification  # noqa: E402
@@ -1061,6 +1062,60 @@ def _summary_recap_paragraphs(
     return picked
 
 
+def _align_bloom_matches(
+    matches: List[Tuple[str, str]],
+    authoritative_level: Optional[str],
+    authoritative_verb: Optional[str],
+) -> List[Tuple[str, str]]:
+    """Reorder detection results so the authoritative singular sits at index 0.
+
+    Wave 58 invariant: when the plural ``bloomLevels[]`` / ``bloomVerbs[]``
+    fields are emitted, ``bloomLevels[0]`` must equal the singular
+    ``bloomLevel`` field and ``bloomVerbs[0]`` must equal ``bloomVerb``.
+    Consumers that only read the singulars get the same answer as before;
+    consumers that read the plurals get the full multi-verb set.
+
+    Strategy:
+
+    * If no detection results, return ``[]`` (caller elides plurals).
+    * If ``authoritative_level`` is None, keep canonical iteration order —
+      the authoritative singular came from the detector itself, so
+      ``matches[0]`` already satisfies the invariant.
+    * Otherwise find the best match for the authoritative singular: prefer
+      an exact ``(level, verb)`` match; fall back to level-only match
+      when the authoritative_verb isn't given or doesn't appear in the
+      detected list.
+    * If found, rotate that entry to position 0 and keep the rest in
+      canonical order (stable).
+    * If not found (pre-set singular disagrees with detection entirely),
+      return ``[]`` — the singular is authoritative and plurals stay
+      elided rather than misleading the consumer.
+    """
+    if not matches:
+        return []
+    if not authoritative_level:
+        # No pre-set — matches[0] is the authoritative singular by construction.
+        return list(matches)
+    # Prefer exact (level, verb) match.
+    primary_idx = None
+    if authoritative_verb:
+        for idx, (lvl, verb) in enumerate(matches):
+            if lvl == authoritative_level and verb == authoritative_verb:
+                primary_idx = idx
+                break
+    if primary_idx is None:
+        # Fall back to level-only match.
+        for idx, (lvl, _verb) in enumerate(matches):
+            if lvl == authoritative_level:
+                primary_idx = idx
+                break
+    if primary_idx is None:
+        # Detection and singular disagree entirely — don't emit misleading plurals.
+        return []
+    rest = matches[:primary_idx] + matches[primary_idx + 1:]
+    return [matches[primary_idx]] + rest
+
+
 def _build_objectives_metadata(objectives: List[Dict]) -> List[Dict[str, Any]]:
     """Build structured objective metadata for JSON-LD from week objectives."""
     result = []
@@ -1069,6 +1124,28 @@ def _build_objectives_metadata(objectives: List[Dict]) -> List[Dict[str, Any]]:
         bloom_verb = o.get("bloom_verb")
         if not bloom_level:
             bloom_level, bloom_verb = detect_bloom_level(o["statement"])
+        # Wave 58: multi-verb detection — a statement like "Analyze and
+        # evaluate X" targets two cognitive demands at once and we now
+        # emit every canonical match as bloomLevels[] / bloomVerbs[].
+        # The schema invariant is bloomLevels[0] == bloomLevel and
+        # bloomVerbs[0] == bloomVerb so consumers can treat the plural
+        # arrays as the authoritative list and the singular fields as a
+        # convenience view onto the first element.
+        #
+        # Common case (bloom_level derived from detection above):
+        #   detect_bloom_verbs returns the same (level, verb) as
+        #   detect_bloom_level at index 0 by construction, so the
+        #   invariant holds trivially.
+        #
+        # Pre-set case (bloom_level supplied upstream, e.g. from
+        # synthesized_objectives.json): the pre-set singular is
+        # authoritative. If it appears in the detected list, rotate
+        # that entry to position 0 so the invariant holds. If it does
+        # not appear at all (detection and singular disagree), elide
+        # the plurals — the consumer keeps using the singular field.
+        aligned_matches = _align_bloom_matches(
+            _detect_bloom_verbs(o["statement"]), bloom_level, bloom_verb
+        )
         # Wave 48: schema-sourced cognitive domain
         domain = _bloom_to_cognitive_domain(bloom_level)
         key_concepts = [_slugify(c) for c in o.get("key_concepts", []) if _slugify(c)]
@@ -1079,6 +1156,9 @@ def _build_objectives_metadata(objectives: List[Dict]) -> List[Dict[str, Any]]:
             "bloomVerb": bloom_verb,
             "cognitiveDomain": domain,
         }
+        if aligned_matches:
+            entry["bloomLevels"] = [lvl for lvl, _v in aligned_matches]
+            entry["bloomVerbs"] = [verb for _l, verb in aligned_matches]
         if key_concepts:
             entry["keyConcepts"] = key_concepts
             # Wave 57: emit Bloom-qualified LO→concept edges. Every keyConcept
