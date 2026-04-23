@@ -7,8 +7,6 @@ import json
 from pathlib import Path
 from typing import List
 
-import pytest
-
 from LibV2.tools.libv2.retriever import (
     ChunkFilter,
     LazyBM25,
@@ -18,7 +16,6 @@ from LibV2.tools.libv2.retriever import (
     retrieve_chunks,
     tokenize,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixture helper

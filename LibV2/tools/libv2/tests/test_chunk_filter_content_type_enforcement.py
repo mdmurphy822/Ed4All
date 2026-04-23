@@ -12,7 +12,6 @@ import pytest
 
 from LibV2.tools.libv2.retriever import ChunkFilter
 
-
 ENV_VAR = "TRAINFORGE_ENFORCE_CONTENT_TYPE"
 
 

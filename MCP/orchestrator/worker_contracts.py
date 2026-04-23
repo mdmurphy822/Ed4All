@@ -133,7 +133,7 @@ class PhaseOutput:
         return json.dumps(self.to_dict(), indent=2, default=str)
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "PhaseOutput":
+    def from_dict(cls, data: Dict[str, Any]) -> PhaseOutput:
         """Rebuild a PhaseOutput from its serialized dict form."""
         gate_results = {}
         for gid, gr in (data.get("gate_results") or {}).items():

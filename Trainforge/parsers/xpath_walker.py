@@ -37,7 +37,6 @@ from __future__ import annotations
 from html.parser import HTMLParser
 from typing import List, Optional, Tuple
 
-
 # Tags whose content is intentionally dropped from the plain-text
 # representation (matches HTMLTextExtractor in html_content_parser.py).
 _DROP_TAGS = {"script", "style"}

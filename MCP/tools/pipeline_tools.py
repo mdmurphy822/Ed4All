@@ -1226,7 +1226,6 @@ def _run_dart_pipeline_body(
     single try/finally. Behaviour is byte-for-byte identical to the
     pre-Wave-22 monolithic function body — this is a pure extraction.
     """
-    import os as _os
 
     # Wave 16 enriched path: when a source PDF is available, go through
     # the dual-extraction layer so tables / figures / OCR contribute
@@ -1234,12 +1233,12 @@ def _run_dart_pipeline_body(
     # broken optional extractor never blocks the raw-text conversion.
     if source_pdf:
         try:
+            from DART.converter import default_classifier
             from DART.converter.block_segmenter import (
                 segment_extracted_document,
             )
             from DART.converter.document_assembler import assemble_html
             from DART.converter.extractor import extract_document
-            from DART.converter import default_classifier
 
             # Wave 17: derive a sibling figures dir from ``output_path``
             # so persisted figure bytes travel with the HTML. Explicit
@@ -2236,8 +2235,8 @@ def _build_tool_registry() -> dict:
             emitter consumes, plus forwards the Wave 9 source-routing
             map when one is present on disk.
             """
-            from MCP.tools import _content_gen_helpers as _cgh
             from Courseforge.scripts import generate_course as _gen
+            from MCP.tools import _content_gen_helpers as _cgh
 
             project_id = kwargs.get("project_id", "")
             if not project_id:
@@ -3005,7 +3004,7 @@ def _build_tool_registry() -> dict:
                     if not ctext:
                         ctext = "Correction not captured in source; review instructor materials."
                     _digest = _hashlib.sha256(
-                        f"{mtext}|{ctext}".encode("utf-8")
+                        f"{mtext}|{ctext}".encode()
                     ).hexdigest()[:16]
                     mc_id = f"mc_{_digest}"
                     if mc_id in mc_seen:
@@ -3040,7 +3039,7 @@ def _build_tool_registry() -> dict:
                                 continue
                             ctext = _mc.get("correction") or "Correction not captured in source; review instructor materials."
                             _digest = _hashlib.sha256(
-                                f"{mtext}|{ctext}".encode("utf-8")
+                                f"{mtext}|{ctext}".encode()
                             ).hexdigest()[:16]
                             mc_id = f"mc_{_digest}"
                             if mc_id in mc_seen:

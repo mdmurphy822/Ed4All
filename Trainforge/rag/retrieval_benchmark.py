@@ -237,7 +237,7 @@ def load_gold_questions(gold_path: Path) -> List[Dict[str, Any]]:
     if not gold_path or not gold_path.exists():
         raise FileNotFoundError(f"Gold queries file not found: {gold_path}")
     out: List[Dict[str, Any]] = []
-    with open(gold_path, "r", encoding="utf-8") as f:
+    with open(gold_path, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith("#"):

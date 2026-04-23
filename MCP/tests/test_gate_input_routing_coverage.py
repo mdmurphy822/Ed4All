@@ -22,9 +22,6 @@ Wave 29 closes the coverage gaps:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict
-
-import pytest
 
 from MCP.hardening.gate_input_routing import (
     _build_assessment_objective_alignment,
@@ -33,7 +30,6 @@ from MCP.hardening.gate_input_routing import (
     _build_libv2_manifest,
     default_router,
 )
-
 
 # --------------------------------------------------------------------- #
 # libv2_manifest — derive from course_dir

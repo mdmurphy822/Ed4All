@@ -29,7 +29,6 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
 
-
 # Matches the canonical shape: dart:{slug}#{block_id}
 # (lowercase slug/block, kept in sync with schemas/knowledge/source_reference.schema.json).
 _SOURCE_ID_RE = re.compile(r"^dart:[a-z0-9_-]+#[a-z0-9_-]+$")
@@ -275,7 +274,7 @@ class PageSourceRefValidator:
 
     def _collect_emitted_ids(
         self, inputs: Dict[str, Any]
-    ) -> "tuple[Set[tuple[str, str]], List[GateIssue]]":
+    ) -> tuple[Set[tuple[str, str]], List[GateIssue]]:
         """Scan every page for sourceIds emitted in JSON-LD or data-cf-*.
 
         Returns a set of (page_location, source_id) pairs plus a list of

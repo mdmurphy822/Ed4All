@@ -15,8 +15,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from MCP.hardening.validation_gates import GateIssue, GateResult
 from lib.ontology.bloom import get_verbs as _get_canonical_verbs
+from MCP.hardening.validation_gates import GateIssue, GateResult
 
 # Bloom's taxonomy verb indicators per level.
 # Source of truth: schemas/taxonomies/bloom_verbs.json (loaded via

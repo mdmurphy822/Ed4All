@@ -27,18 +27,16 @@ phase summary ``failed`` count + ``phase_failed`` gate) now treats
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from MCP.core.executor import AGENT_TOOL_MAPPING, ExecutionResult, TaskExecutor
-
 
 # Agent type → tool name pairing from AGENT_TOOL_MAPPING. We pick
 # content-generator because the whole motivating failure mode is

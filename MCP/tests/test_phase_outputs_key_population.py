@@ -25,14 +25,12 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
-import shutil
 from pathlib import Path
 from typing import Any, Dict
 
 import pytest
 
 from MCP.hardening.gate_input_routing import default_router
-
 
 # ---------------------------------------------------------------------- #
 # Fixture helpers

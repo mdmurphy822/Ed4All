@@ -22,15 +22,12 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Trainforge.process_course import CourseProcessor  # noqa: E402
 from Trainforge.rag.typed_edge_inference import build_semantic_graph  # noqa: E402
-
 
 FIXED_NOW = datetime(2026, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
 

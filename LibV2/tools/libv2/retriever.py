@@ -18,15 +18,13 @@ from .catalog import load_master_catalog, search_catalog
 from .models.catalog import CatalogEntry
 from .retrieval_scoring import (
     BoostContributions,
-    DEFAULT_BOOST_WEIGHTS,
-    MAX_TOTAL_BOOST,
     combine_bm25_with_boosts,
     concept_graph_overlap_boost,
     extract_query_concepts,
+    lo_match_boost,
     load_concept_graph_node_ids,
     load_course_outcomes,
     load_pedagogy_model,
-    lo_match_boost,
     prereq_coverage_boost,
 )
 

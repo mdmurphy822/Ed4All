@@ -22,7 +22,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
-
 DEFAULT_BOOST_WEIGHTS: Dict[str, float] = {
     "concept_graph_overlap": 0.3,
     "lo_match": 0.3,

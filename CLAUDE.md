@@ -279,6 +279,7 @@ Priority extraction chain (extends the Courseforge chain above): JSON-LD > `data
 | `validate_assessment` | Validate assessment quality |
 | `export_training_data` | Export training captures |
 | `get_trainforge_status` | Get processing status |
+| `synthesize_training` | Synthesize SFT + DPO training pairs from a Trainforge corpus |
 
 ### Pipeline Tools
 

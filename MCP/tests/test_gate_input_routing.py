@@ -15,18 +15,14 @@ hack.
 
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
 from typing import Any, Dict
-
-import pytest
 
 from MCP.hardening.gate_input_routing import (
     GateInputRouter,
     default_router,
 )
-
 
 # ---------------------------------------------------------------------- #
 # Helpers

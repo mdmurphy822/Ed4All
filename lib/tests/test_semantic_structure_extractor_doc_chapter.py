@@ -10,13 +10,11 @@ grouping path.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import pytest
 
 from lib.semantic_structure_extractor import SemanticStructureExtractor
-
 
 # Optional slow-path smoke target — points at an artifact from a
 # previous full-textbook run (any corpus). The test that consumes
