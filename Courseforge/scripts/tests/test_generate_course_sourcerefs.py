@@ -36,7 +36,6 @@ from generate_course import (  # noqa: E402
     generate_week,
 )
 
-
 # ---------------------------------------------------------------------- #
 # Helpers for extracting JSON-LD + attributes from rendered HTML
 # ---------------------------------------------------------------------- #

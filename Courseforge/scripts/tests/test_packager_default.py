@@ -29,7 +29,6 @@ if str(_REPO_ROOT) not in sys.path:
 
 from package_multifile_imscc import package_imscc  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Fixture helpers (shared with test_packager_validation_gate.py style)
 # ---------------------------------------------------------------------------

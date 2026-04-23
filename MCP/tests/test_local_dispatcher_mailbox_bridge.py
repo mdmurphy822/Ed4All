@@ -29,7 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from MCP.orchestrator.local_dispatcher import LocalDispatcher  # noqa: E402
 from MCP.orchestrator.task_mailbox import TaskMailbox  # noqa: E402
-from MCP.orchestrator.worker_contracts import PhaseInput, PhaseOutput  # noqa: E402
+from MCP.orchestrator.worker_contracts import PhaseInput  # noqa: E402
 
 
 def _phase_input(

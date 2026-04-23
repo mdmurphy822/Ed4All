@@ -17,8 +17,6 @@ import sys
 import zipfile
 from pathlib import Path
 
-import pytest
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -66,13 +64,13 @@ def _build_mini_imscc(tmp_path: Path) -> Path:
 
 def test_processor_phase_is_in_canonical_enum():
     """Regression: CourseProcessor's phase MUST be a canonical enum member."""
-    from Trainforge.process_course import CourseProcessor
-
     # __new__ sidesteps the full __init__ — we only need to read the class-
     # level phase constant, which is hard-coded inside __init__. Build a
     # real instance against a tmp path to touch the literal at runtime.
     # Use a lightweight path via tmp.
     import tempfile
+
+    from Trainforge.process_course import CourseProcessor
     with tempfile.TemporaryDirectory() as td:
         imscc = _build_mini_imscc(Path(td))
         proc = CourseProcessor(

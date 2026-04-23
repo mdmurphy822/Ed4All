@@ -51,7 +51,6 @@ from lib.validators.content_type import (  # noqa: E402
     assert_chunk_type,
     validate_chunk_type,
 )
-
 from Trainforge.generators.instruction_factory import (  # noqa: E402
     synthesize_instruction_pair,
 )

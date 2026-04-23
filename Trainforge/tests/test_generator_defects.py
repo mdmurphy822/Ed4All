@@ -291,6 +291,7 @@ def _bare_processor(*, pages_with_misconceptions=None):
     richer helper): supplies all attributes either test group reads.
     """
     from collections import defaultdict
+
     from Trainforge.process_course import CourseProcessor
 
     proc = CourseProcessor.__new__(CourseProcessor)
@@ -1108,8 +1109,8 @@ class TestMetadataTraceDiagnostic:
     def test_data_cf_fallback_populates_and_traces(self):
         """When JSON-LD sections have no match but data-cf-* sections do,
         the fallback populates + traces as ``data_cf_fallback``."""
-        from Trainforge.process_course import CourseProcessor
         from Trainforge.parsers.html_content_parser import ContentSection
+        from Trainforge.process_course import CourseProcessor
 
         proc = CourseProcessor.__new__(CourseProcessor)
         item = self._item(
@@ -1131,7 +1132,6 @@ class TestMetadataTraceDiagnostic:
 
     def test_generate_enrichment_trace_report_shape(self):
         """The report groups chunks by _metadata_trace values per field."""
-        from collections import defaultdict
         from Trainforge.process_course import CourseProcessor
 
         proc = CourseProcessor.__new__(CourseProcessor)

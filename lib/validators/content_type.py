@@ -38,7 +38,7 @@ _ENFORCE_ENV_VAR = "TRAINFORGE_ENFORCE_CONTENT_TYPE"
 def _load_content_type_schema() -> dict:
     """Load content_type.json once per process (lru_cache) and memoize."""
     path = SCHEMAS_PATH / "taxonomies" / "content_type.json"
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 

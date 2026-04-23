@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import pytest
 
@@ -42,7 +42,6 @@ from Trainforge.rag.inference_rules import (
     exemplifies_from_example_chunks,
     is_a_from_key_terms,
 )
-
 
 # --------------------------------------------------------------------- #
 # Shared fixtures
@@ -441,8 +440,9 @@ def test_assesses_rule_version_bumped_to_2():
 def test_build_semantic_graph_flag_off_no_evidence_refs(flag_off):
     """Running the full orchestrator with flag off yields no evidence refs on
     any of the 5 chunk-anchored edge types."""
-    from Trainforge.rag.typed_edge_inference import build_semantic_graph
     from datetime import datetime, timezone
+
+    from Trainforge.rag.typed_edge_inference import build_semantic_graph
 
     chunks = [
         _chunk_with_refs(
@@ -493,8 +493,9 @@ def test_build_semantic_graph_flag_off_no_evidence_refs(flag_off):
 def test_build_semantic_graph_flag_on_evidence_refs_present(flag_on):
     """Flag on → all 5 chunk-anchored rules emit source_references in the
     evidence where the originating chunk carries refs."""
-    from Trainforge.rag.typed_edge_inference import build_semantic_graph
     from datetime import datetime, timezone
+
+    from Trainforge.rag.typed_edge_inference import build_semantic_graph
 
     chunks = [
         _chunk_with_refs(
@@ -566,8 +567,9 @@ def test_build_semantic_graph_flag_on_evidence_refs_present(flag_on):
 def test_build_semantic_graph_flag_on_legacy_corpus_no_refs(flag_on):
     """Flag on but chunks have no Wave-10 refs → evidence arms omit refs
     (absence = unknown, back-compat)."""
-    from Trainforge.rag.typed_edge_inference import build_semantic_graph
     from datetime import datetime, timezone
+
+    from Trainforge.rag.typed_edge_inference import build_semantic_graph
 
     chunks = [
         _chunk_no_refs(

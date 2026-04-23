@@ -3,24 +3,20 @@ the combine helper, and the loader fallbacks."""
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from LibV2.tools.libv2.retrieval_scoring import (
-    BoostContributions,
-    DEFAULT_BOOST_WEIGHTS,
     MAX_TOTAL_BOOST,
+    BoostContributions,
     combine_bm25_with_boosts,
     concept_graph_overlap_boost,
     extract_query_concepts,
+    lo_match_boost,
     load_concept_graph_node_ids,
     load_course_outcomes,
     load_pedagogy_model,
-    lo_match_boost,
     prereq_coverage_boost,
 )
-
 
 # ---------------------------------------------------------------------------
 # concept_graph_overlap_boost

@@ -3424,8 +3424,9 @@ class CourseProcessor:
         # would block every pipeline run whose objectives file predates
         # the schema. Errors log at WARNING so drift is observable.
         try:
-            import jsonschema  # type: ignore
             from pathlib import Path as _Path
+
+            import jsonschema  # type: ignore
             schema_path = (
                 _Path(__file__).resolve().parent.parent
                 / "schemas" / "knowledge" / "course.schema.json"

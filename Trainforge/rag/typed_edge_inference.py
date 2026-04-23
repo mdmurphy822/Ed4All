@@ -30,6 +30,10 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from Trainforge.rag.inference_rules import assesses_from_question_lo as _assesses_mod
+from Trainforge.rag.inference_rules import defined_by_from_first_mention as _defined_by_mod
+from Trainforge.rag.inference_rules import derived_from_lo_ref as _derived_lo_mod
+from Trainforge.rag.inference_rules import exemplifies_from_example_chunks as _exemplifies_mod
 from Trainforge.rag.inference_rules import (
     infer_assesses,
     infer_defined_by,
@@ -40,12 +44,10 @@ from Trainforge.rag.inference_rules import (
     infer_prerequisite,
     infer_related,
 )
-from Trainforge.rag.inference_rules import assesses_from_question_lo as _assesses_mod
-from Trainforge.rag.inference_rules import defined_by_from_first_mention as _defined_by_mod
-from Trainforge.rag.inference_rules import derived_from_lo_ref as _derived_lo_mod
-from Trainforge.rag.inference_rules import exemplifies_from_example_chunks as _exemplifies_mod
 from Trainforge.rag.inference_rules import is_a_from_key_terms as _is_a_mod
-from Trainforge.rag.inference_rules import misconception_of_from_misconception_ref as _misconception_mod
+from Trainforge.rag.inference_rules import (
+    misconception_of_from_misconception_ref as _misconception_mod,
+)
 from Trainforge.rag.inference_rules import prerequisite_from_lo_order as _prereq_mod
 from Trainforge.rag.inference_rules import related_from_cooccurrence as _related_mod
 

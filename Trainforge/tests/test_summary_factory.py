@@ -12,13 +12,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Trainforge.generators import summary_factory
 from Trainforge.generators.summary_factory import (
     SUMMARY_MAX_LEN,
     SUMMARY_MIN_LEN,
     generate,
 )
-
 
 # A ~110 word chunk with one LO-tag-bearing sentence for the heuristic to find.
 LONG_TEXT = (

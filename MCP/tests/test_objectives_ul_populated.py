@@ -17,8 +17,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from MCP.tools import _content_gen_helpers as _cgh  # noqa: E402
 from Courseforge.scripts import generate_course as _gen  # noqa: E402
+from MCP.tools import _content_gen_helpers as _cgh  # noqa: E402
 
 
 def _topic(heading: str, paragraph: str, chapter_id: str = "ch1") -> dict:

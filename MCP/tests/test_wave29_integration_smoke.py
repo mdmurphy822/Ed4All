@@ -17,15 +17,12 @@ Verifies the six defects interlock correctly:
 
 from __future__ import annotations
 
-import io
 import json
 import logging
-import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-
 
 # --------------------------------------------------------------------- #
 # (1) DART article nesting end-to-end
@@ -193,7 +190,7 @@ def test_smoke_decision_capture_stderr_budget(tmp_path, monkeypatch, caplog):
     """Emitting 100 decisions with validation issues produces at most
     ONE INFO summary line at WARNING+ — not 100 warnings. Pre-Wave-29
     this would have flooded stderr with hundreds of lines."""
-    from unittest.mock import Mock, patch
+    from unittest.mock import patch
 
     # Redirect storage.
     with patch("lib.decision_capture.LibV2Storage") as storage_cls:
@@ -300,7 +297,7 @@ def test_smoke_stderr_budget_on_synthetic_workflow(tmp_path, caplog, monkeypatch
     and assert the captured stderr stays within the Wave 29 budget
     (≤ 20 WARNING+ lines for a clean run, down from the ~600 lines
     observed in OLSR_SIM_01)."""
-    from unittest.mock import Mock, patch
+    from unittest.mock import patch
 
     with patch("lib.decision_capture.LibV2Storage") as storage_cls:
         storage = Mock()
@@ -314,8 +311,6 @@ def test_smoke_stderr_budget_on_synthetic_workflow(tmp_path, caplog, monkeypatch
         (tmp_path / "legacy").mkdir()
         monkeypatch.delenv("DECISION_VALIDATION_STRICT", raising=False)
 
-        from lib.decision_capture import DecisionCapture
-
         # Simulate 10 phases × 50 decisions each = 500 decisions total.
         # We deliberately pass alternatives_considered so the
         # quality-gate assessment ranks each decision as "proficient"
@@ -323,7 +318,7 @@ def test_smoke_stderr_budget_on_synthetic_workflow(tmp_path, caplog, monkeypatch
         # ``lib/quality.py::assess_decision_quality``). This isolates
         # Wave 29's validation-path quieting from the separate
         # quality-gate warning path (out of Wave 29 scope).
-        from lib.decision_capture import InputRef
+        from lib.decision_capture import DecisionCapture, InputRef
 
         with caplog.at_level(logging.WARNING, logger="lib.decision_capture"):
             for phase_idx in range(10):

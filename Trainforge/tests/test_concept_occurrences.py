@@ -23,7 +23,6 @@ only up to the fields we assert on.
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
@@ -34,7 +33,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Trainforge.rag import typed_edge_inference  # noqa: E402
-from Trainforge.rag.typed_edge_inference import _make_concept_id  # noqa: E402
 
 SCHEMA_PATH = (
     PROJECT_ROOT

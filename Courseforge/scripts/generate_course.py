@@ -31,12 +31,11 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.ontology.bloom import get_verbs_list as _get_canonical_verbs_list  # noqa: E402
 from lib.ontology.bloom import bloom_to_cognitive_domain as _bloom_to_cognitive_domain  # noqa: E402
+from lib.ontology.bloom import get_verbs_list as _get_canonical_verbs_list  # noqa: E402
 from lib.ontology.slugs import canonical_slug as _slugify  # noqa: E402
 from lib.ontology.taxonomy import validate_classification  # noqa: E402
 from lib.ontology.teaching_roles import map_role as _map_teaching_role  # noqa: E402
-
 
 logger = logging.getLogger(__name__)
 

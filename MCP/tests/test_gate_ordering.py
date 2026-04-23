@@ -24,8 +24,6 @@ beyond tmp_path.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -37,12 +35,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from MCP.core.executor import ExecutionResult, TaskExecutor
 from MCP.hardening.validation_gates import (
-    GateConfig,
-    GateIssue,
     GateResult,
-    GateSeverity,
 )
-
 
 # ---------------------------------------------------------------------- #
 # Helpers: a gate manager that records what phase_outputs the gate saw.
