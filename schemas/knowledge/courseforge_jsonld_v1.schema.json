@@ -86,14 +86,26 @@
             { "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel" },
             { "type": "null" }
           ],
-          "description": "Bloom's taxonomy level. May be null when detect_bloom_level fails; downstream chunks treat null as authoritative (see KG-quality review gap #14)."
+          "description": "Bloom's taxonomy level. May be null when detect_bloom_level fails; downstream chunks treat null as authoritative (see KG-quality review gap #14). Wave 58: when the LO text contains multiple canonical verbs (e.g., 'Analyze and evaluate X') this field carries the primary (highest-priority) match; the full set lives in bloomLevels[]."
         },
         "bloomVerb": {
           "oneOf": [
             { "type": "string" },
             { "type": "null" }
           ],
-          "description": "Detected Bloom's verb (free string)."
+          "description": "Detected Bloom's verb (free string). Wave 58: primary verb only; multi-verb LOs also emit bloomVerbs[] in canonical iteration order (bloomVerbs[0] == bloomVerb)."
+        },
+        "bloomLevels": {
+          "type": "array",
+          "items": {
+            "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel"
+          },
+          "description": "Wave 58: every Bloom's level detected in the LO statement, in canonical iteration order (longest-verb-first, higher-level ties winning). bloomLevels[0] equals bloomLevel. Elided when no verb matches. Level enum values may repeat if multiple verbs on the same level appear; dedup is caller's responsibility."
+        },
+        "bloomVerbs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Wave 58: every canonical Bloom's verb detected in the LO statement, in the same iteration order as bloomLevels. bloomVerbs[0] equals bloomVerb. Each verb appears at most once (whole-word deduplication). Elided when no verb matches."
         },
         "cognitiveDomain": {
           "$ref": "https://ed4all.dev/ns/taxonomies/v1/cognitive_domain.schema.json#/$defs/CognitiveDomain",

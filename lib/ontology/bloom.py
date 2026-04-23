@@ -45,6 +45,7 @@ __all__ = [
     "get_verb_objects",
     "get_all_verbs",
     "detect_bloom_level",
+    "detect_bloom_verbs",  # Wave 58: multi-match companion to detect_bloom_level
     # Wave 48: schema-sourced cognitive domain
     "COGNITIVE_DOMAINS",
     "cognitive_domain_enum",
@@ -254,6 +255,46 @@ def detect_bloom_level(text: str) -> Tuple[Optional[str], Optional[str]]:
         if re.search(rf"\b{re.escape(verb)}\b", lowered):
             return (level, verb)
     return (None, None)
+
+
+def detect_bloom_verbs(text: str) -> List[Tuple[str, str]]:
+    """Detect ALL Bloom's level/verb pairs from free text.
+
+    Companion to :func:`detect_bloom_level` for Wave 58. A statement like
+    "Analyze and evaluate the market trends" targets two cognitive demands
+    at once; the singular detector returns only the first match (the one
+    ``detect_bloom_level`` would pick) and silently discards the rest.
+    This function returns every canonical verb that appears as a whole
+    word in ``text``, ordered the same way ``detect_bloom_level`` iterates
+    — longest-verb-first, higher-level ties winning — so the first
+    element of the returned list equals what ``detect_bloom_level``
+    would return as ``(level, verb)``.
+
+    Returns an empty list when ``text`` is empty or no canonical verb
+    matches. Each verb appears at most once in the output (whole-word
+    match deduplicated by verb identity) so repeating a verb in the
+    same statement doesn't double-count the cognitive demand.
+
+    Examples:
+        >>> detect_bloom_verbs("analyze and evaluate the market trends")
+        [('evaluate', 'evaluate'), ('analyze', 'analyze')]
+        >>> detect_bloom_verbs("list the steps")
+        [('remember', 'list')]
+        >>> detect_bloom_verbs("")
+        []
+    """
+    if not text:
+        return []
+    lowered = text.lower().strip()
+    matches: List[Tuple[str, str]] = []
+    seen: Set[str] = set()
+    for verb, level in _detection_order():
+        if verb in seen:
+            continue
+        if re.search(rf"\b{re.escape(verb)}\b", lowered):
+            matches.append((level, verb))
+            seen.add(verb)
+    return matches
 
 
 # ---------------------------------------------------------------------------
