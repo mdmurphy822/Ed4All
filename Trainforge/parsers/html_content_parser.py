@@ -22,6 +22,7 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from lib.ontology.bloom import detect_bloom_level as _canonical_detect_bloom_level  # noqa: E402
 from lib.ontology.bloom import get_verbs_list as _get_canonical_verbs_list  # noqa: E402
 
 
@@ -571,15 +572,14 @@ class HTMLContentParser:
         return objectives
 
     def _detect_bloom_level(self, text: str) -> tuple:
-        """Detect Bloom's taxonomy level from objective text."""
-        text_lower = text.lower()
+        """Detect Bloom's taxonomy level and verb from objective text.
 
-        for level, verbs in self.BLOOM_VERBS.items():
-            for verb in verbs:
-                if text_lower.startswith(verb) or f" {verb} " in text_lower:
-                    return level, verb
-
-        return None, None
+        Wave 55: delegates to ``lib.ontology.bloom.detect_bloom_level``.
+        The pre-Wave-55 local loop used ``startswith() + f" {verb} "`` which
+        missed verbs at end-of-text and diverged from the canonical matcher
+        on verb-length tie-breaking.
+        """
+        return _canonical_detect_bloom_level(text)
 
     CONCEPT_STOP_WORDS = {
         "initial post", "replies", "due", "guidelines", "discussion forum",
