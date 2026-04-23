@@ -17,9 +17,10 @@ obtain the same data without crossing the package boundary.
 from __future__ import annotations
 
 import json
+import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 _BLOOM_LEVELS = (
     "remember",
@@ -62,3 +63,48 @@ def get_verbs_list() -> Dict[str, List[str]]:
     """
     cached = _load_raw()
     return {level: list(cached[level]) for level in _BLOOM_LEVELS}
+
+
+# ---------------------------------------------------------------------------
+# Canonical detector (vendored, Wave 55)
+# ---------------------------------------------------------------------------
+#
+# ``lib.ontology.bloom.detect_bloom_level`` is the authoritative matcher.
+# LibV2 cannot import it directly (cross-package boundary) so we vendor the
+# algorithm here, reading verbs from the same vendored JSON the CI hash
+# check already keeps in sync. Any divergence in detection logic between
+# this copy and the canonical is caught by
+# ``lib/tests/test_bloom_detector_unification.py``.
+
+_LEVEL_PRIORITY = {level: idx for idx, level in enumerate(_BLOOM_LEVELS)}
+
+
+@lru_cache(maxsize=1)
+def _detection_order() -> Tuple[Tuple[str, str], ...]:
+    """Build the (verb, level) iteration order — longest-first, higher-
+    level-tie-wins, alphabetical for stability."""
+    raw = _load_raw()
+    pairs: List[Tuple[str, str]] = []
+    for level in _BLOOM_LEVELS:
+        for verb in raw[level]:
+            pairs.append((verb, level))
+    pairs.sort(key=lambda p: (-len(p[0]), -_LEVEL_PRIORITY[p[1]], p[0]))
+    return tuple(pairs)
+
+
+def detect_bloom_level(text: str) -> Tuple[Optional[str], Optional[str]]:
+    """Detect the Bloom's level and verb from free text.
+
+    Lowercases + strips the input, searches for each canonical verb as a
+    whole word (``\\b{verb}\\b``). Returns ``(level, verb)`` on first match
+    or ``(None, None)`` if no verb is found. Iteration order is longest-
+    verb-first with higher-level ties winning — identical to
+    ``lib.ontology.bloom.detect_bloom_level``.
+    """
+    if not text:
+        return (None, None)
+    lowered = text.lower().strip()
+    for verb, level in _detection_order():
+        if re.search(rf"\b{re.escape(verb)}\b", lowered):
+            return (level, verb)
+    return (None, None)

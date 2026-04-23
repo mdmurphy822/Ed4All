@@ -8,9 +8,8 @@ for improved retrieval coverage.
 import re
 from typing import Optional
 
-from ._bloom_verbs import get_verbs_list as _get_canonical_verbs_list
+from ._bloom_verbs import detect_bloom_level as _vendored_detect_bloom_level
 from .query_decomposition import (
-    BLOOM_LEVELS,
     INTENT_ASPECT_RULES,
     INTENT_CHUNK_TYPES,
     DecomposedQuery,
@@ -107,13 +106,6 @@ class QueryDecomposer:
             r'create\s+a\s+new',
         ],
     }
-
-    # Bloom's verb patterns for level detection.
-    # Source of truth: schemas/taxonomies/bloom_verbs.json, vendored at
-    # LibV2/vendor/bloom_verbs.json (LibV2 cannot import from Ed4All's
-    # lib/ package per LibV2/CLAUDE.md; _bloom_verbs.py bridges the gap).
-    # Migrated in Wave 1.2 / Worker H (REC-BL-01).
-    BLOOM_VERBS = _get_canonical_verbs_list()
 
     # Domain keyword hints
     DOMAIN_KEYWORDS = {
@@ -249,22 +241,21 @@ class QueryDecomposer:
     def _detect_bloom_level(self, query: str) -> Optional[str]:
         """Detect Bloom's taxonomy level from verb usage.
 
+        Wave 55: delegates to the vendored canonical matcher
+        (``LibV2/tools/libv2/_bloom_verbs.py::detect_bloom_level``) and
+        discards the verb. The pre-Wave-55 local implementation used word-
+        token set intersection, which lacked the longest-verb-first tie-
+        breaking of the canonical matcher. Vendoring (rather than importing
+        ``lib.ontology.bloom``) preserves LibV2's cross-package sandbox.
+
         Args:
             query: User query
 
         Returns:
             Bloom level string or None if not detected
         """
-        query_lower = query.lower()
-        words = set(re.findall(r'\b[a-z]+\b', query_lower))
-
-        # Check each Bloom level, prefer higher levels
-        for level in reversed(BLOOM_LEVELS):
-            verbs = self.BLOOM_VERBS.get(level, [])
-            if words & set(verbs):
-                return level
-
-        return None
+        level, _verb = _vendored_detect_bloom_level(query)
+        return level
 
     def _extract_concepts(self, query: str) -> list[str]:
         """Extract key concepts/terms from query.
