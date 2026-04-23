@@ -145,6 +145,15 @@
           "type": "array",
           "items": { "type": "string" },
           "description": "LO IDs that are prerequisite to this objective. Emitted at generate_course.py:542-544; not currently consumed at chunk granularity (see KG-quality review gap #2)."
+        },
+        "hierarchyLevel": {
+          "enum": ["terminal", "chapter"],
+          "description": "Wave 59: LO hierarchy tier derived from the canonical ID prefix. TO-NN → 'terminal' (course-wide rollups); CO-NN → 'chapter' (chapter-level LOs that roll up to a terminal). Lets KG consumers filter by tier without re-parsing the ID pattern."
+        },
+        "parentObjectiveId": {
+          "type": "string",
+          "pattern": "^[A-Z]{2,}-\\d{2,}$",
+          "description": "Wave 59: Parent LO ID — the terminal objective a chapter LO rolls up to. Absent on terminal LOs (they are KG roots). Optional on chapter LOs — emitted when upstream supplies the mapping via the LO dict's 'parent_objective_id'/'parentObjectiveId' field (e.g., from synthesized_objectives.json); elided when no parent is known. Heuristic inference from key-concept overlap is deferred to a later wave."
         }
       }
     },

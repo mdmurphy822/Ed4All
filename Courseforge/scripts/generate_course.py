@@ -35,6 +35,8 @@ from lib.ontology.bloom import bloom_to_cognitive_domain as _bloom_to_cognitive_
 from lib.ontology.bloom import detect_bloom_level  # noqa: E402
 from lib.ontology.bloom import detect_bloom_verbs as _detect_bloom_verbs  # noqa: E402
 from lib.ontology.bloom import get_verbs_list as _get_canonical_verbs_list  # noqa: E402
+from lib.ontology.learning_objectives import hierarchy_from_id as _lo_hierarchy_from_id  # noqa: E402
+from lib.ontology.learning_objectives import validate_lo_id as _validate_lo_id  # noqa: E402
 from lib.ontology.slugs import canonical_slug as _slugify  # noqa: E402
 from lib.ontology.taxonomy import validate_classification  # noqa: E402
 from lib.ontology.teaching_roles import map_role as _map_teaching_role  # noqa: E402
@@ -1187,6 +1189,24 @@ def _build_objectives_metadata(objectives: List[Dict]) -> List[Dict[str, Any]]:
         prereqs = o.get("prerequisite_objectives", [])
         if prereqs:
             entry["prerequisiteObjectives"] = prereqs
+        # Wave 59: explicit LO hierarchy in the JSON-LD payload. The
+        # hierarchy tier ('terminal' / 'chapter') is derivable from the
+        # canonical ID prefix — promote it to a first-class field so KG
+        # consumers don't have to re-parse IDs. The parent edge
+        # ('parentObjectiveId') is opt-in: emit only when upstream
+        # supplies it (e.g., synthesized_objectives.json). Non-canonical
+        # or missing IDs silently skip these fields.
+        lo_id = o.get("id")
+        if lo_id and _validate_lo_id(lo_id):
+            try:
+                entry["hierarchyLevel"] = _lo_hierarchy_from_id(lo_id)
+            except ValueError:
+                # Recognized pattern but unknown prefix — elide rather than
+                # emit a non-enum value that schema validation would reject.
+                pass
+        parent_id = o.get("parent_objective_id") or o.get("parentObjectiveId")
+        if parent_id and _validate_lo_id(parent_id):
+            entry["parentObjectiveId"] = parent_id
         result.append(entry)
     return result
 
