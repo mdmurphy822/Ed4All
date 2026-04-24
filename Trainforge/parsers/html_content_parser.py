@@ -74,6 +74,26 @@ class LearningObjective:
     cognitive_domain: Optional[str] = None  # factual/conceptual/procedural/metacognitive
     key_concepts: List[str] = field(default_factory=list)
     assessment_suggestions: List[str] = field(default_factory=list)
+    # Wave 59 (Courseforge emit) / Wave 69 (Trainforge consume): LO hierarchy
+    # tier derived from canonical ID prefix. ``terminal`` = course-wide
+    # rollup (TO-NN); ``chapter`` = chapter-level LO (CO-NN) rolling up to
+    # a terminal. Elided when the JSON-LD doesn't declare it (legacy pre-
+    # Wave 59 corpus).
+    hierarchy_level: Optional[str] = None
+    # Wave 59 (Courseforge emit) / Wave 69 (Trainforge consume): parent LO
+    # ID — the terminal objective a chapter LO rolls up to. Absent on
+    # terminals (they are KG roots). Optional on chapter LOs — carried when
+    # Courseforge's synthesized_objectives.json supplied the mapping.
+    parent_objective_id: Optional[str] = None
+    # Wave 57 (Courseforge emit) / Wave 69 (Trainforge consume): Bloom-
+    # qualified LO→concept edges. Each entry is {"concept": <slug>,
+    # "bloom_level": <canonical level>} — note the snake_case keys (our
+    # internal convention) vs. Courseforge's camelCase
+    # targetedConcepts/bloomLevel on the wire. Bloom levels are lowercased
+    # at parse time to match Trainforge's case-insensitive reference
+    # resolution. Fed into build_semantic_graph to materialize the Wave 66
+    # ``targets-concept`` edge type.
+    targeted_concepts: List[Dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -265,7 +285,39 @@ class HTMLContentParser:
 
         # Extract page-level fields from JSON-LD
         page_id = json_ld.get("pageId") if json_ld else None
-        misconceptions = json_ld.get("misconceptions", []) if json_ld else []
+        raw_misconceptions = json_ld.get("misconceptions", []) if json_ld else []
+        # Wave 60 (Courseforge emit) / Wave 69 (Trainforge consume): normalize
+        # Misconception dicts from JSON-LD camelCase (bloomLevel /
+        # cognitiveDomain) to Trainforge snake_case (bloom_level /
+        # cognitive_domain) and lowercase the bloom level. Only the canonical
+        # required pair (misconception + correction) is mandatory; bloom /
+        # domain are optional and silently absent on pre-Wave-60 corpora.
+        misconceptions: List[Dict[str, Any]] = []
+        for mc in raw_misconceptions:
+            if not isinstance(mc, dict):
+                # Pass non-dict entries through unchanged (strings etc.)
+                misconceptions.append(mc)
+                continue
+            entry: Dict[str, Any] = {}
+            statement = mc.get("misconception")
+            if isinstance(statement, str):
+                entry["misconception"] = statement
+            correction = mc.get("correction")
+            if isinstance(correction, str):
+                entry["correction"] = correction
+            # Preserve legacy fields if present (concept_id, lo_id etc.)
+            for k, v in mc.items():
+                if k in ("misconception", "correction", "bloomLevel",
+                         "cognitiveDomain", "bloom_level", "cognitive_domain"):
+                    continue
+                entry[k] = v
+            bloom = mc.get("bloomLevel") or mc.get("bloom_level")
+            if isinstance(bloom, str) and bloom:
+                entry["bloom_level"] = bloom.lower()
+            domain = mc.get("cognitiveDomain") or mc.get("cognitive_domain")
+            if isinstance(domain, str) and domain:
+                entry["cognitive_domain"] = domain
+            misconceptions.append(entry)
         prerequisite_pages = json_ld.get("prerequisitePages", []) if json_ld else []
         suggested_assessments = json_ld.get("suggestedAssessmentTypes", []) if json_ld else []
 
@@ -497,6 +549,32 @@ class HTMLContentParser:
         # Strategy 1: JSON-LD (highest fidelity — authoritative Bloom's data)
         if json_ld and json_ld.get("learningObjectives"):
             for lo in json_ld["learningObjectives"]:
+                # Wave 69: surface Wave 57 targetedConcepts[] + Wave 59
+                # hierarchyLevel/parentObjectiveId so downstream consumers
+                # (process_course → build_semantic_graph, inference_rules/
+                # targets_concept_from_lo) can materialize the typed LO→
+                # concept edges and the terminal/chapter hierarchy tier.
+                # Keys translated camelCase (JSON-LD wire format per
+                # courseforge_jsonld_v1.schema.json) → snake_case (Trainforge
+                # internal convention). Bloom levels lowercased to match
+                # Trainforge's case-insensitive ref resolution used by the
+                # Wave 66 rule.
+                raw_targets = lo.get("targetedConcepts") or []
+                targeted: List[Dict[str, str]] = []
+                for entry in raw_targets:
+                    if not isinstance(entry, dict):
+                        continue
+                    concept = entry.get("concept")
+                    bloom = entry.get("bloomLevel")
+                    if not isinstance(concept, str) or not concept:
+                        continue
+                    if not isinstance(bloom, str) or not bloom:
+                        continue
+                    targeted.append({
+                        "concept": concept,
+                        "bloom_level": bloom.lower(),
+                    })
+
                 objectives.append(LearningObjective(
                     id=lo.get("id"),
                     text=lo.get("statement", ""),
@@ -505,6 +583,9 @@ class HTMLContentParser:
                     cognitive_domain=lo.get("cognitiveDomain"),
                     key_concepts=lo.get("keyConcepts", []),
                     assessment_suggestions=lo.get("assessmentSuggestions", []),
+                    hierarchy_level=lo.get("hierarchyLevel"),
+                    parent_objective_id=lo.get("parentObjectiveId"),
+                    targeted_concepts=targeted,
                 ))
             return objectives
 
