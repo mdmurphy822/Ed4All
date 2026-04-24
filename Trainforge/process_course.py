@@ -861,6 +861,12 @@ class CourseProcessor:
         # Stage 2
         print("[2/6] Parsing HTML content...")
         parsed_items = self._parse_html(html_files)
+        # Wave 69: retain parsed_items so the semantic graph stage can
+        # reconstruct objectives_metadata (list of LO dicts shaped like
+        # JSON-LD learningObjectives[]) for the Wave 66 targets_concept_from_lo
+        # rule. Previously the call site passed objectives_metadata=None,
+        # leaving the rule to fire on empty input.
+        self._parsed_items = parsed_items
 
         # Pre-chunking: detect corpus-wide boilerplate (footers / template chrome)
         # and build the set of valid outcome IDs for referential-integrity checks.
@@ -890,6 +896,7 @@ class CourseProcessor:
         course_data_for_semantic = self._build_course_json(manifest)
         semantic_graph = self._generate_semantic_concept_graph(
             chunks, course_data_for_semantic, concept_graph,
+            parsed_items=parsed_items,
         )
 
         # Stage 6
@@ -1546,6 +1553,51 @@ class CourseProcessor:
                     m = canonicalize_sc_references(m)
                 normalized_mis.append(m)
             chunk["misconceptions"] = normalized_mis
+
+        # Wave 69: propagate Wave 57 targetedConcepts[] from LOs onto chunks
+        # whose learning_outcome_refs cite those LOs. Each chunk entry is
+        # {"concept": <slug>, "bloom_level": <canonical level>} — a Bloom-
+        # qualified LO→concept binding that downstream consumers (retrieval,
+        # training-synthesis, SHACL validation) can key off of without
+        # re-walking the LO list. Deduplicated across LOs by (concept,
+        # bloom_level); preserves the first-seen bloom level when the same
+        # concept shows up under multiple Bloom levels across different LOs
+        # (matches the Wave 66 rule's first-wins dedup policy).
+        lo_refs = chunk.get("learning_outcome_refs") or []
+        if lo_refs:
+            # Ref-resolution is case-insensitive (Trainforge convention).
+            ref_set = {str(r).lower() for r in lo_refs if r}
+            targeted: List[Dict[str, str]] = []
+            seen_targeted: Set[tuple] = set()
+            for lo in item.get("learning_objectives") or []:
+                lo_id = getattr(lo, "id", None)
+                if lo_id is None and isinstance(lo, dict):
+                    lo_id = lo.get("id")
+                if not isinstance(lo_id, str) or lo_id.lower() not in ref_set:
+                    continue
+                tc_list = getattr(lo, "targeted_concepts", None)
+                if tc_list is None and isinstance(lo, dict):
+                    tc_list = lo.get("targeted_concepts")
+                for entry in tc_list or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    concept = entry.get("concept")
+                    bloom = entry.get("bloom_level")
+                    if not concept or not bloom:
+                        continue
+                    key = (concept, bloom)
+                    if key in seen_targeted:
+                        continue
+                    seen_targeted.add(key)
+                    targeted.append({
+                        "concept": concept,
+                        "bloom_level": bloom,
+                    })
+            if targeted:
+                # Deterministic order: by (concept, bloom_level) so chunks
+                # diff cleanly across runs.
+                targeted.sort(key=lambda e: (e["concept"], e["bloom_level"]))
+                chunk["targeted_concepts"] = targeted
 
         # Per-chunk summary for dense-retrieval recall augmentation (v4).
         # Deterministic extractive summary — see Trainforge/generators/summary_factory.py.
@@ -2465,16 +2517,34 @@ class CourseProcessor:
                     statement = (entry.get("misconception") or "").strip()
                     correction = (entry.get("correction") or "").strip()
                     explicit_cid = (entry.get("concept_id") or "").strip() or None
+                    # Wave 69: Bloom level (canonicalized lowercase in the
+                    # html_content_parser misconception normalizer) now
+                    # participates in the seed so Bloom-distinct
+                    # misconceptions emit distinct IDs. Breaking change: old
+                    # corpora re-chunked under this wave will see new
+                    # misconception IDs (documented below).
+                    bloom_level = (entry.get("bloom_level") or "").strip()
+                    cognitive_domain = (entry.get("cognitive_domain") or "").strip()
                 elif isinstance(entry, str):
                     statement = entry.strip()
                     correction = ""
                     explicit_cid = None
+                    bloom_level = ""
+                    cognitive_domain = ""
                 else:
                     continue
                 if not statement:
                     continue
                 # Content-hash ID per misconception.schema.json.
-                seed = f"{statement}|{correction}"
+                # Wave 69: seed extended with bloom_level so two misconceptions
+                # that share statement + correction text but target different
+                # Bloom cognitive demands (e.g., apply-level vs analyze-level
+                # misreading of the same concept) emit distinct IDs. Old
+                # corpora without Wave 60 bloomLevel on misconceptions feed an
+                # empty string here and keep the pre-Wave-69 hash stable *for
+                # the bloom-less path* — but any misconception that now carries
+                # a bloomLevel will hash differently than it did pre-wave.
+                seed = f"{statement}|{correction}|{bloom_level}"
                 mc_id = "mc_" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
                 if mc_id in seen:
                     continue
@@ -2484,6 +2554,10 @@ class CourseProcessor:
                     "misconception": statement,
                     "correction": correction or statement,
                 }
+                if bloom_level:
+                    entity["bloom_level"] = bloom_level
+                if cognitive_domain:
+                    entity["cognitive_domain"] = cognitive_domain
                 concept_id: Optional[str] = explicit_cid
                 if not concept_id and first_tag:
                     concept_id = _make_concept_id(first_tag, course_id)
@@ -2530,6 +2604,7 @@ class CourseProcessor:
         chunks: List[Dict[str, Any]],
         course: Optional[Dict[str, Any]],
         concept_graph: Dict[str, Any],
+        parsed_items: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Build the typed-edge concept graph alongside ``concept_graph.json``.
 
@@ -2541,6 +2616,12 @@ class CourseProcessor:
         the chunk corpus so the ``misconception-of`` and ``assesses`` rules
         can fire. Both were previously always ``None`` at this call site,
         leaving those rule emitters inert.
+
+        Wave 69: ``objectives_metadata`` is built from the parsed JSON-LD
+        ``learningObjectives[]`` across every page so the Wave 66
+        ``targets_concept_from_lo`` rule (which previously fired on empty
+        input) can materialize the Wave 57 ``targetedConcepts[]`` as
+        typed ``targets-concept`` edges.
         """
         from Trainforge.rag.typed_edge_inference import build_semantic_graph
 
@@ -2565,6 +2646,9 @@ class CourseProcessor:
 
         misconceptions = self._build_misconceptions_for_graph(chunks)
         questions = self._build_questions_for_graph(chunks)
+        objectives_metadata = self._build_objectives_metadata_for_graph(
+            parsed_items or []
+        )
 
         return build_semantic_graph(
             chunks=chunks,
@@ -2575,7 +2659,78 @@ class CourseProcessor:
             decision_capture=self.capture,
             misconceptions=misconceptions or None,
             questions=questions or None,
+            objectives_metadata=objectives_metadata or None,
         )
+
+    def _build_objectives_metadata_for_graph(
+        self, parsed_items: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Wave 69: derive ``objectives_metadata`` for build_semantic_graph.
+
+        The Wave 66 rule ``targets_concept_from_lo`` expects a list of LO
+        dicts shaped like Courseforge's JSON-LD ``learningObjectives[]``
+        emit — each entry at minimum carrying ``id`` and an optional
+        ``targetedConcepts[]`` (list of ``{concept, bloomLevel}`` dicts).
+        The rule lowercases LO IDs itself and validates the bloom level
+        against the canonical 6-value enum.
+
+        We iterate every parsed page and prefer the raw JSON-LD payload
+        (``courseforge_metadata.learningObjectives``) so the shape lands
+        on the rule exactly as emitted. When no JSON-LD is available
+        (legacy corpora / non-Courseforge IMSCC) we reconstruct the shape
+        from ``html_content_parser.LearningObjective.targeted_concepts``
+        — which is already a snake_case list — by translating back to
+        camelCase for the rule.
+
+        Deduplicated by LO ID so a page appearing twice (or cross-page
+        duplicates) doesn't inflate the edge count downstream — the rule
+        itself dedups by (lo_id, concept_id) inside each LO, but a clean
+        input list also avoids log spam.
+        """
+        by_id: Dict[str, Dict[str, Any]] = {}
+        for item in parsed_items:
+            # Path 1: direct JSON-LD payload (preferred — exact emit shape).
+            cf_meta = item.get("courseforge_metadata") or {}
+            for raw_lo in cf_meta.get("learningObjectives") or []:
+                if not isinstance(raw_lo, dict):
+                    continue
+                lo_id = raw_lo.get("id")
+                if not isinstance(lo_id, str) or not lo_id:
+                    continue
+                if lo_id in by_id:
+                    continue
+                # Shallow copy so we don't mutate the parsed item.
+                by_id[lo_id] = dict(raw_lo)
+
+            # Path 2: reconstruct from parsed LearningObjective dataclass
+            # when JSON-LD wasn't available or didn't include this LO.
+            for parsed_lo in item.get("learning_objectives") or []:
+                # Dataclass or dict — support both.
+                lo_id = getattr(parsed_lo, "id", None)
+                if lo_id is None and isinstance(parsed_lo, dict):
+                    lo_id = parsed_lo.get("id")
+                if not isinstance(lo_id, str) or not lo_id:
+                    continue
+                if lo_id in by_id:
+                    continue
+                targeted = getattr(parsed_lo, "targeted_concepts", None)
+                if targeted is None and isinstance(parsed_lo, dict):
+                    targeted = parsed_lo.get("targeted_concepts")
+                targeted = targeted or []
+                # Back-translate snake_case → camelCase for the rule.
+                rule_shape_targets = [
+                    {
+                        "concept": t.get("concept"),
+                        "bloomLevel": t.get("bloom_level"),
+                    }
+                    for t in targeted
+                    if isinstance(t, dict)
+                ]
+                by_id[lo_id] = {
+                    "id": lo_id,
+                    "targetedConcepts": rule_shape_targets,
+                }
+        return list(by_id.values())
 
     def _generate_pedagogy_graph(self, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Mirror graph of pedagogical and logistics tags.
