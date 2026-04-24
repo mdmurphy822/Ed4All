@@ -365,7 +365,7 @@ def catalog_stats(ctx):
 @click.option("--concept", multiple=True, help="Filter by concept tag (can specify multiple)")
 @click.option("--limit", "-n", type=int, default=10, help="Maximum results (default: 10)")
 @click.option("--sample-per-course", type=int, help="Max chunks per course for cross-course search")
-@click.option("--output", "-o", type=click.Choice(["text", "json"]), default="text", help="Output format")
+@click.option("--output", "-o", type=click.Choice(["text", "json", "jsonld"]), default="text", help="Output format")
 # Worker J: reference-retrieval flags
 @click.option("--include-rationale", is_flag=True, help="Emit per-result rationale (matched tags/LOs, boost contributions)")
 @click.option("--no-metadata-scoring", is_flag=True, help="Disable concept/LO/prereq boosts (pure BM25)")
@@ -376,6 +376,10 @@ def catalog_stats(ctx):
 @click.option("--week", "week_num", type=int, help="Filter by week number (parses source.module_id)")
 @click.option("--teaching-role", help="Filter by teaching_role (transfer, assess, synthesize, ...)")
 @click.option("--content-type", "content_type_label", help="Filter by content_type_label")
+# Wave 70 RDF-aligned filters
+@click.option("--cognitive-domain", help="Filter by cognitive_domain (factual, conceptual, procedural, metacognitive)")
+@click.option("--hierarchy-level", type=click.Choice(["terminal", "chapter"]),
+              help="Filter by LO hierarchy_level (resolved via learning_outcome_refs against course.json outcomes)")
 @click.pass_context
 def retrieve(ctx, query: str, domain: Optional[str], division: Optional[str],
              subdomain: Optional[str], course: Optional[str], chunk_type: Optional[str],
@@ -385,7 +389,9 @@ def retrieve(ctx, query: str, domain: Optional[str], division: Optional[str],
              no_concept_graph_boost: bool, no_lo_boost: bool,
              prefer_self_contained: bool, lo_filter: tuple,
              week_num: Optional[int], teaching_role: Optional[str],
-             content_type_label: Optional[str]):
+             content_type_label: Optional[str],
+             cognitive_domain: Optional[str],
+             hierarchy_level: Optional[str]):
     """Search chunks by keyword with metadata filters.
 
     Streams chunks without loading entire corpus. Uses TF-IDF ranking.
@@ -416,6 +422,8 @@ def retrieve(ctx, query: str, domain: Optional[str], division: Optional[str],
         teaching_role=teaching_role,
         content_type_label=content_type_label,
         week_num=week_num,
+        cognitive_domain=cognitive_domain,
+        hierarchy_level=hierarchy_level,
         limit=limit,
         sample_per_course=sample_per_course,
         include_rationale=include_rationale,
@@ -433,6 +441,11 @@ def retrieve(ctx, query: str, domain: Optional[str], division: Optional[str],
     if output == "json":
         import json as json_module
         print(json_module.dumps([r.to_dict() for r in results], indent=2))
+    elif output == "jsonld":
+        import json as json_module
+        # Emit as a JSON array of JSON-LD docs so piping to a JSON-LD
+        # processor works. Each element carries its own @context.
+        print(json_module.dumps([r.to_jsonld() for r in results], indent=2))
     else:
         for i, result in enumerate(results, 1):
             print(f"\n--- Result {i} (score: {result.score:.3f}) ---")
@@ -465,11 +478,17 @@ def retrieve(ctx, query: str, domain: Optional[str], division: Optional[str],
 @click.option("--limit", "-n", type=int, default=10, help="Maximum results (default: 10)")
 @click.option("--decompose/--no-decompose", default=True, help="Enable query decomposition")
 @click.option("--explain", is_flag=True, help="Show decomposition explanation")
-@click.option("--output", "-o", type=click.Choice(["text", "json"]), default="text", help="Output format")
+@click.option("--output", "-o", type=click.Choice(["text", "json", "jsonld"]), default="text", help="Output format")
+# Wave 70 RDF-aligned filters
+@click.option("--cognitive-domain", help="Filter by cognitive_domain (factual, conceptual, procedural, metacognitive)")
+@click.option("--hierarchy-level", type=click.Choice(["terminal", "chapter"]),
+              help="Filter by LO hierarchy_level (resolved via learning_outcome_refs against course.json outcomes)")
 @click.pass_context
 def multi_retrieve(ctx, query: str, domain: Optional[str], division: Optional[str],
                    chunk_type: Optional[str], difficulty: Optional[str], limit: int,
-                   decompose: bool, explain: bool, output: str):
+                   decompose: bool, explain: bool, output: str,
+                   cognitive_domain: Optional[str],
+                   hierarchy_level: Optional[str]):
     """Multi-query retrieval with query decomposition and RRF fusion.
 
     Decomposes complex queries into sub-queries, executes them in parallel,
@@ -515,6 +534,8 @@ def multi_retrieve(ctx, query: str, domain: Optional[str], division: Optional[st
         decompose=decompose,
         chunk_type=chunk_type,
         difficulty=difficulty,
+        cognitive_domain=cognitive_domain,
+        hierarchy_level=hierarchy_level,
     )
 
     if not results.results:
@@ -523,6 +544,34 @@ def multi_retrieve(ctx, query: str, domain: Optional[str], division: Optional[st
 
     if output == "json":
         print(json.dumps(results.to_dict(), indent=2))
+    elif output == "jsonld":
+        # JSON-LD emit for multi-retrieve: each FusedResult wraps a
+        # RetrievalResult-shaped dict. We project to a JSON-LD envelope
+        # so downstream consumers get the same @context / @type shape
+        # as single-retrieve. Wrap each fused result in an ed4all:
+        # RetrievalResult node — the fusion metadata (fused_score,
+        # contributing_queries) lives on the envelope under ed4all: predicates.
+        from .retriever import RetrievalResult
+
+        jsonld_results = []
+        for r in results.results:
+            # Rehydrate RetrievalResult so the to_jsonld() projection works.
+            rr = RetrievalResult(
+                chunk_id=getattr(r, "chunk_id", ""),
+                text=getattr(r, "text", ""),
+                score=getattr(r, "fused_score", getattr(r, "score", 0.0)),
+                course_slug=getattr(r, "course_slug", ""),
+                domain=getattr(r, "domain", ""),
+                chunk_type=getattr(r, "chunk_type", ""),
+                difficulty=getattr(r, "difficulty", None),
+                concept_tags=getattr(r, "concept_tags", []) or [],
+                source=getattr(r, "source", {}) or {},
+                tokens_estimate=getattr(r, "tokens_estimate", 0),
+                learning_outcome_refs=getattr(r, "learning_outcome_refs", []) or [],
+                bloom_level=getattr(r, "bloom_level", None),
+            )
+            jsonld_results.append(rr.to_jsonld())
+        print(json.dumps(jsonld_results, indent=2))
     else:
         # Show fusion stats
         print(f"\n=== Multi-Query Results ({results.result_count} fused) ===")

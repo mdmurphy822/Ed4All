@@ -65,6 +65,16 @@ class ChunkFilter:
     content_type_label: Optional[str] = None
     module_id: Optional[str] = None
     week_num: Optional[int] = None
+    # Wave 70 additions — RDF-aligned filter axes.
+    # ``cognitive_domain`` is expected on chunks directly (factual /
+    # conceptual / procedural / metacognitive per
+    # schemas/context/courseforge_v1.vocabulary.ttl). Dependent on Wave 69
+    # extension that lands the predicate on chunk emit.
+    # ``hierarchy_level`` is NOT on chunks; it's resolved via the chunk's
+    # ``learning_outcome_refs[]`` against the course's outcomes list.
+    # Value space: "terminal" or "chapter" (matches LO hierarchyLevel).
+    cognitive_domain: Optional[str] = None
+    hierarchy_level: Optional[str] = None
 
     def __post_init__(self) -> None:
         # REC-VOC-03 Phase 2 (Worker T): opt-in content_type enforcement.
@@ -134,6 +144,22 @@ class RetrievalResult:
         if self.rationale is not None:
             base["rationale"] = self.rationale
         return base
+
+    def to_jsonld(
+        self,
+        context_url: str = "https://ed4all.dev/ns/courseforge/v1",
+    ) -> dict:
+        """Wave 70 — RDF-compatible JSON-LD projection.
+
+        Additive wrapper over :meth:`to_dict` — the legacy dict shape is
+        untouched. See :mod:`LibV2.tools.libv2.jsonld_emit` for the full
+        predicate alignment table.
+        """
+        # Local import so the (rarely-used) emit path doesn't get pulled
+        # into every `from .retriever import ...` call.
+        from .jsonld_emit import retrieval_result_to_jsonld
+
+        return retrieval_result_to_jsonld(self, context_url=context_url)
 
 
 # Retrieval scoring utilities
@@ -411,8 +437,21 @@ class LazyBM25:
 LazyTFIDF = LazyBM25
 
 
-def _matches_filter(chunk: dict, chunk_filter: ChunkFilter) -> bool:
-    """Check if a chunk matches the filter criteria."""
+def _matches_filter(
+    chunk: dict,
+    chunk_filter: ChunkFilter,
+    outcomes_by_id: Optional[dict] = None,
+) -> bool:
+    """Check if a chunk matches the filter criteria.
+
+    ``outcomes_by_id`` is an optional ``{lo_id_lower: outcome_dict}`` map
+    used to resolve the Wave 70 ``hierarchy_level`` filter — the
+    hierarchy lives on the LO, not the chunk, so we fan out via
+    ``learning_outcome_refs[]``. Callers that don't pass the map (e.g.
+    direct unit-test invocation) get no hierarchy_level coverage, which
+    matches the intent: the predicate is only meaningful when resolved
+    against the course outcomes.
+    """
     if chunk_filter.chunk_type:
         if chunk.get("chunk_type") != chunk_filter.chunk_type:
             return False
@@ -467,7 +506,64 @@ def _matches_filter(chunk: dict, chunk_filter: ChunkFilter) -> bool:
         if chunk_week != chunk_filter.week_num:
             return False
 
+    # Wave 70 — RDF-aligned filters.
+    if chunk_filter.cognitive_domain:
+        # Expected on the chunk directly (Wave 60 → Wave 69 emit). Match
+        # case-insensitively to be kind to corpora with mixed case.
+        chunk_cd = chunk.get("cognitive_domain")
+        if not chunk_cd or str(chunk_cd).lower() != str(chunk_filter.cognitive_domain).lower():
+            return False
+
+    if chunk_filter.hierarchy_level:
+        target = str(chunk_filter.hierarchy_level).lower()
+        refs = [str(r).lower() for r in chunk.get("learning_outcome_refs", []) if r]
+        if not refs:
+            return False
+        if not outcomes_by_id:
+            # No lookup table available — we can't resolve the LO's
+            # hierarchyLevel, so be conservative and reject rather than
+            # let through a chunk we can't attest about.
+            return False
+        matched = False
+        for ref in refs:
+            lo = outcomes_by_id.get(ref)
+            if not lo:
+                continue
+            lo_level = str(lo.get("hierarchy_level", "")).lower()
+            if lo_level == target:
+                matched = True
+                break
+        if not matched:
+            return False
+
     return True
+
+
+def _build_outcomes_lookup(course_dir: Path) -> dict:
+    """Build a ``{lo_id_lower: outcome_dict}`` map for hierarchy_level lookup.
+
+    Consumes the same ``course.json`` shape that
+    ``retrieval_scoring.load_course_outcomes`` reads. Returns an empty
+    dict when the course has no outcomes file — callers should handle
+    that case the same as "no match".
+    """
+    path = course_dir / "course.json"
+    if not path.exists():
+        return {}
+    try:
+        with open(path) as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+    los = data.get("learning_outcomes") or data.get("outcomes") or []
+    out: dict = {}
+    for lo in los:
+        if not isinstance(lo, dict):
+            continue
+        lo_id = lo.get("id")
+        if lo_id:
+            out[str(lo_id).lower()] = lo
+    return out
 
 
 def stream_chunks_from_course(
@@ -484,6 +580,13 @@ def stream_chunks_from_course(
     chunks_path = course_dir / "corpus" / "chunks.jsonl"
     if not chunks_path.exists():
         return
+
+    # Wave 70: build the outcomes lookup lazily — only the
+    # hierarchy_level filter needs it, so courses without course.json
+    # aren't penalized.
+    outcomes_by_id: Optional[dict] = None
+    if chunk_filter and chunk_filter.hierarchy_level:
+        outcomes_by_id = _build_outcomes_lookup(course_dir)
 
     count = 0
     with open(chunks_path) as f:
@@ -505,7 +608,9 @@ def stream_chunks_from_course(
             chunk["_domain"] = domain
 
             # Apply filter
-            if chunk_filter and not _matches_filter(chunk, chunk_filter):
+            if chunk_filter and not _matches_filter(
+                chunk, chunk_filter, outcomes_by_id=outcomes_by_id,
+            ):
                 continue
 
             count += 1
@@ -581,6 +686,9 @@ def retrieve_chunks(
     content_type_label: Optional[str] = None,
     module_id: Optional[str] = None,
     week_num: Optional[int] = None,
+    # Wave 70 RDF-aligned filters
+    cognitive_domain: Optional[str] = None,
+    hierarchy_level: Optional[str] = None,
     # Worker J additions — back-compat by default
     include_rationale: bool = False,
     metadata_scoring: bool = True,
@@ -639,6 +747,8 @@ def retrieve_chunks(
         content_type_label=content_type_label,
         module_id=module_id,
         week_num=week_num,
+        cognitive_domain=cognitive_domain,
+        hierarchy_level=hierarchy_level,
     )
 
     candidate_budget = max(limit * 10, 100)
