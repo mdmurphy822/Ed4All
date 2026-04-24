@@ -74,6 +74,58 @@ class TestConstruction:
         with pytest.raises(ValueError, match="Unknown orchestrator mode"):
             orch._get_dispatcher()
 
+    def test_api_mode_get_dispatcher_does_not_recurse(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        """Wave 74 P1 regression: pre-fix, ``_get_executor`` called
+        ``_get_dispatcher`` inside itself to obtain a dispatcher to
+        thread into the executor. In api mode ``_get_dispatcher``
+        already calls ``_get_executor`` while constructing
+        ``APIDispatcher(..., executor=self._get_executor(...))``, so
+        the two methods mutually recursed on first-time startup with
+        empty caches until RecursionError.
+
+        Repro: instantiate with ``mode="api"`` and call
+        ``_get_dispatcher`` — must return an APIDispatcher instance
+        without blowing the stack.
+        """
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-test-key")
+        orch = PipelineOrchestrator(
+            config=_make_config(),
+            mode="api",
+            backend_spec=BackendSpec(mode="api", provider="anthropic"),
+            project_root=tmp_path,
+        )
+        # Empty caches at start — this is the recursion-trigger path.
+        assert orch._dispatcher is None
+        assert orch._executor is None
+
+        dispatcher = orch._get_dispatcher()
+        assert dispatcher is not None
+        assert dispatcher.__class__.__name__ == "APIDispatcher"
+        # Executor was built during APIDispatcher construction with a
+        # None dispatcher (since self._dispatcher was still being
+        # resolved at that point).
+        assert orch._executor is not None
+        assert orch._executor.dispatcher is None
+
+    def test_local_mode_get_executor_receives_dispatcher_on_first_call(
+        self, tmp_path: Path,
+    ):
+        """Symmetric coverage: local mode's ``_get_dispatcher`` does
+        NOT call ``_get_executor`` during construction
+        (``LocalDispatcher.__init__`` doesn't take an executor), so
+        when ``_get_executor`` is called AFTER ``_get_dispatcher``
+        caches the dispatcher, the executor picks it up immediately."""
+        orch = PipelineOrchestrator(
+            config=_make_config(),
+            mode="local",
+            project_root=tmp_path,
+        )
+        dispatcher = orch._get_dispatcher()
+        executor = orch._get_executor()
+        assert executor.dispatcher is dispatcher
+
 
 class TestPlan:
     def test_plan_returns_phases_in_order(self, tmp_path: Path, monkeypatch):
@@ -174,6 +226,56 @@ class TestRun:
         assert result.status == "ok"
         assert "planning" in result.phase_results
         assert result.phase_outputs == {"planning": {"_completed": True}}
+
+    @pytest.mark.asyncio
+    async def test_run_patches_api_executor_dispatcher_post_construction(
+        self, tmp_path: Path, monkeypatch,
+    ):
+        """Wave 74 P1 fix: after the mutual-recursion fix,
+        ``_get_executor`` no longer eagerly calls ``_get_dispatcher``.
+        In api mode the executor is first built with
+        ``dispatcher=None`` while ``APIDispatcher`` is still being
+        constructed. ``PipelineOrchestrator.run`` must patch the
+        executor's ``dispatcher`` attribute AFTER ``_get_dispatcher``
+        returns so subsequent ``_invoke_tool`` calls can see it and
+        honour the Wave 74 routing fork when the flag is on.
+        """
+        import MCP.orchestrator.pipeline_orchestrator as po
+
+        state_dir = tmp_path / "state" / "workflows"
+        state_dir.mkdir(parents=True)
+        (state_dir / "WF-T.json").write_text(
+            json.dumps({"id": "WF-T", "type": "test_wf", "params": {}})
+        )
+        monkeypatch.setattr(po, "STATE_PATH", tmp_path / "state")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-test-key")
+
+        orch = PipelineOrchestrator(
+            config=_make_config(),
+            mode="api",
+            backend_spec=BackendSpec(mode="api", provider="anthropic"),
+            project_root=tmp_path,
+        )
+
+        async def fake_run(self, workflow_id: str):
+            return {
+                "workflow_id": workflow_id,
+                "status": "COMPLETE",
+                "phase_results": {},
+                "phase_outputs": {},
+            }
+
+        with patch(
+            "MCP.core.workflow_runner.WorkflowRunner.run_workflow", new=fake_run
+        ):
+            await orch.run("WF-T")
+
+        # After run() returns, the executor must have picked up the
+        # APIDispatcher via the patch in run().
+        assert orch._executor is not None
+        assert orch._executor.dispatcher is orch._dispatcher
+        assert orch._dispatcher is not None
+        assert orch._dispatcher.__class__.__name__ == "APIDispatcher"
 
     @pytest.mark.asyncio
     async def test_run_handles_workflow_exception(self, tmp_path: Path, monkeypatch):

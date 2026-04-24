@@ -286,35 +286,32 @@ class PipelineOrchestrator:
                 )
                 capture = None
 
-        # Wave 74: thread the dispatcher (built by ``_get_dispatcher``)
-        # into the executor so ``TaskExecutor._invoke_tool`` can route
+        # Wave 74: thread the cached dispatcher (if any) into the
+        # executor so ``TaskExecutor._invoke_tool`` can route
         # subagent-classified tasks through ``dispatcher.dispatch_task``
-        # when ``ED4ALL_AGENT_DISPATCH=true``. The dispatcher property
-        # is cached on the orchestrator; call ``_get_dispatcher`` via
-        # ``self._dispatcher`` (already populated if reached through the
-        # normal ``run()`` path) or build one lazily if the executor is
-        # being fetched before dispatch (tests).
-        dispatcher_for_executor = self._dispatcher
-        if dispatcher_for_executor is None:
-            try:
-                dispatcher_for_executor = self._get_dispatcher(
-                    workflow_state=workflow_state,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.debug(
-                    "Wave 74: could not resolve dispatcher for executor "
-                    "threading (%s); executor falls back to in-process "
-                    "tool registry regardless of ED4ALL_AGENT_DISPATCH",
-                    exc,
-                )
-                dispatcher_for_executor = None
-
+        # when ``ED4ALL_AGENT_DISPATCH=true``.
+        #
+        # Wave 74 P1 fix: *must not* call ``self._get_dispatcher`` from
+        # here. In ``mode="api"`` the dispatcher constructor calls
+        # ``self._get_executor`` to wire the executor into
+        # ``APIDispatcher`` — so ``_get_executor`` → ``_get_dispatcher``
+        # → ``APIDispatcher.__init__`` → ``_get_executor`` would mutually
+        # recurse on first-time startup and blow the stack before any
+        # task runs. We therefore only read ``self._dispatcher`` as a
+        # cached value. When this method is called during
+        # ``_get_dispatcher``'s construction of ``APIDispatcher`` (the
+        # recursion trigger), the cache is still None; the executor
+        # is built with ``dispatcher=None`` and its dispatcher attribute
+        # is patched in by ``run()`` after ``_get_dispatcher`` returns.
+        # When called later (from ``_build_runner`` or tests after a
+        # prior ``_get_dispatcher`` call), the cache is populated and
+        # the executor receives the dispatcher immediately.
         self._executor = TaskExecutor(
             tool_registry=tool_registry,
             run_id=run_id,
             run_path=run_path,
             capture=capture,
-            dispatcher=dispatcher_for_executor,
+            dispatcher=self._dispatcher,
         )
         return self._executor
 
@@ -408,6 +405,24 @@ class PipelineOrchestrator:
             self.mode,
             type(dispatcher).__name__,
         )
+
+        # Wave 74 P1 fix: in api mode ``_get_dispatcher`` calls
+        # ``_get_executor`` mid-construction to wire the executor into
+        # ``APIDispatcher`` — at that point ``self._dispatcher`` is
+        # still None, so the executor was built with
+        # ``dispatcher=None``. Now that ``_get_dispatcher`` has
+        # returned (and cached ``self._dispatcher``), patch the
+        # already-built executor's dispatcher attribute so the Wave
+        # 74 ``_invoke_tool`` routing fork sees it on every subsequent
+        # task. No-op when the executor wasn't built (defensive) or
+        # when it already received the dispatcher at construction time
+        # (local-mode path, where ``_get_dispatcher`` doesn't need an
+        # executor so no mutual recursion happens and ``_get_executor``
+        # can read the cache on first call).
+        if self._executor is not None and getattr(
+            self._executor, "dispatcher", None,
+        ) is None:
+            self._executor.dispatcher = dispatcher
 
         # Optional: pre-dispatch hook (used for decision capture + metrics)
         await dispatcher.before_run(workflow_id=workflow_id, state=state)
