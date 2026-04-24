@@ -46,6 +46,14 @@ _ALLOW_STUB_ENV = "LOCAL_DISPATCHER_ALLOW_STUB"
 # content-generation-size tasks without pinning the dispatcher forever.
 _DEFAULT_MAILBOX_TIMEOUT = 600.0
 
+# Wave 74: per-task subagent dispatch carries different latency
+# expectations than phase-level dispatch. A content-generator working
+# through a full week's modules can legitimately take 10+ minutes.
+# Overridable via ``ED4ALL_AGENT_TIMEOUT_SECONDS`` env var (Session 2
+# exposes this on the CLI too).
+_DEFAULT_AGENT_TASK_TIMEOUT = 1800.0
+_AGENT_TASK_TIMEOUT_ENV = "ED4ALL_AGENT_TIMEOUT_SECONDS"
+
 
 # Registry of known agent-spec directories. The dispatcher searches these
 # in order when it needs to resolve an agent name to a markdown spec.
@@ -192,6 +200,341 @@ class LocalDispatcher:
             )
 
         return self._parse_subagent_response(raw, phase_input)
+
+    # ---------------------------------------------------------- per-task
+    #
+    # Wave 74: per-task dispatch hook. Closes the Wave 38 gap where
+    # ``TaskExecutor._invoke_tool`` called the Python tool registry
+    # directly on every phase task, bypassing the dispatcher entirely.
+    # When a phase task's agent is classified as subagent-dispatched
+    # (see ``MCP/core/executor.AGENT_SUBAGENT_SET``) AND
+    # ``ED4ALL_AGENT_DISPATCH=true``, the executor routes through this
+    # method instead of invoking the in-process templated emitter.
+    #
+    # Contract mirrors the Python tool's envelope: caller hands a dict
+    # of mapped params, receives back a JSON-serialisable dict matching
+    # the tool's historical return shape (e.g. ``{"success": true,
+    # "artifacts": [...], "outputs": {...}}``). Unsuccessful work
+    # returns the Wave 33 ``{"success": false, "error_code": ...,
+    # "error": ...}`` envelope so the executor retry path and gate
+    # aggregation stay unchanged.
+
+    async def dispatch_task(
+        self,
+        *,
+        task_name: str,
+        agent_type: str,
+        task_params: Dict[str, Any],
+        run_id: str,
+        phase_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Dispatch one phase task to a subagent, return tool-shape dict.
+
+        Three-path selector (mirrors ``dispatch_phase``'s selector):
+
+        1. ``agent_tool`` callable injected → call it directly.
+           Test-harness path + future in-process integrations.
+        2. ``agent_tool`` missing AND ``LOCAL_DISPATCHER_ALLOW_STUB=1`` →
+           return a stub envelope so dry-run / CI exercise the routing
+           fork without a real subagent pathway.
+        3. ``agent_tool`` missing AND stub flag off → write a pending
+           ``kind="agent_task"`` spec to the run's mailbox, block on
+           ``TaskMailbox.wait_for_completion``. An outer Claude Code
+           operator dispatches the actual subagent via the MCP
+           ``Agent`` tool (using the agent spec markdown at
+           ``{project}/{Courseforge|Trainforge|DART}/agents/{agent_type}.md``
+           to drive the prompt) and writes the completion envelope.
+           Timeout → ``{"success": false, "error_code":
+           "MAILBOX_TIMEOUT"}``.
+
+        Args:
+            task_name: Python tool name the agent would have called
+                in the legacy path. Carried through so operators can
+                disambiguate when multiple agents map to the same tool
+                (three Courseforge agents all map to
+                ``remediate_course_content``).
+            agent_type: The agent type the executor picked up from the
+                task's ``agent_type`` field. Drives agent-spec resolution
+                + the pending-task prefix so operators filter by kind.
+            task_params: Already param-mapped via ``TaskParameterMapper``.
+                Serialised into the mailbox spec verbatim.
+            run_id: Workflow run id — pins the mailbox directory.
+            phase_context: Optional phase-level context (phase outputs
+                so far, workflow params). Emitted into the pending spec
+                so subagents can resolve cross-phase inputs without
+                re-reading state JSON.
+        """
+        self._dispatched.append(f"{agent_type}:{task_name}")
+
+        if self.agent_tool is not None:
+            return await self._dispatch_task_via_callable(
+                task_name=task_name,
+                agent_type=agent_type,
+                task_params=task_params,
+                run_id=run_id,
+                phase_context=phase_context,
+            )
+
+        allow_stub = os.environ.get(_ALLOW_STUB_ENV, "").strip().lower() in (
+            "1", "true", "yes", "on",
+        )
+        if allow_stub:
+            logger.info(
+                "LocalDispatcher.dispatch_task: no agent_tool wired; "
+                "LOCAL_DISPATCHER_ALLOW_STUB set — emitting stub envelope "
+                "for agent=%s tool=%s", agent_type, task_name,
+            )
+            return {
+                "success": True,
+                "dispatch_mode": "stub",
+                "agent_type": agent_type,
+                "tool_name": task_name,
+                "outputs": {},
+                "artifacts": [],
+            }
+
+        return await self._dispatch_task_via_mailbox(
+            task_name=task_name,
+            agent_type=agent_type,
+            task_params=task_params,
+            run_id=run_id,
+            phase_context=phase_context,
+        )
+
+    async def _dispatch_task_via_callable(
+        self,
+        *,
+        task_name: str,
+        agent_type: str,
+        task_params: Dict[str, Any],
+        run_id: str,
+        phase_context: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Happy-path: caller injected an ``agent_tool``. Call it and
+        parse the returned JSON into the tool-shape dict.
+        """
+        request = {
+            "subagent_type": agent_type,
+            "agent_type": agent_type,
+            "tool_name": task_name,
+            "task_params": task_params,
+            "run_id": run_id,
+            "phase_context": phase_context or {},
+        }
+        try:
+            raw = await self.agent_tool(request)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "LocalDispatcher.dispatch_task: agent_tool raised for "
+                "agent=%s tool=%s", agent_type, task_name,
+            )
+            return {
+                "success": False,
+                "error": str(exc),
+                "error_code": "AGENT_TOOL_RAISED",
+            }
+
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                return {
+                    "success": False,
+                    "error": f"agent_tool returned non-JSON string: {exc}",
+                    "error_code": "INVALID_AGENT_RESPONSE",
+                    "raw": raw[:2000],
+                }
+            if isinstance(parsed, dict):
+                return parsed
+            return {
+                "success": False,
+                "error": "agent_tool returned JSON that wasn't an object",
+                "error_code": "INVALID_AGENT_RESPONSE",
+            }
+        return {
+            "success": False,
+            "error": f"agent_tool returned unexpected type {type(raw).__name__}",
+            "error_code": "INVALID_AGENT_RESPONSE",
+        }
+
+    async def _dispatch_task_via_mailbox(
+        self,
+        *,
+        task_name: str,
+        agent_type: str,
+        task_params: Dict[str, Any],
+        run_id: str,
+        phase_context: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Mailbox-bridge path — writes a pending agent task spec and
+        blocks on the outer Claude Code operator's completion envelope.
+        """
+        mailbox = TaskMailbox(run_id=run_id, base_dir=self.mailbox_base_dir)
+
+        task_id = f"{agent_type}-{uuid.uuid4().hex[:12]}"
+        spec: Dict[str, Any] = {
+            "kind": "agent_task",
+            "agent_type": agent_type,
+            "tool_name": task_name,
+            "task_params": task_params,
+            "phase_context": phase_context or {},
+            "agent_spec_path": self._resolve_agent_spec_path(agent_type),
+        }
+
+        try:
+            mailbox.put_pending(task_id, spec)
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "LocalDispatcher.dispatch_task: failed to queue task "
+                "for agent=%s tool=%s", agent_type, task_name,
+            )
+            return {
+                "success": False,
+                "error": f"mailbox put_pending failed: {exc}",
+                "error_code": "MAILBOX_PUT_FAILED",
+            }
+
+        timeout = self._resolve_agent_task_timeout()
+        logger.info(
+            "LocalDispatcher.dispatch_task: agent task %s queued for "
+            "agent=%s tool=%s (timeout=%.0fs)",
+            task_id, agent_type, task_name, timeout,
+        )
+
+        loop = asyncio.get_event_loop()
+        try:
+            envelope = await loop.run_in_executor(
+                None,
+                lambda: mailbox.wait_for_completion(
+                    task_id,
+                    timeout_seconds=timeout,
+                    poll_interval=self.mailbox_poll_interval,
+                ),
+            )
+        except TimeoutError:
+            logger.error(
+                "LocalDispatcher.dispatch_task: mailbox timeout for "
+                "task=%s agent=%s", task_id, agent_type,
+            )
+            return {
+                "success": False,
+                "error": (
+                    f"MAILBOX_TIMEOUT: no completion from outer operator "
+                    f"within {timeout:.0f}s for task {task_id!r}. "
+                    f"Recovery: run the mailbox operator loop (Session 2 "
+                    f"ships ``ed4all mailbox-bridge peek-agent``) in a "
+                    f"Claude Code session, or set ED4ALL_AGENT_TIMEOUT_SECONDS "
+                    f"higher, or disable ED4ALL_AGENT_DISPATCH to fall back "
+                    f"to the in-process templated path."
+                ),
+                "error_code": "MAILBOX_TIMEOUT",
+                "mailbox_task_id": task_id,
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "LocalDispatcher.dispatch_task: mailbox wait failed for %s",
+                task_id,
+            )
+            return {
+                "success": False,
+                "error": f"mailbox wait_for_completion failed: {exc}",
+                "error_code": "MAILBOX_WAIT_FAILED",
+                "mailbox_task_id": task_id,
+            }
+        finally:
+            try:
+                mailbox.cleanup(task_id)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "LocalDispatcher.dispatch_task: cleanup failed for %s "
+                    "(non-fatal)", task_id,
+                )
+
+        return self._tool_dict_from_envelope(envelope, task_id)
+
+    @staticmethod
+    def _tool_dict_from_envelope(
+        envelope: Dict[str, Any], task_id: str,
+    ) -> Dict[str, Any]:
+        """Unwrap a mailbox completion envelope into a tool-shape dict.
+
+        Accepted shapes:
+
+        * ``{"success": true, "result": {...tool envelope...}}``
+          — canonical.
+        * ``{"success": true, ...}`` with no ``result`` key → the
+          envelope IS the tool dict (convenience for operators that
+          return a flat structure).
+        * ``{"success": false, ...}`` → pass through (tool-shape
+          failure envelope).
+        """
+        if not isinstance(envelope, dict):
+            return {
+                "success": False,
+                "error": "agent task completion envelope was not a JSON object",
+                "error_code": "INVALID_ENVELOPE",
+                "mailbox_task_id": task_id,
+            }
+
+        if envelope.get("success") is False:
+            out = dict(envelope)
+            out.setdefault("mailbox_task_id", task_id)
+            return out
+
+        result = envelope.get("result")
+        if isinstance(result, dict):
+            result = dict(result)
+            result.setdefault("mailbox_task_id", task_id)
+            return result
+
+        # Flat-envelope operator convenience.
+        if envelope.get("success") is True:
+            out = {k: v for k, v in envelope.items() if k not in ("kind", "task_id")}
+            out.setdefault("mailbox_task_id", task_id)
+            return out
+
+        return {
+            "success": False,
+            "error": (
+                "agent task envelope reported success but carried no "
+                "recognisable result payload"
+            ),
+            "error_code": "INVALID_ENVELOPE",
+            "mailbox_task_id": task_id,
+        }
+
+    def _resolve_agent_spec_path(self, agent_type: str) -> Optional[str]:
+        """Locate the agent spec markdown so operators can inject it into
+        subagent prompts. Returns the relative path (from project root)
+        or ``None`` if no spec is found.
+        """
+        for base in AGENT_SPEC_DIRS:
+            candidate = self.project_root / base / f"{agent_type}.md"
+            if candidate.exists():
+                try:
+                    return str(candidate.relative_to(self.project_root))
+                except ValueError:
+                    return str(candidate)
+        return None
+
+    def _resolve_agent_task_timeout(self) -> float:
+        """Read ``ED4ALL_AGENT_TIMEOUT_SECONDS`` at call time (not import
+        time) so tests / ops can override per-run via environment.
+        """
+        raw = os.environ.get(_AGENT_TASK_TIMEOUT_ENV, "").strip()
+        if raw:
+            try:
+                parsed = float(raw)
+                if parsed > 0:
+                    return parsed
+            except ValueError:
+                logger.warning(
+                    "Invalid %s=%r; falling back to default %.0fs",
+                    _AGENT_TASK_TIMEOUT_ENV, raw, _DEFAULT_AGENT_TASK_TIMEOUT,
+                )
+        return _DEFAULT_AGENT_TASK_TIMEOUT
 
     async def _dispatch_via_mailbox(
         self,

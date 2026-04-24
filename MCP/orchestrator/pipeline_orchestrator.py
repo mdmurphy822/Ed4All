@@ -286,11 +286,35 @@ class PipelineOrchestrator:
                 )
                 capture = None
 
+        # Wave 74: thread the dispatcher (built by ``_get_dispatcher``)
+        # into the executor so ``TaskExecutor._invoke_tool`` can route
+        # subagent-classified tasks through ``dispatcher.dispatch_task``
+        # when ``ED4ALL_AGENT_DISPATCH=true``. The dispatcher property
+        # is cached on the orchestrator; call ``_get_dispatcher`` via
+        # ``self._dispatcher`` (already populated if reached through the
+        # normal ``run()`` path) or build one lazily if the executor is
+        # being fetched before dispatch (tests).
+        dispatcher_for_executor = self._dispatcher
+        if dispatcher_for_executor is None:
+            try:
+                dispatcher_for_executor = self._get_dispatcher(
+                    workflow_state=workflow_state,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "Wave 74: could not resolve dispatcher for executor "
+                    "threading (%s); executor falls back to in-process "
+                    "tool registry regardless of ED4ALL_AGENT_DISPATCH",
+                    exc,
+                )
+                dispatcher_for_executor = None
+
         self._executor = TaskExecutor(
             tool_registry=tool_registry,
             run_id=run_id,
             run_path=run_path,
             capture=capture,
+            dispatcher=dispatcher_for_executor,
         )
         return self._executor
 

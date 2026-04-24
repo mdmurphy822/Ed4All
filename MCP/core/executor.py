@@ -189,6 +189,78 @@ AGENT_TOOL_MAPPING = {
 }
 
 
+# =============================================================================
+# Wave 74 — Agent classification for per-task subagent dispatch
+# =============================================================================
+#
+# The entries in ``AGENT_TOOL_MAPPING`` above each resolve to a Python tool
+# that ``TaskExecutor._invoke_tool`` calls in-process. For Wave 38's gap
+# close we additionally classify each agent as either:
+#
+#   * **subagent-dispatched** — the work genuinely needs LLM reasoning
+#     (content generation, assessment question synthesis, semantic
+#     remediation, pedagogical quality evaluation). When
+#     ``ED4ALL_AGENT_DISPATCH=true`` AND a dispatcher is threaded into
+#     the executor, tasks for these agents route through
+#     ``dispatcher.dispatch_task`` instead of the in-process tool. A
+#     Claude Code subagent on the other end of the mailbox bridge does
+#     the work per that agent's spec file.
+#
+#   * **Python-tool** — the work is deterministic (PDF extraction,
+#     TF-IDF routing, file staging, IMSCC packaging, WCAG static
+#     validation, archival). These stay on the legacy ``_invoke_tool``
+#     path regardless of the flag. DART alt-text + block classification
+#     still route through the Wave 73 ``MailboxBrokeredBackend`` for
+#     their LLM sub-calls; that's orthogonal to this classification.
+#
+# Classification derives from whether the agent spec
+# (``Courseforge/agents/*.md``, ``Trainforge/agents/*.md``,
+# ``DART/agents/*.md``) is authored around reasoning-style directives
+# ("design a", "evaluate", "generate questions covering", etc.) or
+# deterministic-tool directives ("parse the XML", "stage files", "hash
+# the manifest"). The list is explicit rather than derived because a
+# future agent that claims the ``*.md`` shape of a reasoning agent but
+# is backed by a Python tool (or vice-versa) should flip classification
+# only after a deliberate PR review.
+AGENT_SUBAGENT_SET = frozenset({
+    # Courseforge reasoning agents
+    "course-outliner",         # LO synthesis from textbook structure
+    "content-generator",       # weekly module page emission
+    "oscqr-course-evaluator",  # OSCQR rubric evaluation (subjective)
+    "quality-assurance",       # pattern prevention & validation narrative
+
+    # DART / Remediation reasoning agents (HTML enhancement)
+    "content-analyzer",                # accessibility + quality gap detection
+    "accessibility-remediation",       # alt-text, heading hierarchy fixes
+    "content-quality-remediation",     # educational depth enhancement
+    "intelligent-design-mapper",       # component selection + styling
+
+    # Trainforge reasoning agents
+    "assessment-extractor",            # narrative content-extraction summaries
+    "assessment-generator",            # question + distractor generation
+    "assessment-validator",            # alignment + rubric judgments
+    "training-synthesizer",            # instruction + preference pair synthesis
+})
+
+
+# Feature flag enabling the dispatch_task routing fork. Default **off**
+# so Wave 74 Session 1 lands the infrastructure without altering any
+# existing pipeline run. Evaluated per-call so tests can toggle via
+# ``monkeypatch.setenv``.
+_AGENT_DISPATCH_ENV = "ED4ALL_AGENT_DISPATCH"
+
+
+def _agent_dispatch_enabled() -> bool:
+    """Return True iff ``ED4ALL_AGENT_DISPATCH`` is set to a truthy value.
+
+    Read at call time (not import) so tests can toggle the flag per-run.
+    Accepts ``1``, ``true``, ``yes``, ``on`` (case-insensitive). Anything
+    else — including unset — is treated as off.
+    """
+    raw = os.environ.get(_AGENT_DISPATCH_ENV, "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 @dataclass
 class ExecutionResult:
     """Result of executing a task."""
@@ -252,6 +324,7 @@ class TaskExecutor:
         run_path: Optional[Path] = None,
         poison_pill_threshold: int = 3,
         batch_timeout_minutes: Optional[int] = None,
+        dispatcher: Optional[Any] = None,
     ):
         """
         Initialize the task executor.
@@ -267,9 +340,19 @@ class TaskExecutor:
             run_path: Path to run directory for checkpoints (Phase 0 hardening)
             poison_pill_threshold: N same-pattern failures stops batch (Phase 0)
             batch_timeout_minutes: Timeout for entire batch (Phase 0)
+            dispatcher: Optional dispatcher exposing a
+                ``dispatch_task(*, task_name, agent_type, task_params,
+                run_id, phase_context) -> dict`` coroutine. Wave 74:
+                when present and ``ED4ALL_AGENT_DISPATCH=true`` and the
+                task's agent_type is in ``AGENT_SUBAGENT_SET``,
+                ``_invoke_tool`` routes through the dispatcher instead of
+                the in-process ``tool_registry`` entry. Defaults ``None``
+                so legacy callers (tests, direct instantiation) keep the
+                pre-Wave-74 execution path.
         """
         self.tool_registry = tool_registry or {}
         self.capture = capture
+        self.dispatcher = dispatcher
 
         # Generate or use provided run_id for tracing
         self.run_id = run_id or os.environ.get(
@@ -705,6 +788,25 @@ class TaskExecutor:
         Uses TaskParameterMapper to translate generic task parameters
         to the tool-specific parameter names expected by each tool.
 
+        Wave 74 (per-task subagent dispatch):
+
+        When ``ED4ALL_AGENT_DISPATCH=true`` AND a ``dispatcher`` was
+        injected into the executor AND the task's ``agent_type`` is
+        classified as subagent-dispatched (see ``AGENT_SUBAGENT_SET``),
+        the call is routed through ``dispatcher.dispatch_task`` instead
+        of the in-process ``tool_registry[tool_name]``. The dispatcher
+        hands the mapped params to a Claude Code subagent (via the Wave
+        34 mailbox bridge) that executes the agent's markdown spec and
+        returns a tool-shape dict matching what the Python emitter
+        would have produced. This closes the Wave 38 gap that caused
+        content_generation / assessment phases to run as in-process
+        templates regardless of ``--mode`` selection.
+
+        The fork is surgical: when any of the three conditions fail we
+        fall through to the legacy in-process invocation unchanged.
+        Tests / legacy callers that don't pass a dispatcher keep the
+        pre-Wave-74 behaviour byte-for-byte.
+
         Args:
             tool_name: Name of the MCP tool to invoke
             task_params: Task dict with prompt, params, context, etc.
@@ -716,6 +818,53 @@ class TaskExecutor:
             ValueError: If tool not registered
             ParameterMappingError: If required parameters are missing
         """
+        # Wave 74 fork: if the dispatcher + feature flag + agent
+        # classification all point to subagent dispatch, route there
+        # before touching the in-process registry. This happens BEFORE
+        # the tool_registry lookup so agents that don't have a Python
+        # tool backing them (a future all-agent workflow) don't trip
+        # the "Tool not registered" guard.
+        agent_type = None
+        if isinstance(task_params, dict):
+            agent_type = task_params.get("agent_type")
+        if (
+            _agent_dispatch_enabled()
+            and self.dispatcher is not None
+            and isinstance(agent_type, str)
+            and agent_type in AGENT_SUBAGENT_SET
+            and hasattr(self.dispatcher, "dispatch_task")
+        ):
+            # Param-mapping still runs so downstream agent prompts see
+            # the same shape the Python tool would have received.
+            # Mapping failures surface the same way they do on the
+            # legacy path (raise ParameterMappingError).
+            try:
+                mapped_params = self.param_mapper.map_task_to_tool_params(
+                    task_params, tool_name
+                )
+            except ParameterMappingError as e:
+                logger.error(
+                    f"Parameter mapping failed for dispatch_task "
+                    f"(agent={agent_type}, tool={tool_name}): {e}"
+                )
+                raise
+
+            logger.info(
+                f"[{self.run_id}] Routing task via dispatcher.dispatch_task "
+                f"(agent={agent_type}, tool={tool_name}, "
+                f"params={list(mapped_params.keys())})"
+            )
+            return await asyncio.wait_for(
+                self.dispatcher.dispatch_task(
+                    task_name=tool_name,
+                    agent_type=agent_type,
+                    task_params=mapped_params,
+                    run_id=self.run_id,
+                ),
+                timeout=self.batch_timeout_seconds,
+            )
+
+        # Legacy in-process path — unchanged from pre-Wave-74.
         tool_func = self.tool_registry.get(tool_name)
 
         if not tool_func:
