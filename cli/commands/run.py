@@ -28,7 +28,8 @@ import json
 import logging
 import os
 import sys
-from typing import Any, Dict, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 import click
 
@@ -53,6 +54,9 @@ def _normalize_workflow(name: str) -> str:
     return name.replace("-", "_").strip().lower()
 
 
+DEFAULT_DART_OUTPUT_DIR = "DART/output"
+
+
 def _build_workflow_params(
     workflow: str,
     *,
@@ -64,6 +68,8 @@ def _build_workflow_params(
     bloom_levels: str,
     priority: str,
     objectives_path: Optional[str],
+    skip_dart: bool = False,
+    dart_output_dir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the params dict for a workflow from CLI inputs.
 
@@ -97,7 +103,89 @@ def _build_workflow_params(
         if workflow == "textbook_to_course":
             params["pdf_paths"] = corpus
 
+    # Wave 74 Session 3: reuse existing DART HTML instead of re-converting.
+    # When --skip-dart is set, the workflow runner synthesizes a
+    # dart_conversion phase_output from the provided dir so staging's
+    # inputs_from resolves without the phase actually executing.
+    if skip_dart:
+        params["skip_dart"] = True
+        params["dart_output_dir"] = dart_output_dir or DEFAULT_DART_OUTPUT_DIR
+
     return params
+
+
+def _discover_dart_htmls(dart_output_dir: str) -> List[Path]:
+    """Return the list of ``*_accessible.html`` files in the given dir.
+
+    Does not recurse — DART's canonical layout is flat.
+    """
+    root = Path(dart_output_dir)
+    if not root.is_dir():
+        return []
+    return sorted(root.glob("*_accessible.html"))
+
+
+def _corpus_pdf_basenames(corpus: Optional[str]) -> List[str]:
+    """Return the list of PDF basenames (without .pdf) implied by ``corpus``.
+
+    Accepts a single PDF path, a comma-separated list, or a directory.
+    Silently returns an empty list when the corpus is None, not a PDF
+    and not a directory — the caller treats ``[]`` as "no cross-check
+    possible" rather than a hard failure.
+    """
+    if not corpus:
+        return []
+    # Directory
+    path = Path(corpus)
+    if path.is_dir():
+        return [p.stem for p in sorted(path.glob("*.pdf"))]
+    # Comma-separated or single file
+    parts = [p.strip() for p in corpus.split(",") if p.strip()]
+    stems: List[str] = []
+    for part in parts:
+        part_path = Path(part)
+        if part_path.suffix.lower() == ".pdf":
+            stems.append(part_path.stem)
+    return stems
+
+
+def _validate_skip_dart_inputs(
+    *,
+    dart_output_dir: str,
+    corpus: Optional[str],
+) -> Optional[str]:
+    """Validate the --skip-dart inputs. Returns an error string on failure.
+
+    * Dir must exist and contain at least one ``*_accessible.html`` file.
+    * For each corpus PDF, emit a *warning* (not an error) when the
+      matching ``{basename}_accessible.html`` is absent — caller may be
+      running against a superset corpus or renamed outputs.
+    """
+    root = Path(dart_output_dir)
+    if not root.is_dir():
+        return (
+            f"--skip-dart requires --dart-output-dir to point at an existing "
+            f"directory; got: {dart_output_dir!r}"
+        )
+    htmls = _discover_dart_htmls(dart_output_dir)
+    if not htmls:
+        return (
+            f"--skip-dart requires at least one ``*_accessible.html`` file "
+            f"inside {dart_output_dir!r}; found none."
+        )
+    # Warn (don't fail) on corpus/output mismatches
+    pdf_stems = _corpus_pdf_basenames(corpus)
+    if pdf_stems:
+        html_stems = {p.name.removesuffix("_accessible.html") for p in htmls}
+        missing = [s for s in pdf_stems if s not in html_stems]
+        if missing:
+            click.secho(
+                f"warning: --skip-dart is set but {len(missing)} corpus PDF(s) "
+                f"have no matching ``*_accessible.html`` in "
+                f"{dart_output_dir!r}: {missing}",
+                fg="yellow",
+            )
+    return None
 
 
 async def _create_textbook_workflow(
@@ -125,6 +213,8 @@ async def _create_textbook_workflow(
         assessment_count=params.get("assessment_count", 50),
         bloom_levels=params.get("bloom_levels", "remember,understand,apply,analyze"),
         priority=params.get("priority", "normal"),
+        skip_dart=bool(params.get("skip_dart", False)),
+        dart_output_dir=params.get("dart_output_dir"),
     )
     return json.loads(result)
 
@@ -253,6 +343,26 @@ def _build_orchestrator(
     help="Resume a prior run from its last checkpoint (provide run_id)",
 )
 @click.option(
+    "--skip-dart",
+    is_flag=True,
+    default=False,
+    help=(
+        "Skip the dart_conversion phase and reuse existing DART HTML output. "
+        "Useful when re-running textbook-to-course after tweaking downstream "
+        "phases. Requires --dart-output-dir to contain ``*_accessible.html`` "
+        "files (defaults to DART/output/)."
+    ),
+)
+@click.option(
+    "--dart-output-dir",
+    type=click.Path(),
+    default=None,
+    help=(
+        "Directory containing ``*_accessible.html`` files. Only consulted "
+        "when --skip-dart is set. Defaults to DART/output/."
+    ),
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Show the planned pipeline without executing",
@@ -280,6 +390,8 @@ def run_command(
     priority: str,
     objectives: Optional[str],
     resume_run_id: Optional[str],
+    skip_dart: bool,
+    dart_output_dir: Optional[str],
     dry_run: bool,
     watch: bool,
     output_json: bool,
@@ -314,6 +426,29 @@ def run_command(
     mode = _resolve_mode(mode)
     provider = _resolve_provider(api_provider)
 
+    # Wave 74 Session 3: validate --skip-dart inputs BEFORE building
+    # params so CLI fails fast with a clear error. --skip-dart is
+    # currently only honoured by textbook_to_course; other workflows
+    # don't have a dart_conversion phase to elide.
+    if skip_dart and workflow != "textbook_to_course":
+        click.secho(
+            f"--skip-dart is only supported for workflow 'textbook_to_course'; "
+            f"got '{workflow}'.",
+            fg="red",
+        )
+        sys.exit(2)
+    effective_dart_output_dir = dart_output_dir or (
+        DEFAULT_DART_OUTPUT_DIR if skip_dart else None
+    )
+    if skip_dart:
+        err = _validate_skip_dart_inputs(
+            dart_output_dir=effective_dart_output_dir or DEFAULT_DART_OUTPUT_DIR,
+            corpus=corpus,
+        )
+        if err:
+            click.secho(err, fg="red")
+            sys.exit(2)
+
     params = _build_workflow_params(
         workflow,
         corpus=corpus,
@@ -324,6 +459,8 @@ def run_command(
         bloom_levels=bloom_levels,
         priority=priority,
         objectives_path=objectives,
+        skip_dart=skip_dart,
+        dart_output_dir=effective_dart_output_dir,
     )
 
     # -------- dry-run: plan only, no side effects ------------------------
@@ -413,20 +550,31 @@ def _dry_run_plan(
 
         # Respect --no-assessments by pruning the optional phase
         skip_trainforge = not params.get("generate_assessments", True)
+        skip_dart_flag = bool(params.get("skip_dart", False))
         phases = []
         for idx, phase in enumerate(sorted_phases):
             if skip_trainforge and phase.name == "trainforge_assessment":
                 continue
-            phases.append(
-                {
-                    "order": len(phases) + 1,
-                    "name": phase.name,
-                    "agents": list(phase.agents),
-                    "max_concurrent": getattr(phase, "max_concurrent", 5),
-                    "depends_on": list(phase.depends_on or []),
-                    "optional": bool(getattr(phase, "optional", False)),
-                }
-            )
+            phase_entry = {
+                "order": len(phases) + 1,
+                "name": phase.name,
+                "agents": list(phase.agents),
+                "max_concurrent": getattr(phase, "max_concurrent", 5),
+                "depends_on": list(phase.depends_on or []),
+                "optional": bool(getattr(phase, "optional", False)),
+            }
+            # Wave 74 Session 3: mark dart_conversion as SKIPPED in the
+            # dry-run plan when --skip-dart is set. The phase is still
+            # listed so ordering is transparent, but its status reflects
+            # that the runner will synthesize outputs from an existing
+            # DART/output/ directory instead of executing it.
+            if skip_dart_flag and phase.name == "dart_conversion":
+                phase_entry["status"] = "SKIPPED"
+                phase_entry["skip_reason"] = (
+                    f"--skip-dart set; reusing HTML from "
+                    f"{params.get('dart_output_dir', DEFAULT_DART_OUTPUT_DIR)!r}"
+                )
+            phases.append(phase_entry)
 
         return {
             "workflow": workflow,
@@ -462,10 +610,16 @@ def _print_dry_run_plan(plan: Dict[str, Any]) -> None:
     click.secho("Phases:", fg="cyan")
     for phase in plan.get("phases", []):
         agents = ", ".join(phase["agents"])
+        status = phase.get("status")
+        status_suffix = f"  <{status}>" if status else ""
         click.echo(
             f"  {phase['order']}. {phase['name']}"
             f"  [agents={agents}, max_concurrent={phase['max_concurrent']}]"
+            f"{status_suffix}"
         )
+        skip_reason = phase.get("skip_reason")
+        if skip_reason:
+            click.echo(f"      reason: {skip_reason}")
 
 
 def _any_gate_failed(result) -> bool:
