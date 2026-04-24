@@ -148,3 +148,6 @@ plans/
 # Top-level inputs/ — corpus PDFs + local scratch; directory kept, contents ignored
 inputs/*
 !inputs/.gitkeep
+
+# Ad-hoc pipeline testruns (gitignored)
+testruns/
