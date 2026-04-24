@@ -119,6 +119,10 @@ def test_bloom_less_path_matches_pre_wave_69_two_field_seed():
     switches to a 2-field seed when no bloom is supplied so legacy corpora
     retain their pre-Wave-69 IDs. Asserted directly against the canonical
     2-field sha256 so the seed shape can't silently drift again.
+
+    Whitespace-only bloom (``" "``, ``"\\t"``) must also take the 2-field
+    path — ``.strip()`` inside the helper collapses them to empty before
+    the branch, so a cosmetically-stripped emit cannot rekey legacy IDs.
     """
     import hashlib
 
@@ -126,6 +130,9 @@ def test_bloom_less_path_matches_pre_wave_69_two_field_seed():
     assert _misconception_id("b", "c") == expected
     assert _misconception_id("b", "c", None) == expected
     assert _misconception_id("b", "c", "") == expected
+    assert _misconception_id("b", "c", " ") == expected
+    assert _misconception_id("b", "c", "\t") == expected
+    assert _misconception_id("b", "c", "   ") == expected
 
 
 # ---------------------------------------------------------------------------
@@ -215,3 +222,28 @@ def test_graph_helper_and_preference_factory_agree_on_id():
         "apply",
     )
     assert entity["id"] == direct_id
+
+
+def test_graph_helper_lowercases_mixed_case_bloom_for_lockstep():
+    """Wave 72 regression: graph-side normalization matches preference_factory.
+
+    ``preference_factory._misconception_id`` applies ``.strip().lower()`` to
+    ``bloom_level`` before the seed branch. The graph-side call site
+    (``_build_misconceptions_for_graph``) must do the same, otherwise a
+    chunk constructed directly (bypassing the html_content_parser
+    normalizer that canonicalizes Bloom to lowercase) with ``"Apply"`` or
+    ``"APPLY"`` or ``" apply "`` would hash to a different ID on the
+    graph side than on the preference_factory side — silently breaking
+    cross-call-site identity for the same conceptual misconception.
+    """
+    proc = _bare_processor()
+    canonical_id = _misconception_id(
+        "Students believe X is always Y.",
+        "X is Z except when W holds.",
+        "apply",
+    )
+    for raw_bloom in ("apply", "Apply", "APPLY", " apply ", "\tApply\n"):
+        (entity,) = proc._build_misconceptions_for_graph(
+            [_fixture_chunk(raw_bloom)]
+        )
+        assert entity["id"] == canonical_id, raw_bloom
