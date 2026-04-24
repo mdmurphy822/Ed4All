@@ -21,11 +21,13 @@ from .retrieval_scoring import (
     combine_bm25_with_boosts,
     concept_graph_overlap_boost,
     extract_query_concepts,
-    lo_match_boost,
     load_concept_graph_node_ids,
     load_course_outcomes,
     load_pedagogy_model,
+    load_targets_concept_edges,
+    lo_match_boost,
     prereq_coverage_boost,
+    targets_concept_boost,
 )
 
 _WEEK_NUM_RE = re.compile(r"week[_\-\s]?(\d+)", re.IGNORECASE)
@@ -695,6 +697,8 @@ def retrieve_chunks(
     use_concept_graph_boost: bool = True,
     use_lo_match_boost: bool = True,
     prefer_self_contained: bool = False,  # prereq boost, off by default (niche)
+    use_targets_concept_boost: bool = True,  # Wave 71: typed LO→concept edges
+    query_bloom_level: Optional[str] = None,  # Wave 71: detected query Bloom for edge-level match bonus
     lo_filter: Optional[list[str]] = None,
     boost_weights: Optional[dict] = None,
     use_retrieval_text: bool = True,
@@ -776,6 +780,9 @@ def retrieve_chunks(
     graph_nodes_by_slug: dict[str, set[str]] = {}
     outcomes_by_slug: dict[str, list[dict]] = {}
     pedagogy_by_slug: dict[str, dict] = {}
+    # Wave 71: typed LO→concept edges from concept_graph_semantic.json.
+    # Shape: {lo_id_lower: [(concept_id_lower, bloom_level_lower|None), ...]}
+    targets_concept_by_slug: dict[str, dict] = {}
 
     def _metadata_for(slug: str):
         if slug not in graph_nodes_by_slug:
@@ -783,7 +790,13 @@ def retrieve_chunks(
             graph_nodes_by_slug[slug] = load_concept_graph_node_ids(cd)
             outcomes_by_slug[slug] = load_course_outcomes(cd)
             pedagogy_by_slug[slug] = load_pedagogy_model(cd)
-        return graph_nodes_by_slug[slug], outcomes_by_slug[slug], pedagogy_by_slug[slug]
+            targets_concept_by_slug[slug] = load_targets_concept_edges(cd)
+        return (
+            graph_nodes_by_slug[slug],
+            outcomes_by_slug[slug],
+            pedagogy_by_slug[slug],
+            targets_concept_by_slug[slug],
+        )
 
     # Assemble results.  Apply metadata boosts AFTER BM25 so their effect is
     # multiplicative, bounded by MAX_TOTAL_BOOST, and attributable per-boost
@@ -792,11 +805,20 @@ def retrieve_chunks(
     results: list[tuple[RetrievalResult, float]] = []
     for chunk, blended, bm25_score, ngram_score in scored_with_components:
         slug = chunk.get("_course_slug", "")
-        graph_nodes, course_outcomes, pedagogy_model = _metadata_for(slug)
+        graph_nodes, course_outcomes, pedagogy_model, targets_concept_edges = (
+            _metadata_for(slug)
+        )
 
         contributions = BoostContributions()
+        # Compute query concepts once — the concept-graph overlap boost and
+        # the Wave 71 targets-concept boost both consume them, so caching
+        # avoids re-tokenizing the query per chunk.
+        q_concepts = (
+            extract_query_concepts(_canonicalize_query(query), graph_nodes)
+            if metadata_scoring and graph_nodes
+            else set()
+        )
         if metadata_scoring and use_concept_graph_boost:
-            q_concepts = extract_query_concepts(_canonicalize_query(query), graph_nodes)
             contributions.concept_graph_overlap = concept_graph_overlap_boost(chunk, q_concepts)
         if metadata_scoring and use_lo_match_boost:
             contributions.lo_match = lo_match_boost(
@@ -804,6 +826,16 @@ def retrieve_chunks(
             )
         if metadata_scoring and prefer_self_contained:
             contributions.prereq_coverage = prereq_coverage_boost(chunk, pedagogy_model)
+        # Wave 71: reward chunks whose referenced LOs explicitly target a
+        # query concept via the typed concept graph, with a Bloom-level
+        # match bonus when the caller supplies query_bloom_level.
+        if metadata_scoring and use_targets_concept_boost and targets_concept_edges:
+            contributions.targets_concept = targets_concept_boost(
+                chunk,
+                q_concepts,
+                targets_concept_edges,
+                query_bloom_level=query_bloom_level,
+            )
 
         final_score, capped_boost = combine_bm25_with_boosts(
             blended, contributions, weights=boost_weights,
