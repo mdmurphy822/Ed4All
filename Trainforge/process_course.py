@@ -2539,12 +2539,15 @@ class CourseProcessor:
                 # Wave 69: seed extended with bloom_level so two misconceptions
                 # that share statement + correction text but target different
                 # Bloom cognitive demands (e.g., apply-level vs analyze-level
-                # misreading of the same concept) emit distinct IDs. Old
-                # corpora without Wave 60 bloomLevel on misconceptions feed an
-                # empty string here and keep the pre-Wave-69 hash stable *for
-                # the bloom-less path* — but any misconception that now carries
-                # a bloomLevel will hash differently than it did pre-wave.
-                seed = f"{statement}|{correction}|{bloom_level}"
+                # misreading of the same concept) emit distinct IDs.
+                # Wave 72: the bloom-less path keeps the 2-field seed so
+                # legacy / pre-Wave-60 corpora don't rehash. Pre-Wave-72 an
+                # empty bloom_level produced "statement|correction|" (trailing
+                # pipe), which broke cross-run IDs for every bloom-less entry.
+                if bloom_level:
+                    seed = f"{statement}|{correction}|{bloom_level}"
+                else:
+                    seed = f"{statement}|{correction}"
                 mc_id = "mc_" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
                 if mc_id in seen:
                     continue
@@ -2686,10 +2689,21 @@ class CourseProcessor:
         duplicates) doesn't inflate the edge count downstream — the rule
         itself dedups by (lo_id, concept_id) inside each LO, but a clean
         input list also avoids log spam.
+
+        Wave 72: two-pass dedup. Pre-Wave-72 we interleaved Path 1 + Path 2
+        per item, which meant an early item's dataclass fallback (typically
+        with empty ``targetedConcepts``) could shadow a later item's richer
+        JSON-LD payload for the same LO. The docstring claimed JSON-LD was
+        preferred but the per-item interleaving broke that guarantee for
+        mixed corpora (legacy pages + JSON-LD pages sharing LO IDs). Now
+        we do Path 1 across *all* items first, then Path 2 fills any LOs
+        still absent — the "JSON-LD preferred" promise actually holds.
         """
         by_id: Dict[str, Dict[str, Any]] = {}
+
+        # Pass 1: direct JSON-LD payload across every item — preferred
+        # because it's the exact emit shape the Wave 66 rule expects.
         for item in parsed_items:
-            # Path 1: direct JSON-LD payload (preferred — exact emit shape).
             cf_meta = item.get("courseforge_metadata") or {}
             for raw_lo in cf_meta.get("learningObjectives") or []:
                 if not isinstance(raw_lo, dict):
@@ -2702,8 +2716,9 @@ class CourseProcessor:
                 # Shallow copy so we don't mutate the parsed item.
                 by_id[lo_id] = dict(raw_lo)
 
-            # Path 2: reconstruct from parsed LearningObjective dataclass
-            # when JSON-LD wasn't available or didn't include this LO.
+        # Pass 2: reconstruct from parsed LearningObjective dataclass for
+        # LOs not covered by Pass 1 (legacy corpora / non-Courseforge IMSCC).
+        for item in parsed_items:
             for parsed_lo in item.get("learning_objectives") or []:
                 # Dataclass or dict — support both.
                 lo_id = getattr(parsed_lo, "id", None)
