@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -222,6 +223,18 @@ class PipelineOrchestrator:
                 run_id = workflow_state.get("workflow_id") or workflow_state.get("id")
 
             run_path = (self.state_dir / "runs" / run_id) if run_id else None
+
+            # Wave 73: publish the resolved run_id into the process
+            # environment so pipeline tools that auto-resolve an
+            # ``LLMBackend`` can build a ``MailboxBrokeredBackend``
+            # bound to this run's mailbox when ``--mode local`` is
+            # active. The alternative is threading ``run_id`` through
+            # every tool signature; exporting once at the orchestrator
+            # boundary is the surgical choice and matches the existing
+            # ``LLM_MODE`` / ``ANTHROPIC_API_KEY`` env-driven pattern
+            # the Wave 30 auto-resolve site already reads.
+            if run_id and isinstance(run_id, str):
+                os.environ["ED4ALL_RUN_ID"] = run_id
 
             # Build orchestrator-level decision capture. Best-effort —
             # a DecisionCapture construction failure must not block

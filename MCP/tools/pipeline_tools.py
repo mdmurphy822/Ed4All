@@ -1627,19 +1627,31 @@ def _build_tool_registry() -> dict:
         # falls back to the WCAG-decorative placeholder (alt='' +
         # role='presentation') and a single warning is logged — the
         # pipeline does not crash on the no-LLM-available path.
+        #
+        # Wave 73: also honor ``--mode local`` when ``ED4ALL_RUN_ID`` is
+        # set — builds a ``MailboxBrokeredBackend`` so every LLM call
+        # site (classifier, alt-text) routes through the TaskMailbox
+        # to a Claude Code operator loop. Previously local mode
+        # unconditionally produced ``_llm_backend=None``, which meant
+        # alt-text / classifier silently dropped to heuristic / WCAG
+        # decorative fallbacks even when the operator *could* service
+        # real Claude completions.
         _llm_backend = kwargs.get("llm")
         if _llm_backend is None:
             try:
                 import os as _os_inner
                 _api_key_present = bool(_os_inner.environ.get("ANTHROPIC_API_KEY"))
                 _mode = _os_inner.environ.get("LLM_MODE", "local").strip().lower()
+                _run_id = _os_inner.environ.get("ED4ALL_RUN_ID", "").strip()
+                from MCP.orchestrator.llm_backend import build_backend
                 if _api_key_present and _mode == "api":
-                    from MCP.orchestrator.llm_backend import build_backend
+                    _llm_backend = build_backend()
+                elif _mode == "local" and _run_id:
                     _llm_backend = build_backend()
             except Exception as _exc:  # noqa: BLE001 — never block on backend resolution
                 logger.debug(
-                    "Wave 30 Gap 1: LLM backend auto-resolve failed (%s); "
-                    "falling back to decorative alt-text",
+                    "Wave 30 Gap 1 / Wave 73: LLM backend auto-resolve "
+                    "failed (%s); falling back to decorative alt-text",
                     _exc,
                 )
                 _llm_backend = None
