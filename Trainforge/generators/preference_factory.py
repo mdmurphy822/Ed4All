@@ -137,20 +137,35 @@ def _seed_rng(chunk_id: str, seed: int) -> random.Random:
     return random.Random(int(h.hexdigest(), 16))
 
 
-def _misconception_id(misconception_text: str, correction_text: str) -> str:
-    """Content-hash misconception ID (REC-LNK-02).
+def _misconception_id(
+    misconception_text: str,
+    correction_text: str,
+    bloom_level: Optional[str] = None,
+) -> str:
+    """Content-hash misconception ID (REC-LNK-02, Wave 69 extends seed).
 
     Stable across runs and across chunk re-chunking. The hash input is
-    ``misconception_text.strip() + "|" + correction_text.strip()`` -- outer
-    whitespace is normalised but inner whitespace is preserved, so cosmetic
-    edits do not churn IDs but real text edits do.
+    ``misconception_text.strip() + "|" + correction_text.strip() + "|" + (bloom_level or "").strip()``
+    -- outer whitespace is normalised but inner whitespace is preserved,
+    so cosmetic edits do not churn IDs but real text edits do.
 
     Form: ``mc_<16-hex-char sha256>``. Replaces the earlier unstable
     position-based format ``{chunk_id}_mc_{index:02d}_{hash}``.
+
+    Wave 69: ``bloom_level`` (optional 3rd arg, default None) joins the seed
+    so two misconceptions that share statement + correction text but target
+    different Bloom cognitive demands emit distinct IDs. Misconceptions
+    with no bloom level (legacy / pre-Wave-60 corpora) pass ``None`` /
+    empty-string and keep the pre-Wave-69 hash stable -- the new segment
+    collapses to an empty string suffix, which is a breaking change from
+    pre-wave ``{statement}|{correction}`` seed. Callers on old corpora
+    will see new IDs after a rebuild; that's acceptable per the
+    TRAINFORGE_CONTENT_HASH_IDS churn tolerance.
     """
     mt = (misconception_text or "").strip()
     ct = (correction_text or "").strip()
-    content = f"{mt}|{ct}"
+    bl = (bloom_level or "").strip().lower()
+    content = f"{mt}|{ct}|{bl}"
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
     return f"mc_{digest}"
 
@@ -349,6 +364,9 @@ def synthesize_preference_pair(
             mc_id = _misconception_id(
                 str(mc.get("misconception", "")),
                 str(mc.get("correction", "")),
+                # Wave 69: bloom-level participates in the seed; lower-cased
+                # via the helper. Absent / None on pre-Wave-60 corpora.
+                str(mc.get("bloom_level") or ""),
             )
 
     if not rejected or rejected == chosen:

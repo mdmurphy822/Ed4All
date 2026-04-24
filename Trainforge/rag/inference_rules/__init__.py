@@ -46,6 +46,7 @@ from .is_a_from_key_terms import infer as infer_is_a
 from .misconception_of_from_misconception_ref import infer as infer_misconception_of
 from .prerequisite_from_lo_order import infer as infer_prerequisite
 from .related_from_cooccurrence import infer as infer_related
+from .targets_concept_from_lo import infer as infer_targets_concept
 
 __all__ = [
     "infer_assesses",
@@ -56,4 +57,5 @@ __all__ = [
     "infer_misconception_of",
     "infer_prerequisite",
     "infer_related",
+    "infer_targets_concept",
 ]

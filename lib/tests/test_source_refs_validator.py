@@ -21,8 +21,6 @@ import json
 import sys
 from pathlib import Path
 
-import pytest
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -32,7 +30,6 @@ from lib.validators.source_refs import (  # noqa: E402
     _iter_jsonld_source_ids,
     _iter_sidecar_block_ids,
 )
-
 
 # ---------------------------------------------------------------------- #
 # Fixture helpers: synthesize staging + HTML inputs inline

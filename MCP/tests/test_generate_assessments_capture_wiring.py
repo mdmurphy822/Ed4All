@@ -17,7 +17,6 @@ Follows the precedent set by
 
 from __future__ import annotations
 
-import asyncio
 import json
 import sys
 from pathlib import Path
@@ -30,15 +29,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from MCP.tools import pipeline_tools  # noqa: E402
-from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
-
 # Re-use the existing IMSCC fixture from the contract tests so this
 # wiring test doesn't duplicate the minimal HTML / manifest payload.
 from MCP.tests.test_generate_assessments import (  # noqa: E402
     COURSE_CODE,
     _build_imscc,
 )
+from MCP.tools import pipeline_tools  # noqa: E402
+from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
 
 
 @pytest.fixture

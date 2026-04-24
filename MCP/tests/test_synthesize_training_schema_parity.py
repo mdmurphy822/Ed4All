@@ -26,8 +26,6 @@ import json
 from pathlib import Path
 from typing import Any, Dict
 
-import pytest
-
 from MCP.core.tool_schemas import (
     TOOL_SCHEMAS,
     get_param_mapping,

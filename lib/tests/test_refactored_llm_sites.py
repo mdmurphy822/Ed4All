@@ -7,12 +7,10 @@ each should accept an injected backend and avoid the direct
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock
 
 import pytest
 
 from MCP.orchestrator.llm_backend import MockBackend
-
 
 # ============================================================================
 # ClaudeProcessor (DART/pdf_converter/claude_processor.py)

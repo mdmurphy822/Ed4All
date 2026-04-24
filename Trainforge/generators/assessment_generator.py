@@ -46,6 +46,7 @@ except ImportError:
 # TODO(wave-future): migrate patterns + question_types to taxonomy schemas
 # (only the verb portion is loaded from the canonical taxonomy today).
 from lib.ontology.bloom import get_verbs_list as _get_canonical_verbs_list  # noqa: E402
+
 _CANONICAL_VERBS = _get_canonical_verbs_list()
 
 

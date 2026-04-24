@@ -25,8 +25,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
-from MCP.hardening.validation_gates import GateIssue, GateResult
 from lib.validators.bloom import detect_bloom_level
+from MCP.hardening.validation_gates import GateIssue, GateResult
 
 ASSESSMENT_PLACEHOLDER_PATTERNS = [
     re.compile(r"Correct answer based on content", re.IGNORECASE),

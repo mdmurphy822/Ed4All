@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ed4all.dev/ns/taxonomies/v1/cognitive_domain.schema.json",
   "title": "Cognitive Knowledge Domain",
-  "description": "Revised Bloom's Taxonomy knowledge dimension — the four-category orthogonal axis to the cognitive process dimension (the six Bloom's levels). Used as data-cf-cognitive-domain on Courseforge objectives and referenced by downstream JSON-LD.",
-  "$comment": "Values lifted from Courseforge/scripts/generate_course.py:146-153 (BLOOM_TO_DOMAIN dict values: factual, conceptual, procedural, metacognitive). Also documented as data-cf-cognitive-domain in Courseforge/CLAUDE.md.",
+  "description": "Revised Bloom's Taxonomy knowledge dimension — the four-category orthogonal axis to the cognitive process dimension (the six Bloom's levels). Used as data-cf-cognitive-domain on Courseforge objectives and referenced by downstream JSON-LD. Also carries the authoritative bloom_level → cognitive_domain mapping consumed at emit time.",
+  "$comment": "Values lifted from Courseforge/scripts/generate_course.py:146-153 (BLOOM_TO_DOMAIN dict values: factual, conceptual, procedural, metacognitive). Also documented as data-cf-cognitive-domain in Courseforge/CLAUDE.md. Wave 48: bloom_level_to_domain mapping promoted from the hardcoded dict at Courseforge/scripts/generate_course.py:152-159 and MCP/tools/_content_gen_helpers.py::_render_objectives_section (domain_map local). Default fallback for unknown bloom levels is 'conceptual' (see lib/ontology/bloom.py::bloom_to_cognitive_domain).",
   "$defs": {
     "CognitiveDomain": {
       "type": "string",
@@ -13,7 +13,41 @@
         "procedural",
         "metacognitive"
       ]
+    },
+    "BloomLevel": {
+      "type": "string",
+      "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create"]
     }
   },
-  "$ref": "#/$defs/CognitiveDomain"
+  "type": "object",
+  "properties": {
+    "enum": {
+      "type": "array",
+      "description": "The four canonical knowledge-domain values (factual, conceptual, procedural, metacognitive).",
+      "items": { "$ref": "#/$defs/CognitiveDomain" },
+      "default": ["factual", "conceptual", "procedural", "metacognitive"]
+    },
+    "bloom_level_to_domain": {
+      "type": "object",
+      "description": "Authoritative mapping from each Bloom's cognitive-process level to its default knowledge-domain. Used to stamp data-cf-cognitive-domain on objective list items and to populate JSON-LD learningObjectives[].cognitiveDomain.",
+      "required": ["remember", "understand", "apply", "analyze", "evaluate", "create"],
+      "additionalProperties": false,
+      "properties": {
+        "remember":    { "$ref": "#/$defs/CognitiveDomain" },
+        "understand":  { "$ref": "#/$defs/CognitiveDomain" },
+        "apply":       { "$ref": "#/$defs/CognitiveDomain" },
+        "analyze":     { "$ref": "#/$defs/CognitiveDomain" },
+        "evaluate":    { "$ref": "#/$defs/CognitiveDomain" },
+        "create":      { "$ref": "#/$defs/CognitiveDomain" }
+      },
+      "default": {
+        "remember": "factual",
+        "understand": "conceptual",
+        "apply": "procedural",
+        "analyze": "conceptual",
+        "evaluate": "metacognitive",
+        "create": "procedural"
+      }
+    }
+  }
 }

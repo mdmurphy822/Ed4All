@@ -22,11 +22,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
-
 DEFAULT_BOOST_WEIGHTS: Dict[str, float] = {
     "concept_graph_overlap": 0.3,
     "lo_match": 0.3,
     "prereq_coverage": 0.2,
+    # Wave 71: Bloom-qualified LO→concept edges from Wave 66's typed graph.
+    # Boosts chunks whose referenced LOs explicitly target the query's
+    # concepts (with a bonus when the Bloom level matches too).
+    "targets_concept": 0.25,
 }
 
 # Caps the multiplicative effect of all enabled boosts combined.
@@ -106,6 +109,140 @@ def load_concept_graph_node_ids(course_dir: Path) -> Set[str]:
             continue
         return {str(n.get("id", "")).lower() for n in graph.get("nodes", []) if n.get("id")}
     return set()
+
+
+# ---------------------------------------------------------------------------
+# Wave 71: targets-concept edge boost (Bloom-qualified LO→concept)
+# ---------------------------------------------------------------------------
+#
+# The Wave 66 Trainforge inference rule `targets_concept_from_lo` materializes
+# Wave 57 Courseforge `targetedConcepts[]` payloads as first-class typed edges
+# in `concept_graph_semantic.json`:
+#
+#     {"source": "<lo_id>", "target": "<concept_id>",
+#      "type": "targets-concept",
+#      "provenance": {"evidence": {"bloom_level": "apply", ...}}}
+#
+# This lets retrieval answer a pedagogically precise question the untyped
+# graph couldn't: "does this chunk's LO explicitly target the concepts in
+# the user's query, and at what cognitive demand?"
+#
+# The pre-Wave-71 `concept_graph_overlap_boost` only compared chunk.concept_tags
+# against query tokens — concept membership, not the LO→concept relationship.
+# This boost reads the typed graph, so a chunk whose LO targets the concept at
+# the query's Bloom level scores higher than a chunk that happens to mention
+# the concept without the explicit LO binding.
+
+
+def load_targets_concept_edges(
+    course_dir: Path,
+) -> Dict[str, List[Tuple[str, Optional[str]]]]:
+    """Load targets-concept edges from ``graph/concept_graph_semantic.json``.
+
+    Returns a ``{lo_id_lower: [(concept_id_lower, bloom_level_lower), ...]}``
+    map. Empty dict when the typed graph is absent (pre-Wave-66 corpora) or
+    has no targets-concept edges (corpus built from LOs without Wave 57
+    ``targetedConcepts[]``).
+
+    LO IDs and concept slugs are lowercased here so callers can match
+    case-insensitively against chunk.learning_outcome_refs / query tokens
+    without re-normalizing on every lookup.
+    """
+    path = course_dir / "graph" / "concept_graph_semantic.json"
+    if not path.exists():
+        return {}
+    try:
+        with open(path) as f:
+            graph = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+    edges = graph.get("edges") if isinstance(graph, dict) else None
+    if not isinstance(edges, list):
+        return {}
+    out: Dict[str, List[Tuple[str, Optional[str]]]] = {}
+    for edge in edges:
+        if not isinstance(edge, dict) or edge.get("type") != "targets-concept":
+            continue
+        lo = edge.get("source")
+        concept = edge.get("target")
+        if not isinstance(lo, str) or not isinstance(concept, str):
+            continue
+        lo_key = lo.lower()
+        concept_key = concept.lower()
+        bloom = None
+        provenance = edge.get("provenance") or {}
+        evidence = provenance.get("evidence") if isinstance(provenance, dict) else None
+        if isinstance(evidence, dict):
+            raw_bloom = evidence.get("bloom_level")
+            if isinstance(raw_bloom, str) and raw_bloom:
+                bloom = raw_bloom.lower()
+        out.setdefault(lo_key, []).append((concept_key, bloom))
+    return out
+
+
+def targets_concept_boost(
+    chunk: Mapping[str, Any],
+    query_concepts: Iterable[str],
+    targets_by_lo: Mapping[str, List[Tuple[str, Optional[str]]]],
+    *,
+    query_bloom_level: Optional[str] = None,
+    bloom_match_bonus: float = 0.2,
+) -> float:
+    """Score a chunk by how explicitly its LOs target the query's concepts.
+
+    Algorithm:
+      1. Collect the chunk's LO refs (case-insensitive).
+      2. Union the targets-concept edges across those LOs: every concept
+         those LOs target (with per-edge Bloom level).
+      3. Intersect with the query's concept set.
+      4. Base score = Jaccard(query_concepts ∩ chunk_targeted_concepts,
+                              query_concepts ∪ chunk_targeted_concepts).
+      5. Bloom-match bonus: if ``query_bloom_level`` is set AND at least
+         one intersecting concept's edge has matching ``bloom_level``,
+         multiply the base score by ``(1 + bloom_match_bonus)`` (capped at 1.0).
+
+    Returns 0.0 when:
+      * The chunk has no LO refs.
+      * None of the chunk's LOs carry targets-concept edges (loader empty).
+      * The query has no concepts.
+      * The intersection is empty (chunk's LOs don't target any query concept).
+
+    The score is bounded in [0.0, 1.0] so it composes cleanly with the
+    existing boost mix in ``combine_bm25_with_boosts``.
+    """
+    q = {str(c).lower() for c in query_concepts if c}
+    if not q:
+        return 0.0
+    if not targets_by_lo:
+        return 0.0
+    lo_refs = chunk.get("learning_outcome_refs") or []
+    if not isinstance(lo_refs, list):
+        return 0.0
+    lo_keys = {str(lo).lower() for lo in lo_refs if lo}
+    if not lo_keys:
+        return 0.0
+
+    # Build (concept, bloom_level) set this chunk's LOs target.
+    targeted: Dict[str, Set[Optional[str]]] = {}
+    for lo in lo_keys:
+        for concept, bloom in targets_by_lo.get(lo, ()):
+            targeted.setdefault(concept, set()).add(bloom)
+    if not targeted:
+        return 0.0
+
+    targeted_concepts = set(targeted.keys())
+    inter = q & targeted_concepts
+    if not inter:
+        return 0.0
+    union = q | targeted_concepts
+    base = len(inter) / len(union) if union else 0.0
+
+    if query_bloom_level:
+        qb = query_bloom_level.lower()
+        for concept in inter:
+            if qb in targeted[concept]:
+                return min(1.0, base * (1.0 + bloom_match_bonus))
+    return base
 
 
 # ---------------------------------------------------------------------------
@@ -260,12 +397,14 @@ class BoostContributions:
     concept_graph_overlap: float = 0.0
     lo_match: float = 0.0
     prereq_coverage: float = 0.0
+    targets_concept: float = 0.0  # Wave 71
 
     def to_dict(self) -> Dict[str, float]:
         return {
             "concept_graph_overlap": round(self.concept_graph_overlap, 4),
             "lo_match": round(self.lo_match, 4),
             "prereq_coverage": round(self.prereq_coverage, 4),
+            "targets_concept": round(self.targets_concept, 4),
         }
 
 
@@ -288,6 +427,7 @@ def combine_bm25_with_boosts(
         contributions.concept_graph_overlap * w.get("concept_graph_overlap", 0.0)
         + contributions.lo_match * w.get("lo_match", 0.0)
         + contributions.prereq_coverage * w.get("prereq_coverage", 0.0)
+        + contributions.targets_concept * w.get("targets_concept", 0.0)  # Wave 71
     )
     # Negative penalties from prereq violations can reduce the score but not below 0.
     capped = max(-max_total_boost, min(max_total_boost, raw))

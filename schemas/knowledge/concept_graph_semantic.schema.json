@@ -75,7 +75,8 @@
               "exemplifies",
               "misconception-of",
               "derived-from-objective",
-              "defined-by"
+              "defined-by",
+              "targets-concept"
             ]
           },
           "confidence": {
@@ -87,7 +88,7 @@
             "type": "number"
           },
           "provenance": {
-            "$comment": "REC-PRV-02 (Wave 6, Worker W): per-rule evidence sub-schemas with a oneOf discriminator keyed by the `rule` field. Each specific arm binds rule={rule_name} to evidence={matching $def}. The final FallbackProvenance arm matches any rule that isn't one of the 8 known rules (and allows evidence to be absent or any shape) — preserving backward-compat with legacy graphs and future rules. The arms are mutually exclusive by virtue of the `rule` const, so oneOf validation is unambiguous. Strict validation is opt-in via TRAINFORGE_STRICT_EVIDENCE=true (see lib/validators/evidence.py::get_schema): strip the fallback arm before validating. Each specific evidence $def sets additionalProperties:false to enforce shape when in strict mode; lenient mode passes through the fallback arm if a known-rule edge's evidence shape drifts.",
+            "$comment": "REC-PRV-02 (Wave 6, Worker W): per-rule evidence sub-schemas with a oneOf discriminator keyed by the `rule` field. Each specific arm binds rule={rule_name} to evidence={matching $def}. The final FallbackProvenance arm matches any rule that isn't one of the 9 known rules (and allows evidence to be absent or any shape) — preserving backward-compat with legacy graphs and future rules. The arms are mutually exclusive by virtue of the `rule` const, so oneOf validation is unambiguous. Strict validation is opt-in via TRAINFORGE_STRICT_EVIDENCE=true (see lib/validators/evidence.py::get_schema): strip the fallback arm before validating. Each specific evidence $def sets additionalProperties:false to enforce shape when in strict mode; lenient mode passes through the fallback arm if a known-rule edge's evidence shape drifts. Wave 66 adds the 9th known rule: targets_concept_from_lo.",
             "oneOf": [
               {"$ref": "#/$defs/IsAProvenance"},
               {"$ref": "#/$defs/PrerequisiteProvenance"},
@@ -97,6 +98,7 @@
               {"$ref": "#/$defs/MisconceptionOfProvenance"},
               {"$ref": "#/$defs/DerivedFromObjectiveProvenance"},
               {"$ref": "#/$defs/DefinedByProvenance"},
+              {"$ref": "#/$defs/TargetsConceptProvenance"},
               {"$ref": "#/$defs/FallbackProvenance"}
             ]
           },
@@ -314,9 +316,47 @@
         "evidence": {"$ref": "#/$defs/DefinedByEvidence"}
       }
     },
+    "TargetsConceptEvidence": {
+      "type": "object",
+      "description": "Wave 66: Evidence emitted by rule targets_concept_from_lo (Trainforge/rag/inference_rules/targets_concept_from_lo.py). Materializes the Wave 57 LO→concept edge from Courseforge JSON-LD learningObjectives[].targetedConcepts[]: each entry there becomes one typed edge carrying the bloom_level the LO targets the concept at. Required: lo_id (canonical LO identifier, e.g., 'TO-01' / 'co-05' — case-insensitive per Trainforge normalization), concept_id (concept slug, 'framework' / 'ecosystem-flow'), bloom_level (one of the six canonical Bloom levels). Optional source_references[] when TRAINFORGE_SOURCE_PROVENANCE=true.",
+      "required": ["lo_id", "concept_id", "bloom_level"],
+      "additionalProperties": false,
+      "properties": {
+        "lo_id": {"type": "string", "minLength": 1},
+        "concept_id": {"type": "string", "minLength": 1},
+        "bloom_level": {
+          "type": "string",
+          "enum": [
+            "remember",
+            "understand",
+            "apply",
+            "analyze",
+            "evaluate",
+            "create"
+          ],
+          "$comment": "Inlined canonical BloomLevel enum (matches schemas/taxonomies/bloom_verbs.json $defs.BloomLevel) so schema validators don't need to fetch the external taxonomy ref. Drift guard: Wave 48's schema-sourced cognitive-domain loader + Wave 55's canonical detect_bloom_level keep the Python constants in sync with this enum; a Courseforge / Trainforge regression test would catch divergence before it shipped."
+        },
+        "source_references": {
+          "type": "array",
+          "items": {"$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json"},
+          "description": "Wave 66: optional source references copied from the emitting LO's page-level sourceReferences[] when TRAINFORGE_SOURCE_PROVENANCE=true."
+        }
+      }
+    },
+    "TargetsConceptProvenance": {
+      "type": "object",
+      "description": "Wave 66: Provenance arm for edges emitted by rule targets_concept_from_lo.",
+      "required": ["rule", "rule_version"],
+      "additionalProperties": true,
+      "properties": {
+        "rule": {"const": "targets_concept_from_lo"},
+        "rule_version": {"type": "integer", "minimum": 1},
+        "evidence": {"$ref": "#/$defs/TargetsConceptEvidence"}
+      }
+    },
     "FallbackProvenance": {
       "type": "object",
-      "description": "Lenient fallback arm of the provenance oneOf. Matches any edge whose rule is NOT one of the 8 modeled rules (mutually exclusive by the `not:enum` discriminator). Evidence may be absent or any shape — preserving backward-compat with legacy graphs and with future rules not yet modeled as a specific $def. Strip this arm from the oneOf when strict validation is required (see lib/validators/evidence.py::get_schema(strict=True) or TRAINFORGE_STRICT_EVIDENCE=true). The strict-stripped schema then rejects any edge whose rule is unknown OR whose evidence shape drifts from its modeled $def.",
+      "description": "Lenient fallback arm of the provenance oneOf. Matches any edge whose rule is NOT one of the 9 modeled rules (mutually exclusive by the `not:enum` discriminator). Evidence may be absent or any shape — preserving backward-compat with legacy graphs and with future rules not yet modeled as a specific $def. Strip this arm from the oneOf when strict validation is required (see lib/validators/evidence.py::get_schema(strict=True) or TRAINFORGE_STRICT_EVIDENCE=true). The strict-stripped schema then rejects any edge whose rule is unknown OR whose evidence shape drifts from its modeled $def. Wave 66 added the 9th modeled rule: targets_concept_from_lo.",
       "required": ["rule", "rule_version"],
       "additionalProperties": true,
       "properties": {
@@ -331,7 +371,8 @@
               "exemplifies_from_example_chunks",
               "misconception_of_from_misconception_ref",
               "derived_from_lo_ref",
-              "defined_by_from_first_mention"
+              "defined_by_from_first_mention",
+              "targets_concept_from_lo"
             ]
           }
         },

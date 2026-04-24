@@ -162,14 +162,16 @@ def test_schema_path_exists():
     assert SCHEMA_PATH.exists()
 
 
-def test_get_schema_returns_oneOf_with_nine_arms_default():
+def test_get_schema_returns_oneOf_with_ten_arms_default():
+    """Wave 66 added TargetsConceptProvenance — the oneOf now carries
+    9 specific arms + 1 FallbackProvenance."""
     schema = get_schema(strict=False)
     oneof = (
         schema["properties"]["edges"]["items"]["properties"]["provenance"]["oneOf"]
     )
-    assert len(oneof) == 9
+    assert len(oneof) == 10
     refs = [arm["$ref"] for arm in oneof]
-    # Last arm is the fallback; first 8 are specific.
+    # Last arm is the fallback; first 9 are specific.
     assert refs[-1].endswith("/FallbackProvenance")
     specific = {
         "#/$defs/IsAProvenance",
@@ -180,18 +182,20 @@ def test_get_schema_returns_oneOf_with_nine_arms_default():
         "#/$defs/MisconceptionOfProvenance",
         "#/$defs/DerivedFromObjectiveProvenance",
         "#/$defs/DefinedByProvenance",
+        "#/$defs/TargetsConceptProvenance",
     }
     assert set(refs[:-1]) == specific
 
 
 def test_get_schema_strict_drops_fallback_arm():
+    """Strict mode removes the fallback arm → 9 specific arms remain."""
     schema = get_schema(strict=True)
     oneof = (
         schema["properties"]["edges"]["items"]["properties"]["provenance"]["oneOf"]
     )
     refs = [arm["$ref"] for arm in oneof]
     assert not any(r.endswith("/FallbackProvenance") for r in refs)
-    assert len(oneof) == 8
+    assert len(oneof) == 9
 
 
 def test_get_schema_env_var_toggles_strict(monkeypatch):
@@ -203,13 +207,13 @@ def test_get_schema_env_var_toggles_strict(monkeypatch):
     oneof = (
         schema["properties"]["edges"]["items"]["properties"]["provenance"]["oneOf"]
     )
-    assert len(oneof) == 8
+    assert len(oneof) == 9
     monkeypatch.setenv(STRICT_ENV_VAR, "false")
     schema2 = get_schema()
     oneof2 = (
         schema2["properties"]["edges"]["items"]["properties"]["provenance"]["oneOf"]
     )
-    assert len(oneof2) == 9
+    assert len(oneof2) == 10
 
 
 # ---------------------------------------------------------------------------

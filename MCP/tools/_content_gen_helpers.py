@@ -23,7 +23,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 # Project imports — mature Bloom/taxonomy helpers.
-from lib.ontology.bloom import detect_bloom_level
+from lib.ontology.bloom import (
+    bloom_to_cognitive_domain,  # Wave 48: schema-sourced cognitive domain
+    detect_bloom_level,
+)
 from lib.ontology.learning_objectives import mint_lo_id
 from lib.ontology.slugs import canonical_slug
 
@@ -2047,15 +2050,8 @@ def _render_objectives_section(
             detected_level, detected_verb = detect_bloom_level(statement)
             bloom_level = bloom_level or detected_level
             bloom_verb = bloom_verb or detected_verb
-        domain_map = {
-            "remember": "factual",
-            "understand": "conceptual",
-            "apply": "procedural",
-            "analyze": "conceptual",
-            "evaluate": "metacognitive",
-            "create": "procedural",
-        }
-        domain = domain_map.get(bloom_level or "", "conceptual")
+        # Wave 48: schema-sourced cognitive domain
+        domain = bloom_to_cognitive_domain(bloom_level)
         attrs = [f'data-cf-objective-id="{_html.escape(obj_id)}"']
         if bloom_level:
             attrs.append(f'data-cf-bloom-level="{bloom_level}"')

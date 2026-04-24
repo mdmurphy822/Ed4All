@@ -33,7 +33,6 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from Trainforge.process_course import CourseProcessor  # noqa: E402
 
-
 COURSE_SCHEMA_PATH = (
     PROJECT_ROOT / "schemas" / "knowledge" / "course.schema.json"
 )

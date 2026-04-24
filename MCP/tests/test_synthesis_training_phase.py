@@ -20,7 +20,6 @@ no real IMSCC processing, no LLM traffic.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import shutil
 import sys
@@ -31,7 +30,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
-
 
 FIXTURE_ROOT = (
     Path(__file__).resolve().parents[2]

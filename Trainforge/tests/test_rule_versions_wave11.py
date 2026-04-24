@@ -40,7 +40,6 @@ from Trainforge.rag.inference_rules import (
 )
 from Trainforge.rag.typed_edge_inference import build_semantic_graph
 
-
 WAVE_11_TOUCHED = {
     "is_a_from_key_terms": is_a_from_key_terms,
     "exemplifies_from_example_chunks": exemplifies_from_example_chunks,

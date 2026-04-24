@@ -31,7 +31,6 @@ if str(PROJECT_ROOT) not in sys.path:
 from MCP.tools import pipeline_tools  # noqa: E402
 from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
 
-
 COURSE_CODE = "TESTBETA_101"
 
 # Rich fixture HTML: multiple sections with <strong> key terms and an
