@@ -1,4 +1,4 @@
-# Courseforge JSON-LD SHACL Shapes v1 — Wave 63
+# Courseforge JSON-LD SHACL Shapes v1 — Wave 63, hardened in Wave 67
 #
 # Companion to schemas/context/courseforge_v1.jsonld. Validates the RDF
 # graph produced when a JSON-LD payload emitted by generate_course.py is
@@ -6,17 +6,20 @@
 # adopters an RDF-native validation surface alongside the JSON Schema at
 # schemas/knowledge/courseforge_jsonld_v1.schema.json.
 #
-# Targeting strategy: shapes target Schema.org classes (schema:LearningResource,
-# schema:DefinedTerm) directly rather than ed4all-namespaced subclasses. That's
-# pragmatic — our graphs are self-contained today, so over-targeting isn't a
-# concern. If mixed-graph consumption becomes a requirement, a future wave
-# can switch to ed4all:CourseModule + rdfs:subClassOf schema:LearningResource
-# with the @context updated in lockstep.
+# Targeting strategy (Wave 67): every NodeShape targets an ed4all-namespaced
+# class (ed4all:CourseModule / ed4all:LearningObjective / ed4all:Section
+# etc.). The @context maps each JSON-LD @type alias to its ed4all: class
+# directly; Schema.org inference is preserved via the Wave 65 vocabulary's
+# `rdfs:subClassOf schema:LearningResource` / `schema:DefinedTerm` /
+# `schema:CreativeWork` axioms. A Pearson-emitted schema:LearningResource
+# in a mixed graph therefore does NOT fire our CourseModuleShape —
+# Wave 63's over-targeting concern is closed.
 #
-# Cardinality / format constraints mirror courseforge_jsonld_v1.schema.json
-# but in SHACL idiom: sh:minCount / sh:maxCount / sh:datatype / sh:pattern /
-# sh:nodeKind / sh:in. String minLength on Schema.org predicates is enforced
-# only where the JSON Schema also enforces it.
+# Vocabulary concept values (bloomLevel, cognitiveDomain, bloomRange,
+# hierarchyLevel) are validated with `sh:in` against the canonical IRI set
+# rather than `sh:pattern`. A typo like <https://ed4all.dev/vocab/bloom#aplly>
+# falls outside the set and fails validation — Wave 63's pattern-based
+# check would have accepted it.
 
 @prefix sh:       <http://www.w3.org/ns/shacl#> .
 @prefix rdf:      <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
@@ -33,11 +36,12 @@
 @prefix cfshapes: <https://ed4all.dev/ns/courseforge/v1/shapes#> .
 
 # ---------------------------------------------------------------------------
-# Controlled-vocabulary declarations
+# Controlled-vocabulary concept declarations
 # ---------------------------------------------------------------------------
-# Declare Bloom / cognitive-domain / hierarchy concepts as SKOS concepts so
-# consumers can query them by rdf:type skos:Concept. The shapes below validate
-# that our emitted values point to IRIs in these schemes.
+# Declared inline so shapes using `sh:in ( bloom:remember ... )` don't require
+# loading the Wave 65 vocabulary file separately during SHACL validation.
+# Matches schemas/context/courseforge_v1.vocabulary.ttl — any drift is caught
+# by schemas/tests/test_courseforge_vocabulary.py.
 
 bloom:remember    a skos:Concept ; skos:prefLabel "Remember" .
 bloom:understand  a skos:Concept ; skos:prefLabel "Understand" .
@@ -55,16 +59,15 @@ hierarchy:terminal  a skos:Concept ; skos:prefLabel "Terminal" .
 hierarchy:chapter   a skos:Concept ; skos:prefLabel "Chapter" .
 
 # ---------------------------------------------------------------------------
-# CourseModuleShape — targets schema:LearningResource
+# CourseModuleShape — targets ed4all:CourseModule
 # ---------------------------------------------------------------------------
 
 cfshapes:CourseModuleShape
   a sh:NodeShape ;
-  sh:targetClass schema:LearningResource ;
+  sh:targetClass ed4all:CourseModule ;
   rdfs:label "Courseforge CourseModule Shape" ;
-  rdfs:comment "Validates the CourseModule JSON-LD payload emitted by generate_course.py::_build_page_metadata." ;
+  rdfs:comment "Validates the CourseModule JSON-LD payload emitted by generate_course.py::_build_page_metadata. Wave 67: targets ed4all:CourseModule (not schema:LearningResource) so Schema.org LearningResources from other emitters don't get validated against our required-predicate list." ;
 
-  # Required: courseCode (pattern ^[A-Z]{2,}_?\d{3,}$)
   sh:property [
     sh:path schema:courseCode ;
     sh:minCount 1 ;
@@ -74,7 +77,6 @@ cfshapes:CourseModuleShape
     sh:message "courseCode must match ^[A-Z]{2,}_?\\d{3,}$ (e.g., SAMPLE_101, WCAG_201)." ;
   ] ;
 
-  # Required: weekNumber (xsd:integer, >= 0)
   sh:property [
     sh:path schema:position ;
     sh:minCount 1 ;
@@ -84,14 +86,12 @@ cfshapes:CourseModuleShape
     sh:message "weekNumber (schema:position) must be a non-negative integer." ;
   ] ;
 
-  # Required: moduleType (schema:learningResourceType)
   sh:property [
     sh:path schema:learningResourceType ;
     sh:minCount 1 ;
     sh:message "moduleType (schema:learningResourceType) is required on CourseModule." ;
   ] ;
 
-  # Required: pageId (schema:identifier)
   sh:property [
     sh:path schema:identifier ;
     sh:minCount 1 ;
@@ -100,31 +100,47 @@ cfshapes:CourseModuleShape
     sh:message "pageId (schema:identifier) is required and non-empty." ;
   ] ;
 
-  # Optional: learningObjectives — each must conform to LearningObjectiveShape
+  # Wave 67 fix #5: explicit sh:node wiring so the relationship between parent
+  # and child shape is declarative, not implicit via class targeting.
   sh:property [
     sh:path schema:teaches ;
     sh:nodeKind sh:BlankNodeOrIRI ;
-    sh:message "Each learningObjective must be a node conforming to cfshapes:LearningObjectiveShape." ;
+    sh:node cfshapes:LearningObjectiveShape ;
+    sh:message "Each value of schema:teaches (learningObjectives[]) must conform to cfshapes:LearningObjectiveShape." ;
   ] ;
 
-  # Optional: bloomDistribution — conforms to BloomDistributionShape
+  sh:property [
+    sh:path schema:hasPart ;
+    sh:nodeKind sh:BlankNodeOrIRI ;
+    sh:node cfshapes:SectionShape ;
+    sh:message "Each value of schema:hasPart (sections[]) must conform to cfshapes:SectionShape." ;
+  ] ;
+
+  # Wave 67 fix #6: hasMisconception now has a parent-scoped property
+  # constraint (was previously only validated via class targeting).
+  sh:property [
+    sh:path ed4all:hasMisconception ;
+    sh:nodeKind sh:BlankNodeOrIRI ;
+    sh:node cfshapes:MisconceptionShape ;
+  ] ;
+
   sh:property [
     sh:path ed4all:bloomDistribution ;
     sh:maxCount 1 ;
     sh:nodeKind sh:BlankNodeOrIRI ;
+    sh:node cfshapes:BloomDistributionShape ;
   ] .
 
 # ---------------------------------------------------------------------------
-# LearningObjectiveShape — targets schema:DefinedTerm
+# LearningObjectiveShape — targets ed4all:LearningObjective
 # ---------------------------------------------------------------------------
 
 cfshapes:LearningObjectiveShape
   a sh:NodeShape ;
-  sh:targetClass schema:DefinedTerm ;
+  sh:targetClass ed4all:LearningObjective ;
   rdfs:label "Courseforge LearningObjective Shape" ;
   rdfs:comment "Validates LearningObjective JSON-LD emitted by generate_course.py::_build_objectives_metadata." ;
 
-  # Required: statement (schema:description)
   sh:property [
     sh:path schema:description ;
     sh:minCount 1 ;
@@ -132,23 +148,34 @@ cfshapes:LearningObjectiveShape
     sh:message "LearningObjective.statement (schema:description) is required and non-empty." ;
   ] ;
 
-  # Optional: bloomLevel — when present, must be a Bloom vocab IRI
+  # Wave 67 fix #1: closed-set validation via sh:in rather than prefix
+  # pattern. Catches typos like bloom#aplly that the pattern missed.
   sh:property [
     sh:path ed4all:bloomLevel ;
     sh:nodeKind sh:IRI ;
-    sh:pattern "^https://ed4all\\.dev/vocab/bloom#" ;
-    sh:message "bloomLevel must resolve to a concept IRI under https://ed4all.dev/vocab/bloom# (remember|understand|apply|analyze|evaluate|create)." ;
+    sh:in (
+      bloom:remember
+      bloom:understand
+      bloom:apply
+      bloom:analyze
+      bloom:evaluate
+      bloom:create
+    ) ;
+    sh:message "bloomLevel must be one of bloom:remember / understand / apply / analyze / evaluate / create." ;
   ] ;
 
-  # Optional: cognitiveDomain — when present, must be a cogdomain vocab IRI
   sh:property [
     sh:path ed4all:cognitiveDomain ;
     sh:nodeKind sh:IRI ;
-    sh:pattern "^https://ed4all\\.dev/vocab/cognitive-domain#" ;
-    sh:message "cognitiveDomain must resolve to a concept IRI under https://ed4all.dev/vocab/cognitive-domain#." ;
+    sh:in (
+      cogdomain:factual
+      cogdomain:conceptual
+      cogdomain:procedural
+      cogdomain:metacognitive
+    ) ;
+    sh:message "cognitiveDomain must be one of cogdomain:factual / conceptual / procedural / metacognitive." ;
   ] ;
 
-  # Optional: hierarchyLevel — when present, must be terminal or chapter
   sh:property [
     sh:path ed4all:hierarchyLevel ;
     sh:nodeKind sh:IRI ;
@@ -156,17 +183,48 @@ cfshapes:LearningObjectiveShape
     sh:message "hierarchyLevel must be hierarchy:terminal or hierarchy:chapter." ;
   ] ;
 
-  # Optional: parentObjectiveId — when present, must be an IRI whose local
-  # segment matches the canonical LO pattern
+  # Wave 67 fix #2: canonical LO pattern now enforced on the parent IRI.
+  # The Wave 63 shape only required `sh:nodeKind sh:IRI`, letting any URL
+  # pass through — including non-LO URIs.
   sh:property [
     sh:path ed4all:parentObjective ;
     sh:nodeKind sh:IRI ;
+    sh:pattern ".*[/#](TO|CO)-\\d{2,}$" ;
+    sh:message "parentObjectiveId must be an IRI whose local segment matches the canonical LO pattern (TO-NN or CO-NN)." ;
   ] ;
 
-  # Optional: targetedConcepts — each conforms to TargetedConceptShape
   sh:property [
     sh:path ed4all:targetsConcept ;
     sh:nodeKind sh:BlankNodeOrIRI ;
+    sh:node cfshapes:TargetedConceptShape ;
+  ] .
+
+# ---------------------------------------------------------------------------
+# SectionShape — Wave 67 fix #3 (was absent in Wave 63)
+# ---------------------------------------------------------------------------
+
+cfshapes:SectionShape
+  a sh:NodeShape ;
+  sh:targetClass ed4all:Section ;
+  rdfs:label "Courseforge Section Shape" ;
+  rdfs:comment "Wave 67: validates Section metadata emitted by generate_course.py::_build_sections_metadata. Previously absent — section payloads carrying no heading / malformed content type would validate silently." ;
+
+  sh:property [
+    sh:path schema:name ;
+    sh:minCount 1 ;
+    sh:minLength 1 ;
+    sh:message "Section.heading (schema:name) is required and non-empty." ;
+  ] ;
+
+  # bloomRange values: canonical Bloom level as string literal.
+  # Not an IRI because the @context drops @type:@vocab on bloomRange — pyld
+  # can't cleanly expand @vocab + @container:@set items to IRIs, so we keep
+  # them as literals and sh:in against the string enum.
+  sh:property [
+    sh:path ed4all:bloomRange ;
+    sh:datatype xsd:string ;
+    sh:in ( "remember" "understand" "apply" "analyze" "evaluate" "create" ) ;
+    sh:message "Section.bloomRange entries must be canonical Bloom level strings." ;
   ] .
 
 # ---------------------------------------------------------------------------
@@ -179,7 +237,6 @@ cfshapes:TargetedConceptShape
   rdfs:label "Courseforge TargetedConcept Shape" ;
   rdfs:comment "Validates the Wave 57 Bloom-qualified LO→concept edge." ;
 
-  # Required: concept (schema:about) — an IRI pointing at the concept
   sh:property [
     sh:path schema:about ;
     sh:minCount 1 ;
@@ -188,14 +245,20 @@ cfshapes:TargetedConceptShape
     sh:message "TargetedConcept.concept (schema:about) is required and must be an IRI." ;
   ] ;
 
-  # Required: bloomLevel — the cognitive demand at which the parent LO targets the concept
   sh:property [
     sh:path ed4all:bloomLevel ;
     sh:minCount 1 ;
     sh:maxCount 1 ;
     sh:nodeKind sh:IRI ;
-    sh:pattern "^https://ed4all\\.dev/vocab/bloom#" ;
-    sh:message "TargetedConcept.bloomLevel is required and must be a concept IRI under https://ed4all.dev/vocab/bloom#." ;
+    sh:in (
+      bloom:remember
+      bloom:understand
+      bloom:apply
+      bloom:analyze
+      bloom:evaluate
+      bloom:create
+    ) ;
+    sh:message "TargetedConcept.bloomLevel is required and must be a canonical bloom vocab IRI." ;
   ] .
 
 # ---------------------------------------------------------------------------
@@ -208,7 +271,6 @@ cfshapes:MisconceptionShape
   rdfs:label "Courseforge Misconception Shape" ;
   rdfs:comment "Validates Misconception JSON-LD emitted by _build_misconceptions_metadata. REC-JSL-01: both misconception + correction are required." ;
 
-  # Required: misconception (schema:description)
   sh:property [
     sh:path schema:description ;
     sh:minCount 1 ;
@@ -216,7 +278,6 @@ cfshapes:MisconceptionShape
     sh:message "Misconception.misconception (schema:description) is required and non-empty." ;
   ] ;
 
-  # Required: correction
   sh:property [
     sh:path ed4all:correction ;
     sh:minCount 1 ;
@@ -224,21 +285,31 @@ cfshapes:MisconceptionShape
     sh:message "Misconception.correction (ed4all:correction) is required and non-empty." ;
   ] ;
 
-  # Optional: bloomLevel — Wave 60 enrichment
   sh:property [
     sh:path ed4all:bloomLevel ;
     sh:maxCount 1 ;
     sh:nodeKind sh:IRI ;
-    sh:pattern "^https://ed4all\\.dev/vocab/bloom#" ;
-    sh:message "Misconception.bloomLevel must be a concept IRI under https://ed4all.dev/vocab/bloom#." ;
+    sh:in (
+      bloom:remember
+      bloom:understand
+      bloom:apply
+      bloom:analyze
+      bloom:evaluate
+      bloom:create
+    ) ;
+    sh:message "Misconception.bloomLevel must be a canonical bloom vocab IRI." ;
   ] ;
 
-  # Optional: cognitiveDomain — Wave 60 enrichment
   sh:property [
     sh:path ed4all:cognitiveDomain ;
     sh:maxCount 1 ;
     sh:nodeKind sh:IRI ;
-    sh:pattern "^https://ed4all\\.dev/vocab/cognitive-domain#" ;
+    sh:in (
+      cogdomain:factual
+      cogdomain:conceptual
+      cogdomain:procedural
+      cogdomain:metacognitive
+    ) ;
   ] .
 
 # ---------------------------------------------------------------------------
@@ -251,7 +322,6 @@ cfshapes:BloomDistributionShape
   rdfs:label "Courseforge BloomDistribution Shape" ;
   rdfs:comment "Validates the per-page Bloom distribution aggregate (Wave 61)." ;
 
-  # Required: total (non-negative integer)
   sh:property [
     sh:path ed4all:total ;
     sh:minCount 1 ;
