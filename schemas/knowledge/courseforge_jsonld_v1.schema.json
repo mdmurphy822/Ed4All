@@ -201,10 +201,21 @@
       "type": "object",
       "required": ["misconception", "correction"],
       "additionalProperties": false,
-      "description": "Per REC-JSL-01: both 'misconception' and 'correction' keys required. Prevents the silent correction-edge drop flagged in KG-quality review gap #2.",
+      "description": "Per REC-JSL-01: both 'misconception' and 'correction' keys required. Prevents the silent correction-edge drop flagged in KG-quality review gap #2. Wave 60: optional bloomLevel + cognitiveDomain fields let KG consumers filter misconceptions by cognitive demand (e.g., 'apply'-level mistakes differ from 'analyze'-level ones in the diagnostic questions they warrant).",
       "properties": {
         "misconception": { "type": "string", "minLength": 1 },
-        "correction": { "type": "string", "minLength": 1 }
+        "correction": { "type": "string", "minLength": 1 },
+        "bloomLevel": {
+          "oneOf": [
+            { "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel" },
+            { "type": "null" }
+          ],
+          "description": "Wave 60: Bloom's taxonomy level for the misconception. Inferred at emit time from the correction statement via detect_bloom_level, with fallback to the misconception statement. Upstream-supplied values (on the input dict under 'bloomLevel' / 'bloom_level') override detection. Null when no canonical verb matches either statement; elided entirely from the emit when null so legacy consumers don't see a surprise field."
+        },
+        "cognitiveDomain": {
+          "$ref": "https://ed4all.dev/ns/taxonomies/v1/cognitive_domain.schema.json#/$defs/CognitiveDomain",
+          "description": "Wave 60: knowledge domain derived from bloomLevel via lib.ontology.bloom.bloom_to_cognitive_domain. Emitted iff bloomLevel is populated."
+        }
       }
     }
   }
