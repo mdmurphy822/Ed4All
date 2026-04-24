@@ -1280,6 +1280,43 @@ def _build_sections_metadata(sections: List[Dict]) -> List[Dict[str, Any]]:
     return result
 
 
+def _build_bloom_distribution(
+    objectives_metadata: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Aggregate Bloom/cognitive-domain counts across a page's LOs.
+
+    Wave 61: lets KG consumers answer "what's the cognitive-demand
+    profile of this page?" without re-aggregating per-LO data. Counts
+    the primary ``bloomLevel`` on each LO (skipping LOs with null
+    bloomLevel); multi-level LOs via ``bloomLevels[]`` are intentionally
+    NOT double-counted here so the ``total`` field maps 1:1 with LO
+    count. Consumers wanting the richer multi-level aggregate should
+    union the per-LO ``bloomLevels[]`` arrays themselves.
+
+    Returns ``None`` when no LO has a bloomLevel (caller elides the
+    field from the page JSON-LD so legacy payloads stay identical).
+    Zero-count levels / domains are elided from the per-key dicts.
+    """
+    by_level: Dict[str, int] = {}
+    by_domain: Dict[str, int] = {}
+    total = 0
+    for lo in objectives_metadata:
+        lvl = lo.get("bloomLevel")
+        if not lvl:
+            continue
+        total += 1
+        by_level[lvl] = by_level.get(lvl, 0) + 1
+        dom = _bloom_to_cognitive_domain(lvl)
+        if dom:
+            by_domain[dom] = by_domain.get(dom, 0) + 1
+    if total == 0:
+        return None
+    out: Dict[str, Any] = {"total": total, "byLevel": by_level}
+    if by_domain:
+        out["byCognitiveDomain"] = by_domain
+    return out
+
+
 def _build_misconceptions_metadata(
     misconceptions: List[Dict],
 ) -> List[Dict[str, Any]]:
@@ -1370,6 +1407,12 @@ def _build_page_metadata(
     }
     if objectives:
         meta["learningObjectives"] = _build_objectives_metadata(objectives)
+        # Wave 61: emit per-page Bloom distribution when any LO has a
+        # bloomLevel populated. Elided otherwise so legacy pages with
+        # verb-less LOs stay schema-stable.
+        distribution = _build_bloom_distribution(meta["learningObjectives"])
+        if distribution:
+            meta["bloomDistribution"] = distribution
     if sections:
         meta["sections"] = _build_sections_metadata(sections)
     if misconceptions:
