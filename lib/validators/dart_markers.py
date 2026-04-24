@@ -40,7 +40,6 @@ from typing import Any, Dict, List, Tuple
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
 
-
 # Marker name -> tuple of literal substrings, any of which satisfies the marker.
 # Kept in sync with MCP/tools/pipeline_tools.py:validate_dart_markers.
 _REQUIRED_MARKERS: Dict[str, Tuple[str, ...]] = {

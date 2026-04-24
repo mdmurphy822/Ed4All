@@ -1,0 +1,83 @@
+{
+  "_description": "Courseforge JSON-LD @context v1 — Wave 62, hardened in Wave 67. Maps the compact terms emitted by generate_course.py's _build_page_metadata / _build_objectives_metadata / _build_sections_metadata / _build_misconceptions_metadata / _build_bloom_distribution to external vocabularies (Schema.org LearningResource, SKOS for Bloom verbs and cognitive domain, PROV-O for run provenance, Dublin Core for timestamps). Canonical namespace URI: https://ed4all.dev/ns/courseforge/v1 — when that URL is served by infra, a JSON-LD processor can dereference it directly; until then, bundle this file from the repo at schemas/context/courseforge_v1.jsonld and substitute via a document loader. Wave 67 notes: (1) class aliases now target ed4all:CourseModule / ed4all:LearningObjective / ed4all:Section (not Schema.org classes directly) — Schema.org inference is available via the Wave 65 vocabulary's rdfs:subClassOf axioms and avoids over-targeting mixed-graph consumers. (2) bloomLevels / bloomVerbs terms are set to null (suppressed from RDF projection) because pyld's @vocab + @list interaction produces literal @values instead of IRI references; the singular bloomLevel / bloomVerb carry the authoritative RDF predicate, and the JSON plural stays on the wire as a convenience view. (3) bloomRange drops @type:@vocab for the same pyld limitation; SHACL validates its values as string literals against the canonical Bloom level enum. This sibling '_description' key lives outside the @context block so JSON-LD 1.1 processors don't parse it as a term definition.",
+  "@context": {
+    "@version": 1.1,
+
+    "schema": "http://schema.org/",
+    "skos": "http://www.w3.org/2004/02/skos/core#",
+    "dcterms": "http://purl.org/dc/terms/",
+    "prov": "http://www.w3.org/ns/prov#",
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+
+    "ed4all": "https://ed4all.dev/ns/courseforge/v1#",
+    "bloom": "https://ed4all.dev/vocab/bloom#",
+    "cogdomain": "https://ed4all.dev/vocab/cognitive-domain#",
+    "hierarchy": "https://ed4all.dev/vocab/hierarchy#",
+
+    "CourseModule": "ed4all:CourseModule",
+    "LearningObjective": "ed4all:LearningObjective",
+    "Section": "ed4all:Section",
+    "Misconception": "ed4all:Misconception",
+    "TargetedConcept": "ed4all:TargetedConcept",
+    "BloomDistribution": "ed4all:BloomDistribution",
+
+    "id": "@id",
+
+    "courseCode": "schema:courseCode",
+    "weekNumber": { "@id": "schema:position", "@type": "xsd:integer" },
+    "moduleType": "schema:learningResourceType",
+    "pageId": "schema:identifier",
+
+    "learningObjectives": { "@id": "schema:teaches", "@container": "@set" },
+    "sections": { "@id": "schema:hasPart", "@container": "@set" },
+    "misconceptions": { "@id": "ed4all:hasMisconception", "@container": "@set" },
+    "suggestedAssessmentTypes": { "@id": "ed4all:suggestedAssessmentType", "@container": "@set" },
+    "prerequisitePages": { "@id": "schema:coursePrerequisites", "@type": "@id", "@container": "@set" },
+    "sourceReferences": { "@id": "schema:isBasedOn", "@container": "@set" },
+    "bloomDistribution": "ed4all:bloomDistribution",
+    "classification": "ed4all:classification",
+
+    "statement": "schema:description",
+    "bloomLevel": {
+      "@id": "ed4all:bloomLevel",
+      "@type": "@vocab",
+      "@context": { "@vocab": "https://ed4all.dev/vocab/bloom#" }
+    },
+    "bloomVerb": "ed4all:bloomVerb",
+    "bloomLevels": null,
+    "bloomVerbs": null,
+    "cognitiveDomain": {
+      "@id": "ed4all:cognitiveDomain",
+      "@type": "@vocab",
+      "@context": { "@vocab": "https://ed4all.dev/vocab/cognitive-domain#" }
+    },
+    "keyConcepts": { "@id": "schema:keywords", "@container": "@set" },
+    "targetedConcepts": { "@id": "ed4all:targetsConcept", "@container": "@set" },
+    "concept": { "@id": "schema:about", "@type": "@id" },
+    "assessmentSuggestions": { "@id": "ed4all:suggestedAssessmentType", "@container": "@set" },
+    "prerequisiteObjectives": { "@id": "schema:competencyRequired", "@type": "@id", "@container": "@set" },
+    "hierarchyLevel": {
+      "@id": "ed4all:hierarchyLevel",
+      "@type": "@vocab",
+      "@context": { "@vocab": "https://ed4all.dev/vocab/hierarchy#" }
+    },
+    "parentObjectiveId": { "@id": "ed4all:parentObjective", "@type": "@id" },
+
+    "heading": "schema:name",
+    "contentType": "schema:learningResourceType",
+    "keyTerms": { "@id": "schema:keywords", "@container": "@set" },
+    "bloomRange": { "@id": "ed4all:bloomRange", "@container": "@set" },
+    "teachingRole": "ed4all:teachingRole",
+
+    "misconception": "schema:description",
+    "correction": "ed4all:correction",
+
+    "total": { "@id": "ed4all:total", "@type": "xsd:integer" },
+    "byLevel": "ed4all:byLevel",
+    "byCognitiveDomain": "ed4all:byCognitiveDomain",
+
+    "run_id": { "@id": "prov:wasGeneratedBy", "@type": "@id" },
+    "created_at": { "@id": "dcterms:created", "@type": "xsd:dateTime" },
+    "generated_at": { "@id": "dcterms:issued", "@type": "xsd:dateTime" }
+  }
+}

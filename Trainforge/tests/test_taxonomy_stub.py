@@ -272,7 +272,6 @@ def test_stub_invalid_fails_at_emit(tmp_path):
 def test_valid_classification_emits_stub(tmp_path):
     """Valid classification triggers course_metadata.json emit + page JSON-LD."""
     import importlib.util
-    import re as _re
     import sys
 
     repo = Path(__file__).resolve().parents[2]

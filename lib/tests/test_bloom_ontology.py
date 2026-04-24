@@ -184,6 +184,100 @@ def test_detect_bloom_level(text, expected_level, expected_verb):
     )
 
 
+# ---------------------------------------------------------------------------
+# Wave 48: schema-sourced cognitive domain
+# ---------------------------------------------------------------------------
+#
+# Covers the promotion of the BLOOM_TO_DOMAIN dict from two hardcoded
+# duplicates (Courseforge/scripts/generate_course.py + MCP/tools/
+# _content_gen_helpers.py) into schemas/taxonomies/cognitive_domain.json
+# with a canonical lib.ontology.bloom helper.
+
+
+def test_cognitive_domain_enum_matches_schema():
+    """Module-level enum tuple matches the cognitive_domain.json $defs enum."""
+    import json
+
+    from lib.ontology.bloom import COGNITIVE_DOMAINS, cognitive_domain_enum
+
+    schema_path = (
+        _REPO_ROOT / "schemas" / "taxonomies" / "cognitive_domain.json"
+    )
+    assert schema_path.exists(), f"Schema missing: {schema_path}"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema_enum = tuple(schema["$defs"]["CognitiveDomain"]["enum"])
+
+    assert COGNITIVE_DOMAINS == schema_enum, (
+        "Module COGNITIVE_DOMAINS drifted from schema CognitiveDomain.enum"
+    )
+    assert cognitive_domain_enum() == schema_enum, (
+        "cognitive_domain_enum() accessor drifted from schema"
+    )
+
+
+def test_every_bloom_level_maps_to_canonical_domain():
+    """Every Bloom level resolves to a value in the canonical 4-value enum."""
+    from lib.ontology.bloom import (
+        BLOOM_LEVELS,
+        COGNITIVE_DOMAINS,
+        bloom_to_cognitive_domain,
+    )
+
+    enum_set = set(COGNITIVE_DOMAINS)
+    for level in BLOOM_LEVELS:
+        domain = bloom_to_cognitive_domain(level)
+        assert domain in enum_set, (
+            f"bloom_to_cognitive_domain({level!r}) -> {domain!r} "
+            f"not in canonical enum {sorted(enum_set)}"
+        )
+
+
+def test_unknown_bloom_level_falls_back_to_conceptual():
+    """Unknown / missing bloom levels preserve pre-Wave-48 fallback."""
+    from lib.ontology.bloom import bloom_to_cognitive_domain
+
+    assert bloom_to_cognitive_domain("bogus") == "conceptual"
+    assert bloom_to_cognitive_domain("") == "conceptual"
+    assert bloom_to_cognitive_domain(None) == "conceptual"
+
+
+def test_courseforge_uses_canonical_helper():
+    """generate_course.py no longer holds a local BLOOM_TO_DOMAIN dict."""
+    gc_path = _REPO_ROOT / "Courseforge" / "scripts" / "generate_course.py"
+    src = gc_path.read_text(encoding="utf-8")
+
+    # The literal dict-opening token must be gone entirely (the replacement
+    # routes through lib.ontology.bloom.bloom_to_cognitive_domain).
+    assert "BLOOM_TO_DOMAIN = {" not in src, (
+        "generate_course.py still contains the hardcoded BLOOM_TO_DOMAIN dict; "
+        "Wave 48 expected it replaced with _bloom_to_cognitive_domain()."
+    )
+    assert "BLOOM_TO_DOMAIN:" not in src, (
+        "generate_course.py still contains a BLOOM_TO_DOMAIN type-annotated "
+        "declaration; Wave 48 expected it replaced."
+    )
+    # Affirm the canonical helper is imported.
+    assert "bloom_to_cognitive_domain" in src, (
+        "generate_course.py is missing the canonical helper import"
+    )
+
+
+def test_content_gen_helpers_uses_canonical_helper():
+    """_content_gen_helpers.py no longer holds a local domain_map dict."""
+    helpers_path = (
+        _REPO_ROOT / "MCP" / "tools" / "_content_gen_helpers.py"
+    )
+    src = helpers_path.read_text(encoding="utf-8")
+
+    assert "domain_map = {" not in src, (
+        "_content_gen_helpers.py still contains the hardcoded domain_map "
+        "dict; Wave 48 expected it replaced with bloom_to_cognitive_domain()."
+    )
+    assert "bloom_to_cognitive_domain" in src, (
+        "_content_gen_helpers.py is missing the canonical helper import"
+    )
+
+
 def test_libv2_vendor_hash_sync():
     """LibV2/vendor/bloom_verbs.json must be byte-identical to the source."""
     auth = _REPO_ROOT / "schemas" / "taxonomies" / "bloom_verbs.json"

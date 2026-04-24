@@ -23,15 +23,11 @@ This suite locks in the wire-up and back-compat semantics.
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 from MCP.core.executor import TaskExecutor
-from MCP.core.workflow_runner import STATE_PATH
 from MCP.orchestrator.pipeline_orchestrator import PipelineOrchestrator
-
 
 # ---------------------------------------------------------------------- #
 # Fixtures
@@ -158,8 +154,8 @@ def test_normalize_course_code_is_importable_from_lib_decision_capture():
 
 def test_normalize_course_code_backward_compat_from_dart_tools():
     """Back-compat: dart_tools.py re-exports normalize_course_code."""
-    from MCP.tools.dart_tools import normalize_course_code as dart_norm
     from lib.decision_capture import normalize_course_code as lib_norm
+    from MCP.tools.dart_tools import normalize_course_code as dart_norm
     # Same callable reference (re-export)
     assert dart_norm is lib_norm
 

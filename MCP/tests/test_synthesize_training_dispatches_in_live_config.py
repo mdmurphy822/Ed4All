@@ -37,8 +37,6 @@ import importlib
 import json
 from pathlib import Path
 
-import pytest
-
 from MCP.core.param_mapper import TaskParameterMapper
 from MCP.core.tool_schemas import (
     get_optional_params,

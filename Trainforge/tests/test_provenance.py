@@ -16,7 +16,6 @@ overflow guard, xpath format, coverage, and multi-part disjointness.
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from pathlib import Path
 from typing import Dict, List
@@ -30,13 +29,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Trainforge.parsers.xpath_walker import (  # noqa: E402
-    build_index,
     find_body_xpath,
     find_heading_xpath,
     find_section_container_xpath,
     resolve_xpath,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixture HTML — a miniature IMSCC-like page with two sections. Chosen to

@@ -30,7 +30,7 @@ from MCP.core.executor import TaskExecutor
 from MCP.core.workflow_runner import STATE_PATH, WorkflowRunner
 
 from .llm_backend import BackendSpec, LLMBackend, build_backend
-from .worker_contracts import PhaseInput, PhaseOutput
+from .worker_contracts import PhaseInput
 
 logger = logging.getLogger(__name__)
 

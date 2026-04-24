@@ -30,6 +30,10 @@ import os
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from Trainforge.rag.inference_rules import assesses_from_question_lo as _assesses_mod
+from Trainforge.rag.inference_rules import defined_by_from_first_mention as _defined_by_mod
+from Trainforge.rag.inference_rules import derived_from_lo_ref as _derived_lo_mod
+from Trainforge.rag.inference_rules import exemplifies_from_example_chunks as _exemplifies_mod
 from Trainforge.rag.inference_rules import (
     infer_assesses,
     infer_defined_by,
@@ -39,15 +43,15 @@ from Trainforge.rag.inference_rules import (
     infer_misconception_of,
     infer_prerequisite,
     infer_related,
+    infer_targets_concept,
 )
-from Trainforge.rag.inference_rules import assesses_from_question_lo as _assesses_mod
-from Trainforge.rag.inference_rules import defined_by_from_first_mention as _defined_by_mod
-from Trainforge.rag.inference_rules import derived_from_lo_ref as _derived_lo_mod
-from Trainforge.rag.inference_rules import exemplifies_from_example_chunks as _exemplifies_mod
 from Trainforge.rag.inference_rules import is_a_from_key_terms as _is_a_mod
-from Trainforge.rag.inference_rules import misconception_of_from_misconception_ref as _misconception_mod
+from Trainforge.rag.inference_rules import (
+    misconception_of_from_misconception_ref as _misconception_mod,
+)
 from Trainforge.rag.inference_rules import prerequisite_from_lo_order as _prereq_mod
 from Trainforge.rag.inference_rules import related_from_cooccurrence as _related_mod
+from Trainforge.rag.inference_rules import targets_concept_from_lo as _targets_concept_mod
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +101,7 @@ _PRECEDENCE: Dict[str, int] = {
     "exemplifies": 2,
     "misconception-of": 2,
     "prerequisite": 2,
+    "targets-concept": 2,
     "related-to": 1,
 }
 
@@ -296,6 +301,7 @@ def build_semantic_graph(
     run_id: Optional[str] = None,
     misconceptions: Optional[List[Dict[str, Any]]] = None,
     questions: Optional[List[Dict[str, Any]]] = None,
+    objectives_metadata: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Build the typed-edge concept graph.
 
@@ -369,6 +375,11 @@ def build_semantic_graph(
         (infer_derived_from_objective, _derived_lo_mod, {}),
         (infer_exemplifies, _exemplifies_mod, {}),
         (infer_misconception_of, _misconception_mod, {"misconceptions": misconceptions}),
+        (
+            infer_targets_concept,
+            _targets_concept_mod,
+            {"objectives_metadata": objectives_metadata},
+        ),
     ):
         try:
             produced = fn(chunks, course, concept_graph, **kwargs) or []

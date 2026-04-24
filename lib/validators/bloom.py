@@ -15,8 +15,9 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from MCP.hardening.validation_gates import GateIssue, GateResult
+from lib.ontology.bloom import detect_bloom_level as _canonical_detect_bloom_level
 from lib.ontology.bloom import get_verbs as _get_canonical_verbs
+from MCP.hardening.validation_gates import GateIssue, GateResult
 
 # Bloom's taxonomy verb indicators per level.
 # Source of truth: schemas/taxonomies/bloom_verbs.json (loaded via
@@ -28,15 +29,18 @@ BLOOM_VERBS: Dict[str, Set[str]] = _get_canonical_verbs()
 
 
 def detect_bloom_level(stem: str) -> Optional[str]:
-    """Detect the Bloom's taxonomy level from a question stem."""
-    stem_lower = stem.lower()
-    # Check for verb matches, prioritizing higher-order levels
-    levels = ["create", "evaluate", "analyze", "apply", "understand", "remember"]
-    for level in levels:
-        for verb in BLOOM_VERBS[level]:
-            if re.search(rf"\b{verb}\b", stem_lower):
-                return level
-    return None
+    """Detect the Bloom's taxonomy level from a question stem.
+
+    Wave 55: delegates to ``lib.ontology.bloom.detect_bloom_level`` (the
+    canonical matcher) and discards the verb. The pre-Wave-55 local loop
+    iterated ``create → remember`` and used ``re.search(\\b{verb}\\b, ...)``
+    — behavior-preserving for this wrapper's ``Optional[str]`` signature
+    but duplicated the detection logic. Delegation removes the duplicate
+    and automatically picks up any future additions to the canonical
+    matcher (e.g., longest-multi-word-verb ties).
+    """
+    level, _verb = _canonical_detect_bloom_level(stem)
+    return level
 
 
 class BloomAlignmentValidator:

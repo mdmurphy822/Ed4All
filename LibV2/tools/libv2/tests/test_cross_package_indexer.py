@@ -24,7 +24,6 @@ from LibV2.tools.libv2.cross_package_indexer import (  # noqa: E402
     write_cross_package_index,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixture helpers
 # ---------------------------------------------------------------------------

@@ -36,7 +36,6 @@ from generate_course import (  # noqa: E402
     generate_week,
 )
 
-
 # ---------------------------------------------------------------------- #
 # Helpers for extracting JSON-LD + attributes from rendered HTML
 # ---------------------------------------------------------------------- #
@@ -831,6 +830,151 @@ class TestWave43SummaryRecapHelper:
         ]
         out = _summary_recap_paragraphs(modules)
         assert len(out) == 1
+
+    def test_skips_short_lead_in_picks_later_substantive_paragraph(self):
+        """Wave 46 regression: pre-Wave-46 the recap only evaluated
+        ``paragraphs[0]``. A module with a short lead-in sentence
+        followed by a substantive body paragraph was silently skipped
+        — the recap came up empty and AGGREGATE_EMPTY_PAGES returned
+        on summary-heavy runs. Post-Wave-46 the scanner walks the
+        section's paragraphs until it finds the first one that clears
+        the 30-word floor.
+        """
+        lead_in = "This section introduces the topic."  # 5 words
+        substantive = " ".join(["word"] * 40)  # 40 words, clears floor
+        assert len(lead_in.split()) < 30
+        assert len(substantive.split()) >= 30
+
+        modules = [
+            {
+                "title": "lead-in heavy module",
+                "sections": [
+                    {
+                        "heading": "Topic",
+                        "paragraphs": [lead_in, substantive],
+                    },
+                ],
+            },
+        ]
+        out = _summary_recap_paragraphs(modules)
+        # Post-Wave-46: the scanner skips the short lead-in and picks
+        # the 40-word body instead of returning [].
+        assert len(out) == 1
+        assert out[0] == substantive
+
+    def test_scans_multiple_short_paragraphs_before_substantive(self):
+        """Harder case: several short paragraphs before the
+        substantive one. Scanner must keep walking until it finds an
+        eligible paragraph or exhausts the section.
+        """
+        shorts = [
+            "First short sentence.",
+            "Another brief lead-in.",
+            "Still warming up here.",
+        ]
+        substantive = " ".join(["word"] * 40)
+        modules = [
+            {
+                "title": "m",
+                "sections": [
+                    {
+                        "heading": "h",
+                        "paragraphs": [*shorts, substantive],
+                    },
+                ],
+            },
+        ]
+        out = _summary_recap_paragraphs(modules)
+        assert len(out) == 1
+        assert out[0] == substantive
+
+    def test_section_with_only_short_paragraphs_emits_nothing(self):
+        """When every paragraph in the section falls below the floor,
+        the scanner must not pick anything from that module's section
+        (and the module's section loop should continue / break
+        normally to respect the one-paragraph-per-module invariant).
+        """
+        modules = [
+            {
+                "title": "all short",
+                "sections": [
+                    {
+                        "heading": "h",
+                        "paragraphs": [
+                            "Short one.",
+                            "Short two.",
+                            "Short three.",
+                        ],
+                    },
+                ],
+            },
+        ]
+        out = _summary_recap_paragraphs(modules)
+        assert out == []
+
+    def test_budget_rejected_paragraph_does_not_reserve_dedupe_key(self):
+        """Wave 47 regression: pre-Wave-47 an eligible paragraph that
+        failed the ``max_total_words`` budget check still called
+        ``seen.add(key)`` before the budget guard fired. That reserved
+        the paragraph's 80-char prefix even though nothing was emitted,
+        causing a later shorter paragraph from another module with the
+        same prefix to be dropped as a duplicate. Reachable via Wave 46's
+        short-lead-in flow near the word cap.
+
+        Test shape:
+
+        * filler (35 words) — picked (total=35).
+        * long_para (65 words) — eligible but budget-rejected under a
+          cap of 80 (35+65=100 > 80 → break). Pre-Wave-47 this still
+          reserved its 80-char prefix in ``seen``.
+        * shorter_para (30 words, same 80-char prefix as long_para) —
+          pre-Wave-47 dedupe-blocked because the reserved prefix
+          matched. Post-Wave-47 the prefix is NOT reserved so this
+          paragraph fits the remaining budget (35+30=65 ≤ 80) and is
+          picked.
+        """
+        # 80-char prefix shared across the rejected and later paragraphs.
+        shared_prefix = (
+            "Hierarchical content filtering is a technique used in "
+            "large-scale retrieval systems"
+        )
+        assert len(shared_prefix) >= 80, f"prefix is {len(shared_prefix)} chars"
+
+        filler = " ".join(["filler"] * 35)
+        # 65-word paragraph that shares the 80-char prefix.
+        long_para = shared_prefix + " " + " ".join(["extra"] * 55)
+        # 30-word paragraph, also sharing the 80-char prefix.
+        shorter_para = shared_prefix + " " + " ".join(["tail"] * 20)
+        assert len(filler.split()) == 35
+        assert len(long_para.split()) >= 60
+        assert len(shorter_para.split()) >= 30
+
+        modules = [
+            {
+                "title": "filler",
+                "sections": [{"heading": "h", "paragraphs": [filler]}],
+            },
+            {
+                "title": "budget-rejected",
+                "sections": [{"heading": "h", "paragraphs": [long_para]}],
+            },
+            {
+                "title": "should-still-pick",
+                "sections": [{"heading": "h", "paragraphs": [shorter_para]}],
+            },
+        ]
+        out = _summary_recap_paragraphs(modules, max_total_words=80)
+        # Pre-Wave-47: out == [filler] — long_para reserved the shared
+        # prefix before the budget check, then shorter_para got
+        # dedupe-blocked.
+        # Post-Wave-47: out == [filler, shorter_para] — the
+        # budget-rejected long_para never poisons ``seen``.
+        assert len(out) == 2, (
+            f"Expected budget-rejected long paragraph to NOT reserve "
+            f"dedup key; got {len(out)} paragraphs: {out!r}"
+        )
+        assert out[0] == filler
+        assert out[1] == shorter_para
 
     def test_short_paragraph_does_not_block_later_substantive_dupe_prefix(self):
         """Wave 44 regression: pre-Wave-44 a short ineligible paragraph

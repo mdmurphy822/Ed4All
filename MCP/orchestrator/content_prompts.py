@@ -66,10 +66,8 @@ Training-synthesis prompt asks for::
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
-
+from typing import Any, List, Optional, Sequence
 
 # Contract text shared across all three prompts. Keeps the "return a
 # single JSON object, status ok/fail" rule in one place.
@@ -98,7 +96,7 @@ def _format_lo_refs(lo_refs: Sequence[Any]) -> str:
         elif isinstance(ref, dict) and "id" in ref:
             tokens.append(str(ref["id"]))
         elif hasattr(ref, "id"):
-            tokens.append(str(getattr(ref, "id")))
+            tokens.append(str(ref.id))
     return ", ".join(tokens) if tokens else "(no LOs supplied)"
 
 

@@ -18,10 +18,13 @@ Usage:
 import argparse
 import html as html_mod
 import json
+import logging
+import os
 import re
 import sys
+from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
 # Ensure project root is importable so lib.ontology.bloom resolves when
 # this script is invoked from inside Courseforge/scripts/.
@@ -29,10 +32,502 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from lib.ontology.bloom import bloom_to_cognitive_domain as _bloom_to_cognitive_domain  # noqa: E402
+from lib.ontology.bloom import detect_bloom_level  # noqa: E402
+from lib.ontology.bloom import detect_bloom_verbs as _detect_bloom_verbs  # noqa: E402
 from lib.ontology.bloom import get_verbs_list as _get_canonical_verbs_list  # noqa: E402
+from lib.ontology.learning_objectives import hierarchy_from_id as _lo_hierarchy_from_id  # noqa: E402
+from lib.ontology.learning_objectives import validate_lo_id as _validate_lo_id  # noqa: E402
 from lib.ontology.slugs import canonical_slug as _slugify  # noqa: E402
 from lib.ontology.taxonomy import validate_classification  # noqa: E402
 from lib.ontology.teaching_roles import map_role as _map_teaching_role  # noqa: E402
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Wave 50: content_type enum validation
+# ---------------------------------------------------------------------------
+#
+# The SectionContentType enum in schemas/taxonomies/content_type.json is the
+# single source of truth for values emitted on <h2>/<h3> via
+# data-cf-content-type (and mirrored into JSON-LD sections[].contentType).
+# ``_infer_content_type`` used to return a free string — any typo or new
+# heuristic branch could silently ship an ad-hoc value. We now validate the
+# return against this frozenset at the emit site.
+#
+# Enforcement: TRAINFORGE_ENFORCE_CONTENT_TYPE=truthy ("1","true","yes","on")
+# raises on miss; unset/falsy logs a WARNING and falls back to "explanation"
+# (the safest default in the enum). Mirrors the opt-in policy used by
+# lib/validators/content_type.py for Trainforge chunks. Wave 56 extends the
+# same enforcement to callouts via ``_validate_callout_content_type`` so the
+# CalloutContentType enum ("application-note", "note") is also gated at
+# emit time — a single env-var toggle now covers both section and callout
+# emit sites.
+
+_CONTENT_TYPE_SCHEMA_PATH = (
+    _PROJECT_ROOT / "schemas" / "taxonomies" / "content_type.json"
+)
+_ENFORCE_CONTENT_TYPE_ENV = "TRAINFORGE_ENFORCE_CONTENT_TYPE"
+_ENFORCE_TRUTHY_VALUES = frozenset({"1", "true", "yes", "on"})
+_CONTENT_TYPE_DEFAULT = "explanation"
+_CALLOUT_CONTENT_TYPE_DEFAULT = "note"
+
+
+def _load_section_content_type_enum() -> FrozenSet[str]:
+    """Read SectionContentType enum straight from the taxonomy schema."""
+    with open(_CONTENT_TYPE_SCHEMA_PATH, encoding="utf-8") as f:
+        schema = json.load(f)
+    return frozenset(schema["$defs"]["SectionContentType"]["enum"])
+
+
+def _load_callout_content_type_enum() -> FrozenSet[str]:
+    """Read CalloutContentType enum straight from the taxonomy schema."""
+    with open(_CONTENT_TYPE_SCHEMA_PATH, encoding="utf-8") as f:
+        schema = json.load(f)
+    return frozenset(schema["$defs"]["CalloutContentType"]["enum"])
+
+
+# Hardcoded mirror of schemas/taxonomies/content_type.json::$defs.SectionContentType.
+# A drift guard asserts equality at import time (below) so the two stay in sync.
+SECTION_CONTENT_TYPE_ENUM: FrozenSet[str] = frozenset({
+    "definition",
+    "example",
+    "procedure",
+    "comparison",
+    "exercise",
+    "overview",
+    "summary",
+    "explanation",
+})
+
+# Hardcoded mirror of schemas/taxonomies/content_type.json::$defs.CalloutContentType.
+# Emitted on ``<div class="callout">`` via ``data-cf-content-type``. Separate
+# from SectionContentType per REC-VOC-03 — callouts are not section children
+# in the section-heading heuristic sense, so they have their own vocabulary.
+CALLOUT_CONTENT_TYPE_ENUM: FrozenSet[str] = frozenset({
+    "application-note",
+    "note",
+})
+
+# Import-time drift guards: hardcoded constants must equal the taxonomy file.
+assert SECTION_CONTENT_TYPE_ENUM == _load_section_content_type_enum(), (
+    "SECTION_CONTENT_TYPE_ENUM in generate_course.py has drifted from "
+    f"{_CONTENT_TYPE_SCHEMA_PATH}::$defs.SectionContentType. Update both."
+)
+assert CALLOUT_CONTENT_TYPE_ENUM == _load_callout_content_type_enum(), (
+    "CALLOUT_CONTENT_TYPE_ENUM in generate_course.py has drifted from "
+    f"{_CONTENT_TYPE_SCHEMA_PATH}::$defs.CalloutContentType. Update both."
+)
+
+
+def _content_type_enforcement_enabled() -> bool:
+    """Read the enforcement env var each call so tests can toggle via setenv."""
+    return os.getenv(_ENFORCE_CONTENT_TYPE_ENV, "").strip().lower() in _ENFORCE_TRUTHY_VALUES
+
+
+def _validate_section_content_type(value: str) -> str:
+    """Validate a SectionContentType value at emit time.
+
+    On miss with TRAINFORGE_ENFORCE_CONTENT_TYPE truthy: raise ValueError.
+    Otherwise: WARN and fall back to "explanation" so emit still succeeds.
+    """
+    if value in SECTION_CONTENT_TYPE_ENUM:
+        return value
+    if _content_type_enforcement_enabled():
+        raise ValueError(
+            f"Unknown content type: {value!r}; expected one of "
+            f"{sorted(SECTION_CONTENT_TYPE_ENUM)}"
+        )
+    logger.warning(
+        "Unknown SectionContentType %r emitted by _infer_content_type; "
+        "falling back to %r. Set %s to raise instead.",
+        value, _CONTENT_TYPE_DEFAULT, _ENFORCE_CONTENT_TYPE_ENV,
+    )
+    return _CONTENT_TYPE_DEFAULT
+
+
+def _validate_callout_content_type(value: str) -> str:
+    """Validate a CalloutContentType value at emit time.
+
+    Wave 56: mirrors ``_validate_section_content_type`` for callouts. The
+    callout emit site at ``_render_content_sections`` used to hardcode
+    ``"application-note"`` / ``"note"`` without validation — any typo or
+    new callout subtype could silently ship an ad-hoc value outside the
+    taxonomy. The same ``TRAINFORGE_ENFORCE_CONTENT_TYPE`` env var gates
+    enforcement so a single toggle covers both sections and callouts.
+
+    On miss with the flag truthy: raise ValueError. Otherwise: WARN and
+    fall back to ``"note"`` (the neutral callout, safer than
+    ``"application-note"`` which implies a warning).
+    """
+    if value in CALLOUT_CONTENT_TYPE_ENUM:
+        return value
+    if _content_type_enforcement_enabled():
+        raise ValueError(
+            f"Unknown callout content type: {value!r}; expected one of "
+            f"{sorted(CALLOUT_CONTENT_TYPE_ENUM)}"
+        )
+    logger.warning(
+        "Unknown CalloutContentType %r emitted by _render_content_sections; "
+        "falling back to %r. Set %s to raise instead.",
+        value, _CALLOUT_CONTENT_TYPE_DEFAULT, _ENFORCE_CONTENT_TYPE_ENV,
+    )
+    return _CALLOUT_CONTENT_TYPE_DEFAULT
+
+
+# ---------------------------------------------------------------------------
+# Wave 49: JSON-LD page-metadata schema validation at emit time
+# ---------------------------------------------------------------------------
+#
+# ``_wrap_page`` serializes ``page_metadata`` into a
+# ``<script type="application/ld+json">`` block on every generated page.
+# Pre-Wave-49 nothing validated the payload at emit time — malformed
+# JSON-LD (missing required fields, null ``bloomLevel`` where required,
+# out-of-enum ``contentType``, ``Misconception`` missing ``correction``,
+# ...) shipped silently and was either handled defensively by Trainforge
+# or misclassified the resulting chunk. The canonical shape lives in
+# ``schemas/knowledge/courseforge_jsonld_v1.schema.json``; Wave 49 wires
+# up ``Draft202012Validator`` right before the ``json.dumps`` call.
+#
+# Enforcement mirrors the Wave 50 ``TRAINFORGE_ENFORCE_CONTENT_TYPE``
+# pattern. ``COURSEFORGE_ENFORCE_JSONLD_SCHEMA`` truthy ("1","true",
+# "yes","on") raises ``ValueError`` on a schema miss; unset/falsy logs
+# a WARNING and lets emit proceed — the default, so legacy corpora
+# with known schema quirks (flagged post-Wave-49 in the PR body) don't
+# block CI on the day this lands.
+
+_JSONLD_SCHEMA_PATH = (
+    _PROJECT_ROOT / "schemas" / "knowledge" / "courseforge_jsonld_v1.schema.json"
+)
+_JSONLD_SOURCE_REF_SCHEMA_PATH = (
+    _PROJECT_ROOT / "schemas" / "knowledge" / "source_reference.schema.json"
+)
+_JSONLD_TAXONOMY_FILES = (
+    "bloom_verbs.json",
+    "module_type.json",
+    "content_type.json",
+    "cognitive_domain.json",
+    "question_type.json",
+)
+_ENFORCE_JSONLD_SCHEMA_ENV = "COURSEFORGE_ENFORCE_JSONLD_SCHEMA"
+
+
+def _build_jsonld_validator():
+    """Build a ``Draft202012Validator`` wired to resolve the sibling
+    ``$ref``s used by ``courseforge_jsonld_v1.schema.json`` (taxonomies +
+    source_reference). Returns ``None`` if ``jsonschema`` / ``referencing``
+    aren't importable (the module still loads, but emit-time validation
+    becomes a no-op — tests cover this path).
+    """
+    try:
+        from jsonschema import Draft202012Validator
+        from referencing import Registry, Resource
+    except ImportError:
+        return None
+
+    with open(_JSONLD_SCHEMA_PATH, encoding="utf-8") as f:
+        page_schema = json.load(f)
+    with open(_JSONLD_SOURCE_REF_SCHEMA_PATH, encoding="utf-8") as f:
+        srcref_schema = json.load(f)
+
+    resources = [
+        (page_schema["$id"], Resource.from_contents(page_schema)),
+        (srcref_schema["$id"], Resource.from_contents(srcref_schema)),
+    ]
+    tax_dir = _PROJECT_ROOT / "schemas" / "taxonomies"
+    for name in _JSONLD_TAXONOMY_FILES:
+        with open(tax_dir / name, encoding="utf-8") as f:
+            tax = json.load(f)
+        resources.append((tax["$id"], Resource.from_contents(tax)))
+    registry = Registry().with_resources(resources)
+    return Draft202012Validator(page_schema, registry=registry), page_schema
+
+
+# Import-time load: the schema must exist and parse. We deliberately fail
+# loudly via ImportError rather than silently fall back to "no validation"
+# — the whole point of Wave 49 is to catch malformed emits.
+if not _JSONLD_SCHEMA_PATH.exists():
+    raise ImportError(
+        f"Courseforge JSON-LD schema not found at {_JSONLD_SCHEMA_PATH}. "
+        "This file is required for emit-time validation (Wave 49). "
+        "Check that schemas/knowledge/courseforge_jsonld_v1.schema.json "
+        "is present in the repo."
+    )
+
+try:
+    with open(_JSONLD_SCHEMA_PATH, encoding="utf-8") as _f:
+        _JSONLD_SCHEMA: Optional[Dict[str, Any]] = json.load(_f)
+except (OSError, json.JSONDecodeError) as _err:
+    raise ImportError(
+        f"Failed to load Courseforge JSON-LD schema at {_JSONLD_SCHEMA_PATH}: "
+        f"{_err}"
+    ) from _err
+
+_JSONLD_VALIDATOR_CACHE: Optional[Any] = None
+
+
+def _get_jsonld_validator():
+    """Lazy-cached module-level validator. Built once on first use."""
+    global _JSONLD_VALIDATOR_CACHE
+    if _JSONLD_VALIDATOR_CACHE is None:
+        built = _build_jsonld_validator()
+        if built is None:
+            return None
+        _JSONLD_VALIDATOR_CACHE = built[0]
+    return _JSONLD_VALIDATOR_CACHE
+
+
+def _jsonld_enforcement_enabled() -> bool:
+    """Read the enforcement env var each call so tests can toggle via setenv."""
+    return os.getenv(_ENFORCE_JSONLD_SCHEMA_ENV, "").strip().lower() in _ENFORCE_TRUTHY_VALUES
+
+
+def _validate_page_jsonld(metadata: Dict[str, Any], page_id: str) -> None:
+    """Validate a page's JSON-LD metadata against
+    ``courseforge_jsonld_v1.schema.json`` at emit time.
+
+    Behaviour:
+      * Valid payload -> return None, emit proceeds unchanged.
+      * ValidationError with ``COURSEFORGE_ENFORCE_JSONLD_SCHEMA`` truthy
+        -> raise ``ValueError(f"page_id={page_id} failed JSON-LD schema: {error}")``.
+        Fail-closed path for strict CI runs.
+      * ValidationError with the flag unset/falsy -> log a WARNING via
+        the module logger and return None (default; preserves back-compat
+        for existing corpora with known schema quirks).
+
+    The validator is cached module-wide, so repeated calls are cheap.
+    """
+    validator = _get_jsonld_validator()
+    if validator is None:
+        # jsonschema / referencing not importable; no-op so emit still
+        # succeeds on thinly-dependencied environments. Production envs
+        # have jsonschema pinned via pyproject.toml; the branch exists
+        # purely to keep tests deterministic when deps are missing.
+        return
+
+    errors = list(validator.iter_errors(metadata))
+    if not errors:
+        return
+
+    # Report the first error (the most specific / useful one) so logs
+    # aren't swamped on pages with multiple issues. The ValidationError
+    # repr is typically long (path + validator keyword + offending value);
+    # render a compact message.
+    first = errors[0]
+    path = ".".join(str(p) for p in first.absolute_path) if first.absolute_path else "(root)"
+    detail = f"{path}: {first.message}"
+
+    if _jsonld_enforcement_enabled():
+        raise ValueError(
+            f"page_id={page_id} failed JSON-LD schema: {detail}"
+        )
+
+    logger.warning(
+        "JSON-LD schema validation failed for page_id=%s: %s. "
+        "Set %s to raise instead.",
+        page_id, detail, _ENFORCE_JSONLD_SCHEMA_ENV,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Wave 68: SHACL validation of emitted JSON-LD page metadata
+# ---------------------------------------------------------------------------
+#
+# Wave 49 above wires up JSON-Schema validation at emit time. Wave 68 adds a
+# second, RDF-native validation layer that sits on top of the Wave 62
+# @context (schemas/context/courseforge_v1.jsonld) and the Wave 63+67 SHACL
+# shapes file (schemas/context/courseforge_v1.shacl.ttl).
+#
+# Why two layers? JSON-Schema enforces the wire-format shape (required
+# fields, enum values, structural composition). SHACL enforces the RDF graph
+# after the payload is expanded through the Wave 62 @context — it catches
+# semantic drift that the schema can't express, e.g. a bloomLevel IRI
+# outside the canonical 6-concept SKOS set (a typo like `#aplly` that passes
+# a `sh:pattern` but fails the Wave 67 `sh:in` check), a Section missing
+# its `schema:name` heading, or a parentObjectiveId IRI whose local segment
+# doesn't match `(TO|CO)-NN`. The two layers are complementary; Wave 68
+# does NOT replace Wave 49.
+#
+# Enforcement mirrors the Wave 49 pattern. ``COURSEFORGE_ENFORCE_SHACL``
+# truthy ("1","true","yes","on") raises ValueError on a shape miss; unset/
+# falsy logs a WARNING and lets emit proceed. Default is WARN so legacy
+# corpora with known shape quirks don't block CI on the day this lands —
+# identical policy to Wave 49.
+#
+# Cost: shape file + @context document are loaded once per process via
+# ``functools.lru_cache`` (mirrors ``_get_jsonld_validator``'s module-level
+# cache). Per-page the cost is a pyld ``to_rdf`` expand + an rdflib
+# n-quads parse + a pyshacl ``validate`` call.
+#
+# Graceful-degrade on missing deps: if pyld / pyshacl / rdflib aren't
+# importable in the running env, ``_validate_page_jsonld_shacl`` becomes a
+# no-op (returns ``(True, "")``) and emit proceeds. Production envs have
+# these pinned via pyproject.toml; the branch exists so test envs without
+# the SHACL extra installed still run the Courseforge suite.
+
+_SHACL_SHAPES_PATH = (
+    _PROJECT_ROOT / "schemas" / "context" / "courseforge_v1.shacl.ttl"
+)
+_SHACL_CONTEXT_PATH = (
+    _PROJECT_ROOT / "schemas" / "context" / "courseforge_v1.jsonld"
+)
+_ENFORCE_SHACL_ENV = "COURSEFORGE_ENFORCE_SHACL"
+
+
+def _shacl_enforcement_enabled() -> bool:
+    """Read the SHACL enforcement env var each call so tests can toggle it."""
+    return os.getenv(_ENFORCE_SHACL_ENV, "").strip().lower() in _ENFORCE_TRUTHY_VALUES
+
+
+def _shacl_deps_available() -> bool:
+    """Return True if pyld / pyshacl / rdflib are importable.
+
+    Import-error is a recoverable state: the SHACL validator silently
+    disables on environments that don't ship the RDF stack, mirroring the
+    Wave 49 ``_build_jsonld_validator`` graceful-degrade branch. Production
+    envs pin all three via pyproject.toml.
+    """
+    try:
+        import pyld  # noqa: F401
+        import pyshacl  # noqa: F401
+        import rdflib  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+@lru_cache(maxsize=1)
+def _load_shacl_context() -> Dict[str, Any]:
+    """Load the Wave 62 @context document from disk once per process.
+
+    Uses ``lru_cache`` so the file-read happens on first call only. Tests
+    that want to verify the cache can check ``cache_info()``.
+    """
+    with open(_SHACL_CONTEXT_PATH, encoding="utf-8") as f:
+        return json.load(f)
+
+
+@lru_cache(maxsize=1)
+def _load_shacl_shapes_graph():
+    """Load and parse the Wave 63+67 SHACL shapes file once per process.
+
+    Returns an ``rdflib.Graph`` with the shapes parsed as Turtle. Cached
+    for the process lifetime — the file is immutable, and pyshacl may be
+    called once per emitted page. Returns ``None`` if rdflib isn't
+    importable (graceful degrade; paired with ``_shacl_deps_available``).
+    """
+    try:
+        from rdflib import Graph
+    except ImportError:
+        return None
+    graph = Graph()
+    graph.parse(_SHACL_SHAPES_PATH, format="turtle")
+    return graph
+
+
+def _validate_page_jsonld_shacl(
+    metadata: Dict[str, Any],
+) -> Tuple[bool, str]:
+    """SHACL-validate a page's JSON-LD metadata against the Wave 63+67 shapes.
+
+    Pipeline: register the Wave 64 document loader (idempotent), substitute
+    the inline @context dict so the expansion works offline, run
+    ``pyld.jsonld.to_rdf`` to get n-quads, parse into rdflib, run
+    ``pyshacl.validate``.
+
+    Returns:
+        ``(conforms, results_text)`` — ``conforms`` is ``True`` when every
+        shape validates. On a dep-missing env returns ``(True, "")`` so
+        the caller's guard-rail behavior stays unchanged (no-op).
+
+    Wiring: called from ``_wrap_page`` right after ``_validate_page_jsonld``.
+    See that helper's docstring for the WARN-vs-raise env-var contract;
+    Wave 68 mirrors it via ``COURSEFORGE_ENFORCE_SHACL``.
+    """
+    if not _shacl_deps_available():
+        return True, ""
+
+    try:
+        from pyld import jsonld as _pyld_jsonld
+        import pyshacl
+        from rdflib import Graph
+    except ImportError:
+        # Defensive: _shacl_deps_available already returned True above,
+        # but a partial-import env (e.g. pyshacl installed without rdflib)
+        # could still trip here. Fall back to no-op.
+        return True, ""
+
+    # Wave 64 loader: idempotent — safe to call per-emit. The underlying
+    # set_document_loader is a no-op rebind when the local loader is
+    # already in place.
+    try:
+        from lib.ontology.jsonld_context_loader import register_local_loader
+        register_local_loader()
+    except ImportError:
+        # If the loader module is missing we fall back to substituting the
+        # @context dict inline (same strategy as the Wave 63 test helper).
+        pass
+
+    context_doc = _load_shacl_context()
+    shapes_graph = _load_shacl_shapes_graph()
+    if shapes_graph is None:
+        return True, ""
+
+    # Substitute the inline @context dict so pyld doesn't need to resolve
+    # the canonical URL at all (the Wave 63 test helper does the same).
+    # This keeps the path deterministic regardless of whether the Wave 64
+    # loader was registered before this call.
+    expandable = dict(metadata)
+    expandable["@context"] = context_doc["@context"]
+
+    try:
+        nq = _pyld_jsonld.to_rdf(expandable, {"format": "application/n-quads"})
+    except Exception as exc:  # pyld raises JsonLdError subclasses
+        logger.warning(
+            "SHACL validation skipped (JSON-LD to_rdf failed): %s", exc,
+        )
+        return True, ""
+
+    data_graph = Graph()
+    data_graph.parse(data=nq, format="nquads")
+
+    conforms, _results_graph, results_text = pyshacl.validate(
+        data_graph=data_graph,
+        shacl_graph=shapes_graph,
+        inference="none",
+        abort_on_first=False,
+        meta_shacl=False,
+        advanced=True,
+        js=False,
+        debug=False,
+    )
+    return bool(conforms), results_text or ""
+
+
+def _validate_page_jsonld_shacl_at_emit(
+    metadata: Dict[str, Any], page_id: str,
+) -> None:
+    """Emit-site wrapper: raise or log based on ``COURSEFORGE_ENFORCE_SHACL``.
+
+    Parallels ``_validate_page_jsonld`` for SHACL. Called from
+    ``_wrap_page`` after the JSON Schema validator returns. Kept separate
+    from the pure ``_validate_page_jsonld_shacl`` helper so tests can
+    unit-check the conforms/message return shape without env interference.
+    """
+    conforms, results_text = _validate_page_jsonld_shacl(metadata)
+    if conforms:
+        return
+
+    detail = (results_text or "").strip() or "(no pyshacl message)"
+    if _shacl_enforcement_enabled():
+        raise ValueError(
+            f"page_id={page_id} failed SHACL validation: {detail}"
+        )
+    logger.warning(
+        "SHACL validation failed for page_id=%s: %s Set %s to raise instead.",
+        page_id, detail, _ENFORCE_SHACL_ENV,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -148,28 +643,19 @@ def resolve_week_objectives(
 # lib.ontology.bloom). Migrated in Wave 1.2 / Worker H (REC-BL-01).
 BLOOM_VERBS: Dict[str, List[str]] = _get_canonical_verbs_list()
 
-# Cognitive domain inference from content type / Bloom's level
-BLOOM_TO_DOMAIN: Dict[str, str] = {
-    "remember": "factual",
-    "understand": "conceptual",
-    "apply": "procedural",
-    "analyze": "conceptual",
-    "evaluate": "metacognitive",
-    "create": "procedural",
-}
+# Wave 48: schema-sourced cognitive domain — the bloom_level → knowledge-domain
+# mapping now lives in schemas/taxonomies/cognitive_domain.json and is loaded
+# via lib.ontology.bloom.bloom_to_cognitive_domain (imported above as
+# _bloom_to_cognitive_domain). Pre-Wave-48 this file held a local
+# BLOOM_TO_DOMAIN dict that could drift from the identical copy in
+# MCP/tools/_content_gen_helpers.py::_render_objectives_section.
 
 
-def detect_bloom_level(objective_text: str) -> Tuple[Optional[str], Optional[str]]:
-    """Detect Bloom's taxonomy level and verb from objective text.
-
-    Returns (bloom_level, bloom_verb) or (None, None) if not detected.
-    """
-    text_lower = objective_text.lower().strip()
-    for level, verbs in BLOOM_VERBS.items():
-        for verb in verbs:
-            if text_lower.startswith(verb) or f" {verb} " in text_lower:
-                return level, verb
-    return None, None
+# Wave 55: detect_bloom_level is imported from lib.ontology.bloom at the top
+# of the module. The pre-Wave-55 local implementation used
+# ``startswith() + f" {verb} " in text_lower`` matching, which missed verbs
+# at end-of-text (no trailing space) or immediately followed by punctuation,
+# and iterated levels in a different order than the canonical matcher.
 
 
 # `_slugify` is imported at the top of the module from
@@ -273,10 +759,26 @@ def _wrap_page(title: str, course_code: str, week_num: int, body_html: str,
     Args:
         page_metadata: Optional structured metadata dict rendered as JSON-LD
                        in <head> for downstream Trainforge extraction.
+
+    Wave 49: when ``page_metadata`` is present, the payload is validated
+    against ``schemas/knowledge/courseforge_jsonld_v1.schema.json`` right
+    before serialization. See :func:`_validate_page_jsonld` for the env
+    flag + fail-closed / warn semantics.
+
+    Wave 68: a second RDF-native validation layer runs immediately after
+    the Wave 49 JSON Schema check. See
+    :func:`_validate_page_jsonld_shacl_at_emit` for the env flag
+    (``COURSEFORGE_ENFORCE_SHACL``) + WARN-vs-raise semantics. The two
+    layers are complementary, not redundant — SHACL catches IRI-level
+    closed-set constraints (e.g., typo'd bloomLevel IRI) that the JSON
+    Schema's flat enum check can't express.
     """
     safe_title = html_mod.escape(title)
     json_ld = ""
     if page_metadata:
+        page_id = page_metadata.get("pageId") or "<unknown>"
+        _validate_page_jsonld(page_metadata, page_id)
+        _validate_page_jsonld_shacl_at_emit(page_metadata, page_id)
         json_ld = (
             '\n  <script type="application/ld+json">\n'
             + json.dumps(page_metadata, indent=2, ensure_ascii=False)
@@ -347,7 +849,8 @@ def _render_objectives(
         bloom_verb = o.get("bloom_verb")
         if not bloom_level:
             bloom_level, bloom_verb = detect_bloom_level(o["statement"])
-        domain = BLOOM_TO_DOMAIN.get(bloom_level, "conceptual") if bloom_level else ""
+        # Wave 48: schema-sourced cognitive domain
+        domain = _bloom_to_cognitive_domain(bloom_level) if bloom_level else ""
         attrs = f' data-cf-objective-id="{html_mod.escape(o["id"])}"'
         if bloom_level:
             attrs += f' data-cf-bloom-level="{bloom_level}"'
@@ -448,8 +951,13 @@ def _render_self_check(
     return "\n".join(blocks)
 
 
-def _infer_content_type(section: Dict) -> str:
-    """Infer a content type label for a section from its structure/heading."""
+def _infer_content_type_raw(section: Dict) -> str:
+    """Heuristic mapping from section structure/heading to a content type.
+
+    Wave 50: split out from ``_infer_content_type`` so the validator can
+    wrap the raw heuristic result. Tests can monkeypatch this to return a
+    bogus value and exercise the enforcement branch.
+    """
     heading = section.get("heading", "").lower()
     if section.get("flip_cards"):
         return "definition"
@@ -466,6 +974,17 @@ def _infer_content_type(section: Dict) -> str:
     if any(kw in heading for kw in ("summary", "recap", "takeaway")):
         return "summary"
     return "explanation"
+
+
+def _infer_content_type(section: Dict) -> str:
+    """Infer a content type label for a section from its structure/heading.
+
+    Wave 50: the heuristic result is validated against
+    ``SECTION_CONTENT_TYPE_ENUM`` before returning so ad-hoc strings can't
+    slip into shipped HTML / JSON-LD. See ``_validate_section_content_type``
+    for the enforcement-flag semantics.
+    """
+    return _validate_section_content_type(_infer_content_type_raw(section))
 
 
 def _render_content_sections(
@@ -545,7 +1064,9 @@ def _render_content_sections(
         if section.get("callout"):
             c = section["callout"]
             cls = f'callout {c.get("type", "")}'.strip()
-            callout_type = "application-note" if c.get("type") == "callout-warning" else "note"
+            callout_type = _validate_callout_content_type(
+                "application-note" if c.get("type") == "callout-warning" else "note"
+            )
             parts.append(
                 f'    <div class="{cls}" role="region"'
                 f' aria-label="{html_mod.escape(c.get("label", "Note"))}"'
@@ -676,46 +1197,135 @@ def _summary_recap_paragraphs(
             paragraphs = section.get("paragraphs") or []
             if not paragraphs:
                 continue
-            raw = paragraphs[0]
-            if not isinstance(raw, str):
-                continue
-            para = raw.strip()
-            if not para:
-                continue
-            # Wave 44: check the 30-word eligibility floor BEFORE the
-            # dedupe-prefix reservation. Pre-Wave-44 a short ineligible
-            # paragraph added its 80-char prefix to ``seen`` and
-            # subsequent substantive paragraphs sharing the same
-            # opening text (common on textbooks where successive
-            # sections reuse lead-in phrasing like "In this chapter...")
-            # were then dropped as duplicates — leaving the recap empty
-            # and negating the Wave 43 fix on those corpora.
-            if len(para.split()) < 30:
-                # Validator would ignore this paragraph; skip so the
-                # recap only contains non-trivial prose.
-                continue
-            key = para[:80].lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            # Cap length on a word boundary so the recap stays tight.
-            if len(para) > max_chars_per_paragraph:
-                truncated = para[:max_chars_per_paragraph]
-                last_space = truncated.rfind(" ")
-                if last_space > 0:
-                    truncated = truncated[:last_space]
-                para = truncated.rstrip(",.;:") + "..."
-            words = len(para.split())
-            if total_words + words > max_total_words and picked:
+            # Wave 46: scan through the section's paragraphs until we
+            # find the first one that clears the non-trivial floor.
+            # Pre-Wave-46 we only evaluated ``paragraphs[0]``; modules
+            # whose first paragraph was a short lead-in sentence
+            # ("In this section we examine…") were skipped even when
+            # later paragraphs carried substantive prose. On
+            # lead-in-heavy corpora that silently reintroduced empty
+            # summaries and pushed AGGREGATE_EMPTY_PAGES back into
+            # play — the exact failure mode Wave 43 was meant to fix.
+            #
+            # Wave 44 ordering invariant preserved: the word-count
+            # check runs BEFORE the dedupe-prefix reservation so
+            # short ineligible paragraphs never poison ``seen``.
+            #
+            # Wave 47 tightening: ``seen.add(key)`` now fires only
+            # AFTER the paragraph is actually appended to ``picked``.
+            # Pre-Wave-47 an eligible paragraph that failed the
+            # max-total-words budget check still reserved its 80-char
+            # prefix in ``seen`` (even though it was never emitted),
+            # so a later shorter paragraph from another module with
+            # the same prefix got incorrectly dropped as a duplicate.
+            # Reachable via Wave 46's short-lead-in-then-long flow:
+            # a long paragraph picked mid-scan but budget-rejected
+            # would block subsequent recap candidates near the cap.
+            emitted_from_section = False
+            for raw in paragraphs:
+                if emitted_from_section:
+                    break
+                if not isinstance(raw, str):
+                    continue
+                para = raw.strip()
+                if not para:
+                    continue
+                if len(para.split()) < 30:
+                    continue
+                key = para[:80].lower()
+                if key in seen:
+                    continue
+                # Cap length on a word boundary so the recap stays tight.
+                if len(para) > max_chars_per_paragraph:
+                    truncated = para[:max_chars_per_paragraph]
+                    last_space = truncated.rfind(" ")
+                    if last_space > 0:
+                        truncated = truncated[:last_space]
+                    para = truncated.rstrip(",.;:") + "..."
+                words = len(para.split())
+                if total_words + words > max_total_words and picked:
+                    # Total-words cap hit — stop scanning this section
+                    # and fall through to the outer module loop, which
+                    # will also break on the cap. Do NOT reserve
+                    # ``key`` in ``seen`` — the paragraph was not
+                    # emitted, so dedup must not treat it as taken.
+                    break
+                picked.append(para)
+                total_words += words
+                # Reserve the dedupe key only after the paragraph is
+                # confirmed emitted. This preserves the Wave 44
+                # short-lead-in guard (ineligible paragraphs never
+                # poisoned ``seen``) while closing the Wave 47 hole
+                # (budget-rejected eligible paragraphs no longer
+                # poison ``seen`` either).
+                seen.add(key)
+                emitted_from_section = True
+            # Wave 43 invariant: only take one paragraph per module so
+            # the recap spreads across topics instead of dumping a
+            # single module's prose. Break the section loop after a
+            # successful pick — subsequent sections in the same
+            # module are skipped.
+            if emitted_from_section:
                 break
-            picked.append(para)
-            total_words += words
-            # Only take the first section of each module so we spread
-            # across topics rather than dumping one module's prose.
-            break
         if len(picked) >= max_paragraphs:
             break
+        if total_words >= max_total_words:
+            break
     return picked
+
+
+def _align_bloom_matches(
+    matches: List[Tuple[str, str]],
+    authoritative_level: Optional[str],
+    authoritative_verb: Optional[str],
+) -> List[Tuple[str, str]]:
+    """Reorder detection results so the authoritative singular sits at index 0.
+
+    Wave 58 invariant: when the plural ``bloomLevels[]`` / ``bloomVerbs[]``
+    fields are emitted, ``bloomLevels[0]`` must equal the singular
+    ``bloomLevel`` field and ``bloomVerbs[0]`` must equal ``bloomVerb``.
+    Consumers that only read the singulars get the same answer as before;
+    consumers that read the plurals get the full multi-verb set.
+
+    Strategy:
+
+    * If no detection results, return ``[]`` (caller elides plurals).
+    * If ``authoritative_level`` is None, keep canonical iteration order —
+      the authoritative singular came from the detector itself, so
+      ``matches[0]`` already satisfies the invariant.
+    * Otherwise find the best match for the authoritative singular: prefer
+      an exact ``(level, verb)`` match; fall back to level-only match
+      when the authoritative_verb isn't given or doesn't appear in the
+      detected list.
+    * If found, rotate that entry to position 0 and keep the rest in
+      canonical order (stable).
+    * If not found (pre-set singular disagrees with detection entirely),
+      return ``[]`` — the singular is authoritative and plurals stay
+      elided rather than misleading the consumer.
+    """
+    if not matches:
+        return []
+    if not authoritative_level:
+        # No pre-set — matches[0] is the authoritative singular by construction.
+        return list(matches)
+    # Prefer exact (level, verb) match.
+    primary_idx = None
+    if authoritative_verb:
+        for idx, (lvl, verb) in enumerate(matches):
+            if lvl == authoritative_level and verb == authoritative_verb:
+                primary_idx = idx
+                break
+    if primary_idx is None:
+        # Fall back to level-only match.
+        for idx, (lvl, _verb) in enumerate(matches):
+            if lvl == authoritative_level:
+                primary_idx = idx
+                break
+    if primary_idx is None:
+        # Detection and singular disagree entirely — don't emit misleading plurals.
+        return []
+    rest = matches[:primary_idx] + matches[primary_idx + 1:]
+    return [matches[primary_idx]] + rest
 
 
 def _build_objectives_metadata(objectives: List[Dict]) -> List[Dict[str, Any]]:
@@ -726,7 +1336,30 @@ def _build_objectives_metadata(objectives: List[Dict]) -> List[Dict[str, Any]]:
         bloom_verb = o.get("bloom_verb")
         if not bloom_level:
             bloom_level, bloom_verb = detect_bloom_level(o["statement"])
-        domain = BLOOM_TO_DOMAIN.get(bloom_level, "conceptual") if bloom_level else "conceptual"
+        # Wave 58: multi-verb detection — a statement like "Analyze and
+        # evaluate X" targets two cognitive demands at once and we now
+        # emit every canonical match as bloomLevels[] / bloomVerbs[].
+        # The schema invariant is bloomLevels[0] == bloomLevel and
+        # bloomVerbs[0] == bloomVerb so consumers can treat the plural
+        # arrays as the authoritative list and the singular fields as a
+        # convenience view onto the first element.
+        #
+        # Common case (bloom_level derived from detection above):
+        #   detect_bloom_verbs returns the same (level, verb) as
+        #   detect_bloom_level at index 0 by construction, so the
+        #   invariant holds trivially.
+        #
+        # Pre-set case (bloom_level supplied upstream, e.g. from
+        # synthesized_objectives.json): the pre-set singular is
+        # authoritative. If it appears in the detected list, rotate
+        # that entry to position 0 so the invariant holds. If it does
+        # not appear at all (detection and singular disagree), elide
+        # the plurals — the consumer keeps using the singular field.
+        aligned_matches = _align_bloom_matches(
+            _detect_bloom_verbs(o["statement"]), bloom_level, bloom_verb
+        )
+        # Wave 48: schema-sourced cognitive domain
+        domain = _bloom_to_cognitive_domain(bloom_level)
         key_concepts = [_slugify(c) for c in o.get("key_concepts", []) if _slugify(c)]
         entry: Dict[str, Any] = {
             "id": o["id"],
@@ -735,8 +1368,23 @@ def _build_objectives_metadata(objectives: List[Dict]) -> List[Dict[str, Any]]:
             "bloomVerb": bloom_verb,
             "cognitiveDomain": domain,
         }
+        if aligned_matches:
+            entry["bloomLevels"] = [lvl for lvl, _v in aligned_matches]
+            entry["bloomVerbs"] = [verb for _l, verb in aligned_matches]
         if key_concepts:
             entry["keyConcepts"] = key_concepts
+            # Wave 57: emit Bloom-qualified LO→concept edges. Every keyConcept
+            # gets paired with the parent LO's bloomLevel so downstream KG
+            # consumers can materialize `LO --[bloomLevel]--> concept` edges
+            # directly, without re-inferring cognitive demand via chunk co-
+            # occurrence. Elided when bloom_level is null (no signal to tag
+            # the edge with) so schema validators stay happy without a
+            # nullable edge type.
+            if bloom_level:
+                entry["targetedConcepts"] = [
+                    {"concept": slug, "bloomLevel": bloom_level}
+                    for slug in key_concepts
+                ]
         # Include assessment suggestions based on Bloom's level
         if bloom_level and bloom_level in BLOOM_VERBS:
             from_bloom = {
@@ -751,6 +1399,24 @@ def _build_objectives_metadata(objectives: List[Dict]) -> List[Dict[str, Any]]:
         prereqs = o.get("prerequisite_objectives", [])
         if prereqs:
             entry["prerequisiteObjectives"] = prereqs
+        # Wave 59: explicit LO hierarchy in the JSON-LD payload. The
+        # hierarchy tier ('terminal' / 'chapter') is derivable from the
+        # canonical ID prefix — promote it to a first-class field so KG
+        # consumers don't have to re-parse IDs. The parent edge
+        # ('parentObjectiveId') is opt-in: emit only when upstream
+        # supplies it (e.g., synthesized_objectives.json). Non-canonical
+        # or missing IDs silently skip these fields.
+        lo_id = o.get("id")
+        if lo_id and _validate_lo_id(lo_id):
+            try:
+                entry["hierarchyLevel"] = _lo_hierarchy_from_id(lo_id)
+            except ValueError:
+                # Recognized pattern but unknown prefix — elide rather than
+                # emit a non-enum value that schema validation would reject.
+                pass
+        parent_id = o.get("parent_objective_id") or o.get("parentObjectiveId")
+        if parent_id and _validate_lo_id(parent_id):
+            entry["parentObjectiveId"] = parent_id
         result.append(entry)
     return result
 
@@ -824,6 +1490,95 @@ def _build_sections_metadata(sections: List[Dict]) -> List[Dict[str, Any]]:
     return result
 
 
+def _build_bloom_distribution(
+    objectives_metadata: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Aggregate Bloom/cognitive-domain counts across a page's LOs.
+
+    Wave 61: lets KG consumers answer "what's the cognitive-demand
+    profile of this page?" without re-aggregating per-LO data. Counts
+    the primary ``bloomLevel`` on each LO (skipping LOs with null
+    bloomLevel); multi-level LOs via ``bloomLevels[]`` are intentionally
+    NOT double-counted here so the ``total`` field maps 1:1 with LO
+    count. Consumers wanting the richer multi-level aggregate should
+    union the per-LO ``bloomLevels[]`` arrays themselves.
+
+    Returns ``None`` when no LO has a bloomLevel (caller elides the
+    field from the page JSON-LD so legacy payloads stay identical).
+    Zero-count levels / domains are elided from the per-key dicts.
+    """
+    by_level: Dict[str, int] = {}
+    by_domain: Dict[str, int] = {}
+    total = 0
+    for lo in objectives_metadata:
+        lvl = lo.get("bloomLevel")
+        if not lvl:
+            continue
+        total += 1
+        by_level[lvl] = by_level.get(lvl, 0) + 1
+        dom = _bloom_to_cognitive_domain(lvl)
+        if dom:
+            by_domain[dom] = by_domain.get(dom, 0) + 1
+    if total == 0:
+        return None
+    out: Dict[str, Any] = {"total": total, "byLevel": by_level}
+    if by_domain:
+        out["byCognitiveDomain"] = by_domain
+    return out
+
+
+def _build_misconceptions_metadata(
+    misconceptions: List[Dict],
+) -> List[Dict[str, Any]]:
+    """Enrich misconception dicts with Bloom metadata for the JSON-LD emit.
+
+    Wave 60: misconceptions used to ship as free ``{misconception, correction}``
+    pairs with no cognitive-demand signal. The KG couldn't distinguish an
+    "apply"-level mistake (common when learners mis-sequence a procedure)
+    from an "analyze"-level one (common when learners misread evidence),
+    so diagnostic-question generation couldn't key on the right demand.
+
+    This helper infers ``bloomLevel`` / ``cognitiveDomain`` per misconception:
+
+    * Prefer an upstream-supplied ``bloomLevel`` (or snake-case ``bloom_level``)
+      on the input dict — course-planner authority over detection.
+    * Otherwise run ``detect_bloom_level`` on the correction statement
+      first (describes the correct cognitive demand), falling back to the
+      misconception statement (may carry the "should" verb when the
+      correction is terse).
+    * If neither has a canonical verb, elide both fields entirely so
+      legacy payloads stay visually identical and consumers treat absence
+      as "unknown".
+
+    ``additionalProperties: false`` on the Misconception $def means we
+    strip any other keys from the input dict — callers that need to
+    attach extra metadata should extend the schema instead of smuggling
+    undeclared keys.
+    """
+    result: List[Dict[str, Any]] = []
+    for m in misconceptions:
+        mis_text = str(m.get("misconception") or "")
+        cor_text = str(m.get("correction") or "")
+        bloom_level = m.get("bloomLevel") or m.get("bloom_level")
+        if not bloom_level:
+            # Prefer correction — states the correct action; misconception
+            # text often phrases the wrong belief as a declarative and
+            # may lack a Bloom-style action verb.
+            lvl, _verb = detect_bloom_level(cor_text)
+            if not lvl:
+                lvl, _verb = detect_bloom_level(mis_text)
+            bloom_level = lvl
+        entry: Dict[str, Any] = {
+            "misconception": mis_text,
+            "correction": cor_text,
+        }
+        if bloom_level:
+            entry["bloomLevel"] = bloom_level
+            entry["cognitiveDomain"] = _bloom_to_cognitive_domain(bloom_level)
+        result.append(entry)
+    return result
+
+
 def _build_page_metadata(
     course_code: str, week_num: int, module_type: str, page_id: str,
     objectives: Optional[List[Dict]] = None,
@@ -862,10 +1617,16 @@ def _build_page_metadata(
     }
     if objectives:
         meta["learningObjectives"] = _build_objectives_metadata(objectives)
+        # Wave 61: emit per-page Bloom distribution when any LO has a
+        # bloomLevel populated. Elided otherwise so legacy pages with
+        # verb-less LOs stay schema-stable.
+        distribution = _build_bloom_distribution(meta["learningObjectives"])
+        if distribution:
+            meta["bloomDistribution"] = distribution
     if sections:
         meta["sections"] = _build_sections_metadata(sections)
     if misconceptions:
-        meta["misconceptions"] = misconceptions
+        meta["misconceptions"] = _build_misconceptions_metadata(misconceptions)
     if suggested_assessments:
         meta["suggestedAssessmentTypes"] = suggested_assessments
     if classification:

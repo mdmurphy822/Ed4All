@@ -37,10 +37,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from MCP.tools import pipeline_tools  # noqa: E402
 from MCP.tools import _content_gen_helpers as _cgh  # noqa: E402
+from MCP.tools import pipeline_tools  # noqa: E402
 from MCP.tools.pipeline_tools import _build_tool_registry  # noqa: E402
-
 
 COURSE_CODE = "WAVE27SRC_101"
 

@@ -64,6 +64,10 @@
       "type": "array",
       "items": { "$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json" },
       "description": "Wave 9: optional page-level source attribution. Each entry references a DART-synthesized source block (canonical shape: schemas/knowledge/source_reference.schema.json). Emitted by generate_course.py when source_module_map.json is populated; absent when no DART input (course_generation workflow) or when routing produced no mapping. Elided when empty so legacy callers stay schema-clean."
+    },
+    "bloomDistribution": {
+      "$ref": "#/$defs/BloomDistribution",
+      "description": "Wave 61: aggregate Bloom/cognitive-domain distribution across this page's learningObjectives. Emitted iff at least one LO has a populated bloomLevel. Lets KG consumers answer 'what's the cognitive-demand profile of this page/course?' without re-aggregating per-LO data."
     }
   },
   "$defs": {
@@ -86,14 +90,26 @@
             { "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel" },
             { "type": "null" }
           ],
-          "description": "Bloom's taxonomy level. May be null when detect_bloom_level fails; downstream chunks treat null as authoritative (see KG-quality review gap #14)."
+          "description": "Bloom's taxonomy level. May be null when detect_bloom_level fails; downstream chunks treat null as authoritative (see KG-quality review gap #14). Wave 58: when the LO text contains multiple canonical verbs (e.g., 'Analyze and evaluate X') this field carries the primary (highest-priority) match; the full set lives in bloomLevels[]."
         },
         "bloomVerb": {
           "oneOf": [
             { "type": "string" },
             { "type": "null" }
           ],
-          "description": "Detected Bloom's verb (free string)."
+          "description": "Detected Bloom's verb (free string). Wave 58: primary verb only; multi-verb LOs also emit bloomVerbs[] in canonical iteration order (bloomVerbs[0] == bloomVerb)."
+        },
+        "bloomLevels": {
+          "type": "array",
+          "items": {
+            "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel"
+          },
+          "description": "Wave 58: every Bloom's level detected in the LO statement, in canonical iteration order (longest-verb-first, higher-level ties winning). bloomLevels[0] equals bloomLevel. Elided when no verb matches. Level enum values may repeat if multiple verbs on the same level appear; dedup is caller's responsibility."
+        },
+        "bloomVerbs": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Wave 58: every canonical Bloom's verb detected in the LO statement, in the same iteration order as bloomLevels. bloomVerbs[0] equals bloomVerb. Each verb appears at most once (whole-word deduplication). Elided when no verb matches."
         },
         "cognitiveDomain": {
           "$ref": "https://ed4all.dev/ns/taxonomies/v1/cognitive_domain.schema.json#/$defs/CognitiveDomain",
@@ -104,6 +120,26 @@
           "items": { "type": "string" },
           "description": "Concept slugs associated with this objective."
         },
+        "targetedConcepts": {
+          "type": "array",
+          "description": "Wave 57: Bloom-qualified LO→concept edges. Each entry binds a canonical concept slug to the cognitive demand at which this LO targets it (inherited from the parent LO's bloomLevel). Emitted only when both keyConcepts and bloomLevel are populated. Enables KG consumers to materialize LO--[bloomLevel]-->concept edges directly rather than inferring from chunk co-occurrence. Concept slugs here are a subset of keyConcepts; the two stay in sync by construction.",
+          "items": {
+            "type": "object",
+            "required": ["concept", "bloomLevel"],
+            "additionalProperties": false,
+            "properties": {
+              "concept": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Canonical concept slug (output of lib.ontology.slugs.canonical_slug)."
+              },
+              "bloomLevel": {
+                "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel",
+                "description": "Bloom's taxonomy level at which this LO targets the concept. Inherited from the parent LO at emit time."
+              }
+            }
+          }
+        },
         "assessmentSuggestions": {
           "type": "array",
           "items": { "$ref": "https://ed4all.dev/ns/taxonomies/v1/question_type.schema.json#/$defs/QuestionType" },
@@ -113,6 +149,15 @@
           "type": "array",
           "items": { "type": "string" },
           "description": "LO IDs that are prerequisite to this objective. Emitted at generate_course.py:542-544; not currently consumed at chunk granularity (see KG-quality review gap #2)."
+        },
+        "hierarchyLevel": {
+          "enum": ["terminal", "chapter"],
+          "description": "Wave 59: LO hierarchy tier derived from the canonical ID prefix. TO-NN → 'terminal' (course-wide rollups); CO-NN → 'chapter' (chapter-level LOs that roll up to a terminal). Lets KG consumers filter by tier without re-parsing the ID pattern."
+        },
+        "parentObjectiveId": {
+          "type": "string",
+          "pattern": "^[A-Z]{2,}-\\d{2,}$",
+          "description": "Wave 59: Parent LO ID — the terminal objective a chapter LO rolls up to. Absent on terminal LOs (they are KG roots). Optional on chapter LOs — emitted when upstream supplies the mapping via the LO dict's 'parent_objective_id'/'parentObjectiveId' field (e.g., from synthesized_objectives.json); elided when no parent is known. Heuristic inference from key-concept overlap is deferred to a later wave."
         }
       }
     },
@@ -156,14 +201,54 @@
         "definition": { "type": "string", "minLength": 1 }
       }
     },
+    "BloomDistribution": {
+      "type": "object",
+      "required": ["total", "byLevel"],
+      "additionalProperties": false,
+      "description": "Wave 61: Aggregate Bloom/cognitive-domain distribution across a page's learningObjectives. Counts the primary (singular) bloomLevel of each LO — multi-level LOs (via bloomLevels[]) are NOT double-counted here. Consumers wanting the richer multi-level aggregate should union the per-LO bloomLevels[] arrays themselves.",
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of LOs on this page with a non-null bloomLevel. LOs with null bloomLevel are skipped entirely."
+        },
+        "byLevel": {
+          "type": "object",
+          "description": "Per-Bloom-level LO counts. Keys are canonical BloomLevel enum members; zero-count levels are elided for payload terseness.",
+          "additionalProperties": { "type": "integer", "minimum": 1 },
+          "propertyNames": {
+            "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel"
+          }
+        },
+        "byCognitiveDomain": {
+          "type": "object",
+          "description": "Per-cognitive-domain LO counts, derived from bloomLevel via lib.ontology.bloom.bloom_to_cognitive_domain. Zero-count domains elided. Emitted alongside byLevel when at least one LO's bloomLevel maps to a canonical domain.",
+          "additionalProperties": { "type": "integer", "minimum": 1 },
+          "propertyNames": {
+            "$ref": "https://ed4all.dev/ns/taxonomies/v1/cognitive_domain.schema.json#/$defs/CognitiveDomain"
+          }
+        }
+      }
+    },
     "Misconception": {
       "type": "object",
       "required": ["misconception", "correction"],
       "additionalProperties": false,
-      "description": "Per REC-JSL-01: both 'misconception' and 'correction' keys required. Prevents the silent correction-edge drop flagged in KG-quality review gap #2.",
+      "description": "Per REC-JSL-01: both 'misconception' and 'correction' keys required. Prevents the silent correction-edge drop flagged in KG-quality review gap #2. Wave 60: optional bloomLevel + cognitiveDomain fields let KG consumers filter misconceptions by cognitive demand (e.g., 'apply'-level mistakes differ from 'analyze'-level ones in the diagnostic questions they warrant).",
       "properties": {
         "misconception": { "type": "string", "minLength": 1 },
-        "correction": { "type": "string", "minLength": 1 }
+        "correction": { "type": "string", "minLength": 1 },
+        "bloomLevel": {
+          "oneOf": [
+            { "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel" },
+            { "type": "null" }
+          ],
+          "description": "Wave 60: Bloom's taxonomy level for the misconception. Inferred at emit time from the correction statement via detect_bloom_level, with fallback to the misconception statement. Upstream-supplied values (on the input dict under 'bloomLevel' / 'bloom_level') override detection. Null when no canonical verb matches either statement; elided entirely from the emit when null so legacy consumers don't see a surprise field."
+        },
+        "cognitiveDomain": {
+          "$ref": "https://ed4all.dev/ns/taxonomies/v1/cognitive_domain.schema.json#/$defs/CognitiveDomain",
+          "description": "Wave 60: knowledge domain derived from bloomLevel via lib.ontology.bloom.bloom_to_cognitive_domain. Emitted iff bloomLevel is populated."
+        }
       }
     }
   }

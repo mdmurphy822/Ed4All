@@ -90,6 +90,10 @@ class MultiQueryRetriever:
         chunk_type: Optional[str] = None,
         difficulty: Optional[str] = None,
         strategy_weights: Optional[dict[str, float]] = None,
+        # Wave 70 — RDF-aligned filter axes. Additive; fusion behavior
+        # untouched (filters fire per-sub-query in ``_execute_single_query``).
+        cognitive_domain: Optional[str] = None,
+        hierarchy_level: Optional[str] = None,
     ) -> FusionResult:
         """Retrieve chunks using query decomposition and fusion.
 
@@ -116,6 +120,8 @@ class MultiQueryRetriever:
                 division=division,
                 chunk_type=chunk_type,
                 difficulty=difficulty,
+                cognitive_domain=cognitive_domain,
+                hierarchy_level=hierarchy_level,
             )
             return FusionResult(
                 results=[],
@@ -152,6 +158,8 @@ class MultiQueryRetriever:
             division=division,
             chunk_type=chunk_type,
             difficulty=difficulty,
+            cognitive_domain=cognitive_domain,
+            hierarchy_level=hierarchy_level,
         )
 
         # Also execute original query for coverage
@@ -162,6 +170,8 @@ class MultiQueryRetriever:
             division=division,
             chunk_type=chunk_type,
             difficulty=difficulty,
+            cognitive_domain=cognitive_domain,
+            hierarchy_level=hierarchy_level,
         )
         result_sets["original"] = original_results
 
@@ -277,6 +287,8 @@ class MultiQueryRetriever:
         division: Optional[str],
         chunk_type: Optional[str],
         difficulty: Optional[str],
+        cognitive_domain: Optional[str] = None,
+        hierarchy_level: Optional[str] = None,
     ) -> dict[str, list[RetrievalResult]]:
         """Execute sub-queries in parallel.
 
@@ -287,6 +299,8 @@ class MultiQueryRetriever:
             division: Division filter
             chunk_type: Chunk type filter
             difficulty: Difficulty filter
+            cognitive_domain: Cognitive domain filter (Wave 70)
+            hierarchy_level: LO hierarchy level filter (Wave 70)
 
         Returns:
             Dict mapping sub-query text to results
@@ -309,6 +323,8 @@ class MultiQueryRetriever:
                 division=division,
                 chunk_type=sq_chunk_type,
                 difficulty=sq_difficulty,
+                cognitive_domain=cognitive_domain,
+                hierarchy_level=hierarchy_level,
             )
             return sub_query.text, results
 
@@ -337,6 +353,8 @@ class MultiQueryRetriever:
         division: Optional[str],
         chunk_type: Optional[str],
         difficulty: Optional[str],
+        cognitive_domain: Optional[str] = None,
+        hierarchy_level: Optional[str] = None,
     ) -> list[RetrievalResult]:
         """Execute a single query using the base retriever.
 
@@ -347,6 +365,8 @@ class MultiQueryRetriever:
             division: Division filter
             chunk_type: Chunk type filter
             difficulty: Difficulty filter
+            cognitive_domain: Cognitive domain filter (Wave 70)
+            hierarchy_level: LO hierarchy level filter (Wave 70)
 
         Returns:
             List of RetrievalResult objects
@@ -360,6 +380,8 @@ class MultiQueryRetriever:
             division=division,
             chunk_type=chunk_type,
             difficulty=difficulty,
+            cognitive_domain=cognitive_domain,
+            hierarchy_level=hierarchy_level,
         )
 
         return results
