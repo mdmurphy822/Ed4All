@@ -373,3 +373,78 @@ def test_jsonld_path_wins_over_dataclass_fallback_across_items():
         {"concept": "framework", "bloomLevel": "apply"},
         {"concept": "ecosystem-flow", "bloomLevel": "analyze"},
     ]
+
+    # Reversed ordering (rich first, legacy second) must emit the same
+    # result — the two-pass structure is ordering-independent. A
+    # regression where Pass 2 overwrites Pass 1 (the inverse of the
+    # pre-Wave-72 bug) would slip through without this assertion.
+    out_reversed = proc._build_objectives_metadata_for_graph(
+        [rich_item, legacy_item]
+    )
+    assert len(out_reversed) == 1
+    assert out_reversed[0]["id"] == "TO-01"
+    assert out_reversed[0].get("targetedConcepts") == [
+        {"concept": "framework", "bloomLevel": "apply"},
+        {"concept": "ecosystem-flow", "bloomLevel": "analyze"},
+    ]
+
+
+def test_jsonld_dedup_is_first_seen_wins_for_duplicate_rich_payloads():
+    """When two items both carry rich JSON-LD for the same LO id, the
+    first one encountered in ``parsed_items`` wins. Pins the
+    ``_build_objectives_metadata_for_graph`` Pass-1 invariant so a future
+    refactor that flips to last-seen-wins or a deep-merge strategy has to
+    update this test consciously (and update the docstring).
+    """
+    item_a = _parsed_item(
+        {
+            "pageId": "p-a",
+            "learningObjectives": [
+                {
+                    "id": "TO-01",
+                    "statement": "Rich A",
+                    "bloomLevel": "apply",
+                    "targetedConcepts": [
+                        {"concept": "concept-a", "bloomLevel": "apply"},
+                    ],
+                }
+            ],
+        },
+        lesson_id="p-a",
+    )
+    item_b = _parsed_item(
+        {
+            "pageId": "p-b",
+            "learningObjectives": [
+                {
+                    "id": "TO-01",
+                    "statement": "Rich B",
+                    "bloomLevel": "analyze",
+                    "targetedConcepts": [
+                        {"concept": "concept-b-1", "bloomLevel": "analyze"},
+                        {"concept": "concept-b-2", "bloomLevel": "evaluate"},
+                    ],
+                }
+            ],
+        },
+        lesson_id="p-b",
+    )
+
+    proc = _bare_processor()
+    out = proc._build_objectives_metadata_for_graph([item_a, item_b])
+    assert len(out) == 1
+    assert out[0]["id"] == "TO-01"
+    # First-seen (item_a) wins; item_b's targets are dropped.
+    assert out[0].get("targetedConcepts") == [
+        {"concept": "concept-a", "bloomLevel": "apply"},
+    ]
+
+    # Reverse the order — now item_b wins. Confirms the invariant is
+    # "first in parsed_items" rather than "alphabetic" or "most
+    # targets" or any other implicit tie-breaker.
+    out_rev = proc._build_objectives_metadata_for_graph([item_b, item_a])
+    assert len(out_rev) == 1
+    assert out_rev[0].get("targetedConcepts") == [
+        {"concept": "concept-b-1", "bloomLevel": "analyze"},
+        {"concept": "concept-b-2", "bloomLevel": "evaluate"},
+    ]
