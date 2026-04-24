@@ -320,3 +320,211 @@ class TestResume:
             )
             assert result.exit_code == 0, result.output
             orch.run.assert_awaited_once_with("WF-ABC")
+
+
+# =============================================================================
+# Wave 74 Session 3: --skip-dart flag coverage
+# =============================================================================
+
+
+class TestSkipDartFlag:
+    """Wave 74 Session 3: verify --skip-dart threads through the CLI.
+
+    Pins:
+    * CLI flag parses and sets workflow params (skip_dart + dart_output_dir).
+    * Dry-run plan marks dart_conversion as SKIPPED with a reason line.
+    * Default (--skip-dart absent) leaves params + plan unchanged
+      (regression guard).
+    * Invalid inputs (no dir / empty dir / non-textbook workflow) fail
+      fast with a clear error message.
+    * Warning (not fatal) when a corpus PDF has no matching HTML.
+    """
+
+    def test_skip_dart_appears_in_run_help(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["run", "--help"])
+        assert result.exit_code == 0
+        assert "--skip-dart" in result.output
+        assert "--dart-output-dir" in result.output
+
+    def test_build_params_sets_skip_dart_keys(self):
+        params = _build_workflow_params(
+            "textbook_to_course",
+            corpus="fake.pdf",
+            course_name="X_101",
+            weeks=None,
+            no_assessments=False,
+            assessment_count=50,
+            bloom_levels="remember,understand,apply,analyze",
+            priority="normal",
+            objectives_path=None,
+            skip_dart=True,
+            dart_output_dir="/some/dart/output",
+        )
+        assert params["skip_dart"] is True
+        assert params["dart_output_dir"] == "/some/dart/output"
+
+    def test_build_params_defaults_no_skip_dart_keys(self):
+        """Regression guard: no skip_dart keys when flag is off."""
+        params = _build_workflow_params(
+            "textbook_to_course",
+            corpus="fake.pdf",
+            course_name="X_101",
+            weeks=None,
+            no_assessments=False,
+            assessment_count=50,
+            bloom_levels="remember,understand,apply,analyze",
+            priority="normal",
+            objectives_path=None,
+        )
+        assert "skip_dart" not in params
+        assert "dart_output_dir" not in params
+
+    def test_dry_run_with_skip_dart_marks_phase_skipped(self, tmp_path):
+        # Create a fake DART output dir with one accessible HTML whose
+        # basename matches the corpus PDF, so the CLI emits no warning
+        # that would pollute the --json stream.
+        (tmp_path / "book_accessible.html").write_text("<html></html>")
+        corpus = tmp_path / "book.pdf"
+        corpus.write_bytes(b"%PDF-1.4")
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "run",
+                "textbook-to-course",
+                "--corpus",
+                str(corpus),
+                "--course-name",
+                "TEST_101",
+                "--skip-dart",
+                "--dart-output-dir",
+                str(tmp_path),
+                "--dry-run",
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        dart_phase = next(
+            p for p in payload["phases"] if p["name"] == "dart_conversion"
+        )
+        assert dart_phase.get("status") == "SKIPPED"
+        assert "skip-dart" in dart_phase.get("skip_reason", "").lower()
+        # staging should still be in the plan and depend on dart_conversion.
+        staging = next(p for p in payload["phases"] if p["name"] == "staging")
+        assert "dart_conversion" in staging["depends_on"]
+        # Workflow params carry the skip_dart + dart_output_dir keys.
+        assert payload["params"]["skip_dart"] is True
+        assert payload["params"]["dart_output_dir"] == str(tmp_path)
+
+    def test_dry_run_without_skip_dart_regression(self):
+        """Regression guard: default plan has no SKIPPED marker."""
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "run",
+                "textbook-to-course",
+                "--corpus",
+                "inputs/pdfs/fake.pdf",
+                "--course-name",
+                "TEST_101",
+                "--dry-run",
+                "--json",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        dart_phase = next(
+            p for p in payload["phases"] if p["name"] == "dart_conversion"
+        )
+        assert "status" not in dart_phase
+        assert "skip_reason" not in dart_phase
+
+    def test_skip_dart_with_missing_dir_fails_fast(self):
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "run",
+                "textbook-to-course",
+                "--corpus",
+                "inputs/pdfs/fake.pdf",
+                "--course-name",
+                "TEST_101",
+                "--skip-dart",
+                "--dart-output-dir",
+                "/definitely/does/not/exist",
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 2
+        assert "existing directory" in result.output
+
+    def test_skip_dart_with_empty_dir_fails_fast(self, tmp_path):
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "run",
+                "textbook-to-course",
+                "--corpus",
+                "inputs/pdfs/fake.pdf",
+                "--course-name",
+                "TEST_101",
+                "--skip-dart",
+                "--dart-output-dir",
+                str(tmp_path),
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 2
+        assert "at least one" in result.output
+
+    def test_skip_dart_rejects_non_textbook_workflow(self):
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "run",
+                "rag_training",
+                "--corpus",
+                "course.imscc",
+                "--course-name",
+                "TEST_101",
+                "--skip-dart",
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 2
+        assert "skip-dart" in result.output.lower()
+        assert "textbook_to_course" in result.output
+
+    def test_skip_dart_warns_on_corpus_html_mismatch(self, tmp_path):
+        """When a corpus PDF has no matching HTML, warn but don't fail."""
+        # HTML present but mismatched corpus
+        (tmp_path / "book_accessible.html").write_text("<html></html>")
+        # Corpus contains a file NOT matching the HTML basename
+        fake_corpus = tmp_path / "different.pdf"
+        fake_corpus.write_bytes(b"%PDF-1.4")
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "run",
+                "textbook-to-course",
+                "--corpus",
+                str(fake_corpus),
+                "--course-name",
+                "TEST_101",
+                "--skip-dart",
+                "--dart-output-dir",
+                str(tmp_path),
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "warning" in result.output.lower()
+        assert "different" in result.output

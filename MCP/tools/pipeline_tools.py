@@ -253,6 +253,8 @@ async def create_textbook_pipeline(
     bloom_levels: str = "remember,understand,apply,analyze",
     priority: str = "normal",
     duration_weeks_explicit: bool = True,
+    skip_dart: bool = False,
+    dart_output_dir: Optional[str] = None,
 ) -> str:
     """
     Create and orchestrate a textbook-to-course pipeline.
@@ -347,6 +349,14 @@ async def create_textbook_pipeline(
             "bloom_levels": [level.strip() for level in bloom_levels.split(",")],
             "run_id": run_id
         }
+        # Wave 74 Session 3: forward --skip-dart so the workflow runner
+        # can synthesize the dart_conversion phase_output from an
+        # existing DART/output/ directory instead of re-running the
+        # PDF->HTML conversion.
+        if skip_dart:
+            params["skip_dart"] = True
+            if dart_output_dir:
+                params["dart_output_dir"] = str(Path(dart_output_dir).resolve())
 
         # Create workflow via orchestrator
         result = await create_workflow_impl(

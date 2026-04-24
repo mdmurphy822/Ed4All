@@ -503,6 +503,16 @@ class WorkflowRunner:
         # Initialize phase outputs (may already exist from partial run)
         phase_outputs: Dict[str, Dict] = workflow_state.get("phase_outputs", {})
 
+        # Wave 74 Session 3: honour --skip-dart by synthesising the
+        # dart_conversion phase_output from an existing DART/output/
+        # directory before the phase loop runs. Downstream phases
+        # (staging, libv2_archival) then resolve their inputs_from
+        # without dart_conversion actually executing.
+        if workflow_params.get("skip_dart") and "dart_conversion" not in phase_outputs:
+            synthesized = self._synthesize_dart_skip_output(workflow_params)
+            if synthesized is not None:
+                phase_outputs["dart_conversion"] = synthesized
+
         # Update workflow status
         workflow_state["status"] = "RUNNING"
         workflow_state["started_at"] = datetime.now().isoformat()
@@ -828,7 +838,15 @@ class WorkflowRunner:
     def _should_skip_phase(
         self, phase: WorkflowPhase, workflow_params: Dict[str, Any]
     ) -> bool:
-        """Check if an optional phase should be skipped based on workflow params."""
+        """Check if an optional phase should be skipped based on workflow params.
+
+        Wave 74 Session 3: dart_conversion's --skip-dart path is
+        handled upstream by pre-populating ``phase_outputs`` in
+        ``run_workflow`` before the loop runs. The already-completed
+        guard then skips execution naturally, preserving the
+        synthesised output dict (this method would have overwritten it
+        with a bare ``{"_skipped": True, "_completed": True}``).
+        """
         if not getattr(phase, "optional", False):
             return False
 
@@ -837,6 +855,82 @@ class WorkflowRunner:
             return not workflow_params.get("generate_assessments", True)
 
         return False
+
+    def _synthesize_dart_skip_output(
+        self, workflow_params: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Build a dart_conversion phase_output from existing DART HTMLs.
+
+        Walks ``workflow_params['dart_output_dir']`` for
+        ``*_accessible.html`` files and returns a dict mirroring what
+        ``_extract_phase_outputs`` would have produced on a live run:
+        ``output_path``, ``output_paths``, ``html_path``, ``html_paths``,
+        plus the ``_completed``/``_skipped``/``_gates_passed`` markers
+        the phase loop expects.
+
+        When the corpus params include explicit ``pdf_paths``, we emit
+        one entry per PDF in corpus order so downstream staging's
+        ``{stem}_accessible.html`` lookup matches the PDF ordering. If a
+        PDF has no matching HTML we skip it silently — the CLI already
+        warned at --skip-dart validation time.
+        """
+        from pathlib import Path as _Path
+
+        dart_dir_str = workflow_params.get("dart_output_dir") or "DART/output"
+        dart_dir = _Path(dart_dir_str)
+        if not dart_dir.is_absolute():
+            dart_dir = (PROJECT_ROOT / dart_dir_str).resolve()
+        if not dart_dir.is_dir():
+            logger.error(
+                "skip_dart set but dart_output_dir is not a directory: %s",
+                dart_dir,
+            )
+            return None
+
+        # Order htmls by corpus PDF order when available; fall back to
+        # a stable sort over the directory listing.
+        pdf_paths = workflow_params.get("pdf_paths") or []
+        if isinstance(pdf_paths, str):
+            pdf_paths = [p.strip() for p in pdf_paths.split(",") if p.strip()]
+        ordered_htmls: List[_Path] = []
+        if pdf_paths:
+            for pdf in pdf_paths:
+                stem = _Path(pdf).stem
+                candidate = dart_dir / f"{stem}_accessible.html"
+                if candidate.exists():
+                    ordered_htmls.append(candidate)
+        if not ordered_htmls:
+            ordered_htmls = sorted(dart_dir.glob("*_accessible.html"))
+
+        if not ordered_htmls:
+            logger.error(
+                "skip_dart set but no ``*_accessible.html`` files found in %s",
+                dart_dir,
+            )
+            return None
+
+        path_strs = [str(p) for p in ordered_htmls]
+        joined = ",".join(path_strs)
+        logger.info(
+            "skip_dart: synthesised dart_conversion phase_output "
+            "from %d HTML(s) in %s",
+            len(path_strs),
+            dart_dir,
+        )
+        return {
+            "output_path": path_strs[0],
+            "output_paths": joined,
+            "html_path": path_strs[0],
+            "html_paths": joined,
+            "success": True,
+            "html_length": sum(
+                (p.stat().st_size if p.exists() else 0) for p in ordered_htmls
+            ),
+            "_completed": True,
+            "_skipped": True,
+            "_gates_passed": True,
+            "_skip_reason": "skip_dart=True; reused existing DART HTMLs",
+        }
 
     def _dependencies_met(
         self, phase: WorkflowPhase, phase_outputs: Dict[str, Dict]
