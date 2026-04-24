@@ -17,6 +17,7 @@ textbook_structure.schema.json based on extraction method used.
 """
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -24,6 +25,27 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from bs4 import BeautifulSoup, Tag
+
+logger = logging.getLogger(__name__)
+
+# TOC-like heading texts that should NOT be promoted to chapter titles
+# on their own. DART's converter emits many "Contents" h2s when page
+# chrome wraps every printed page; if we hand one of those to the
+# course planner we end up with a chapter named "Contents" and every
+# real chapter demoted to a section. Case-insensitive exact match.
+_TOC_HEADING_TEXTS = frozenset({
+    "contents",
+    "table of contents",
+    "toc",
+    "index",
+})
+
+
+def _is_toc_heading(text: Optional[str]) -> bool:
+    """Whether a heading text is a table-of-contents artifact."""
+    if not text:
+        return False
+    return text.strip().lower() in _TOC_HEADING_TEXTS
 
 from .analysis.concept_graph import ConceptGraphBuilder
 from .analysis.content_profiler import ContentProfiler
@@ -495,45 +517,390 @@ class SemanticStructureExtractor:
         and inner ``<section>`` wrappers as sections. Falls back to the
         legacy ``<h2>`` grouping heuristic when no doc-chapter articles
         exist (pre-Wave-13 DART HTML, generic third-party HTML).
+
+        Wave 74 Session 3: when both primary paths produce trivial
+        output (0 chapters, or chapters that are all TOC artifacts, or
+        a single chapter with no sections but the DOM has many
+        ``<h2>``/``<h3>`` headings), synthesize chapters from the raw
+        heading hierarchy. This handles third-party DART HTML that
+        lacks ``<section>`` wrappers and doc-chapter articles but still
+        carries a rich heading structure (W3C specs are the canonical
+        example).
         """
         # Wave 19 primary path: DPUB-ARIA doc-chapter articles.
         doc_chapter_articles = soup.find_all(
             'article', attrs={'role': 'doc-chapter'}
         )
+        primary_chapters: List[ChapterStructure] = []
         if doc_chapter_articles:
-            chapters: List[ChapterStructure] = []
             for idx, article in enumerate(doc_chapter_articles, start=1):
                 chapter = self._build_chapter_from_article(
                     soup, article, idx
                 )
-                chapters.append(chapter)
-            return chapters
+                primary_chapters.append(chapter)
 
-        # Legacy heading-hierarchy path.
-        chapters = []
-        chapter_counter = 0
+        if not primary_chapters:
+            # Legacy heading-hierarchy path.
+            chapter_counter = 0
 
-        # Find h1 or h2 headings that represent chapters
-        chapter_levels = self.config.get('chapter_heading_levels', [1, 2])
+            # Find h1 or h2 headings that represent chapters
+            chapter_levels = self.config.get('chapter_heading_levels', [1, 2])
 
-        for root_node in hierarchy.root_nodes:
-            # Process h1 as document title, h2s as chapters
-            if root_node.level == 1:
-                # Process children of h1 as chapters
-                for child_id in root_node.children:
-                    child_node = hierarchy.get_node(child_id)
-                    if child_node and child_node.level in chapter_levels:
-                        chapter_counter += 1
-                        chapter = self._build_chapter(
-                            soup, hierarchy, child_node, chapter_counter
-                        )
-                        chapters.append(chapter)
-            elif root_node.level in chapter_levels:
-                chapter_counter += 1
-                chapter = self._build_chapter(
-                    soup, hierarchy, root_node, chapter_counter
+            for root_node in hierarchy.root_nodes:
+                # Process h1 as document title, h2s as chapters
+                if root_node.level == 1:
+                    # Process children of h1 as chapters
+                    for child_id in root_node.children:
+                        child_node = hierarchy.get_node(child_id)
+                        if child_node and child_node.level in chapter_levels:
+                            chapter_counter += 1
+                            chapter = self._build_chapter(
+                                soup, hierarchy, child_node, chapter_counter
+                            )
+                            primary_chapters.append(chapter)
+                elif root_node.level in chapter_levels:
+                    chapter_counter += 1
+                    chapter = self._build_chapter(
+                        soup, hierarchy, root_node, chapter_counter
+                    )
+                    primary_chapters.append(chapter)
+
+        # Wave 74 Session 3: heading-hierarchy fallback.
+        # Fires when the primary paths degenerate to trivial output but
+        # the DOM still carries meaningful h2/h3 structure.
+        if self._primary_output_is_trivial(soup, primary_chapters):
+            fallback = self._build_chapters_from_headings(soup)
+            if fallback:
+                source_path = self._document_source_hint(soup)
+                logger.warning(
+                    "SemanticStructureExtractor: primary extraction paths "
+                    "produced trivial output (%d chapter(s)); falling back "
+                    "to heading-hierarchy synthesis and emitted %d "
+                    "chapter(s). source=%s",
+                    len(primary_chapters),
+                    len(fallback),
+                    source_path or "<inline>",
                 )
-                chapters.append(chapter)
+                return fallback
+
+        return primary_chapters
+
+    # ------------------------------------------------------------------
+    # Wave 74 Session 3: heading-hierarchy fallback
+    # ------------------------------------------------------------------
+
+    def _primary_output_is_trivial(
+        self,
+        soup: BeautifulSoup,
+        chapters: List[ChapterStructure],
+    ) -> bool:
+        """Whether the primary extraction paths produced trivial output.
+
+        Trivial means one of:
+
+        * Zero chapters.
+        * All chapter titles are TOC artifacts (``Contents``, ``Index``,
+          etc.) — the extractor caught the TOC h2 and missed the real
+          chapter headings that follow it as siblings.
+        * Zero chapters with non-empty sections AND the raw DOM carries
+          at least three h2/h3 headings that aren't TOC artifacts.
+          This covers specs like rdf11-primer (1 TOC h2, 13 real h3s)
+          and the W3C family more broadly.
+        """
+        if not chapters:
+            return True
+
+        non_toc_chapters = [
+            c for c in chapters if not _is_toc_heading(c.heading_text)
+        ]
+        if not non_toc_chapters:
+            return True
+
+        chapters_with_sections = [
+            c for c in chapters if c.sections
+        ]
+        if chapters_with_sections:
+            return False
+
+        # Count real (non-TOC) h2/h3 headings in the DOM. If there's
+        # a genuine hierarchy lurking, the primary paths missed it.
+        real_heading_count = 0
+        for tag in soup.find_all(['h2', 'h3']):
+            text = tag.get_text(strip=True)
+            if text and not _is_toc_heading(text):
+                real_heading_count += 1
+                if real_heading_count >= 3:
+                    return True
+        return False
+
+    def _document_source_hint(self, soup: BeautifulSoup) -> Optional[str]:
+        """Best-effort source identifier for log messages."""
+        title = soup.find('title')
+        if title:
+            text = title.get_text(strip=True)
+            if text:
+                return text
+        h1 = soup.find('h1')
+        if h1:
+            text = h1.get_text(strip=True)
+            if text:
+                return text
+        return None
+
+    def _build_chapters_from_headings(
+        self,
+        soup: BeautifulSoup,
+    ) -> List[ChapterStructure]:
+        """Synthesize chapter/section hierarchy from raw heading levels.
+
+        Strategy:
+
+        1. Walk every ``h1``..``h6`` in document order inside ``<main>``
+           (falling back to ``<body>`` then the whole soup).
+        2. Drop TOC artifacts (``Contents``, ``Table of Contents``).
+        3. Pick the "chapter level" as the shallowest heading level
+           that has at least two non-TOC entries. If the only real
+           heading level is h3 (e.g., rdf11-primer), h3s become
+           chapters; if h2 and h3 both exist with real content, h2s
+           become chapters and h3s become sections.
+        4. Content blocks between two consecutive headings attach to
+           the most recent open heading's chapter/section.
+        5. ``data-dart-*`` attributes on individual content elements
+           carry through via ``ContentBlockClassifier._classify_element``.
+        """
+        container = soup.find('main') or soup.find('body') or soup
+        if container is None:
+            return []
+
+        # Collect every heading in document order, filtering TOC noise.
+        all_headings: List[Tag] = []
+        for tag in container.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+            text = tag.get_text(strip=True)
+            if not text:
+                continue
+            if _is_toc_heading(text):
+                continue
+            all_headings.append(tag)
+
+        if not all_headings:
+            return []
+
+        # Figure out which level acts as chapter vs section.
+        level_counts: Dict[int, int] = {}
+        for tag in all_headings:
+            try:
+                lv = int(tag.name.lstrip('h'))
+            except ValueError:
+                continue
+            level_counts[lv] = level_counts.get(lv, 0) + 1
+
+        # Chapter level: shallowest heading level with >= 1 entry,
+        # preferring levels with multiple entries when present. h1 is
+        # skipped as chapter-level when it appears exactly once (it's
+        # the document title).
+        sorted_levels = sorted(level_counts.keys())
+        chapter_level: Optional[int] = None
+        skip_solo_h1 = False
+        for lv in sorted_levels:
+            if lv == 1 and level_counts[lv] < 2:
+                # Treat a solo h1 as the document title, not a chapter.
+                skip_solo_h1 = True
+                continue
+            chapter_level = lv
+            break
+        if chapter_level is None:
+            # Only a single h1 exists — promote it to a chapter anyway
+            # so we at least emit one meaningful entry.
+            chapter_level = sorted_levels[0]
+            skip_solo_h1 = False
+
+        section_level = chapter_level + 1
+        subsection_level = chapter_level + 2
+
+        # Walk the full descendants stream of the container. Maintain
+        # a "current chapter / section / subsection" pointer and attach
+        # any non-heading ContentBlock-yielding element to the deepest
+        # open target.
+        chapters: List[ChapterStructure] = []
+        current_chapter: Optional[ChapterStructure] = None
+        current_section: Optional[SectionStructure] = None
+        current_subsection: Optional[SectionStructure] = None
+        chapter_counter = 0
+        section_counter = 0
+        subsection_counter = 0
+        classifier = ContentBlockClassifier()
+        heading_set = set(id(h) for h in all_headings)
+
+        # Track elements we've already processed to avoid double-counting
+        # when a parent tag emits both itself and its children through
+        # the descendant iterator.
+        consumed: set = set()
+
+        def _walk(node: Tag) -> None:
+            nonlocal current_chapter, current_section, current_subsection
+            nonlocal chapter_counter, section_counter, subsection_counter
+
+            for child in node.children:
+                if not isinstance(child, Tag):
+                    continue
+                if id(child) in consumed:
+                    continue
+                name = child.name.lower() if child.name else ''
+
+                # Heading — open a new chapter/section/subsection.
+                if name in ('h1', 'h2', 'h3', 'h4', 'h5', 'h6'):
+                    if id(child) not in heading_set:
+                        # Filtered (TOC artifact) — ignore.
+                        continue
+                    try:
+                        lv = int(name.lstrip('h'))
+                    except ValueError:
+                        continue
+                    heading_text = child.get_text(strip=True)
+                    heading_id = child.get('id')
+
+                    # Skip a solo h1 that's serving as the document title
+                    # when chapter_level is deeper (e.g., chapter_level==3
+                    # because h2 only had TOC entries).
+                    if skip_solo_h1 and lv == 1:
+                        consumed.add(id(child))
+                        continue
+
+                    if lv <= chapter_level:
+                        chapter_counter += 1
+                        current_chapter = ChapterStructure(
+                            id=f"ch{chapter_counter}",
+                            heading_level=lv,
+                            heading_text=heading_text,
+                            heading_id=heading_id,
+                            explicit_objectives=[],
+                            content_blocks=[],
+                            sections=[],
+                        )
+                        chapters.append(current_chapter)
+                        current_section = None
+                        current_subsection = None
+                        section_counter = 0
+                        subsection_counter = 0
+                    elif lv == section_level:
+                        # Ensure there's a chapter to attach to.
+                        if current_chapter is None:
+                            chapter_counter += 1
+                            current_chapter = ChapterStructure(
+                                id=f"ch{chapter_counter}",
+                                heading_level=chapter_level,
+                                heading_text=heading_text,
+                                heading_id=heading_id,
+                                explicit_objectives=[],
+                                content_blocks=[],
+                                sections=[],
+                            )
+                            chapters.append(current_chapter)
+                        section_counter += 1
+                        current_section = SectionStructure(
+                            id=f"{current_chapter.id}_s{section_counter}",
+                            heading_level=lv,
+                            heading_text=heading_text,
+                            heading_id=heading_id,
+                            content_blocks=[],
+                            subsections=[],
+                        )
+                        current_chapter.sections.append(current_section)
+                        current_subsection = None
+                        subsection_counter = 0
+                    elif lv >= subsection_level:
+                        # Ensure a section exists; synthesize if needed.
+                        if current_chapter is None:
+                            chapter_counter += 1
+                            current_chapter = ChapterStructure(
+                                id=f"ch{chapter_counter}",
+                                heading_level=chapter_level,
+                                heading_text=heading_text,
+                                heading_id=heading_id,
+                                explicit_objectives=[],
+                                content_blocks=[],
+                                sections=[],
+                            )
+                            chapters.append(current_chapter)
+                        if current_section is None:
+                            section_counter += 1
+                            current_section = SectionStructure(
+                                id=f"{current_chapter.id}_s{section_counter}",
+                                heading_level=section_level,
+                                heading_text=heading_text,
+                                heading_id=None,
+                                content_blocks=[],
+                                subsections=[],
+                            )
+                            current_chapter.sections.append(current_section)
+                        subsection_counter += 1
+                        current_subsection = SectionStructure(
+                            id=(
+                                f"{current_section.id}_sub{subsection_counter}"
+                            ),
+                            heading_level=lv,
+                            heading_text=heading_text,
+                            heading_id=heading_id,
+                            content_blocks=[],
+                            subsections=[],
+                        )
+                        current_section.subsections.append(current_subsection)
+                    # Mark the heading as consumed — we don't want to
+                    # reclassify it as a ContentBlock.
+                    consumed.add(id(child))
+                    continue
+
+                # Non-heading leaf-like element — try to classify as a
+                # content block and attach to the deepest open target.
+                if name in (
+                    'p', 'ul', 'ol', 'dl', 'pre', 'code', 'blockquote',
+                    'table', 'figure', 'img', 'aside', 'div',
+                ):
+                    # Skip elements that contain nested headings — we
+                    # want to recurse into them so the headings land in
+                    # the right chapter/section.
+                    has_nested_heading = any(
+                        id(h) in heading_set
+                        for h in child.find_all(
+                            ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']
+                        )
+                    )
+                    if has_nested_heading:
+                        _walk(child)
+                        continue
+
+                    block = classifier._classify_element(child)
+                    if block is None:
+                        continue
+                    if current_subsection is not None:
+                        current_subsection.content_blocks.append(block)
+                    elif current_section is not None:
+                        current_section.content_blocks.append(block)
+                    elif current_chapter is not None:
+                        current_chapter.content_blocks.append(block)
+                    consumed.add(id(child))
+                    continue
+
+                # Structural wrappers (section/article/header/nav/main/
+                # body) — recurse so we find nested headings.
+                if name in (
+                    'section', 'article', 'header', 'footer', 'nav',
+                    'main', 'body', 'html', 'div',
+                ):
+                    _walk(child)
+
+        _walk(container)
+
+        # Drop any chapter whose only heading_text is a TOC artifact
+        # AND that has no sections / content — belt and braces.
+        chapters = [
+            c for c in chapters
+            if not (
+                _is_toc_heading(c.heading_text)
+                and not c.sections
+                and not c.content_blocks
+            )
+        ]
 
         return chapters
 
