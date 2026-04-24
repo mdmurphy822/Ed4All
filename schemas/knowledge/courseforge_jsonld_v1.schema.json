@@ -64,6 +64,10 @@
       "type": "array",
       "items": { "$ref": "https://ed4all.dev/schemas/knowledge/source_reference.schema.json" },
       "description": "Wave 9: optional page-level source attribution. Each entry references a DART-synthesized source block (canonical shape: schemas/knowledge/source_reference.schema.json). Emitted by generate_course.py when source_module_map.json is populated; absent when no DART input (course_generation workflow) or when routing produced no mapping. Elided when empty so legacy callers stay schema-clean."
+    },
+    "bloomDistribution": {
+      "$ref": "#/$defs/BloomDistribution",
+      "description": "Wave 61: aggregate Bloom/cognitive-domain distribution across this page's learningObjectives. Emitted iff at least one LO has a populated bloomLevel. Lets KG consumers answer 'what's the cognitive-demand profile of this page/course?' without re-aggregating per-LO data."
     }
   },
   "$defs": {
@@ -195,6 +199,35 @@
       "properties": {
         "term": { "type": "string", "minLength": 1 },
         "definition": { "type": "string", "minLength": 1 }
+      }
+    },
+    "BloomDistribution": {
+      "type": "object",
+      "required": ["total", "byLevel"],
+      "additionalProperties": false,
+      "description": "Wave 61: Aggregate Bloom/cognitive-domain distribution across a page's learningObjectives. Counts the primary (singular) bloomLevel of each LO — multi-level LOs (via bloomLevels[]) are NOT double-counted here. Consumers wanting the richer multi-level aggregate should union the per-LO bloomLevels[] arrays themselves.",
+      "properties": {
+        "total": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of LOs on this page with a non-null bloomLevel. LOs with null bloomLevel are skipped entirely."
+        },
+        "byLevel": {
+          "type": "object",
+          "description": "Per-Bloom-level LO counts. Keys are canonical BloomLevel enum members; zero-count levels are elided for payload terseness.",
+          "additionalProperties": { "type": "integer", "minimum": 1 },
+          "propertyNames": {
+            "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel"
+          }
+        },
+        "byCognitiveDomain": {
+          "type": "object",
+          "description": "Per-cognitive-domain LO counts, derived from bloomLevel via lib.ontology.bloom.bloom_to_cognitive_domain. Zero-count domains elided. Emitted alongside byLevel when at least one LO's bloomLevel maps to a canonical domain.",
+          "additionalProperties": { "type": "integer", "minimum": 1 },
+          "propertyNames": {
+            "$ref": "https://ed4all.dev/ns/taxonomies/v1/cognitive_domain.schema.json#/$defs/CognitiveDomain"
+          }
+        }
       }
     },
     "Misconception": {
