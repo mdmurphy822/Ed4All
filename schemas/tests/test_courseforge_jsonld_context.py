@@ -201,13 +201,20 @@ def test_context_parses_as_jsonld_context(context_doc):
 # ---------------------------------------------------------------------- #
 
 
-def test_course_module_type_expands_to_schema_learning_resource(
+def test_course_module_type_expands_to_ed4all_course_module(
     context_doc, sample_course_module
 ):
+    """Wave 67: @type now expands to ed4all:CourseModule (not schema:
+    LearningResource directly). Schema.org LearningResource inference is
+    available via the Wave 65 vocabulary's ``rdfs:subClassOf`` axiom;
+    RDFS-aware consumers reason from ed4all:CourseModule → schema:
+    LearningResource. The direct @type→LearningResource mapping was
+    over-targeting for mixed-graph consumers per the Wave 63 review."""
     payload = _apply_context(sample_course_module, context_doc)
     expanded = jsonld.expand(payload)[0]
-    assert "http://schema.org/LearningResource" in expanded.get("@type", []), (
-        f"@type should map to schema:LearningResource; got {expanded.get('@type')!r}"
+    types = expanded.get("@type", [])
+    assert "https://ed4all.dev/ns/courseforge/v1#CourseModule" in types, (
+        f"@type should map to ed4all:CourseModule; got {types!r}"
     )
 
 
@@ -429,12 +436,14 @@ def test_real_generate_week_output_expands_cleanly(tmp_path, context_doc):
         # proves the context covers the emit surface.
         expanded = jsonld.expand(with_context)
         assert isinstance(expanded, list)
-        # And the top-level @type expands to schema:LearningResource.
+        # Wave 67: the top-level @type expands to ed4all:CourseModule;
+        # schema:LearningResource is reachable via rdfs:subClassOf in the
+        # Wave 65 vocabulary (inference), not as a direct @type.
         if expanded:
             types = expanded[0].get("@type", [])
             if types:
-                assert "http://schema.org/LearningResource" in types, (
-                    f"Emit payload @type didn't expand to schema:LearningResource; "
+                assert "https://ed4all.dev/ns/courseforge/v1#CourseModule" in types, (
+                    f"Emit payload @type didn't expand to ed4all:CourseModule; "
                     f"got {types!r}. This usually means the emit uses a @type "
                     f"keyword not mapped in the context."
                 )
