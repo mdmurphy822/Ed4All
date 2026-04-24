@@ -105,6 +105,34 @@
       },
       "description": "Per-chunk misconceptions normalized from page-level JSON-LD. Union permits dict (Courseforge-emitted) or plain string (non-Courseforge IMSCC passthrough); see process_course.py:1177-1184."
     },
+    "targeted_concepts": {
+      "type": "array",
+      "description": "Wave 69: Bloom-qualified LO→concept bindings propagated from the chunk's cited LOs (via learning_outcome_refs). Each entry binds a canonical concept slug to the Bloom cognitive demand at which one of the chunk's LOs targets it. Sourced from Courseforge Wave 57 JSON-LD learningObjectives[].targetedConcepts[]; translated camelCase → snake_case at parse time (html_content_parser.LearningObjective.targeted_concepts) and merged onto chunks during _create_chunk. Deduplicated by (concept, bloom_level). Present only when at least one referenced LO carried targetedConcepts[]; elided for legacy / pre-Wave-57 corpora.",
+      "items": {
+        "type": "object",
+        "required": ["concept", "bloom_level"],
+        "additionalProperties": false,
+        "properties": {
+          "concept": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Canonical concept slug (output of lib.ontology.slugs.canonical_slug)."
+          },
+          "bloom_level": {
+            "type": "string",
+            "enum": [
+              "remember",
+              "understand",
+              "apply",
+              "analyze",
+              "evaluate",
+              "create"
+            ],
+            "$comment": "Inlined canonical BloomLevel enum mirrors concept_graph_semantic.schema.json $defs/TargetsConceptEvidence. Wave 69 keeps the enum local so validators don't chase a cross-schema $ref for a single-field validation."
+          }
+        }
+      }
+    },
     "summary": {
       "type": "string",
       "description": "Deterministic extractive summary from Trainforge/generators/summary_factory.py for dense-retrieval recall augmentation."
@@ -201,9 +229,26 @@
       "type": "object",
       "required": ["misconception", "correction"],
       "additionalProperties": false,
+      "description": "Per REC-JSL-01: both 'misconception' and 'correction' keys required. Wave 60 (Courseforge emit) / Wave 69 (Trainforge consume): optional bloom_level + cognitive_domain fields mirror courseforge_jsonld_v1.schema.json $defs/Misconception. Trainforge normalizes the JSON-LD camelCase (bloomLevel / cognitiveDomain) to snake_case in html_content_parser.",
       "properties": {
         "misconception": { "type": "string", "minLength": 1 },
-        "correction": { "type": "string", "minLength": 1 }
+        "correction": { "type": "string", "minLength": 1 },
+        "bloom_level": {
+          "type": "string",
+          "enum": [
+            "remember",
+            "understand",
+            "apply",
+            "analyze",
+            "evaluate",
+            "create"
+          ],
+          "description": "Wave 60 / Wave 69: Bloom's taxonomy level targeted by this misconception. Inferred at Courseforge emit time from the correction statement (or misconception statement as fallback) via lib.ontology.bloom.detect_bloom_level; upstream-supplied values override detection. Elided on legacy / pre-Wave-60 misconceptions."
+        },
+        "cognitive_domain": {
+          "type": "string",
+          "description": "Wave 60 / Wave 69: Cognitive domain derived from bloom_level via lib.ontology.bloom.bloom_to_cognitive_domain. Emitted iff bloom_level is populated."
+        }
       }
     }
   }
