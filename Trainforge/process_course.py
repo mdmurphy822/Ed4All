@@ -129,11 +129,27 @@ _CHUNK_SCHEMA_LOAD_FAILED: bool = False
 def _load_chunk_validator() -> Any:
     """Build and cache a Draft202012Validator for chunk_v4.schema.json.
 
-    The validator carries a RefResolver populated with every schema under
-    ``schemas/`` keyed by its ``$id``, so ``$ref`` URIs to Worker F's
-    taxonomies resolve offline. Returns None if jsonschema is unavailable
-    or the schema file cannot be loaded — caller treats that as "hook
-    disabled" and the pipeline proceeds without validation.
+    The validator is wired up so every ``$ref`` — inline pointers like
+    ``#/$defs/Source`` and external URIs like
+    ``https://ed4all.dev/schemas/knowledge/source_reference.schema.json``
+    — resolves offline against every schema under ``schemas/`` keyed by
+    its ``$id``.
+
+    Wave 74 fix: prefer the modern ``referencing`` library (jsonschema
+    4.18+) over the deprecated ``RefResolver``. Under certain load
+    orders / resolver-stack pushes, ``RefResolver`` fails to resolve
+    inline ``#/$defs/Source`` with
+    ``_RefResolutionError: Unresolvable JSON pointer: '$defs/Source'``
+    after descending into an external ``$ref`` (symptom observed in
+    today's ``RDF_SHACL_KG`` pipeline run). The ``referencing``-based
+    resolver keeps the base-URI stack honest and resolves both inline
+    and external refs deterministically. We fall back to ``RefResolver``
+    only when ``referencing`` is missing, preserving backward compat
+    for environments still on pre-4.18 jsonschema.
+
+    Returns None if jsonschema is unavailable or the schema file cannot
+    be loaded — caller treats that as "hook disabled" and the pipeline
+    proceeds without validation.
     """
     global _CHUNK_VALIDATOR, _CHUNK_SCHEMA_LOAD_FAILED
     if _CHUNK_VALIDATOR is not None:
@@ -142,7 +158,7 @@ def _load_chunk_validator() -> Any:
         return None
     try:
         import jsonschema  # noqa: F401
-        from jsonschema import Draft202012Validator, RefResolver
+        from jsonschema import Draft202012Validator
     except ImportError:
         _CHUNK_SCHEMA_LOAD_FAILED = True
         return None
@@ -154,7 +170,9 @@ def _load_chunk_validator() -> Any:
     try:
         with open(schema_path) as f:
             schema = json.load(f)
-        store: Dict[str, Any] = {}
+        # Collect every local schema keyed by its $id for offline ref
+        # resolution (Worker F taxonomies, source_reference, etc.).
+        id_to_schema: Dict[str, Dict[str, Any]] = {}
         for p in schemas_root.rglob("*.json"):
             try:
                 with open(p) as f:
@@ -163,9 +181,26 @@ def _load_chunk_validator() -> Any:
                 continue
             sid = s.get("$id")
             if sid:
-                store[sid] = s
-        resolver = RefResolver.from_schema(schema, store=store)
-        _CHUNK_VALIDATOR = Draft202012Validator(schema, resolver=resolver)
+                id_to_schema[sid] = s
+
+        # Prefer the modern `referencing` library (jsonschema 4.18+).
+        # Falls back to the deprecated `RefResolver` only when
+        # `referencing` is unavailable.
+        try:
+            from referencing import Registry, Resource
+            from referencing.jsonschema import DRAFT202012
+
+            resources = [
+                (sid, Resource.from_contents(s, default_specification=DRAFT202012))
+                for sid, s in id_to_schema.items()
+            ]
+            registry = Registry().with_resources(resources)
+            _CHUNK_VALIDATOR = Draft202012Validator(schema, registry=registry)
+        except ImportError:
+            from jsonschema import RefResolver  # type: ignore
+
+            resolver = RefResolver.from_schema(schema, store=dict(id_to_schema))
+            _CHUNK_VALIDATOR = Draft202012Validator(schema, resolver=resolver)
     except Exception:
         _CHUNK_SCHEMA_LOAD_FAILED = True
         return None
