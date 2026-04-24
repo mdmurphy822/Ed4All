@@ -390,7 +390,217 @@ def test_bloom_distribution_negative_total_fails(context_doc, shapes_graph):
 
 
 # ---------------------------------------------------------------------- #
-# 4. End-to-end — real generate_week output validates
+# 4. Wave 67 hardening — gaps closed by the SHACL hardening pass
+# ---------------------------------------------------------------------- #
+
+
+def test_external_learning_resource_does_not_fire_course_module_shape(shapes_graph):
+    """Wave 67 fix #4: external schema:LearningResource (e.g., Pearson's own
+    catalog content) does NOT trigger CourseModuleShape's required-predicate
+    constraints. Wave 63 over-targeted by hitting schema:LearningResource
+    directly; Wave 67 targets ed4all:CourseModule so our shapes stay
+    scoped to our-emitted content."""
+    from rdflib import Graph as RDFGraph
+
+    data = RDFGraph()
+    data.parse(
+        data=(
+            "<https://pearson.example/video-1> "
+            "<http://www.w3.org/1999/02/22-rdf-syntax-ns#type> "
+            "<http://schema.org/LearningResource> .\n"
+            "<https://pearson.example/video-1> "
+            "<http://schema.org/name> \"Intro Video\" .\n"
+        ),
+        format="nt",
+    )
+    conforms, _, text = pyshacl.validate(
+        data_graph=data, shacl_graph=shapes_graph, inference="none", advanced=True
+    )
+    assert conforms, (
+        f"External LearningResource wrongly triggered CourseModuleShape:\n{text}"
+    )
+
+
+def test_bloom_level_typo_in_correct_namespace_fails(context_doc, shapes_graph):
+    """Wave 67 fix #1: sh:in against the 6 canonical bloom concept IRIs
+    catches typos that Wave 63's prefix pattern missed. E.g., a value of
+    <https://ed4all.dev/vocab/bloom#aplly> shared the correct namespace
+    prefix and passed the old check."""
+    payload = {
+        "@type": "CourseModule",
+        "courseCode": "TEST_101",
+        "weekNumber": 1,
+        "moduleType": "overview",
+        "pageId": "week_01_overview",
+        "learningObjectives": [
+            {
+                "@type": "LearningObjective",
+                "id": "https://example.org/los/CO-01",
+                "statement": "Apply X.",
+                # Full IRI form, typo in the local fragment
+                "ed4all:bloomLevel": {"@id": "https://ed4all.dev/vocab/bloom#aplly"},
+            }
+        ],
+    }
+    conforms, _, text = _validate(payload, context_doc, shapes_graph)
+    assert not conforms, (
+        f"Typo'd bloom IRI should fail SHACL (sh:in enforces the 6-concept set); "
+        f"instead conforms=True"
+    )
+    assert "InConstraintComponent" in text or "bloomLevel must be one of" in text
+
+
+def test_bloom_level_empty_fragment_fails(context_doc, shapes_graph):
+    """Wave 67 fix #1 follow-on: empty fragment under the correct namespace
+    (<https://ed4all.dev/vocab/bloom#>) also fails under sh:in."""
+    payload = {
+        "@type": "CourseModule",
+        "courseCode": "TEST_101",
+        "weekNumber": 1,
+        "moduleType": "overview",
+        "pageId": "week_01_overview",
+        "learningObjectives": [
+            {
+                "@type": "LearningObjective",
+                "id": "https://example.org/los/CO-01",
+                "statement": "x",
+                "ed4all:bloomLevel": {"@id": "https://ed4all.dev/vocab/bloom#"},
+            }
+        ],
+    }
+    conforms, _, _ = _validate(payload, context_doc, shapes_graph)
+    assert not conforms
+
+
+def test_parent_objective_id_requires_canonical_lo_pattern(context_doc, shapes_graph):
+    """Wave 67 fix #2: parentObjectiveId must point at an IRI whose local
+    segment matches (TO|CO)-NN. Wave 63's nodeKind-only constraint allowed
+    any IRI through, including non-LO URLs."""
+    payload = {
+        "@type": "CourseModule",
+        "courseCode": "TEST_101",
+        "weekNumber": 1,
+        "moduleType": "overview",
+        "pageId": "week_01_overview",
+        "learningObjectives": [
+            {
+                "@type": "LearningObjective",
+                "id": "https://example.org/los/CO-01",
+                "statement": "x",
+                "parentObjectiveId": "https://example.org/garbage-not-a-lo",
+            }
+        ],
+    }
+    conforms, _, text = _validate(payload, context_doc, shapes_graph)
+    assert not conforms, (
+        f"Non-canonical parentObjectiveId IRI should fail SHACL pattern"
+    )
+
+
+def test_parent_objective_id_canonical_pattern_accepted(context_doc, shapes_graph):
+    """Well-formed TO-NN / CO-NN parent IDs pass the Wave 67 pattern."""
+    payload = {
+        "@type": "CourseModule",
+        "courseCode": "TEST_101",
+        "weekNumber": 1,
+        "moduleType": "overview",
+        "pageId": "week_01_overview",
+        "learningObjectives": [
+            {
+                "@type": "LearningObjective",
+                "id": "https://example.org/los/CO-05",
+                "statement": "x",
+                "parentObjectiveId": "https://example.org/los/TO-01",
+            }
+        ],
+    }
+    conforms, _, text = _validate(payload, context_doc, shapes_graph)
+    assert conforms, f"Canonical TO-01 parent ID should pass:\n{text}"
+
+
+def test_section_missing_heading_fails(context_doc, shapes_graph):
+    """Wave 67 fix #3: SectionShape now exists and enforces schema:name
+    (heading). Wave 63 had no SectionShape — a section without a heading
+    validated silently."""
+    payload = {
+        "@type": "CourseModule",
+        "courseCode": "TEST_101",
+        "weekNumber": 1,
+        "moduleType": "content",
+        "pageId": "week_01_content_01",
+        "sections": [{"@type": "Section"}],  # no heading
+    }
+    conforms, _, text = _validate(payload, context_doc, shapes_graph)
+    assert not conforms, (
+        f"Section without heading should fail SectionShape (Wave 67 fix #3)"
+    )
+    assert "name" in text or "heading" in text or "MinCountConstraintComponent" in text
+
+
+def test_section_with_heading_validates(context_doc, shapes_graph):
+    """Well-formed section passes SectionShape."""
+    payload = {
+        "@type": "CourseModule",
+        "courseCode": "TEST_101",
+        "weekNumber": 1,
+        "moduleType": "content",
+        "pageId": "week_01_content_01",
+        "sections": [
+            {
+                "@type": "Section",
+                "heading": "Definition of Photosynthesis",
+                "bloomRange": ["remember", "understand"],
+            }
+        ],
+    }
+    conforms, _, text = _validate(payload, context_doc, shapes_graph)
+    assert conforms, f"Well-formed Section failed SHACL:\n{text}"
+
+
+def test_section_bad_bloom_range_fails(context_doc, shapes_graph):
+    """Section.bloomRange items must be canonical Bloom level strings."""
+    payload = {
+        "@type": "CourseModule",
+        "courseCode": "TEST_101",
+        "weekNumber": 1,
+        "moduleType": "content",
+        "pageId": "week_01_content_01",
+        "sections": [
+            {
+                "@type": "Section",
+                "heading": "x",
+                "bloomRange": ["remember", "aplly"],  # typo
+            }
+        ],
+    }
+    conforms, _, _ = _validate(payload, context_doc, shapes_graph)
+    assert not conforms
+
+
+def test_empty_string_statement_fails(context_doc, shapes_graph):
+    """Wave 67 test gap #7: sh:minLength 1 on schema:description catches
+    empty-string statements (missing was already tested)."""
+    payload = {
+        "@type": "CourseModule",
+        "courseCode": "TEST_101",
+        "weekNumber": 1,
+        "moduleType": "overview",
+        "pageId": "week_01_overview",
+        "learningObjectives": [
+            {
+                "@type": "LearningObjective",
+                "id": "https://example.org/los/CO-01",
+                "statement": "",  # empty — length 0
+                "bloomLevel": "apply",
+            }
+        ],
+    }
+    conforms, _, text = _validate(payload, context_doc, shapes_graph)
+    assert not conforms, f"Empty statement should fail sh:minLength 1"
+
+
+# ---------------------------------------------------------------------- #
+# 5. End-to-end — real generate_week output validates
 # ---------------------------------------------------------------------- #
 
 

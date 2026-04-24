@@ -110,9 +110,13 @@ def test_loader_resolves_canonical_url_to_local_doc(reset_pyld_loader):
     expanded = jsonld.expand(payload)
     assert isinstance(expanded, list)
     assert len(expanded) == 1
-    # @type expands to schema:LearningResource → proof the context was loaded.
+    # Wave 67: @type expands to ed4all:CourseModule (the Wave 65 vocabulary
+    # declares ed4all:CourseModule rdfs:subClassOf schema:LearningResource so
+    # reasoners still infer the Schema.org type). Catching ed4all:CourseModule
+    # here proves the loader served OUR context and not some Schema.org
+    # resolver — the IRI wouldn't appear anywhere else.
     types = expanded[0].get("@type", [])
-    assert "http://schema.org/LearningResource" in types, (
+    assert "https://ed4all.dev/ns/courseforge/v1#CourseModule" in types, (
         f"Loader didn't serve the expected context; @type didn't resolve. "
         f"Got {types!r}"
     )
