@@ -1280,6 +1280,58 @@ def _build_sections_metadata(sections: List[Dict]) -> List[Dict[str, Any]]:
     return result
 
 
+def _build_misconceptions_metadata(
+    misconceptions: List[Dict],
+) -> List[Dict[str, Any]]:
+    """Enrich misconception dicts with Bloom metadata for the JSON-LD emit.
+
+    Wave 60: misconceptions used to ship as free ``{misconception, correction}``
+    pairs with no cognitive-demand signal. The KG couldn't distinguish an
+    "apply"-level mistake (common when learners mis-sequence a procedure)
+    from an "analyze"-level one (common when learners misread evidence),
+    so diagnostic-question generation couldn't key on the right demand.
+
+    This helper infers ``bloomLevel`` / ``cognitiveDomain`` per misconception:
+
+    * Prefer an upstream-supplied ``bloomLevel`` (or snake-case ``bloom_level``)
+      on the input dict — course-planner authority over detection.
+    * Otherwise run ``detect_bloom_level`` on the correction statement
+      first (describes the correct cognitive demand), falling back to the
+      misconception statement (may carry the "should" verb when the
+      correction is terse).
+    * If neither has a canonical verb, elide both fields entirely so
+      legacy payloads stay visually identical and consumers treat absence
+      as "unknown".
+
+    ``additionalProperties: false`` on the Misconception $def means we
+    strip any other keys from the input dict — callers that need to
+    attach extra metadata should extend the schema instead of smuggling
+    undeclared keys.
+    """
+    result: List[Dict[str, Any]] = []
+    for m in misconceptions:
+        mis_text = str(m.get("misconception") or "")
+        cor_text = str(m.get("correction") or "")
+        bloom_level = m.get("bloomLevel") or m.get("bloom_level")
+        if not bloom_level:
+            # Prefer correction — states the correct action; misconception
+            # text often phrases the wrong belief as a declarative and
+            # may lack a Bloom-style action verb.
+            lvl, _verb = detect_bloom_level(cor_text)
+            if not lvl:
+                lvl, _verb = detect_bloom_level(mis_text)
+            bloom_level = lvl
+        entry: Dict[str, Any] = {
+            "misconception": mis_text,
+            "correction": cor_text,
+        }
+        if bloom_level:
+            entry["bloomLevel"] = bloom_level
+            entry["cognitiveDomain"] = _bloom_to_cognitive_domain(bloom_level)
+        result.append(entry)
+    return result
+
+
 def _build_page_metadata(
     course_code: str, week_num: int, module_type: str, page_id: str,
     objectives: Optional[List[Dict]] = None,
@@ -1321,7 +1373,7 @@ def _build_page_metadata(
     if sections:
         meta["sections"] = _build_sections_metadata(sections)
     if misconceptions:
-        meta["misconceptions"] = misconceptions
+        meta["misconceptions"] = _build_misconceptions_metadata(misconceptions)
     if suggested_assessments:
         meta["suggestedAssessmentTypes"] = suggested_assessments
     if classification:
