@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import sys
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Optional, Set, Tuple
 
@@ -330,6 +331,206 @@ def _validate_page_jsonld(metadata: Dict[str, Any], page_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Wave 68: SHACL validation of emitted JSON-LD page metadata
+# ---------------------------------------------------------------------------
+#
+# Wave 49 above wires up JSON-Schema validation at emit time. Wave 68 adds a
+# second, RDF-native validation layer that sits on top of the Wave 62
+# @context (schemas/context/courseforge_v1.jsonld) and the Wave 63+67 SHACL
+# shapes file (schemas/context/courseforge_v1.shacl.ttl).
+#
+# Why two layers? JSON-Schema enforces the wire-format shape (required
+# fields, enum values, structural composition). SHACL enforces the RDF graph
+# after the payload is expanded through the Wave 62 @context — it catches
+# semantic drift that the schema can't express, e.g. a bloomLevel IRI
+# outside the canonical 6-concept SKOS set (a typo like `#aplly` that passes
+# a `sh:pattern` but fails the Wave 67 `sh:in` check), a Section missing
+# its `schema:name` heading, or a parentObjectiveId IRI whose local segment
+# doesn't match `(TO|CO)-NN`. The two layers are complementary; Wave 68
+# does NOT replace Wave 49.
+#
+# Enforcement mirrors the Wave 49 pattern. ``COURSEFORGE_ENFORCE_SHACL``
+# truthy ("1","true","yes","on") raises ValueError on a shape miss; unset/
+# falsy logs a WARNING and lets emit proceed. Default is WARN so legacy
+# corpora with known shape quirks don't block CI on the day this lands —
+# identical policy to Wave 49.
+#
+# Cost: shape file + @context document are loaded once per process via
+# ``functools.lru_cache`` (mirrors ``_get_jsonld_validator``'s module-level
+# cache). Per-page the cost is a pyld ``to_rdf`` expand + an rdflib
+# n-quads parse + a pyshacl ``validate`` call.
+#
+# Graceful-degrade on missing deps: if pyld / pyshacl / rdflib aren't
+# importable in the running env, ``_validate_page_jsonld_shacl`` becomes a
+# no-op (returns ``(True, "")``) and emit proceeds. Production envs have
+# these pinned via pyproject.toml; the branch exists so test envs without
+# the SHACL extra installed still run the Courseforge suite.
+
+_SHACL_SHAPES_PATH = (
+    _PROJECT_ROOT / "schemas" / "context" / "courseforge_v1.shacl.ttl"
+)
+_SHACL_CONTEXT_PATH = (
+    _PROJECT_ROOT / "schemas" / "context" / "courseforge_v1.jsonld"
+)
+_ENFORCE_SHACL_ENV = "COURSEFORGE_ENFORCE_SHACL"
+
+
+def _shacl_enforcement_enabled() -> bool:
+    """Read the SHACL enforcement env var each call so tests can toggle it."""
+    return os.getenv(_ENFORCE_SHACL_ENV, "").strip().lower() in _ENFORCE_TRUTHY_VALUES
+
+
+def _shacl_deps_available() -> bool:
+    """Return True if pyld / pyshacl / rdflib are importable.
+
+    Import-error is a recoverable state: the SHACL validator silently
+    disables on environments that don't ship the RDF stack, mirroring the
+    Wave 49 ``_build_jsonld_validator`` graceful-degrade branch. Production
+    envs pin all three via pyproject.toml.
+    """
+    try:
+        import pyld  # noqa: F401
+        import pyshacl  # noqa: F401
+        import rdflib  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+@lru_cache(maxsize=1)
+def _load_shacl_context() -> Dict[str, Any]:
+    """Load the Wave 62 @context document from disk once per process.
+
+    Uses ``lru_cache`` so the file-read happens on first call only. Tests
+    that want to verify the cache can check ``cache_info()``.
+    """
+    with open(_SHACL_CONTEXT_PATH, encoding="utf-8") as f:
+        return json.load(f)
+
+
+@lru_cache(maxsize=1)
+def _load_shacl_shapes_graph():
+    """Load and parse the Wave 63+67 SHACL shapes file once per process.
+
+    Returns an ``rdflib.Graph`` with the shapes parsed as Turtle. Cached
+    for the process lifetime — the file is immutable, and pyshacl may be
+    called once per emitted page. Returns ``None`` if rdflib isn't
+    importable (graceful degrade; paired with ``_shacl_deps_available``).
+    """
+    try:
+        from rdflib import Graph
+    except ImportError:
+        return None
+    graph = Graph()
+    graph.parse(_SHACL_SHAPES_PATH, format="turtle")
+    return graph
+
+
+def _validate_page_jsonld_shacl(
+    metadata: Dict[str, Any],
+) -> Tuple[bool, str]:
+    """SHACL-validate a page's JSON-LD metadata against the Wave 63+67 shapes.
+
+    Pipeline: register the Wave 64 document loader (idempotent), substitute
+    the inline @context dict so the expansion works offline, run
+    ``pyld.jsonld.to_rdf`` to get n-quads, parse into rdflib, run
+    ``pyshacl.validate``.
+
+    Returns:
+        ``(conforms, results_text)`` — ``conforms`` is ``True`` when every
+        shape validates. On a dep-missing env returns ``(True, "")`` so
+        the caller's guard-rail behavior stays unchanged (no-op).
+
+    Wiring: called from ``_wrap_page`` right after ``_validate_page_jsonld``.
+    See that helper's docstring for the WARN-vs-raise env-var contract;
+    Wave 68 mirrors it via ``COURSEFORGE_ENFORCE_SHACL``.
+    """
+    if not _shacl_deps_available():
+        return True, ""
+
+    try:
+        from pyld import jsonld as _pyld_jsonld
+        import pyshacl
+        from rdflib import Graph
+    except ImportError:
+        # Defensive: _shacl_deps_available already returned True above,
+        # but a partial-import env (e.g. pyshacl installed without rdflib)
+        # could still trip here. Fall back to no-op.
+        return True, ""
+
+    # Wave 64 loader: idempotent — safe to call per-emit. The underlying
+    # set_document_loader is a no-op rebind when the local loader is
+    # already in place.
+    try:
+        from lib.ontology.jsonld_context_loader import register_local_loader
+        register_local_loader()
+    except ImportError:
+        # If the loader module is missing we fall back to substituting the
+        # @context dict inline (same strategy as the Wave 63 test helper).
+        pass
+
+    context_doc = _load_shacl_context()
+    shapes_graph = _load_shacl_shapes_graph()
+    if shapes_graph is None:
+        return True, ""
+
+    # Substitute the inline @context dict so pyld doesn't need to resolve
+    # the canonical URL at all (the Wave 63 test helper does the same).
+    # This keeps the path deterministic regardless of whether the Wave 64
+    # loader was registered before this call.
+    expandable = dict(metadata)
+    expandable["@context"] = context_doc["@context"]
+
+    try:
+        nq = _pyld_jsonld.to_rdf(expandable, {"format": "application/n-quads"})
+    except Exception as exc:  # pyld raises JsonLdError subclasses
+        logger.warning(
+            "SHACL validation skipped (JSON-LD to_rdf failed): %s", exc,
+        )
+        return True, ""
+
+    data_graph = Graph()
+    data_graph.parse(data=nq, format="nquads")
+
+    conforms, _results_graph, results_text = pyshacl.validate(
+        data_graph=data_graph,
+        shacl_graph=shapes_graph,
+        inference="none",
+        abort_on_first=False,
+        meta_shacl=False,
+        advanced=True,
+        js=False,
+        debug=False,
+    )
+    return bool(conforms), results_text or ""
+
+
+def _validate_page_jsonld_shacl_at_emit(
+    metadata: Dict[str, Any], page_id: str,
+) -> None:
+    """Emit-site wrapper: raise or log based on ``COURSEFORGE_ENFORCE_SHACL``.
+
+    Parallels ``_validate_page_jsonld`` for SHACL. Called from
+    ``_wrap_page`` after the JSON Schema validator returns. Kept separate
+    from the pure ``_validate_page_jsonld_shacl`` helper so tests can
+    unit-check the conforms/message return shape without env interference.
+    """
+    conforms, results_text = _validate_page_jsonld_shacl(metadata)
+    if conforms:
+        return
+
+    detail = (results_text or "").strip() or "(no pyshacl message)"
+    if _shacl_enforcement_enabled():
+        raise ValueError(
+            f"page_id={page_id} failed SHACL validation: {detail}"
+        )
+    logger.warning(
+        "SHACL validation failed for page_id=%s: %s Set %s to raise instead.",
+        page_id, detail, _ENFORCE_SHACL_ENV,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Canonical-objectives loading & per-week LO resolution
 # ---------------------------------------------------------------------------
 #
@@ -563,12 +764,21 @@ def _wrap_page(title: str, course_code: str, week_num: int, body_html: str,
     against ``schemas/knowledge/courseforge_jsonld_v1.schema.json`` right
     before serialization. See :func:`_validate_page_jsonld` for the env
     flag + fail-closed / warn semantics.
+
+    Wave 68: a second RDF-native validation layer runs immediately after
+    the Wave 49 JSON Schema check. See
+    :func:`_validate_page_jsonld_shacl_at_emit` for the env flag
+    (``COURSEFORGE_ENFORCE_SHACL``) + WARN-vs-raise semantics. The two
+    layers are complementary, not redundant — SHACL catches IRI-level
+    closed-set constraints (e.g., typo'd bloomLevel IRI) that the JSON
+    Schema's flat enum check can't express.
     """
     safe_title = html_mod.escape(title)
     json_ld = ""
     if page_metadata:
         page_id = page_metadata.get("pageId") or "<unknown>"
         _validate_page_jsonld(page_metadata, page_id)
+        _validate_page_jsonld_shacl_at_emit(page_metadata, page_id)
         json_ld = (
             '\n  <script type="application/ld+json">\n'
             + json.dumps(page_metadata, indent=2, ensure_ascii=False)
