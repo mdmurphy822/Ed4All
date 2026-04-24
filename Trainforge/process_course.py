@@ -2523,7 +2523,12 @@ class CourseProcessor:
                     # misconceptions emit distinct IDs. Breaking change: old
                     # corpora re-chunked under this wave will see new
                     # misconception IDs (documented below).
-                    bloom_level = (entry.get("bloom_level") or "").strip()
+                    # Wave 72: mirror the ``.strip().lower()`` normalization
+                    # from ``preference_factory._misconception_id`` so the
+                    # two hash call sites stay lock-step even when a direct
+                    # chunk-construction path bypasses the html_content_parser
+                    # normalizer and supplies mixed-case Bloom input.
+                    bloom_level = (entry.get("bloom_level") or "").strip().lower()
                     cognitive_domain = (entry.get("cognitive_domain") or "").strip()
                 elif isinstance(entry, str):
                     statement = entry.strip()
@@ -2698,6 +2703,13 @@ class CourseProcessor:
         mixed corpora (legacy pages + JSON-LD pages sharing LO IDs). Now
         we do Path 1 across *all* items first, then Path 2 fills any LOs
         still absent — the "JSON-LD preferred" promise actually holds.
+
+        Within Path 1, the first rich JSON-LD payload encountered for a
+        given ``id`` wins; duplicate JSON-LD entries for the same id on
+        later items are dropped (no deep-merge). Likewise within Path 2.
+        This keeps dedup deterministic and list-order-driven; if a future
+        wave needs cross-page concept-union it should be a new helper, not
+        a silent behavior change here.
         """
         by_id: Dict[str, Dict[str, Any]] = {}
 
