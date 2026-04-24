@@ -318,3 +318,58 @@ def test_chunks_without_matching_lo_refs_do_not_get_targeted_concepts():
         chunk_type="explanation",
     )
     assert "targeted_concepts" not in chunk
+
+
+def test_jsonld_path_wins_over_dataclass_fallback_across_items():
+    """Wave 72 regression: the JSON-LD (Path 1) payload must win over the
+    dataclass fallback (Path 2) even when a legacy item precedes the
+    JSON-LD item in the parsed list.
+
+    Pre-Wave-72 ``_build_objectives_metadata_for_graph`` interleaved both
+    paths per item. A legacy item (no JSON-LD) with an LO id TO-01 and
+    empty ``targeted_concepts`` would populate ``by_id[TO-01]`` via
+    Path 2; a later JSON-LD item's Path 1 then saw the id present and
+    skipped, silently discarding the richer ``targetedConcepts[]``.
+    """
+    # Fabricate a parsed item whose JSON-LD path is empty but whose
+    # dataclass path emits TO-01 with no targeted_concepts.
+    from Trainforge.parsers.html_content_parser import LearningObjective
+    legacy_item = {
+        "courseforge_metadata": None,
+        "learning_objectives": [
+            LearningObjective(
+                id="TO-01",
+                text="Legacy LO without JSON-LD emit",
+                bloom_level="apply",
+                # No targeted_concepts — simulates pre-Wave-57 corpora.
+            )
+        ],
+    }
+    # Fabricate a JSON-LD item that reuses the same id with rich targets.
+    rich_json_ld = {
+        "pageId": "p-rich",
+        "learningObjectives": [
+            {
+                "id": "TO-01",
+                "statement": "Apply frameworks",
+                "bloomLevel": "apply",
+                "cognitiveDomain": "conceptual",
+                "targetedConcepts": [
+                    {"concept": "framework", "bloomLevel": "apply"},
+                    {"concept": "ecosystem-flow", "bloomLevel": "analyze"},
+                ],
+            }
+        ],
+    }
+    rich_item = _parsed_item(rich_json_ld, lesson_id="p-rich")
+
+    proc = _bare_processor()
+    # Legacy first, rich second: without Wave 72's two-pass fix the
+    # legacy empty payload shadows the rich one.
+    out = proc._build_objectives_metadata_for_graph([legacy_item, rich_item])
+    assert len(out) == 1
+    assert out[0]["id"] == "TO-01"
+    assert out[0].get("targetedConcepts") == [
+        {"concept": "framework", "bloomLevel": "apply"},
+        {"concept": "ecosystem-flow", "bloomLevel": "analyze"},
+    ]

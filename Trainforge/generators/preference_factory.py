@@ -144,28 +144,36 @@ def _misconception_id(
 ) -> str:
     """Content-hash misconception ID (REC-LNK-02, Wave 69 extends seed).
 
-    Stable across runs and across chunk re-chunking. The hash input is
-    ``misconception_text.strip() + "|" + correction_text.strip() + "|" + (bloom_level or "").strip()``
-    -- outer whitespace is normalised but inner whitespace is preserved,
-    so cosmetic edits do not churn IDs but real text edits do.
-
-    Form: ``mc_<16-hex-char sha256>``. Replaces the earlier unstable
+    Stable across runs and across chunk re-chunking. Form:
+    ``mc_<16-hex-char sha256>``. Replaces the earlier unstable
     position-based format ``{chunk_id}_mc_{index:02d}_{hash}``.
 
-    Wave 69: ``bloom_level`` (optional 3rd arg, default None) joins the seed
-    so two misconceptions that share statement + correction text but target
-    different Bloom cognitive demands emit distinct IDs. Misconceptions
-    with no bloom level (legacy / pre-Wave-60 corpora) pass ``None`` /
-    empty-string and keep the pre-Wave-69 hash stable -- the new segment
-    collapses to an empty string suffix, which is a breaking change from
-    pre-wave ``{statement}|{correction}`` seed. Callers on old corpora
-    will see new IDs after a rebuild; that's acceptable per the
-    TRAINFORGE_CONTENT_HASH_IDS churn tolerance.
+    Wave 69: ``bloom_level`` (optional 3rd arg) joins the seed so two
+    misconceptions sharing statement + correction text but different
+    Bloom cognitive demands emit distinct IDs. The seed is built as:
+
+    * ``{statement}|{correction}|{bloom_level}`` when a bloom level is
+      supplied (Wave 60+ corpora), and
+    * ``{statement}|{correction}`` when no bloom level is supplied (Wave 72).
+
+    The two-form seed keeps pre-Wave-60 / legacy-corpus IDs stable with
+    the pre-Wave-69 hash. Pre-Wave-72 the bloom-less path appended a
+    trailing ``|`` and silently rekeyed every legacy misconception — this
+    shape matches the documented intent. Outer whitespace is normalised
+    but inner whitespace is preserved, so cosmetic edits do not churn
+    IDs but real text edits do.
     """
     mt = (misconception_text or "").strip()
     ct = (correction_text or "").strip()
     bl = (bloom_level or "").strip().lower()
-    content = f"{mt}|{ct}|{bl}"
+    # Wave 72: two-segment seed for bloom-less misconceptions so legacy
+    # corpora keep the pre-Wave-69 hash. The graph-side call site
+    # (``CourseProcessor._build_misconceptions_for_graph``) applies the
+    # same branch to stay in lock-step.
+    if bl:
+        content = f"{mt}|{ct}|{bl}"
+    else:
+        content = f"{mt}|{ct}"
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
     return f"mc_{digest}"
 
