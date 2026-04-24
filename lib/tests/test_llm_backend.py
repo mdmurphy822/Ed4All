@@ -446,23 +446,71 @@ class TestMailboxBrokeredBackend:
         with pytest.raises(NotImplementedError, match="streaming"):
             asyncio.run(backend.complete("sys", "user", stream=True))
 
-    def test_task_ids_are_monotonic_and_llm_prefixed(self, tmp_path):
-        """Sanity: task ids minted by this backend are deterministic so
-        two concurrent MailboxBrokeredBackend instances don't collide
-        and so phase-dispatch tasks (``{phase}-{uuid8}``) never share a
-        prefix-shape with LLM tasks."""
+    def test_task_ids_are_globally_unique_across_concurrent_backends(
+        self, tmp_path,
+    ):
+        """Wave 73 P1: ids are globally unique, not per-instance monotonic.
+
+        Pre-fix the backend emitted ``f"{prefix}-{counter:04d}"`` starting
+        from ``llm-0001``, so two concurrent backends (which happens
+        whenever ``dart_conversion`` runs ``max_concurrent: 4`` PDFs in
+        parallel, each auto-resolving its own backend in
+        ``pipeline_tools._raw_text_to_accessible_html``) both emitted
+        ``llm-0001`` on their first call. ``TaskMailbox.put_pending`` uses
+        ``os.replace`` so the second writer silently clobbers the first,
+        and both callers wait on the same ``completed/llm-0001.json`` —
+        getting the same response for different figures.
+
+        This test mints a batch of ids from two backends sharing one
+        mailbox and asserts every id is unique across the union.
+        """
         mailbox = self._mailbox(tmp_path)
-        backend = MailboxBrokeredBackend(mailbox, timeout_seconds=0.05)
-        # Fire + let them timeout so we can observe the queued task ids.
-        for i in range(3):
-            try:
-                backend.complete_sync("s", f"u{i}")
-            except TimeoutError:
-                pass
-        # Because cleanup() runs on every call (success or fail), we
-        # can't list pending anymore — instead assert the counter
-        # advanced deterministically and the mailbox stayed empty after
-        # cleanup.
-        assert backend._call_counter == 3
+        backend_a = MailboxBrokeredBackend(mailbox, timeout_seconds=0.01)
+        backend_b = MailboxBrokeredBackend(mailbox, timeout_seconds=0.01)
+
+        ids: set[str] = set()
+        for backend in (backend_a, backend_b):
+            for i in range(5):
+                try:
+                    backend.complete_sync("s", f"u{i}")
+                except TimeoutError:
+                    pass
+                # Internal helper access: the public surface returns
+                # text, not ids. Inspect via the monotonic counter
+                # (kept for debugging) + the private minting helper so
+                # we don't have to reach into the filesystem.
+                ids.add(backend._next_task_id())
+
+        # 10 mint calls (5 per backend) + 10 ids consumed in complete_sync
+        # (that we didn't capture) — uniqueness holds across both paths
+        # because every id carries a fresh uuid suffix.
+        assert len(ids) == 10, f"duplicate ids emitted: {sorted(ids)}"
+        # Still prefixed for operator-side filtering.
+        assert all(tid.startswith("llm-") for tid in ids), sorted(ids)
+        # Counter still advances monotonically (debug aid; no longer
+        # participates in the id itself).
+        assert backend_a._call_counter >= 5
+        assert backend_b._call_counter >= 5
+        # Cleanup ran on every complete_sync call regardless of timeout.
         assert mailbox.list_pending() == []
         assert mailbox.list_in_progress() == []
+
+    def test_task_ids_do_not_collide_with_phase_dispatch_ids(self, tmp_path):
+        """``LocalDispatcher._dispatch_via_mailbox`` mints ``{phase}-{uuid8}``
+        for phase tasks. LLM-call task ids carry the ``llm-`` prefix plus
+        a 12-hex uuid tail, so the two shapes never share a key even
+        when both flow through the same per-run mailbox.
+        """
+        mailbox = self._mailbox(tmp_path)
+        backend = MailboxBrokeredBackend(mailbox)
+        llm_ids = {backend._next_task_id() for _ in range(20)}
+        # Every LLM id has the 'llm-' prefix.
+        assert all(tid.startswith("llm-") for tid in llm_ids)
+        # Phase ids from LocalDispatcher use phase-name prefixes
+        # (content_generation, dart_conversion, …) — none of which can
+        # equal the literal string 'llm' because phase names are
+        # lowercase_snake_case and never start with that sequence in
+        # the config.
+        import re as _re
+        llm_shape = _re.compile(r"^llm-[0-9a-f]{12}$")
+        assert all(llm_shape.match(tid) for tid in llm_ids)

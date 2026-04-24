@@ -360,16 +360,32 @@ class MailboxBrokeredBackend:
         self._call_counter = 0
 
     def _next_task_id(self) -> str:
-        """Return a mailbox task id unique within this backend instance.
+        """Return a mailbox task id globally unique across concurrent backends.
 
-        Monotonic per-backend counter keeps task ids deterministic in
-        tests (``llm-0000``, ``llm-0001``, ...) while still avoiding
-        collisions with phase-dispatch task ids (which follow the
-        ``{phase_name}-{uuid8}`` shape and so never collide with the
-        ``{prefix}-{int}`` shape we emit here).
+        Wave 73 code-review P1: the original implementation returned
+        ``f"{prefix}-{counter:04d}"`` with a per-instance counter. Two
+        parallel phase tasks (``TaskExecutor._execute_parallel`` dispatches
+        via ``asyncio.gather``; ``textbook_to_course.dart_conversion``
+        runs with ``max_concurrent: 4``) each auto-resolve their own
+        ``MailboxBrokeredBackend`` at the ``pipeline_tools.py`` injection
+        site, so both started from ``llm-0001`` and collided on
+        ``TaskMailbox.put_pending`` — at best overwriting each other's
+        spec files via ``os.replace``, at worst (and more commonly)
+        two callers waited on the same ``completed/llm-0001.json`` and
+        consumed the same response for different figures. No
+        exception was raised; the bug surfaced only as mislabeled
+        alt-text / misclassified blocks downstream.
+
+        Switching to a UUID-suffixed id mirrors the phase-dispatch
+        shape at ``LocalDispatcher._dispatch_via_mailbox`` (``{phase}-{uuid8}``).
+        We also keep a monotonic counter as a debugging aid (visible
+        via ``backend._call_counter``); it no longer participates in
+        the task_id, so its per-instance scope is harmless.
         """
+        import uuid as _uuid  # noqa: PLC0415 — lazy so the module stays light
+
         self._call_counter += 1
-        return f"{self.task_id_prefix}-{self._call_counter:04d}"
+        return f"{self.task_id_prefix}-{_uuid.uuid4().hex[:12]}"
 
     def complete_sync(
         self,
