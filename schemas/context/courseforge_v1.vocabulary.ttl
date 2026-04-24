@@ -1,0 +1,264 @@
+# Courseforge RDFS/OWL Vocabulary v1 — Wave 65
+#
+# Formal declaration of every ed4all: class and predicate Courseforge emits,
+# with rdfs:subClassOf / rdfs:subPropertyOf / owl:equivalentProperty relationships
+# to Schema.org, Dublin Core, PROV-O, and SKOS. This file complements:
+#
+#   * schemas/context/courseforge_v1.jsonld   — JSON-LD term-to-IRI mappings
+#   * schemas/context/courseforge_v1.shacl.ttl — RDF-native validation shapes
+#
+# Together they form the RDF story:
+#
+#   JSON-LD payload
+#       └── @context (Wave 62) resolves terms to IRIs
+#           └── Vocabulary (Wave 65) declares class/predicate semantics
+#               └── SHACL shapes (Wave 63) validate the resulting graph
+#                   └── Document loader (Wave 64) serves it all offline
+#
+# Downstream consumers (Pearson / LRMI / CASE / RDF reasoners) that know
+# Schema.org or Dublin Core but not ed4all: get useful inferences via the
+# subClassOf / subPropertyOf declarations below — e.g., an RDFS reasoner
+# seeing `ed4all:CourseModule rdfs:subClassOf schema:LearningResource`
+# will infer every CourseModule IS a LearningResource without needing to
+# learn our namespace.
+#
+# IMS CASE conceptual alignment is declared via rdfs:comment pointers
+# rather than concrete owl:equivalentProperty / owl:equivalentClass
+# bindings — the IMS CASE 1.0 canonical URIs are cfItem / cfAssociation
+# but the URI binding under a W3C namespace isn't standardized. When
+# the IMS publishes a canonical URL, replace the rdfs:comment with a
+# real equivalence axiom.
+
+@prefix rdf:      <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:     <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl:      <http://www.w3.org/2002/07/owl#> .
+@prefix xsd:      <http://www.w3.org/2001/XMLSchema#> .
+@prefix schema:   <http://schema.org/> .
+@prefix skos:     <http://www.w3.org/2004/02/skos/core#> .
+@prefix dcterms:  <http://purl.org/dc/terms/> .
+@prefix prov:     <http://www.w3.org/ns/prov#> .
+@prefix vann:     <http://purl.org/vocab/vann/> .
+@prefix ed4all:   <https://ed4all.dev/ns/courseforge/v1#> .
+@prefix bloom:    <https://ed4all.dev/vocab/bloom#> .
+@prefix cogdomain: <https://ed4all.dev/vocab/cognitive-domain#> .
+@prefix hierarchy: <https://ed4all.dev/vocab/hierarchy#> .
+
+# ---------------------------------------------------------------------------
+# Ontology header
+# ---------------------------------------------------------------------------
+
+<https://ed4all.dev/ns/courseforge/v1>
+  a owl:Ontology ;
+  rdfs:label "Courseforge Ontology v1" ;
+  rdfs:comment "Formal RDFS/OWL declaration of the Courseforge JSON-LD emit vocabulary. Paired with schemas/context/courseforge_v1.jsonld (term mappings) and schemas/context/courseforge_v1.shacl.ttl (validation shapes)." ;
+  dcterms:issued "2026-04-24"^^xsd:date ;
+  owl:versionInfo "1.0.0" ;
+  vann:preferredNamespacePrefix "ed4all" ;
+  vann:preferredNamespaceUri "https://ed4all.dev/ns/courseforge/v1#" .
+
+# ---------------------------------------------------------------------------
+# Classes
+# ---------------------------------------------------------------------------
+
+ed4all:CourseModule
+  a rdfs:Class, owl:Class ;
+  rdfs:label "Course Module" ;
+  rdfs:comment "A single page of Courseforge-generated course content (overview, content, application, summary, discussion). Carries the page-level JSON-LD metadata block." ;
+  rdfs:subClassOf schema:LearningResource ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:LearningObjective
+  a rdfs:Class, owl:Class ;
+  rdfs:label "Learning Objective" ;
+  rdfs:comment "A course-wide (TO-NN) or chapter-level (CO-NN) learning outcome. Conceptually aligned with IMS CASE CFItem; when a canonical CASE IRI is available, add an owl:equivalentClass axiom bound to it." ;
+  rdfs:subClassOf schema:DefinedTerm ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:Section
+  a rdfs:Class, owl:Class ;
+  rdfs:label "Content Section" ;
+  rdfs:comment "A heading+paragraphs unit within a CourseModule's content body." ;
+  rdfs:subClassOf schema:CreativeWork ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:Misconception
+  a rdfs:Class, owl:Class ;
+  rdfs:label "Misconception" ;
+  rdfs:comment "A documented learner error paired with its correction. Wave 60 adds optional Bloom level + cognitive domain." ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:TargetedConcept
+  a rdfs:Class, owl:Class ;
+  rdfs:label "Targeted Concept" ;
+  rdfs:comment "Wave 57: a Bloom-qualified LO→concept edge. Binds a concept slug to the cognitive demand at which the parent LO targets it." ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:BloomDistribution
+  a rdfs:Class, owl:Class ;
+  rdfs:label "Bloom Distribution" ;
+  rdfs:comment "Wave 61: per-page aggregate counts of learning objectives by Bloom's level and cognitive domain." ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+# ---------------------------------------------------------------------------
+# Object properties (relations between resources)
+# ---------------------------------------------------------------------------
+
+ed4all:parentObjective
+  a owl:ObjectProperty ;
+  rdfs:label "parent objective" ;
+  rdfs:comment "Parent LO in the TO/CO hierarchy. A CO-NN's parentObjective is a TO-NN. IMS CASE cfAssociation with associationType='isPartOf' is the conceptual equivalent." ;
+  rdfs:subPropertyOf dcterms:isPartOf ;
+  rdfs:domain ed4all:LearningObjective ;
+  rdfs:range ed4all:LearningObjective ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:targetsConcept
+  a owl:ObjectProperty ;
+  rdfs:label "targets concept" ;
+  rdfs:comment "Wave 57: Bloom-qualified LO→concept edge. Domain is LearningObjective; range is TargetedConcept (the qualified edge, which carries the bloomLevel)." ;
+  rdfs:subPropertyOf schema:about ;
+  rdfs:domain ed4all:LearningObjective ;
+  rdfs:range ed4all:TargetedConcept ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:hasMisconception
+  a owl:ObjectProperty ;
+  rdfs:label "has misconception" ;
+  rdfs:comment "Links a CourseModule (or smaller resource) to a documented Misconception." ;
+  rdfs:domain ed4all:CourseModule ;
+  rdfs:range ed4all:Misconception ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:bloomDistribution
+  a owl:ObjectProperty ;
+  rdfs:label "bloom distribution" ;
+  rdfs:domain ed4all:CourseModule ;
+  rdfs:range ed4all:BloomDistribution ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:bloomLevel
+  a owl:ObjectProperty ;
+  rdfs:label "Bloom's level" ;
+  rdfs:comment "The cognitive demand (Remember / Understand / Apply / Analyze / Evaluate / Create) targeted by a learning objective, question, or misconception. Values are SKOS concepts in the https://ed4all.dev/vocab/bloom# scheme." ;
+  rdfs:range skos:Concept ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:cognitiveDomain
+  a owl:ObjectProperty ;
+  rdfs:label "cognitive knowledge domain" ;
+  rdfs:comment "Revised Bloom's knowledge dimension (factual / conceptual / procedural / metacognitive) derived from bloomLevel. Values are SKOS concepts in the https://ed4all.dev/vocab/cognitive-domain# scheme." ;
+  rdfs:range skos:Concept ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:hierarchyLevel
+  a owl:ObjectProperty ;
+  rdfs:label "LO hierarchy tier" ;
+  rdfs:comment "Either 'terminal' (TO-NN, course-wide) or 'chapter' (CO-NN, chapter-level). Values are SKOS concepts in the https://ed4all.dev/vocab/hierarchy# scheme." ;
+  rdfs:domain ed4all:LearningObjective ;
+  rdfs:range skos:Concept ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+# ---------------------------------------------------------------------------
+# Datatype properties (literals)
+# ---------------------------------------------------------------------------
+
+ed4all:bloomVerb
+  a owl:DatatypeProperty ;
+  rdfs:label "Bloom's verb" ;
+  rdfs:comment "Primary canonical Bloom's verb detected in the LO statement. Free string (matches one of the 60 canonical verbs in schemas/taxonomies/bloom_verbs.json)." ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:correction
+  a owl:DatatypeProperty ;
+  rdfs:label "correction" ;
+  rdfs:comment "Correction text paired with a Misconception (REC-JSL-01: required)." ;
+  rdfs:domain ed4all:Misconception ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:total
+  a owl:DatatypeProperty ;
+  rdfs:label "total" ;
+  rdfs:comment "Count of LOs with a non-null bloomLevel in a BloomDistribution." ;
+  rdfs:domain ed4all:BloomDistribution ;
+  rdfs:range xsd:nonNegativeInteger ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:byLevel
+  a owl:DatatypeProperty ;
+  rdfs:label "by Bloom level" ;
+  rdfs:comment "Object mapping Bloom level names to counts. Non-RDF-native shape (nested dict) — consumers wanting RDF triples should unpack client-side." ;
+  rdfs:domain ed4all:BloomDistribution ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:byCognitiveDomain
+  a owl:DatatypeProperty ;
+  rdfs:label "by cognitive domain" ;
+  rdfs:domain ed4all:BloomDistribution ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:teachingRole
+  a owl:DatatypeProperty ;
+  rdfs:label "teaching role" ;
+  rdfs:comment "REC-VOC-02: pedagogical role of a content block (e.g., term-definition, formative-assessment, practice). Free string today; could become an ObjectProperty pointing at a SKOS role scheme in a future wave." ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:classification
+  a owl:DatatypeProperty ;
+  rdfs:label "course classification" ;
+  rdfs:comment "Course-level taxonomy block inherited on every page's JSON-LD (REC-TAX-01)." ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:suggestedAssessmentType
+  a owl:DatatypeProperty ;
+  rdfs:label "suggested assessment type" ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:bloomRange
+  a owl:ObjectProperty ;
+  rdfs:label "Bloom range" ;
+  rdfs:comment "Section-level span of Bloom levels. Values are SKOS concepts in the bloom scheme." ;
+  rdfs:range skos:Concept ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+# ---------------------------------------------------------------------------
+# SKOS Concept Schemes
+# ---------------------------------------------------------------------------
+
+bloom:
+  a skos:ConceptScheme ;
+  rdfs:label "Bloom's Revised Taxonomy (Cognitive Process Dimension)" ;
+  rdfs:comment "The six cognitive-process levels of Anderson & Krathwohl's Revised Bloom's Taxonomy, lowest to highest: Remember, Understand, Apply, Analyze, Evaluate, Create." ;
+  skos:hasTopConcept bloom:remember, bloom:understand, bloom:apply,
+                     bloom:analyze, bloom:evaluate, bloom:create .
+
+bloom:remember     a skos:Concept ; skos:prefLabel "Remember" ; skos:inScheme bloom: ; skos:broader bloom:understand ; skos:notation "1" .
+bloom:understand   a skos:Concept ; skos:prefLabel "Understand" ; skos:inScheme bloom: ; skos:broader bloom:apply ; skos:narrower bloom:remember ; skos:notation "2" .
+bloom:apply        a skos:Concept ; skos:prefLabel "Apply" ; skos:inScheme bloom: ; skos:broader bloom:analyze ; skos:narrower bloom:understand ; skos:notation "3" .
+bloom:analyze      a skos:Concept ; skos:prefLabel "Analyze" ; skos:inScheme bloom: ; skos:broader bloom:evaluate ; skos:narrower bloom:apply ; skos:notation "4" .
+bloom:evaluate     a skos:Concept ; skos:prefLabel "Evaluate" ; skos:inScheme bloom: ; skos:broader bloom:create ; skos:narrower bloom:analyze ; skos:notation "5" .
+bloom:create       a skos:Concept ; skos:prefLabel "Create" ; skos:inScheme bloom: ; skos:narrower bloom:evaluate ; skos:notation "6" .
+
+cogdomain:
+  a skos:ConceptScheme ;
+  rdfs:label "Revised Bloom's Knowledge Dimension" ;
+  rdfs:comment "The four knowledge-domain categories from Anderson & Krathwohl's Revised Bloom's Taxonomy: Factual, Conceptual, Procedural, Metacognitive." ;
+  skos:hasTopConcept cogdomain:factual, cogdomain:conceptual,
+                     cogdomain:procedural, cogdomain:metacognitive .
+
+cogdomain:factual        a skos:Concept ; skos:prefLabel "Factual" ; skos:inScheme cogdomain: .
+cogdomain:conceptual     a skos:Concept ; skos:prefLabel "Conceptual" ; skos:inScheme cogdomain: .
+cogdomain:procedural     a skos:Concept ; skos:prefLabel "Procedural" ; skos:inScheme cogdomain: .
+cogdomain:metacognitive  a skos:Concept ; skos:prefLabel "Metacognitive" ; skos:inScheme cogdomain: .
+
+hierarchy:
+  a skos:ConceptScheme ;
+  rdfs:label "Courseforge LO Hierarchy Tiers" ;
+  rdfs:comment "Two-tier learning-objective hierarchy: Terminal (TO-NN, course-wide) and Chapter (CO-NN, chapter-level)." ;
+  skos:hasTopConcept hierarchy:terminal .
+
+hierarchy:terminal  a skos:Concept ; skos:prefLabel "Terminal" ; skos:inScheme hierarchy: ; skos:narrower hierarchy:chapter .
+hierarchy:chapter   a skos:Concept ; skos:prefLabel "Chapter" ; skos:inScheme hierarchy: ; skos:broader hierarchy:terminal .
