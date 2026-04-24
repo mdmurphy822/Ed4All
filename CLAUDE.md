@@ -674,6 +674,8 @@ Ten environment-variable toggles gate opt-in strict / stable-ID / provenance beh
 | `DECISION_VALIDATION_STRICT` | Fails closed on unknown `decision_type` values in decision captures. |
 | `DART_LLM_CLASSIFICATION` | DART's block classifier routes through Claude via `LLMClassifier` instead of heuristic regex. Requires an injected `LLMBackend`. |
 | `LOCAL_DISPATCHER_ALLOW_STUB` | Permits `LocalDispatcher` to emit a stubbed `PhaseOutput` (`status="ok"`) when no `agent_tool` callable was wired in. Tests / dry-run only. Default off so production `--mode local` runs fail loudly instead of silently succeeding with empty phase outputs. |
+| `ED4ALL_AGENT_DISPATCH` | Wave 74: route tasks for subagent-classified agents (see `AGENT_SUBAGENT_SET` in `MCP/core/executor.py`) through `dispatcher.dispatch_task` instead of the in-process `tool_registry` entry. Closes the Wave 38 gap that caused content_generation / assessment phases to run as in-process templates regardless of `--mode`. Default off so Wave 74 Session 1 lands the infrastructure without altering any existing run. Agents that stay in-process (DART extraction, TF-IDF routing, packaging, WCAG validation, archival) are unaffected. |
+| `ED4ALL_AGENT_TIMEOUT_SECONDS` | Wave 74: override the default 1800 s mailbox timeout for per-task subagent dispatches. Longer than Wave 73's 120 s default because content-generator / remediation subagents can legitimately take 10+ min to produce a full week's module output. |
 
 ---
 

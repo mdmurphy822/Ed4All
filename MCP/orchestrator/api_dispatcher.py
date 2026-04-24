@@ -113,6 +113,49 @@ class APIDispatcher:
                 error=str(exc),
             )
 
+    # Wave 74: per-task subagent dispatch parity with LocalDispatcher.
+    # In api mode the expected path is to call the injected LLMBackend
+    # directly inside the agent-style tool rather than round-tripping
+    # through an external operator. Session 1 lands a minimal contract-
+    # conformant implementation that degrades to the stub shape — api
+    # mode callers can switch to ``ED4ALL_AGENT_DISPATCH=true`` without
+    # changing the orchestrator contract, and Session 2 wires real
+    # per-agent prompt templates (same templates local-mode operators
+    # use) so the same subagent logic executes against the SDK instead
+    # of an outer Claude Code session.
+    async def dispatch_task(
+        self,
+        *,
+        task_name: str,
+        agent_type: str,
+        task_params: Dict[str, Any],
+        run_id: str,
+        phase_context: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Dispatch one phase task to an in-process agent coroutine.
+
+        Wave 74 Session 1: returns a stub envelope because the agent-
+        prompt templates + LLMBackend round-trip land in Session 2.
+        The stub shape matches what ``LocalDispatcher.dispatch_task``
+        emits when ``LOCAL_DISPATCHER_ALLOW_STUB=1`` — just enough to
+        let the executor routing fork round-trip without requiring
+        Session 2's prompt infrastructure.
+        """
+        self._dispatched.append(f"{agent_type}:{task_name}")
+        logger.info(
+            "APIDispatcher.dispatch_task (Session-1 stub) — "
+            "agent=%s tool=%s run_id=%s",
+            agent_type, task_name, run_id,
+        )
+        return {
+            "success": True,
+            "dispatch_mode": "api_stub",
+            "agent_type": agent_type,
+            "tool_name": task_name,
+            "outputs": {},
+            "artifacts": [],
+        }
+
     # ------------------------------------------------------------ parallel
 
     async def dispatch_batch(
