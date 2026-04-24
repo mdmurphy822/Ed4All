@@ -3,13 +3,12 @@
 import hashlib
 import json
 import logging
-import os
 import re
 import shutil
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional
 
 from .models.course import (
     ArxivMetadata,
@@ -25,85 +24,16 @@ from .validator import ValidationError, validate_course_strict
 
 logger = logging.getLogger(__name__)
 
-# Wave 70 — opt-in strict SHACL gate on the import path. Off by default
-# (log a warning on non-conform); ``LIBV2_SHACL_IMPORT_STRICT=1`` promotes
-# a violation to a hard ValueError so CI / regression corpora catch drift
-# immediately. Mirrors the truthy-string convention used elsewhere in
-# Ed4All (see schemas/ONTOLOGY.md § 12).
-_SHACL_STRICT_ENV = "LIBV2_SHACL_IMPORT_STRICT"
-_TRUTHY = {"1", "true", "yes", "on"}
-
-
-def _shacl_strict_flag() -> bool:
-    return os.environ.get(_SHACL_STRICT_ENV, "").strip().lower() in _TRUTHY
-
-
-def _shacl_validate_manifest(
-    manifest_dict: dict, strict: bool
-) -> Tuple[bool, str]:
-    """Run the Courseforge SHACL shapes against a manifest-shaped dict.
-
-    The loader + validator live in ``_shacl_validator`` so the heavy
-    pyld/pyshacl/rdflib deps are imported lazily — a bare LibV2 install
-    without the RDF toolchain still gets a clean import (with an
-    info-level note that validation was skipped).
-
-    Args:
-        manifest_dict: The manifest to validate (expanded via the
-            Courseforge @context inside the validator).
-        strict: When True, raises ``ValueError`` with the SHACL report
-            on non-conform. When False, logs a warning and returns the
-            report so the import proceeds.
-
-    Returns:
-        ``(conforms, report_text)``. ``conforms=True`` means the payload
-        satisfied every shape. On missing deps, returns
-        ``(True, "<skipped: pyld/pyshacl/rdflib not installed>")`` — the
-        import continues, and logs capture the skip.
-    """
-    # Lazy import so ``libv2 import`` doesn't pay for pyld at CLI startup.
-    try:
-        from ._shacl_validator import ShaclDepsMissing, validate_manifest_shacl
-    except ImportError as exc:  # defensive — shouldn't fire, vendored in-tree
-        logger.info(
-            "SHACL manifest validation skipped — vendored validator import "
-            "failed: %s",
-            exc,
-        )
-        return True, f"<skipped: validator import failed: {exc}>"
-
-    try:
-        conforms, report = validate_manifest_shacl(manifest_dict)
-    except ShaclDepsMissing as exc:
-        logger.info(
-            "SHACL manifest validation skipped — pyld/pyshacl/rdflib not "
-            "installed (%s). Install the RDF toolchain to enable the gate.",
-            exc,
-        )
-        return True, f"<skipped: deps missing: {exc}>"
-    except Exception as exc:  # pragma: no cover - defensive
-        # Any unexpected SHACL failure is a warning, not a crash — we
-        # must not break imports on validator bugs.
-        logger.warning(
-            "SHACL manifest validation errored out (%s: %s); treating as "
-            "non-conform but not strict-failing.",
-            type(exc).__name__,
-            exc,
-        )
-        return False, f"<validator error: {type(exc).__name__}: {exc}>"
-
-    if not conforms:
-        if strict:
-            raise ValueError(
-                "LibV2 SHACL manifest validation failed (strict mode):\n"
-                + report
-            )
-        logger.warning(
-            "LibV2 SHACL manifest validation produced violations (lenient "
-            "mode — import proceeds):\n%s",
-            report,
-        )
-    return conforms, report
+# Wave 70 introduced a ``LIBV2_SHACL_IMPORT_STRICT`` gate here that routed
+# ``CourseManifest.to_dict()`` through the Courseforge SHACL shapes. The
+# gate was non-functional: the LibV2 manifest payload carries none of the
+# ed4all: @type fields that ``courseforge_v1.shacl.ttl`` targets, so the
+# expanded RDF graph had zero focus nodes and every NodeShape conformed
+# vacuously. Wave 72 removes the dead call site. The lower-level
+# ``_shacl_validator.validate_manifest_shacl`` helper is preserved — it
+# works correctly on real Courseforge JSON-LD payloads (see
+# ``schemas/tests/test_courseforge_shacl_shapes.py``) and stays available
+# for any future caller that feeds it the right input.
 
 
 def slugify(title: str, max_length: int = 50) -> str:
@@ -563,18 +493,8 @@ def import_course(
 
     # Write manifest (must exist before validation runs)
     manifest_path = target_dir / "manifest.json"
-    manifest_payload = manifest.to_dict()
     with open(manifest_path, "w") as f:
-        json.dump(manifest_payload, f, indent=2)
-
-    # Wave 70 — SHACL gate on the manifest. Strict mode (env-controlled)
-    # raises; lenient mode logs and continues. Missing RDF deps skip
-    # silently. Raised as ValueError so the caller can catch it distinct
-    # from JSON Schema ValidationError below.
-    _shacl_validate_manifest(
-        manifest_payload,
-        strict=_shacl_strict_flag(),
-    )
+        json.dump(manifest.to_dict(), f, indent=2)
 
     # Run validation AFTER manifest is written so validator can find it
     validation_result = validate_course_strict(target_dir, repo_root)

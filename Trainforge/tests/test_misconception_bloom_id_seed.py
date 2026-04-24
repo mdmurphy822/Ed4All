@@ -110,6 +110,24 @@ def test_bloom_level_absent_differs_from_bloom_level_present():
     assert legacy != wave69
 
 
+def test_bloom_less_path_matches_pre_wave_69_two_field_seed():
+    """Wave 72 regression: bloom-less path hashes a 2-field seed.
+
+    Pre-Wave-72 the seed was always ``{statement}|{correction}|{bloom_level}``
+    — when ``bloom_level`` was empty the trailing pipe still contributed to
+    the hash, rekeying every legacy / pre-Wave-60 misconception. Wave 72
+    switches to a 2-field seed when no bloom is supplied so legacy corpora
+    retain their pre-Wave-69 IDs. Asserted directly against the canonical
+    2-field sha256 so the seed shape can't silently drift again.
+    """
+    import hashlib
+
+    expected = "mc_" + hashlib.sha256(b"b|c").hexdigest()[:16]
+    assert _misconception_id("b", "c") == expected
+    assert _misconception_id("b", "c", None) == expected
+    assert _misconception_id("b", "c", "") == expected
+
+
 # ---------------------------------------------------------------------------
 # process_course._build_misconceptions_for_graph picks up bloom_level
 # ---------------------------------------------------------------------------
