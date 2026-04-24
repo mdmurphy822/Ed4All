@@ -276,6 +276,7 @@ def test_edge_enum_includes_new_types():
         "misconception-of",
         "derived-from-objective",
         "defined-by",
+        "targets-concept",
     }
 
     # Sanity: validate a synthetic artifact containing all 5 new edge types.

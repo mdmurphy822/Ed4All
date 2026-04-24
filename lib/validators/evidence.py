@@ -4,7 +4,7 @@ Thin helper over ``schemas/knowledge/concept_graph_semantic.schema.json``.
 The schema ships with a ``oneOf`` discriminator on ``edges[].provenance``
 keyed by the ``rule`` field. Each specific arm (``{Rule}Provenance``) binds
 ``rule = {name}`` to a matching evidence ``$def``; the final
-``FallbackProvenance`` arm matches any rule NOT in the 8 modeled rules
+``FallbackProvenance`` arm matches any rule NOT in the 9 modeled rules
 (via ``not: enum``) and accepts any evidence shape.
 
 That keeps the default validation behaviour **lenient** — preserving
