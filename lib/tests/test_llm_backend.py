@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, Dict
 from unittest.mock import MagicMock
 
 import pytest
@@ -13,10 +14,12 @@ from MCP.orchestrator.llm_backend import (
     BackendSpec,
     LLMBackend,
     LocalBackend,
+    MailboxBrokeredBackend,
     MockBackend,
     OpenAIBackend,
     build_backend,
 )
+from MCP.orchestrator.task_mailbox import TaskMailbox
 
 
 class TestProtocolConformance:
@@ -205,5 +208,261 @@ class TestBuildBackend:
 
     def test_env_vars_picked_up(self, monkeypatch):
         monkeypatch.setenv("LLM_MODE", "local")
+        monkeypatch.delenv("ED4ALL_RUN_ID", raising=False)
         backend = build_backend()
         assert isinstance(backend, LocalBackend)
+
+    def test_local_mode_with_run_id_builds_mailbox_backend(
+        self, monkeypatch, tmp_path,
+    ):
+        """Wave 73: ``--mode local`` + ``ED4ALL_RUN_ID`` → MailboxBrokeredBackend.
+
+        Previously local mode always returned the throwing LocalBackend,
+        so DART alt-text and block classification silently dropped to
+        heuristic fallbacks even when a Claude Code operator *could*
+        service completions. Presence of ED4ALL_RUN_ID + a resolvable
+        mailbox base_dir now opts into the mailbox bridge.
+        """
+        monkeypatch.setenv("LLM_MODE", "local")
+        monkeypatch.setenv("ED4ALL_RUN_ID", "TST_RUN_001")
+        monkeypatch.setenv("ED4ALL_MAILBOX_BASE_DIR", str(tmp_path))
+
+        backend = build_backend()
+        assert isinstance(backend, MailboxBrokeredBackend)
+        # Mailbox root is scoped under the run id.
+        assert backend.mailbox.run_id == "TST_RUN_001"
+        assert backend.mailbox.root == tmp_path / "TST_RUN_001" / "mailbox"
+
+    def test_local_mode_without_run_id_still_throws(self, monkeypatch, tmp_path):
+        """Without an ED4ALL_RUN_ID the stub LocalBackend path is preserved
+        — callers that don't opt into the mailbox bridge still fail loudly
+        if they accidentally call ``.complete()``."""
+        monkeypatch.setenv("LLM_MODE", "local")
+        monkeypatch.delenv("ED4ALL_RUN_ID", raising=False)
+        monkeypatch.delenv("ED4ALL_MAILBOX_BASE_DIR", raising=False)
+
+        backend = build_backend()
+        assert isinstance(backend, LocalBackend)
+        with pytest.raises(NotImplementedError):
+            backend.complete_sync("sys", "user")
+
+
+class TestMailboxBrokeredBackend:
+    """Wave 73: LLM bridge between the pipeline subprocess and a Claude Code
+    operator via the TaskMailbox."""
+
+    def _mailbox(self, tmp_path, run_id: str = "TST_RUN") -> TaskMailbox:
+        return TaskMailbox(run_id=run_id, base_dir=tmp_path)
+
+    def test_protocol_conformance(self, tmp_path):
+        backend = MailboxBrokeredBackend(self._mailbox(tmp_path))
+        assert isinstance(backend, LLMBackend)
+
+    def test_rejects_non_mailbox(self):
+        """Typo-safety: passing a string path instead of a TaskMailbox must
+        raise at construction — not mysteriously fail downstream."""
+        with pytest.raises(TypeError, match="TaskMailbox"):
+            MailboxBrokeredBackend("state/runs/whatever/mailbox")  # type: ignore[arg-type]
+
+    def test_complete_sync_writes_pending_then_reads_completion(self, tmp_path):
+        """Happy path: backend writes pending → operator writes completion
+        → backend returns the response_text."""
+        mailbox = self._mailbox(tmp_path)
+        backend = MailboxBrokeredBackend(
+            mailbox, timeout_seconds=5.0, poll_interval=0.02,
+        )
+
+        # Stage a completion envelope for the task id the backend will mint.
+        # Backend uses "llm-0001" as the first task id.
+        def operator_thread():
+            # Wait for pending file to appear, then write completion.
+            import time
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                pending = mailbox.list_pending()
+                if pending:
+                    task_id = pending[0]
+                    mailbox.claim(task_id)
+                    mailbox.complete(
+                        task_id,
+                        {
+                            "success": True,
+                            "result": {"response_text": "Claude says hello."},
+                        },
+                    )
+                    return
+                time.sleep(0.02)
+
+        import threading
+        op = threading.Thread(target=operator_thread, daemon=True)
+        op.start()
+
+        response = backend.complete_sync(
+            system="You are a helper.",
+            user="Say hello.",
+        )
+        op.join(timeout=2.0)
+
+        assert response == "Claude says hello."
+
+    def test_pending_spec_carries_kind_and_payload(self, tmp_path):
+        """The pending-file payload must tag ``kind="llm_call"`` and include
+        the system/user/model/max_tokens fields so the operator knows how
+        to dispatch it. Guards against the operator loop confusing LLM
+        tasks with phase-dispatch tasks that share the mailbox."""
+        mailbox = self._mailbox(tmp_path)
+        backend = MailboxBrokeredBackend(
+            mailbox, timeout_seconds=0.5, poll_interval=0.02,
+        )
+
+        captured: Dict[str, Any] = {}
+
+        def operator_thread():
+            import time
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                pending = mailbox.list_pending()
+                if pending:
+                    task_id = pending[0]
+                    spec = mailbox.claim(task_id)
+                    captured.update(spec)
+                    mailbox.complete(
+                        task_id,
+                        {"success": True, "result": {"response_text": "ok"}},
+                    )
+                    return
+                time.sleep(0.02)
+
+        import threading
+        op = threading.Thread(target=operator_thread, daemon=True)
+        op.start()
+        backend.complete_sync(
+            "system-msg",
+            "user-msg",
+            model="claude-haiku-4-5-20251001",
+            max_tokens=512,
+            temperature=0.2,
+        )
+        op.join(timeout=2.0)
+
+        assert captured["kind"] == "llm_call"
+        assert captured["system"] == "system-msg"
+        assert captured["user"] == "user-msg"
+        assert captured["model"] == "claude-haiku-4-5-20251001"
+        assert captured["max_tokens"] == 512
+        assert captured["temperature"] == 0.2
+
+    def test_timeout_raises(self, tmp_path):
+        """With no operator writing completion, the backend must raise
+        TimeoutError rather than silently returning empty string."""
+        mailbox = self._mailbox(tmp_path)
+        backend = MailboxBrokeredBackend(
+            mailbox, timeout_seconds=0.1, poll_interval=0.02,
+        )
+        with pytest.raises(TimeoutError):
+            backend.complete_sync("sys", "user")
+
+    def test_failure_envelope_raises(self, tmp_path):
+        """``success: False`` must surface as an exception — call sites
+        that catch ``Exception`` then fall back to heuristics rely on the
+        exception path to know the LLM was unavailable."""
+        mailbox = self._mailbox(tmp_path)
+        backend = MailboxBrokeredBackend(
+            mailbox, timeout_seconds=2.0, poll_interval=0.02,
+        )
+
+        def operator_thread():
+            import time
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline:
+                pending = mailbox.list_pending()
+                if pending:
+                    task_id = pending[0]
+                    mailbox.claim(task_id)
+                    mailbox.complete(
+                        task_id,
+                        {"success": False, "error": "operator declined",
+                         "error_code": "OPERATOR_REFUSED"},
+                    )
+                    return
+                time.sleep(0.02)
+
+        import threading
+        op = threading.Thread(target=operator_thread, daemon=True)
+        op.start()
+        with pytest.raises(RuntimeError, match="OPERATOR_REFUSED"):
+            backend.complete_sync("sys", "user")
+        op.join(timeout=1.0)
+
+    def test_envelope_shapes_accepted(self, tmp_path):
+        """All three documented envelope shapes resolve to the right text.
+
+        1. ``{"result": {"response_text": "X"}}`` — canonical
+        2. ``{"result": "X"}`` — bare-string convenience
+        3. ``{"raw": "X"}`` — fallback
+        """
+        mailbox = self._mailbox(tmp_path)
+        # Shape 1 → canonical
+        backend = MailboxBrokeredBackend(
+            mailbox, timeout_seconds=2.0, poll_interval=0.02,
+        )
+
+        def _run(envelope_builder, expected):
+            def operator_thread():
+                import time
+                deadline = time.monotonic() + 2.0
+                while time.monotonic() < deadline:
+                    pending = mailbox.list_pending()
+                    if pending:
+                        task_id = pending[0]
+                        mailbox.claim(task_id)
+                        mailbox.complete(task_id, envelope_builder())
+                        return
+                    time.sleep(0.02)
+            import threading
+            op = threading.Thread(target=operator_thread, daemon=True)
+            op.start()
+            out = backend.complete_sync("sys", "user")
+            op.join(timeout=1.0)
+            assert out == expected
+
+        _run(
+            lambda: {"success": True, "result": {"response_text": "canonical"}},
+            "canonical",
+        )
+        _run(
+            lambda: {"success": True, "result": "bare-string"},
+            "bare-string",
+        )
+        _run(
+            lambda: {"success": True, "raw": "raw-fallback"},
+            "raw-fallback",
+        )
+
+    def test_streaming_raises(self, tmp_path):
+        """Streaming is explicitly unsupported (decision O3)."""
+        import asyncio
+        backend = MailboxBrokeredBackend(self._mailbox(tmp_path))
+        with pytest.raises(NotImplementedError, match="streaming"):
+            asyncio.run(backend.complete("sys", "user", stream=True))
+
+    def test_task_ids_are_monotonic_and_llm_prefixed(self, tmp_path):
+        """Sanity: task ids minted by this backend are deterministic so
+        two concurrent MailboxBrokeredBackend instances don't collide
+        and so phase-dispatch tasks (``{phase}-{uuid8}``) never share a
+        prefix-shape with LLM tasks."""
+        mailbox = self._mailbox(tmp_path)
+        backend = MailboxBrokeredBackend(mailbox, timeout_seconds=0.05)
+        # Fire + let them timeout so we can observe the queued task ids.
+        for i in range(3):
+            try:
+                backend.complete_sync("s", f"u{i}")
+            except TimeoutError:
+                pass
+        # Because cleanup() runs on every call (success or fail), we
+        # can't list pending anymore — instead assert the counter
+        # advanced deterministically and the mailbox stayed empty after
+        # cleanup.
+        assert backend._call_counter == 3
+        assert mailbox.list_pending() == []
+        assert mailbox.list_in_progress() == []

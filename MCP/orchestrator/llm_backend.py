@@ -271,6 +271,237 @@ class LocalBackend:
 
 
 # =============================================================================
+# MailboxBrokeredBackend — bridges ``complete()`` to a Claude Code session
+# =============================================================================
+
+
+class MailboxBrokeredBackend:
+    """``LLMBackend`` that routes completions through a ``TaskMailbox``.
+
+    Wave 73: in ``--mode local`` runs the orchestrator is a Python subprocess
+    that has no direct access to an LLM API. Historically this meant every
+    in-process LLM call site (``DART.converter.llm_classifier``,
+    ``DART.pdf_converter.alt_text_generator``, ``Trainforge.align_chunks``)
+    either refused to start (``LocalBackend`` throws) or silently fell back
+    to a heuristic / no-op path — so "local mode" shipped real grounded
+    templated content but no real Claude-generated enrichment anywhere.
+
+    This backend closes that gap by brokering every ``complete()`` call
+    through the same ``TaskMailbox`` infrastructure that ``LocalDispatcher``
+    uses for phase-level dispatch:
+
+    1. ``complete_sync()`` writes a pending task spec carrying
+       ``kind="llm_call"`` plus the ``system`` / ``user`` / ``model`` /
+       ``max_tokens`` / ``temperature`` / ``images`` payload.
+    2. It blocks on ``TaskMailbox.wait_for_completion`` up to
+       ``timeout_seconds``.
+    3. An outer Claude Code operator (polling ``mailbox/pending/``)
+       dispatches an ``Agent`` subagent to produce the completion, then
+       writes a completion envelope ``{"success": true, "result":
+       {"response_text": "<str>"}}`` to ``mailbox/completed/{task_id}.json``.
+    4. The backend reads ``response_text`` and returns it to the caller —
+       indistinguishable from a direct SDK completion from the call site's
+       perspective.
+
+    The envelope shape mirrors the phase-dispatch completion shape (see
+    ``LocalDispatcher._dispatch_via_mailbox``) except ``result`` carries
+    ``response_text`` rather than a full ``PhaseOutput`` payload — this
+    lets operators disambiguate "LLM call" tasks from phase tasks by the
+    ``kind`` field and the ``result`` schema.
+
+    Streaming is explicitly unsupported: the mailbox protocol is
+    request/response and the upstream codebase defers streaming per
+    decision O3 anyway.
+    """
+
+    def __init__(
+        self,
+        mailbox,
+        *,
+        timeout_seconds: float = 120.0,
+        poll_interval: float = 0.25,
+        default_model: Optional[str] = None,
+        task_id_prefix: str = "llm",
+    ):
+        """
+        Args:
+            mailbox: A ``MCP.orchestrator.task_mailbox.TaskMailbox`` bound
+                to the active run's state directory.
+            timeout_seconds: Maximum seconds to block waiting for the
+                outer operator to write the completion envelope. Default
+                120s — classifier batches and alt-text generations are
+                typically tens of seconds, so 2 minutes gives headroom
+                for operator turnaround without pinning forever.
+            poll_interval: Seconds between mailbox polls. Kept short
+                (0.25s) so the call latency is dominated by operator
+                dispatch, not poll granularity.
+            default_model: Informational only — passed through to the
+                operator so decision captures can pin the model. The
+                operator chooses the actual serving model.
+            task_id_prefix: Prefix for generated task_ids. ``llm``
+                distinguishes LLM-completion tasks from phase-dispatch
+                tasks when they share a mailbox.
+        """
+        # Lazy import to avoid a hard dependency for consumers who never
+        # build this backend (it lives in the same package so this is
+        # cheap; kept lazy for symmetry with other backends).
+        from .task_mailbox import TaskMailbox  # noqa: PLC0415
+
+        if not isinstance(mailbox, TaskMailbox):
+            raise TypeError(
+                "MailboxBrokeredBackend requires a TaskMailbox instance. "
+                f"Got {type(mailbox).__name__}."
+            )
+        self.mailbox = mailbox
+        self.timeout_seconds = float(timeout_seconds)
+        self.poll_interval = float(poll_interval)
+        self.default_model = default_model or DEFAULT_ANTHROPIC_MODEL
+        self.task_id_prefix = str(task_id_prefix)
+        self._call_counter = 0
+
+    def _next_task_id(self) -> str:
+        """Return a mailbox task id unique within this backend instance.
+
+        Monotonic per-backend counter keeps task ids deterministic in
+        tests (``llm-0000``, ``llm-0001``, ...) while still avoiding
+        collisions with phase-dispatch task ids (which follow the
+        ``{phase_name}-{uuid8}`` shape and so never collide with the
+        ``{prefix}-{int}`` shape we emit here).
+        """
+        self._call_counter += 1
+        return f"{self.task_id_prefix}-{self._call_counter:04d}"
+
+    def complete_sync(
+        self,
+        system: str,
+        user: str,
+        *,
+        model: Optional[str] = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        images: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        task_id = self._next_task_id()
+        spec: Dict[str, Any] = {
+            "kind": "llm_call",
+            "system": system or "",
+            "user": user,
+            "model": model or self.default_model,
+            "max_tokens": int(max_tokens),
+            "temperature": float(temperature),
+        }
+        if images:
+            spec["images"] = images
+
+        self.mailbox.put_pending(task_id, spec)
+        logger.debug(
+            "MailboxBrokeredBackend: queued %s (len(user)=%d, max_tokens=%d)",
+            task_id,
+            len(user or ""),
+            max_tokens,
+        )
+
+        try:
+            envelope = self.mailbox.wait_for_completion(
+                task_id,
+                timeout_seconds=self.timeout_seconds,
+                poll_interval=self.poll_interval,
+            )
+        finally:
+            # Prune per-task files regardless of success so the mailbox
+            # stays bounded across long runs. Mirrors LocalDispatcher's
+            # cleanup pattern.
+            try:
+                self.mailbox.cleanup(task_id)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "MailboxBrokeredBackend: cleanup failed for %s (non-fatal)",
+                    task_id,
+                )
+
+        return self._text_from_envelope(envelope, task_id)
+
+    @staticmethod
+    def _text_from_envelope(envelope: Dict[str, Any], task_id: str) -> str:
+        """Extract the completion text from a mailbox envelope.
+
+        Accepted shapes (in precedence order):
+
+        * ``{"success": true, "result": {"response_text": "..."}}``
+          — canonical Wave 73 shape.
+        * ``{"success": true, "result": "..."}``
+          — convenience for operators that return a bare string.
+        * ``{"success": true, "raw": "..."}``
+          — fallback; ``raw`` is returned verbatim.
+
+        Raises ``RuntimeError`` on ``success: false`` or a missing text
+        payload so the call site can surface the mailbox failure instead
+        of silently returning empty string (which would masquerade as a
+        zero-length completion and suppress downstream heuristic
+        fallbacks that key on the exception path).
+        """
+        if not isinstance(envelope, dict):
+            raise RuntimeError(
+                f"MailboxBrokeredBackend: task {task_id!r} completion "
+                f"envelope was not a JSON object"
+            )
+        if not envelope.get("success", False):
+            err = envelope.get("error") or "outer operator reported failure"
+            code = envelope.get("error_code")
+            suffix = f" (error_code={code})" if code else ""
+            raise RuntimeError(
+                f"MailboxBrokeredBackend: task {task_id!r} failed: {err}{suffix}"
+            )
+
+        result = envelope.get("result")
+        if isinstance(result, dict):
+            text = result.get("response_text")
+            if isinstance(text, str):
+                return text
+        if isinstance(result, str):
+            return result
+        raw = envelope.get("raw")
+        if isinstance(raw, str):
+            return raw
+        raise RuntimeError(
+            f"MailboxBrokeredBackend: task {task_id!r} completion envelope "
+            f"reported success but carried no response_text"
+        )
+
+    async def complete(
+        self,
+        system: str,
+        user: str,
+        *,
+        model: Optional[str] = None,
+        max_tokens: int = 4096,
+        temperature: float = 0.7,
+        stream: bool = False,
+        images: Optional[List[Dict[str, Any]]] = None,
+    ) -> Union[str, AsyncIterator[str]]:
+        if stream:
+            raise NotImplementedError(
+                "MailboxBrokeredBackend does not support streaming "
+                "(deferred per decision O3). Call with stream=False."
+            )
+        # Off-thread the blocking mailbox wait so the event loop isn't pinned.
+        import asyncio as _asyncio  # noqa: PLC0415
+
+        loop = _asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: self.complete_sync(
+                system,
+                user,
+                model=model,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                images=images,
+            ),
+        )
+
+
+# =============================================================================
 # OpenAIBackend — stub reserved for later wave
 # =============================================================================
 
@@ -470,6 +701,13 @@ class BackendSpec:
     model: Optional[str] = None
     api_key: Optional[str] = None
     mock_responses: List[str] = field(default_factory=list)
+    # Wave 73: when mode=local, ``run_id`` + optional ``mailbox_base_dir``
+    # select a ``MailboxBrokeredBackend`` (Claude Code operator loop) over
+    # the default ``LocalBackend`` stub. Empty run_id keeps the pre-Wave-73
+    # throwing behavior so tests / callers that haven't opted in stay
+    # loud if they accidentally call ``.complete()``.
+    run_id: Optional[str] = None
+    mailbox_base_dir: Optional[str] = None
 
 
 def build_backend(spec: Optional[BackendSpec] = None, **overrides: Any) -> LLMBackend:
@@ -478,7 +716,21 @@ def build_backend(spec: Optional[BackendSpec] = None, **overrides: Any) -> LLMBa
     Precedence: explicit ``overrides`` > ``spec`` fields > env vars > defaults.
 
     Recognized env vars: ``LLM_MODE``, ``LLM_PROVIDER``, ``LLM_MODEL``,
-    ``ANTHROPIC_API_KEY``, ``OPENAI_API_KEY``.
+    ``ANTHROPIC_API_KEY``, ``OPENAI_API_KEY``, ``ED4ALL_RUN_ID``,
+    ``ED4ALL_MAILBOX_BASE_DIR``.
+
+    Wave 73 local-mode path: when ``mode=local`` and a ``run_id`` is
+    resolvable (via overrides, spec, or ``ED4ALL_RUN_ID`` env), build a
+    ``MailboxBrokeredBackend`` bound to ``{mailbox_base_dir}/{run_id}/
+    mailbox/``. This lets in-process LLM call sites (classifier, alt-text,
+    align_chunks) route through the TaskMailbox to a Claude Code operator
+    loop — the "local LLM" pathway that was scaffolded but not wired in
+    Waves 7 / 34.
+
+    When ``mode=local`` but no ``run_id`` is available, fall through to
+    the throwing ``LocalBackend`` to preserve the pre-Wave-73 contract:
+    callers that accidentally try to call ``.complete()`` without
+    opting into the mailbox path fail loudly.
     """
     spec = spec or BackendSpec()
 
@@ -491,6 +743,26 @@ def build_backend(spec: Optional[BackendSpec] = None, **overrides: Any) -> LLMBa
     model = overrides.get("model") or spec.model or os.environ.get("LLM_MODEL")
 
     if mode == "local":
+        run_id = (
+            overrides.get("run_id")
+            or spec.run_id
+            or os.environ.get("ED4ALL_RUN_ID")
+        )
+        if run_id:
+            mailbox_base_dir = (
+                overrides.get("mailbox_base_dir")
+                or spec.mailbox_base_dir
+                or os.environ.get("ED4ALL_MAILBOX_BASE_DIR")
+            )
+            from .task_mailbox import TaskMailbox  # noqa: PLC0415
+
+            base_path = Path(mailbox_base_dir) if mailbox_base_dir else None
+            mailbox = TaskMailbox(run_id=run_id, base_dir=base_path)
+            timeout = overrides.get("mailbox_timeout_seconds")
+            kwargs: Dict[str, Any] = {"default_model": model}
+            if timeout is not None:
+                kwargs["timeout_seconds"] = float(timeout)
+            return MailboxBrokeredBackend(mailbox, **kwargs)
         return LocalBackend()
 
     # api mode

@@ -61,6 +61,19 @@ except ImportError as _mbx_import_err:  # pragma: no cover
     )
 
 
+# Register Wave 73 'ed4all mailbox-bridge peek/complete' commands — the
+# operator-side plumbing for the MailboxBrokeredBackend LLM bridge.
+try:
+    from cli.commands.mailbox_bridge import register_mailbox_bridge_command
+
+    register_mailbox_bridge_command(cli)
+except ImportError as _mbb_import_err:  # pragma: no cover
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "cli.commands.mailbox_bridge unavailable: %s", _mbb_import_err
+    )
+
+
 # =============================================================================
 # VALIDATE-RUN COMMAND
 # =============================================================================
