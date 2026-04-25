@@ -228,7 +228,22 @@ class TestConceptGraphPartition:
         assert "behaviorism" in node_ids
         assert all(edge.get("relation_type") == "co-occurs" for edge in graph["edges"])
 
-    def test_pedagogy_graph_captures_pedagogy_tags(self):
+    def test_pedagogy_graph_emits_typed_nodes(self):
+        """Wave 81: ``_generate_pedagogy_graph`` now delegates to the
+        Wave 75/78 ``build_pedagogy_graph`` instead of the legacy
+        co-occurrence stub.
+
+        Pre-Wave-81 this test asserted that Bloom verb tags (``apply``)
+        landed as graph nodes and domain concepts (``behaviorism``)
+        did not — that was the stub's "mirror pedagogy/logistics tags"
+        behavior. The real builder emits typed nodes
+        (``BloomLevel`` / ``DifficultyLevel`` / ``Chunk`` / ``Module`` /
+        ``Outcome`` / ``ComponentObjective`` / ``Misconception``)
+        instead. The contract enforced here is: even on a tag-only
+        chunk corpus with no objectives, BloomLevel + DifficultyLevel
+        typed nodes always emit (the builder seeds them
+        unconditionally).
+        """
         from Trainforge.process_course import CourseProcessor
 
         proc = CourseProcessor.__new__(CourseProcessor)
@@ -237,9 +252,25 @@ class TestConceptGraphPartition:
             _chunk(id="c2", concept_tags=["apply", "behaviorism"]),
         ]
         ped = proc._generate_pedagogy_graph(chunks)
-        node_ids = {n["id"] for n in ped["nodes"]}
-        assert "apply" in node_ids
-        assert "behaviorism" not in node_ids
+        node_classes = {n.get("class") for n in ped["nodes"]}
+        # BloomLevel + DifficultyLevel are always seeded by the builder.
+        assert "BloomLevel" in node_classes, (
+            f"Wave 81: BloomLevel typed nodes missing. Got classes: "
+            f"{sorted(c for c in node_classes if c)}"
+        )
+        assert "DifficultyLevel" in node_classes, (
+            f"Wave 81: DifficultyLevel typed nodes missing. Got classes: "
+            f"{sorted(c for c in node_classes if c)}"
+        )
+        # Chunk nodes from the corpus also land.
+        chunk_node_ids = {n["id"] for n in ped["nodes"] if n.get("class") == "Chunk"}
+        assert chunk_node_ids == {"c1", "c2"}, (
+            f"Wave 81: Chunk nodes missing or wrong. Got: {chunk_node_ids}"
+        )
+        # The legacy stub assertion that ``apply`` is a node and
+        # ``behaviorism`` is not no longer applies — bloom verbs are
+        # typed BloomLevel nodes (``bloom:apply``) not raw tag IDs.
+        assert "bloom:apply" in {n["id"] for n in ped["nodes"]}
 
 
 # ---------------------------------------------------------------------------
