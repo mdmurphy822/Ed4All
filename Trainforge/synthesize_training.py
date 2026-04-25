@@ -59,6 +59,14 @@ from Trainforge.generators.instruction_factory import (  # noqa: E402
 from Trainforge.generators.preference_factory import (  # noqa: E402
     synthesize_preference_pair,
 )
+from Trainforge.curriculum import (  # noqa: E402
+    DEFAULT_PREREQ_CONTEXT_TOKENS,
+    build_curriculum_context,
+    build_curriculum_manifest,
+    build_prereq_recap,
+    load_pedagogy_graph,
+    order_pairs_by_curriculum,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +94,14 @@ class SynthesisStats:
     capped_at_max_pairs: bool = False
     max_pairs_cap: Optional[int] = None
     difficulty_curriculum: bool = False
+    # Wave 79 Worker B: prerequisite-aware curriculum mode.
+    curriculum_from_graph: bool = False
+    prereq_windowed: bool = False
+    prereq_context_tokens: int = DEFAULT_PREREQ_CONTEXT_TOKENS
+    cycles_broken_count: int = 0
+    pairs_without_concepts: int = 0
+    concepts_without_pairs_count: int = 0
+    pairs_with_prereq_recap: int = 0
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -105,6 +121,13 @@ class SynthesisStats:
             "capped_at_max_pairs": self.capped_at_max_pairs,
             "max_pairs_cap": self.max_pairs_cap,
             "difficulty_curriculum": self.difficulty_curriculum,
+            "curriculum_from_graph": self.curriculum_from_graph,
+            "prereq_windowed": self.prereq_windowed,
+            "prereq_context_tokens": self.prereq_context_tokens,
+            "cycles_broken_count": self.cycles_broken_count,
+            "pairs_without_concepts": self.pairs_without_concepts,
+            "concepts_without_pairs_count": self.concepts_without_pairs_count,
+            "pairs_with_prereq_recap": self.pairs_with_prereq_recap,
         }
 
 
@@ -358,6 +381,33 @@ def _last_event_id(capture: DecisionCapture) -> str:
 # Stage entry point
 # ---------------------------------------------------------------------------
 
+def _resolve_pedagogy_graph_path(
+    corpus_dir: Path,
+    explicit: Optional[Path] = None,
+) -> Optional[Path]:
+    """Locate ``pedagogy_graph.json`` next to a Trainforge corpus.
+
+    Order tried (first hit wins):
+      1. ``explicit`` if supplied (caller override / tests).
+      2. ``<corpus_dir>/graph/pedagogy_graph.json`` (LibV2 archive layout).
+      3. ``<corpus_dir>/pedagogy/pedagogy_graph.json`` (Trainforge run output).
+      4. ``<corpus_dir>/pedagogy_graph.json``.
+    Returns None when no graph is on disk (caller decides whether that is
+    fatal — it is when ``--curriculum-from-graph`` is set).
+    """
+    if explicit is not None:
+        return Path(explicit) if Path(explicit).exists() else None
+    candidates = [
+        corpus_dir / "graph" / "pedagogy_graph.json",
+        corpus_dir / "pedagogy" / "pedagogy_graph.json",
+        corpus_dir / "pedagogy_graph.json",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
+
+
 def run_synthesis(
     corpus_dir: Path,
     course_code: str,
@@ -370,6 +420,11 @@ def run_synthesis(
     difficulty_curriculum: bool = False,
     max_pairs: Optional[int] = None,
     output_dir: Optional[Path] = None,
+    curriculum_from_graph: bool = False,
+    prereq_windowed: bool = False,
+    prereq_context_tokens: int = DEFAULT_PREREQ_CONTEXT_TOKENS,
+    pedagogy_graph_path: Optional[Path] = None,
+    slug: Optional[str] = None,
 ) -> SynthesisStats:
     """Run the full synthesis stage for one course output directory.
 
@@ -445,6 +500,30 @@ def run_synthesis(
     stats.stratify_dimensions = list(stratify_dims)
     stats.max_pairs_cap = max_pairs
     stats.difficulty_curriculum = bool(difficulty_curriculum)
+    stats.curriculum_from_graph = bool(curriculum_from_graph)
+    stats.prereq_windowed = bool(prereq_windowed)
+    stats.prereq_context_tokens = int(prereq_context_tokens)
+
+    # Wave 79 Worker B: load the pedagogy graph eagerly when curriculum mode
+    # is active so a missing graph fails loud instead of silently degrading
+    # to chunk-id ordering. The build itself is cheap (sub-1k concept dict
+    # build + Kahn's pass) so doing it once here is fine.
+    curriculum_ctx = None
+    chunks_by_id: Dict[str, Dict[str, Any]] = {}
+    if curriculum_from_graph or prereq_windowed:
+        graph_path = _resolve_pedagogy_graph_path(corpus_dir, pedagogy_graph_path)
+        if graph_path is None:
+            raise FileNotFoundError(
+                "--curriculum-from-graph / --prereq-windowed require "
+                f"pedagogy_graph.json under {corpus_dir} (looked in graph/, "
+                f"pedagogy/, and the corpus root)."
+            )
+        graph = load_pedagogy_graph(graph_path)
+        curriculum_ctx = build_curriculum_context(graph, chunks)
+        chunks_by_id = {
+            str(c.get("id") or c.get("chunk_id") or ""): c for c in chunks
+        }
+        chunks_by_id.pop("", None)
 
     owns_capture = False
     if capture is None:
@@ -687,9 +766,125 @@ def run_synthesis(
             instruction_records.sort(key=lambda r: (r["chunk_id"], r.get("seed", 0)))
             preference_records.sort(key=lambda r: (r["chunk_id"], r.get("seed", 0)))
 
+        # ------------------------------------------------------------------
+        # Wave 79 Worker B: prerequisite-aware curriculum reordering + recap
+        # ------------------------------------------------------------------
+        # Runs AFTER the difficulty-curriculum pass so the topo order wins
+        # when both flags are set (the prerequisite graph encodes more
+        # information than the difficulty tier label alone).
+        manifest_doc: Optional[Dict[str, Any]] = None
+        if curriculum_ctx is not None and curriculum_from_graph:
+            (
+                instruction_records,
+                inst_pairs_by_pos,
+                inst_concepts_no_pairs,
+                inst_no_concept,
+            ) = order_pairs_by_curriculum(
+                instruction_records,
+                chunks_by_id,
+                curriculum_ctx.topo,
+                curriculum_ctx.concept_lookup,
+            )
+            (
+                preference_records,
+                pref_pairs_by_pos,
+                pref_concepts_no_pairs,
+                pref_no_concept,
+            ) = order_pairs_by_curriculum(
+                preference_records,
+                chunks_by_id,
+                curriculum_ctx.topo,
+                curriculum_ctx.concept_lookup,
+            )
+            # Merge per-artifact manifests: a concept reports pairs from
+            # BOTH instruction and preference outputs.
+            merged_pairs_by_position: Dict[str, List[Dict[str, Any]]] = {}
+            for src in (inst_pairs_by_pos, pref_pairs_by_pos):
+                for cid, items in src.items():
+                    merged_pairs_by_position.setdefault(cid, []).extend(items)
+            concepts_with_pairs = set(merged_pairs_by_position.keys())
+            concepts_without_pairs = [
+                cid for cid in curriculum_ctx.topo.order
+                if cid not in concepts_with_pairs
+            ]
+            stats.cycles_broken_count = len(curriculum_ctx.topo.cycles_broken)
+            stats.pairs_without_concepts = inst_no_concept + pref_no_concept
+            stats.concepts_without_pairs_count = len(concepts_without_pairs)
+            manifest_slug = slug or corpus_dir.name
+            manifest_doc = build_curriculum_manifest(
+                slug=manifest_slug,
+                topo=curriculum_ctx.topo,
+                pairs_by_concept_position=merged_pairs_by_position,
+                concepts_without_pairs=concepts_without_pairs,
+                pairs_without_concepts=stats.pairs_without_concepts,
+            )
+            capture.log_decision(
+                decision_type="instruction_pair_synthesis",
+                decision=(
+                    f"Curriculum ordering applied via pedagogy_graph: "
+                    f"{len(curriculum_ctx.topo.order)} concepts in topo order, "
+                    f"{stats.cycles_broken_count} cycles broken."
+                ),
+                rationale=(
+                    "Prerequisite-aware emit order anchors each pair at the "
+                    "latest concept its chunk references. Pairs without "
+                    "concept tags fall to the end so a learner sees graph-"
+                    "anchored material first; cycle-break rule is "
+                    "(first_seen_week, concept_id) ascending so the order "
+                    "is stable across runs."
+                ),
+                context=(
+                    f"pairs_without_concepts={stats.pairs_without_concepts}; "
+                    f"concepts_without_pairs={stats.concepts_without_pairs_count}; "
+                    f"prereq_windowed={prereq_windowed}; "
+                    f"context_tokens={prereq_context_tokens}"
+                ),
+            )
+
+        # Apply --prereq-windowed AFTER ordering so the recap reflects the
+        # final emit shape. We mutate the prompt field in place (both
+        # instruction and preference pair records use ``prompt``).
+        if curriculum_ctx is not None and prereq_windowed:
+            for rec in instruction_records:
+                recap = build_prereq_recap(
+                    rec,
+                    chunks_by_id,
+                    curriculum_ctx.concept_lookup,
+                    curriculum_ctx.predecessors,
+                    curriculum_ctx.first_seen_chunk,
+                    context_tokens=prereq_context_tokens,
+                    label_lookup=curriculum_ctx.label_lookup,
+                )
+                if recap:
+                    rec["prereq_recap"] = recap
+                    original = rec.get("prompt", "")
+                    rec["prompt"] = recap + "\n\n" + original
+                    stats.pairs_with_prereq_recap += 1
+            for rec in preference_records:
+                recap = build_prereq_recap(
+                    rec,
+                    chunks_by_id,
+                    curriculum_ctx.concept_lookup,
+                    curriculum_ctx.predecessors,
+                    curriculum_ctx.first_seen_chunk,
+                    context_tokens=prereq_context_tokens,
+                    label_lookup=curriculum_ctx.label_lookup,
+                )
+                if recap:
+                    rec["prereq_recap"] = recap
+                    original = rec.get("prompt", "")
+                    rec["prompt"] = recap + "\n\n" + original
+                    stats.pairs_with_prereq_recap += 1
+
         _write_jsonl(instruction_out, instruction_records)
         _write_jsonl(preference_out, preference_records)
         _update_dataset_config(dataset_config_path, stats)
+        if manifest_doc is not None:
+            manifest_path = training_specs_dir / "curriculum_manifest.json"
+            _tmp = manifest_path.with_suffix(manifest_path.suffix + ".tmp")
+            with _tmp.open("w", encoding="utf-8") as fh:
+                json.dump(manifest_doc, fh, indent=2, ensure_ascii=False, sort_keys=True)
+            _tmp.replace(manifest_path)
 
         # Log a stage-complete decision so the summary lives alongside the per-pair events.
         capture.log_decision(
@@ -734,6 +929,10 @@ def run_synthesis_from_libv2(
     include_dpo_from_misconceptions: bool = False,
     difficulty_curriculum: bool = False,
     max_pairs: Optional[int] = None,
+    curriculum_from_graph: bool = False,
+    prereq_windowed: bool = False,
+    prereq_context_tokens: int = DEFAULT_PREREQ_CONTEXT_TOKENS,
+    pedagogy_graph_path: Optional[Path] = None,
 ) -> SynthesisStats:
     """Run synthesis directly against a LibV2 course archive.
 
@@ -784,6 +983,11 @@ def run_synthesis_from_libv2(
         difficulty_curriculum=difficulty_curriculum,
         max_pairs=max_pairs,
         output_dir=output_dir,
+        curriculum_from_graph=curriculum_from_graph,
+        prereq_windowed=prereq_windowed,
+        prereq_context_tokens=prereq_context_tokens,
+        pedagogy_graph_path=pedagogy_graph_path,
+        slug=slug,
     )
 
 
@@ -880,6 +1084,46 @@ def build_parser() -> argparse.ArgumentParser:
             "<corpus>/training_specs/."
         ),
     )
+    # Wave 79 Worker B
+    p.add_argument(
+        "--curriculum-from-graph",
+        action="store_true",
+        help=(
+            "Order emitted pairs by topological sort over pedagogy_graph "
+            "prerequisite_of edges. Each pair anchors at the latest concept "
+            "its chunk references; pairs whose chunks reference no concepts "
+            "go to the end. Cycle-break: (first_seen_week, concept_id) asc."
+        ),
+    )
+    p.add_argument(
+        "--prereq-windowed",
+        action="store_true",
+        help=(
+            "Prepend a 'Prerequisites recap' block to each pair's prompt, "
+            "summarising depth-1 prerequisite_of predecessors of the "
+            "pair's chunk concepts. Recap is capped at "
+            "--prereq-context-tokens whitespace tokens."
+        ),
+    )
+    p.add_argument(
+        "--prereq-context-tokens",
+        type=int,
+        default=DEFAULT_PREREQ_CONTEXT_TOKENS,
+        help=(
+            "Token cap for the prerequisites recap block "
+            f"(default: {DEFAULT_PREREQ_CONTEXT_TOKENS}). Applied as a "
+            "whitespace-token approximation."
+        ),
+    )
+    p.add_argument(
+        "--pedagogy-graph",
+        default=None,
+        help=(
+            "Override path to pedagogy_graph.json. By default the stage "
+            "looks under <corpus>/graph/, <corpus>/pedagogy/, then the "
+            "corpus root."
+        ),
+    )
     return p
 
 
@@ -892,6 +1136,12 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
     diff_curriculum = bool(getattr(args, "difficulty_curriculum", False))
     max_pairs_cap = getattr(args, "max_pairs", None)
     output_dir = Path(args.output) if getattr(args, "output", None) else None
+    curriculum_graph = bool(getattr(args, "curriculum_from_graph", False))
+    prereq_windowed = bool(getattr(args, "prereq_windowed", False))
+    prereq_ctx_tokens = int(
+        getattr(args, "prereq_context_tokens", DEFAULT_PREREQ_CONTEXT_TOKENS)
+    )
+    pedagogy_path = Path(args.pedagogy_graph) if getattr(args, "pedagogy_graph", None) else None
 
     if getattr(args, "slug", None):
         stats = run_synthesis_from_libv2(
@@ -904,6 +1154,10 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             difficulty_curriculum=diff_curriculum,
             max_pairs=max_pairs_cap,
             output_dir=output_dir,
+            curriculum_from_graph=curriculum_graph,
+            prereq_windowed=prereq_windowed,
+            prereq_context_tokens=prereq_ctx_tokens,
+            pedagogy_graph_path=pedagogy_path,
         )
     else:
         if not args.course_code:
@@ -921,6 +1175,10 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             difficulty_curriculum=diff_curriculum,
             max_pairs=max_pairs_cap,
             output_dir=output_dir,
+            curriculum_from_graph=curriculum_graph,
+            prereq_windowed=prereq_windowed,
+            prereq_context_tokens=prereq_ctx_tokens,
+            pedagogy_graph_path=pedagogy_path,
         )
 
     print("\n[Synthesis] Complete.")
