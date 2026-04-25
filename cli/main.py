@@ -87,6 +87,20 @@ except ImportError as _state_import_err:  # pragma: no cover
     )
 
 
+# Register Wave 75 'ed4all libv2 validate-packet' command — post-hoc
+# SHACL-style integrity validator for archived knowledge packets.
+try:
+    from cli.commands import register_libv2_command
+
+    register_libv2_command(cli)
+except ImportError as _libv2_import_err:  # pragma: no cover
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "cli.commands.libv2_validate_packet unavailable: %s",
+        _libv2_import_err,
+    )
+
+
 # =============================================================================
 # VALIDATE-RUN COMMAND
 # =============================================================================
