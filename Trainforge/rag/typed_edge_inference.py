@@ -195,6 +195,13 @@ def _build_nodes(
     provided, stamp them onto each node so the semantic graph is
     time- and run-addressable.
     """
+    # Wave 75: defensive backfill — if the upstream concept_graph was
+    # built before classifier wiring landed, classify on the fly so the
+    # semantic graph still ships ``class`` on every node. Imported lazily
+    # so the rule library stays decoupled from lib/ontology at module
+    # import time.
+    from lib.ontology.concept_classifier import classify_concept
+
     nodes: List[Dict[str, Any]] = []
     for n in concept_graph.get("nodes", []):
         node = {
@@ -212,6 +219,18 @@ def _build_nodes(
         occurrences = n.get("occurrences")
         if occurrences:
             node["occurrences"] = list(occurrences)
+        # Wave 75: carry ``class`` through to the semantic graph so
+        # retrieval can filter pedagogical / assessment / low-signal
+        # nodes uniformly across both graph artifacts. Backfill via the
+        # classifier when the source node lacks the field (legacy
+        # graphs).
+        klass = n.get("class")
+        if not klass:
+            # Strip course_id prefix when scoping is on so the classifier
+            # sees the bare slug it was designed against.
+            slug_for_class = node["id"].split(":", 1)[-1]
+            klass = classify_concept(slug_for_class, label=n.get("label"))
+        node["class"] = klass
         if created_at is not None:
             _stamp_provenance(node, run_id, created_at)
         nodes.append(node)

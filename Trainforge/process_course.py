@@ -2854,6 +2854,15 @@ class CourseProcessor:
                     key = tuple(sorted([a, b]))
                     co_occurrence[key] += 1
 
+        # Wave 75: every emitted node is stamped with a ``class`` so
+        # retrieval can filter pedagogical scaffolding ("key-takeaway"),
+        # assessment options ("answer-b"), instructional artifacts
+        # ("submission-format"), LO leaks ("to-04"), and stop-word-like
+        # noise ("not", "do-not") out of domain-concept similarity
+        # search without dropping or merging nodes. See
+        # ``lib/ontology/concept_classifier.py`` for the rule precedence.
+        from lib.ontology.concept_classifier import classify_concept
+
         sorted_tags = sorted(tag_frequency.items(), key=lambda x: -x[1])
         nodes: List[Dict[str, Any]] = []
         for tag, freq in sorted_tags:
@@ -2862,10 +2871,16 @@ class CourseProcessor:
             node_id = _make_concept_id(tag, course_id)
             # Label stays human-readable (no course_id prefix) regardless
             # of scoping mode; only ``id`` is composite when the flag is on.
+            label = tag.replace("-", " ").title()
             node: Dict[str, Any] = {
                 "id": node_id,
-                "label": tag.replace("-", " ").title(),
+                "label": label,
                 "frequency": freq,
+                # Wave 75: classify against the un-scoped slug so the
+                # rule set behaves identically with / without
+                # TRAINFORGE_SCOPE_CONCEPT_IDS. Classifier is
+                # deterministic + side-effect-free.
+                "class": classify_concept(tag, label=label),
             }
             if SCOPE_CONCEPT_IDS and course_id:
                 node["course_id"] = course_id
