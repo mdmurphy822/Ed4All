@@ -474,14 +474,38 @@ def load_objectives(objectives_path: Path) -> Dict[str, Any]:
         week_bloom_map: {week_num: [bloom_levels]}
         bloom_distribution: {level: count}
         description: str
+
+    Wave 76 — Surface BOTH objective-file schemas under the legacy keys so
+    every downstream caller (``_build_valid_outcome_ids``, pedagogy graph
+    builder, etc.) sees the same shape regardless of whether the source
+    file follows the pre-Wave-75 ``terminal_objectives`` /
+    ``chapter_objectives`` convention or the Wave 75 ``terminal_outcomes``
+    / ``component_objectives`` emit.
     """
     with open(objectives_path) as f:
         data = json.load(f)
 
+    # Normalize keys so both schemas land under the legacy field names that
+    # the rest of process_course.py reads.
+    terminal_list = (
+        data.get("terminal_objectives")
+        or data.get("terminal_outcomes")
+        or []
+    )
+    chapter_list = (
+        data.get("chapter_objectives")
+        or data.get("component_objectives")
+        or []
+    )
+
     week_bloom: Dict[int, List[str]] = defaultdict(list)
 
-    for chapter in data.get("chapter_objectives", []):
-        # Parse week range from chapter name like "Week 1-2: ..."
+    for chapter in chapter_list:
+        if not isinstance(chapter, dict):
+            continue
+        # Two shapes for a chapter entry:
+        #   nested: {"chapter": "Week 1-2: ...", "objectives": [{...}]}
+        #   flat:   {"id": "co-01", "week": 1, "bloom_level": "remember", ...}
         chapter_name = chapter.get("chapter", "")
         week_match = re.search(r"[Ww]eek\s+(\d+)(?:\s*-\s*(\d+))?", chapter_name)
         if week_match:
@@ -491,15 +515,25 @@ def load_objectives(objectives_path: Path) -> Dict[str, Any]:
         else:
             weeks = []
 
-        for obj in chapter.get("objectives", []):
-            bloom = obj.get("bloomLevel", "").lower()
+        if "objectives" in chapter and isinstance(chapter.get("objectives"), list):
+            inner = chapter["objectives"]
+        else:
+            inner = [chapter]
+            single_week = chapter.get("week")
+            if isinstance(single_week, int):
+                weeks = [single_week]
+
+        for obj in inner:
+            if not isinstance(obj, dict):
+                continue
+            bloom = (obj.get("bloomLevel") or obj.get("bloom_level") or "").lower()
             if bloom:
                 for w in weeks:
                     week_bloom[w].append(bloom)
 
     return {
-        "terminal_objectives": data.get("terminal_objectives", []),
-        "chapter_objectives": data.get("chapter_objectives", []),
+        "terminal_objectives": terminal_list,
+        "chapter_objectives": chapter_list,
         "week_bloom_map": dict(week_bloom),
         "bloom_distribution": data.get("bloom_distribution", {}),
         "description": data.get("description", ""),
@@ -3269,10 +3303,18 @@ class CourseProcessor:
         # Reverse coverage: which declared outcomes have ZERO resolving chunks?
         # This is the symmetric complement of learning_outcome_coverage and
         # catches content-generation gaps that the chunk-ratio metric misses.
-        referenced_ids = {
-            r for c in chunks for r in c.get("learning_outcome_refs", [])
-            if r in valid_ids
-        }
+        # Wave 76 — case-insensitive comparison, skipping None/empty refs.
+        referenced_ids: Set[str] = set()
+        for c in chunks:
+            for r in c.get("learning_outcome_refs", []) or []:
+                if r is None:
+                    continue
+                r_str = r if isinstance(r, str) else str(r)
+                if not r_str.strip():
+                    continue
+                lowered = r_str.lower()
+                if lowered in valid_ids:
+                    referenced_ids.add(lowered)
         uncovered_outcomes = sorted(valid_ids - referenced_ids)
         outcome_reverse_coverage = (
             (len(valid_ids) - len(uncovered_outcomes)) / len(valid_ids)
@@ -3580,11 +3622,31 @@ class CourseProcessor:
         chunks: List[Dict[str, Any]],
         valid_outcome_ids: Set[str],
     ) -> List[Dict[str, str]]:
+        """List learning_outcome_refs that don't resolve.
+
+        Wave 76 — three policy clarifications vs. the pre-Wave-76 logic:
+          1. Comparison is case-insensitive. ``valid_outcome_ids`` is
+             expected to be a lowercase set; chunk refs are lowercased
+             before lookup. Mirrors the lowercase emit in
+             ``_build_course_json`` and matches LibV2's case-insensitive
+             join in ``retrieval_scoring.py``.
+          2. ``None`` and empty-string refs are skipped silently — they
+             carry no information, so they aren't ``broken``, just absent.
+          3. Non-string refs are coerced via ``str()``; the exact
+             malformed value (e.g. comma-joined ``"co-01,co-02"``) is
+             preserved verbatim in the report so a reviewer can see the
+             original input shape.
+        """
         broken: List[Dict[str, str]] = []
         for c in chunks:
             for ref in c.get("learning_outcome_refs", []):
-                if ref not in valid_outcome_ids:
-                    broken.append({"chunk_id": c["id"], "ref": ref})
+                if ref is None:
+                    continue
+                ref_str = ref if isinstance(ref, str) else str(ref)
+                if not ref_str.strip():
+                    continue
+                if ref_str.lower() not in valid_outcome_ids:
+                    broken.append({"chunk_id": c["id"], "ref": ref_str})
         return broken
 
     @staticmethod
@@ -3592,11 +3654,23 @@ class CourseProcessor:
         chunks: List[Dict[str, Any]],
         valid_outcome_ids: Set[str],
     ) -> float:
+        """Fraction of chunks with at least one ref that resolves.
+
+        Wave 76 — case-insensitive comparison; mirrors the policy in
+        :meth:`_collect_broken_refs`.
+        """
         total = len(chunks) or 1
-        resolving = sum(
-            1 for c in chunks
-            if any(r in valid_outcome_ids for r in c.get("learning_outcome_refs", []))
-        )
+
+        def _resolves(c: Dict[str, Any]) -> bool:
+            for ref in c.get("learning_outcome_refs", []) or []:
+                if ref is None:
+                    continue
+                ref_str = ref if isinstance(ref, str) else str(ref)
+                if ref_str.lower() in valid_outcome_ids:
+                    return True
+            return False
+
+        resolving = sum(1 for c in chunks if _resolves(c))
         return resolving / total
 
     @staticmethod
@@ -3661,25 +3735,84 @@ class CourseProcessor:
         contract from §2.1. Legacy objective files without ``week_scoped_ids``
         yield a set that only resolves flat IDs; chunks that reference
         week-scoped forms will surface as broken_refs in the quality report.
+
+        Wave 76 — Supports BOTH objective-file schemas:
+          (a) Wave 75 emit: ``terminal_outcomes`` + ``component_objectives``
+              (the flat shape produced by ``_emit_objectives_artifact``).
+          (b) Pre-Wave-75 / synthesized form: ``terminal_objectives`` +
+              ``chapter_objectives`` (chapter is either a flat list of LO
+              dicts or a nested ``[{chapter, objectives:[...]}]`` shape).
+
+        Falls back to ``course.json::learning_outcomes[].id`` when no
+        objectives file is loaded — covers archives that pre-date the
+        objectives.json emit.
+
+        Comparison is case-insensitive: every ID is lowercased before being
+        added to the set, mirroring the lowercase emit in
+        ``_build_course_json``.
         """
         ids: Set[str] = set()
-        if not self.objectives:
-            return ids
-        for to in self.objectives.get("terminal_objectives", []):
+
+        terminal_list = []
+        component_list = []
+        if self.objectives:
+            terminal_list = (
+                self.objectives.get("terminal_objectives")
+                or self.objectives.get("terminal_outcomes")
+                or []
+            )
+            component_list = (
+                self.objectives.get("chapter_objectives")
+                or self.objectives.get("component_objectives")
+                or []
+            )
+
+        for to in terminal_list:
+            if not isinstance(to, dict):
+                continue
             obj_id = (to.get("id") or "").lower()
             if obj_id:
                 ids.add(obj_id)
             for ws in to.get("week_scoped_ids", []) or []:
                 if ws:
-                    ids.add(ws.lower())
-        for ch in self.objectives.get("chapter_objectives", []):
-            for obj in ch.get("objectives", []):
+                    ids.add(str(ws).lower())
+
+        for ch in component_list:
+            if not isinstance(ch, dict):
+                continue
+            # Nested shape: {"chapter": "...", "objectives": [{...}, ...]}
+            # Flat shape:   {"id": "co-01", "parent_terminal": "to-01", ...}
+            if "objectives" in ch and isinstance(ch.get("objectives"), list):
+                inner = ch["objectives"]
+            else:
+                inner = [ch]
+            for obj in inner:
+                if not isinstance(obj, dict):
+                    continue
                 obj_id = (obj.get("id") or "").lower()
                 if obj_id:
                     ids.add(obj_id)
                 for ws in obj.get("week_scoped_ids", []) or []:
                     if ws:
-                        ids.add(ws.lower())
+                        ids.add(str(ws).lower())
+
+        # Wave 76 fallback — pre-objectives-emit archives shipped only
+        # course.json. Resolve refs against its flat learning_outcomes[]
+        # so the broken-refs check doesn't false-positive on every chunk.
+        if not ids:
+            try:
+                course_json_path = self.output_dir / "course.json"
+                if course_json_path.exists():
+                    with open(course_json_path, encoding="utf-8") as f:
+                        course = json.load(f)
+                    for lo in course.get("learning_outcomes", []) or []:
+                        if isinstance(lo, dict):
+                            lo_id = (lo.get("id") or "").lower()
+                            if lo_id:
+                                ids.add(lo_id)
+            except (OSError, json.JSONDecodeError, AttributeError):
+                pass
+
         return ids
 
     def _assert_integrity(self, report: Dict[str, Any]) -> None:
