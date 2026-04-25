@@ -1014,6 +1014,19 @@ class CourseProcessor:
         from Trainforge.retag_outcomes import build_parent_map as _bpm
         self._lo_parent_map: Dict[str, str] = _bpm(self.objectives)
 
+        # Wave 81: precompute the merged (curated + auto-extracted)
+        # vocabulary table once per run. The auto-extraction pass walks
+        # every CO statement once at construction so emit-time
+        # _create_chunk reuses it rather than re-extracting per chunk.
+        # When no objectives are loaded the merged map collapses to the
+        # curated ``RETAG_VOCABULARIES`` so behavior matches Wave 76.
+        from Trainforge.retag_outcomes import (
+            merged_vocabularies as _merged_vocab,
+        )
+        self._lo_vocabularies: Dict[str, List[str]] = _merged_vocab(
+            self.objectives,
+        )
+
         # Decision capture
         # Phase value must be in the canonical enum at
         # ``schemas/events/decision_event.schema.json`` (hyphenated). Prior
@@ -1869,8 +1882,16 @@ class CourseProcessor:
         # they see the full set of refs. Both rules are additive —
         # never removes an existing ref. See Trainforge/retag_outcomes.py
         # for the rationale + vocabulary lists.
+        #
+        # Wave 81: pass the per-run merged vocabulary map (curated +
+        # auto-extracted) so coverage spans every CO in the active
+        # objectives payload, not just the three curated entries.
         from Trainforge.retag_outcomes import retag_chunk_outcomes
-        retag_chunk_outcomes(chunk, parent_map=getattr(self, "_lo_parent_map", None))
+        retag_chunk_outcomes(
+            chunk,
+            parent_map=getattr(self, "_lo_parent_map", None),
+            vocabularies=getattr(self, "_lo_vocabularies", None),
+        )
 
         # Wave 69: propagate Wave 57 targetedConcepts[] from LOs onto chunks
         # whose learning_outcome_refs cite those LOs. Each chunk entry is
