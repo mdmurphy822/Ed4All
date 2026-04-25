@@ -92,6 +92,28 @@ METRICS_SEMANTIC_VERSION = 5
 CHUNK_SCHEMA_VERSION = "v4"
 
 
+# Wave 81 (Worker A): canonical ChunkType enum used to gate
+# ``data-cf-template-type`` propagation in ``_merge_small_sections``. When a
+# Courseforge HTML section carries ``data-cf-template-type="<value>"`` and
+# ``<value>`` is in this set, the chunker uses it as the chunk_type instead of
+# the heading-keyword heuristic. Values outside the set fall back to the
+# heuristic so off-spec corpora can't break downstream consumers that key off
+# chunk_type. Source of truth:
+# ``schemas/taxonomies/content_type.json::ChunkType``.
+CANONICAL_CHUNK_TYPES = frozenset({
+    "assessment_item",
+    "overview",
+    "summary",
+    "exercise",
+    "explanation",
+    "example",
+    "procedure",
+    "real_world_scenario",
+    "common_pitfall",
+    "problem_solution",
+})
+
+
 # Worker N (REC-ID-01): opt-in content-hash chunk IDs. When
 # TRAINFORGE_CONTENT_HASH_IDS=true, chunk IDs are derived from
 # sha256(text + source_locator + schema_version) so re-chunking the same
@@ -1476,17 +1498,36 @@ class CourseProcessor:
         that collapsed into the same chunk (Wave 10); dedupe + insertion-
         order preserved so downstream role-precedence resolution stays
         deterministic.
+
+        Wave 81 (Worker A): when any section in a merge group carries
+        ``data-cf-template-type`` (propagated via
+        ``ContentSection.template_type``), the resulting chunk_type is taken
+        from that attribute (constrained to the canonical ChunkType enum)
+        instead of the heading-keyword heuristic. The first section's
+        template_type wins because Courseforge emits exactly one
+        ``<section data-cf-template-type=...>`` per page; merge groups
+        therefore inherit a single template label deterministically. Falls
+        back to the legacy ``_type_from_heading`` heuristic when no section
+        in the group carries a template label.
         """
         merged: List[Tuple[str, str, str, List[str]]] = []
         buffer_heading = ""
         buffer_text = ""
         buffer_wc = 0
         buffer_type = "explanation"
+        buffer_template_type: Optional[str] = None
         buffer_source_ids: List[str] = []
+
+        def _resolve_buffer_type() -> str:
+            # Wave 81: prefer template_type when present and canonical.
+            if buffer_template_type and buffer_template_type in CANONICAL_CHUNK_TYPES:
+                return buffer_template_type
+            return buffer_type
 
         for section in sections:
             section_type = self._type_from_heading(section.heading)
             section_src = list(getattr(section, "source_references", []) or [])
+            section_template = getattr(section, "template_type", None)
 
             if buffer_wc == 0:
                 # Start a new buffer
@@ -1494,6 +1535,7 @@ class CourseProcessor:
                 buffer_text = section.content
                 buffer_wc = section.word_count
                 buffer_type = section_type
+                buffer_template_type = section_template
                 buffer_source_ids = list(section_src)
             elif buffer_wc + section.word_count <= self.MAX_CHUNK_SIZE:
                 # Merge into buffer
@@ -1502,19 +1544,25 @@ class CourseProcessor:
                 # Keep the first heading but prefer non-trivial types
                 if buffer_type == "explanation" and section_type != "explanation":
                     buffer_type = section_type
+                # Wave 81: first non-empty template_type wins; we don't
+                # overwrite once set so the merge group stays anchored to a
+                # single canonical template label.
+                if not buffer_template_type and section_template:
+                    buffer_template_type = section_template
                 self._merge_section_source_ids(buffer_source_ids, section_src)
             else:
                 # Flush buffer and start new
-                merged.append((buffer_heading, buffer_text, buffer_type, buffer_source_ids))
+                merged.append((buffer_heading, buffer_text, _resolve_buffer_type(), buffer_source_ids))
                 buffer_heading = section.heading
                 buffer_text = section.content
                 buffer_wc = section.word_count
                 buffer_type = section_type
+                buffer_template_type = section_template
                 buffer_source_ids = list(section_src)
 
         # Flush remaining
         if buffer_text.strip():
-            merged.append((buffer_heading, buffer_text, buffer_type, buffer_source_ids))
+            merged.append((buffer_heading, buffer_text, _resolve_buffer_type(), buffer_source_ids))
 
         return merged
 

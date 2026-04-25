@@ -62,6 +62,16 @@ class ContentSection:
     # auto-role of ``contributing`` when JSON-LD doesn't supply the full
     # shape. Sorted + deduplicated for deterministic downstream diffs.
     source_references: List[str] = field(default_factory=list)
+    # Wave 81: ``data-cf-template-type`` value harvested from the enclosing
+    # ``<section>`` element. Courseforge Wave 79 C content-generator emits this
+    # attribute on every section root with values like ``explanation``,
+    # ``example``, ``procedure``, ``real_world_scenario``, ``common_pitfall``,
+    # ``problem_solution``, ``summary``, ``overview``, ``self_check``. When
+    # present, process_course.py prefers this over the heading-keyword heuristic
+    # (``_type_from_heading``) so the chunker no longer collapses the four new
+    # template types into the legacy six. ``None`` for non-Courseforge IMSCC
+    # packages or for legacy Courseforge corpora that predate Wave 79 C.
+    template_type: Optional[str] = None
 
 
 @dataclass
@@ -584,6 +594,17 @@ class HTMLContentParser:
 
         return "Untitled Module"
 
+    # Wave 81: regex to walk back from a heading to its enclosing
+    # ``<section ...>`` open tag and read ``data-cf-template-type``.
+    # Courseforge content-generator emits one attribute per section root; the
+    # value is the canonical template label that the chunker should honor.
+    _SECTION_OPEN_RE = re.compile(
+        r'<section\b([^>]*)>', re.IGNORECASE
+    )
+    _TEMPLATE_TYPE_ATTR_RE = re.compile(
+        r'data-cf-template-type="([^"]*)"', re.IGNORECASE
+    )
+
     def _extract_sections(self, html: str) -> List[ContentSection]:
         """Extract content sections by heading, including data-cf-* attributes."""
         sections = []
@@ -591,6 +612,14 @@ class HTMLContentParser:
         # Find all headings (capture the full opening tag to read attributes)
         heading_pattern = r'<h([1-6])([^>]*)>([^<]+)</h\1>'
         headings = list(re.finditer(heading_pattern, html, re.IGNORECASE))
+
+        # Wave 81: pre-compute every <section ...> open-tag position so we can
+        # walk back from each heading to its nearest enclosing section root and
+        # read the data-cf-template-type attribute. Courseforge emits exactly
+        # one section root per page (sections do not nest in our content
+        # corpus), but the algorithm tolerates nested sections by always
+        # taking the closest preceding open tag.
+        section_opens = list(self._SECTION_OPEN_RE.finditer(html))
 
         for i, match in enumerate(headings):
             level = int(match.group(1))
@@ -601,6 +630,33 @@ class HTMLContentParser:
             start = match.end()
             end = headings[i + 1].start() if i + 1 < len(headings) else len(html)
             section_html = html[start:end]
+
+            # Wave 81: derive template_type from the nearest enclosing
+            # <section ...> root. Falls back to heading-attr / section-body
+            # scan when the section root predates the heading by a wide
+            # margin (rare). When no data-cf-template-type is found anywhere,
+            # ``template_type`` stays None and process_course.py's heading
+            # heuristic continues to drive chunk_type (legacy behavior).
+            template_type: Optional[str] = None
+            heading_start = match.start()
+            for sec_open in reversed(section_opens):
+                if sec_open.start() < heading_start:
+                    sec_attrs = sec_open.group(1)
+                    tt_match = self._TEMPLATE_TYPE_ATTR_RE.search(sec_attrs)
+                    if tt_match:
+                        template_type = tt_match.group(1).strip() or None
+                    break
+            # Belt-and-braces: the attribute may also appear directly on the
+            # heading or inside the section body (some templates carry it on
+            # both the section root and the h1). Pick the first non-empty.
+            if not template_type:
+                tt_attr = self._TEMPLATE_TYPE_ATTR_RE.search(attrs_str)
+                if tt_attr:
+                    template_type = tt_attr.group(1).strip() or None
+            if not template_type:
+                tt_body = self._TEMPLATE_TYPE_ATTR_RE.search(section_html)
+                if tt_body:
+                    template_type = tt_body.group(1).strip() or None
 
             # Extract text
             extractor = HTMLTextExtractor()
@@ -676,6 +732,7 @@ class HTMLContentParser:
                 teaching_roles=distinct_roles,
                 objective_refs=distinct_obj_refs,
                 source_references=distinct_source_ids,
+                template_type=template_type,
             ))
 
         return sections

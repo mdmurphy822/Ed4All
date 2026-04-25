@@ -100,11 +100,15 @@ def test_flag_on_rejects_callout_content_types(monkeypatch):
 
 
 def test_flag_on_rejects_section_only_content_types(monkeypatch):
-    """SectionContentType members that aren't in ChunkType also reject."""
+    """SectionContentType members that aren't in ChunkType also reject.
+
+    Wave 81 widened ChunkType to include ``procedure`` (also a
+    SectionContentType member), so the surviving SectionContentType-only
+    values are ``definition`` and ``comparison``.
+    """
     monkeypatch.setenv(ENV_VAR, "true")
-    # `definition`, `procedure`, `comparison` are SectionContentType-only.
+    # `definition`, `comparison` are SectionContentType-only post-Wave-81.
     assert validate_chunk_type("definition") is False
-    assert validate_chunk_type("procedure") is False
     assert validate_chunk_type("comparison") is False
 
 
@@ -124,14 +128,26 @@ def test_flag_on_section_content_type_enforcement(monkeypatch):
 
 
 def test_get_valid_chunk_types_returns_expected_set():
-    """ChunkType enum matches Worker F's Wave 1 taxonomy publication."""
+    """ChunkType enum matches the canonical taxonomy.
+
+    Wave 1 published 6 values; Wave 81 added 4 template-driven values
+    (procedure, real_world_scenario, common_pitfall, problem_solution)
+    propagated from Courseforge ``data-cf-template-type`` via the Wave 81
+    chunker. Total = 10.
+    """
     assert get_valid_chunk_types() == frozenset({
+        # Wave 1
         "assessment_item",
         "overview",
         "summary",
         "exercise",
         "explanation",
         "example",
+        # Wave 81 additions
+        "procedure",
+        "real_world_scenario",
+        "common_pitfall",
+        "problem_solution",
     })
 
 

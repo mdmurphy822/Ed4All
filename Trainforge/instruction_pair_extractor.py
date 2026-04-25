@@ -75,6 +75,18 @@ METHOD_EXAMPLE_REASONING = "example_reasoning"
 METHOD_EXPLANATION_TEMPLATE = "explanation_template"
 METHOD_MISCONCEPTION_DISTINGUISH = "misconception_distinguish"
 METHOD_MISCONCEPTION_CONTRAST = "misconception_contrast"
+# Wave 81: template-aware extractors keyed on chunk_type values that are now
+# propagated from Courseforge ``data-cf-template-type`` (Wave 79 C). Each
+# extractor produces a richer pair shape than the legacy
+# ``explanation_template`` fallback because the source HTML carries
+# template-specific subsections (Steps / Inputs / Output for procedure,
+# Your Task / Approach / Success Criteria for real_world_scenario, etc.).
+METHOD_PROCEDURE = "procedure"
+METHOD_REAL_WORLD_SCENARIO = "real_world_scenario"
+METHOD_COMMON_PITFALL = "common_pitfall"
+METHOD_COMMON_PITFALL_MULTI_ARM = "common_pitfall_multi_arm"
+METHOD_PROBLEM_SOLUTION = "problem_solution"
+METHOD_PROBLEM_SOLUTION_DPO = "problem_solution_dpo"
 
 ALL_METHODS: Tuple[str, ...] = (
     METHOD_ASSESSMENT_ITEM,
@@ -83,6 +95,12 @@ ALL_METHODS: Tuple[str, ...] = (
     METHOD_EXPLANATION_TEMPLATE,
     METHOD_MISCONCEPTION_DISTINGUISH,
     METHOD_MISCONCEPTION_CONTRAST,
+    METHOD_PROCEDURE,
+    METHOD_REAL_WORLD_SCENARIO,
+    METHOD_COMMON_PITFALL,
+    METHOD_COMMON_PITFALL_MULTI_ARM,
+    METHOD_PROBLEM_SOLUTION,
+    METHOD_PROBLEM_SOLUTION_DPO,
 )
 
 
@@ -97,6 +115,15 @@ _QUALITY_BY_METHOD: Dict[str, float] = {
     METHOD_EXPLANATION_TEMPLATE: 0.6,
     METHOD_MISCONCEPTION_DISTINGUISH: 0.9,
     METHOD_MISCONCEPTION_CONTRAST: 0.9,
+    # Wave 81 template-aware buckets — generally higher than
+    # explanation_template because the chunks carry strict subsection
+    # structure (Inputs/Steps/Output etc.) that produces well-shaped pairs.
+    METHOD_PROCEDURE: 1.0,
+    METHOD_REAL_WORLD_SCENARIO: 0.95,
+    METHOD_COMMON_PITFALL: 0.95,
+    METHOD_COMMON_PITFALL_MULTI_ARM: 0.95,
+    METHOD_PROBLEM_SOLUTION: 1.0,
+    METHOD_PROBLEM_SOLUTION_DPO: 1.0,
 }
 
 
@@ -767,6 +794,379 @@ def extract_from_misconceptions(
 
 
 # ---------------------------------------------------------------------------
+# Wave 81 template-aware extractors
+# ---------------------------------------------------------------------------
+#
+# These extractors run when chunk.chunk_type matches a Wave 79 C template
+# label (procedure, real_world_scenario, common_pitfall, problem_solution).
+# Each template emits a stable subsection grammar that we exploit to lift
+# pairs richer than what the legacy explanation_template fallback produces.
+
+# Each section header maps to the prefix string we expect (case-insensitive).
+# Anchors are reused across templates because Courseforge content-generator
+# templates emit the same section labels in upper- or title-case across
+# pages.
+
+_SECTION_HEADER_RES = {
+    # procedure
+    "inputs": re.compile(r"\bInputs?\b\s*:?", re.IGNORECASE),
+    "steps": re.compile(r"\bSteps?\b\s*:?", re.IGNORECASE),
+    "output": re.compile(r"\bOutput\b\s*:?", re.IGNORECASE),
+    "worked_example": re.compile(r"\bWorked\s+Example\b", re.IGNORECASE),
+    "when_to_use": re.compile(r"\bWhen\s+to\s+use\b", re.IGNORECASE),
+    # real_world_scenario
+    "scenario": re.compile(r"\bScenario\b\s*:?", re.IGNORECASE),
+    "your_task": re.compile(r"\bYour\s+Task\b", re.IGNORECASE),
+    "approach": re.compile(r"\bApproach\b", re.IGNORECASE),
+    "success_criteria": re.compile(
+        r"\bSuccess\s+Criteria\b", re.IGNORECASE
+    ),
+    # common_pitfall
+    "what_looks_right": re.compile(
+        r"\bWhat\s+looks\s+like\s+the\s+right\s+answer\b",
+        re.IGNORECASE,
+    ),
+    "why_wrong": re.compile(r"\bWhy\s+it'?s\s+wrong\b", re.IGNORECASE),
+    "right_approach": re.compile(
+        r"\bThe\s+right\s+approach\b", re.IGNORECASE
+    ),
+    "quick_test": re.compile(r"\bQuick\s+test\b", re.IGNORECASE),
+    # problem_solution
+    "problem": re.compile(r"\bProblem\b", re.IGNORECASE),
+    "walkthrough": re.compile(r"\bWalkthrough\b", re.IGNORECASE),
+    "common_incorrect": re.compile(
+        r"\bCommon\s+Incorrect\s+Approach\b", re.IGNORECASE
+    ),
+    "verification": re.compile(
+        r"\bVerification\s+discipline\b", re.IGNORECASE
+    ),
+}
+
+
+def _split_by_headers(text: str, header_keys: Sequence[str]) -> Dict[str, str]:
+    """Split ``text`` into named blocks keyed by anchor matches.
+
+    Returns a mapping ``key -> block_text`` for every key in ``header_keys``
+    whose regex matched somewhere in ``text``. Keys whose anchor never fired
+    are absent. Block text runs from just after the matched header to the
+    next header (in source order, regardless of which key it belongs to) or
+    to the end of the string.
+    """
+    if not text:
+        return {}
+    matches: List[Tuple[int, int, str]] = []
+    for key in header_keys:
+        rx = _SECTION_HEADER_RES.get(key)
+        if not rx:
+            continue
+        m = rx.search(text)
+        if m:
+            matches.append((m.start(), m.end(), key))
+    matches.sort(key=lambda t: t[0])
+    out: Dict[str, str] = {}
+    for i, (start, end, key) in enumerate(matches):
+        next_start = matches[i + 1][0] if i + 1 < len(matches) else len(text)
+        block = text[end:next_start].strip().lstrip(":").strip()
+        if block:
+            out[key] = block
+    return out
+
+
+def extract_from_procedure(chunk: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Lift Inputs / Steps / Output / Worked Example into procedure pairs.
+
+    Pair shape:
+        instruction = "Given <inputs>, <procedure_name>: produce <output>."
+        output      = step-by-step text (Steps section verbatim, optionally
+                      with Worked Example appended).
+    """
+    text = chunk.get("text") or ""
+    if not text.strip():
+        return []
+    blocks = _split_by_headers(
+        text,
+        ("when_to_use", "inputs", "steps", "output", "worked_example"),
+    )
+    inputs = blocks.get("inputs", "")
+    steps = blocks.get("steps", "")
+    output_blk = blocks.get("output", "")
+    worked = blocks.get("worked_example", "")
+    if not steps:
+        return []
+    procedure_name = _flatten(chunk.get("section_heading") or chunk.get("title") or "")
+    if not procedure_name:
+        # First sentence of text as fallback procedure name.
+        first = _SENTENCE_END_RE.split(text, maxsplit=1)
+        if first:
+            procedure_name = _flatten(first[0])[:160]
+    procedure_name = procedure_name or "Run the following procedure"
+    inputs_phrase = _flatten(inputs) if inputs else "the appropriate inputs"
+    output_phrase = _flatten(output_blk) if output_blk else "the documented output"
+    instruction = (
+        f"Given {inputs_phrase}, perform the procedure {procedure_name}: "
+        f"produce {output_phrase}."
+    )
+    out_text = _flatten(steps)
+    if worked:
+        out_text = f"{out_text} Worked example: {_flatten(worked)}"
+    pair = _shape_pair(
+        instruction=instruction,
+        output=out_text,
+        chunk=chunk,
+        extraction_method=METHOD_PROCEDURE,
+        extra_meta={
+            "has_inputs": bool(inputs),
+            "has_output_section": bool(output_blk),
+            "has_worked_example": bool(worked),
+            "procedure_name": procedure_name,
+        },
+    )
+    return [pair] if pair else []
+
+
+def extract_from_real_world_scenario(
+    chunk: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Lift Scenario / Your Task / Approach / Success Criteria.
+
+    Pair shape:
+        instruction = "<scenario context>. Task: <task statement>"
+        output      = "<approach text>. Success criteria: <criteria>"
+    """
+    text = chunk.get("text") or ""
+    if not text.strip():
+        return []
+    blocks = _split_by_headers(
+        text,
+        ("scenario", "your_task", "approach", "success_criteria"),
+    )
+    task = blocks.get("your_task", "")
+    approach = blocks.get("approach", "")
+    if not task or not approach:
+        return []
+    # Scenario context: the explicit Scenario block, falling back to whatever
+    # text precedes the Your Task header.
+    scenario = blocks.get("scenario", "")
+    if not scenario:
+        rx = _SECTION_HEADER_RES["your_task"]
+        m = rx.search(text)
+        if m:
+            scenario = text[: m.start()].strip()
+    scenario = _flatten(scenario)[:1200]
+    if not scenario:
+        return []
+    criteria = blocks.get("success_criteria", "")
+    instruction = f"{scenario}. Task: {_flatten(task)}"
+    out_text = _flatten(approach)
+    if criteria:
+        out_text = f"{out_text} Success criteria: {_flatten(criteria)}"
+    pair = _shape_pair(
+        instruction=instruction,
+        output=out_text,
+        chunk=chunk,
+        extraction_method=METHOD_REAL_WORLD_SCENARIO,
+        extra_meta={
+            "has_success_criteria": bool(criteria),
+            "scenario_chars": len(scenario),
+        },
+    )
+    return [pair] if pair else []
+
+
+def extract_from_common_pitfall(
+    chunk: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Lift the misconception-distinguish + multi-arm pair from a pitfall.
+
+    Emits up to two pairs per chunk:
+      1. ``common_pitfall`` — distinguish-style pair where the instruction
+         restates the misconception and the output explains why it's wrong
+         and what the correct approach is.
+      2. ``common_pitfall_multi_arm`` — situation-aware pair where the
+         instruction names the situation + the misconception and asks for
+         the correct approach; the output is the right approach plus the
+         underlying reasoning (Why it's wrong block).
+    """
+    text = chunk.get("text") or ""
+    if not text.strip():
+        return []
+    blocks = _split_by_headers(
+        text,
+        (
+            "what_looks_right",
+            "why_wrong",
+            "right_approach",
+            "quick_test",
+        ),
+    )
+    misconception = blocks.get("what_looks_right", "")
+    why_wrong = blocks.get("why_wrong", "")
+    right_approach = blocks.get("right_approach", "")
+    if not misconception or not right_approach:
+        return []
+    misconception_f = _flatten(misconception)
+    why_wrong_f = _flatten(why_wrong) if why_wrong else ""
+    right_approach_f = _flatten(right_approach)
+    quick_test_f = _flatten(blocks.get("quick_test", ""))
+
+    out: List[Dict[str, Any]] = []
+    # Pair 1: distinguish-style
+    instr_distinguish = (
+        f"Is this the right approach? '{misconception_f[:600]}'"
+    )
+    if why_wrong_f:
+        out_distinguish = (
+            f"No. {why_wrong_f} The correct approach: {right_approach_f}"
+        )
+    else:
+        out_distinguish = f"No. The correct approach: {right_approach_f}"
+    pair1 = _shape_pair(
+        instruction=instr_distinguish,
+        output=out_distinguish,
+        chunk=chunk,
+        extraction_method=METHOD_COMMON_PITFALL,
+        extra_meta={
+            "misconception_excerpt": misconception_f[:200],
+            "has_why_wrong": bool(why_wrong_f),
+            "has_quick_test": bool(quick_test_f),
+        },
+    )
+    if pair1:
+        out.append(pair1)
+
+    # Pair 2: multi-arm — situation, common mistake, ask for correct approach.
+    # The "situation" is the chunk's section heading or the first sentence
+    # of misconception text.
+    situation = _flatten(chunk.get("section_heading") or "")
+    if not situation:
+        first = _SENTENCE_END_RE.split(text, maxsplit=1)
+        if first:
+            situation = _flatten(first[0])[:200]
+    situation = situation or "the following situation"
+    instr_multi = (
+        f"In {situation}, a common mistake is: {misconception_f[:500]}. "
+        f"What is the correct approach and why?"
+    )
+    out_multi = right_approach_f
+    if why_wrong_f:
+        out_multi = (
+            f"{right_approach_f} Reasoning: {why_wrong_f}"
+        )
+    pair2 = _shape_pair(
+        instruction=instr_multi,
+        output=out_multi,
+        chunk=chunk,
+        extraction_method=METHOD_COMMON_PITFALL_MULTI_ARM,
+        extra_meta={
+            "situation": situation[:200],
+            "misconception_excerpt": misconception_f[:200],
+        },
+    )
+    if pair2:
+        out.append(pair2)
+    return out
+
+
+def extract_from_problem_solution(
+    chunk: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Lift main pair + DPO-shape pair from a problem-solution walkthrough.
+
+    Emits up to two pairs:
+      1. ``problem_solution`` — main instruction-response pair
+         (problem statement -> walkthrough).
+      2. ``problem_solution_dpo`` — DPO-shape pair where the walkthrough
+         is the ``chosen`` response and the ``Common Incorrect Approach``
+         block is the ``rejected`` response.
+    """
+    text = chunk.get("text") or ""
+    if not text.strip():
+        return []
+    blocks = _split_by_headers(
+        text,
+        ("problem", "walkthrough", "common_incorrect", "verification"),
+    )
+    problem = blocks.get("problem", "")
+    walkthrough = blocks.get("walkthrough", "")
+    counter = blocks.get("common_incorrect", "")
+    if not problem or not walkthrough:
+        return []
+    problem_f = _flatten(problem)
+    walkthrough_f = _flatten(walkthrough)
+    verification_f = _flatten(blocks.get("verification", ""))
+    out: List[Dict[str, Any]] = []
+    # Main pair
+    main_out = walkthrough_f
+    if verification_f:
+        main_out = f"{walkthrough_f} Verification: {verification_f}"
+    pair_main = _shape_pair(
+        instruction=problem_f,
+        output=main_out,
+        chunk=chunk,
+        extraction_method=METHOD_PROBLEM_SOLUTION,
+        extra_meta={
+            "has_verification": bool(verification_f),
+            "has_counter_example": bool(counter),
+        },
+    )
+    if pair_main:
+        out.append(pair_main)
+    # DPO-shape pair: walkthrough = chosen, counter-example = rejected.
+    if counter:
+        counter_f = _flatten(counter)
+        dpo_pair = _shape_dpo_pair(
+            instruction=problem_f,
+            chosen=walkthrough_f,
+            rejected=counter_f,
+            chunk=chunk,
+            extraction_method=METHOD_PROBLEM_SOLUTION_DPO,
+            extra_meta={
+                "chosen_chars": len(walkthrough_f),
+                "rejected_chars": len(counter_f),
+            },
+        )
+        if dpo_pair:
+            out.append(dpo_pair)
+    return out
+
+
+def _shape_dpo_pair(
+    *,
+    instruction: str,
+    chosen: str,
+    rejected: str,
+    chunk: Dict[str, Any],
+    extraction_method: str,
+    extra_meta: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Assemble a DPO-flavoured pair: ``chosen`` + ``rejected`` siblings
+    alongside the canonical ``output`` field (set to ``chosen``).
+
+    Downstream stratified DPO emitters look for ``chosen``/``rejected``
+    keys; legacy SFT consumers continue to read ``output``. Both paths see
+    the same record shape so we don't have to fork the JSONL stream.
+    """
+    instruction = _flatten(instruction)
+    chosen = _flatten(chosen)
+    rejected = _flatten(rejected)
+    if not instruction or not chosen or not rejected:
+        return None
+    pair: Dict[str, Any] = {
+        "instruction": instruction,
+        "output": chosen,
+        "chosen": chosen,
+        "rejected": rejected,
+        "metadata": _build_metadata(
+            chunk=chunk,
+            extraction_method=extraction_method,
+            extra=extra_meta,
+        ),
+        "schema_version": "v1",
+    }
+    return pair
+
+
+# ---------------------------------------------------------------------------
 # Driver
 # ---------------------------------------------------------------------------
 
@@ -889,6 +1289,34 @@ def run_extraction(
             # template keeps the ``derived_from=explanation_template``
             # quality bucket honest.
             emitted.extend(extract_from_explanation(chunk))
+        # Wave 81: template-aware extractors keyed on the four new
+        # chunk_type values that are now propagated from Courseforge
+        # data-cf-template-type (Wave 79 C). Each emits richer pairs than
+        # the explanation_template fallback because the source HTML has
+        # template-specific subsection structure.
+        if chunk_type == "procedure" and METHOD_PROCEDURE in method_set:
+            emitted.extend(extract_from_procedure(chunk))
+        if (
+            chunk_type == "real_world_scenario"
+            and METHOD_REAL_WORLD_SCENARIO in method_set
+        ):
+            emitted.extend(extract_from_real_world_scenario(chunk))
+        if chunk_type == "common_pitfall" and (
+            METHOD_COMMON_PITFALL in method_set
+            or METHOD_COMMON_PITFALL_MULTI_ARM in method_set
+        ):
+            for pair in extract_from_common_pitfall(chunk):
+                method = pair["metadata"]["extraction_method"]
+                if method in method_set:
+                    emitted.append(pair)
+        if chunk_type == "problem_solution" and (
+            METHOD_PROBLEM_SOLUTION in method_set
+            or METHOD_PROBLEM_SOLUTION_DPO in method_set
+        ):
+            for pair in extract_from_problem_solution(chunk):
+                method = pair["metadata"]["extraction_method"]
+                if method in method_set:
+                    emitted.append(pair)
         if (
             METHOD_MISCONCEPTION_DISTINGUISH in method_set
             or METHOD_MISCONCEPTION_CONTRAST in method_set
