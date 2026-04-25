@@ -107,6 +107,9 @@ def _wire_executor(
 
     Checkpoint manager + error classifier stay default — the tests
     don't exercise those paths.
+
+    Wave 74: caller is responsible for opting into ``state_runs_isolated``
+    so the timestamp-fallback ``run_path`` lands in tmp_path.
     """
     executor = TaskExecutor(tool_registry={}, max_retries=0)
     executor.gate_manager = gate_manager
@@ -136,7 +139,7 @@ def _synthetic_extract_fn(phase_name: str, results: Dict[str, ExecutionResult]) 
 
 
 @pytest.mark.asyncio
-async def test_gate_router_receives_current_phase_outputs():
+async def test_gate_router_receives_current_phase_outputs(state_runs_isolated):
     """Simulate content_generation: 3 task results, each with its own
     ``page_path``. The gate router for page_objectives-style validators
     must receive a phase_outputs dict that already contains
@@ -215,7 +218,7 @@ async def test_gate_router_receives_current_phase_outputs():
 
 
 @pytest.mark.asyncio
-async def test_prior_phase_outputs_preserved_alongside_current():
+async def test_prior_phase_outputs_preserved_alongside_current(state_runs_isolated):
     """The current phase's extraction must MERGE into phase_outputs —
     not replace the prior phases. Both must be visible to the router."""
     gate_manager = _RecordingGateManager()
@@ -278,7 +281,7 @@ async def test_prior_phase_outputs_preserved_alongside_current():
 
 
 @pytest.mark.asyncio
-async def test_caller_phase_outputs_not_mutated():
+async def test_caller_phase_outputs_not_mutated(state_runs_isolated):
     """``execute_phase`` only uses ``phase_outputs`` as read-only context.
 
     The WorkflowRunner calls ``_extract_phase_outputs`` AFTER
@@ -342,7 +345,7 @@ async def test_caller_phase_outputs_not_mutated():
 
 
 @pytest.mark.asyncio
-async def test_missing_extract_fn_preserves_legacy_behaviour():
+async def test_missing_extract_fn_preserves_legacy_behaviour(state_runs_isolated):
     """Legacy callers that don't pass ``extract_phase_outputs_fn``
     (e.g., tests / pre-existing Wave 23 code paths) must still work:
     the gate router sees only prior phases' outputs, matching the
@@ -395,7 +398,7 @@ async def test_missing_extract_fn_preserves_legacy_behaviour():
 
 
 @pytest.mark.asyncio
-async def test_extract_fn_exception_logs_and_continues():
+async def test_extract_fn_exception_logs_and_continues(state_runs_isolated):
     """If the extractor raises, the executor logs a warning and
     proceeds as if no extraction ran — a bug in the extractor must
     not take down the entire phase."""

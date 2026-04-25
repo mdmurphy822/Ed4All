@@ -100,7 +100,7 @@ def _make_executor(
 
 
 @pytest.mark.asyncio
-async def test_feature_flag_off_routes_to_in_process_tool(monkeypatch):
+async def test_feature_flag_off_routes_to_in_process_tool(monkeypatch, state_runs_isolated):
     """Default (flag unset) — every agent, subagent-classified or not,
     runs through the legacy ``tool_registry`` path. Session 1's
     promise: landing the code doesn't change any existing run."""
@@ -125,7 +125,7 @@ async def test_feature_flag_off_routes_to_in_process_tool(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_feature_flag_on_subagent_agent_routes_to_dispatcher(
-    monkeypatch,
+    monkeypatch, state_runs_isolated,
 ):
     """Happy path — flag + dispatcher + classified agent → dispatch_task."""
     monkeypatch.setenv("ED4ALL_AGENT_DISPATCH", "true")
@@ -162,7 +162,7 @@ async def test_feature_flag_on_subagent_agent_routes_to_dispatcher(
 
 @pytest.mark.asyncio
 async def test_feature_flag_on_python_tool_agent_stays_in_process(
-    monkeypatch,
+    monkeypatch, state_runs_isolated,
 ):
     """Flag on, but agent is Python-tool-classified (not in
     AGENT_SUBAGENT_SET) → legacy path. DART conversion, packaging,
@@ -186,7 +186,7 @@ async def test_feature_flag_on_python_tool_agent_stays_in_process(
 
 
 @pytest.mark.asyncio
-async def test_feature_flag_on_no_dispatcher_falls_through(monkeypatch):
+async def test_feature_flag_on_no_dispatcher_falls_through(monkeypatch, state_runs_isolated):
     """Flag on but dispatcher unset → legacy path. Guards against a
     PipelineOrchestrator misconfiguration where ``_get_dispatcher``
     returned None but the flag was still set."""
@@ -204,7 +204,7 @@ async def test_feature_flag_on_no_dispatcher_falls_through(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_feature_flag_on_unknown_agent_type_falls_through(monkeypatch):
+async def test_feature_flag_on_unknown_agent_type_falls_through(monkeypatch, state_runs_isolated):
     """Agent type not in AGENT_SUBAGENT_SET (and maybe not in any set
     at all — e.g. a typo or a new agent not yet classified) falls
     through to the legacy path. We don't second-guess — if the
@@ -226,7 +226,7 @@ async def test_feature_flag_on_unknown_agent_type_falls_through(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_feature_flag_truthy_variants(monkeypatch):
+async def test_feature_flag_truthy_variants(monkeypatch, state_runs_isolated):
     """`1`, `true`, `yes`, `on` (any case) all enable the flag.
     Anything else — including `0`, `false`, empty — disables it.
     Uses ``generate_course_content`` with its minimal required
@@ -288,7 +288,7 @@ async def test_subagent_set_covers_core_reasoning_agents():
 
 
 @pytest.mark.asyncio
-async def test_missing_agent_type_in_task_params_falls_through(monkeypatch):
+async def test_missing_agent_type_in_task_params_falls_through(monkeypatch, state_runs_isolated):
     """Legacy task shapes (pre-Wave-74 workflows, MCP-tool callers)
     may lack an ``agent_type`` field. The fork must not crash on that
     and must fall through to the in-process path."""

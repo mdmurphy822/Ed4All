@@ -76,7 +76,13 @@ class TaskMailbox:
         if not run_id:
             raise ValueError("run_id must be a non-empty string")
         self.run_id = run_id
-        base = Path(base_dir) if base_dir is not None else Path("state/runs")
+        if base_dir is not None:
+            base = Path(base_dir)
+        else:
+            # Honor ED4ALL_STATE_RUNS_DIR override so unit tests can
+            # redirect mailbox dirs into tmp_path.
+            env_override = os.environ.get("ED4ALL_STATE_RUNS_DIR")
+            base = Path(env_override) if env_override else Path("state/runs")
         self.root = base / run_id / "mailbox"
         self.pending_dir = self.root / "pending"
         self.in_progress_dir = self.root / "in_progress"

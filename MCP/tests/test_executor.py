@@ -84,8 +84,13 @@ class TestExecutionResult:
 # TASK EXECUTOR INITIALIZATION TESTS
 # =============================================================================
 
+@pytest.mark.usefixtures("state_runs_isolated")
 class TestTaskExecutorInit:
-    """Test TaskExecutor initialization."""
+    """Test TaskExecutor initialization.
+
+    Wave 74: opted into ``state_runs_isolated`` so the timestamp-fallback
+    ``run_path`` lands in tmp_path instead of project ``state/runs/``.
+    """
 
     @pytest.mark.unit
     def test_init_empty_registry(self):
@@ -142,8 +147,13 @@ class TestTaskExecutorInit:
 # TOOL REGISTRY VALIDATION TESTS
 # =============================================================================
 
+@pytest.mark.usefixtures("state_runs_isolated")
 class TestToolRegistryValidation:
-    """Test tool registry validation."""
+    """Test tool registry validation.
+
+    Wave 74: opted into ``state_runs_isolated`` to avoid polluting
+    project ``state/runs/``.
+    """
 
     @pytest.mark.unit
     def test_validate_empty_registry(self):
@@ -206,8 +216,13 @@ class TestToolRegistryValidation:
 # TASK EXECUTION TESTS
 # =============================================================================
 
+@pytest.mark.usefixtures("state_runs_isolated")
 class TestTaskExecution:
-    """Test task execution."""
+    """Test task execution.
+
+    Wave 74: opted into ``state_runs_isolated`` to avoid polluting
+    project ``state/runs/``.
+    """
 
     @pytest.fixture
     def mock_tool_registry(self):
@@ -283,8 +298,13 @@ class TestTaskExecution:
 # RETRY LOGIC TESTS
 # =============================================================================
 
+@pytest.mark.usefixtures("state_runs_isolated")
 class TestRetryLogic:
-    """Test retry logic and error handling."""
+    """Test retry logic and error handling.
+
+    Wave 74: opted into ``state_runs_isolated`` to avoid polluting
+    project ``state/runs/``.
+    """
 
     @pytest.mark.unit
     @pytest.mark.asyncio
@@ -356,8 +376,13 @@ class TestRetryLogic:
 # WORKFLOW EXECUTION TESTS
 # =============================================================================
 
+@pytest.mark.usefixtures("state_runs_isolated")
 class TestWorkflowExecution:
-    """Test workflow execution."""
+    """Test workflow execution.
+
+    Wave 74: opted into ``state_runs_isolated`` to avoid polluting
+    project ``state/runs/``.
+    """
 
     @pytest.fixture
     def mock_executor(self):

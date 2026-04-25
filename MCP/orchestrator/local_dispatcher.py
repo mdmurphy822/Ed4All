@@ -99,11 +99,16 @@ class LocalDispatcher:
         self.llm_factory = llm_factory
         self.agent_tool = agent_tool
         self.project_root = project_root or Path.cwd()
-        self.mailbox_base_dir = (
-            Path(mailbox_base_dir)
-            if mailbox_base_dir is not None
-            else self.project_root / "state" / "runs"
-        )
+        if mailbox_base_dir is not None:
+            self.mailbox_base_dir = Path(mailbox_base_dir)
+        else:
+            # Honor ED4ALL_STATE_RUNS_DIR override so unit tests can
+            # redirect mailbox writes into tmp_path.
+            env_override = os.environ.get("ED4ALL_STATE_RUNS_DIR")
+            self.mailbox_base_dir = (
+                Path(env_override) if env_override
+                else self.project_root / "state" / "runs"
+            )
         self.mailbox_timeout_seconds = float(mailbox_timeout_seconds)
         self.mailbox_poll_interval = float(mailbox_poll_interval)
         self._dispatched: List[str] = []

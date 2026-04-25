@@ -74,6 +74,19 @@ except ImportError as _mbb_import_err:  # pragma: no cover
     )
 
 
+# Register Wave 74 'ed4all state prune' command — GC for state/runs and
+# state/workflows so per-run dirs/files don't accumulate forever.
+try:
+    from cli.commands import register_state_command
+
+    register_state_command(cli)
+except ImportError as _state_import_err:  # pragma: no cover
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "cli.commands.state_prune unavailable: %s", _state_import_err
+    )
+
+
 # =============================================================================
 # VALIDATE-RUN COMMAND
 # =============================================================================

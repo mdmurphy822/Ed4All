@@ -44,8 +44,12 @@ def fresh_executor_module():
 
 
 @pytest.mark.unit
-def test_task_executor_error_classifier_wired(fresh_executor_module):
-    """``TaskExecutor().error_classifier`` must be non-None."""
+def test_task_executor_error_classifier_wired(fresh_executor_module, state_runs_isolated):
+    """``TaskExecutor().error_classifier`` must be non-None.
+
+    Wave 74: opted into ``state_runs_isolated`` so the timestamp-fallback
+    ``run_path`` lands in tmp_path.
+    """
     executor = fresh_executor_module.TaskExecutor()
     assert executor.error_classifier is not None, (
         "ErrorClassifier import regressed — check the F1 fix on "
@@ -54,7 +58,7 @@ def test_task_executor_error_classifier_wired(fresh_executor_module):
 
 
 @pytest.mark.unit
-def test_task_executor_checkpoint_manager_wired(fresh_executor_module):
+def test_task_executor_checkpoint_manager_wired(fresh_executor_module, state_runs_isolated):
     """``TaskExecutor().checkpoint_manager`` must be non-None."""
     executor = fresh_executor_module.TaskExecutor()
     assert executor.checkpoint_manager is not None, (
@@ -64,7 +68,7 @@ def test_task_executor_checkpoint_manager_wired(fresh_executor_module):
 
 
 @pytest.mark.unit
-def test_task_executor_gate_manager_wired(fresh_executor_module):
+def test_task_executor_gate_manager_wired(fresh_executor_module, state_runs_isolated):
     """``TaskExecutor().gate_manager`` must be non-None."""
     executor = fresh_executor_module.TaskExecutor()
     assert executor.gate_manager is not None, (
@@ -74,7 +78,7 @@ def test_task_executor_gate_manager_wired(fresh_executor_module):
 
 
 @pytest.mark.unit
-def test_task_executor_lock_manager_wired(fresh_executor_module):
+def test_task_executor_lock_manager_wired(fresh_executor_module, state_runs_isolated):
     """``TaskExecutor().lock_manager`` must be non-None.
 
     LockfileManager was imported but never instantiated pre-Wave-22.

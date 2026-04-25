@@ -64,6 +64,18 @@ def synthetic_workflow_state(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "MCP.core.workflow_runner.STATE_PATH", tmp_path,
     )
+    # Wave 74: TaskExecutor now resolves run_path via
+    # ``lib.paths.get_state_runs_dir`` which honors
+    # ``ED4ALL_STATE_RUNS_DIR``. Set it here so executor checkpoints
+    # for this test land in tmp_path instead of project state/runs/.
+    monkeypatch.setenv("ED4ALL_STATE_RUNS_DIR", str(tmp_path / "runs"))
+    # ``_get_executor`` also exports ``ED4ALL_RUN_ID`` into the
+    # process env (so downstream pipeline tools can build a
+    # MailboxBrokeredBackend bound to this run's mailbox). monkeypatch
+    # so the env var is restored on teardown — otherwise an unrelated
+    # later test that calls ``build_backend()`` reads the stale
+    # ``TTC_TEST_100_*`` and recreates ``state/runs/<old-run-id>/``.
+    monkeypatch.setenv("ED4ALL_RUN_ID", run_id)
     return run_id, state
 
 
@@ -124,8 +136,12 @@ def test_executor_capture_uses_normalized_course_code(synthetic_workflow_state):
     assert executor.capture.course_code == expected
 
 
-def test_get_executor_without_state_still_works_for_legacy_callers():
-    """Back-compat: _get_executor() with no args (legacy signature) still works."""
+def test_get_executor_without_state_still_works_for_legacy_callers(state_runs_isolated):
+    """Back-compat: _get_executor() with no args (legacy signature) still works.
+
+    Uses ``state_runs_isolated`` so the timestamp-fallback ``run_path``
+    lands in tmp_path instead of polluting project ``state/runs/``.
+    """
     orch = PipelineOrchestrator(mode="local")
     executor = orch._get_executor()  # no workflow_state — legacy call shape
 
