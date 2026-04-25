@@ -2,7 +2,15 @@
 
 Asserts node-class invariants, per-relation edge counts on a small
 synthetic corpus, plus a regression that the rdf-shacl-550 archive
-regenerates with >= 800 edges (the floor stated in the task).
+regenerates within the post-Wave-76 envelope.
+
+Wave 76 Worker D refined the prerequisite_of rule (strict-later-week
++ at-least-one-shared-chunk + DomainConcept filter) which dropped the
+rdf-shacl-550 prereq edge count from 7032 to ~700 in legacy permissive
+mode (no concept_classes). Total edge count is now bounded above by
+~3000 (depends on chunk LO-ref density) and floor remains >= 800.
+The strict pruning-mode envelope (prereq <= 500 with classes applied)
+is asserted in the companion file ``test_pedagogy_graph_pruning.py``.
 """
 from __future__ import annotations
 
@@ -276,7 +284,10 @@ def test_lo_ref_normalization_handles_compound_refs():
 
 
 # ---------------------------------------------------------------------------
-# Regression: real archive must re-build with >= 800 edges.
+# Regression: real archive must re-build within the post-Wave-76
+# legacy-mode envelope (no concept_classes; prereq rule still requires
+# strict-later-week + at-least-one-shared-chunk so the count drops
+# from Wave-75's 7032 to ~700, total drops from 8324 to ~2300).
 # ---------------------------------------------------------------------------
 
 
@@ -302,7 +313,17 @@ SYNTH_OBJECTIVES = (
     not (CORPUS_CHUNKS.exists() and SYNTH_OBJECTIVES.exists()),
     reason="rdf-shacl-550 archive missing — regression skipped",
 )
-def test_real_archive_regen_has_at_least_800_edges():
+def test_real_archive_regen_within_legacy_envelope():
+    """Legacy mode (no concept_classes) — verify post-Wave-76 envelope.
+
+    Wave 75 floor was >= 800 edges. Wave 76 Worker D's stricter
+    prereq rule (now requires strict-later-week AND at-least-one-
+    shared-chunk) drops the legacy-mode total to ~2300 (prereq from
+    7032 to ~700). We keep the floor at 1000 (above Wave 75's 800)
+    and add a 3000 ceiling to flag a regression to a cartesian. The
+    strict pruning-mode envelope (prereq <= 500 with classes applied)
+    lives in ``test_pedagogy_graph_pruning.py``.
+    """
     chunks = []
     with open(CORPUS_CHUNKS, encoding="utf-8") as f:
         for line in f:
@@ -312,11 +333,18 @@ def test_real_archive_regen_has_at_least_800_edges():
 
     g = build_pedagogy_graph(chunks, objectives, course_id="RDF_SHACL_550")
 
-    # Floor-asserts from the task spec.
-    assert g["stats"]["edge_count"] >= 800, (
-        f"expected >= 800 edges, got {g['stats']['edge_count']}"
+    # Wave 76 envelope: total edges should fall sharply from Wave 75's
+    # 8324 but stay above Wave 75's 800 floor.
+    edge_count = g["stats"]["edge_count"]
+    assert 1000 <= edge_count <= 3000, (
+        f"expected 1000 <= edges <= 3000, got {edge_count}"
     )
     er = g["stats"]["edges_by_relation"]
+    # prereq is the over-saturation lever: was 7032 pre-Wave-76, must
+    # not regress above ~1500 even without concept_classes (the strict
+    # cap with classes is asserted in the pruning test file).
+    assert er.get("prerequisite_of", 0) <= 1500, er.get("prerequisite_of", 0)
+    # Structural edges unchanged by Wave 76 pruning.
     assert er.get("teaches", 0) >= 219, er.get("teaches", 0)
     assert er.get("belongs_to_module", 0) == 219, er.get("belongs_to_module", 0)
     assert er.get("supports_outcome", 0) == 29, er.get("supports_outcome", 0)
