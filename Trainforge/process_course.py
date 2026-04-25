@@ -1014,19 +1014,6 @@ class CourseProcessor:
         from Trainforge.retag_outcomes import build_parent_map as _bpm
         self._lo_parent_map: Dict[str, str] = _bpm(self.objectives)
 
-        # Wave 81: precompute the merged (curated + auto-extracted)
-        # vocabulary table once per run. The auto-extraction pass walks
-        # every CO statement once at construction so emit-time
-        # _create_chunk reuses it rather than re-extracting per chunk.
-        # When no objectives are loaded the merged map collapses to the
-        # curated ``RETAG_VOCABULARIES`` so behavior matches Wave 76.
-        from Trainforge.retag_outcomes import (
-            merged_vocabularies as _merged_vocab,
-        )
-        self._lo_vocabularies: Dict[str, List[str]] = _merged_vocab(
-            self.objectives,
-        )
-
         # Decision capture
         # Phase value must be in the canonical enum at
         # ``schemas/events/decision_event.schema.json`` (hyphenated). Prior
@@ -1160,7 +1147,16 @@ class CourseProcessor:
         # Stage 5
         print("[5/6] Generating metadata...")
         concept_graph = self._generate_concept_graph(chunks)
-        pedagogy_graph = self._generate_pedagogy_graph(chunks)
+        # Wave 81: pedagogy graph is built AFTER concept_graph so the
+        # concept_classes map (Wave 75/76 classifier output) can flow
+        # into the prerequisite_of / interferes_with /
+        # concept_supports_outcome filters. Pre-Wave-81 the pedagogy
+        # graph was a 1-node stub (tag co-occurrence on
+        # pedagogy/logistics tags only); see the rewritten
+        # ``_generate_pedagogy_graph`` below.
+        pedagogy_graph = self._generate_pedagogy_graph(
+            chunks, concept_graph=concept_graph,
+        )
         manifest = self._generate_manifest(title, concept_graph=concept_graph)
         corpus_stats = self._generate_corpus_stats()
         quality_report = self._generate_quality_report(chunks)
@@ -1882,16 +1878,8 @@ class CourseProcessor:
         # they see the full set of refs. Both rules are additive —
         # never removes an existing ref. See Trainforge/retag_outcomes.py
         # for the rationale + vocabulary lists.
-        #
-        # Wave 81: pass the per-run merged vocabulary map (curated +
-        # auto-extracted) so coverage spans every CO in the active
-        # objectives payload, not just the three curated entries.
         from Trainforge.retag_outcomes import retag_chunk_outcomes
-        retag_chunk_outcomes(
-            chunk,
-            parent_map=getattr(self, "_lo_parent_map", None),
-            vocabularies=getattr(self, "_lo_vocabularies", None),
-        )
+        retag_chunk_outcomes(chunk, parent_map=getattr(self, "_lo_parent_map", None))
 
         # Wave 69: propagate Wave 57 targetedConcepts[] from LOs onto chunks
         # whose learning_outcome_refs cite those LOs. Each chunk entry is
@@ -3138,18 +3126,141 @@ class CourseProcessor:
                 }
         return list(by_id.values())
 
-    def _generate_pedagogy_graph(self, chunks: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Mirror graph of pedagogical and logistics tags.
+    def _generate_pedagogy_graph(
+        self,
+        chunks: List[Dict[str, Any]],
+        concept_graph: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Build the typed pedagogical graph (Wave 75/76/78).
 
-        Emitted so downstream consumers who want pedagogy signal don't have
-        to re-derive it from the chunks, and so nothing is silently dropped
-        when pedagogy tags show up in ``concept_tags``.
+        Wave 81 wires the post-hoc retroactive scripts into the normal
+        emit pipeline: previously this method emitted a stub
+        co-occurrence graph over pedagogy/logistics tags (1-node /
+        0-edge in practice on real corpora) and the rich
+        ``build_pedagogy_graph`` from
+        ``Trainforge.pedagogy_graph_builder`` was only invoked by
+        ``scripts/wave78_complete_pedagogy.py`` retroactively. Now the
+        same builder runs at emit time so fresh archives carry the
+        full Wave 78 relation set
+        (``derived_from_objective`` / ``concept_supports_outcome`` /
+        ``assessment_validates_outcome`` / ``chunk_at_difficulty``)
+        plus the existing Wave 75 edges
+        (``teaches`` / ``assesses`` / ``practices`` / ``exemplifies`` /
+        ``prerequisite_of`` / ``interferes_with`` /
+        ``belongs_to_module`` / ``supports_outcome`` /
+        ``at_bloom_level`` / ``follows``).
+
+        Inputs:
+
+        * ``chunks``        — same chunk list emitted in Stage 4. The
+                              builder reads ``concept_tags`` /
+                              ``learning_outcome_refs`` /
+                              ``misconceptions`` / ``chunk_type`` /
+                              ``difficulty`` / ``source.module_id`` /
+                              ``source.item_path``.
+        * ``concept_graph`` — concept_graph.json shape, used to source
+                              the ``concept_classes`` map (Wave 75/76
+                              classifier output stamped on every node).
+                              When omitted the builder treats every
+                              concept as DomainConcept-default
+                              (legacy permissive mode); Wave 81 always
+                              passes it from the caller.
+
+        Objectives source: prefers ``self.objectives`` (already loaded
+        by the constructor — Wave 30 Gap 4 path covers the synthesized
+        fallback). When unavailable we still call the builder with an
+        empty objectives dict so the four DifficultyLevel + six
+        BloomLevel typed nodes always emit (the builder degrades
+        gracefully).
+
+        Fail-soft: any exception inside the builder is logged and the
+        method returns an empty graph shell so the rest of metadata
+        emit proceeds. Mirrors the ``semantic_graph`` fail-soft pattern.
         """
-        return self._build_tag_graph(
-            chunks,
-            include_tags=PEDAGOGY_TAG_SET | LOGISTICS_TAG_SET,
-            graph_kind="pedagogy",
-        )
+        from datetime import datetime as _dt
+
+        try:
+            from Trainforge.pedagogy_graph_builder import build_pedagogy_graph
+        except Exception as exc:  # pragma: no cover — import-failure guard
+            logger.warning(
+                "Wave 81: pedagogy_graph_builder import failed; emitting "
+                "empty graph. Cause: %s",
+                exc,
+            )
+            return {
+                "kind": "pedagogy",
+                "nodes": [],
+                "edges": [],
+                "generated_at": _dt.now().isoformat(),
+                "stats": {
+                    "node_count": 0,
+                    "edge_count": 0,
+                    "nodes_by_class": {},
+                    "edges_by_relation": {},
+                },
+            }
+
+        # Source concept_classes from the concept_graph nodes. Each
+        # node carries a ``class`` field (Wave 75 wiring inside
+        # ``_build_tag_graph``). The builder's ``prerequisite_of`` /
+        # ``interferes_with`` / ``concept_supports_outcome`` filters
+        # consult this map to drop pedagogical / assessment-option /
+        # low-signal endpoints. ``concept_graph`` may be None when an
+        # older caller bypasses the Wave 81 wiring; treat that as
+        # permissive-mode (every concept defaults to DomainConcept).
+        concept_classes: Dict[str, str] = {}
+        if isinstance(concept_graph, dict):
+            for node in concept_graph.get("nodes") or []:
+                if not isinstance(node, dict):
+                    continue
+                raw_id = node.get("id")
+                klass = node.get("class")
+                if not isinstance(raw_id, str) or not raw_id:
+                    continue
+                if not isinstance(klass, str) or not klass:
+                    continue
+                # Strip the ``course_id:`` prefix when SCOPE_CONCEPT_IDS
+                # is on so the builder sees the bare slug it was
+                # designed against (mirrors the helper in
+                # scripts/wave75_classify_concept_graph.py). Also key
+                # by the full ID so the builder's lookups land
+                # regardless of scoping mode.
+                slug = raw_id.split(":", 1)[-1]
+                concept_classes[slug] = klass
+                concept_classes[raw_id] = klass
+
+        # ``self.objectives`` may be missing (legacy
+        # ``CourseProcessor.__new__`` callers in existing tests bypass
+        # the constructor) or None; treat both as empty so the builder
+        # still emits BloomLevel + DifficultyLevel typed nodes.
+        raw_objectives = getattr(self, "objectives", None)
+        objectives = raw_objectives if isinstance(raw_objectives, dict) else {}
+
+        try:
+            return build_pedagogy_graph(
+                chunks,
+                objectives=objectives,
+                course_id=getattr(self, "course_code", None) or None,
+                concept_classes=concept_classes or None,
+            )
+        except Exception as exc:  # noqa: BLE001 — fail-soft on builder error
+            logger.warning(
+                "Wave 81: build_pedagogy_graph failed; emitting empty "
+                "graph. Cause: %s",
+                exc,
+            )
+            return {
+                "kind": "pedagogy",
+                "nodes": [],
+                "edges": [],
+                "generated_at": _dt.now().isoformat(),
+                "stats": {
+                    "node_count": 0,
+                    "edge_count": 0,
+                    "nodes_by_class": {},
+                    "edges_by_relation": {},
+                },
+            }
 
     def _build_tag_graph(
         self,
