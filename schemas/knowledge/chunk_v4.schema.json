@@ -227,11 +227,16 @@
     },
     "Misconception": {
       "type": "object",
-      "required": ["misconception", "correction"],
+      "required": ["correction"],
       "additionalProperties": false,
-      "description": "Per REC-JSL-01: both 'misconception' and 'correction' keys required. Wave 60 (Courseforge emit) / Wave 69 (Trainforge consume): optional bloom_level + cognitive_domain fields mirror courseforge_jsonld_v1.schema.json $defs/Misconception. Trainforge normalizes the JSON-LD camelCase (bloomLevel / cognitiveDomain) to snake_case in html_content_parser.",
+      "description": "Per REC-JSL-01: 'correction' is required and at least one of 'misconception' or 'statement' must be present (Wave 74+ content-generator subagents emit 'statement' as a synonym for 'misconception'). Wave 60 / Wave 69 retain optional bloom_level + cognitive_domain fields. Trainforge normalizes JSON-LD camelCase (bloomLevel / cognitiveDomain) to snake_case in html_content_parser.",
+      "anyOf": [
+        {"required": ["misconception"]},
+        {"required": ["statement"]}
+      ],
       "properties": {
-        "misconception": { "type": "string", "minLength": 1 },
+        "misconception": {"type": "string", "minLength": 1},
+        "statement": {"type": "string", "minLength": 1, "description": "Wave 74+ alias for misconception. Equivalent semantics; emitted by content-generator subagents."},
         "correction": { "type": "string", "minLength": 1 },
         "bloom_level": {
           "type": "string",

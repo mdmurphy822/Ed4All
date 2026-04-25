@@ -108,10 +108,17 @@ def test_role_enum_is_locked():
 
 
 def test_extractor_enum_is_locked():
-    """Extractor enum must be the typed five-value set."""
+    """Extractor enum is locked to canonical extractors + Wave 74 agent identifiers.
+
+    First five are DART per-block envelope extractors; remaining three are
+    Wave 9 / Wave 74 courseforge subagents that synthesize or re-cite source
+    references (source-router from Wave 9 TF-IDF; content-generator family
+    from Wave 74 mailbox-dispatched content subagents).
+    """
     schema = _load_schema()
     assert schema["properties"]["extractor"]["enum"] == [
         "pdftotext", "pdfplumber", "ocr", "claude", "synthesized",
+        "source-router", "content-generator", "content-generator-v1",
     ]
 
 
