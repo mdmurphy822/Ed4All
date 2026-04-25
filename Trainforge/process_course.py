@@ -409,6 +409,48 @@ def compile_domain_concept_seeds(
 
 
 # ---------------------------------------------------------------------------
+# Wave 75: learning_outcome_ref normalization
+# ---------------------------------------------------------------------------
+
+def normalize_outcome_refs(raw_refs: Any) -> List[str]:
+    """Normalize an iterable of learning_outcome_refs.
+
+    Wave 75 — Subagent-emitted chunks have been observed to pack
+    multiple LO codes into a single string with comma separators
+    (``"co-01,co-02,co-03"``). This helper splits on comma + strips
+    whitespace so downstream resolvers see one ref per element. Order
+    is preserved; duplicates are collapsed.
+
+    Accepts ``None``, a single string, or any iterable of strings.
+    Returns ``[]`` for ``None`` / empty input. Non-string elements are
+    coerced via ``str()`` defensively.
+    """
+    if raw_refs is None:
+        return []
+    if isinstance(raw_refs, str):
+        raw_refs = [raw_refs]
+    out: List[str] = []
+    seen: Set[str] = set()
+    for raw in raw_refs:
+        if raw is None:
+            continue
+        if not isinstance(raw, str):
+            raw = str(raw)
+        if "," in raw:
+            parts = [p.strip() for p in raw.split(",")]
+        else:
+            parts = [raw.strip()]
+        for p in parts:
+            if not p:
+                continue
+            if p in seen:
+                continue
+            seen.add(p)
+            out.append(p)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Concept tag normalization
 # ---------------------------------------------------------------------------
 
@@ -2143,22 +2185,48 @@ class CourseProcessor:
             os.getenv("TRAINFORGE_PRESERVE_LO_CASE", "").lower() == "true"
         )
 
-        def _normalize(raw: str) -> str:
+        def _normalize_one(raw: str) -> str:
             """Apply case policy + week-prefix stripping to a single ref."""
             base = raw.strip() if preserve_case else raw.lower().strip()
             # Strip week prefix (w01-, W01-, w02-, ...) to align with
             # course.json format. WEEK_PREFIX_RE is case-insensitive.
             return self.WEEK_PREFIX_RE.sub('', base)
 
+        def _normalize(raw: Any) -> List[str]:
+            """Wave 75: normalize a raw ref into a list of refs.
+
+            Handles malformed comma-delimited strings like
+            ``"co-01,co-02,co-03"`` (observed in subagent-emitted
+            chunks) by splitting on comma and stripping each piece.
+            Always returns a list — callers must extend, not append.
+            """
+            if raw is None:
+                return []
+            if not isinstance(raw, str):
+                raw = str(raw)
+            if "," in raw:
+                parts = [p.strip() for p in raw.split(",")]
+            else:
+                parts = [raw]
+            out: List[str] = []
+            for p in parts:
+                normed = _normalize_one(p)
+                if normed:
+                    out.append(normed)
+            return out
+
         refs: List[str] = []
+
+        def _extend(values: List[str]) -> None:
+            for v in values:
+                if v and v not in refs:
+                    refs.append(v)
 
         # (1) Structured objective IDs from parser (JSON-LD or data-cf-*).
         for lo in item.get("learning_objectives", []):
             obj_id = lo.id if hasattr(lo, "id") else lo.get("id")
             if obj_id:
-                normalized = _normalize(obj_id)
-                if normalized and normalized not in refs:
-                    refs.append(normalized)
+                _extend(_normalize(obj_id))
 
         # (2) Fallback: regex extraction from key_concepts when no
         # structured IDs were available. Preserves prior behavior of
@@ -2187,9 +2255,7 @@ class CourseProcessor:
             activity_refs = list(item.get("objective_refs", []))
 
         for raw_ref in activity_refs:
-            normalized = _normalize(raw_ref)
-            if normalized and normalized not in refs:
-                refs.append(normalized)
+            _extend(_normalize(raw_ref))
 
         return refs
 
@@ -3600,13 +3666,35 @@ class CourseProcessor:
                     "hierarchy_level": "terminal",
                 })
 
+            # Wave 75: chapter_objectives can come in two shapes —
+            #   (a) nested: [{"chapter": "Week 1", "objectives": [{...}, ...]}]
+            #   (b) flat:   [{"id": "co-01", "parent_to": "to-01", ...}, ...]
+            # The Wave-24 plan_course_structure subagent emits the flat
+            # form; pre-Wave-24 Trainforge fixtures use nested. Pre-Wave-75
+            # course.json build only handled the nested form, which is why
+            # the 29 COs from RDF_SHACL_550's synthesized_objectives.json
+            # never propagated into the LibV2 archive's course.json.
             for ch in self.objectives.get("chapter_objectives", []):
-                for obj in ch.get("objectives", []):
+                if isinstance(ch, dict) and "objectives" in ch:
+                    inner = ch.get("objectives") or []
+                else:
+                    inner = [ch]
+                for obj in inner:
+                    if not isinstance(obj, dict) or "id" not in obj:
+                        continue
                     outcomes.append({
                         "id": obj["id"].lower(),
-                        "statement": obj["statement"],
-                        "bloom_level": (obj.get("bloomLevel") or obj.get("bloom_level") or "understand"),
+                        "statement": obj.get("statement") or obj.get("text") or "",
+                        "bloom_level": (
+                            obj.get("bloomLevel")
+                            or obj.get("bloom_level")
+                            or "understand"
+                        ),
                         "hierarchy_level": "chapter",
+                        # Wave 75: emit a discriminator so downstream
+                        # consumers can split terminal vs component
+                        # without re-deriving from the ID prefix.
+                        "type": "component",
                     })
         else:
             note = (
@@ -3654,6 +3742,119 @@ class CourseProcessor:
 
         return course_data
 
+    def _build_objectives_json(self) -> Optional[Dict[str, Any]]:
+        """Build the Wave 75 objectives.json sidecar.
+
+        Carries the full TO-/CO- hierarchy synthesized by Courseforge's
+        ``plan_course_structure`` phase so downstream chunk
+        ``learning_outcome_refs`` can resolve against ALL outcomes
+        (not just the terminal ones declared on course.json).
+
+        Returns ``None`` when no objectives are available. Otherwise
+        returns a dict matching ``schemas/knowledge/objectives_v1.schema.json``.
+
+        Schema validation: best-effort. Drift logs at WARNING; the
+        canonical shape is still emitted so consumers can rely on the
+        file structure regardless of jsonschema availability.
+        """
+        if not self.objectives:
+            return None
+
+        preserve_case = (
+            os.getenv("TRAINFORGE_PRESERVE_LO_CASE", "").lower() == "true"
+        )
+
+        def _id(raw: str) -> str:
+            return raw.strip() if preserve_case else raw.lower().strip()
+
+        terminal_outcomes: List[Dict[str, Any]] = []
+        for to in self.objectives.get("terminal_objectives", []):
+            if not isinstance(to, dict) or "id" not in to:
+                continue
+            entry: Dict[str, Any] = {
+                "id": _id(to["id"]),
+                "statement": to.get("statement") or to.get("text") or "",
+            }
+            if to.get("bloom_level") or to.get("bloomLevel"):
+                entry["bloom_level"] = (
+                    to.get("bloom_level") or to.get("bloomLevel")
+                )
+            if to.get("bloom_verb"):
+                entry["bloom_verb"] = to["bloom_verb"]
+            if to.get("cognitive_domain"):
+                entry["cognitive_domain"] = to["cognitive_domain"]
+            if to.get("weeks"):
+                entry["weeks"] = list(to["weeks"])
+            terminal_outcomes.append(entry)
+
+        component_objectives: List[Dict[str, Any]] = []
+        for ch in self.objectives.get("chapter_objectives", []):
+            # Same dual-shape handling as _build_course_json.
+            if isinstance(ch, dict) and "objectives" in ch:
+                inner = ch.get("objectives") or []
+            else:
+                inner = [ch]
+            for obj in inner:
+                if not isinstance(obj, dict) or "id" not in obj:
+                    continue
+                entry = {
+                    "id": _id(obj["id"]),
+                    "statement": obj.get("statement") or obj.get("text") or "",
+                }
+                parent = obj.get("parent_to") or obj.get("parent_terminal")
+                if parent:
+                    entry["parent_terminal"] = _id(parent)
+                if obj.get("bloom_level") or obj.get("bloomLevel"):
+                    entry["bloom_level"] = (
+                        obj.get("bloom_level") or obj.get("bloomLevel")
+                    )
+                if obj.get("bloom_verb"):
+                    entry["bloom_verb"] = obj["bloom_verb"]
+                if obj.get("cognitive_domain"):
+                    entry["cognitive_domain"] = obj["cognitive_domain"]
+                if obj.get("week") is not None:
+                    entry["week"] = obj["week"]
+                if obj.get("source_refs"):
+                    entry["source_refs"] = list(obj["source_refs"])
+                component_objectives.append(entry)
+
+        objectives_data: Dict[str, Any] = {
+            "schema_version": "v1",
+            "course_code": self.course_code,
+            "terminal_outcomes": terminal_outcomes,
+            "component_objectives": component_objectives,
+            "objective_count": {
+                "terminal": len(terminal_outcomes),
+                "component": len(component_objectives),
+            },
+        }
+
+        # Best-effort schema validation (same pattern as _build_course_json).
+        try:
+            from pathlib import Path as _Path
+
+            import jsonschema  # type: ignore
+            schema_path = (
+                _Path(__file__).resolve().parent.parent
+                / "schemas" / "knowledge" / "objectives_v1.schema.json"
+            )
+            if schema_path.exists():
+                with open(schema_path, encoding="utf-8") as _f:
+                    schema = json.load(_f)
+                try:
+                    jsonschema.validate(objectives_data, schema)
+                except jsonschema.ValidationError as exc:
+                    logger.warning(
+                        "objectives.json drifted from objectives_v1.schema.json: %s",
+                        exc.message,
+                    )
+        except ImportError:
+            pass
+        except Exception as exc:  # noqa: BLE001 - defensive
+            logger.debug("objectives_v1.schema.json validation skipped: %s", exc)
+
+        return objectives_data
+
     # ------------------------------------------------------------------
     # Stage 6: Write metadata
     # ------------------------------------------------------------------
@@ -3689,6 +3890,20 @@ class CourseProcessor:
         # never emitted course.json.
         course_data = self._build_course_json(manifest)
         _write(self.output_dir / "course.json", course_data)
+
+        # Wave 75 — emit objectives.json sidecar with the full TO-/CO-
+        # hierarchy. course.json declares the flattened
+        # learning_outcomes for LibV2 retrieval; objectives.json is the
+        # structured source of truth that keeps the
+        # ``terminal_outcomes[]`` / ``component_objectives[]`` split
+        # explicit (with parent_terminal back-pointers, source_refs,
+        # week assignments, and the canonical schema_version=v1
+        # discriminator). LibV2's importer copies it alongside
+        # course.json so chunk learning_outcome_refs can resolve
+        # against the full set.
+        objectives_data = self._build_objectives_json()
+        if objectives_data is not None:
+            _write(self.output_dir / "objectives.json", objectives_data)
 
         _write(self.corpus_dir / "corpus_stats.json", corpus_stats)
         _write(self.graph_dir / "concept_graph.json", concept_graph)

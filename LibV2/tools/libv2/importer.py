@@ -405,6 +405,17 @@ def import_course(
     if course_json.exists():
         shutil.copy(course_json, target_dir / "course.json")
 
+    # Wave 75 — copy objectives.json sidecar if Trainforge emitted it.
+    # Carries the full TO-/CO- hierarchy (terminal_outcomes[] +
+    # component_objectives[] with parent_terminal back-pointers) so
+    # downstream chunk ``learning_outcome_refs`` can resolve against
+    # ALL outcomes, not just the terminal ones declared on course.json.
+    # Optional: pre-Wave-75 archives don't carry one and that's still
+    # valid (LibV2 retrieval keeps falling back to course.json).
+    objectives_json = source_dir / "objectives.json"
+    if objectives_json.exists():
+        shutil.copy(objectives_json, target_dir / "objectives.json")
+
     # Create source/ directory structure and copy source artifacts
     source_base_dir = target_dir / "source"
     source_artifacts = None
