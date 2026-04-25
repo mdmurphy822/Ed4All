@@ -93,12 +93,13 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
     # =========================================================================
     "stage_dart_outputs": {
         "required": ["run_id", "dart_html_paths", "course_name"],
-        "optional": [],
-        "defaults": {},
+        "optional": ["stage_mode"],
+        "defaults": {"stage_mode": None},
         "param_mapping": {
             "html_paths": "dart_html_paths",
             "paths": "dart_html_paths",
             "course": "course_name",
+            "mode": "stage_mode",
         },
         "description": "Stage DART HTML outputs to Courseforge inputs directory",
     },
