@@ -627,6 +627,14 @@ def default_router() -> GateInputRouter:
         "lib.validators.libv2_manifest.LibV2ManifestValidator",
         _build_libv2_manifest,
     )
+    # Wave 78: packet integrity validator (gates the libv2_archival
+    # phase fail-closed). Reuses the same input shape as the manifest
+    # validator (course_dir + manifest_path) — the validator's gate
+    # adapter resolves archive_root from either.
+    r.register(
+        "lib.validators.libv2_packet_integrity.PacketIntegrityValidator",
+        _build_libv2_manifest,
+    )
     r.register(
         "lib.validators.assessment_objective_alignment.AssessmentObjectiveAlignmentValidator",
         _build_assessment_objective_alignment,

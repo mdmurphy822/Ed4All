@@ -154,6 +154,11 @@
           "type": "object",
           "additionalProperties": true
         },
+        "config": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Wave 78: free-form key/value block forwarded into the validator's input dict (e.g., {strict: true} for PacketIntegrityValidator). Validators ignore unknown keys."
+        },
         "behavior": {
           "type": "object",
           "additionalProperties": false,

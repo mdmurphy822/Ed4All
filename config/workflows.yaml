@@ -863,6 +863,28 @@ workflows:
               on_error: fail_closed
             description: Validate LibV2 manifest JSON, schema, and on-disk artifact integrity
 
+          # Wave 78: fail-closed packet integrity. Promotes the Wave 75
+          # PacketIntegrityValidator from a post-hoc operator tool to a
+          # blocking workflow gate. ``config.strict: true`` activates
+          # both --strict-coverage (every_objective_has_teaching,
+          # every_objective_has_assessment, to_has_teaching_and_assessment,
+          # domain_concept_has_chunk) and --strict-typing
+          # (edge_endpoint_typing). Set
+          # LIBV2_RELAX_PACKET_INTEGRITY=true to downgrade these rules
+          # to warnings for legacy archives that haven't been re-emit
+          # with Wave 76+ pedagogy + concept typing.
+          - gate_id: packet_integrity_strict
+            validator: lib.validators.libv2_packet_integrity.PacketIntegrityValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            config:
+              strict: true
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Wave 78 — fail-closed packet integrity (coverage + typing)
+
       - name: finalization
         agents: [brightspace-packager]
         parallel: false
