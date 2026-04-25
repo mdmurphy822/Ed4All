@@ -39,8 +39,11 @@
     },
     "extractor": {
       "type": "string",
-      "enum": ["pdftotext", "pdfplumber", "ocr", "claude", "synthesized"],
-      "description": "Optional. Which extraction stage produced this block (propagated from DART's per-block envelope)."
+      "enum": [
+        "pdftotext", "pdfplumber", "ocr", "claude", "synthesized",
+        "source-router", "content-generator", "content-generator-v1"
+      ],
+      "description": "Which extraction stage produced this block. DART emits one of the first five (per-block envelope). Wave 74+ courseforge subagents that synthesize or re-cite source references emit one of the agent identifiers (source-router from Wave 9 TF-IDF routing; content-generator from Wave 74 mailbox-dispatched content subagents)."
     }
   }
 }

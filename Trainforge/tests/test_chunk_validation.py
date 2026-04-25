@@ -52,15 +52,21 @@ def _require_jsonschema():
 
 
 def _build_validator(schema_path: Path):
-    """Build a Draft202012Validator with a RefResolver populated from every
+    """Build a Draft202012Validator with offline ref resolution against every
     $id in schemas/ so Worker F taxonomy references resolve offline.
+
+    Mirrors ``Trainforge/process_course.py::_load_chunk_validator``: prefers
+    the modern ``referencing`` library; falls back to the deprecated
+    ``RefResolver`` only when ``referencing`` is missing. Without this, the
+    deprecated resolver hits ``_RefResolutionError: Unresolvable JSON
+    pointer: '$defs/Source'`` after descending into an external $ref.
     """
     jsonschema = _require_jsonschema()
-    from jsonschema import Draft202012Validator, RefResolver
+    from jsonschema import Draft202012Validator
 
     with open(schema_path) as f:
         schema = json.load(f)
-    store: Dict[str, Any] = {}
+    id_to_schema: Dict[str, Any] = {}
     for p in SCHEMAS_DIR.rglob("*.json"):
         try:
             with open(p) as f:
@@ -69,9 +75,22 @@ def _build_validator(schema_path: Path):
             continue
         sid = s.get("$id")
         if sid:
-            store[sid] = s
-    resolver = RefResolver.from_schema(schema, store=store)
-    return schema, Draft202012Validator(schema, resolver=resolver)
+            id_to_schema[sid] = s
+    try:
+        from referencing import Registry, Resource
+        from referencing.jsonschema import DRAFT202012
+
+        resources = [
+            (sid, Resource.from_contents(s, default_specification=DRAFT202012))
+            for sid, s in id_to_schema.items()
+        ]
+        registry = Registry().with_resources(resources)
+        return schema, Draft202012Validator(schema, registry=registry)
+    except ImportError:
+        from jsonschema import RefResolver  # type: ignore
+
+        resolver = RefResolver.from_schema(schema, store=dict(id_to_schema))
+        return schema, Draft202012Validator(schema, resolver=resolver)
 
 
 def _find_real_chunks_jsonl() -> Optional[Path]:
