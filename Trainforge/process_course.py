@@ -3773,6 +3773,82 @@ class CourseProcessor:
 # CLI
 # ---------------------------------------------------------------------------
 
+
+def prune_output_after_import(
+    output_dir: Path,
+    course_code: str,
+    libv2_slug: Optional[str],
+    libv2_target_path: Optional[Path],
+    libv2_root: Path,
+) -> Optional[Path]:
+    """Drop everything in ``output_dir`` and leave only ``IMPORT_RECEIPT.json``.
+
+    Wave 74 cleanup. Caller is responsible for verifying that the LibV2
+    import actually succeeded; this helper unconditionally prunes when
+    invoked. Returns the path to the receipt on success, ``None`` when
+    the prune was refused (sanity guard).
+
+    Sanity guard: never prune if ``output_dir`` IS the LibV2 root or
+    sits inside it — that would corrupt the freshly imported archive.
+
+    The output dir itself is preserved (callers may have it open / cd'd);
+    only its contents are dropped before the receipt is written.
+    """
+    import shutil
+
+    output_dir = Path(output_dir).resolve()
+    libv2_root = Path(libv2_root).resolve()
+    try:
+        output_dir.relative_to(libv2_root)
+        inside_libv2 = True
+    except ValueError:
+        inside_libv2 = False
+    if output_dir == libv2_root or inside_libv2:
+        print(
+            f"[Prune] Refusing to prune {output_dir} because it is the "
+            f"LibV2 root or sits inside it."
+        )
+        return None
+
+    chunks_imported = 0
+    chunks_path = output_dir / "chunks.jsonl"
+    if chunks_path.exists():
+        try:
+            with chunks_path.open("r", encoding="utf-8") as fh:
+                chunks_imported = sum(1 for line in fh if line.strip())
+        except Exception:
+            chunks_imported = 0
+
+    receipt = {
+        "run_at": datetime.now(timezone.utc).isoformat(),
+        "course_code": course_code,
+        "libv2_slug": libv2_slug,
+        "libv2_path": str(libv2_target_path) if libv2_target_path else None,
+        "chunks_imported": chunks_imported,
+    }
+
+    if output_dir.exists():
+        for entry in output_dir.iterdir():
+            try:
+                if entry.is_dir() and not entry.is_symlink():
+                    shutil.rmtree(entry)
+                else:
+                    entry.unlink()
+            except Exception as exc:
+                print(f"[Prune] Skipped {entry}: {exc}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    receipt_path = output_dir / "IMPORT_RECEIPT.json"
+    with receipt_path.open("w", encoding="utf-8") as fh:
+        json.dump(receipt, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    print(
+        f"[Prune] Pruned {output_dir}; left {receipt_path.name} with "
+        f"{chunks_imported} chunks_imported recorded."
+    )
+    return receipt_path
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Process a Courseforge IMSCC into a Trainforge RAG corpus",
@@ -3819,6 +3895,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--llm-provider", default="mock", choices=["mock", "anthropic"],
                    help="LLM provider for alignment stage (default: mock)")
     p.add_argument("--import-to-libv2", action="store_true", help="Import into LibV2 after processing")
+    p.add_argument(
+        "--prune-after-import",
+        action="store_true",
+        help=(
+            "After a successful --import-to-libv2, drop the contents of "
+            "--output and leave only IMPORT_RECEIPT.json. Default off so "
+            "current behavior (output dir kept verbatim) is preserved. "
+            "Ignored with a warning when --import-to-libv2 is not set."
+        ),
+    )
     p.add_argument("--synthesize", action="store_true",
                    help="Synthesize SFT/DPO training pairs from chunks after base processing (Worker C).")
     p.add_argument("--synthesis-provider", default="mock", choices=["mock", "anthropic"],
@@ -3933,6 +4019,9 @@ def main():
             print(f"[Synthesis] Failed: {e}")
 
     # Optional LibV2 import
+    libv2_import_succeeded = False
+    libv2_slug: Optional[str] = None
+    libv2_target_path: Optional[Path] = None
     if args.import_to_libv2:
         print("\n[LibV2] Importing into LibV2...")
         try:
@@ -3954,12 +4043,39 @@ def main():
             )
             print(f"[LibV2] Imported as: {slug}")
             print(f"[LibV2] Location: LibV2/courses/{slug}/")
+            libv2_import_succeeded = True
+            libv2_slug = slug
+            libv2_target_path = (PROJECT_ROOT / "LibV2" / "courses" / slug).resolve()
         except Exception as e:
             print(f"[LibV2] Import failed: {e}")
             print("[LibV2] You can import manually later with:")
             print(
                 f"  python -m LibV2.tools.libv2.cli import {args.output} "
                 f"--domain {processor.domain} --division {processor.division}"
+            )
+
+    # Wave 74 cleanup: prune --output after a successful LibV2 import so the
+    # output dir doesn't sit on disk as a duplicate of the LibV2 archive.
+    # Default OFF — current behavior (full output dir kept) is unchanged
+    # unless the caller explicitly opts in.
+    if args.prune_after_import:
+        if not args.import_to_libv2:
+            print(
+                "[Prune] Warning: --prune-after-import has no effect without "
+                "--import-to-libv2; ignoring."
+            )
+        elif not libv2_import_succeeded:
+            print(
+                "[Prune] LibV2 import did not succeed; preserving --output "
+                "dir verbatim (no pruning)."
+            )
+        else:
+            prune_output_after_import(
+                output_dir=Path(args.output),
+                course_code=args.course_code,
+                libv2_slug=libv2_slug,
+                libv2_target_path=libv2_target_path,
+                libv2_root=PROJECT_ROOT / "LibV2",
             )
 
     # Optional: retrieval benchmark over the freshly regenerated corpus.
