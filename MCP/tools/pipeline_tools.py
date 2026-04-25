@@ -187,6 +187,198 @@ def _stage_tree(src_dir: Path, dest_dir: Path, mode: str) -> None:
     shutil.copytree(src_dir, dest_dir)
 
 
+def _course_chunk_id_prefix(course_name: str) -> str:
+    """Return the ``{course_code}_chunk_`` prefix Trainforge writes.
+
+    Mirrors ``Trainforge.process_course.CourseProcessor`` — the chunk
+    prefix is ``f"{self.course_code.lower()}_chunk_"`` (see
+    ``Trainforge/process_course.py:1106``). We lowercase here too so the
+    archival gate matches the on-disk IDs exactly. Spaces / dashes get
+    normalised to underscores so values that have already been slugified
+    (e.g. ``"rdf-shacl-550"``) still produce the right prefix
+    (``"rdf_shacl_550_chunk_"``).
+    """
+    code = (course_name or "").strip().lower()
+    if not code:
+        return ""
+    # Trainforge keeps underscores in the prefix; if the caller passed a
+    # slug-shaped name (``rdf-shacl-550``), normalise back to underscores.
+    code = code.replace("-", "_").replace(" ", "_")
+    return f"{code}_chunk_"
+
+
+def _check_chunks_freshness(
+    *,
+    chunks_path: Path,
+    course_name: str,
+    run_start_ts: float,
+    had_prior_chunks: bool,
+) -> dict:
+    """Wave 74: classify chunks.jsonl at the archive destination.
+
+    Returns a dict with ``status`` ∈ {``"absent"``, ``"fresh"``,
+    ``"stale"``} plus diagnostic fields. The archival caller fails closed
+    on ``"stale"``.
+
+    Decision rules:
+
+    * ``absent`` — no file at ``chunks_path``. Trainforge was
+      intentionally skipped (DART-only batch) OR the copy block deleted
+      the prior file and never wrote a fresh one. Either way, archival
+      proceeds without chunks; feature flags fall back to ``false``.
+    * ``fresh`` — file exists; either every line decodes to a chunk
+      whose ``id`` starts with ``{course_code_lower()}_chunk_`` OR the
+      file's ``mtime`` is at or after ``run_start_ts`` (mtime check is
+      a fallback for callers that don't follow the prefix convention).
+    * ``stale`` — file exists, but at least one chunk's ``id`` carries
+      a prefix that doesn't match the current course AND the file
+      pre-dates ``run_start_ts``. Caught the rdf-shacl-550 leak.
+
+    Args:
+        chunks_path: Where chunks.jsonl lives in the LibV2 archive
+            (``course_dir / "corpus" / "chunks.jsonl"``).
+        course_name: The current run's course code / name. Used to
+            derive the expected ``{prefix}_chunk_`` ID pattern.
+        run_start_ts: ``time.time()`` captured at archival entry. Files
+            with ``mtime >= run_start_ts`` are by definition fresh.
+        had_prior_chunks: ``True`` when the destination already had a
+            chunks file before the copy block ran. Used to disambiguate
+            the ``absent`` outcome — when we deleted a prior file but
+            never re-wrote, the absent-after-delete state is OK as long
+            as Trainforge was intentionally absent. (We don't fail
+            closed on it because the existing flow was always fine with
+            no chunks for DART-only runs.)
+    """
+    if not chunks_path.exists() or not chunks_path.is_file():
+        return {"status": "absent", "reason": "no chunks.jsonl present"}
+
+    expected_prefix = _course_chunk_id_prefix(course_name)
+    if not expected_prefix:
+        # No course name → can't validate. Treat as absent so we don't
+        # fail closed on a caller-side bug; the missing-course-name
+        # branch above already short-circuits with a clearer error.
+        return {"status": "absent", "reason": "no course_name to validate against"}
+
+    # mtime check — files written this run pass unconditionally.
+    try:
+        mtime = chunks_path.stat().st_mtime
+    except OSError:
+        mtime = 0.0
+    if mtime >= run_start_ts:
+        return {
+            "status": "fresh",
+            "reason": "chunks.jsonl mtime is at/after run start",
+        }
+
+    # mtime predates run-start → inspect the IDs. We sample a bounded
+    # number of lines so a multi-GB chunks.jsonl doesn't blow the
+    # archival path's runtime.
+    #
+    # Decision rule: chunks landing in a LibV2 archive are produced by
+    # ``Trainforge.process_course`` which writes IDs as
+    # ``{course_code.lower()}_chunk_{N}`` (process_course.py:1106). The
+    # ``_chunk_`` substring is the recognizable production signature.
+    # When at least one chunk on disk has a recognizable course prefix
+    # (i.e. ``{head}_chunk_...``) that DOESN'T match the current course,
+    # we have positive evidence the chunks file is from a different
+    # run/course → stale. When chunks have no recognizable
+    # ``{head}_chunk_`` shape at all (synthetic test fixtures,
+    # malformed inputs), we treat as unverifiable rather than stale —
+    # the pre-Wave-74 behaviour was to write the archive anyway, and a
+    # purely-synthetic IMSCC pipeline is allowed to keep working.
+    observed_prefixes: dict[str, int] = {}
+    matched = 0
+    unrecognized = 0
+    inspected = 0
+    sample_limit = 50
+    try:
+        with open(chunks_path, encoding="utf-8") as fh:
+            for raw_line in fh:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                inspected += 1
+                try:
+                    chunk = json.loads(line)
+                except (json.JSONDecodeError, ValueError):
+                    unrecognized += 1
+                    continue
+                if not isinstance(chunk, dict):
+                    unrecognized += 1
+                    continue
+                cid = chunk.get("id") or ""
+                if not isinstance(cid, str):
+                    unrecognized += 1
+                    continue
+                if cid.startswith(expected_prefix):
+                    matched += 1
+                elif "_chunk_" in cid:
+                    # Recognizable production-shape ID but wrong course.
+                    head = cid.split("_chunk_", 1)[0]
+                    if head:
+                        observed_prefixes[head] = (
+                            observed_prefixes.get(head, 0) + 1
+                        )
+                    else:
+                        unrecognized += 1
+                else:
+                    # No ``_chunk_`` marker at all — synthetic / minimal
+                    # test fixture or unknown shape. No positive evidence
+                    # of staleness; tolerate.
+                    unrecognized += 1
+                if inspected >= sample_limit:
+                    break
+    except OSError as exc:
+        return {
+            "status": "stale",
+            "reason": f"could not read chunks.jsonl ({exc})",
+            "expected_prefix": expected_prefix,
+            "observed_prefixes": {},
+        }
+
+    if inspected == 0:
+        # File exists but is empty / all blank lines — treat as absent
+        # so DART-only smoke tests that touch an empty chunks file
+        # don't get a false-positive failure.
+        return {
+            "status": "absent",
+            "reason": "chunks.jsonl is empty",
+        }
+
+    if matched > 0:
+        return {
+            "status": "fresh",
+            "reason": (
+                f"found {matched}/{inspected} chunks matching prefix "
+                f"{expected_prefix!r}"
+            ),
+        }
+
+    if observed_prefixes:
+        # Recognizable production IDs from a DIFFERENT course → stale.
+        return {
+            "status": "stale",
+            "reason": (
+                f"chunks.jsonl carries IDs from a different course "
+                f"(expected prefix {expected_prefix!r}, observed "
+                f"{sorted(observed_prefixes.items(), key=lambda x: -x[1])[:3]})"
+            ),
+            "expected_prefix": expected_prefix,
+            "observed_prefixes": observed_prefixes,
+        }
+
+    # No recognizable course prefix at all (synthetic / minimal test
+    # fixture). No positive evidence of staleness — tolerate so we
+    # don't fail closed on perfectly fine non-production inputs.
+    return {
+        "status": "fresh",
+        "reason": (
+            f"chunks.jsonl carries unrecognized IDs ({unrecognized}/"
+            f"{inspected} lines) — no positive staleness evidence"
+        ),
+    }
+
+
 def _detect_source_provenance(course_dir: Path) -> bool:
     """Wave 10: scan archived chunks.jsonl for chunks with source_references[].
 
@@ -3707,6 +3899,24 @@ def _build_tool_registry() -> dict:
                     return c
             return None
 
+        # Wave 74 fail-closed: never silently preserve a prior run's
+        # chunks.jsonl under the same slug. If the destination already
+        # exists, drop it before the copy block so we either install
+        # fresh chunks below or end up with no chunks file (which is
+        # the correct state for DART-only / Trainforge-skipped runs).
+        _dest_chunks_path = course_dir / "corpus" / "chunks.jsonl"
+        _had_prior_chunks = _dest_chunks_path.exists()
+        if _had_prior_chunks:
+            try:
+                _dest_chunks_path.unlink()
+            except OSError as _exc:
+                logger.warning(
+                    "archive_to_libv2: failed to remove prior-run "
+                    "chunks.jsonl at %s: %s",
+                    _dest_chunks_path,
+                    _exc,
+                )
+
         if trainforge_dir is not None and trainforge_dir.exists():
             copy_map = [
                 (_pick(trainforge_dir / "corpus" / "chunks.jsonl",
@@ -3753,6 +3963,38 @@ def _build_tool_registry() -> dict:
                 "archive_to_libv2: no Trainforge output dir located for "
                 f"course {course_name} — features flags will default to false."
             )
+
+        # --- Wave 74 fail-closed: chunks-freshness gate -------------------
+        # When a chunks.jsonl exists at the archive destination, it MUST
+        # carry IDs from this run's course_code. Otherwise we caught a
+        # leak from a prior run under the same slug — refuse to write
+        # the manifest and surface ``error_code = TRAINFORGE_OUTPUT_STALE``
+        # to the caller. When the destination has no chunks file (the
+        # Trainforge-intentionally-absent case — e.g. DART-only batches
+        # gated by ``--no-assessments``), this check is a no-op.
+        _chunks_check = _check_chunks_freshness(
+            chunks_path=_dest_chunks_path,
+            course_name=course_name,
+            run_start_ts=_run_start_ts,
+            had_prior_chunks=_had_prior_chunks,
+        )
+        if _chunks_check["status"] == "stale":
+            logger.error(
+                "archive_to_libv2: refusing to write manifest — "
+                "chunks.jsonl at %s is stale for course %s (%s).",
+                _dest_chunks_path,
+                course_name,
+                _chunks_check["reason"],
+            )
+            return json.dumps({
+                "success": False,
+                "error": _chunks_check["reason"],
+                "error_code": "TRAINFORGE_OUTPUT_STALE",
+                "course_name": course_name,
+                "chunks_path": str(_dest_chunks_path),
+                "expected_prefix": _chunks_check.get("expected_prefix"),
+                "observed_prefixes": _chunks_check.get("observed_prefixes"),
+            })
 
         # --- Build manifest (with source_artifacts checksums) -------------
         import hashlib
