@@ -3,7 +3,7 @@
   "$id": "https://ed4all.dev/ns/taxonomies/v1/content_type.schema.json",
   "title": "Content Type Union",
   "description": "Union vocabulary for content-type labels emitted by Courseforge on sections, callouts, and by Trainforge on chunks. Union-only per REC-VOC-03 — NOT enforced as a single field anywhere yet; each subtype is scoped to its emission site.",
-  "$comment": "SectionContentType lifted from Courseforge/scripts/generate_course.py:388-405 (_infer_content_type return values: definition, example, procedure, comparison, exercise, overview, summary, explanation). CalloutContentType lifted from Courseforge/scripts/generate_course.py:448 (data-cf-content-type values on div.callout: application-note, note). ChunkType lifted from Trainforge/process_course.py:1372-1397 (_type_from_resource + _type_from_heading return values). Per REC-VOC-03 (union-only, not enforcement yet).",
+  "$comment": "SectionContentType lifted from Courseforge/scripts/generate_course.py:388-405 (_infer_content_type return values: definition, example, procedure, comparison, exercise, overview, summary, explanation). CalloutContentType lifted from Courseforge/scripts/generate_course.py:448 (data-cf-content-type values on div.callout: application-note, note). ChunkType lifted from Trainforge/process_course.py:1372-1397 (_type_from_resource + _type_from_heading return values), then extended in Wave 81 with the four template-driven values (procedure, real_world_scenario, common_pitfall, problem_solution) emitted by Courseforge content-generator templates and propagated through html_content_parser via data-cf-template-type. Per REC-VOC-03 (union-only, not enforcement yet).",
   "$defs": {
     "SectionContentType": {
       "type": "string",
@@ -29,14 +29,18 @@
     },
     "ChunkType": {
       "type": "string",
-      "description": "Content-type labels emitted on Trainforge chunks (chunk_type field), union of _type_from_resource and _type_from_heading return values.",
+      "description": "Content-type labels emitted on Trainforge chunks (chunk_type field). Six legacy values (assessment_item, overview, summary, exercise, explanation, example) lifted from _type_from_resource + _type_from_heading. Four Wave 81 additions (procedure, real_world_scenario, common_pitfall, problem_solution) propagated from Courseforge data-cf-template-type via Trainforge.parsers.html_content_parser when the section carries the attribute.",
       "enum": [
         "assessment_item",
         "overview",
         "summary",
         "exercise",
         "explanation",
-        "example"
+        "example",
+        "procedure",
+        "real_world_scenario",
+        "common_pitfall",
+        "problem_solution"
       ]
     },
     "ContentType": {

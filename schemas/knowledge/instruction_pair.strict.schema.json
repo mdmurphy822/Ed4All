@@ -51,9 +51,13 @@
         "summary",
         "exercise",
         "explanation",
-        "example"
+        "example",
+        "procedure",
+        "real_world_scenario",
+        "common_pitfall",
+        "problem_solution"
       ],
-      "description": "Content-type label from the source chunk. Must be a member of the ChunkType enum defined in schemas/taxonomies/content_type.json#/$defs/ChunkType. Enforced by lib.validators.content_type when TRAINFORGE_ENFORCE_CONTENT_TYPE=true."
+      "description": "Content-type label from the source chunk. Must be a member of the ChunkType enum defined in schemas/taxonomies/content_type.json#/$defs/ChunkType. Wave 81 added the four template-driven values (procedure, real_world_scenario, common_pitfall, problem_solution) propagated from Courseforge data-cf-template-type. Enforced by lib.validators.content_type when TRAINFORGE_ENFORCE_CONTENT_TYPE=true."
     },
     "seed": {
       "type": "integer",
