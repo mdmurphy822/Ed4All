@@ -222,7 +222,20 @@ class PipelineOrchestrator:
             if not run_id:
                 run_id = workflow_state.get("workflow_id") or workflow_state.get("id")
 
-            run_path = (self.state_dir / "runs" / run_id) if run_id else None
+            # Wave 74: honor ED4ALL_STATE_RUNS_DIR override so unit
+            # tests can redirect the executor's run_path into tmp_path
+            # (see conftest.py ``state_runs_isolated`` fixture). Falls
+            # back to ``self.state_dir / "runs"`` so the existing
+            # ``monkeypatch.setattr("MCP.orchestrator.pipeline_orchestrator.STATE_PATH", ...)``
+            # path (used by Wave 23 wiring tests) continues to work.
+            if run_id:
+                _env_runs = os.environ.get("ED4ALL_STATE_RUNS_DIR")
+                if _env_runs:
+                    run_path = Path(_env_runs) / run_id
+                else:
+                    run_path = self.state_dir / "runs" / run_id
+            else:
+                run_path = None
 
             # Wave 73: publish the resolved run_id into the process
             # environment so pipeline tools that auto-resolve an

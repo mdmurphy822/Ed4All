@@ -83,7 +83,7 @@ async def _run_task(
 
 
 @pytest.mark.asyncio
-async def test_success_true_envelope_completes():
+async def test_success_true_envelope_completes(state_runs_isolated):
     """A tool returning ``{"success": True, ...}`` stays COMPLETE."""
     executor = _build_executor_with_stub_tool(
         json.dumps({
@@ -106,7 +106,7 @@ async def test_success_true_envelope_completes():
 
 
 @pytest.mark.asyncio
-async def test_success_false_envelope_marks_failed():
+async def test_success_false_envelope_marks_failed(state_runs_isolated):
     """A tool returning ``{"success": False, ...}`` becomes FAILED.
 
     ``error_code`` + ``error_message`` must be hoisted into the
@@ -137,7 +137,7 @@ async def test_success_false_envelope_marks_failed():
 
 
 @pytest.mark.asyncio
-async def test_raised_exception_still_marks_error():
+async def test_raised_exception_still_marks_error(state_runs_isolated):
     """Existing raise-based error path must still flow through the
     error classifier / retry / poison-pill machinery."""
     async def raising_tool(**kwargs):
@@ -217,7 +217,7 @@ def test_phase_aggregation_counts_failed_as_failure():
 
 
 @pytest.mark.asyncio
-async def test_content_generation_empty_envelope_fails():
+async def test_content_generation_empty_envelope_fails(state_runs_isolated):
     """The live-scenario: ``generate_course_content`` returns the
     emptiness guard envelope (``_check_content_nonempty`` → Wave 32
     Deliverable C). Task must end up FAILED, not silently COMPLETE.

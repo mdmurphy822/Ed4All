@@ -33,7 +33,7 @@ _PROJECT_ROOT = _CORE_DIR.parents[1]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from lib.paths import STATE_PATH  # noqa: E402
+from lib.paths import STATE_PATH, get_state_runs_dir  # noqa: E402
 
 from .config import OrchestratorConfig  # noqa: E402
 from .param_mapper import ParameterMappingError, TaskParameterMapper  # noqa: E402
@@ -376,7 +376,10 @@ class TaskExecutor:
         self.param_mapper = TaskParameterMapper(strict=False)
 
         # Phase 0 Hardening: Initialize hardening components
-        self.run_path = run_path or (STATE_PATH / "runs" / self.run_id)
+        # Honor ED4ALL_STATE_RUNS_DIR override so unit tests can
+        # redirect run state into tmp_path (see conftest.py
+        # ``state_runs_isolated`` fixture).
+        self.run_path = run_path or (get_state_runs_dir() / self.run_id)
         self._init_hardening(poison_pill_threshold)
 
         # Log initialization with run_id

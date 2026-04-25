@@ -84,6 +84,24 @@ TRAINING_DIR_LEGACY = TRAINING_DIR
 RUNS_PATH = STATE_PATH / "runs"
 
 
+def get_state_runs_dir() -> Path:
+    """Resolve the ``state/runs/`` parent directory.
+
+    Priority:
+    1. ``ED4ALL_STATE_RUNS_DIR`` env var (used by tests via the
+       ``state_runs_isolated`` pytest fixture so unit tests don't
+       pollute the real project ``state/runs/``).
+    2. ``STATE_PATH / "runs"`` — the canonical project location.
+
+    The result is read at call time (not import time) so tests can
+    monkeypatch the env var without re-importing modules.
+    """
+    env_override = os.environ.get("ED4ALL_STATE_RUNS_DIR")
+    if env_override:
+        return Path(env_override)
+    return STATE_PATH / "runs"
+
+
 # ============================================================================
 # PATH RESOLUTION HELPERS (Phase 0.5)
 # ============================================================================

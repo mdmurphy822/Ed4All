@@ -104,7 +104,13 @@ async def test_create_workflow_impl_preserves_supplied_canonical_cc(tmp_path, mo
 # --------------------------------------------------------------------- #
 
 
-def test_pipeline_orchestrator_reads_canonical_course_code(tmp_path, monkeypatch):
+def test_pipeline_orchestrator_reads_canonical_course_code(tmp_path, monkeypatch, state_runs_isolated):
+    # Wave 74: ``_get_executor`` publishes ``params.run_id`` into
+    # ``ED4ALL_RUN_ID``. Without this monkeypatch the env var leaks
+    # between tests and a downstream extract_and_convert_pdf in a
+    # different test file recreates ``state/runs/WF-20260420-abc12345/``
+    # via the auto-resolved MailboxBrokeredBackend.
+    monkeypatch.setenv("ED4ALL_RUN_ID", "WF-20260420-abc12345")
     """``_get_executor`` should use ``params.canonical_course_code``
     when building its DecisionCapture, NOT re-derive from the
     workflow_id / workflow_type."""
@@ -153,7 +159,9 @@ def test_pipeline_orchestrator_reads_canonical_course_code(tmp_path, monkeypatch
     assert captured.get("course_code") == "CUSTOM_PINNED_042"
 
 
-def test_pipeline_orchestrator_falls_back_without_canonical_code(tmp_path, monkeypatch):
+def test_pipeline_orchestrator_falls_back_without_canonical_code(tmp_path, monkeypatch, state_runs_isolated):
+    # Wave 74: ED4ALL_RUN_ID containment (see sibling test above).
+    monkeypatch.setenv("ED4ALL_RUN_ID", "WF-LEGACY")
     """When workflow_state lacks ``canonical_course_code`` (legacy
     states created pre-Wave-29), the orchestrator falls back to
     normalising ``course_name``."""
