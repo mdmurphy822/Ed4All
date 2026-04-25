@@ -128,6 +128,100 @@ Text Dark: #333333         /* Main text color */
 }
 ```
 
+## Wave 79 Template Catalog
+
+**Forward-looking** — applies to FUTURE Courseforge runs. Existing
+exports (rdf-shacl-550 archive) are unchanged.
+
+### Why
+
+Wave 78's content-generator subagents produced ~219 chunks across the
+RDF/SHACL course, with 153 of them (~70%) tagged `explanation`. Only
+~25 (11%) were `example`, ~14 (6%) `exercise`, ~14 (6%)
+`assessment_item`. Downstream SLM training (Wave 79 Worker A's
+instruction-pair extractor) wants ~3× the example/exercise/assessment
+ratio so synthesized SFT + DPO pairs cover task-oriented behavior,
+not just explanatory recall. The catalog below gives the
+content-generator subagent **deterministic** per-template HTML so the
+parser can find each chunk type by attribute, not by heuristic
+class-name guessing.
+
+### Canonical catalog
+
+See `Courseforge/templates/chunk_templates.md` for the full template
+HTML and per-template required attribute tables. Four templates:
+
+| Template | `data-cf-template-type` | Trainforge mapping |
+|----------|-------------------------|---------------------|
+| Real-World Scenario          | `real_world_scenario` | scenario context → SFT prompt; deliverable → SFT response |
+| Problem-Solution Walkthrough | `problem_solution`    | walkthrough → DPO chosen; counter-example → DPO rejected |
+| Common Pitfall               | `common_pitfall`      | misconception paragraph → KG misconception node + DPO rejected; correction → DPO chosen |
+| Step-by-Step Procedure       | `procedure`           | inputs + steps → procedural SFT pair; worked example → second SFT pair |
+
+### Per-week chunk mix (mandatory for Wave 79+ runs)
+
+For each week, the content-generator MUST emit (in addition to the
+existing overview / summary / self-check pages):
+
+| Chunk type | Per week |
+|------------|---------:|
+| `explanation`         | 4-5  |
+| `example`             | 2-3  |
+| `procedure` (Template 4)              | 2    |
+| `real_world_scenario` (Template 1)    | 1-2  |
+| `common_pitfall` (Template 3)         | 1    |
+| `problem_solution` (Template 2)       | 1    |
+| `self-check` (interactive)            | 1    |
+| `summary`                             | 1    |
+| `overview`                            | 1    |
+| **Total / week**                      | **~15-18** (up from ~8-10 today) |
+
+### What to emit (per-template instructions)
+
+For every template instance the subagent generates, the enclosing
+`<section>` MUST carry the template's required `data-cf-*`
+attributes (full table in `templates/chunk_templates.md`):
+
+1. **Real-World Scenario** — emit `data-cf-template-type="real_world_scenario"`,
+   `data-cf-scenario-domain` (slug), `data-cf-applicable-concepts`
+   (comma-separated concept slugs), `data-cf-expected-deliverable`
+   (one-line deliverable description), plus the wave-stable
+   `data-cf-objective-id` / `data-cf-bloom-level` /
+   `data-cf-content-type` / `data-cf-source-ids` attributes.
+2. **Problem-Solution Walkthrough** — emit
+   `data-cf-template-type="problem_solution"`,
+   `data-cf-problem-class` (slug), `data-cf-applicable-concepts`,
+   plus the wave-stable attributes. The counter-example paragraph
+   MUST carry `data-cf-counter-example="true"` so the DPO extractor
+   can locate it deterministically.
+3. **Common Pitfall** — emit `data-cf-template-type="common_pitfall"`,
+   `data-cf-pitfall-concept` (slug), `data-cf-confused-with` (slug),
+   plus the wave-stable attributes. The misconception paragraph
+   MUST carry `data-cf-misconception="true"` so Trainforge can mint
+   a misconception node deterministically.
+4. **Step-by-Step Procedure** — emit `data-cf-template-type="procedure"`,
+   `data-cf-procedure-name` (noun-phrase slug),
+   `data-cf-applicable-concepts`, plus the wave-stable attributes.
+   Procedure sections MUST include explicit "Inputs", ordered
+   "Steps", an "Output" description, and one "Worked Example" sub-
+   heading so the extractor can split the chunk into procedural
+   skeleton + grounded instantiation.
+
+These attributes are ADDITIVE — the existing
+`data-cf-content-type` / `data-cf-objective-id` / `data-cf-bloom-level`
+/ `data-cf-source-ids` attributes from `Courseforge/CLAUDE.md` §
+"HTML Data Attributes" still apply on the same `<section>`.
+
+### Pattern 22 still applies
+
+Templates AUGMENT the surrounding theoretical foundation; they do not
+REPLACE it. Each template instance lives alongside a 400+ word
+explanation block per the Pattern 22 prevention protocol below. A
+week of 15-18 chunks should still satisfy the 600+ word per-sub-
+module floor.
+
+---
+
 ## Source Material Integration (Wave 9 — Source Provenance)
 
 **Critical contract**: When the `textbook_to_course` workflow runs, the
