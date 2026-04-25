@@ -1,4 +1,4 @@
-"""``ed4all libv2 validate-packet`` (Wave 75 Worker D).
+"""``ed4all libv2 validate-packet`` (Wave 75 Worker D + Wave 78).
 
 Operator-facing wrapper around
 :class:`lib.validators.libv2_packet_integrity.PacketIntegrityValidator`.
@@ -7,11 +7,12 @@ Runs SHACL-style integrity rules on a LibV2 archive
 (``LibV2/courses/<slug>/``) and emits either a human-readable summary
 table or a machine-readable JSON report.
 
-This is intentionally **not** wired into any workflow gate — packet
-integrity validation is post-hoc. The ``libv2_archival`` phase already
-runs the manifest gate (``LibV2ManifestValidator``); this command is
-an after-the-fact "is the archived knowledge graph self-consistent?"
-check that operators can run on demand.
+Wave 78 promotes the validator to a real workflow gate at
+``libv2_archival`` (see ``config/workflows.yaml``). This CLI remains
+the on-demand operator interface. Strict-mode flags
+(``--strict-coverage``, ``--strict-typing``, ``--strict``) opt into
+fail-closed coverage + typing rules — without them the validator
+preserves the Wave 75 warning-only behavior for the new rules.
 
 Examples
 --------
@@ -19,6 +20,8 @@ Examples
     ed4all libv2 validate-packet --slug rdf-shacl-550-rdf-shacl-550
     ed4all libv2 validate-packet --slug X --format json
     ed4all libv2 validate-packet --slug X --strict
+    ed4all libv2 validate-packet --slug X --strict-coverage --format json
+    ed4all libv2 validate-packet --slug X --strict-typing
 """
 
 from __future__ import annotations
@@ -139,7 +142,29 @@ def libv2_group() -> None:
 @click.option(
     "--strict",
     is_flag=True,
-    help="Treat warnings as critical (exit non-zero on any issue).",
+    help=(
+        "Wave 78: imply both --strict-coverage and --strict-typing. "
+        "Coverage + typing rules become critical; non-zero exit on any "
+        "critical issue."
+    ),
+)
+@click.option(
+    "--strict-coverage",
+    is_flag=True,
+    help=(
+        "Wave 78: promote coverage rules "
+        "(every_objective_has_teaching, every_objective_has_assessment, "
+        "to_has_teaching_and_assessment, domain_concept_has_chunk) to "
+        "critical."
+    ),
+)
+@click.option(
+    "--strict-typing",
+    is_flag=True,
+    help=(
+        "Wave 78: promote edge_endpoint_typing to critical (validates "
+        "edge endpoint classes against the typed-endpoint contract)."
+    ),
 )
 @click.option(
     "--format",
@@ -161,16 +186,30 @@ def libv2_group() -> None:
 def validate_packet_command(
     slug: str,
     strict: bool,
+    strict_coverage: bool,
+    strict_typing: bool,
     output_format: str,
     courses_root: Optional[Path],
 ) -> None:
     """Validate a LibV2 archive's internal SHACL-style integrity."""
     archive_root = _resolve_slug(slug, courses_root)
 
-    validator = PacketIntegrityValidator()
+    # --strict implies both granular flags.
+    effective_strict_coverage = bool(strict or strict_coverage)
+    effective_strict_typing = bool(strict or strict_typing)
+
+    validator = PacketIntegrityValidator(
+        strict_coverage=effective_strict_coverage,
+        strict_typing=effective_strict_typing,
+    )
     result = validator.validate(archive_root)
 
     payload = result.to_dict()
+    # Surface the active strictness mode in the report so post-hoc
+    # readers can tell whether warnings were promoted.
+    payload.setdefault("summary", {})
+    payload["summary"]["strict_coverage"] = effective_strict_coverage
+    payload["summary"]["strict_typing"] = effective_strict_typing
 
     if output_format == "json":
         # Emit to stdout AND persist alongside the archive.
@@ -179,12 +218,10 @@ def validate_packet_command(
     else:
         click.echo(_format_text_report(result))
 
-    # Determine exit code.
-    has_critical = result.critical_count > 0
-    has_warning = result.warning_count > 0
-    if strict and (has_critical or has_warning):
-        sys.exit(1)
-    if has_critical:
+    # Wave 78 exit-code rules: any critical under the active
+    # strictness mode → 1; otherwise 0. Warnings never trip a
+    # non-zero exit (the strict flags are the way to escalate).
+    if result.critical_count > 0:
         sys.exit(1)
     sys.exit(0)
 

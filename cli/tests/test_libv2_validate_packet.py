@@ -30,7 +30,7 @@ def _write_json(path: Path, payload):
 
 
 def _build_passing_archive(courses_root: Path, slug: str) -> Path:
-    """Build a minimal archive that passes every rule."""
+    """Build a minimal archive that passes every rule (Wave 75 + Wave 78)."""
     root = courses_root / slug
     root.mkdir(parents=True)
     _write_json(
@@ -58,6 +58,8 @@ def _build_passing_archive(courses_root: Path, slug: str) -> Path:
             ],
         },
     )
+    # Wave 78: chunks must cover both TO + CO with teaching AND
+    # assessment so every_objective_has_{teaching,assessment} pass.
     _write_jsonl(
         root / "corpus" / "chunks.jsonl",
         [
@@ -66,13 +68,13 @@ def _build_passing_archive(courses_root: Path, slug: str) -> Path:
                 "chunk_type": "explanation",
                 "text": "Widget kind explained.",
                 "concept_tags": ["widget-kind"],
-                "learning_outcome_refs": ["co-01"],
+                "learning_outcome_refs": ["to-01", "co-01"],
             },
             {
                 "id": "c2",
                 "chunk_type": "assessment_item",
                 "text": "Q",
-                "learning_outcome_refs": ["to-01"],
+                "learning_outcome_refs": ["to-01", "co-01"],
             },
         ],
     )
@@ -92,7 +94,7 @@ def _build_passing_archive(courses_root: Path, slug: str) -> Path:
     _write_json(
         root / "graph" / "pedagogy_graph.json",
         {
-            "nodes": [{"id": "TO-01", "class": "TerminalOutcome"}],
+            "nodes": [{"id": "TO-01", "class": "Outcome"}],
             "edges": [],
         },
     )
@@ -155,7 +157,8 @@ def test_cli_text_format_passes_clean_archive(tmp_path: Path):
         ],
     )
     assert result.exit_code == 0, result.output
-    assert "9 run, 9 passed, 0 failed" in result.output
+    # Wave 78 added 3 rules → 12 total.
+    assert "12 run, 12 passed, 0 failed" in result.output
     assert "critical=0" in result.output
 
 
@@ -179,15 +182,16 @@ def test_cli_json_format_emits_valid_json_and_writes_quality_file(tmp_path: Path
     )
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload["rules_run"] == 9
-    assert payload["rules_passed"] == 9
+    # Wave 78 added 3 rules → 12 total.
+    assert payload["rules_run"] == 12
+    assert payload["rules_passed"] == 12
     assert payload["critical_count"] == 0
 
     # Quality file persisted to <archive>/quality/graph_validation_report.json
     quality_file = archive / "quality" / "graph_validation_report.json"
     assert quality_file.exists()
     persisted = json.loads(quality_file.read_text(encoding="utf-8"))
-    assert persisted["rules_run"] == 9
+    assert persisted["rules_run"] == 12
 
 
 def test_cli_returns_zero_with_warnings_when_strict_unset(tmp_path: Path):
@@ -213,9 +217,35 @@ def test_cli_returns_zero_with_warnings_when_strict_unset(tmp_path: Path):
 
 
 def test_cli_returns_nonzero_with_warnings_when_strict_set(tmp_path: Path):
+    """Wave 78: --strict promotes coverage + typing rules to critical.
+
+    Pre-Wave-78 ``--strict`` treated *every* warning as critical.
+    Wave 78 narrows the semantics: only the coverage rules
+    (every_objective_has_teaching / every_objective_has_assessment /
+    to_has_teaching_and_assessment / domain_concept_has_chunk) and
+    the typing rule (edge_endpoint_typing) get promoted. Other
+    warning-severity rules (UNANCHORED_ASSESSMENT, etc.) stay
+    warnings under --strict.
+
+    This test exercises a coverage gap: an archive whose CO has no
+    teaching coverage. Without --strict it's a warning; with
+    --strict it's critical and the CLI exits 1.
+    """
     courses_root = tmp_path / "courses"
     courses_root.mkdir()
-    _build_archive_with_warning_only(courses_root, "demo-course")
+    archive = _build_passing_archive(courses_root, "demo-course")
+    # Strip co-01 from every chunk's refs → coverage gap.
+    chunks_path = archive / "corpus" / "chunks.jsonl"
+    items = [
+        json.loads(line)
+        for line in chunks_path.read_text().splitlines()
+        if line.strip()
+    ]
+    for it in items:
+        it["learning_outcome_refs"] = [
+            r for r in (it.get("learning_outcome_refs") or []) if r != "co-01"
+        ]
+    _write_jsonl(chunks_path, items)
 
     runner = CliRunner()
     result = runner.invoke(
@@ -229,8 +259,75 @@ def test_cli_returns_nonzero_with_warnings_when_strict_set(tmp_path: Path):
             str(courses_root),
         ],
     )
-    # --strict promotes warnings to fail.
+    # --strict promotes coverage rules → critical → exit 1.
     assert result.exit_code == 1, result.output
+
+
+def test_cli_strict_coverage_flag_promotes_only_coverage_rules(tmp_path: Path):
+    """Wave 78: --strict-coverage only escalates coverage rules."""
+    courses_root = tmp_path / "courses"
+    courses_root.mkdir()
+    archive = _build_passing_archive(courses_root, "demo-course")
+    # Coverage gap: drop co-01 refs.
+    chunks_path = archive / "corpus" / "chunks.jsonl"
+    items = [
+        json.loads(line)
+        for line in chunks_path.read_text().splitlines()
+        if line.strip()
+    ]
+    for it in items:
+        it["learning_outcome_refs"] = [
+            r for r in (it.get("learning_outcome_refs") or []) if r != "co-01"
+        ]
+    _write_jsonl(chunks_path, items)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        libv2_group,
+        [
+            "validate-packet",
+            "--slug",
+            "demo-course",
+            "--strict-coverage",
+            "--courses-root",
+            str(courses_root),
+        ],
+    )
+    assert result.exit_code == 1, result.output
+
+
+def test_cli_strict_typing_does_not_escalate_coverage_warnings(tmp_path: Path):
+    """Wave 78: --strict-typing alone does not promote coverage gaps."""
+    courses_root = tmp_path / "courses"
+    courses_root.mkdir()
+    archive = _build_passing_archive(courses_root, "demo-course")
+    # Coverage gap only — no typing violation.
+    chunks_path = archive / "corpus" / "chunks.jsonl"
+    items = [
+        json.loads(line)
+        for line in chunks_path.read_text().splitlines()
+        if line.strip()
+    ]
+    for it in items:
+        it["learning_outcome_refs"] = [
+            r for r in (it.get("learning_outcome_refs") or []) if r != "co-01"
+        ]
+    _write_jsonl(chunks_path, items)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        libv2_group,
+        [
+            "validate-packet",
+            "--slug",
+            "demo-course",
+            "--strict-typing",
+            "--courses-root",
+            str(courses_root),
+        ],
+    )
+    # Coverage gaps remain warnings under --strict-typing; exit 0.
+    assert result.exit_code == 0, result.output
 
 
 def test_cli_returns_nonzero_on_critical(tmp_path: Path):

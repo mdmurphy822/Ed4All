@@ -121,6 +121,12 @@ class GateConfig:
     validator_path: str  # e.g., "lib.validators.wcag.WCAGValidator"
     severity: GateSeverity = GateSeverity.CRITICAL
     threshold: Dict[str, Any] = field(default_factory=dict)
+    # Wave 78: arbitrary YAML ``config:`` block forwarded into the
+    # validator's input dict (under ``_gate_config`` and merged at the
+    # top level). Validators ignore unknown keys; opt-in flags like
+    # ``strict``, ``strict_coverage``, ``strict_typing`` for the LibV2
+    # packet integrity validator are read from this block.
+    config: Dict[str, Any] = field(default_factory=dict)
     behavior_on_fail: GateBehavior = GateBehavior.BLOCK
     behavior_on_error: GateBehavior = GateBehavior.FAIL_CLOSED
     enabled: bool = True
@@ -138,6 +144,7 @@ class GateConfig:
             validator_path=data.get('validator', ''),
             severity=GateSeverity(data.get('severity', 'critical')),
             threshold=data.get('threshold', {}),
+            config=data.get('config', {}) or {},
             behavior_on_fail=GateBehavior(on_fail),
             behavior_on_error=GateBehavior(on_error),
             enabled=data.get('enabled', True)
@@ -223,6 +230,16 @@ class ValidationGateManager:
 
         try:
             validator = self.load_validator(gate_config.validator_path)
+            # Wave 78: merge gate-config block into inputs so validators
+            # can read opt-in flags (e.g., ``strict`` for packet
+            # integrity) without per-builder plumbing. Existing
+            # validators ignore unknown keys.
+            if gate_config.config:
+                merged_inputs: Dict[str, Any] = dict(inputs or {})
+                for k, v in gate_config.config.items():
+                    merged_inputs.setdefault(k, v)
+                merged_inputs["_gate_config"] = dict(gate_config.config)
+                inputs = merged_inputs
             result = validator.validate(inputs)
             result.gate_id = gate_config.gate_id
 

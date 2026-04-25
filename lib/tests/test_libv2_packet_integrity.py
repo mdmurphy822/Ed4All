@@ -82,7 +82,11 @@ def _baseline_archive(tmp_path: Path) -> Path:
         },
     )
 
-    # Chunks — one explanation (teaches to-01 via co-01) + one assessment.
+    # Chunks — one explanation (teaches both to-01 and co-01) + one
+    # assessment that covers both objectives directly. Wave 78 strict
+    # coverage rules require each TO + CO to have a teaching chunk
+    # AND an assessment chunk (with TO rollup); referencing both
+    # objectives explicitly satisfies that fixture-side.
     _write_jsonl(
         root / "corpus" / "chunks.jsonl",
         [
@@ -91,14 +95,14 @@ def _baseline_archive(tmp_path: Path) -> Path:
                 "chunk_type": "explanation",
                 "text": "A widget is a widget. The widget-kind concept is foundational.",
                 "concept_tags": ["widget-kind"],
-                "learning_outcome_refs": ["co-01"],
+                "learning_outcome_refs": ["to-01", "co-01"],
             },
             {
                 "id": "chunk-002",
                 "chunk_type": "assessment_item",
                 "text": "Q: What is a widget?",
                 "concept_tags": [],
-                "learning_outcome_refs": ["to-01"],
+                "learning_outcome_refs": ["to-01", "co-01"],
             },
         ],
     )
@@ -165,8 +169,10 @@ def test_baseline_archive_passes_every_rule(tmp_path: Path):
     result = PacketIntegrityValidator().validate(root)
 
     assert isinstance(result, ValidationResult)
-    assert result.rules_run == 9
-    assert result.rules_passed == 9
+    # Wave 78 added 3 rules: every_objective_has_teaching,
+    # every_objective_has_assessment, edge_endpoint_typing.
+    assert result.rules_run == 12
+    assert result.rules_passed == 12
     assert result.rules_failed == 0
     assert result.issues == []
     assert result.summary["chunk_count"] == 2
@@ -477,6 +483,11 @@ def test_rule_severity_catalog_matches_spec():
         "to_has_teaching_and_assessment",
         "domain_concept_has_chunk",
         "scaffolding_not_assessed",
+        # Wave 78 — coverage + typing rules default to warning;
+        # promoted to critical via --strict-coverage / --strict-typing.
+        "every_objective_has_teaching",
+        "every_objective_has_assessment",
+        "edge_endpoint_typing",
     }
     actual_critical = {k for k, v in RULE_SEVERITY.items() if v == "critical"}
     actual_warning = {k for k, v in RULE_SEVERITY.items() if v == "warning"}
@@ -516,4 +527,4 @@ def test_real_archive_has_zero_critical_after_workers_a_b_c():
         f"{[i.issue_code for i in result.issues if i.severity == 'critical']}"
     )
     # Sanity: every rule actually executed.
-    assert result.rules_run == 9
+    assert result.rules_run == 12

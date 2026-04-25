@@ -1296,6 +1296,10 @@ class TaskExecutor:
                         validator_path=gc.get('validator', gc.get('validator_path', '')),
                         severity=GateSeverity(gc.get('severity', 'critical')),
                         threshold=gc.get('threshold', {}),
+                        # Wave 78: forward the gate's YAML ``config:``
+                        # block into GateConfig so the manager can merge
+                        # it into the validator's input dict at run time.
+                        config=gc.get('config', {}) or {},
                     )
                     parsed_gates.append(gate)
                 except Exception as e:

@@ -1,18 +1,26 @@
-"""LibV2 Packet Integrity Validator (Wave 75 Worker D).
+"""LibV2 Packet Integrity Validator (Wave 75 Worker D + Wave 78).
 
 Runs SHACL-style integrity rules over a self-contained LibV2 archive
 (`LibV2/courses/<slug>/`) and returns a typed result object describing
 which rules passed and which issues fired.
 
-This is a *post-hoc* operator tool — not a workflow gate. The
-``LibV2ManifestValidator`` (Wave 23) already gates the
-``libv2_archival`` phase of the ``textbook_to_course`` workflow on
-manifest schema + on-disk artifact integrity. This validator drills
-into the *internal consistency* of the archive: chunks, objectives,
-graphs, and how they cross-reference each other.
+Wave 78 promotes the validator from a *post-hoc operator tool* to a
+real workflow gate at ``libv2_archival``. The validator now exposes a
+dual interface:
+
+* ``validate(archive_root: Path) -> ValidationResult`` — the
+  CLI-facing call shape (Wave 75). Returns the full structured result
+  with rule-by-rule passes/failures plus a summary.
+* ``validate(inputs: Dict[str, Any]) -> GateResult`` — the
+  ``ValidationGateManager`` call shape. ``inputs`` carries
+  ``manifest_path`` / ``course_dir`` (built by the gate input router)
+  plus optional strict-mode toggles (``strict``, ``strict_coverage``,
+  ``strict_typing``).
 
 Rules
 -----
+
+Pre-Wave-78 rules (carried over):
 
 * ``unique_chunk_ids`` (critical) — every ``chunks.jsonl`` ``id`` is unique.
 * ``refs_resolve`` (critical) — every chunk's ``learning_outcome_refs``
@@ -28,29 +36,53 @@ Rules
 * ``assessment_has_objective`` (warning) — every chunk with
   ``chunk_type=assessment_item`` has at least one
   ``learning_outcome_refs`` entry.
-* ``to_has_teaching_and_assessment`` (warning) — every terminal
-  outcome has at least one teaching chunk
-  (``chunk_type ∈ {explanation, overview, summary, example}``) and at
-  least one assessment chunk (``assessment_item``) — directly or via
-  one of its component objectives.
-* ``domain_concept_has_chunk`` (warning) — every ``concept_graph``
-  node with ``class=DomainConcept`` appears in at least one chunk's
+* ``to_has_teaching_and_assessment`` (warning by default; **critical
+  under --strict-coverage**) — every terminal outcome has at least
+  one teaching chunk and one assessment chunk (directly or via one
+  of its component objectives).
+* ``domain_concept_has_chunk`` (warning by default; **critical under
+  --strict-coverage**) — every ``concept_graph`` node with
+  ``class=DomainConcept`` appears in at least one chunk's
   ``concept_tags`` or text.
-* ``scaffolding_not_assessed`` (warning) — concept_graph nodes whose
-  class is pedagogical scaffolding
-  (``PedagogicalMarker``, ``AssessmentOption``, ``LowSignal``,
-  ``InstructionalArtifact``) never appear as the *target* of
+* ``scaffolding_not_assessed`` (warning) — pedagogical-scaffolding
+  concept_graph nodes never appear as targets of
   ``derived-from-objective`` or ``assesses`` edges in
   ``concept_graph_semantic.json``.
 
-The validator returns ``ValidationResult`` (see below); the CLI
-wrapper turns this into JSON or a human-readable summary.
+Wave 78 rules (new):
+
+* ``every_objective_has_teaching`` (warning by default; **critical
+  under --strict-coverage**) — every TO + CO has either a chunk
+  whose ``learning_outcome_refs`` lists it, or a ``teaches`` edge
+  in ``pedagogy_graph`` from a Chunk to that objective.
+* ``every_objective_has_assessment`` (warning by default; **critical
+  under --strict-coverage**) — every TO + CO has either an
+  ``assessment_item`` chunk that references it, or an ``assesses``
+  edge pointing to it. Terminal outcomes also count their child COs'
+  assessment coverage as a rollup.
+* ``edge_endpoint_typing`` (warning by default; **critical under
+  --strict-typing**) — every edge in ``pedagogy_graph`` and
+  ``concept_graph_semantic`` has source + target node classes that
+  match the typed-endpoint contract per relation type.
+
+Strictness modes
+----------------
+
+Default behavior (no flags) preserves Wave 75 semantics: coverage and
+typing rules emit warnings only. ``--strict-coverage`` promotes the
+four coverage rules to critical; ``--strict-typing`` promotes
+``edge_endpoint_typing`` to critical; ``--strict`` implies both.
+
+The ``LIBV2_RELAX_PACKET_INTEGRITY=true`` env var is a one-way
+escape hatch for legacy archives — when set, all gated rules
+downgrade to warnings regardless of the caller's strict flags.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -132,6 +164,27 @@ RULE_SEVERITY: Dict[str, str] = {
     "to_has_teaching_and_assessment": "warning",
     "domain_concept_has_chunk": "warning",
     "scaffolding_not_assessed": "warning",
+    # Wave 78 — coverage rules (default warning, critical under
+    # --strict-coverage).
+    "every_objective_has_teaching": "warning",
+    "every_objective_has_assessment": "warning",
+    # Wave 78 — typing rule (default warning, critical under
+    # --strict-typing).
+    "edge_endpoint_typing": "warning",
+}
+
+# Wave 78 — rules promoted to critical when the caller passes
+# ``strict=True`` or the more granular flags. The CLI surfaces
+# ``--strict-coverage`` and ``--strict-typing``; ``--strict`` implies
+# both.
+COVERAGE_RULES: Set[str] = {
+    "to_has_teaching_and_assessment",
+    "every_objective_has_teaching",
+    "every_objective_has_assessment",
+    "domain_concept_has_chunk",
+}
+TYPING_RULES: Set[str] = {
+    "edge_endpoint_typing",
 }
 
 # Chunk types that *teach* their referenced LOs (vs. assess them or
@@ -163,6 +216,63 @@ PEDAGOGICAL_EDGE_TYPES: Set[str] = {
 }
 
 
+# Wave 78 — typed-endpoint contract for ``edge_endpoint_typing``.
+# Maps edge.relation_type to (allowed_source_classes,
+# allowed_target_classes). Outcome covers terminal outcomes;
+# ComponentObjective covers component objectives. DomainConcept covers
+# both pedagogy_graph "Concept" nodes (synonym) and concept_graph
+# "DomainConcept" nodes — see ``EDGE_CLASS_SYNONYMS`` for the
+# normalisation map.
+EDGE_TYPING_CONTRACT: Dict[str, Tuple[Set[str], Set[str]]] = {
+    "teaches": ({"Chunk"}, {"Outcome", "ComponentObjective"}),
+    "assesses": ({"Chunk"}, {"Outcome", "ComponentObjective"}),
+    "practices": ({"Chunk"}, {"Outcome", "ComponentObjective"}),
+    "exemplifies": ({"Chunk"}, {"DomainConcept"}),
+    "supports_outcome": ({"ComponentObjective"}, {"Outcome"}),
+    "interferes_with": ({"Misconception"}, {"DomainConcept"}),
+    "prerequisite_of": ({"DomainConcept"}, {"DomainConcept"}),
+    "belongs_to_module": ({"Chunk"}, {"Module"}),
+    "at_bloom_level": (
+        {"Outcome", "ComponentObjective"},
+        {"BloomLevel"},
+    ),
+    "follows": ({"Module"}, {"Module"}),
+}
+
+# Class synonyms — pedagogy_graph emits ``Concept`` for what the
+# concept_graph emits as ``DomainConcept``; ``TerminalOutcome`` and
+# ``Outcome`` are synonyms in different worker emits. Map every
+# observed name to a canonical class so the typing contract is
+# strict but tolerant of legitimate naming drift.
+EDGE_CLASS_SYNONYMS: Dict[str, str] = {
+    "Concept": "DomainConcept",
+    "DomainConcept": "DomainConcept",
+    "TerminalOutcome": "Outcome",
+    "Outcome": "Outcome",
+    "LearningObjective": "Outcome",
+    "ComponentObjective": "ComponentObjective",
+    "Chunk": "Chunk",
+    "Module": "Module",
+    "BloomLevel": "BloomLevel",
+    "Misconception": "Misconception",
+}
+
+
+# Wave 78 — env var that downgrades all gated rules to warnings,
+# regardless of strict-mode flags. Legacy archives only.
+RELAX_ENV_VAR = "LIBV2_RELAX_PACKET_INTEGRITY"
+
+
+def _env_relax() -> bool:
+    """Return True iff ``LIBV2_RELAX_PACKET_INTEGRITY=true`` is set."""
+    return (os.getenv(RELAX_ENV_VAR, "") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 # ---------------------------------------------------------------------- #
 # Validator
 # ---------------------------------------------------------------------- #
@@ -171,17 +281,191 @@ PEDAGOGICAL_EDGE_TYPES: Set[str] = {
 class PacketIntegrityValidator:
     """Validates a LibV2 archive's internal consistency.
 
-    Usage::
+    Usage (CLI shape, Wave 75)::
 
         validator = PacketIntegrityValidator()
         result = validator.validate(Path("LibV2/courses/<slug>"))
+
+    Usage (gate shape, Wave 78)::
+
+        validator = PacketIntegrityValidator()
+        gate_result = validator.validate({
+            "manifest_path": "LibV2/courses/<slug>/manifest.json",
+            "course_dir": "LibV2/courses/<slug>",
+            "strict": True,  # or strict_coverage / strict_typing
+        })
+
+    Strict-mode flags can also be passed to the constructor — useful
+    when the caller is the CLI and wants the validator to compute
+    severity once at instantiation time. Note that
+    ``LIBV2_RELAX_PACKET_INTEGRITY=true`` overrides both: when set,
+    every gated rule downgrades to warning regardless of caller
+    intent.
     """
 
     name = "libv2_packet_integrity"
-    version = "1.0.0"
+    version = "2.0.0"
 
-    def validate(self, archive_root: Path) -> ValidationResult:
+    def __init__(
+        self,
+        *,
+        strict_coverage: bool = False,
+        strict_typing: bool = False,
+    ) -> None:
+        self.strict_coverage = bool(strict_coverage)
+        self.strict_typing = bool(strict_typing)
+
+    # ------------------------------------------------------------------ #
+    # Dual-interface dispatcher
+    # ------------------------------------------------------------------ #
+
+    def validate(
+        self,
+        archive_or_inputs: Any,
+    ) -> Any:  # noqa: ANN401 (dual-shape return)
+        """Dual entry point — Path → ValidationResult; dict → GateResult.
+
+        Path / str → CLI shape (returns ``ValidationResult``).
+        Dict[str, Any] → gate-framework shape (returns ``GateResult``).
+        Anything else raises ``TypeError`` so misuse is loud.
+        """
+        if isinstance(archive_or_inputs, dict):
+            return self._validate_gate(archive_or_inputs)
+        if isinstance(archive_or_inputs, (str, Path)):
+            return self._validate_archive(Path(archive_or_inputs))
+        raise TypeError(
+            "PacketIntegrityValidator.validate accepts a Path/str (CLI) "
+            "or a dict (gate framework); got "
+            f"{type(archive_or_inputs).__name__}."
+        )
+
+    # ------------------------------------------------------------------ #
+    # Strictness resolution
+    # ------------------------------------------------------------------ #
+
+    def _resolve_severity(self, rule_name: str) -> str:
+        """Resolve a rule's effective severity given strict flags + env.
+
+        Precedence (highest first):
+
+        1. ``LIBV2_RELAX_PACKET_INTEGRITY=true`` — every coverage /
+           typing rule downgrades to warning.
+        2. ``--strict-coverage`` (instance flag) — promotes coverage
+           rules to critical.
+        3. ``--strict-typing`` (instance flag) — promotes typing
+           rules to critical.
+        4. Default — table value (which is ``warning`` for coverage
+           + typing rules).
+        """
+        base = RULE_SEVERITY.get(rule_name, "warning")
+
+        if _env_relax():
+            if rule_name in COVERAGE_RULES or rule_name in TYPING_RULES:
+                return "warning"
+
+        if self.strict_coverage and rule_name in COVERAGE_RULES:
+            return "critical"
+        if self.strict_typing and rule_name in TYPING_RULES:
+            return "critical"
+        return base
+
+    # ------------------------------------------------------------------ #
+    # CLI shape — Path → ValidationResult
+    # ------------------------------------------------------------------ #
+
+    def _validate_archive(self, archive_root: Path) -> ValidationResult:
         """Run every rule and return a ``ValidationResult``."""
+        return self._run_rules(archive_root)
+
+    # ------------------------------------------------------------------ #
+    # Gate shape — Dict → GateResult
+    # ------------------------------------------------------------------ #
+
+    def _validate_gate(self, inputs: Dict[str, Any]):
+        """Adapt the gate framework's input/result contract.
+
+        Reads ``manifest_path`` / ``course_dir`` from inputs (the
+        ``GateInputRouter`` builder fills these in for the
+        ``libv2_archival`` phase). Strict-mode flags can be passed in
+        ``inputs`` (``strict``, ``strict_coverage``, ``strict_typing``)
+        or via the gate's ``config`` block — the executor merges
+        ``GateConfig.config`` into inputs before calling.
+        """
+        # Lazy import to keep the validator usable when MCP isn't on the
+        # path (e.g. CLI-only environments).
+        from MCP.hardening.validation_gates import GateIssue, GateResult
+
+        gate_id = str(inputs.get("gate_id", "libv2_packet_integrity") or "libv2_packet_integrity")
+
+        # Strict flags: either gate-config (merged into inputs by the
+        # executor) or per-call inputs. ``strict`` is sugar for both.
+        strict_all = bool(inputs.get("strict", False))
+        self.strict_coverage = bool(
+            inputs.get("strict_coverage", False) or strict_all
+            or self.strict_coverage
+        )
+        self.strict_typing = bool(
+            inputs.get("strict_typing", False) or strict_all
+            or self.strict_typing
+        )
+
+        # Resolve archive root: course_dir wins; manifest_path's parent
+        # is the fallback.
+        course_dir_raw = inputs.get("course_dir")
+        manifest_path_raw = inputs.get("manifest_path")
+        archive_root: Optional[Path] = None
+        if course_dir_raw:
+            archive_root = Path(course_dir_raw)
+        elif manifest_path_raw:
+            archive_root = Path(manifest_path_raw).parent
+
+        if archive_root is None:
+            return GateResult(
+                gate_id=gate_id,
+                validator_name=self.name,
+                validator_version=self.version,
+                passed=False,
+                issues=[GateIssue(
+                    severity="critical",
+                    code="MISSING_ARCHIVE_INPUTS",
+                    message=(
+                        "PacketIntegrityValidator requires either "
+                        "'course_dir' or 'manifest_path' in gate inputs."
+                    ),
+                )],
+            )
+
+        result = self._run_rules(archive_root)
+
+        # Map ValidationIssue → GateIssue.
+        gate_issues: List[GateIssue] = []
+        for issue in result.issues:
+            gate_issues.append(GateIssue(
+                severity=issue.severity,
+                code=issue.issue_code,
+                message=issue.message,
+                location=str(archive_root),
+                suggestion=None,
+            ))
+
+        critical_count = sum(1 for i in gate_issues if i.severity == "critical")
+        passed = critical_count == 0
+        score = max(0.0, 1.0 - len(gate_issues) * 0.05) if gate_issues else 1.0
+
+        return GateResult(
+            gate_id=gate_id,
+            validator_name=self.name,
+            validator_version=self.version,
+            passed=passed,
+            score=score,
+            issues=gate_issues,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Shared rule runner
+    # ------------------------------------------------------------------ #
+
+    def _run_rules(self, archive_root: Path) -> ValidationResult:
         archive_root = Path(archive_root)
         result = ValidationResult(archive_root=str(archive_root))
 
@@ -250,13 +534,31 @@ class PacketIntegrityValidator:
                 self._rule_scaffolding_not_assessed,
                 (concept_graph, concept_graph_semantic),
             ),
+            # Wave 78 — coverage rules.
+            (
+                "every_objective_has_teaching",
+                self._rule_every_objective_has_teaching,
+                (chunks, objectives, pedagogy_graph),
+            ),
+            (
+                "every_objective_has_assessment",
+                self._rule_every_objective_has_assessment,
+                (chunks, objectives, pedagogy_graph),
+            ),
+            # Wave 78 — typing rule.
+            (
+                "edge_endpoint_typing",
+                self._rule_edge_endpoint_typing,
+                (concept_graph, pedagogy_graph, concept_graph_semantic),
+            ),
         ]
 
         for rule_name, runner, args in rule_runners:
             result.rules_run += 1
             issues_before = len(result.issues)
+            severity = self._resolve_severity(rule_name)
             try:
-                runner(rule_name, result, *args)
+                runner(rule_name, severity, result, *args)
             except Exception as exc:  # pragma: no cover (defensive)
                 logger.exception("Rule %s raised", rule_name)
                 result.issues.append(
@@ -451,7 +753,10 @@ class PacketIntegrityValidator:
 
     @staticmethod
     def _rule_unique_chunk_ids(
-        rule: str, result: ValidationResult, chunks: List[Dict[str, Any]]
+        rule: str,
+        severity: str,
+        result: ValidationResult,
+        chunks: List[Dict[str, Any]],
     ) -> None:
         """Every ``chunks.jsonl`` chunk.id is unique."""
         seen: Dict[str, int] = {}
@@ -467,7 +772,7 @@ class PacketIntegrityValidator:
             result.issues.append(
                 ValidationIssue(
                     rule=rule,
-                    severity=RULE_SEVERITY[rule],
+                    severity=severity,
                     issue_code="DUPLICATE_CHUNK_ID",
                     message=f"Chunk id appears more than once: {dup}",
                     context={"chunk_id": dup, "count": seen[dup]},
@@ -477,6 +782,7 @@ class PacketIntegrityValidator:
     @staticmethod
     def _rule_refs_resolve(
         rule: str,
+        severity: str,
         result: ValidationResult,
         chunks: List[Dict[str, Any]],
         objectives: Dict[str, Any],
@@ -499,7 +805,7 @@ class PacketIntegrityValidator:
                     result.issues.append(
                         ValidationIssue(
                             rule=rule,
-                            severity=RULE_SEVERITY[rule],
+                            severity=severity,
                             issue_code="UNRESOLVED_OBJECTIVE_REF",
                             message=(
                                 f"Chunk {ch.get('id')} references unknown "
@@ -514,7 +820,10 @@ class PacketIntegrityValidator:
 
     @staticmethod
     def _rule_co_has_parent(
-        rule: str, result: ValidationResult, objectives: Dict[str, Any]
+        rule: str,
+        severity: str,
+        result: ValidationResult,
+        objectives: Dict[str, Any],
     ) -> None:
         """Every component objective has a non-empty parent_terminal that exists."""
         terminal_ids = {
@@ -531,7 +840,7 @@ class PacketIntegrityValidator:
                 result.issues.append(
                     ValidationIssue(
                         rule=rule,
-                        severity=RULE_SEVERITY[rule],
+                        severity=severity,
                         issue_code="ORPHAN_COMPONENT_OBJECTIVE",
                         message=(
                             f"Component objective {cid!r} has no "
@@ -545,7 +854,7 @@ class PacketIntegrityValidator:
                 result.issues.append(
                     ValidationIssue(
                         rule=rule,
-                        severity=RULE_SEVERITY[rule],
+                        severity=severity,
                         issue_code="ORPHAN_COMPONENT_OBJECTIVE",
                         message=(
                             f"Component objective {cid!r} parent_terminal "
@@ -557,7 +866,10 @@ class PacketIntegrityValidator:
 
     @staticmethod
     def _rule_no_comma_refs(
-        rule: str, result: ValidationResult, chunks: List[Dict[str, Any]]
+        rule: str,
+        severity: str,
+        result: ValidationResult,
+        chunks: List[Dict[str, Any]],
     ) -> None:
         """No chunk has a learning_outcome_ref entry containing a comma."""
         for ch in chunks:
@@ -567,7 +879,7 @@ class PacketIntegrityValidator:
                     result.issues.append(
                         ValidationIssue(
                             rule=rule,
-                            severity=RULE_SEVERITY[rule],
+                            severity=severity,
                             issue_code="MALFORMED_COMMA_REF",
                             message=(
                                 f"Chunk {ch.get('id')} has comma-delimited "
@@ -583,6 +895,7 @@ class PacketIntegrityValidator:
     @staticmethod
     def _rule_graph_edges_resolve(
         rule: str,
+        severity: str,
         result: ValidationResult,
         concept_graph: Dict[str, Any],
         pedagogy_graph: Dict[str, Any],
@@ -608,7 +921,7 @@ class PacketIntegrityValidator:
                     result.issues.append(
                         ValidationIssue(
                             rule=rule,
-                            severity=RULE_SEVERITY[rule],
+                            severity=severity,
                             issue_code="DANGLING_EDGE",
                             message=(
                                 f"{graph_name} edge has unresolved source: "
@@ -628,7 +941,7 @@ class PacketIntegrityValidator:
                     result.issues.append(
                         ValidationIssue(
                             rule=rule,
-                            severity=RULE_SEVERITY[rule],
+                            severity=severity,
                             issue_code="DANGLING_EDGE",
                             message=(
                                 f"{graph_name} edge has unresolved target: "
@@ -647,7 +960,10 @@ class PacketIntegrityValidator:
 
     @staticmethod
     def _rule_assessment_has_objective(
-        rule: str, result: ValidationResult, chunks: List[Dict[str, Any]]
+        rule: str,
+        severity: str,
+        result: ValidationResult,
+        chunks: List[Dict[str, Any]],
     ) -> None:
         """Every assessment_item chunk has ≥1 learning_outcome_refs entry."""
         for ch in chunks:
@@ -661,7 +977,7 @@ class PacketIntegrityValidator:
                 result.issues.append(
                     ValidationIssue(
                         rule=rule,
-                        severity=RULE_SEVERITY[rule],
+                        severity=severity,
                         issue_code="UNANCHORED_ASSESSMENT",
                         message=(
                             f"Assessment chunk {ch.get('id')!r} has no "
@@ -674,6 +990,7 @@ class PacketIntegrityValidator:
     @staticmethod
     def _rule_to_has_teaching_and_assessment(
         rule: str,
+        severity: str,
         result: ValidationResult,
         chunks: List[Dict[str, Any]],
         objectives: Dict[str, Any],
@@ -737,7 +1054,7 @@ class PacketIntegrityValidator:
                 result.issues.append(
                     ValidationIssue(
                         rule=rule,
-                        severity=RULE_SEVERITY[rule],
+                        severity=severity,
                         issue_code="UNCOVERED_TERMINAL_OUTCOME",
                         message=(
                             f"Terminal outcome {tid!r} missing "
@@ -755,6 +1072,7 @@ class PacketIntegrityValidator:
     @staticmethod
     def _rule_domain_concept_has_chunk(
         rule: str,
+        severity: str,
         result: ValidationResult,
         concept_graph: Dict[str, Any],
         chunks: List[Dict[str, Any]],
@@ -812,7 +1130,7 @@ class PacketIntegrityValidator:
                 result.issues.append(
                     ValidationIssue(
                         rule=rule,
-                        severity=RULE_SEVERITY[rule],
+                        severity=severity,
                         issue_code="ORPHAN_DOMAIN_CONCEPT",
                         message=(
                             f"DomainConcept node {nid!r} has no chunk "
@@ -825,6 +1143,7 @@ class PacketIntegrityValidator:
     @staticmethod
     def _rule_scaffolding_not_assessed(
         rule: str,
+        severity: str,
         result: ValidationResult,
         concept_graph: Dict[str, Any],
         concept_graph_semantic: Dict[str, Any],
@@ -851,7 +1170,7 @@ class PacketIntegrityValidator:
                 result.issues.append(
                     ValidationIssue(
                         rule=rule,
-                        severity=RULE_SEVERITY[rule],
+                        severity=severity,
                         issue_code="SCAFFOLDING_AS_ASSESSED",
                         message=(
                             f"{etype} edge targets scaffolding node "
@@ -862,6 +1181,292 @@ class PacketIntegrityValidator:
                             "source": edge.get("source"),
                             "target": tgt,
                             "target_class": klass,
+                        },
+                    )
+                )
+
+    # ------------------------------------------------------------------ #
+    # Wave 78 — coverage rules
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _rule_every_objective_has_teaching(
+        rule: str,
+        severity: str,
+        result: ValidationResult,
+        chunks: List[Dict[str, Any]],
+        objectives: Dict[str, Any],
+        pedagogy_graph: Dict[str, Any],
+    ) -> None:
+        """Every TO + CO has ≥1 teaching chunk OR ≥1 ``teaches`` edge.
+
+        Wave 78 strict-coverage rule. Pre-Wave-78 the only coverage
+        signal was ``to_has_teaching_and_assessment`` which (a)
+        only inspected terminal outcomes and (b) was warning-only.
+        This rule extends coverage to component objectives and
+        accepts ``pedagogy_graph`` ``teaches`` edges as an
+        alternative source — useful when chunk LO refs lag behind
+        Worker B's pedagogy emit.
+        """
+        # Collect every objective id (TO + CO) at lowercase.
+        objective_ids: Set[str] = set()
+        for bucket in ("terminal_outcomes", "component_outcomes"):
+            for entry in objectives.get(bucket, []) or []:
+                if not isinstance(entry, dict):
+                    continue
+                lo_id = entry.get("id")
+                if isinstance(lo_id, str) and lo_id.strip():
+                    objective_ids.add(lo_id.strip().lower())
+
+        if not objective_ids:
+            return
+
+        # Path A — chunk learning_outcome_refs.
+        ref_coverage: Set[str] = set()
+        for ch in chunks:
+            for ref in ch.get("learning_outcome_refs") or []:
+                if not isinstance(ref, str) or "," in ref:
+                    continue
+                norm = ref.strip().lower()
+                if norm in objective_ids:
+                    ref_coverage.add(norm)
+
+        # Path B — pedagogy_graph ``teaches`` edges from a Chunk node.
+        edge_coverage: Set[str] = set()
+        if pedagogy_graph:
+            chunk_node_ids: Set[str] = {
+                n.get("id")
+                for n in pedagogy_graph.get("nodes", []) or []
+                if isinstance(n, dict)
+                and (n.get("class") or "") == "Chunk"
+                and n.get("id")
+            }
+            for edge in pedagogy_graph.get("edges", []) or []:
+                if not isinstance(edge, dict):
+                    continue
+                etype = edge.get("type") or edge.get("relation_type")
+                if etype != "teaches":
+                    continue
+                src = edge.get("source")
+                tgt = edge.get("target")
+                if src in chunk_node_ids and isinstance(tgt, str):
+                    norm = tgt.strip().lower()
+                    if norm in objective_ids:
+                        edge_coverage.add(norm)
+
+        covered = ref_coverage | edge_coverage
+        for oid in sorted(objective_ids - covered):
+            result.issues.append(
+                ValidationIssue(
+                    rule=rule,
+                    severity=severity,
+                    issue_code="OBJECTIVE_NO_TEACHING_CHUNK",
+                    message=(
+                        f"Objective {oid!r} has no teaching chunk and no "
+                        "'teaches' edge from a Chunk in pedagogy_graph."
+                    ),
+                    context={
+                        "objective_id": oid,
+                        "ref_coverage": oid in ref_coverage,
+                        "edge_coverage": oid in edge_coverage,
+                    },
+                )
+            )
+
+    @staticmethod
+    def _rule_every_objective_has_assessment(
+        rule: str,
+        severity: str,
+        result: ValidationResult,
+        chunks: List[Dict[str, Any]],
+        objectives: Dict[str, Any],
+        pedagogy_graph: Dict[str, Any],
+    ) -> None:
+        """Every TO + CO has ≥1 assessment chunk OR ``assesses`` edge.
+
+        Wave 78 strict-coverage rule. Terminal outcomes additionally
+        roll up their child COs' assessment coverage — a TO is
+        considered covered if any of its COs has an assessment.
+        """
+        # Build TO + CO id sets and CO → parent_terminal map.
+        to_ids: Set[str] = set()
+        co_ids: Set[str] = set()
+        co_to_to: Dict[str, str] = {}
+        for entry in objectives.get("terminal_outcomes", []) or []:
+            if isinstance(entry, dict):
+                tid = (entry.get("id") or "").strip().lower()
+                if tid:
+                    to_ids.add(tid)
+        for entry in objectives.get("component_outcomes", []) or []:
+            if isinstance(entry, dict):
+                cid = (entry.get("id") or "").strip().lower()
+                parent = (entry.get("parent_terminal") or "").strip().lower()
+                if cid:
+                    co_ids.add(cid)
+                if cid and parent:
+                    co_to_to[cid] = parent
+
+        all_objective_ids = to_ids | co_ids
+        if not all_objective_ids:
+            return
+
+        # Path A — assessment_item chunks referencing the objective.
+        ref_coverage: Set[str] = set()
+        for ch in chunks:
+            if ch.get("chunk_type") != ASSESSMENT_CHUNK_TYPE:
+                continue
+            for ref in ch.get("learning_outcome_refs") or []:
+                if not isinstance(ref, str) or "," in ref:
+                    continue
+                norm = ref.strip().lower()
+                if norm in all_objective_ids:
+                    ref_coverage.add(norm)
+
+        # Path B — pedagogy_graph ``assesses`` edges.
+        edge_coverage: Set[str] = set()
+        if pedagogy_graph:
+            for edge in pedagogy_graph.get("edges", []) or []:
+                if not isinstance(edge, dict):
+                    continue
+                etype = edge.get("type") or edge.get("relation_type")
+                if etype != "assesses":
+                    continue
+                tgt = edge.get("target")
+                if isinstance(tgt, str):
+                    norm = tgt.strip().lower()
+                    if norm in all_objective_ids:
+                        edge_coverage.add(norm)
+
+        covered = ref_coverage | edge_coverage
+
+        # TO rollup — a TO is also covered when any of its child COs
+        # has assessment coverage.
+        rollup_covered: Set[str] = set()
+        for cid in co_ids:
+            if cid in covered:
+                parent = co_to_to.get(cid)
+                if parent and parent in to_ids:
+                    rollup_covered.add(parent)
+
+        for oid in sorted(all_objective_ids):
+            if oid in covered:
+                continue
+            if oid in to_ids and oid in rollup_covered:
+                continue
+            result.issues.append(
+                ValidationIssue(
+                    rule=rule,
+                    severity=severity,
+                    issue_code="OBJECTIVE_NO_ASSESSMENT",
+                    message=(
+                        f"Objective {oid!r} has no assessment_item chunk, "
+                        "no 'assesses' edge, and (for TOs) no child CO "
+                        "with assessment coverage."
+                    ),
+                    context={
+                        "objective_id": oid,
+                        "kind": "to" if oid in to_ids else "co",
+                        "ref_coverage": oid in ref_coverage,
+                        "edge_coverage": oid in edge_coverage,
+                    },
+                )
+            )
+
+    # ------------------------------------------------------------------ #
+    # Wave 78 — typing rule
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _rule_edge_endpoint_typing(
+        rule: str,
+        severity: str,
+        result: ValidationResult,
+        concept_graph: Dict[str, Any],
+        pedagogy_graph: Dict[str, Any],
+        concept_graph_semantic: Dict[str, Any],
+    ) -> None:
+        """Validate edge endpoint classes against the typed-endpoint contract.
+
+        Wave 78 strict-typing rule. For every relation type listed in
+        ``EDGE_TYPING_CONTRACT``, the source and target node must
+        belong to one of the allowed classes. Class names are
+        normalized via ``EDGE_CLASS_SYNONYMS`` so legitimate naming
+        drift (Concept ↔ DomainConcept, TerminalOutcome ↔ Outcome)
+        doesn't trip the rule.
+
+        Edges whose relation_type isn't in the contract are silently
+        skipped — they're either custom relations or relations that
+        Wave 78 hasn't pinned a typing contract for yet.
+        """
+        # Build a unified node-class index across all three graphs so
+        # cross-graph references (rare but legal) don't mis-fire.
+        node_class: Dict[str, str] = {}
+        for graph in (concept_graph, pedagogy_graph, concept_graph_semantic):
+            if not graph:
+                continue
+            for n in graph.get("nodes", []) or []:
+                if isinstance(n, dict) and n.get("id"):
+                    raw_class = n.get("class") or ""
+                    canonical = EDGE_CLASS_SYNONYMS.get(raw_class, raw_class)
+                    # Don't overwrite an already-canonicalized class
+                    # with an empty one from a different graph.
+                    if canonical or n["id"] not in node_class:
+                        node_class[n["id"]] = canonical
+
+        for graph_name, graph in (
+            ("pedagogy_graph", pedagogy_graph),
+            ("concept_graph_semantic", concept_graph_semantic),
+        ):
+            if not graph:
+                continue
+            for edge in graph.get("edges", []) or []:
+                if not isinstance(edge, dict):
+                    continue
+                etype = edge.get("type") or edge.get("relation_type")
+                contract = EDGE_TYPING_CONTRACT.get(etype)
+                if contract is None:
+                    continue
+                allowed_src, allowed_tgt = contract
+                src = edge.get("source")
+                tgt = edge.get("target")
+                src_class = node_class.get(src) if src else None
+                tgt_class = node_class.get(tgt) if tgt else None
+
+                src_ok = bool(src_class and src_class in allowed_src)
+                tgt_ok = bool(tgt_class and tgt_class in allowed_tgt)
+
+                if src_ok and tgt_ok:
+                    continue
+
+                violations: List[str] = []
+                if not src_ok:
+                    violations.append(
+                        f"source class {src_class!r} not in {sorted(allowed_src)}"
+                    )
+                if not tgt_ok:
+                    violations.append(
+                        f"target class {tgt_class!r} not in {sorted(allowed_tgt)}"
+                    )
+
+                result.issues.append(
+                    ValidationIssue(
+                        rule=rule,
+                        severity=severity,
+                        issue_code="EDGE_ENDPOINT_TYPE_MISMATCH",
+                        message=(
+                            f"{graph_name} '{etype}' edge {src!r} -> {tgt!r} "
+                            f"violates typed-endpoint contract: "
+                            + "; ".join(violations)
+                        ),
+                        context={
+                            "graph": graph_name,
+                            "edge_type": etype,
+                            "source": src,
+                            "target": tgt,
+                            "source_class": src_class,
+                            "target_class": tgt_class,
+                            "allowed_source_classes": sorted(allowed_src),
+                            "allowed_target_classes": sorted(allowed_tgt),
                         },
                     )
                 )
