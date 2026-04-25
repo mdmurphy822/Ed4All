@@ -1,0 +1,100 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://ed4all.org/schemas/knowledge/objectives_v1.schema.json",
+  "title": "Objectives (LibV2 objectives.json)",
+  "description": "Wave 75 — canonical shape for the objectives.json sidecar emitted alongside course.json. Carries the full TO-/CO- hierarchy synthesized by Courseforge's plan_course_structure phase so downstream chunk learning_outcome_refs can resolve against ALL outcomes (not just the 7 terminal ones declared on course.json). Mirrors synthesized_objectives.json on the Courseforge side but normalized to the LibV2 archive shape (lowercase IDs, flat CO list with parent_terminal back-pointer, optional source_refs[] per CO).",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "course_code",
+    "terminal_outcomes",
+    "component_objectives",
+    "objective_count"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "v1"
+    },
+    "course_code": {
+      "type": "string",
+      "description": "Stable course identifier (matches course.json::course_code).",
+      "minLength": 1
+    },
+    "terminal_outcomes": {
+      "type": "array",
+      "description": "Course-wide terminal objectives (TO-NN). Emit-case is lowercase by default; preserved when TRAINFORGE_PRESERVE_LO_CASE is set.",
+      "items": {
+        "$ref": "#/definitions/TerminalOutcome"
+      }
+    },
+    "component_objectives": {
+      "type": "array",
+      "description": "Component / chapter-level objectives (CO-NN). Each carries an optional parent_terminal back-pointer to its TO-NN.",
+      "items": {
+        "$ref": "#/definitions/ComponentObjective"
+      }
+    },
+    "objective_count": {
+      "type": "object",
+      "required": ["terminal", "component"],
+      "additionalProperties": false,
+      "properties": {
+        "terminal": {"type": "integer", "minimum": 0},
+        "component": {"type": "integer", "minimum": 0}
+      }
+    }
+  },
+  "definitions": {
+    "TerminalOutcome": {
+      "type": "object",
+      "required": ["id", "statement"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z]{2,}-\\d{2,}$"
+        },
+        "statement": {"type": "string", "minLength": 1},
+        "bloom_level": {
+          "type": "string",
+          "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create"]
+        },
+        "bloom_verb": {"type": "string"},
+        "cognitive_domain": {"type": "string"},
+        "weeks": {
+          "type": "array",
+          "items": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
+    "ComponentObjective": {
+      "type": "object",
+      "required": ["id", "statement"],
+      "additionalProperties": true,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-zA-Z]{2,}-\\d{2,}$"
+        },
+        "parent_terminal": {
+          "type": ["string", "null"],
+          "pattern": "^[a-zA-Z]{2,}-\\d{2,}$"
+        },
+        "statement": {"type": "string", "minLength": 1},
+        "bloom_level": {
+          "type": "string",
+          "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create"]
+        },
+        "bloom_verb": {"type": "string"},
+        "cognitive_domain": {"type": "string"},
+        "week": {"type": ["integer", "null"], "minimum": 1},
+        "source_refs": {
+          "type": "array",
+          "items": {"type": "string"}
+        }
+      }
+    }
+  }
+}
