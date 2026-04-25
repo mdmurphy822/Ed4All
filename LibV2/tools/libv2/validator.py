@@ -194,6 +194,80 @@ def validate_course_manifest(course_dir: Path, repo_root: Path) -> ValidationRes
     return result
 
 
+# Wave 76 — Domain aliases. The canonical taxonomy (schemas/taxonomies/
+# taxonomy.json) keys domains in slug form (``computer-science``), but
+# manifests have shipped human-readable forms (``computer science``,
+# ``Computer Science``) for as long as the importer has been running.
+# Rather than rewrite every existing manifest, the validator accepts a
+# small set of canonical aliases per domain and matches case-insensitively.
+# Additions here are append-only — never remove an alias because doing so
+# retroactively invalidates archived courses.
+_DOMAIN_ALIASES: dict[str, list[str]] = {
+    # STEM
+    "physics": ["physics"],
+    "chemistry": ["chemistry"],
+    "biology": ["biology"],
+    "mathematics": ["mathematics", "math", "maths"],
+    "computer-science": [
+        "computer-science",
+        "computer science",
+        "computing",
+        "cs",
+        "software-engineering",
+        "software engineering",
+        "information-systems",
+        "information systems",
+    ],
+    "engineering": ["engineering"],
+    "medicine": [
+        "medicine",
+        "medicine and health sciences",
+        "medicine & health sciences",
+        "health sciences",
+    ],
+    "environmental-science": [
+        "environmental-science",
+        "environmental science",
+    ],
+    "data-science": ["data-science", "data science"],
+    "educational-technology": [
+        "educational-technology",
+        "educational technology",
+        "edtech",
+    ],
+    # ARTS (defensive — accept slug + display form for any registered domain)
+    "literature": ["literature"],
+    "history": ["history"],
+    "philosophy": ["philosophy"],
+    "music": ["music"],
+    "visual-arts": ["visual-arts", "visual arts"],
+    "performing-arts": ["performing-arts", "performing arts"],
+    "languages": ["languages"],
+    "religion": ["religion"],
+}
+
+
+def _domain_matches(declared: str, canonical: str) -> bool:
+    """Case-insensitive match of a declared manifest domain against a
+    canonical taxonomy slug, expanded via :data:`_DOMAIN_ALIASES`.
+
+    Wave 76 — fixes a false-negative where ``"computer science"`` (space
+    form, the natural-language form ed-tech tooling emits) failed against
+    the slug-form ``computer-science`` taxonomy key.
+    """
+    if not declared:
+        return False
+    declared_norm = declared.strip().lower()
+    canonical_norm = canonical.strip().lower()
+    if declared_norm == canonical_norm:
+        return True
+    # Slug ↔ space variant (e.g. "computer-science" ↔ "computer science")
+    if declared_norm.replace("-", " ") == canonical_norm.replace("-", " "):
+        return True
+    aliases = _DOMAIN_ALIASES.get(canonical_norm, [])
+    return any(declared_norm == a.strip().lower() for a in aliases)
+
+
 def validate_taxonomy_compliance(course_dir: Path, repo_root: Path) -> ValidationResult:
     """Validate that course classification uses valid taxonomy terms."""
     result = ValidationResult(valid=True)
@@ -224,11 +298,11 @@ def validate_taxonomy_compliance(course_dir: Path, repo_root: Path) -> Validatio
         result.add_error(f"Unknown division: {division}")
         return result
 
-    # Validate domain
+    # Validate domain (Wave 76 — case-insensitive, alias-aware)
     if division and domain:
         division_data = taxonomy["divisions"].get(division, {})
         domains = division_data.get("domains", {})
-        if domain not in domains:
+        if not any(_domain_matches(domain, canonical) for canonical in domains):
             result.add_error(f"Unknown domain '{domain}' in division '{division}'")
 
     return result
@@ -325,38 +399,115 @@ def validate_dataset_config_constraints(course_dir: Path) -> ValidationResult:
     return result
 
 
+def _count_total_learning_outcomes(course_dir: Path) -> Optional[int]:
+    """Count terminal + component outcomes for the minimum-coverage rule.
+
+    Wave 76 — Pre-Wave-76 the validator counted only ``course.json::
+    learning_outcomes[]`` and rejected courses where the count fell
+    below 10. Two failure modes:
+      1. course.json was emitted before Wave 75's component-objective
+         merge, so it held only the 7 terminal LOs even though the
+         course had 36 outcomes total.
+      2. course.json held the full 36 but a follow-on filter (now
+         removed) dropped entries with ``type == "component"``.
+
+    The fix counts the union of:
+      - ``course.json::learning_outcomes[]`` (Wave 75+ canonical: holds
+        terminal AND component LOs in one flat list).
+      - As a fallback, ``objectives.json::terminal_outcomes[]`` +
+        ``objectives.json::component_objectives[]`` (or the legacy
+        ``terminal_objectives`` / ``chapter_objectives`` keys), which
+        is what Wave 75 Worker A's emit guarantees even when course.json
+        is mid-migration.
+
+    Returns the total outcome count, or ``None`` when neither file exists
+    / is parseable. Caller is responsible for raising on that condition.
+    """
+    ids: set[str] = set()
+
+    course_json_path = course_dir / "course.json"
+    if course_json_path.exists():
+        try:
+            with open(course_json_path) as f:
+                course = json.load(f)
+            for lo in course.get("learning_outcomes", []) or []:
+                if isinstance(lo, dict):
+                    lo_id = (lo.get("id") or "").strip().lower()
+                    if lo_id:
+                        ids.add(lo_id)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    objectives_path = course_dir / "objectives.json"
+    if objectives_path.exists():
+        try:
+            with open(objectives_path) as f:
+                objectives = json.load(f)
+            terminal_list = (
+                objectives.get("terminal_outcomes")
+                or objectives.get("terminal_objectives")
+                or []
+            )
+            component_list = (
+                objectives.get("component_objectives")
+                or objectives.get("chapter_objectives")
+                or []
+            )
+            for to in terminal_list or []:
+                if isinstance(to, dict):
+                    lo_id = (to.get("id") or "").strip().lower()
+                    if lo_id:
+                        ids.add(lo_id)
+            for ch in component_list or []:
+                if not isinstance(ch, dict):
+                    continue
+                # Both nested chapters and flat component objectives.
+                if "objectives" in ch and isinstance(ch.get("objectives"), list):
+                    inner = ch["objectives"]
+                else:
+                    inner = [ch]
+                for obj in inner:
+                    if isinstance(obj, dict):
+                        lo_id = (obj.get("id") or "").strip().lower()
+                        if lo_id:
+                            ids.add(lo_id)
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    if not ids and not course_json_path.exists():
+        return None
+    return len(ids)
+
+
 def validate_learning_outcomes(course_dir: Path) -> ValidationResult:
     """
     Validate learning outcome coverage.
 
     Requirements:
-    - 10-25 course-level learning outcomes
-    - Warning if <50% of chunks have learning_outcome_refs
+    - Minimum 10 course-level learning outcomes (terminal + component
+      combined, Wave 76).
+    - Warning above 60 (Wave 76 — bumped from 25 because Wave-75 archives
+      legitimately ship 30-40 LOs once components are counted).
+    - Warning if <50% of chunks have learning_outcome_refs.
     """
     result = ValidationResult(valid=True)
 
     course_json_path = course_dir / "course.json"
     chunks_path = course_dir / "corpus" / "chunks.json"
 
-    # Check course-level outcomes
-    if course_json_path.exists():
-        try:
-            with open(course_json_path) as f:
-                course = json.load(f)
-
-            outcomes = course.get("learning_outcomes", [])
-            if len(outcomes) < 10:
-                result.add_error(
-                    f"Course has {len(outcomes)} learning outcomes, minimum is 10"
-                )
-            elif len(outcomes) > 25:
-                result.add_warning(
-                    f"Course has {len(outcomes)} learning outcomes, recommended max is 25"
-                )
-        except json.JSONDecodeError as e:
-            result.add_error(f"Invalid JSON in course.json: {e}")
-    else:
+    # Check course-level outcomes (terminal + component union)
+    total = _count_total_learning_outcomes(course_dir)
+    if total is None:
         result.add_warning("course.json not found, skipping outcome validation")
+    else:
+        if total < 10:
+            result.add_error(
+                f"Course has {total} learning outcomes, minimum is 10"
+            )
+        elif total > 60:
+            result.add_warning(
+                f"Course has {total} learning outcomes, recommended max is 60"
+            )
 
     # Check chunk-level outcome refs
     if chunks_path.exists():
