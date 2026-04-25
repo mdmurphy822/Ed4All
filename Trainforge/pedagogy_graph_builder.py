@@ -9,10 +9,25 @@ about *teaches* / *assesses* / *practices* / *exemplifies* /
 *supports_outcome* relations rather than re-deriving them from
 chunk concept tags.
 
+Wave 76 (Worker D) refines the ``prerequisite_of`` and
+``interferes_with`` rules so they emit only meaningful edges:
+
+* ``prerequisite_of(A, B)`` requires (1) B's first-seen week strictly
+  later than A's, (2) at least one chunk that contains both A and B
+  as concept tags, and (3) both endpoints classified as
+  ``DomainConcept`` per the supplied ``concept_classes`` map (when
+  provided). The previous rule emitted a hard-capped (50/source)
+  cartesian within adjacent weeks and over-saturated the graph
+  (84% of edges in the rdf-shacl-550 archive).
+* ``interferes_with(M, C)`` only emits when ``C`` is classified as
+  ``DomainConcept``. PedagogicalMarker / AssessmentOption / LowSignal
+  / InstructionalArtifact targets are dropped.
+
 Public entry point::
 
     build_pedagogy_graph(chunks, objectives, course_id=None,
-                         modules=None) -> Dict[str, Any]
+                         modules=None, concept_classes=None)
+        -> Dict[str, Any]
 
 Inputs:
 
@@ -217,13 +232,25 @@ def build_pedagogy_graph(
     *,
     course_id: Optional[str] = None,
     modules: Optional[List[str]] = None,
+    concept_classes: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Walk chunks + objectives and emit a typed pedagogical graph.
 
     See module docstring for inputs / outputs / edge semantics.
+
+    ``concept_classes`` (Wave 76): optional mapping of concept slug ->
+    class label sourced from ``concept_graph.json`` (Worker B's
+    classifier). Recognised classes: ``DomainConcept``, ``Misconception``,
+    ``PedagogicalMarker``, ``AssessmentOption``, ``LowSignal``,
+    ``InstructionalArtifact``. Filters apply to ``prerequisite_of`` and
+    ``interferes_with`` only — DomainConcept endpoints are kept;
+    pedagogical/assessment scaffolding is dropped. When omitted,
+    every concept is treated as DomainConcept-default (legacy mode);
+    the new co-occurrence + strict-later-week filter still applies.
     """
     chunks = list(chunks or [])
     objectives = objectives or {}
+    concept_classes = concept_classes or {}
 
     nodes: List[Dict[str, Any]] = []
     edges: List[Dict[str, Any]] = []
@@ -392,7 +419,14 @@ def build_pedagogy_graph(
     # 7. Chunk nodes + per-chunk edges.
     # ------------------------------------------------------------------
     valid_objective_ids = set(objective_nodes.keys())
+    # ``concept_to_chunks`` tracks chunk-membership for concepts that
+    # are *exemplifies*-edge-eligible (i.e., concepts cited from example
+    # chunks). It still drives Concept-node emission for the exemplifies
+    # path. Wave 76 adds ``concept_to_chunks_all`` to track membership
+    # across every chunk type — this is the substrate for the new
+    # co-occurrence-aware ``prerequisite_of`` rule.
     concept_to_chunks: Dict[str, Set[str]] = defaultdict(set)
+    concept_to_chunks_all: Dict[str, Set[str]] = defaultdict(set)
     concept_to_week: Dict[str, int] = {}
     concept_label: Dict[str, str] = {}
 
@@ -479,17 +513,21 @@ def build_pedagogy_graph(
                 concept_label.setdefault(slug, tag)
 
         # Aggregate concept_tags per-week for prerequisite_of inference.
+        # Also accumulate per-chunk membership across ALL chunk types
+        # (Wave 76) — the new prerequisite_of rule needs this to test
+        # "exists at least one chunk containing both A and B".
         m = re.match(r"week_(\d+)", top_mid or "")
-        if m:
-            week = int(m.group(1))
-            for tag in c.get("concept_tags") or []:
-                slug = _slugify_concept(tag)
-                if not slug:
-                    continue
+        week = int(m.group(1)) if m else None
+        for tag in c.get("concept_tags") or []:
+            slug = _slugify_concept(tag)
+            if not slug:
+                continue
+            concept_to_chunks_all[slug].add(cid)
+            concept_label.setdefault(slug, tag)
+            if week is not None:
                 # First week wins so a concept's "home" week is its
                 # introduction; later usages don't overwrite.
                 concept_to_week.setdefault(slug, week)
-                concept_label.setdefault(slug, tag)
 
     # ------------------------------------------------------------------
     # 8. Concept nodes (only those referenced by exemplifies edges or
@@ -579,9 +617,25 @@ def build_pedagogy_graph(
     for mc_id_, node in sorted(mc_seen.items()):
         nodes.append(node)
 
-    # interferes_with edges (sorted for determinism).
+    # Wave 76: a concept is interferes_with-eligible only when classified
+    # as a DomainConcept. When ``concept_classes`` is unset, every concept
+    # is treated as DomainConcept-default (legacy compatibility — Worker
+    # B's classifier had not run yet on older corpora).
+    def _is_domain_concept(slug: str) -> bool:
+        if not concept_classes:
+            return True
+        cls = concept_classes.get(slug)
+        if cls is None:
+            return True  # unclassified -> permissive default
+        return cls == "DomainConcept"
+
+    # interferes_with edges (sorted for determinism). Filtered to
+    # DomainConcept targets so misconceptions don't link to pedagogical
+    # scaffolding ("key-takeaway", "rubric", etc.).
     for mc_id_, slugs in sorted(mc_to_concepts.items()):
         for slug in sorted(slugs):
+            if not _is_domain_concept(slug):
+                continue
             _emit_concept(slug)
             edges.append({
                 "source": mc_id_,
@@ -590,33 +644,62 @@ def build_pedagogy_graph(
             })
 
     # ------------------------------------------------------------------
-    # 10. prerequisite_of edges (Concept -> Concept by week ordering).
-    #     A concept introduced in week N is a prerequisite for any
-    #     concept *first seen* in week N+1. Keeps the edge count
-    #     bounded (only adjacent-week pairs) and carries genuine
-    #     pedagogical signal: "you need this before that."
+    # 10. prerequisite_of edges (Concept -> Concept).
+    #
+    #     Wave 76 rule (replaces the prior adjacent-week cartesian):
+    #
+    #     Emit prerequisite_of(A, B) iff ALL hold:
+    #       (1) A's first-seen week W_A < B's first-seen week W_B
+    #           (strictly earlier — same-week pairs are NOT prereqs).
+    #       (2) Some chunk contains BOTH A and B as concept_tags
+    #           (co-occurrence anchors the relation in real content).
+    #       (3) A and B are both DomainConcept-class per the supplied
+    #           ``concept_classes`` map (or unclassified -> permissive
+    #           default). Misconception nodes are interferes_with arms
+    #           and never appear as prereq endpoints.
+    #
+    #     Each emitted edge carries ``confidence`` (the count of
+    #     supporting co-occurring chunks) so downstream consumers can
+    #     prune by signal strength.
     # ------------------------------------------------------------------
-    by_week: Dict[int, List[str]] = defaultdict(list)
+    candidates_by_week: Dict[int, List[str]] = defaultdict(list)
     for slug, week in concept_to_week.items():
-        if slug in concept_nodes_emitted:
-            by_week[week].append(slug)
-    sorted_weeks = sorted(by_week.keys())
-    for i, w in enumerate(sorted_weeks[:-1]):
-        nxt = sorted_weeks[i + 1]
-        if nxt - w > 2:
-            # Treat large jumps (e.g., week_03 -> week_09 in the rdf
-            # corpus where weeks 4-8 weren't materialised) as still
-            # prerequisitive — the relation is monotone in week order.
-            pass
-        for a in sorted(by_week[w]):
-            for b in sorted(by_week[nxt]):
-                if a == b:
+        # Only consider slugs we already track per-chunk (so co-occurrence
+        # tests are sound) AND classified as DomainConcept.
+        if slug not in concept_to_chunks_all:
+            continue
+        if not _is_domain_concept(slug):
+            continue
+        candidates_by_week[week].append(slug)
+
+    # For every (earlier, later) week pair, emit edges from every
+    # earlier-week concept to every later-week concept that share at
+    # least one chunk. No cap. Determinism: sort weeks + slugs.
+    sorted_weeks = sorted(candidates_by_week.keys())
+    for i, w_a in enumerate(sorted_weeks):
+        for w_b in sorted_weeks[i + 1:]:
+            for a in sorted(candidates_by_week[w_a]):
+                a_chunks = concept_to_chunks_all.get(a, set())
+                if not a_chunks:
                     continue
-                edges.append({
-                    "source": f"concept:{a}",
-                    "target": f"concept:{b}",
-                    "relation_type": "prerequisite_of",
-                })
+                for b in sorted(candidates_by_week[w_b]):
+                    if a == b:
+                        continue
+                    b_chunks = concept_to_chunks_all.get(b, set())
+                    if not b_chunks:
+                        continue
+                    shared = a_chunks & b_chunks
+                    if not shared:
+                        continue
+                    # Ensure both endpoints have Concept nodes emitted.
+                    _emit_concept(a)
+                    _emit_concept(b)
+                    edges.append({
+                        "source": f"concept:{a}",
+                        "target": f"concept:{b}",
+                        "relation_type": "prerequisite_of",
+                        "confidence": len(shared),
+                    })
 
     # ------------------------------------------------------------------
     # 11. Stats block + return.
