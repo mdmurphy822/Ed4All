@@ -318,6 +318,23 @@ class HTMLContentParser:
             if isinstance(domain, str) and domain:
                 entry["cognitive_domain"] = domain
             misconceptions.append(entry)
+
+        # Wave 81 (Worker C): bridging fallback for HTML-attr-only emit.
+        # Wave 79 content-generator subagents tag the misconception
+        # paragraph with ``data-cf-misconception="true"`` but don't always
+        # populate JSON-LD ``misconceptions[]``. Forward fix: the
+        # ``Courseforge/templates/chunk_templates.md`` Template 3 spec now
+        # mandates dual-emit. Backward bridge: scan the HTML for
+        # ``data-cf-misconception="true"`` paragraphs whose text isn't
+        # already covered by a JSON-LD entry, extract a misconception (with
+        # the sibling "right approach" / "correct approach" paragraph as
+        # the correction), and append. JSON-LD wins on text equality so
+        # the bridge never produces duplicates.
+        misconceptions.extend(
+            self._extract_misconceptions_from_attrs(
+                html_content, existing=misconceptions
+            )
+        )
         prerequisite_pages = json_ld.get("prerequisitePages", []) if json_ld else []
         suggested_assessments = json_ld.get("suggestedAssessmentTypes", []) if json_ld else []
 
@@ -427,6 +444,131 @@ class HTMLContentParser:
             except (json_mod.JSONDecodeError, ValueError):
                 continue
         return None
+
+    def _extract_misconceptions_from_attrs(
+        self,
+        html: str,
+        existing: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Wave 81 bridging fallback: harvest misconceptions tagged with
+        ``data-cf-misconception="true"`` on the paragraph itself.
+
+        Used when JSON-LD ``misconceptions[]`` is absent or partial. The
+        sibling "The right approach" / "Correct approach" subsection (the
+        next ``<h4>`` followed by ``<p>`` after the misconception
+        paragraph, before the next sibling ``<h4>`` or section close)
+        supplies the ``correction`` text. Default ``bloom_level`` is
+        ``"analyze"`` per Template 3's typical Bloom range.
+
+        ``existing`` is the list of already-extracted misconceptions
+        (from JSON-LD). Any HTML-attr paragraph whose stripped text
+        matches an existing entry's ``misconception`` field is skipped
+        so JSON-LD wins on duplicates. Dedupe is bidirectional substring
+        containment because the HTML-attr paragraph routinely wraps the
+        JSON-LD's de-quoted statement with surrounding quotes plus a
+        trailing explanatory clause; a strict equality test misses the
+        overlap.
+        """
+        if "data-cf-misconception" not in html:
+            return []
+
+        # Build a set of stripped existing misconception statements (case
+        # / whitespace / surrounding-quote insensitive) so JSON-LD takes
+        # precedence.
+        def _norm(s: str) -> str:
+            text = re.sub(r"\s+", " ", s or "").strip().lower()
+            # Strip ASCII + curly quotes that often wrap the
+            # misconception statement on the HTML side.
+            text = text.strip('"“”‘’\'')
+            return text
+
+        existing_norm: List[str] = []
+        for e in existing:
+            if not isinstance(e, dict):
+                continue
+            # Some legacy chunks (pre-Wave-81) store the misconception
+            # under ``statement`` rather than the canonical
+            # ``misconception``. Honor both to keep dedupe symmetrical
+            # across the field-name boundary.
+            stmt = e.get("misconception") or e.get("statement")
+            if stmt:
+                existing_norm.append(_norm(stmt))
+
+        # Find every paragraph carrying data-cf-misconception="true".
+        # The regex tolerates additional attributes before or after.
+        para_pattern = re.compile(
+            r'<p\b[^>]*\bdata-cf-misconception\s*=\s*"true"[^>]*>'
+            r'(?P<inner>.*?)</p>',
+            re.DOTALL | re.IGNORECASE,
+        )
+
+        # "Right approach" / "correct approach" sibling lookup pattern:
+        # find an <h4> whose text contains "right approach" or
+        # "correct approach", then capture the immediately-following
+        # <p>...</p>. Case-insensitive on the heading text.
+        correction_pattern = re.compile(
+            r'<h4\b[^>]*>\s*(?:[^<]*?)(?:right|correct)\s+approach[^<]*</h4>'
+            r'\s*<p\b[^>]*>(?P<correction>.*?)</p>',
+            re.DOTALL | re.IGNORECASE,
+        )
+
+        added: List[Dict[str, Any]] = []
+        for match in para_pattern.finditer(html):
+            inner = match.group("inner")
+            # Strip nested tags from the misconception paragraph to get
+            # plain text. Matches HTMLTextExtractor's behavior loosely.
+            misconception_text = re.sub(r"<[^>]+>", "", inner)
+            misconception_text = re.sub(
+                r"\s+", " ", misconception_text
+            ).strip()
+            if not misconception_text:
+                continue
+            norm_candidate = _norm(misconception_text)
+            # JSON-LD-wins dedupe with bidirectional substring
+            # containment (existing in candidate OR candidate in
+            # existing) so quoted-vs-de-quoted variants of the same
+            # misconception collapse.
+            if any(
+                e and (e in norm_candidate or norm_candidate in e)
+                for e in existing_norm
+            ):
+                continue
+
+            entry: Dict[str, Any] = {
+                "misconception": misconception_text,
+                "bloom_level": "analyze",
+            }
+
+            # Look for the correction inside the surrounding section.
+            # We bound the search to the enclosing <section>...</section>
+            # so paragraphs in unrelated sections don't leak in.
+            sec_start = html.rfind("<section", 0, match.start())
+            sec_end_marker = html.find("</section>", match.end())
+            sec_end = (
+                sec_end_marker + len("</section>")
+                if sec_end_marker != -1
+                else len(html)
+            )
+            section_slice = html[
+                sec_start if sec_start != -1 else 0 : sec_end
+            ]
+            corr_match = correction_pattern.search(section_slice)
+            if corr_match:
+                correction_text = re.sub(
+                    r"<[^>]+>", "", corr_match.group("correction")
+                )
+                correction_text = re.sub(
+                    r"\s+", " ", correction_text
+                ).strip()
+                if correction_text:
+                    entry["correction"] = correction_text
+
+            # Record this new misconception in the dedupe list so
+            # repeated paragraphs (rare but possible) collapse.
+            existing_norm.append(norm_candidate)
+            added.append(entry)
+
+        return added
 
     def _extract_title(self, html: str) -> str:
         """Extract page title."""

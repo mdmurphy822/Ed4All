@@ -199,6 +199,17 @@ attributes (full table in `templates/chunk_templates.md`):
    plus the wave-stable attributes. The misconception paragraph
    MUST carry `data-cf-misconception="true"` so Trainforge can mint
    a misconception node deterministically.
+
+   **Wave 81 dual-emit requirement (mandatory)**: every common_pitfall
+   chunk MUST emit BOTH the `data-cf-misconception="true"` HTML
+   attribute AND a corresponding entry in the page's JSON-LD
+   `misconceptions[]` array. The two arms are equivalent semantics;
+   both are required. Trainforge's primary harvester reads the JSON-LD
+   array; the HTML-attr fallback (Wave 81 Worker C) only rescues
+   archives produced by pre-Wave-81 runs and MUST NOT be relied on for
+   new content. See `Courseforge/templates/chunk_templates.md`
+   Template 3 for the canonical JSON-LD shape (`misconception`,
+   `correction`, `bloom_level`).
 4. **Step-by-Step Procedure** — emit `data-cf-template-type="procedure"`,
    `data-cf-procedure-name` (noun-phrase slug),
    `data-cf-applicable-concepts`, plus the wave-stable attributes.

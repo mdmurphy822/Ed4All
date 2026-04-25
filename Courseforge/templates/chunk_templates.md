@@ -244,6 +244,51 @@ misconception node deterministically.
 </section>
 ```
 
+### Required JSON-LD `misconceptions[]` entry (Wave 81 — dual-emit)
+
+Every `common_pitfall` chunk MUST emit BOTH the
+`data-cf-misconception="true"` HTML attribute on the misconception
+paragraph AND a corresponding entry in the page's JSON-LD
+`misconceptions[]` array. The two arms are equivalent semantics; both
+are required.
+
+The forward Trainforge harvester reads `misconceptions[]` as the
+authoritative source; the backward bridge (Wave 81 Worker C) falls
+back to scraping the `data-cf-misconception` paragraph when
+`misconceptions[]` is absent, but new content MUST NOT rely on the
+fallback. The fallback exists only to rescue archives produced by
+pre-Wave-81 content-generator runs.
+
+Canonical JSON-LD shape:
+
+```html
+<script type="application/ld+json">
+{
+  "@context": "https://ed4all.dev/ns/courseforge/v1",
+  "@type": "CourseSection",
+  "templateType": "common_pitfall",
+  "misconceptions": [{
+    "misconception": "<text matching the data-cf-misconception paragraph>",
+    "correction": "<text from 'The right approach' paragraph>",
+    "bloom_level": "analyze"
+  }]
+}
+</script>
+```
+
+Field contract:
+
+| Field | Required | Notes |
+|-------|:--------:|-------|
+| `misconception` | yes | Verbatim text of the `data-cf-misconception="true"` paragraph (strip surrounding quotes if any). |
+| `correction` | yes | Verbatim text of the paragraph under the `<h4>The right approach</h4>` (or `<h4>Correct approach</h4>`) sub-heading. |
+| `bloom_level` | yes | Typically `analyze` (matches `data-cf-bloom-level` on the section). |
+
+Validation: a `common_pitfall` section that emits the
+`data-cf-misconception="true"` attribute without a corresponding
+JSON-LD `misconceptions[]` entry is treated as a generation defect.
+Future strict-mode validators will fail closed on this mismatch.
+
 ---
 
 ## Template 4 — Step-by-Step Procedure
