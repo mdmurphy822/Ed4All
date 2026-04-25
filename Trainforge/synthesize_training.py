@@ -36,10 +36,12 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import random
 import sys
+from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 # Make project root importable when run as a script.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -76,6 +78,14 @@ class SynthesisStats:
     preference_pairs_emitted: int = 0
     preference_pairs_rejected: int = 0
     rejected_reasons: Dict[str, int] = field(default_factory=dict)
+    # Wave 77: stratified-sampling additions. None when stratification
+    # not active, so legacy callers keep the same payload shape.
+    misconception_dpo_pairs_emitted: int = 0
+    stratify_dimensions: List[str] = field(default_factory=list)
+    stratify_distribution: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    capped_at_max_pairs: bool = False
+    max_pairs_cap: Optional[int] = None
+    difficulty_curriculum: bool = False
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -87,6 +97,14 @@ class SynthesisStats:
             "preference_pairs_emitted": self.preference_pairs_emitted,
             "preference_pairs_rejected": self.preference_pairs_rejected,
             "rejected_reasons": dict(self.rejected_reasons),
+            "misconception_dpo_pairs_emitted": self.misconception_dpo_pairs_emitted,
+            "stratify_dimensions": list(self.stratify_dimensions),
+            "stratify_distribution": {
+                k: dict(v) for k, v in self.stratify_distribution.items()
+            },
+            "capped_at_max_pairs": self.capped_at_max_pairs,
+            "max_pairs_cap": self.max_pairs_cap,
+            "difficulty_curriculum": self.difficulty_curriculum,
         }
 
 
@@ -121,6 +139,171 @@ def _write_jsonl(path: Path, records: Iterable[Dict[str, Any]]) -> int:
 
 def _eligible(chunk: Dict[str, Any]) -> bool:
     return bool(chunk.get("learning_outcome_refs")) and bool(chunk.get("id") or chunk.get("chunk_id"))
+
+
+# ---------------------------------------------------------------------------
+# Wave 77: stratified-sampling + LibV2-archive helpers
+# ---------------------------------------------------------------------------
+
+# Canonical difficulty tiers, ordered foundational -> advanced. Used by the
+# --difficulty-curriculum ordering. Unknown tiers sort last.
+_DIFFICULTY_ORDER: Dict[str, int] = {
+    "foundational": 0,
+    "intermediate": 1,
+    "advanced": 2,
+}
+
+
+# Recognised stratification dimensions. Anything else is rejected with a
+# ValueError so typos don't silently degrade to a no-op.
+_STRATIFY_DIMENSIONS = {"bloom", "chunk_type", "outcome", "difficulty"}
+
+
+def _resolve_libv2_corpus_dir(slug: str, libv2_root: Optional[Path] = None) -> Path:
+    """Return the directory under ``LibV2/courses/`` matching ``slug``.
+
+    Accepts both the canonical slug (``rdf-shacl-550``) and the doubled-up
+    form some archival runs produce (``rdf-shacl-550-rdf-shacl-550``). The
+    archived layout is ``LibV2/courses/<slug>/{corpus,objectives.json,...}``;
+    this function locates that root so callers can read ``corpus/chunks.jsonl``
+    and ``objectives.json`` directly without re-running the Trainforge pipeline.
+    """
+    root = libv2_root or (PROJECT_ROOT / "LibV2" / "courses")
+    direct = root / slug
+    if direct.exists():
+        return direct
+    doubled = root / f"{slug}-{slug}"
+    if doubled.exists():
+        return doubled
+    # Last attempt: case-insensitive scan.
+    if root.exists():
+        for child in sorted(root.iterdir()):
+            if child.is_dir() and child.name.lower() == slug.lower():
+                return child
+    raise FileNotFoundError(
+        f"LibV2 archive for slug={slug!r} not found under {root}; "
+        f"tried {direct} and {doubled}"
+    )
+
+
+def _stratify_key(chunk: Dict[str, Any], dimension: str) -> str:
+    """Extract the stratification bucket key for one chunk on one dimension.
+
+    Missing fields collapse to ``"unknown"`` so every chunk lands in some
+    bucket rather than being silently dropped.
+    """
+    if dimension == "bloom":
+        return str(chunk.get("bloom_level") or "unknown").lower()
+    if dimension == "chunk_type":
+        return str(chunk.get("chunk_type") or "unknown").lower()
+    if dimension == "outcome":
+        refs = chunk.get("learning_outcome_refs") or []
+        return str(refs[0]).lower() if refs else "unknown"
+    if dimension == "difficulty":
+        return str(chunk.get("difficulty") or "unknown").lower()
+    return "unknown"
+
+
+def _composite_stratify_key(chunk: Dict[str, Any], dimensions: Sequence[str]) -> str:
+    return "|".join(_stratify_key(chunk, d) for d in dimensions)
+
+
+def _stratified_sample(
+    chunks: List[Dict[str, Any]],
+    dimensions: Sequence[str],
+    target_count: int,
+    rng: random.Random,
+) -> List[Dict[str, Any]]:
+    """Round-robin draw across stratification buckets so the output
+    distribution is uniform across the dimension(s).
+
+    Each bucket donates one chunk per pass; passes continue until either
+    ``target_count`` chunks have been emitted or every bucket is empty.
+    Within a bucket the pre-existing order is preserved (after a one-time
+    deterministic shuffle keyed by the rng) so two runs at the same seed
+    return the same sequence.
+    """
+    if not chunks or target_count <= 0:
+        return []
+    buckets: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for c in chunks:
+        buckets[_composite_stratify_key(c, dimensions)].append(c)
+
+    # Deterministic shuffle inside each bucket so we don't always pick the
+    # earliest chunk on a tie; rng is seeded by the caller.
+    for key in buckets:
+        rng.shuffle(buckets[key])
+
+    bucket_keys = sorted(buckets.keys())
+    out: List[Dict[str, Any]] = []
+    while len(out) < target_count:
+        progressed = False
+        for k in bucket_keys:
+            if not buckets[k]:
+                continue
+            out.append(buckets[k].pop(0))
+            progressed = True
+            if len(out) >= target_count:
+                break
+        if not progressed:
+            break
+    return out
+
+
+def _curriculum_sort_key(chunk: Dict[str, Any]) -> Tuple[int, str]:
+    diff = str(chunk.get("difficulty") or "").lower()
+    rank = _DIFFICULTY_ORDER.get(diff, len(_DIFFICULTY_ORDER))
+    cid = str(chunk.get("id") or chunk.get("chunk_id") or "")
+    return (rank, cid)
+
+
+def _build_misconception_dpo_pair(
+    chunk: Dict[str, Any],
+    misconception: Dict[str, Any],
+    pair_index: int,
+) -> Optional[Dict[str, Any]]:
+    """Convert a single (misconception, correction) entry into a DPO pair.
+
+    Returns None when either side is empty -- silently skipping malformed
+    misconception entries is preferable to crashing the run.
+    """
+    from Trainforge.generators.preference_factory import _misconception_id
+
+    mc_text = str(misconception.get("misconception", "")).strip()
+    correction = str(misconception.get("correction", "")).strip()
+    if not mc_text or not correction:
+        return None
+
+    chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
+    bloom = str(chunk.get("bloom_level") or "").lower() or None
+    refs = chunk.get("learning_outcome_refs") or []
+    primary_concept = ""
+    tags = chunk.get("concept_tags") or []
+    if tags:
+        primary_concept = str(tags[0]).replace("-", " ").replace("_", " ")
+    elif refs:
+        primary_concept = f"learning outcome {refs[0]}"
+    else:
+        primary_concept = "the course topic"
+
+    prompt = (
+        f"Explain {primary_concept} clearly enough for a new learner to "
+        f"avoid the most common misconception."
+    )
+    mc_id = _misconception_id(mc_text, correction, bloom)
+    pair = {
+        "id": f"mcp_{chunk_id}_{pair_index:03d}",
+        "chunk_id": chunk_id,
+        "prompt": prompt,
+        "chosen": correction,
+        "rejected": mc_text,
+        "source": "misconception_editorial",
+        "misconception_id": mc_id,
+        "bloom_level": bloom or "unknown",
+        "learning_outcome_refs": list(refs),
+        "seed": pair_index,
+    }
+    return pair
 
 
 def _update_dataset_config(
@@ -181,6 +364,12 @@ def run_synthesis(
     provider: str = "mock",
     seed: int = DEFAULT_SEED,
     capture: Optional[DecisionCapture] = None,
+    *,
+    stratify: Optional[Sequence[str]] = None,
+    include_dpo_from_misconceptions: bool = False,
+    difficulty_curriculum: bool = False,
+    max_pairs: Optional[int] = None,
+    output_dir: Optional[Path] = None,
 ) -> SynthesisStats:
     """Run the full synthesis stage for one course output directory.
 
@@ -194,20 +383,68 @@ def run_synthesis(
         capture: Optional pre-built DecisionCapture. If None, one is created
             for the ``synthesize-training`` phase and saved at end of run.
 
+    Wave 77 keyword-only additions (all default-off so legacy callers --
+    process_course.py, MCP synthesize_training tool, the textbook_to_course
+    pipeline phase -- keep their existing behaviour):
+
+        stratify: List of dimensions in ``{"bloom","chunk_type","outcome",
+            "difficulty"}``. When set, eligible chunks are sampled
+            round-robin across the resulting buckets so the output pair
+            distribution is uniform across that dimension.
+        include_dpo_from_misconceptions: When True, every editorial
+            ``chunk.misconceptions`` entry produces an additional DPO pair
+            with ``chosen=correction`` and ``rejected=misconception``. These
+            are appended to the standard preference_pairs.jsonl output and
+            tagged with ``source="misconception_editorial"`` so downstream
+            consumers can filter.
+        difficulty_curriculum: When True, the emitted pairs are ordered
+            foundational -> intermediate -> advanced (preserved in the
+            output JSONL). Default ordering remains by ``chunk_id``.
+        max_pairs: Hard cap on total emitted pairs (instruction +
+            preference combined). The cap is applied to each artifact
+            independently so neither file exceeds the cap on its own. None
+            (default) means uncapped.
+        output_dir: Optional override for the directory that receives
+            ``instruction_pairs.jsonl`` and ``preference_pairs.jsonl``.
+            Defaults to ``corpus_dir/training_specs``. The
+            ``dataset_config.json`` is always written next to the JSONL
+            outputs.
+
     Returns:
         :class:`SynthesisStats` with counts.
     """
     corpus_dir = Path(corpus_dir)
     chunks_path = corpus_dir / "corpus" / "chunks.jsonl"
-    training_specs_dir = corpus_dir / "training_specs"
+    if output_dir is not None:
+        training_specs_dir = Path(output_dir)
+    else:
+        training_specs_dir = corpus_dir / "training_specs"
     training_specs_dir.mkdir(parents=True, exist_ok=True)
 
     instruction_out = training_specs_dir / "instruction_pairs.jsonl"
     preference_out = training_specs_dir / "preference_pairs.jsonl"
     dataset_config_path = training_specs_dir / "dataset_config.json"
 
+    # Validate stratification dimensions early so a typo fails loud rather
+    # than silently degrading to no-op.
+    stratify_dims: List[str] = []
+    if stratify:
+        for d in stratify:
+            d_clean = str(d).strip().lower()
+            if not d_clean:
+                continue
+            if d_clean not in _STRATIFY_DIMENSIONS:
+                raise ValueError(
+                    f"Unknown stratification dimension: {d_clean!r}. "
+                    f"Valid choices: {sorted(_STRATIFY_DIMENSIONS)}"
+                )
+            stratify_dims.append(d_clean)
+
     chunks = _read_chunks(chunks_path)
     stats = SynthesisStats(chunks_total=len(chunks))
+    stats.stratify_dimensions = list(stratify_dims)
+    stats.max_pairs_cap = max_pairs
+    stats.difficulty_curriculum = bool(difficulty_curriculum)
 
     owns_capture = False
     if capture is None:
@@ -243,87 +480,212 @@ def run_synthesis(
             ],
         )
 
+        # Wave 77: split chunk traversal into "count eligible" and
+        # "iterate emit-order" so stratified sampling can reorder the
+        # emit-order without changing the eligibility tally.
+        eligible_chunks: List[Tuple[int, Dict[str, Any]]] = []
         for idx, chunk in enumerate(chunks):
             if not _eligible(chunk):
                 stats.chunks_skipped_no_lo += 1
                 continue
             stats.chunks_eligible += 1
+            eligible_chunks.append((idx, chunk))
 
+        # Apply stratified sampling if requested. The original (idx, chunk)
+        # tuples are preserved so each chunk keeps its original seed offset
+        # -- otherwise idempotence under `--seed N` would break.
+        if stratify_dims and eligible_chunks:
+            rng = random.Random(seed)
+            target = max_pairs if max_pairs is not None else len(eligible_chunks)
+            target = min(target, len(eligible_chunks))
+            picked = _stratified_sample(
+                [c for _, c in eligible_chunks],
+                stratify_dims,
+                target_count=target,
+                rng=rng,
+            )
+            picked_ids = {id(c): True for c in picked}
+            iter_chunks = [(i, c) for (i, c) in eligible_chunks if id(c) in picked_ids]
+            # Track the bucket distribution so callers (and tests) can
+            # confirm the sampler actually balanced.
+            for c in picked:
+                for d in stratify_dims:
+                    bucket = _stratify_key(c, d)
+                    stats.stratify_distribution.setdefault(d, {})
+                    stats.stratify_distribution[d][bucket] = (
+                        stats.stratify_distribution[d].get(bucket, 0) + 1
+                    )
+        else:
+            iter_chunks = list(eligible_chunks)
+
+        # Effective per-artifact cap. None -> unlimited. We apply it to
+        # instruction and preference outputs independently so a request for
+        # `--max-pairs 50` produces at most 50 of each (matches the tests'
+        # expectation that capping is per-file, not the combined total).
+        per_artifact_cap = max_pairs
+
+        for idx, chunk in iter_chunks:
             pair_seed = seed + idx
 
             # --- Instruction pair ---
-            inst_result = synthesize_instruction_pair(chunk, seed=pair_seed, provider=provider)
-            if inst_result.pair is None:
-                stats.instruction_pairs_rejected += 1
-                reason = inst_result.quality.get("reason") or "gate_failed"
-                stats.rejected_reasons[f"instruction:{reason}"] = (
-                    stats.rejected_reasons.get(f"instruction:{reason}", 0) + 1
-                )
+            inst_capped = (
+                per_artifact_cap is not None
+                and stats.instruction_pairs_emitted >= per_artifact_cap
+            )
+            if inst_capped:
+                stats.capped_at_max_pairs = True
             else:
-                # REC-VOC-03 Phase 2 (Worker T): opt-in content_type enforcement
-                # against ChunkType enum. Flag off -> no-op; flag on -> fail-closed.
-                # Matches Worker I's TRAINFORGE_VALIDATE_CHUNKS pattern at
-                # process_course.py:1987-2009.
-                ct_value = inst_result.pair.get("content_type", "")
-                if not validate_chunk_type(ct_value):
+                inst_result = synthesize_instruction_pair(
+                    chunk, seed=pair_seed, provider=provider
+                )
+                if inst_result.pair is None:
                     stats.instruction_pairs_rejected += 1
-                    reason = "invalid_content_type"
+                    reason = inst_result.quality.get("reason") or "gate_failed"
                     stats.rejected_reasons[f"instruction:{reason}"] = (
                         stats.rejected_reasons.get(f"instruction:{reason}", 0) + 1
                     )
-                    chunk_id = inst_result.pair.get("chunk_id", "<unknown>")
-                    # Fail-closed: raise so the pipeline surfaces the bad vocabulary
-                    # rather than silently rejecting. Caller sets the env var
-                    # intentionally; silent drop would undermine that intent.
-                    assert_chunk_type(
-                        ct_value,
-                        context=f"instruction_pair.chunk_id={chunk_id}",
+                else:
+                    # REC-VOC-03 Phase 2 (Worker T): opt-in content_type enforcement
+                    # against ChunkType enum. Flag off -> no-op; flag on -> fail-closed.
+                    # Matches Worker I's TRAINFORGE_VALIDATE_CHUNKS pattern at
+                    # process_course.py:1987-2009.
+                    ct_value = inst_result.pair.get("content_type", "")
+                    if not validate_chunk_type(ct_value):
+                        stats.instruction_pairs_rejected += 1
+                        reason = "invalid_content_type"
+                        stats.rejected_reasons[f"instruction:{reason}"] = (
+                            stats.rejected_reasons.get(f"instruction:{reason}", 0) + 1
+                        )
+                        chunk_id = inst_result.pair.get("chunk_id", "<unknown>")
+                        # Fail-closed: raise so the pipeline surfaces the bad vocabulary
+                        # rather than silently rejecting. Caller sets the env var
+                        # intentionally; silent drop would undermine that intent.
+                        assert_chunk_type(
+                            ct_value,
+                            context=f"instruction_pair.chunk_id={chunk_id}",
+                        )
+                    capture.log_decision(
+                        decision_type="instruction_pair_synthesis",
+                        decision=(
+                            f"Emit instruction pair for chunk {inst_result.pair['chunk_id']} "
+                            f"(template={inst_result.template_id}, bloom={inst_result.pair['bloom_level']})."
+                        ),
+                        rationale=inst_result.rationale,
+                        alternatives_considered=inst_result.alternatives or None,
+                        context=(
+                            f"topic='{inst_result.topic}'; "
+                            f"content_type='{inst_result.pair['content_type']}'; "
+                            f"quality={inst_result.quality}"
+                        ),
                     )
-                capture.log_decision(
-                    decision_type="instruction_pair_synthesis",
-                    decision=(
-                        f"Emit instruction pair for chunk {inst_result.pair['chunk_id']} "
-                        f"(template={inst_result.template_id}, bloom={inst_result.pair['bloom_level']})."
-                    ),
-                    rationale=inst_result.rationale,
-                    alternatives_considered=inst_result.alternatives or None,
-                    context=(
-                        f"topic='{inst_result.topic}'; "
-                        f"content_type='{inst_result.pair['content_type']}'; "
-                        f"quality={inst_result.quality}"
-                    ),
-                )
-                inst_result.pair["decision_capture_id"] = _last_event_id(capture)
-                instruction_records.append(inst_result.pair)
-                stats.instruction_pairs_emitted += 1
+                    inst_result.pair["decision_capture_id"] = _last_event_id(capture)
+                    instruction_records.append(inst_result.pair)
+                    stats.instruction_pairs_emitted += 1
 
             # --- Preference pair ---
-            pref_result = synthesize_preference_pair(chunk, seed=pair_seed, provider=provider)
-            if pref_result.pair is None:
-                stats.preference_pairs_rejected += 1
-                reason = pref_result.quality.get("reason") or "gate_failed"
-                stats.rejected_reasons[f"preference:{reason}"] = (
-                    stats.rejected_reasons.get(f"preference:{reason}", 0) + 1
-                )
+            pref_capped = (
+                per_artifact_cap is not None
+                and stats.preference_pairs_emitted >= per_artifact_cap
+            )
+            if pref_capped:
+                stats.capped_at_max_pairs = True
             else:
-                capture.log_decision(
-                    decision_type="preference_pair_generation",
-                    decision=(
-                        f"Emit preference pair for chunk {pref_result.pair['chunk_id']} "
-                        f"(source={pref_result.source}, "
-                        f"misconception_id={pref_result.misconception_id})."
-                    ),
-                    rationale=pref_result.rationale,
-                    alternatives_considered=pref_result.alternatives or None,
-                    context=f"quality={pref_result.quality}",
+                pref_result = synthesize_preference_pair(
+                    chunk, seed=pair_seed, provider=provider
                 )
-                pref_result.pair["decision_capture_id"] = _last_event_id(capture)
-                preference_records.append(pref_result.pair)
-                stats.preference_pairs_emitted += 1
+                if pref_result.pair is None:
+                    stats.preference_pairs_rejected += 1
+                    reason = pref_result.quality.get("reason") or "gate_failed"
+                    stats.rejected_reasons[f"preference:{reason}"] = (
+                        stats.rejected_reasons.get(f"preference:{reason}", 0) + 1
+                    )
+                else:
+                    capture.log_decision(
+                        decision_type="preference_pair_generation",
+                        decision=(
+                            f"Emit preference pair for chunk {pref_result.pair['chunk_id']} "
+                            f"(source={pref_result.source}, "
+                            f"misconception_id={pref_result.misconception_id})."
+                        ),
+                        rationale=pref_result.rationale,
+                        alternatives_considered=pref_result.alternatives or None,
+                        context=f"quality={pref_result.quality}",
+                    )
+                    pref_result.pair["decision_capture_id"] = _last_event_id(capture)
+                    preference_records.append(pref_result.pair)
+                    stats.preference_pairs_emitted += 1
 
-        # --- Persist artifacts (deterministic ordering: by chunk_id) ---
-        instruction_records.sort(key=lambda r: (r["chunk_id"], r.get("seed", 0)))
-        preference_records.sort(key=lambda r: (r["chunk_id"], r.get("seed", 0)))
+        # --- Wave 77: misconception -> DPO pair augmentation -----------------
+        # Emit one DPO pair per editorial (misconception, correction) entry
+        # found on the eligible chunks. These augment the standard preference
+        # pairs and are subject to the same per-artifact cap. We iterate the
+        # FULL eligible-chunk set (not the post-stratification subset) so the
+        # editorial signal is preserved end-to-end -- stratified sampling is
+        # about template-generated pairs, not editorial misconceptions.
+        if include_dpo_from_misconceptions:
+            mc_index = 0
+            for _, chunk in eligible_chunks:
+                misconceptions = chunk.get("misconceptions") or []
+                if not isinstance(misconceptions, list):
+                    continue
+                for mc in misconceptions:
+                    if not isinstance(mc, dict):
+                        continue
+                    if (
+                        per_artifact_cap is not None
+                        and stats.preference_pairs_emitted >= per_artifact_cap
+                    ):
+                        stats.capped_at_max_pairs = True
+                        break
+                    pair = _build_misconception_dpo_pair(chunk, mc, mc_index)
+                    mc_index += 1
+                    if pair is None:
+                        continue
+                    capture.log_decision(
+                        decision_type="preference_pair_generation",
+                        decision=(
+                            f"Emit misconception DPO pair for chunk {pair['chunk_id']} "
+                            f"(misconception_id={pair['misconception_id']})."
+                        ),
+                        rationale=(
+                            "Editorial misconception/correction pair from "
+                            "chunk.misconceptions converted directly into a DPO "
+                            "preference pair: chosen=correction, rejected=misconception. "
+                            "These are the highest-fidelity preference signal in the "
+                            "corpus because the alternatives were authored by the "
+                            "course designer, not template-synthesized."
+                        ),
+                    )
+                    pair["decision_capture_id"] = _last_event_id(capture)
+                    preference_records.append(pair)
+                    stats.preference_pairs_emitted += 1
+                    stats.misconception_dpo_pairs_emitted += 1
+
+        # --- Persist artifacts ------------------------------------------------
+        # Default ordering: by chunk_id (deterministic, byte-stable across runs).
+        # --difficulty-curriculum overrides with a foundational -> advanced
+        # rank, with chunk_id as the tiebreaker so byte-stability under same
+        # seed is preserved.
+        if difficulty_curriculum:
+            chunk_diff_lookup = {
+                str(c.get("id") or c.get("chunk_id") or ""): c
+                for _, c in eligible_chunks
+            }
+
+            def _curriculum_record_key(rec: Dict[str, Any]) -> Tuple[int, str, int]:
+                cid = str(rec.get("chunk_id") or "")
+                src_chunk = chunk_diff_lookup.get(cid)
+                if src_chunk is None:
+                    rank = len(_DIFFICULTY_ORDER)
+                else:
+                    rank, _ = _curriculum_sort_key(src_chunk)
+                return (rank, cid, int(rec.get("seed", 0)))
+
+            instruction_records.sort(key=_curriculum_record_key)
+            preference_records.sort(key=_curriculum_record_key)
+        else:
+            instruction_records.sort(key=lambda r: (r["chunk_id"], r.get("seed", 0)))
+            preference_records.sort(key=lambda r: (r["chunk_id"], r.get("seed", 0)))
 
         _write_jsonl(instruction_out, instruction_records)
         _write_jsonl(preference_out, preference_records)
@@ -357,25 +719,112 @@ def run_synthesis(
 
 
 # ---------------------------------------------------------------------------
+# Wave 77: LibV2-archive entry path
+# ---------------------------------------------------------------------------
+
+def run_synthesis_from_libv2(
+    slug: str,
+    course_code: Optional[str] = None,
+    *,
+    libv2_root: Optional[Path] = None,
+    output_dir: Optional[Path] = None,
+    provider: str = "mock",
+    seed: int = DEFAULT_SEED,
+    stratify: Optional[Sequence[str]] = None,
+    include_dpo_from_misconceptions: bool = False,
+    difficulty_curriculum: bool = False,
+    max_pairs: Optional[int] = None,
+) -> SynthesisStats:
+    """Run synthesis directly against a LibV2 course archive.
+
+    Locates the course directory under ``LibV2/courses/<slug>/``, which
+    already contains ``corpus/chunks.jsonl`` (the same shape the Trainforge
+    pipeline emits) and ``objectives.json``. This avoids re-running the
+    pipeline when the only goal is to (re-)synthesize training pairs from
+    an already-archived corpus -- e.g. when iterating on stratification or
+    misconception-DPO emission.
+
+    Args:
+        slug: LibV2 course slug, e.g. ``"rdf-shacl-550"``.
+        course_code: Course code for decision capture. Defaults to the
+            ``course_code`` field on objectives.json, or the slug uppercased
+            with hyphens replaced by underscores.
+        libv2_root: Override for ``LibV2/courses/`` (testing).
+        output_dir: Where to write ``instruction_pairs.jsonl`` /
+            ``preference_pairs.jsonl``. Defaults to
+            ``<archive>/training_specs/`` (overwriting the on-disk pairs).
+        provider, seed, stratify, include_dpo_from_misconceptions,
+            difficulty_curriculum, max_pairs: Forwarded to
+            :func:`run_synthesis`.
+
+    Returns:
+        Same :class:`SynthesisStats` payload as the pipeline-based entry.
+    """
+    archive_dir = _resolve_libv2_corpus_dir(slug, libv2_root=libv2_root)
+
+    if course_code is None:
+        objectives_path = archive_dir / "objectives.json"
+        if objectives_path.exists():
+            try:
+                with objectives_path.open("r", encoding="utf-8") as fh:
+                    obj_data = json.load(fh)
+                    course_code = str(obj_data.get("course_code") or "").strip()
+            except (OSError, ValueError):
+                course_code = ""
+        if not course_code:
+            course_code = slug.upper().replace("-", "_")
+
+    return run_synthesis(
+        corpus_dir=archive_dir,
+        course_code=course_code,
+        provider=provider,
+        seed=seed,
+        stratify=stratify,
+        include_dpo_from_misconceptions=include_dpo_from_misconceptions,
+        difficulty_curriculum=difficulty_curriculum,
+        max_pairs=max_pairs,
+        output_dir=output_dir,
+    )
+
+
+# ---------------------------------------------------------------------------
 # CLI (standalone invocation)
 # ---------------------------------------------------------------------------
+
+def _parse_stratify_arg(raw: Optional[str]) -> List[str]:
+    if not raw:
+        return []
+    return [d.strip().lower() for d in raw.split(",") if d.strip()]
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description=(
             "Synthesize SFT and DPO training pairs from an already-processed "
-            "Trainforge course output directory."
+            "Trainforge course output directory or LibV2 course archive."
         )
     )
-    p.add_argument(
+    # Either --corpus (legacy: Trainforge output dir) or --slug (Wave 77:
+    # LibV2 archive entry path). At least one must be provided.
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument(
         "--corpus",
-        required=True,
         help="Course output directory (the one containing corpus/ and training_specs/).",
+    )
+    src.add_argument(
+        "--slug",
+        help=(
+            "LibV2 course slug under LibV2/courses/<slug>/ "
+            "(reads corpus/chunks.jsonl + objectives.json from the archive)."
+        ),
     )
     p.add_argument(
         "--course-code",
-        required=True,
-        help="Course code for decision capture, e.g. SAMPLE_101.",
+        help=(
+            "Course code for decision capture, e.g. SAMPLE_101. "
+            "Required when --corpus is used; optional with --slug "
+            "(falls back to objectives.json:course_code)."
+        ),
     )
     p.add_argument(
         "--provider",
@@ -389,6 +838,48 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_SEED,
         help=f"Base deterministic seed (default: {DEFAULT_SEED}).",
     )
+    # Wave 77 additions
+    p.add_argument(
+        "--stratify",
+        default="",
+        help=(
+            "Comma-separated stratification dimensions. Choices: "
+            "bloom, chunk_type, outcome, difficulty. When set, eligible "
+            "chunks are sampled round-robin across the resulting buckets "
+            "so the output distribution is uniform across the dimension(s)."
+        ),
+    )
+    p.add_argument(
+        "--include-dpo-from-misconceptions",
+        action="store_true",
+        help=(
+            "Emit one DPO pair per editorial chunk.misconceptions entry "
+            "(chosen=correction, rejected=misconception)."
+        ),
+    )
+    p.add_argument(
+        "--difficulty-curriculum",
+        action="store_true",
+        help=(
+            "Order emitted pairs foundational -> intermediate -> advanced "
+            "(preserved in the output JSONL) for curriculum-style training."
+        ),
+    )
+    p.add_argument(
+        "--max-pairs",
+        type=int,
+        default=1000,
+        help="Cap total emitted pairs per artifact (default: 1000).",
+    )
+    p.add_argument(
+        "--output",
+        default=None,
+        help=(
+            "Optional output directory for instruction_pairs.jsonl + "
+            "preference_pairs.jsonl. Defaults to "
+            "<corpus>/training_specs/."
+        ),
+    )
     return p
 
 
@@ -396,12 +887,41 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
     if args is None:
         args = build_parser().parse_args()
 
-    stats = run_synthesis(
-        corpus_dir=Path(args.corpus),
-        course_code=args.course_code,
-        provider=args.provider,
-        seed=args.seed,
-    )
+    stratify_dims = _parse_stratify_arg(getattr(args, "stratify", ""))
+    include_dpo = bool(getattr(args, "include_dpo_from_misconceptions", False))
+    diff_curriculum = bool(getattr(args, "difficulty_curriculum", False))
+    max_pairs_cap = getattr(args, "max_pairs", None)
+    output_dir = Path(args.output) if getattr(args, "output", None) else None
+
+    if getattr(args, "slug", None):
+        stats = run_synthesis_from_libv2(
+            slug=args.slug,
+            course_code=args.course_code,
+            provider=args.provider,
+            seed=args.seed,
+            stratify=stratify_dims,
+            include_dpo_from_misconceptions=include_dpo,
+            difficulty_curriculum=diff_curriculum,
+            max_pairs=max_pairs_cap,
+            output_dir=output_dir,
+        )
+    else:
+        if not args.course_code:
+            raise SystemExit(
+                "--course-code is required when --corpus is used "
+                "(only optional with --slug)."
+            )
+        stats = run_synthesis(
+            corpus_dir=Path(args.corpus),
+            course_code=args.course_code,
+            provider=args.provider,
+            seed=args.seed,
+            stratify=stratify_dims,
+            include_dpo_from_misconceptions=include_dpo,
+            difficulty_curriculum=diff_curriculum,
+            max_pairs=max_pairs_cap,
+            output_dir=output_dir,
+        )
 
     print("\n[Synthesis] Complete.")
     print(f"  Chunks eligible:    {stats.chunks_eligible}/{stats.chunks_total}")
