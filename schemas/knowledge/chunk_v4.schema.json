@@ -87,6 +87,10 @@
       "enum": ["section_jsonld", "page_jsonld", "lo_inherited", "verbs", "default"],
       "description": "Provenance tag for bloom_level. Only emitted when source is 'verbs' or 'default' (low-confidence paths), per process_course.py:1145."
     },
+    "bloom_level_secondary": {
+      "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel",
+      "description": "Wave 76: secondary (lower) Bloom level when the source declared a compound bloom_level (e.g. 'remember-apply'). Compound values are split with the higher level becoming the canonical bloom_level and the lower stored here, so the taxonomy enum stays canonical without losing source information. Optional; absent when bloom_level was already a single canonical level."
+    },
     "content_type_label": {
       "type": "string",
       "description": "Section/content classification label from JSON-LD or data-cf-content-type. Freeform today; future enum reconciliation is Wave 2 scope."
