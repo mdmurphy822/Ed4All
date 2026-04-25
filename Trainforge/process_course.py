@@ -828,6 +828,14 @@ class CourseProcessor:
                 self.objectives = None
                 self._objectives_source = "load_failed"
 
+        # Wave 76: precompute the component->terminal parent map once so
+        # the per-chunk retag pass in _create_chunk doesn't re-walk the
+        # objectives payload. Empty when no objectives are loaded —
+        # retag_chunk_outcomes degrades to a no-op for parent rollup
+        # in that case but still applies the vocabulary retag rule.
+        from Trainforge.retag_outcomes import build_parent_map as _bpm
+        self._lo_parent_map: Dict[str, str] = _bpm(self.objectives)
+
         # Decision capture
         # Phase value must be in the canonical enum at
         # ``schemas/events/decision_event.schema.json`` (hyphenated). Prior
@@ -1630,6 +1638,16 @@ class CourseProcessor:
                     m = canonicalize_sc_references(m)
                 normalized_mis.append(m)
             chunk["misconceptions"] = normalized_mis
+
+        # Wave 76: vocabulary-driven retag + parent-outcome rollup.
+        # Runs *after* the structured/JSON-LD/regex extraction in
+        # _extract_objective_refs but *before* downstream consumers
+        # (targeted_concepts propagation, summary, retrieval_text) so
+        # they see the full set of refs. Both rules are additive —
+        # never removes an existing ref. See Trainforge/retag_outcomes.py
+        # for the rationale + vocabulary lists.
+        from Trainforge.retag_outcomes import retag_chunk_outcomes
+        retag_chunk_outcomes(chunk, parent_map=getattr(self, "_lo_parent_map", None))
 
         # Wave 69: propagate Wave 57 targetedConcepts[] from LOs onto chunks
         # whose learning_outcome_refs cite those LOs. Each chunk entry is
