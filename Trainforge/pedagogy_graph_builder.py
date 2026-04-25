@@ -9,6 +9,17 @@ about *teaches* / *assesses* / *practices* / *exemplifies* /
 *supports_outcome* relations rather than re-deriving them from
 chunk concept tags.
 
+Wave 78 (Worker B) completes the relation set with four new edge
+types — ``derived_from_objective`` (Chunk → Objective provenance,
+mirrored from concept_graph_semantic), ``concept_supports_outcome``
+(DomainConcept → Outcome rollup, derived from concept ∩ chunk LO
+refs), ``assessment_validates_outcome`` (assessment_item Chunk →
+Outcome rollup via parent_terminal CO chains, distinct from the
+direct ``assesses`` edge), and ``chunk_at_difficulty`` (Chunk →
+DifficultyLevel typed node) — bringing the graph from 10 to 14
+distinct relation types so the strict validator (Worker A) and intent
+router (Worker C) have complete substrate to operate on.
+
 Wave 76 (Worker D) refines the ``prerequisite_of`` and
 ``interferes_with`` rules so they emit only meaningful edges:
 
@@ -58,23 +69,73 @@ Node classes:
 * ``Module``            -- one per top-level module (week_NN slice).
 * ``BloomLevel``        -- six canonical levels.
 * ``Misconception``     -- one per unique misconception statement.
+* ``DifficultyLevel``   -- three canonical levels (foundational,
+                            intermediate, advanced) — Wave 78.
 
 Edge types (each gets ``relation_type`` set verbatim):
 
-* ``teaches``           -- Chunk -> Objective (non-assessment chunks).
-* ``assesses``          -- Chunk -> Objective (assessment_item chunks
-                            and chunks emitted from quiz/self-check).
-* ``practices``         -- Chunk -> Objective (chunk_type=exercise).
-* ``exemplifies``       -- Chunk -> Concept (example chunks; concept
-                            slugs from chunk.concept_tags).
-* ``prerequisite_of``   -- Concept -> Concept (week N -> week N+1
-                            concept ordering).
-* ``interferes_with``   -- Misconception -> Concept (links each
-                            misconception node to chunk concept_tags).
-* ``belongs_to_module`` -- Chunk -> Module.
-* ``supports_outcome``  -- ComponentObjective -> Outcome (parent_to).
-* ``at_bloom_level``    -- Objective -> BloomLevel.
-* ``follows``           -- Module -> Module (display-order chain).
+* ``teaches``                       -- Chunk -> Objective (non-assessment
+                                        chunks).
+* ``assesses``                      -- Chunk -> Objective (assessment_item
+                                        chunks and chunks emitted from
+                                        quiz/self-check). Direct ref —
+                                        complement of the rollup edge
+                                        ``assessment_validates_outcome``.
+* ``practices``                     -- Chunk -> Objective
+                                        (chunk_type=exercise).
+* ``exemplifies``                   -- Chunk -> Concept (example chunks;
+                                        concept slugs from
+                                        chunk.concept_tags).
+* ``prerequisite_of``               -- Concept -> Concept (week N -> week
+                                        N+1 concept ordering).
+* ``interferes_with``               -- Misconception -> Concept (links
+                                        each misconception node to chunk
+                                        concept_tags).
+* ``belongs_to_module``             -- Chunk -> Module.
+* ``supports_outcome``              -- ComponentObjective -> Outcome
+                                        (parent_to).
+* ``at_bloom_level``                -- Objective -> BloomLevel.
+* ``follows``                       -- Module -> Module (display-order
+                                        chain).
+* ``derived_from_objective``        -- Chunk -> Objective (Wave 78).
+                                        Mirrors the concept_graph_semantic
+                                        ``derived-from-objective`` edge
+                                        type into the pedagogy graph as
+                                        explicit chunk-to-LO provenance —
+                                        every chunk emits one edge per
+                                        item in its
+                                        ``learning_outcome_refs``.
+                                        Conceptually similar to
+                                        ``teaches`` but represents
+                                        PROVENANCE rather than pedagogy.
+* ``concept_supports_outcome``      -- DomainConcept -> Outcome (Wave 78).
+                                        Derived: concept C → outcome O
+                                        when at least one chunk contains
+                                        C in concept_tags AND that
+                                        chunk's learning_outcome_refs
+                                        rolled up to terminal level
+                                        contains O. Edge weight = number
+                                        of supporting chunks. Restricted
+                                        to DomainConcept-classified
+                                        sources (Wave 76 filter).
+* ``assessment_validates_outcome``  -- AssessmentItem Chunk -> Outcome
+                                        (Wave 78). For every
+                                        ``chunk_type == "assessment_item"``
+                                        chunk with a ``co-NN`` ref, emit
+                                        a rollup edge to that ref's
+                                        parent terminal ``to-NN``.
+                                        Distinct from ``assesses`` (which
+                                        targets the direct ref) — this is
+                                        the rollup chain.
+* ``chunk_at_difficulty``           -- Chunk -> DifficultyLevel (Wave 78).
+                                        Every chunk with a ``difficulty``
+                                        attribute (foundational /
+                                        intermediate / advanced) emits an
+                                        edge to the corresponding
+                                        DifficultyLevel typed node.
+                                        Enables filtering / clustering by
+                                        cognitive load via graph
+                                        traversal.
 
 The builder is fail-soft: malformed objectives or chunks are skipped
 with no exception, and an empty graph is emitted when both inputs are
@@ -99,6 +160,12 @@ __all__ = ["build_pedagogy_graph", "load_objectives_with_fallback"]
 _QUIZ_MODULE_RE = re.compile(
     r"(self[_-]?check|quiz|exam|assessment|test)\b", re.IGNORECASE
 )
+
+# Wave 78: canonical difficulty levels — must match the ``difficulty``
+# enum on chunk_v4.schema.json. Used both to seed DifficultyLevel typed
+# nodes unconditionally (mirroring the BloomLevel-node convention) and to
+# guard chunk_at_difficulty edge emission against malformed values.
+DIFFICULTY_LEVELS = ("foundational", "intermediate", "advanced")
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +333,17 @@ def build_pedagogy_graph(
             "level": level,
         })
 
+    # Wave 78: DifficultyLevel typed nodes — emitted unconditionally so
+    # downstream traversals can land on the node even on chunk-empty
+    # corpora (parity with BloomLevel emission above).
+    for level in DIFFICULTY_LEVELS:
+        nodes.append({
+            "id": f"difficulty:{level}",
+            "class": "DifficultyLevel",
+            "label": level.title(),
+            "level": level,
+        })
+
     # ------------------------------------------------------------------
     # 2. Outcome + ComponentObjective nodes from objectives.
     #    Supports BOTH conventions:
@@ -419,6 +497,22 @@ def build_pedagogy_graph(
     # 7. Chunk nodes + per-chunk edges.
     # ------------------------------------------------------------------
     valid_objective_ids = set(objective_nodes.keys())
+    # Wave 78: parent-terminal lookup for CO -> TO rollup. Used by both
+    # ``assessment_validates_outcome`` (assessment chunk -> parent_TO)
+    # and ``concept_supports_outcome`` (rolling each chunk's CO refs up
+    # to terminal level before counting concept-supports-outcome chunks).
+    co_to_parent_to: Dict[str, str] = {}
+    for nid, node in objective_nodes.items():
+        if node["class"] != "ComponentObjective":
+            continue
+        parent = node.get("parent_terminal")
+        if (
+            parent
+            and parent in objective_nodes
+            and objective_nodes[parent]["class"] == "Outcome"
+        ):
+            co_to_parent_to[nid] = parent
+
     # ``concept_to_chunks`` tracks chunk-membership for concepts that
     # are *exemplifies*-edge-eligible (i.e., concepts cited from example
     # chunks). It still drives Concept-node emission for the exemplifies
@@ -429,6 +523,13 @@ def build_pedagogy_graph(
     concept_to_chunks_all: Dict[str, Set[str]] = defaultdict(set)
     concept_to_week: Dict[str, int] = {}
     concept_label: Dict[str, str] = {}
+    # Wave 78: per-chunk rolled-up Outcome (terminal) ref set. For each
+    # chunk we compute the union of (a) terminal refs already in the
+    # chunk's learning_outcome_refs and (b) parents of any CO refs.
+    # Drives the ``concept_supports_outcome`` derivation: a concept
+    # appearing in a chunk is treated as supporting every Outcome in
+    # that chunk's rolled-up set.
+    chunk_to_rolled_outcomes: Dict[str, Set[str]] = {}
 
     for c in chunks:
         cid = c.get("id")
@@ -497,6 +598,86 @@ def build_pedagogy_graph(
                     "target": lo,
                     "relation_type": "teaches",
                 })
+
+        # ------------------------------------------------------------
+        # Wave 78: derived_from_objective (Chunk -> Objective).
+        # Mirrors concept_graph_semantic's `derived-from-objective`
+        # rule into pedagogy_graph as explicit chunk-LO provenance.
+        # Conceptually similar to ``teaches`` but represents PROVENANCE
+        # not pedagogy — emitted for *every* chunk regardless of
+        # chunk_type, gated only on the LO node existing in the
+        # objectives map (referential integrity).
+        # ------------------------------------------------------------
+        for lo in sorted(set(lo_refs)):
+            if lo not in valid_objective_ids:
+                continue
+            edges.append({
+                "source": cid,
+                "target": lo,
+                "relation_type": "derived_from_objective",
+            })
+
+        # ------------------------------------------------------------
+        # Wave 78: assessment_validates_outcome (AssessmentItem chunk
+        # -> Outcome) — rollup chain. For every assessment_item chunk
+        # ref pointing at a CO-NN, emit an edge to that CO's
+        # parent_terminal TO-NN. Distinct from ``assesses`` (which
+        # targets the direct ref). Deduped per (chunk, parent_to)
+        # pair so a chunk citing co-01 + co-02 (both rolling up to
+        # to-01) emits only one validates edge.
+        # ------------------------------------------------------------
+        if chunk_type == "assessment_item":
+            seen_validates: Set[str] = set()
+            for lo in sorted(set(lo_refs)):
+                parent_to = co_to_parent_to.get(lo)
+                if not parent_to or parent_to in seen_validates:
+                    continue
+                if parent_to not in valid_objective_ids:
+                    continue
+                seen_validates.add(parent_to)
+                edges.append({
+                    "source": cid,
+                    "target": parent_to,
+                    "relation_type": "assessment_validates_outcome",
+                })
+
+        # ------------------------------------------------------------
+        # Wave 78: chunk_at_difficulty (Chunk -> DifficultyLevel).
+        # Every chunk with a canonical ``difficulty`` value emits an
+        # edge to the corresponding DifficultyLevel typed node.
+        # Malformed / missing values silently skipped (fail-soft, in
+        # keeping with the rest of the builder).
+        # ------------------------------------------------------------
+        difficulty = c.get("difficulty")
+        if isinstance(difficulty, str):
+            d_norm = difficulty.strip().lower()
+            if d_norm in DIFFICULTY_LEVELS:
+                edges.append({
+                    "source": cid,
+                    "target": f"difficulty:{d_norm}",
+                    "relation_type": "chunk_at_difficulty",
+                })
+
+        # ------------------------------------------------------------
+        # Wave 78: roll up this chunk's LO refs to terminal level so
+        # the post-loop ``concept_supports_outcome`` derivation can
+        # count concept->outcome supporting chunks consistently. A
+        # ref already at TO-NN level passes through; a CO-NN ref maps
+        # to its parent_terminal (when present in the objectives map).
+        # ------------------------------------------------------------
+        rolled: Set[str] = set()
+        for lo in lo_refs:
+            if lo not in valid_objective_ids:
+                continue
+            cls = objective_nodes[lo]["class"]
+            if cls == "Outcome":
+                rolled.add(lo)
+            elif cls == "ComponentObjective":
+                parent_to = co_to_parent_to.get(lo)
+                if parent_to:
+                    rolled.add(parent_to)
+        if rolled:
+            chunk_to_rolled_outcomes[cid] = rolled
 
         # exemplifies edges: example chunks → their concept_tags.
         if chunk_type == "example":
@@ -642,6 +823,39 @@ def build_pedagogy_graph(
                 "target": f"concept:{slug}",
                 "relation_type": "interferes_with",
             })
+
+    # ------------------------------------------------------------------
+    # 9b. concept_supports_outcome edges (DomainConcept -> Outcome).
+    #
+    #     Wave 78: derived rollup. Concept C supports Outcome O when
+    #     at least one chunk contains C as a concept_tag AND that
+    #     chunk's learning_outcome_refs (rolled up CO -> parent_TO)
+    #     contains O. Edge weight (``confidence``) = count of
+    #     supporting chunks. Source endpoint must be DomainConcept-
+    #     classified per Worker D's filter (when ``concept_classes``
+    #     supplied; permissive default otherwise). Target endpoint
+    #     is always an Outcome that exists in ``objective_nodes``,
+    #     so referential integrity is intact.
+    # ------------------------------------------------------------------
+    concept_outcome_support: Dict[Tuple[str, str], int] = defaultdict(int)
+    for slug, chunk_ids in concept_to_chunks_all.items():
+        if not _is_domain_concept(slug):
+            continue
+        for cid in chunk_ids:
+            for outcome in chunk_to_rolled_outcomes.get(cid, ()):  # type: ignore[arg-type]
+                concept_outcome_support[(slug, outcome)] += 1
+    for (slug, outcome), weight in sorted(concept_outcome_support.items()):
+        # Ensure both endpoints have nodes emitted. The Outcome node
+        # always exists (it's in objective_nodes); the Concept node
+        # may not yet have been emitted via exemplifies / prereq /
+        # interferes_with paths.
+        _emit_concept(slug)
+        edges.append({
+            "source": f"concept:{slug}",
+            "target": outcome,
+            "relation_type": "concept_supports_outcome",
+            "confidence": weight,
+        })
 
     # ------------------------------------------------------------------
     # 10. prerequisite_of edges (Concept -> Concept).

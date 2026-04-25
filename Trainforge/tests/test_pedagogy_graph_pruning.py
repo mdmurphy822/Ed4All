@@ -371,13 +371,14 @@ def test_real_archive_envelope_after_pruning():
     assert prereq <= int(7032 * 0.15), (
         f"prerequisite_of={prereq} did not drop >= 85% from pre-Wave-76 7032"
     )
-    # Total edges should drop sharply from Wave 75's 8324. Ceiling is
-    # 2500: the actual count is dominated by per-chunk teaches/assesses
-    # edges which scale with LO-ref density in chunks (623 teaches at
-    # the time of writing); concurrent Worker C/E chunk regens may
-    # push this up. The lever Worker D owns is prereq, not teaches.
-    assert 1000 < edge_count <= 2500, (
-        f"edge_count={edge_count} outside expected (1000, 2500] envelope; "
+    # Total edges should drop sharply from Wave 75's 8324. Wave 78
+    # bumped the ceiling 2500 -> 5000 to absorb the four new typed
+    # relations (derived_from_objective + concept_supports_outcome +
+    # assessment_validates_outcome + chunk_at_difficulty); the prereq
+    # count is still the structural lever Worker D owns and remains
+    # bounded by the 800 ceiling above.
+    assert 1000 < edge_count <= 5000, (
+        f"edge_count={edge_count} outside expected (1000, 5000] envelope; "
         f"edges_by_relation={er}"
     )
 
