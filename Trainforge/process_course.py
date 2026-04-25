@@ -272,6 +272,138 @@ BLOOM_WEIGHT = {
     "analyze": 4, "evaluate": 5, "create": 6,
 }
 
+# ---------------------------------------------------------------------------
+# Wave 76: Bloom level + module_id canonicalization helpers.
+# ---------------------------------------------------------------------------
+
+# Canonical Bloom levels in ascending cognitive order. Mirrors
+# lib.ontology.bloom.BLOOM_LEVELS; duplicated here to avoid circular import
+# at module load.
+_CANONICAL_BLOOM_LEVELS: Tuple[str, ...] = (
+    "remember", "understand", "apply", "analyze", "evaluate", "create",
+)
+_BLOOM_RANK = {level: idx for idx, level in enumerate(_CANONICAL_BLOOM_LEVELS)}
+
+
+def canonicalize_bloom_level(value: Any) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve a possibly-compound bloom_level value into (primary, secondary).
+
+    External pipelines occasionally emit compound levels like
+    ``"remember-apply"`` or ``"understand-analyze"`` to express that a
+    chunk straddles two cognitive demands. The chunk_v4 schema only
+    permits single canonical values, so we split on ``-`` and keep the
+    HIGHER level (per Bloom's ordering) as the primary, storing the
+    LOWER as ``bloom_level_secondary`` (Wave 76 schema addition). When
+    the input is already a single canonical level, ``secondary`` is
+    ``None``. Unknown / unparseable values pass through as-is with no
+    secondary so the caller can decide whether to keep, drop, or warn.
+
+    Returns:
+        (primary, secondary). ``primary`` is ``None`` only when ``value``
+        itself is None / empty.
+    """
+    if not value or not isinstance(value, str):
+        return None, None
+    raw = value.strip().lower()
+    if not raw:
+        return None, None
+    if raw in _BLOOM_RANK:
+        return raw, None
+    if "-" in raw:
+        parts = [p.strip() for p in raw.split("-") if p.strip()]
+        canonical_parts = [p for p in parts if p in _BLOOM_RANK]
+        if len(canonical_parts) >= 2:
+            ordered = sorted(canonical_parts, key=lambda p: _BLOOM_RANK[p])
+            # Higher Bloom level becomes primary; lower becomes secondary.
+            return ordered[-1], ordered[0]
+        if len(canonical_parts) == 1:
+            return canonical_parts[0], None
+    # Unknown value — pass through unchanged so downstream warn/log paths can
+    # surface it without losing information.
+    return raw, None
+
+
+_WEEK_PREFIXED_RE = re.compile(r"^week_\d{2,}_")
+
+
+def normalize_module_id(
+    raw_module_id: Optional[str],
+    item_path: Optional[str] = None,
+    week_num: Optional[int] = None,
+) -> Tuple[Optional[str], bool]:
+    """Normalize a chunk's ``source.module_id`` to canonical ``week_NN_<slot>``.
+
+    Strategy:
+      * If ``raw_module_id`` already starts with ``week_NN_``, return it
+        unchanged.
+      * Otherwise, derive the week number from ``item_path`` (e.g.
+        ``week_04/application.html``) or ``week_num`` and prepend
+        ``week_NN_``.
+      * If no week info is recoverable, return the input unchanged so
+        no chunk is silently dropped — the caller is expected to warn.
+
+    Returns ``(normalized_id, was_normalized)``. ``was_normalized`` is
+    ``True`` only when the function actually rewrote the value.
+    """
+    if not raw_module_id:
+        return raw_module_id, False
+    mid = raw_module_id.strip()
+    if not mid:
+        return raw_module_id, False
+    if _WEEK_PREFIXED_RE.match(mid):
+        return mid, False
+    # Try to recover the week number.
+    week: Optional[int] = None
+    if isinstance(week_num, int) and week_num > 0:
+        week = week_num
+    if week is None and item_path:
+        m = re.search(r"week[_\-\s]?(\d+)", item_path, re.IGNORECASE)
+        if m:
+            try:
+                week = int(m.group(1))
+            except ValueError:
+                week = None
+    if week is None or week <= 0:
+        return mid, False
+    return f"week_{week:02d}_{mid}", True
+
+
+def _assert_chunk_files_parity(jsonl_path: Path, json_path: Path) -> None:
+    """Verify chunks.jsonl and chunks.json round-trip to the same chunk list.
+
+    Wave 76 hygiene: external review surfaced a 21-byte divergence
+    between the two formats after Wave 75's streaming-format patch
+    didn't re-emit the bundled JSON array. We now write both from the
+    same in-memory list (single ``_write_chunks`` pass) and read them
+    back here to assert ordered + content-equal parity. Raises
+    ``RuntimeError`` on any drift so the pipeline fails loud.
+    """
+    jsonl_chunks: List[Dict[str, Any]] = []
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                jsonl_chunks.append(json.loads(line))
+    with open(json_path, "r", encoding="utf-8") as f:
+        json_chunks = json.load(f)
+    if not isinstance(json_chunks, list):
+        raise RuntimeError(
+            f"chunks.json parity: expected top-level list, got "
+            f"{type(json_chunks).__name__}"
+        )
+    if len(jsonl_chunks) != len(json_chunks):
+        raise RuntimeError(
+            f"chunks.json/.jsonl parity: line count mismatch — "
+            f"jsonl={len(jsonl_chunks)} vs json={len(json_chunks)}"
+        )
+    for idx, (a, b) in enumerate(zip(jsonl_chunks, json_chunks)):
+        if a != b:
+            raise RuntimeError(
+                f"chunks.json/.jsonl parity: chunk index {idx} differs "
+                f"(jsonl id={a.get('id')!r}, json id={b.get('id')!r})"
+            )
+
+
 # Resource types that cap difficulty one level below week max
 # (overviews and summaries are inherently introductory)
 INTRODUCTORY_RESOURCE_TYPES = {"overview", "summary"}
@@ -1484,9 +1616,31 @@ class CourseProcessor:
         concept_tags = self._extract_concept_tags(text, item)
         difficulty = self._determine_difficulty(text, item)
 
+        # Wave 76: normalize module_id to canonical week_NN_<slot> form.
+        # The IMSCC inventory occasionally yields short slugs (``application``,
+        # ``content_01``, ``summary``) when the file lives at
+        # ``week_04/application.html`` instead of ``week_04/week_04_application.html``.
+        # Both shapes describe the same module slot but downstream graphs key
+        # off module_id, so we lift them to a single canonical form here.
+        normalized_mid, mid_changed = normalize_module_id(
+            item["module_id"],
+            item_path=item.get("item_path"),
+            week_num=item.get("week_num"),
+        )
+        if mid_changed:
+            logger.debug(
+                "module_id_normalized: %s -> %s (item_path=%s)",
+                item["module_id"], normalized_mid, item.get("item_path"),
+            )
+        elif normalized_mid and not _WEEK_PREFIXED_RE.match(normalized_mid):
+            logger.warning(
+                "module_id_unprefixed: %s (no week info recoverable from "
+                "item_path=%s, week_num=%s); keeping as-is",
+                normalized_mid, item.get("item_path"), item.get("week_num"),
+            )
         source: Dict[str, Any] = {
             "course_id": self.course_code,
-            "module_id": item["module_id"],
+            "module_id": normalized_mid,
             "module_title": item["module_title"],
             "lesson_id": item["item_id"],
             "lesson_title": item["title"],
@@ -1610,7 +1764,17 @@ class CourseProcessor:
             bloom_level = "understand"
             bloom_source = "default"
 
+        # Wave 76: canonicalize compound bloom levels (e.g. "remember-apply").
+        # The chunk_v4 schema only admits the six canonical Bloom levels; any
+        # JSON-LD / data-cf-* / LO source that supplied a hyphenated value
+        # would otherwise fail strict validation. Split into primary (HIGHER)
+        # + secondary (LOWER) so no information is lost.
+        primary_bloom, secondary_bloom = canonicalize_bloom_level(bloom_level)
+        if primary_bloom is not None:
+            bloom_level = primary_bloom
         chunk["bloom_level"] = bloom_level
+        if secondary_bloom is not None:
+            chunk["bloom_level_secondary"] = secondary_bloom
         # Only tag the source when it's below lo_inherited confidence;
         # authoritative chunks stay schema-identical to pre-fallback output.
         if bloom_source in ("verbs", "default"):
@@ -2520,6 +2684,14 @@ class CourseProcessor:
 
         with open(json_path, "w", encoding="utf-8") as f:
             json.dump(chunks, f, indent=2, ensure_ascii=False)
+
+        # Wave 76: parity assertion. chunks.json must round-trip to the
+        # exact same chunk list (ordered + content-equal) as chunks.jsonl.
+        # Drift between the two surfaced after Wave 75's comma-ref
+        # normalization re-emitted only the streaming format; we now read
+        # both back from disk and fail loud on any divergence so future
+        # patches can never silently regress one format.
+        _assert_chunk_files_parity(jsonl_path, json_path)
 
         self.capture.log_decision(
             decision_type="chunk_serialization",
