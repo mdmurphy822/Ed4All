@@ -101,6 +101,20 @@ except ImportError as _libv2_import_err:  # pragma: no cover
     )
 
 
+# Register Wave 77 'ed4all tutor' command group — misconception-aware
+# tutoring tools (diagnose / inventory / guardrails) over LibV2 archives.
+try:
+    from cli.commands import register_tutor_command
+
+    register_tutor_command(cli)
+except ImportError as _tutor_import_err:  # pragma: no cover
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "cli.commands.tutor unavailable: %s",
+        _tutor_import_err,
+    )
+
+
 # =============================================================================
 # VALIDATE-RUN COMMAND
 # =============================================================================
