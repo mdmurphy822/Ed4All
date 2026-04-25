@@ -367,3 +367,252 @@ class TestRegistryVariantParity:
         payload = json.loads(result)
         assert payload.get("success") is False
         assert "No files staged" in payload.get("error", "")
+
+
+class TestStageMode:
+    """Wave 74 cleanup: ``stage_mode`` parameter selects copy / symlink /
+    hardlink staging strategies. Default is ``symlink`` so a textbook-to-course
+    run no longer duplicates ~70MB of DART output into the gitignored
+    Courseforge staging tree on every invocation.
+    """
+
+    def _build_dart_corpus(self, tmp_path):
+        dart_dir = tmp_path / "dart_out"
+        dart_dir.mkdir()
+        html_file = dart_dir / "ch01.html"
+        _write_html(html_file, "<html><body><p>chapter one</p></body></html>")
+        _write_json(dart_dir / "ch01_synthesized.json",
+                    {"campus_code": "TEST", "sections": []})
+        _write_json(dart_dir / "ch01.quality.json",
+                    {"confidence_score": 0.9, "extraction_sources": ["pdftotext"]})
+        figs = dart_dir / "ch01_figures"
+        figs.mkdir()
+        (figs / "fig1.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        return dart_dir, html_file
+
+    def test_stage_dart_outputs_copy_mode_creates_real_files(
+        self, stage_tool, tmp_path,
+    ):
+        """Regression guard: copy mode keeps the legacy deep-copy behaviour."""
+        tool, staging_root = stage_tool
+        _, html_file = self._build_dart_corpus(tmp_path)
+
+        run_id = "WF-COPY-001"
+        result = asyncio.run(tool(
+            run_id=run_id,
+            dart_html_paths=str(html_file),
+            course_name="TEST_101",
+            stage_mode="copy",
+        ))
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["stage_mode"] == "copy"
+
+        run_dir = staging_root / run_id
+        for name in ("ch01.html", "ch01_synthesized.json", "ch01.quality.json"):
+            staged = run_dir / name
+            assert staged.exists()
+            assert not staged.is_symlink(), (
+                f"copy mode produced a symlink for {name}; expected real file"
+            )
+        figures = run_dir / "ch01_figures"
+        assert figures.is_dir()
+        assert not figures.is_symlink()
+        assert (figures / "fig1.png").exists()
+        assert not (figures / "fig1.png").is_symlink()
+
+    def test_stage_dart_outputs_symlink_mode_creates_symlinks(
+        self, stage_tool, tmp_path,
+    ):
+        tool, staging_root = stage_tool
+        _, html_file = self._build_dart_corpus(tmp_path)
+
+        run_id = "WF-SYM-001"
+        result = asyncio.run(tool(
+            run_id=run_id,
+            dart_html_paths=str(html_file),
+            course_name="TEST_101",
+            stage_mode="symlink",
+        ))
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["stage_mode"] == "symlink"
+
+        run_dir = staging_root / run_id
+        for name in ("ch01.html", "ch01_synthesized.json", "ch01.quality.json"):
+            staged = run_dir / name
+            assert staged.is_symlink(), (
+                f"symlink mode failed to symlink {name} (got real file)"
+            )
+        figures = run_dir / "ch01_figures"
+        assert figures.is_symlink(), (
+            "symlink mode should tree-symlink the figures dir"
+        )
+
+    def test_stage_dart_outputs_symlink_mode_downstream_resolves(
+        self, stage_tool, tmp_path,
+    ):
+        """Downstream readers (Path().read_text / read_bytes) MUST get the
+        same content through a staged symlink as through the original DART
+        output. Catches platform-specific symlink read failures."""
+        tool, staging_root = stage_tool
+        dart_dir, html_file = self._build_dart_corpus(tmp_path)
+        original_html = html_file.read_text(encoding="utf-8")
+        original_synth = (dart_dir / "ch01_synthesized.json").read_text(encoding="utf-8")
+        original_fig = (dart_dir / "ch01_figures" / "fig1.png").read_bytes()
+
+        run_id = "WF-SYM-RESOLVE-001"
+        asyncio.run(tool(
+            run_id=run_id,
+            dart_html_paths=str(html_file),
+            course_name="TEST_101",
+            stage_mode="symlink",
+        ))
+
+        run_dir = staging_root / run_id
+        # Read through the symlink exactly as downstream readers do.
+        assert (run_dir / "ch01.html").read_text(encoding="utf-8") == original_html
+        assert (run_dir / "ch01_synthesized.json").read_text(encoding="utf-8") == original_synth
+        assert (run_dir / "ch01_figures" / "fig1.png").read_bytes() == original_fig
+
+    def test_stage_dart_outputs_default_is_symlink(
+        self, stage_tool, tmp_path, monkeypatch,
+    ):
+        """Default mode for local-mode runs (no stage_mode arg, no env var)
+        is ``symlink`` — pinned so a future change to the default surfaces
+        in CI rather than silently restoring the 70MB-per-run regression.
+        """
+        # Ensure the env doesn't leak in a test runner that already set it.
+        monkeypatch.delenv("ED4ALL_STAGE_MODE", raising=False)
+
+        tool, staging_root = stage_tool
+        _, html_file = self._build_dart_corpus(tmp_path)
+
+        run_id = "WF-DEFAULT-001"
+        result = asyncio.run(tool(
+            run_id=run_id,
+            dart_html_paths=str(html_file),
+            course_name="TEST_101",
+        ))
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["stage_mode"] == "symlink"
+        assert (staging_root / run_id / "ch01.html").is_symlink()
+
+    def test_stage_dart_outputs_env_override(
+        self, stage_tool, tmp_path, monkeypatch,
+    ):
+        """``ED4ALL_STAGE_MODE=copy`` overrides the default when no kwarg is
+        passed."""
+        monkeypatch.setenv("ED4ALL_STAGE_MODE", "copy")
+
+        tool, staging_root = stage_tool
+        _, html_file = self._build_dart_corpus(tmp_path)
+
+        run_id = "WF-ENV-001"
+        result = asyncio.run(tool(
+            run_id=run_id,
+            dart_html_paths=str(html_file),
+            course_name="TEST_101",
+        ))
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["stage_mode"] == "copy"
+        assert not (staging_root / run_id / "ch01.html").is_symlink()
+
+    def test_stage_dart_outputs_manifest_unchanged(
+        self, stage_tool, tmp_path, monkeypatch,
+    ):
+        """Manifest format MUST stay identical regardless of stage_mode —
+        downstream consumers (LibV2 archivist, source_refs validator, etc.)
+        depend on the Wave 8 role-tagged shape and should not see a new
+        ``stage_mode`` key inside ``staging_manifest.json``.
+        """
+        monkeypatch.delenv("ED4ALL_STAGE_MODE", raising=False)
+        tool, staging_root = stage_tool
+        _, html_file = self._build_dart_corpus(tmp_path)
+
+        manifests = []
+        for mode in ("copy", "symlink", "hardlink"):
+            run_id = f"WF-MANIFEST-{mode.upper()}"
+            asyncio.run(tool(
+                run_id=run_id,
+                dart_html_paths=str(html_file),
+                course_name="TEST_101",
+                stage_mode=mode,
+            ))
+            manifest = json.loads(
+                (staging_root / run_id / "staging_manifest.json").read_text()
+            )
+            manifests.append((mode, manifest))
+
+        # Schema invariants every manifest must hold, regardless of mode.
+        expected_keys = {"run_id", "course_name", "staged_at",
+                         "staged_files", "files", "errors"}
+        for mode, manifest in manifests:
+            assert set(manifest.keys()) == expected_keys, (
+                f"manifest in {mode} mode has unexpected keys: "
+                f"{set(manifest.keys()) ^ expected_keys}"
+            )
+            # stage_mode MUST NOT leak into the on-disk manifest — that's a
+            # response-only field.
+            assert "stage_mode" not in manifest
+
+            # Role-tagged entries are stable across modes.
+            roles = sorted(f["role"] for f in manifest["files"])
+            assert roles == sorted([
+                "content", "figures_bundle",
+                "provenance_sidecar", "quality_sidecar",
+            ])
+
+        # Cross-mode equivalence on the role/path entries (ignoring the
+        # absolute paths in staged_files which are run-id specific).
+        ref_files = manifests[0][1]["files"]
+        for _, manifest in manifests[1:]:
+            assert manifest["files"] == ref_files
+
+    def test_stage_dart_outputs_hardlink_mode_creates_hardlinks(
+        self, stage_tool, tmp_path,
+    ):
+        tool, staging_root = stage_tool
+        _, html_file = self._build_dart_corpus(tmp_path)
+
+        run_id = "WF-HARD-001"
+        result = asyncio.run(tool(
+            run_id=run_id,
+            dart_html_paths=str(html_file),
+            course_name="TEST_101",
+            stage_mode="hardlink",
+        ))
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["stage_mode"] == "hardlink"
+
+        # Hardlinks share an inode with the source.
+        staged_html = staging_root / run_id / "ch01.html"
+        assert not staged_html.is_symlink()
+        try:
+            assert staged_html.stat().st_ino == html_file.stat().st_ino, (
+                "hardlink mode produced a copy instead of an inode-shared link"
+            )
+        except OSError:
+            # If the platform / FS rejected hardlinks, we'd have fallen
+            # back to copy and the assert above would fail loudly.
+            pytest.skip("FS does not support stat ino comparisons")
+
+    def test_stage_dart_outputs_unknown_mode_falls_back_to_default(
+        self, stage_tool, tmp_path, monkeypatch,
+    ):
+        monkeypatch.delenv("ED4ALL_STAGE_MODE", raising=False)
+        tool, staging_root = stage_tool
+        _, html_file = self._build_dart_corpus(tmp_path)
+
+        result = asyncio.run(tool(
+            run_id="WF-UNKNOWN-001",
+            dart_html_paths=str(html_file),
+            course_name="TEST_101",
+            stage_mode="nonsense",
+        ))
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["stage_mode"] == "symlink"

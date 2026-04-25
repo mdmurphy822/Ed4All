@@ -7,8 +7,10 @@ Chains: DART (PDF -> HTML) -> Courseforge (course generation) -> Trainforge (ass
 
 import json
 import logging
+import os
 import shutil
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -37,6 +39,152 @@ def _ensure_directories():
 
 
 _ensure_directories()
+
+
+# ---------------------------------------------------------------------------
+# Wave 74 cleanup: pluggable staging modes.
+#
+# stage_dart_outputs originally deep-copied every DART HTML, *_synthesized.json,
+# *.quality.json, and `{stem}_figures/` directory into
+# ``Courseforge/inputs/textbooks/{run_id}/``. For an 8-PDF / 768-page corpus
+# this cost ~70MB per run; the staging dir is gitignored and never garbage
+# collected. Symlinks (or hardlinks on platforms that disallow user symlinks)
+# preserve every downstream behaviour because all known consumers go through
+# Path().read_text() / read_bytes() rather than os.path.realpath().
+#
+# Modes:
+#   - "copy"     : shutil.copy2 / shutil.copytree (legacy behaviour)
+#   - "symlink"  : os.symlink for files AND directories (single tree-symlink
+#                  for the figures dir, NOT a deep walk)
+#   - "hardlink" : os.link for files; for directories, recreate the tree and
+#                  hardlink each file. Falls back when symlinks are blocked
+#                  (e.g., Windows without SeCreateSymbolicLinkPrivilege).
+#
+# Default for runs with no override is ``symlink``: the staging tree is
+# gitignored test infrastructure, the source DART output is the durable copy,
+# and downstream phases never write to the staged paths so symlink rot is not
+# a concern.
+# ---------------------------------------------------------------------------
+
+VALID_STAGE_MODES = ("copy", "symlink", "hardlink")
+DEFAULT_STAGE_MODE = "symlink"
+
+
+def _resolve_stage_mode(explicit: Optional[str] = None) -> str:
+    """Resolve the active staging mode.
+
+    Precedence:
+        1. ``explicit`` parameter (passed through from the tool kwargs).
+        2. ``ED4ALL_STAGE_MODE`` environment variable.
+        3. :data:`DEFAULT_STAGE_MODE` (``"symlink"``).
+
+    Unknown values fall back to the default with a warning so a typo never
+    silently disables staging.
+    """
+    candidate = explicit or os.environ.get("ED4ALL_STAGE_MODE") or DEFAULT_STAGE_MODE
+    candidate = candidate.strip().lower()
+    if candidate not in VALID_STAGE_MODES:
+        logger.warning(
+            "Unknown stage_mode %r — falling back to %r. Valid: %s",
+            candidate, DEFAULT_STAGE_MODE, VALID_STAGE_MODES,
+        )
+        candidate = DEFAULT_STAGE_MODE
+    return candidate
+
+
+def _stage_file(src: Path, dest: Path, mode: str) -> None:
+    """Stage a single file at ``src`` into ``dest`` using the given mode.
+
+    Always replaces an existing ``dest`` (file or symlink) so re-runs are
+    idempotent. Falls back from symlink/hardlink to copy on OSError so a
+    locked-down platform can never break a staging phase outright.
+    """
+    if dest.exists() or dest.is_symlink():
+        dest.unlink()
+    if mode == "copy":
+        shutil.copy2(src, dest)
+        return
+    if mode == "symlink":
+        try:
+            os.symlink(os.fspath(src.resolve()), os.fspath(dest))
+            return
+        except OSError as e:
+            logger.warning(
+                "symlink failed for %s -> %s (%s); falling back to copy", src, dest, e,
+            )
+            shutil.copy2(src, dest)
+            return
+    if mode == "hardlink":
+        try:
+            os.link(os.fspath(src), os.fspath(dest))
+            return
+        except OSError as e:
+            logger.warning(
+                "hardlink failed for %s -> %s (%s); falling back to copy", src, dest, e,
+            )
+            shutil.copy2(src, dest)
+            return
+    # Should never hit — _resolve_stage_mode guards the enum.
+    shutil.copy2(src, dest)
+
+
+def _stage_tree(src_dir: Path, dest_dir: Path, mode: str) -> None:
+    """Stage a directory tree from ``src_dir`` into ``dest_dir``.
+
+    - ``copy``     : shutil.copytree (deep copy)
+    - ``symlink``  : a single tree-level os.symlink at ``dest_dir`` pointing at
+                     ``src_dir``. Cheap (one inode, no walk).
+    - ``hardlink`` : recreate the directory structure and hardlink every file.
+    """
+    if dest_dir.exists() or dest_dir.is_symlink():
+        if dest_dir.is_symlink() or dest_dir.is_file():
+            dest_dir.unlink()
+        else:
+            shutil.rmtree(dest_dir)
+    if mode == "copy":
+        shutil.copytree(src_dir, dest_dir)
+        return
+    if mode == "symlink":
+        try:
+            os.symlink(
+                os.fspath(src_dir.resolve()),
+                os.fspath(dest_dir),
+                target_is_directory=True,
+            )
+            return
+        except OSError as e:
+            logger.warning(
+                "tree symlink failed for %s -> %s (%s); falling back to copytree",
+                src_dir, dest_dir, e,
+            )
+            shutil.copytree(src_dir, dest_dir)
+            return
+    if mode == "hardlink":
+        try:
+            for src_path in src_dir.rglob("*"):
+                rel = src_path.relative_to(src_dir)
+                target = dest_dir / rel
+                if src_path.is_dir():
+                    target.mkdir(parents=True, exist_ok=True)
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    if target.exists():
+                        target.unlink()
+                    try:
+                        os.link(os.fspath(src_path), os.fspath(target))
+                    except OSError:
+                        shutil.copy2(src_path, target)
+            return
+        except OSError as e:
+            logger.warning(
+                "hardlink tree failed for %s -> %s (%s); falling back to copytree",
+                src_dir, dest_dir, e,
+            )
+            if dest_dir.exists():
+                shutil.rmtree(dest_dir)
+            shutil.copytree(src_dir, dest_dir)
+            return
+    shutil.copytree(src_dir, dest_dir)
 
 
 def _detect_source_provenance(course_dir: Path) -> bool:
@@ -445,23 +593,31 @@ def register_pipeline_tools(mcp):
     async def stage_dart_outputs(
         run_id: str,
         dart_html_paths: str,
-        course_name: str
+        course_name: str,
+        stage_mode: Optional[str] = None,
     ) -> str:
         """
         Stage DART outputs to Courseforge inputs directory.
 
-        Copies synthesized HTML and JSON files from DART output to the
-        Courseforge staging area for course generation.
+        Stages synthesized HTML and JSON files from DART output to the
+        Courseforge staging area for course generation. The default
+        ``stage_mode`` is ``symlink`` (zero-byte references back to DART
+        outputs) which avoids duplicating ~70MB per textbook-to-course run.
+        Set ``stage_mode="copy"`` for the legacy deep-copy behaviour.
 
         Args:
             run_id: Pipeline run identifier
             dart_html_paths: Comma-separated paths to DART HTML outputs
             course_name: Course identifier for staging subdirectory
+            stage_mode: One of ``"copy"``, ``"symlink"``, ``"hardlink"``.
+                Defaults to ``ED4ALL_STAGE_MODE`` env var, then ``"symlink"``.
 
         Returns:
-            JSON with staging_dir and staged_files list
+            JSON with staging_dir, staged_files list, and stage_mode used.
         """
         try:
+            mode = _resolve_stage_mode(stage_mode)
+
             # Create staging directory
             staging_dir = COURSEFORGE_INPUTS / run_id
             staging_dir.mkdir(parents=True, exist_ok=True)
@@ -482,12 +638,12 @@ def register_pipeline_tools(mcp):
                     errors.append(f"DART output not found: {html_path}")
                     continue
 
-                # Copy HTML file (role=content)
+                # Stage HTML file (role=content)
                 dest = staging_dir / html_path.name
-                shutil.copy2(html_path, dest)
+                _stage_file(html_path, dest, mode)
                 staged_files.append(str(dest))
                 staged_entries.append({"path": html_path.name, "role": "content"})
-                logger.info(f"Staged: {html_path.name} -> {dest}")
+                logger.info(f"Staged ({mode}): {html_path.name} -> {dest}")
 
                 # Wave 19: stage the sibling ``{stem}_figures/`` directory
                 # (persisted PyMuPDF figure bytes from Wave 17) so the
@@ -497,16 +653,14 @@ def register_pipeline_tools(mcp):
                 figures_dir_src = html_path.parent / f"{html_path.stem}_figures"
                 if figures_dir_src.is_dir():
                     figures_dir_dest = staging_dir / figures_dir_src.name
-                    if figures_dir_dest.exists():
-                        shutil.rmtree(figures_dir_dest)
-                    shutil.copytree(figures_dir_src, figures_dir_dest)
+                    _stage_tree(figures_dir_src, figures_dir_dest, mode)
                     staged_files.append(str(figures_dir_dest))
                     staged_entries.append({
                         "path": figures_dir_src.name,
                         "role": "figures_bundle",
                     })
                     logger.info(
-                        f"Staged figures dir: {figures_dir_src.name} -> {figures_dir_dest}"
+                        f"Staged figures dir ({mode}): {figures_dir_src.name} -> {figures_dir_dest}"
                     )
 
                 # Validate HTML structure
@@ -520,32 +674,32 @@ def register_pipeline_tools(mcp):
                                 f"(missing <html> and <body> tags)"
                             )
                     except OSError:
-                        pass  # File was copied, just can't validate
+                        pass  # File was staged, just can't validate
 
-                # Copy accompanying JSON if exists (DART synthesized metadata)
+                # Stage accompanying JSON if exists (DART synthesized metadata)
                 json_path = html_path.with_suffix(".json")
                 if json_path.exists():
                     json_dest = staging_dir / json_path.name
-                    shutil.copy2(json_path, json_dest)
+                    _stage_file(json_path, json_dest, mode)
                     staged_files.append(str(json_dest))
                     staged_entries.append({
                         "path": json_path.name,
                         "role": "provenance_sidecar",
                     })
-                    logger.info(f"Staged: {json_path.name} -> {json_dest}")
+                    logger.info(f"Staged ({mode}): {json_path.name} -> {json_dest}")
 
                 # Also check for _synthesized.json pattern
                 synth_json_name = html_path.stem.replace("_synthesized", "") + "_synthesized.json"
                 synth_json_path = html_path.parent / synth_json_name
                 if synth_json_path.exists() and str(synth_json_path) != str(json_path):
                     synth_json_dest = staging_dir / synth_json_name
-                    shutil.copy2(synth_json_path, synth_json_dest)
+                    _stage_file(synth_json_path, synth_json_dest, mode)
                     staged_files.append(str(synth_json_dest))
                     staged_entries.append({
                         "path": synth_json_name,
                         "role": "provenance_sidecar",
                     })
-                    logger.info(f"Staged: {synth_json_name} -> {synth_json_dest}")
+                    logger.info(f"Staged ({mode}): {synth_json_name} -> {synth_json_dest}")
 
                 # Wave 8: also stage the DART quality sidecar if one exists.
                 # Convention: same stem as the HTML, suffix .quality.json.
@@ -556,13 +710,13 @@ def register_pipeline_tools(mcp):
                 quality_path = html_path.parent / quality_name
                 if quality_path.exists():
                     quality_dest = staging_dir / quality_name
-                    shutil.copy2(quality_path, quality_dest)
+                    _stage_file(quality_path, quality_dest, mode)
                     staged_files.append(str(quality_dest))
                     staged_entries.append({
                         "path": quality_name,
                         "role": "quality_sidecar",
                     })
-                    logger.info(f"Staged: {quality_name} -> {quality_dest}")
+                    logger.info(f"Staged ({mode}): {quality_name} -> {quality_dest}")
 
             if errors and not staged_files:
                 return json.dumps({
@@ -592,6 +746,7 @@ def register_pipeline_tools(mcp):
                 "files": staged_entries,
                 "file_count": len(staged_files),
                 "manifest_path": str(manifest_path),
+                "stage_mode": mode,
                 "warnings": errors if errors else None
             })
 
@@ -1702,18 +1857,25 @@ def _build_tool_registry() -> dict:
     async def _stage_dart_outputs(**kwargs):
         """Stage DART outputs to Courseforge inputs with Wave 8 role-tagging.
 
-        Copies HTML (role=content), *_synthesized.json provenance sidecars
+        Stages HTML (role=content), *_synthesized.json provenance sidecars
         (role=provenance_sidecar), and *.quality.json confidence sidecars
         (role=quality_sidecar) to ``COURSEFORGE_INPUTS/{run_id}/`` and
-        emits a role-tagged ``staging_manifest.json``. Kept byte-for-byte
-        parity with the @mcp.tool() variant so pipeline-dispatch runs do
-        not silently drop Wave 8 metadata (audit Q4 finding).
+        emits a role-tagged ``staging_manifest.json``. Kept in parity with
+        the @mcp.tool() variant so pipeline-dispatch runs do not silently
+        drop Wave 8 metadata (audit Q4 finding).
+
+        Wave 74 cleanup: honours ``stage_mode`` kwarg (or ``ED4ALL_STAGE_MODE``
+        env) — defaults to ``symlink`` to skip 70MB/run of duplicated DART
+        output. ``copy`` preserves legacy behaviour; ``hardlink`` is a Windows
+        fallback when symlinks are blocked.
         """
         run_id = kwargs.get("run_id", "")
         dart_html_paths = kwargs.get("dart_html_paths", "")
         course_name = kwargs.get("course_name", "")
+        stage_mode = kwargs.get("stage_mode")
 
         try:
+            mode = _resolve_stage_mode(stage_mode)
             staging_dir = COURSEFORGE_INPUTS / run_id
             staging_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1728,9 +1890,9 @@ def _build_tool_registry() -> dict:
                     errors.append(f"DART output not found: {html_path}")
                     continue
 
-                # Copy HTML file (role=content)
+                # Stage HTML file (role=content)
                 dest = staging_dir / html_path.name
-                shutil.copy2(html_path, dest)
+                _stage_file(html_path, dest, mode)
                 staged_files.append(str(dest))
                 staged_entries.append({"path": html_path.name, "role": "content"})
 
@@ -1738,20 +1900,18 @@ def _build_tool_registry() -> dict:
                 figures_dir_src = html_path.parent / f"{html_path.stem}_figures"
                 if figures_dir_src.is_dir():
                     figures_dir_dest = staging_dir / figures_dir_src.name
-                    if figures_dir_dest.exists():
-                        shutil.rmtree(figures_dir_dest)
-                    shutil.copytree(figures_dir_src, figures_dir_dest)
+                    _stage_tree(figures_dir_src, figures_dir_dest, mode)
                     staged_files.append(str(figures_dir_dest))
                     staged_entries.append({
                         "path": figures_dir_src.name,
                         "role": "figures_bundle",
                     })
 
-                # Copy accompanying JSON if it exists (DART synthesized metadata).
+                # Stage accompanying JSON if it exists (DART synthesized metadata).
                 json_path = html_path.with_suffix(".json")
                 if json_path.exists():
                     json_dest = staging_dir / json_path.name
-                    shutil.copy2(json_path, json_dest)
+                    _stage_file(json_path, json_dest, mode)
                     staged_files.append(str(json_dest))
                     staged_entries.append({
                         "path": json_path.name,
@@ -1763,7 +1923,7 @@ def _build_tool_registry() -> dict:
                 synth_json_path = html_path.parent / synth_json_name
                 if synth_json_path.exists() and str(synth_json_path) != str(json_path):
                     synth_json_dest = staging_dir / synth_json_name
-                    shutil.copy2(synth_json_path, synth_json_dest)
+                    _stage_file(synth_json_path, synth_json_dest, mode)
                     staged_files.append(str(synth_json_dest))
                     staged_entries.append({
                         "path": synth_json_name,
@@ -1775,7 +1935,7 @@ def _build_tool_registry() -> dict:
                 quality_path = html_path.parent / quality_name
                 if quality_path.exists():
                     quality_dest = staging_dir / quality_name
-                    shutil.copy2(quality_path, quality_dest)
+                    _stage_file(quality_path, quality_dest, mode)
                     staged_files.append(str(quality_dest))
                     staged_entries.append({
                         "path": quality_name,
@@ -1808,6 +1968,7 @@ def _build_tool_registry() -> dict:
                 "files": staged_entries,
                 "file_count": len(staged_files),
                 "manifest_path": str(manifest_path),
+                "stage_mode": mode,
                 "warnings": errors if errors else None,
             })
         except Exception as e:
@@ -3370,7 +3531,23 @@ def _build_tool_registry() -> dict:
              and ``state/runs/*/trainforge/`` for the most recently modified
              ``chunks.jsonl``. Absence is not an error — features flags fall
              back to ``false`` with a warning.
+
+        Wave 74 fail-closed gate: when ``chunks.jsonl`` is found at the
+        archive destination but doesn't carry IDs from this run's
+        ``course_code`` (pattern ``^{course_code_lower}_chunk_``), the
+        archival call refuses to proceed and emits ``error_code =
+        TRAINFORGE_OUTPUT_STALE``. This catches the case where a prior
+        run's chunks under the same slug survived into a fresh archive
+        (observed today: smoke_hifi_rag_chunk_* IDs leaked into the
+        rdf-shacl-550 archive after trainforge_assessment failed). When
+        Trainforge was intentionally absent (no chunks file at all), the
+        archival proceeds — feature flags fall back to false with a
+        warning, matching the pre-Wave-74 behaviour for DART-only runs.
         """
+        # Wave 74: capture run-start mtime *before* any writes. Used as a
+        # cheap second guard alongside the ID-pattern check below.
+        _run_start_ts = time.time()
+
         course_name = (
             kwargs.get("course_name")
             or kwargs.get("course_id")
