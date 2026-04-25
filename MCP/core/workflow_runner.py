@@ -12,11 +12,14 @@ Usage:
 
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
+
+_LO_ID_RE = re.compile(r"^[a-zA-Z]{2,}-\d{2,}$")
 
 from .config import OrchestratorConfig, WorkflowPhase
 from .executor import ExecutionResult, TaskExecutor
@@ -455,6 +458,268 @@ except ValueError as _e:
     raise
 
 
+# =============================================================================
+# Wave 80 Worker A: --reuse-objectives helpers
+# =============================================================================
+
+
+def _normalize_to_courseforge_form(
+    data: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Normalize an objectives JSON into Courseforge synthesized form.
+
+    Wave 80 Worker A. Accepts:
+
+      * Courseforge synthesized form: ``terminal_objectives[]`` +
+        ``chapter_objectives[]``. ``chapter_objectives`` may be a flat
+        list of objective dicts OR the canonical
+        ``[{"chapter": ..., "objectives": [...]}]`` group shape.
+      * Wave 75 LibV2 archive form: ``terminal_outcomes[]`` +
+        ``component_objectives[]`` (flat list with optional
+        ``parent_terminal`` back-pointer).
+
+    Returns a dict carrying:
+      * ``terminal_objectives`` — list of terminal LO dicts (Courseforge
+        shape: ``id``, ``statement``, etc.).
+      * ``chapter_objectives`` — list of ``{"chapter": str,
+        "objectives": [...]}`` groups (Courseforge shape).
+      * ``course_name`` (best-effort, may be missing) and
+        ``duration_weeks`` (best-effort, may be missing).
+
+    Returns ``None`` when neither shape is present.
+    """
+    has_courseforge = (
+        isinstance(data.get("terminal_objectives"), list)
+        or isinstance(data.get("chapter_objectives"), list)
+    )
+    has_libv2 = (
+        isinstance(data.get("terminal_outcomes"), list)
+        or isinstance(data.get("component_objectives"), list)
+    )
+    if not (has_courseforge or has_libv2):
+        return None
+
+    if has_courseforge and not has_libv2:
+        # Already in target form. Ensure chapter_objectives is in the
+        # group shape ([{chapter, objectives}], not a flat list).
+        terminal = list(data.get("terminal_objectives") or [])
+        chapter_raw = list(data.get("chapter_objectives") or [])
+        chapter_groups = _coerce_chapter_groups(chapter_raw)
+        return {
+            "terminal_objectives": terminal,
+            "chapter_objectives": chapter_groups,
+            "course_name": data.get("course_name"),
+            "duration_weeks": data.get("duration_weeks"),
+        }
+
+    # LibV2 archive form (or mixed — we prefer libv2 keys when both
+    # present, since the user explicitly handed us the archive shape).
+    terminal_raw = list(data.get("terminal_outcomes") or [])
+    components_raw = list(data.get("component_objectives") or [])
+
+    # Map to Courseforge shape. LibV2 IDs are lowercase by default; we
+    # preserve them verbatim — the LO ID regex accepts both cases.
+    terminal_objectives: List[Dict[str, Any]] = []
+    for to in terminal_raw:
+        if not isinstance(to, dict) or "id" not in to:
+            continue
+        entry: Dict[str, Any] = {"id": to["id"]}
+        for key in (
+            "statement", "bloom_level", "bloom_verb",
+            "cognitive_domain", "weeks",
+        ):
+            if to.get(key) is not None:
+                entry[key] = to[key]
+        terminal_objectives.append(entry)
+
+    # Group component objectives by parent_terminal -> a chapter group
+    # (one group per terminal). LibV2 stores the parent reverse-link as
+    # ``parent_terminal``; Courseforge's content-generator only needs
+    # the flat per-week shape, so we emit one group per CO with the
+    # parent's id as the chapter label fallback.
+    chapter_groups: List[Dict[str, Any]] = []
+    for co in components_raw:
+        if not isinstance(co, dict) or "id" not in co:
+            continue
+        obj: Dict[str, Any] = {"id": co["id"]}
+        for key in (
+            "statement", "bloom_level", "bloom_verb",
+            "cognitive_domain", "week", "source_refs",
+        ):
+            if co.get(key) is not None:
+                obj[key] = co[key]
+        # Preserve the parent_terminal back-pointer so downstream
+        # consumers (and our cross-validation below) can verify the
+        # hierarchy.
+        if co.get("parent_terminal"):
+            obj["parent_terminal"] = co["parent_terminal"]
+        # Emit as a per-CO group. Use ``Week N`` style label by index
+        # to match _plan_course_structure's convention.
+        chapter_groups.append({
+            "chapter": f"Week {len(chapter_groups) + 1}",
+            "objectives": [obj],
+        })
+
+    return {
+        "terminal_objectives": terminal_objectives,
+        "chapter_objectives": chapter_groups,
+        "course_name": data.get("course_code") or data.get("course_name"),
+        "duration_weeks": data.get("duration_weeks"),
+    }
+
+
+def _coerce_chapter_groups(
+    chapter_raw: List[Any],
+) -> List[Dict[str, Any]]:
+    """Coerce a chapter_objectives list to the canonical group shape.
+
+    Accepts the dual shapes already supported by
+    ``_content_gen_helpers.load_objectives_json``:
+
+      * Group shape: ``[{"chapter": str, "objectives": [...]}, ...]``.
+      * Flat shape: ``[{"id": "co-01", ...}, ...]``.
+
+    Always returns the group shape, one group per CO when the input
+    was flat (so the hierarchy is preserved 1:1 without forcing a
+    chapter assignment).
+    """
+    groups: List[Dict[str, Any]] = []
+    flat_buffer: List[Dict[str, Any]] = []
+    for entry in chapter_raw:
+        if not isinstance(entry, dict):
+            continue
+        if "objectives" in entry and isinstance(entry["objectives"], list):
+            groups.append({
+                "chapter": entry.get("chapter") or f"Week {len(groups) + 1}",
+                "objectives": list(entry["objectives"]),
+            })
+        else:
+            flat_buffer.append(entry)
+    # If we accumulated flat-shape entries (or the input had nothing
+    # but flat entries), emit one group per CO so the hierarchy stays
+    # 1:1 with the input.
+    for flat in flat_buffer:
+        groups.append({
+            "chapter": f"Week {len(groups) + 1}",
+            "objectives": [flat],
+        })
+    return groups
+
+
+def _validate_reused_lo_coherence(
+    terminal: List[Dict[str, Any]],
+    chapter_flat: List[Dict[str, Any]],
+) -> Optional[str]:
+    """Return None on success; an error string on failure.
+
+    Wave 80 Worker A. Cross-validates a reused objectives file:
+
+    * Every LO ID matches ``^[a-zA-Z]{2,}-\\d{2,}$`` (mirrors
+      ``schemas/knowledge/courseforge_jsonld_v1.schema.json`` and
+      ``lib/ontology/learning_objectives.py::validate_lo_id``).
+    * No duplicate IDs (across terminal + chapter combined).
+    * Every CO ``parent_terminal`` (or ``parent_to``) reference, when
+      present, resolves to an existing TO ID.
+    """
+    seen_ids: set = set()
+    terminal_ids: set = set()
+    for to in terminal:
+        to_id = (to or {}).get("id")
+        if not to_id:
+            return "terminal entry missing 'id' field"
+        if not _LO_ID_RE.match(str(to_id)):
+            return (
+                f"terminal id {to_id!r} does not match LO id regex "
+                f"^[a-zA-Z]{{2,}}-\\d{{2,}}$"
+            )
+        if to_id in seen_ids:
+            return f"duplicate LO id {to_id!r}"
+        seen_ids.add(to_id)
+        terminal_ids.add(to_id)
+    for co in chapter_flat:
+        co_id = (co or {}).get("id")
+        if not co_id:
+            return "chapter/component entry missing 'id' field"
+        if not _LO_ID_RE.match(str(co_id)):
+            return (
+                f"chapter id {co_id!r} does not match LO id regex "
+                f"^[a-zA-Z]{{2,}}-\\d{{2,}}$"
+            )
+        if co_id in seen_ids:
+            return f"duplicate LO id {co_id!r}"
+        seen_ids.add(co_id)
+        # Hierarchy back-pointer (when present) must resolve.
+        parent = co.get("parent_terminal") or co.get("parent_to")
+        if parent and parent not in terminal_ids:
+            return (
+                f"chapter {co_id!r} parent_terminal={parent!r} "
+                f"does not reference a known TO id "
+                f"(known: {sorted(terminal_ids)})"
+            )
+    return None
+
+
+def _warn_on_source_map_mismatch(
+    source_map_path: str,
+    terminal: List[Dict[str, Any]],
+    chapter_flat: List[Dict[str, Any]],
+) -> None:
+    """Best-effort warning when the reused LOs miss ids referenced in
+    the source_module_map. Pure logging — never raises.
+
+    This catches the case where a user supplies an objectives file
+    that's been heavily edited (e.g. removed half the COs) while the
+    upstream source_module_map still references the original IDs.
+    Downstream content_generation will then emit pages referencing
+    objective ids that don't resolve.
+    """
+    try:
+        path = Path(source_map_path)
+        if not path.exists():
+            return
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+
+    # Collect all LO ids referenced by the source map (best-effort —
+    # the schema is a router output we don't want to over-couple to).
+    referenced: set = set()
+    if isinstance(data, dict):
+        for entries in data.values():
+            if isinstance(entries, list):
+                for e in entries:
+                    if isinstance(e, dict):
+                        for key in ("objective_ids", "lo_ids", "objectives"):
+                            val = e.get(key)
+                            if isinstance(val, list):
+                                for v in val:
+                                    if isinstance(v, str) and _LO_ID_RE.match(v):
+                                        referenced.add(v)
+                            elif isinstance(val, str) and _LO_ID_RE.match(val):
+                                referenced.add(val)
+
+    if not referenced:
+        return
+
+    available = {str(t.get("id")) for t in terminal if t.get("id")}
+    available |= {str(c.get("id")) for c in chapter_flat if c.get("id")}
+    # Case-insensitive comparison since the LO id regex allows mixed.
+    available_lc = {x.lower() for x in available}
+    missing = [
+        rid for rid in referenced
+        if rid.lower() not in available_lc
+    ]
+    if missing:
+        logger.warning(
+            "reuse_objectives: source_module_map references %d LO id(s) "
+            "absent from the supplied objectives file. content_generation "
+            "may emit pages with unresolved objective references. "
+            "missing=%s",
+            len(missing),
+            sorted(missing)[:10],
+        )
+
+
 class WorkflowRunner:
     """
     Executes a multi-phase workflow end-to-end with inter-phase data routing.
@@ -513,6 +778,7 @@ class WorkflowRunner:
             if synthesized is not None:
                 phase_outputs["dart_conversion"] = synthesized
 
+
         # Update workflow status
         workflow_state["status"] = "RUNNING"
         workflow_state["started_at"] = datetime.now().isoformat()
@@ -548,6 +814,52 @@ class WorkflowRunner:
                 )
                 final_status = "FAILED"
                 break
+
+            # Wave 80 Worker A: honour --reuse-objectives by synthesising
+            # the course_planning phase_output from the user-supplied
+            # objectives JSON instead of dispatching the course-outliner
+            # subagent. Stable across re-runs (no LLM nondeterminism),
+            # preserving chunk learning_outcome_refs continuity. We do
+            # this just-in-time (inside the phase loop) rather than
+            # pre-loop because the synthesised output needs project_id
+            # from objective_extraction, which hasn't run pre-loop.
+            if (
+                phase_name == "course_planning"
+                and workflow_params.get("reuse_objectives_path")
+            ):
+                synthesized_planning = (
+                    self._synthesize_course_planning_reuse_output(
+                        workflow_params, phase_outputs,
+                    )
+                )
+                if synthesized_planning is not None:
+                    logger.info(
+                        "course_planning: reusing user-supplied objectives "
+                        "from %s; skipping course-outliner dispatch",
+                        workflow_params.get("reuse_objectives_path"),
+                    )
+                    phase_outputs[phase_name] = synthesized_planning
+                    workflow_state["phase_outputs"] = phase_outputs
+                    self._save_workflow_state(workflow_path, workflow_state)
+                    all_results[phase_name] = {
+                        "task_count": 0,
+                        "completed": 0,
+                        "failed": 0,
+                        "gates_passed": True,
+                    }
+                    continue
+                else:
+                    # Synthesis failed (e.g. project dir not yet created
+                    # or objectives file unreadable). Surface as a hard
+                    # failure: the user explicitly opted in to reuse, so
+                    # silently falling back to a fresh LO mint would
+                    # defeat the purpose.
+                    logger.error(
+                        "course_planning: --reuse-objectives synthesis "
+                        "failed; aborting workflow"
+                    )
+                    final_status = "FAILED"
+                    break
 
             logger.info(f"Starting phase {phase_idx + 1}/{len(sorted_phases)}: {phase_name}")
 
@@ -930,6 +1242,249 @@ class WorkflowRunner:
             "_skipped": True,
             "_gates_passed": True,
             "_skip_reason": "skip_dart=True; reused existing DART HTMLs",
+        }
+
+    def _synthesize_course_planning_reuse_output(
+        self,
+        workflow_params: Dict[str, Any],
+        phase_outputs: Dict[str, Dict],
+    ) -> Optional[Dict[str, Any]]:
+        """Build a ``course_planning`` phase_output from a reused LO file.
+
+        Wave 80 Worker A. Loads the user-supplied objectives JSON
+        (Courseforge synthesized form OR Wave 75 LibV2 archive form),
+        normalizes to the Courseforge form expected by downstream
+        consumers (content-generator, Trainforge CourseProcessor),
+        cross-validates LO ID hierarchy / format / uniqueness, and
+        writes the result to
+        ``{project_path}/01_learning_objectives/synthesized_objectives.json``.
+
+        Returns a dict mirroring what ``_extract_phase_outputs`` would
+        have produced on a live run:
+
+        * ``project_id`` — from the upstream ``objective_extraction``
+          phase output (pre-conditions: that phase completed).
+        * ``synthesized_objectives_path`` — absolute path to the file
+          written into the project's
+          ``01_learning_objectives/synthesized_objectives.json``.
+        * ``objective_ids`` — comma-joined LO IDs (TO-NN + CO-NN).
+        * ``terminal_count`` / ``chapter_count``.
+        * ``_completed`` / ``_skipped`` / ``_gates_passed`` markers.
+
+        Returns ``None`` (and logs at error level) when:
+
+        * The reuse file is missing/unreadable/malformed (CLI already
+          validates at parse time, but a race or manual workflow-state
+          edit could still trip this).
+        * The upstream ``objective_extraction`` phase did NOT produce a
+          ``project_path`` / ``project_id`` we can resolve. Without a
+          project to write into, the content-generator cannot pick up
+          the objectives via ``project_config.json``.
+        * Cross-validation fails (orphan parent_terminal references,
+          malformed IDs, or duplicates).
+        """
+        from pathlib import Path as _Path
+
+        reuse_path_str = workflow_params.get("reuse_objectives_path")
+        if not reuse_path_str:
+            return None
+
+        reuse_path = _Path(reuse_path_str)
+        if not reuse_path.is_file():
+            logger.error(
+                "reuse_objectives: file not found: %s", reuse_path,
+            )
+            return None
+        try:
+            raw = reuse_path.read_text(encoding="utf-8")
+            data = json.loads(raw)
+        except (OSError, ValueError) as e:
+            logger.error(
+                "reuse_objectives: failed to parse %s: %s", reuse_path, e,
+            )
+            return None
+        if not isinstance(data, dict):
+            logger.error(
+                "reuse_objectives: top-level JSON must be an object; "
+                "got %s",
+                type(data).__name__,
+            )
+            return None
+
+        # Normalize into Courseforge synthesized form. Accept either
+        # shape on input.
+        normalized = _normalize_to_courseforge_form(data)
+        if normalized is None:
+            logger.error(
+                "reuse_objectives: file does not match a recognised "
+                "shape (Courseforge synthesized OR LibV2 archive). "
+                "path=%s",
+                reuse_path,
+            )
+            return None
+
+        terminal: List[Dict[str, Any]] = normalized["terminal_objectives"]
+        chapter_groups: List[Dict[str, Any]] = normalized["chapter_objectives"]
+
+        if not terminal:
+            logger.error(
+                "reuse_objectives: zero terminal objectives in %s",
+                reuse_path,
+            )
+            return None
+
+        # Cross-validation. Flatten chapter groups for ID checks.
+        chapter_flat: List[Dict[str, Any]] = []
+        for group in chapter_groups:
+            inner = group.get("objectives") or []
+            for obj in inner:
+                if isinstance(obj, dict):
+                    chapter_flat.append(obj)
+
+        validation_err = _validate_reused_lo_coherence(terminal, chapter_flat)
+        if validation_err:
+            logger.error(
+                "reuse_objectives: cross-validation failed: %s",
+                validation_err,
+            )
+            return None
+
+        # Optional warning: compare against source_module_map if available.
+        source_map_data = phase_outputs.get("source_mapping") or {}
+        source_map_path = source_map_data.get("source_module_map_path")
+        if source_map_path:
+            _warn_on_source_map_mismatch(
+                source_map_path, terminal, chapter_flat,
+            )
+
+        # Resolve project path / id from upstream objective_extraction.
+        objective_extraction_out = phase_outputs.get(
+            "objective_extraction"
+        ) or {}
+        project_id = objective_extraction_out.get("project_id")
+        project_path_str = objective_extraction_out.get("project_path")
+        if not project_path_str and project_id:
+            project_path_str = str(
+                PROJECT_ROOT / "Courseforge" / "exports" / project_id
+            )
+        if not project_path_str:
+            logger.error(
+                "reuse_objectives: cannot resolve project_path from "
+                "upstream objective_extraction output. Did the phase "
+                "complete? extracted=%s",
+                objective_extraction_out,
+            )
+            return None
+
+        project_path = _Path(project_path_str)
+        if not project_path.is_dir():
+            logger.error(
+                "reuse_objectives: resolved project_path is not a "
+                "directory: %s",
+                project_path,
+            )
+            return None
+
+        # Build the canonical synthesized JSON.
+        course_name = (
+            workflow_params.get("course_name")
+            or normalized.get("course_name")
+            or project_id
+            or ""
+        )
+        duration_weeks = normalized.get("duration_weeks") or workflow_params.get(
+            "duration_weeks",
+        )
+
+        lo_entries: List[Dict[str, Any]] = []
+        for to in terminal:
+            entry = dict(to)
+            entry["hierarchy_level"] = "terminal"
+            lo_entries.append(entry)
+        for co in chapter_flat:
+            entry = dict(co)
+            entry["hierarchy_level"] = "chapter"
+            lo_entries.append(entry)
+
+        synthesized = {
+            "course_name": course_name,
+            "generated_from": str(reuse_path),
+            "mint_method": "reuse_objectives",
+            "duration_weeks": duration_weeks,
+            "learning_outcomes": lo_entries,
+            "terminal_objectives": [dict(t) for t in terminal],
+            "chapter_objectives": chapter_groups,
+            "synthesized_at": datetime.now().isoformat(),
+        }
+
+        # Write into the project directory. Use the canonical filename.
+        objectives_out_dir = project_path / "01_learning_objectives"
+        objectives_out_dir.mkdir(parents=True, exist_ok=True)
+        objectives_out_path = (
+            objectives_out_dir / "synthesized_objectives.json"
+        )
+        try:
+            objectives_out_path.write_text(
+                json.dumps(synthesized, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError as e:
+            logger.error(
+                "reuse_objectives: failed to write %s: %s",
+                objectives_out_path, e,
+            )
+            return None
+
+        # Update project_config so downstream phases pick it up.
+        config_path = project_path / "project_config.json"
+        config_data: Dict[str, Any] = {}
+        if config_path.exists():
+            try:
+                config_data = json.loads(
+                    config_path.read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError):
+                config_data = {}
+        config_data["objectives_path"] = str(objectives_out_path)
+        config_data["synthesized_objectives_path"] = str(objectives_out_path)
+        config_data["course_name"] = course_name
+        config_data["project_id"] = project_id or project_path.name
+        config_data["status"] = "planned"
+        if duration_weeks is not None:
+            config_data["duration_weeks"] = duration_weeks
+        try:
+            config_path.write_text(
+                json.dumps(config_data, indent=2), encoding="utf-8",
+            )
+        except OSError as e:
+            logger.warning(
+                "reuse_objectives: failed to update project_config.json "
+                "(non-fatal): %s",
+                e,
+            )
+
+        objective_ids = [str(e["id"]) for e in lo_entries if e.get("id")]
+        joined_ids = ",".join(objective_ids)
+
+        logger.info(
+            "reuse_objectives: synthesised course_planning phase_output "
+            "with %d terminal + %d chapter objectives from %s",
+            len(terminal), len(chapter_flat), reuse_path,
+        )
+
+        return {
+            "project_id": project_id or project_path.name,
+            "synthesized_objectives_path": str(objectives_out_path),
+            "objective_ids": joined_ids,
+            "terminal_count": len(terminal),
+            "chapter_count": len(chapter_flat),
+            "_completed": True,
+            "_skipped": True,
+            "_gates_passed": True,
+            "_skip_reason": (
+                "reuse_objectives=True; reused user-supplied "
+                "objectives JSON"
+            ),
         }
 
     def _dependencies_met(

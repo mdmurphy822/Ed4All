@@ -595,6 +595,7 @@ async def create_textbook_pipeline(
     duration_weeks_explicit: bool = True,
     skip_dart: bool = False,
     dart_output_dir: Optional[str] = None,
+    reuse_objectives_path: Optional[str] = None,
 ) -> str:
     """
     Create and orchestrate a textbook-to-course pipeline.
@@ -697,6 +698,17 @@ async def create_textbook_pipeline(
             params["skip_dart"] = True
             if dart_output_dir:
                 params["dart_output_dir"] = str(Path(dart_output_dir).resolve())
+
+        # Wave 80 Worker A: forward --reuse-objectives so the workflow
+        # runner can synthesize the course_planning phase_output from
+        # the user-supplied objectives JSON instead of dispatching the
+        # course-outliner subagent. Stable across re-runs (no LLM
+        # nondeterminism), preserving chunk learning_outcome_refs
+        # continuity.
+        if reuse_objectives_path:
+            params["reuse_objectives_path"] = str(
+                Path(reuse_objectives_path).resolve()
+            )
 
         # Create workflow via orchestrator
         result = await create_workflow_impl(

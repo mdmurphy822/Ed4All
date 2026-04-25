@@ -70,6 +70,7 @@ def _build_workflow_params(
     objectives_path: Optional[str],
     skip_dart: bool = False,
     dart_output_dir: Optional[str] = None,
+    reuse_objectives: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the params dict for a workflow from CLI inputs.
 
@@ -110,6 +111,15 @@ def _build_workflow_params(
     if skip_dart:
         params["skip_dart"] = True
         params["dart_output_dir"] = dart_output_dir or DEFAULT_DART_OUTPUT_DIR
+
+    # Wave 80 Worker A: --reuse-objectives pins the course_planning phase
+    # to a previously-synthesized objectives file instead of re-dispatching
+    # the course-outliner subagent. Eliminates LLM-nondeterminism drift
+    # across re-runs that breaks chunk learning_outcome_refs continuity.
+    # The runner reads ``reuse_objectives_path`` and synthesizes the
+    # course_planning phase output directly (Wave 74 --skip-dart pattern).
+    if reuse_objectives:
+        params["reuse_objectives_path"] = reuse_objectives
 
     return params
 
@@ -188,6 +198,77 @@ def _validate_skip_dart_inputs(
     return None
 
 
+_LO_ID_PATTERN = __import__("re").compile(r"^[a-zA-Z]{2,}-\d{2,}$")
+
+
+def _validate_reuse_objectives_file(path: str) -> Optional[str]:
+    """Validate the ``--reuse-objectives`` file at parse time.
+
+    Accepts either:
+      * Courseforge synthesized form: ``terminal_objectives[]`` +
+        ``chapter_objectives[]``.
+      * Wave 75 LibV2 archive form: ``terminal_outcomes[]`` +
+        ``component_objectives[]``.
+
+    Returns ``None`` when the file is acceptable; otherwise returns a
+    human-readable error string. Performs:
+
+    * file-exists check
+    * JSON parse
+    * shape detection (at least one of the two recognised splits)
+    * non-empty terminal list
+    """
+    p = Path(path)
+    if not p.exists():
+        return f"--reuse-objectives file not found: {path!r}"
+    if not p.is_file():
+        return f"--reuse-objectives must be a file (got a directory?): {path!r}"
+    try:
+        raw = p.read_text(encoding="utf-8")
+    except OSError as e:
+        return f"--reuse-objectives file unreadable: {path!r} ({e})"
+    try:
+        data = json.loads(raw)
+    except (ValueError, json.JSONDecodeError) as e:
+        return f"--reuse-objectives is not valid JSON: {path!r} ({e})"
+    if not isinstance(data, dict):
+        return (
+            f"--reuse-objectives must be a JSON object at the top level; "
+            f"got {type(data).__name__}"
+        )
+
+    # Detect shape
+    has_courseforge = (
+        isinstance(data.get("terminal_objectives"), list)
+        or isinstance(data.get("chapter_objectives"), list)
+    )
+    has_libv2 = (
+        isinstance(data.get("terminal_outcomes"), list)
+        or isinstance(data.get("component_objectives"), list)
+    )
+    if not (has_courseforge or has_libv2):
+        return (
+            f"--reuse-objectives file does not match a recognised shape. "
+            f"Expected either Courseforge form (terminal_objectives + "
+            f"chapter_objectives) or LibV2 archive form (terminal_outcomes "
+            f"+ component_objectives). Path: {path!r}"
+        )
+
+    # At least one terminal entry
+    terminal: List[Any] = (
+        data.get("terminal_objectives")
+        or data.get("terminal_outcomes")
+        or []
+    )
+    if not terminal:
+        return (
+            f"--reuse-objectives file has zero terminal objectives. "
+            f"At least one terminal entry is required. Path: {path!r}"
+        )
+
+    return None
+
+
 async def _create_textbook_workflow(
     params: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -215,6 +296,7 @@ async def _create_textbook_workflow(
         priority=params.get("priority", "normal"),
         skip_dart=bool(params.get("skip_dart", False)),
         dart_output_dir=params.get("dart_output_dir"),
+        reuse_objectives_path=params.get("reuse_objectives_path"),
     )
     return json.loads(result)
 
@@ -363,6 +445,20 @@ def _build_orchestrator(
     ),
 )
 @click.option(
+    "--reuse-objectives",
+    type=click.Path(),
+    default=None,
+    help=(
+        "Pin the course_planning phase to a previously-synthesized "
+        "objectives JSON instead of re-dispatching the course-outliner "
+        "subagent. Accepts Courseforge synthesized form "
+        "(terminal_objectives + chapter_objectives) or Wave 75 LibV2 "
+        "archive form (terminal_outcomes + component_objectives). Used "
+        "for stable LO regens that need to preserve continuity with the "
+        "existing chunks' learning_outcome_refs."
+    ),
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Show the planned pipeline without executing",
@@ -392,6 +488,7 @@ def run_command(
     resume_run_id: Optional[str],
     skip_dart: bool,
     dart_output_dir: Optional[str],
+    reuse_objectives: Optional[str],
     dry_run: bool,
     watch: bool,
     output_json: bool,
@@ -449,6 +546,22 @@ def run_command(
             click.secho(err, fg="red")
             sys.exit(2)
 
+    # Wave 80 Worker A: validate --reuse-objectives at parse time so
+    # malformed / missing files fail fast with a clear error before any
+    # workflow state is created.
+    if reuse_objectives:
+        if workflow != "textbook_to_course":
+            click.secho(
+                f"--reuse-objectives is only supported for workflow "
+                f"'textbook_to_course'; got '{workflow}'.",
+                fg="red",
+            )
+            sys.exit(2)
+        err = _validate_reuse_objectives_file(reuse_objectives)
+        if err:
+            click.secho(err, fg="red")
+            sys.exit(2)
+
     params = _build_workflow_params(
         workflow,
         corpus=corpus,
@@ -461,6 +574,7 @@ def run_command(
         objectives_path=objectives,
         skip_dart=skip_dart,
         dart_output_dir=effective_dart_output_dir,
+        reuse_objectives=reuse_objectives,
     )
 
     # -------- dry-run: plan only, no side effects ------------------------
@@ -551,6 +665,7 @@ def _dry_run_plan(
         # Respect --no-assessments by pruning the optional phase
         skip_trainforge = not params.get("generate_assessments", True)
         skip_dart_flag = bool(params.get("skip_dart", False))
+        reuse_objectives_path = params.get("reuse_objectives_path")
         phases = []
         for idx, phase in enumerate(sorted_phases):
             if skip_trainforge and phase.name == "trainforge_assessment":
@@ -573,6 +688,18 @@ def _dry_run_plan(
                 phase_entry["skip_reason"] = (
                     f"--skip-dart set; reusing HTML from "
                     f"{params.get('dart_output_dir', DEFAULT_DART_OUTPUT_DIR)!r}"
+                )
+            # Wave 80 Worker A: mark course_planning as REUSED in the
+            # dry-run plan when --reuse-objectives is set. The phase is
+            # still listed so ordering is transparent, but its status
+            # reflects that the runner will copy the user's objectives
+            # file into the project's 01_learning_objectives/ dir
+            # instead of dispatching the course-outliner subagent.
+            if reuse_objectives_path and phase.name == "course_planning":
+                phase_entry["status"] = "REUSED"
+                phase_entry["reuse_reason"] = (
+                    f"--reuse-objectives set; reusing LOs from "
+                    f"{reuse_objectives_path!r}"
                 )
             phases.append(phase_entry)
 
@@ -620,6 +747,9 @@ def _print_dry_run_plan(plan: Dict[str, Any]) -> None:
         skip_reason = phase.get("skip_reason")
         if skip_reason:
             click.echo(f"      reason: {skip_reason}")
+        reuse_reason = phase.get("reuse_reason")
+        if reuse_reason:
+            click.echo(f"      reason: {reuse_reason}")
 
 
 def _any_gate_failed(result) -> bool:
