@@ -127,6 +127,79 @@ def slugify(title: str, max_length: int = 50) -> str:
     return slug
 
 
+def derive_course_slug(
+    course_code: Optional[str],
+    course_title: Optional[str],
+    fallback: Optional[str] = None,
+    max_length: int = 50,
+) -> str:
+    """Derive a LibV2 course slug from ``course_code`` + ``course_title``.
+
+    Bug observed (2026-04-24): ``python -m Trainforge.process_course
+    --import-to-libv2`` produced ``rdf-shacl-550-rdf-shacl-550`` because
+    Courseforge writes the IMSCC manifest title as ``f"{course_code}:
+    {course_title}"`` and Trainforge's IMSCC parser falls back to
+    ``course_code`` when the manifest carries no usable title — so the
+    title round-tripped as ``"RDF_SHACL_550: RDF_SHACL_550"`` and
+    ``slugify`` doubled the code.
+
+    This helper collapses that pattern: when ``course_title`` starts with
+    ``course_code`` (with optional ``:`` / whitespace separator), strip the
+    prefix before slugifying so we never emit ``code-slug-code-slug``. The
+    resulting slug is ``slugify(f"{course_code} {stripped_title}")`` when a
+    distinct title remains, else just ``slugify(course_code)``.
+
+    Args:
+        course_code: Stable course identifier (e.g. ``"RDF_SHACL_550"``).
+        course_title: Human-friendly title from the source manifest.
+        fallback: Used when both code + title are empty (e.g. the source
+            directory name).
+        max_length: Maximum slug length.
+
+    Returns:
+        A URL-safe slug. Never returns ``""`` — falls back to ``fallback``
+        (or ``"course"``) when both inputs are empty.
+    """
+    code = (course_code or "").strip()
+    title = (course_title or "").strip()
+
+    # Dedupe: strip any leading ``{code}`` / ``{code}:`` / ``{code} ``
+    # prefix from the title before concatenating. Case-insensitive
+    # because IMSCC titles are emitted with original case but downstream
+    # slugify lowercases everything anyway.
+    stripped_title = title
+    if code and title:
+        # Match the code at the start, optionally followed by ``:`` and
+        # whitespace, or just whitespace. Repeat — Courseforge has been
+        # observed to double-prefix in some manifests.
+        prefix_re = re.compile(
+            r"^\s*" + re.escape(code) + r"\s*[:\-]?\s*",
+            flags=re.IGNORECASE,
+        )
+        prev = None
+        while stripped_title and stripped_title != prev:
+            prev = stripped_title
+            stripped_title = prefix_re.sub("", stripped_title, count=1).strip()
+
+    if code and stripped_title:
+        # Distinct title remains — concatenate code + title for a richer
+        # slug. ``slugify`` collapses adjacent separators.
+        return slugify(f"{code} {stripped_title}", max_length=max_length)
+
+    if code:
+        # Title was empty or fully redundant with code.
+        return slugify(code, max_length=max_length)
+
+    if title:
+        # No code provided — slug from title alone (legacy callers).
+        return slugify(title, max_length=max_length)
+
+    if fallback:
+        return slugify(fallback, max_length=max_length)
+
+    return "course"
+
+
 def ensure_unique_slug(slug: str, courses_dir: Path) -> str:
     """Ensure the slug is unique by appending a number if needed."""
     if not (courses_dir / slug).exists():
@@ -295,9 +368,16 @@ def import_course(
     # Read Sourceforge manifest
     sf_manifest_data = read_sourceforge_manifest(source_dir)
 
-    # Generate slug
+    # Generate slug. Use the dedupe-aware helper so titles like
+    # ``"RDF_SHACL_550: RDF_SHACL_550"`` (Courseforge IMSCC manifest +
+    # Trainforge fallback) don't collapse into ``rdf-shacl-550-rdf-shacl-550``.
     title = sf_manifest_data.get("course_title", source_dir.name)
-    slug = slugify(title)
+    course_code = sf_manifest_data.get("course_id") or ""
+    slug = derive_course_slug(
+        course_code=course_code,
+        course_title=title,
+        fallback=source_dir.name,
+    )
 
     if not force:
         slug = ensure_unique_slug(slug, courses_dir)
