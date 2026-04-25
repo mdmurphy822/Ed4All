@@ -461,8 +461,20 @@ def normalize_tag(raw: str) -> str:
     (REC-ID-03, Wave 4 Worker Q). The display-layer rules — truncating to 4
     tokens and rejecting tags whose first character isn't alphabetic — remain
     specific to Trainforge's LibV2 tag format and stay here.
+
+    Wave 76: HTML entities are unescaped before slugification so that
+    raw HTML strings like ``"&mdash;target"`` decode to ``"—target"``
+    (which the slugifier then strips ``—`` from) rather than the
+    literal ``"mdash-target"`` slug. ``html.unescape`` covers both
+    named (``&mdash;``) and numeric (``&#8212;``, ``&#x2014;``)
+    variants. Empty/None input still returns ``""`` without raising.
     """
-    tag = canonical_slug(raw)
+    if raw is None:
+        return ""
+    # Wave 76: decode HTML entities BEFORE slugification so entity
+    # glue tokens (mdash, ndash, hellip, etc.) never enter the slug.
+    decoded = html.unescape(str(raw))
+    tag = canonical_slug(decoded)
     # Limit to 4 words (display-layer cap specific to LibV2 tag URLs).
     parts = tag.split("-")
     if len(parts) > 4:
@@ -1550,14 +1562,27 @@ class CourseProcessor:
         # Merge structured JSON-LD keyTerms into concept_tags. These are the
         # highest-fidelity domain vocabulary Courseforge emits; leaving them
         # in chunk["key_terms"] only meant the concept graph missed them.
+        # Wave 76: also filter through the concept classifier so JSON-LD
+        # keyTerms can't reintroduce pedagogical scaffolding / fragments
+        # that ``_extract_concept_tags`` already rejected.
+        from lib.ontology.concept_classifier import (
+            canonicalize_alias as _canon_alias,
+            classify_concept as _classify,
+            is_droppable_class as _is_droppable,
+        )
         for kt in key_terms or []:
             term = kt.get("term") if isinstance(kt, dict) else kt
             tag = normalize_tag(term or "")
-            if not tag or len(tag) < 3 or tag in concept_tags:
+            if not tag or len(tag) < 3:
+                continue
+            tag = _canon_alias(tag)
+            if tag in concept_tags:
                 continue
             if (self.OBJECTIVE_CODE_RE.match(tag)
                     or self.WEEK_PREFIX_RE.match(tag)
                     or tag in self.NON_CONCEPT_TAGS):
+                continue
+            if _is_droppable(_classify(tag)):
                 continue
             concept_tags.append(tag)
 
@@ -2129,7 +2154,46 @@ class CourseProcessor:
     }
 
     def _extract_concept_tags(self, text: str, item: Dict[str, Any]) -> List[str]:
+        # Wave 76: filter at extraction time. Pipeline shape:
+        #   normalize_tag (HTML-decoded, slugified)
+        #   → canonicalize_alias (rdfxml → rdf-xml, ttl → turtle, …)
+        #   → classify_concept (rule-based class assignment)
+        #   → is_droppable_class (reject pedagogy / assessment-options
+        #     / instructional-artifacts / LO-leak / low-signal)
+        #   → tag list (dedup-aware, singular-preferred)
+        #
+        # Wave 75's classifier was post-hoc — it labeled but didn't
+        # filter, so pollution still entered chunks ``concept_tags``
+        # and the resulting concept_graph. Wave 76 closes the loop.
+        from lib.ontology.concept_classifier import (
+            canonicalize_alias,
+            classify_concept,
+            is_droppable_class,
+            singular_form,
+        )
+
         tags: List[str] = []
+
+        def _try_add(tag: str) -> bool:
+            """Filter + dedup + add. Returns True iff appended."""
+            if not tag:
+                return False
+            tag = canonicalize_alias(tag)
+            if tag in tags:
+                return False
+            # Wave 76: drop classes the extractor should not emit
+            # (pedagogical scaffolding, assessment options, LO leaks,
+            # instructional artifacts, low-signal stopwords + fragments).
+            klass = classify_concept(tag)
+            if is_droppable_class(klass):
+                return False
+            # Plural-collapse: if the singular form is already
+            # emitted, treat this tag as a duplicate.
+            sing = singular_form(tag)
+            if sing != tag and sing in tags:
+                return False
+            tags.append(tag)
+            return True
 
         # Key concepts from HTML parser (bold terms, definitions)
         for concept in item.get("key_concepts", []):
@@ -2140,33 +2204,29 @@ class CourseProcessor:
             # before any filter or dedupe (§4.5 canonicalization).
             from Trainforge.rag.wcag_canonical_names import canonicalize_sc_tag
             tag = canonicalize_sc_tag(tag)
-            if tag in tags:
-                continue
             # Skip objective codes (co-01, to-01, w01-co-01) and non-concept tags
             if (self.OBJECTIVE_CODE_RE.match(tag)
                     or self.WEEK_PREFIX_RE.match(tag)
                     or tag in self.NON_CONCEPT_TAGS):
                 continue
-            tags.append(tag)
+            _try_add(tag)
 
         # Text-based concept detection (pedagogy-only patterns).
         text_lower = text.lower()
         for tag, patterns in self.CONCEPT_PATTERNS.items():
-            if tag not in tags and any(p in text_lower for p in patterns):
-                tags.append(tag)
+            if any(p in text_lower for p in patterns):
+                _try_add(tag)
 
         # Per-course domain concept seeds. Pedagogy filter still applies
         # below since seeds are authored per course; a well-formed seed
         # list won't collide with NON_CONCEPT_TAGS, but we defend anyway.
         for canonical, patterns in self.domain_concept_seeds:
-            if canonical in tags:
-                continue
             if (self.OBJECTIVE_CODE_RE.match(canonical)
                     or self.WEEK_PREFIX_RE.match(canonical)
                     or canonical in self.NON_CONCEPT_TAGS):
                 continue
             if any(p.search(text) for p in patterns):
-                tags.append(canonical)
+                _try_add(canonical)
 
         return tags[:20]
 
