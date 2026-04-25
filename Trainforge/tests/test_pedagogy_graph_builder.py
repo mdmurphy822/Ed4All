@@ -258,10 +258,12 @@ def test_every_edge_has_relation_type():
 
 def test_empty_input_no_crash():
     g = build_pedagogy_graph([], {})
-    # Bloom levels are intrinsic structure; no chunks / objectives /
-    # modules / concepts emitted from empty input. Crucially: no crash.
+    # Bloom + DifficultyLevel nodes are intrinsic structure (Wave 78
+    # added the 3 DifficultyLevel typed nodes alongside the 6
+    # BloomLevels). No chunks / objectives / modules / concepts
+    # emitted from empty input. Crucially: no crash, no edges.
     counts = g["stats"]["nodes_by_class"]
-    assert counts == {"BloomLevel": 6}
+    assert counts == {"BloomLevel": 6, "DifficultyLevel": 3}
     assert g["edges"] == []
 
 
@@ -333,11 +335,14 @@ def test_real_archive_regen_within_legacy_envelope():
 
     g = build_pedagogy_graph(chunks, objectives, course_id="RDF_SHACL_550")
 
-    # Wave 76 envelope: total edges should fall sharply from Wave 75's
-    # 8324 but stay above Wave 75's 800 floor.
+    # Wave 78 envelope: bumped ceiling 3000 -> 5000 to absorb the four
+    # new relation types (derived_from_objective ~700,
+    # concept_supports_outcome ~1000, assessment_validates_outcome
+    # ~50, chunk_at_difficulty == chunk_count). Wave 76 ceiling was
+    # 3000; the rdf-shacl-550 archive lands ~4250 post-Wave-78.
     edge_count = g["stats"]["edge_count"]
-    assert 1000 <= edge_count <= 3000, (
-        f"expected 1000 <= edges <= 3000, got {edge_count}"
+    assert 1000 <= edge_count <= 5000, (
+        f"expected 1000 <= edges <= 5000, got {edge_count}"
     )
     er = g["stats"]["edges_by_relation"]
     # prereq is the over-saturation lever: was 7032 pre-Wave-76, must
