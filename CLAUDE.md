@@ -16,6 +16,17 @@ ed4all run textbook-to-course --corpus ./pdfs/ --course-name BIO_201 --weeks 16
 ed4all run rag_training --corpus course.imscc --course-name CHEM_101 --mode api
 ed4all run textbook-to-course --corpus x.pdf --course-name T --dry-run   # plan only
 ed4all run textbook-to-course --resume WF-20260420-abc12345               # resume
+
+# Wave 80: pin the course_planning phase to a previously-synthesized
+# objectives JSON instead of re-dispatching the course-outliner
+# subagent. Eliminates LLM-nondeterminism drift across re-runs that
+# breaks chunk learning_outcome_refs continuity. Accepts both
+# Courseforge synthesized form (terminal_objectives/chapter_objectives)
+# and Wave 75 LibV2 archive form (terminal_outcomes/component_objectives);
+# the runner normalizes to the Courseforge form on disk before
+# downstream phases consume it.
+ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
+  --reuse-objectives Courseforge/exports/PROJ-PHYS_101-.../01_learning_objectives/synthesized_objectives.json
 ```
 
 Modes:
