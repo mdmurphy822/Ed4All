@@ -43,6 +43,7 @@ if str(PROJECT_ROOT) not in sys.path:
 from Trainforge.retag_outcomes import (  # noqa: E402  (after sys.path tweak)
     RETAG_VOCABULARIES,
     build_parent_map,
+    merged_vocabularies,
     retag_chunk_outcomes,
 )
 
@@ -100,6 +101,9 @@ def retag_archive(
 
     objectives = json.loads(objectives_path.read_text(encoding="utf-8"))
     parent_map = build_parent_map(objectives)
+    # Wave 81: merged vocabulary map covers every CO in the loaded
+    # objectives payload (auto-extracted) plus the curated overrides.
+    vocabularies = merged_vocabularies(objectives)
 
     # Load + snapshot before retag.
     chunks = _load_chunks(jsonl_path)
@@ -115,7 +119,11 @@ def retag_archive(
             r.lower() for r in (chunk.get("learning_outcome_refs") or [])
             if isinstance(r, str)
         }
-        retag_chunk_outcomes(chunk, parent_map=parent_map)
+        retag_chunk_outcomes(
+            chunk,
+            parent_map=parent_map,
+            vocabularies=vocabularies,
+        )
         new_refs = {
             r.lower() for r in (chunk.get("learning_outcome_refs") or [])
             if isinstance(r, str)
@@ -124,13 +132,12 @@ def retag_archive(
         if added:
             chunks_changed += 1
         for a in added:
-            if a in RETAG_VOCABULARIES:
-                co_add_counts[a] += 1
-            elif a.startswith("to-"):
+            if a.startswith("to-"):
                 parent_add_counts[a] += 1
             else:
-                # Component IDs added via parent-rollup chain (rare —
-                # parents shouldn't pick up children) get tracked too.
+                # Component IDs (curated or auto-extracted) — tally as
+                # vocabulary-rule additions. Parent-rollup additions
+                # are exclusively to-NN, handled above.
                 co_add_counts[a] += 1
 
     after = _coverage(chunks)
