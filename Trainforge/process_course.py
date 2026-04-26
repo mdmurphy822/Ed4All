@@ -3479,8 +3479,26 @@ class CourseProcessor:
 
         sorted_tags = sorted(tag_frequency.items(), key=lambda x: -x[1])
         nodes: List[Dict[str, Any]] = []
+        # Wave 82 (REC-CG-COMPLETENESS): the rdf-shacl-551 audit found
+        # 236 concepts referenced by pedagogy edges that had no entry in
+        # concept_graph.json — they appeared in only 1 chunk and were
+        # filtered out by this threshold. With
+        # TRAINFORGE_CONCEPT_GRAPH_INCLUDE_SINGLE_OCCURRENCE=true the
+        # threshold drops to ``< 1`` (always pass) so single-occurrence
+        # legitimate domain terms like ``alldisjointclasses`` and
+        # ``haskey`` survive. Wave 76's classifier filter still gates
+        # upstream (pedagogical/assessment scaffolding never enters
+        # concept_tags), so flipping this on doesn't reintroduce the
+        # noise that motivated the original 2+ rule.
+        min_freq = (
+            1
+            if os.getenv(
+                "TRAINFORGE_CONCEPT_GRAPH_INCLUDE_SINGLE_OCCURRENCE", ""
+            ).lower() == "true"
+            else 2
+        )
         for tag, freq in sorted_tags:
-            if freq < 2:
+            if freq < min_freq:
                 continue
             node_id = _make_concept_id(tag, course_id)
             # Label stays human-readable (no course_id prefix) regardless
@@ -4167,7 +4185,9 @@ class CourseProcessor:
         }
 
     def _build_pedagogy_summary(
-        self, chunks: Optional[List[Dict[str, Any]]] = None
+        self,
+        chunks: Optional[List[Dict[str, Any]]] = None,
+        pedagogy_graph: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Build a pedagogy model grounded in the actual chunk set.
 
@@ -4176,7 +4196,18 @@ class CourseProcessor:
         referenced as prereqs after being first introduced earlier). Falls
         back to just the top-level keys when chunks aren't provided so
         older call sites don't break.
+
+        Wave 82 (REC-PEDAGOGY-CHAIN): when ``pedagogy_graph`` is
+        supplied, ``prerequisite_chain`` is populated from the graph's
+        ``prerequisite_of`` edges instead of (the often-empty)
+        chunk ``prereq_concepts`` field. The rdf-shacl-551 audit found
+        the model emitting ``prerequisite_chain: []`` while the graph
+        carried 404 prereq edges — same data, two computation paths
+        with no link between them. The graph-based path is more
+        accurate (uses chunk co-occurrence + strict-later-week filter)
+        and replaces the chunk-prereq_concepts logic when available.
         """
+        from lib.ontology.concept_id import strip_concept_prefix
         summary: Dict[str, Any] = {
             "instructional_approach": "competency-based",
             "learning_theory": "constructivism",
@@ -4240,40 +4271,68 @@ class CourseProcessor:
         summary["bloom_progression"] = bloom_progression
 
         # --- prerequisite_chain + prerequisite_violations ------------------------
-        # For each concept tag, record earliest (module_idx, chunk_id) where it
-        # appears in concept_tags (definition site) vs prereq_concepts (use site).
-        # Valid chain: first use in module index > first definition's module index.
-        module_idx = {mid: i for i, mid in enumerate(module_order)}
-        first_def: Dict[str, Tuple[int, str, str]] = {}
-        first_use: Dict[str, Tuple[int, str, str]] = {}
-        for chunk in chunks:
-            src = chunk.get("source") or {}
-            mid = src.get("module_id")
-            if mid not in module_idx:
-                continue
-            idx = module_idx[mid]
-            cid = chunk["id"]
-            for tag in chunk.get("concept_tags", []) or []:
-                if tag not in first_def or idx < first_def[tag][0]:
-                    first_def[tag] = (idx, mid, cid)
-            for tag in chunk.get("prereq_concepts", []) or []:
-                if tag not in first_use or idx < first_use[tag][0]:
-                    first_use[tag] = (idx, mid, cid)
+        prerequisite_chain: List[Dict[str, Any]] = []
+        prerequisite_violations: List[Dict[str, Any]] = []
 
-        prerequisite_chain = []
-        prerequisite_violations = []
-        for tag in sorted(set(first_def) & set(first_use)):
-            def_idx, def_mod, def_chunk = first_def[tag]
-            use_idx, use_mod, use_chunk = first_use[tag]
-            record = {
-                "concept": tag,
-                "defined_in": {"module_id": def_mod, "chunk_id": def_chunk},
-                "first_used_in": {"module_id": use_mod, "chunk_id": use_chunk},
-            }
-            if use_idx > def_idx:
-                prerequisite_chain.append(record)
-            elif use_idx < def_idx:
-                prerequisite_violations.append(record)
+        if pedagogy_graph is not None:
+            # Wave 82 path: read directly from the graph's prerequisite_of
+            # edges. Each edge represents a co-occurrence pair where the
+            # source concept lives in an earlier module than the target.
+            # Strip the ``concept:`` prefix to keep the chain payload's
+            # concept slugs flat (matches the legacy chunk-based path).
+            for edge in pedagogy_graph.get("edges", []) or []:
+                if not isinstance(edge, dict):
+                    continue
+                if edge.get("relation_type") != "prerequisite_of":
+                    continue
+                src_id = edge.get("source") or ""
+                tgt_id = edge.get("target") or ""
+                if not src_id or not tgt_id:
+                    continue
+                prerequisite_chain.append({
+                    "concept": strip_concept_prefix(src_id),
+                    "required_for": strip_concept_prefix(tgt_id),
+                    "confidence": edge.get("confidence", 1),
+                })
+            # Deterministic order for byte-stable output across runs.
+            prerequisite_chain.sort(
+                key=lambda r: (r["concept"], r["required_for"])
+            )
+        else:
+            # Legacy path: derive from chunk concept_tags vs prereq_concepts.
+            # For each concept tag, record earliest (module_idx, chunk_id)
+            # where it appears in concept_tags (definition site) vs
+            # prereq_concepts (use site). Valid chain: first use in module
+            # index > first definition's module index.
+            module_idx = {mid: i for i, mid in enumerate(module_order)}
+            first_def: Dict[str, Tuple[int, str, str]] = {}
+            first_use: Dict[str, Tuple[int, str, str]] = {}
+            for chunk in chunks:
+                src = chunk.get("source") or {}
+                mid = src.get("module_id")
+                if mid not in module_idx:
+                    continue
+                idx = module_idx[mid]
+                cid = chunk["id"]
+                for tag in chunk.get("concept_tags", []) or []:
+                    if tag not in first_def or idx < first_def[tag][0]:
+                        first_def[tag] = (idx, mid, cid)
+                for tag in chunk.get("prereq_concepts", []) or []:
+                    if tag not in first_use or idx < first_use[tag][0]:
+                        first_use[tag] = (idx, mid, cid)
+
+            for tag in sorted(set(first_def) & set(first_use)):
+                def_idx, def_mod, def_chunk = first_def[tag]
+                use_idx, use_mod, use_chunk = first_use[tag]
+                record = {
+                    "concept": tag,
+                    "defined_in": {"module_id": def_mod, "chunk_id": def_chunk},
+                    "first_used_in": {"module_id": use_mod, "chunk_id": use_chunk},
+                }
+                if use_idx > def_idx:
+                    prerequisite_chain.append(record)
+                elif use_idx < def_idx:
+                    prerequisite_violations.append(record)
 
         summary["prerequisite_chain"] = prerequisite_chain
         summary["prerequisite_violations"] = prerequisite_violations
@@ -4560,8 +4619,14 @@ class CourseProcessor:
             _write(self.graph_dir / "concept_graph_semantic.json", semantic_graph)
         _write(self.quality_dir / "quality_report.json", quality_report)
 
-        # Pedagogy model (full: module sequence, bloom progression, prereq chain)
-        pedagogy = self._build_pedagogy_summary(chunks=chunks)
+        # Pedagogy model (full: module sequence, bloom progression, prereq chain).
+        # Wave 82: thread pedagogy_graph so prerequisite_chain populates from
+        # the graph's prerequisite_of edges instead of the empty-by-default
+        # chunk.prereq_concepts field. Closes the rdf-shacl-551 audit's
+        # "404 prereq edges, prerequisite_chain=[]" gap.
+        pedagogy = self._build_pedagogy_summary(
+            chunks=chunks, pedagogy_graph=pedagogy_graph
+        )
         _write(self.pedagogy_dir / "pedagogy_model.json", pedagogy)
 
         # Worker M1 (§4.4a diagnostic): enrichment-trace report alongside
