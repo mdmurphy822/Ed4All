@@ -140,9 +140,119 @@ def test_multi_anchor_text():
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Wave 84 — additional anchors from the rdf-shacl-551-2 weak-chunk audit.
+# ---------------------------------------------------------------------------
+
+
+class TestWave84Serializations:
+    """Audit's worked-example pages were tagged ``turtle/n-triples/rdf``
+    only — but they cover TriG, N-Quads, and RDF/XML too. Detect them."""
+
+    def test_trig_detected_case_sensitive(self):
+        assert "trig" in detect_anchors(
+            "TriG extends Turtle with named-graph blocks."
+        )
+
+    def test_trig_does_not_match_lowercase_math_function(self):
+        # Case-sensitive: the math word "trig" (trigonometry) must NOT fire.
+        assert "trig" not in detect_anchors("Solve the trig identity.")
+
+    def test_n_quads_detected(self):
+        assert "n-quads" in detect_anchors("Serialize the dataset as N-Quads.")
+
+    def test_rdf_xml_detected_with_slash(self):
+        assert "rdf-xml" in detect_anchors("Parse the RDF/XML file.")
+
+    def test_rdfxml_compact_form_detected(self):
+        assert "rdf-xml" in detect_anchors("RDFXML is the legacy serialization.")
+
+
+class TestWave84Foundationals:
+    """RDF foundational vocabulary: IRI, literal, datatype, blank node."""
+
+    def test_iri_detected(self):
+        assert "iri" in detect_anchors("Use an IRI to identify the resource.")
+
+    def test_iri_plural_detected(self):
+        assert "iri" in detect_anchors("Mint IRIs from a stable namespace.")
+
+    def test_blank_node_detected(self):
+        assert "blank-node" in detect_anchors("Use a blank node for anonymity.")
+
+    def test_blank_node_turtle_syntax_detected(self):
+        # Turtle blank-node syntax: _:b1, _:foo
+        assert "blank-node" in detect_anchors(":alice :knows _:b1 .")
+
+    def test_literal_with_rdf_context_detected(self):
+        assert "literal" in detect_anchors("RDF literals carry datatype tags.")
+
+    def test_plain_word_literal_does_not_fire(self):
+        # The English word "literal" should NOT trigger without RDF/datatype context.
+        assert "literal" not in detect_anchors("The literal interpretation.")
+
+    def test_datatype_detected(self):
+        assert "datatype" in detect_anchors("xsd:string is a datatype.")
+
+    def test_rdf_dataset_detected(self):
+        assert "rdf-dataset" in detect_anchors(
+            "An RDF dataset contains a default graph."
+        )
+
+    def test_named_graphs_detected_as_dataset(self):
+        assert "rdf-dataset" in detect_anchors(
+            "Use named graphs to scope assertions."
+        )
+
+
+class TestWave84ShaclShapes:
+    def test_node_shape_detected(self):
+        assert "node-shape" in detect_anchors("Author a NodeShape per class.")
+
+    def test_node_shape_qname_detected(self):
+        assert "node-shape" in detect_anchors("a sh:NodeShape ;")
+
+    def test_property_shape_detected(self):
+        assert "property-shape" in detect_anchors(
+            "PropertyShape constraints target paths."
+        )
+
+
+class TestWave84RdfsPredicates:
+    def test_subclassof_detected(self):
+        assert "subclassof" in detect_anchors(
+            "Apply rdfs:subClassOf entailment to the graph."
+        )
+
+    def test_subclassof_english_form(self):
+        assert "subclassof" in detect_anchors(
+            "Person is a subclass of Agent."
+        )
+
+    def test_subpropertyof_detected(self):
+        assert "subpropertyof" in detect_anchors(
+            "Declare rdfs:subPropertyOf to chain predicates."
+        )
+
+    def test_rdf_type_detected(self):
+        assert "rdf-type" in detect_anchors(":alice rdf:type :Person .")
+
+
+class TestWave84TurtlePrefix:
+    def test_turtle_at_prefix_detected(self):
+        assert "turtle-prefix" in detect_anchors("@prefix : <http://ex.org/> .")
+
+    def test_sparql_prefix_detected(self):
+        assert "turtle-prefix" in detect_anchors("PREFIX foaf: <http://...>")
+
+
 def test_anchor_slugs_returns_sorted_tuple():
     slugs = anchor_slugs()
     assert slugs == tuple(sorted(slugs))
-    assert len(slugs) == 9  # 8 W3C standards + same-as predicate
+    # Wave 82 set: 8 W3C standards + same-as.
+    # Wave 84 additions: trig, n-quads, rdf-xml, iri, literal, datatype,
+    # blank-node, rdf-dataset, node-shape, property-shape, subclassof,
+    # subpropertyof, rdf-type, turtle-prefix. Total = 23.
+    assert len(slugs) >= 9, f"Lost a Wave 82 anchor: only {len(slugs)} present"
     assert "rdf" in slugs
     assert "same-as" in slugs
