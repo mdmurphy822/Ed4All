@@ -260,6 +260,32 @@ def _mc_id(text: str) -> str:
     return f"mc_{h[:16]}"
 
 
+# Wave 82: chunk IDs are stamped by ``process_course._chunk_content`` with
+# the ``{course_code_lower}_chunk_NNNNN`` shape. The trailing
+# ``_chunk_NNNNN`` is anchored; everything before is the lowercased course
+# code. Used by ``build_pedagogy_graph`` to recover ``course_id`` when the
+# caller omits it (closes the rdf-shacl-551 audit's "course_id=''" gap).
+_CHUNK_ID_COURSE_PREFIX_RE = re.compile(r"^(?P<code>[a-z0-9_]+)_chunk_\d+$")
+
+
+def _derive_course_id_from_chunks(chunks: List[Dict[str, Any]]) -> str:
+    """Best-effort extraction of course_id from the first matching chunk ID.
+
+    Returns the uppercased course-code prefix (e.g. ``RDF_SHACL_551``) when
+    a chunk's ``id`` matches the canonical
+    ``{course_code_lower}_chunk_NNNNN`` shape. Returns ``""`` when chunks
+    is empty or no chunk ID matches.
+    """
+    for chunk in chunks:
+        cid = chunk.get("id") if isinstance(chunk, dict) else None
+        if not isinstance(cid, str):
+            continue
+        match = _CHUNK_ID_COURSE_PREFIX_RE.match(cid)
+        if match:
+            return match.group("code").upper()
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Objective loading
 # ---------------------------------------------------------------------------
@@ -314,10 +340,25 @@ def build_pedagogy_graph(
     pedagogical/assessment scaffolding is dropped. When omitted,
     every concept is treated as DomainConcept-default (legacy mode);
     the new co-occurrence + strict-later-week filter still applies.
+
+    Wave 82: ``course_id`` falls back to a chunk-ID-derived value when
+    the caller passes None/empty. The rdf-shacl-551-2 audit found a
+    shipped pedagogy_graph.json with ``course_id=""`` that joined cleanly
+    against the manifest's nested ``sourceforge_manifest.course_id`` —
+    proof that the value WAS reconstructible from upstream artifacts the
+    builder already saw. Chunk IDs follow the
+    ``{course_code_lower}_chunk_NNNNN`` shape (set in
+    ``process_course._chunk_content``), so the fallback parses the first
+    chunk's prefix when ``course_id`` is missing. Derived values are
+    uppercased to match the convention in ``manifest.json``. Returns
+    ``""`` only when chunks are empty or no chunk ID matches the shape.
     """
     chunks = list(chunks or [])
     objectives = objectives or {}
     concept_classes = concept_classes or {}
+
+    if not course_id:
+        course_id = _derive_course_id_from_chunks(chunks)
 
     nodes: List[Dict[str, Any]] = []
     edges: List[Dict[str, Any]] = []

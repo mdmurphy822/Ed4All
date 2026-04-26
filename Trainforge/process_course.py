@@ -875,6 +875,76 @@ def extract_misconceptions_from_text(text: str) -> List[Dict[str, str]]:
     return found
 
 
+# Wave 82: token-overlap match for misconception → concept_tag routing.
+# Closes the rdf-shacl-551 audit's "interferes_with edges land on the
+# alphabetically-first concept_tag instead of the actually-relevant one"
+# gap. Pure function; deterministic; ties broken by tag-list position.
+_ROUTING_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_ROUTING_STOPWORDS = frozenset({
+    # Conservative stopword list — drops only the highest-frequency
+    # tokens that contribute zero discriminating signal. Domain-bearing
+    # terms (rdf, owl, shacl) are not stopwords; they should match.
+    "a", "an", "the", "of", "in", "on", "at", "by", "to", "for",
+    "and", "or", "but", "is", "are", "was", "were", "be", "been",
+    "this", "that", "these", "those", "it", "its", "as", "if",
+    "with", "from", "into", "than", "then", "so", "such", "not",
+    "no", "do", "does", "did", "have", "has", "had", "will",
+    "can", "may", "might", "should", "would", "could", "must",
+    "you", "your", "we", "our", "they", "them", "their",
+})
+
+
+def _route_misconception_to_tag(
+    statement: str, tags: List[str]
+) -> Optional[str]:
+    """Pick the chunk concept_tag whose slug tokens overlap ``statement`` most.
+
+    Slug tokens are derived by splitting each tag on ``-`` and lowercasing.
+    Statement tokens are word-extracted via :data:`_ROUTING_TOKEN_RE` minus
+    stopwords. Both sides are also passed through
+    :func:`lib.ontology.concept_classifier.singular_form` so a statement
+    saying "triple" matches a ``triples`` tag (and vice versa). Score =
+    number of tag tokens (deduplicated, across both surface + singular
+    forms) that appear in the statement token set.
+
+    Returns the highest-scoring tag (ties break by ``tags`` list order so
+    the result is deterministic and reproduces the legacy first-tag
+    behavior when no overlap exists). Returns the first tag in ``tags``
+    when ``statement`` is empty or all candidate scores are zero.
+    Returns None when ``tags`` is empty.
+    """
+    if not tags:
+        return None
+    if not statement:
+        return tags[0]
+    from lib.ontology.concept_classifier import singular_form
+
+    raw_tokens = [
+        t for t in _ROUTING_TOKEN_RE.findall(statement.lower())
+        if t and t not in _ROUTING_STOPWORDS
+    ]
+    statement_tokens = set(raw_tokens) | {singular_form(t) for t in raw_tokens}
+    if not statement_tokens:
+        return tags[0]
+    best_tag = tags[0]
+    best_score = 0
+    for tag in tags:
+        raw_tag_tokens = [
+            t for t in tag.lower().split("-")
+            if t and t not in _ROUTING_STOPWORDS
+        ]
+        tag_tokens = set(raw_tag_tokens) | {
+            singular_form(t) for t in raw_tag_tokens
+        }
+        if not tag_tokens:
+            continue
+        score = len(tag_tokens & statement_tokens)
+        if score > best_score:
+            best_score = score
+            best_tag = tag
+    return best_tag
+
+
 # ---------------------------------------------------------------------------
 # CourseProcessor
 # ---------------------------------------------------------------------------
@@ -2934,14 +3004,23 @@ class CourseProcessor:
         The ``misconception-of`` inference rule expects a list of misconception
         dicts with stable ``id`` (``mc_[0-9a-f]{16}``) + optional ``concept_id``.
         Chunks carry misconceptions on their ``misconceptions`` list (populated
-        from JSON-LD ``misconceptions[]`` during ``_chunk_content``). We map
-        each entry to a misconception entity whose ``concept_id`` is the
-        chunk's first concept tag — the best available signal for which
-        concept the misconception threatens without an explicit author-side
-        declaration. When the chunk has no concept tags, the misconception
-        is still emitted (so downstream consumers see it) but without
-        ``concept_id`` — the rule skips entries lacking ``concept_id``, so
-        those simply don't produce an edge.
+        from JSON-LD ``misconceptions[]`` during ``_chunk_content``).
+
+        Concept-routing precedence (Wave 82):
+          1. Explicit ``concept_id`` on the JSON-LD misconception entry.
+          2. Token-overlap match against the chunk's ``concept_tags`` —
+             pick the tag whose surface form (slug split on hyphens)
+             shares the most tokens with the misconception's statement.
+             Ties break by tag-list order.
+          3. First concept tag (legacy fallback).
+
+        The token-overlap path was added after the rdf-shacl-551 audit
+        showed 0% of authored misconceptions carry an explicit
+        ``concept_id``, so the legacy first-tag heuristic was the only
+        signal — and it routed misconceptions about "triple" to
+        ``concept:statement`` (the alphabetically-first tag) and
+        misconceptions about "blank-node-vs-IRI" to ``concept:one-line-rule``.
+        Token-overlap closes that gap without needing author-side changes.
         """
         from Trainforge.rag.typed_edge_inference import _make_concept_id
 
@@ -3001,8 +3080,13 @@ class CourseProcessor:
                 if cognitive_domain:
                     entity["cognitive_domain"] = cognitive_domain
                 concept_id: Optional[str] = explicit_cid
-                if not concept_id and first_tag:
-                    concept_id = _make_concept_id(first_tag, course_id)
+                if not concept_id and tags:
+                    # Wave 82: token-overlap match — pick the tag whose
+                    # slug-derived tokens most overlap the misconception
+                    # statement. Falls back to first_tag on no match.
+                    routed_tag = _route_misconception_to_tag(statement, tags)
+                    if routed_tag:
+                        concept_id = _make_concept_id(routed_tag, course_id)
                 if concept_id:
                     entity["concept_id"] = concept_id
                 entities.append(entity)
