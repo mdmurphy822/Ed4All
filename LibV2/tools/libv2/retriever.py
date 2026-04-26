@@ -18,8 +18,11 @@ from .catalog import load_master_catalog, search_catalog
 from .models.catalog import CatalogEntry
 from .retrieval_scoring import (
     BoostContributions,
+    chunk_type_intent_prior,
     combine_bm25_with_boosts,
+    compute_tag_idf,
     concept_graph_overlap_boost,
+    detect_query_intent,
     extract_query_concepts,
     load_concept_graph_node_ids,
     load_course_outcomes,
@@ -27,6 +30,8 @@ from .retrieval_scoring import (
     load_targets_concept_edges,
     lo_match_boost,
     prereq_coverage_boost,
+    resolve_method_preset,
+    tag_idf_overlap_score,
     targets_concept_boost,
 )
 
@@ -203,6 +208,46 @@ _STRUCTURED_TOKEN_RE = re.compile(
     r"|[a-z0-9]+"                         # bare alphanumeric fallback
 )
 
+# Wave 84: split CamelCase boundaries before lowercasing so RDF/SHACL URI
+# forms like ``NodeShape`` / ``PropertyShape`` / ``subClassOf`` produce
+# tokens that align with the prose form. The probe-set diagnosis showed
+# chunk_00147 ("Node Shapes and Property Shapes" — the definition chunk)
+# losing to chunk_00175 ("Logical Composition with sh:and, sh:or") for
+# the query "Define a SHACL NodeShape" because:
+#   - chunk body says "node shape" (tokens: node, shape)
+#   - URI form "sh:NodeShape" tokenizes to "sh", "nodeshape"
+#   - query "NodeShape" tokenizes to "nodeshape"
+# The query never matches the prose body; URI count alone drives ranking.
+# Solution: emit BOTH the joined form (``nodeshape``) and the split forms
+# (``node``, ``shape``) so a query in either style matches text in either
+# style. Pre-existing URI-exact probes still hit because the joined form
+# is preserved.
+_CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z])(?=[A-Z])")
+
+
+def _expand_camel_case(text: str) -> str:
+    """Insert spaces at CamelCase boundaries while preserving the original.
+
+    Returns the input with both the original (joined) form and the split
+    form, separated by spaces, so downstream tokenization picks up each
+    component as its own token AND the original camelCase word survives
+    (lowercased) as a joined token via the bare-alphanumeric fallback.
+
+    Examples:
+        ``"NodeShape"`` → ``"NodeShape Node Shape"``
+        ``"sh:PropertyShape"`` → ``"sh:PropertyShape sh:Property Shape"``
+        ``"subClassOf entailment"`` → ``"subClassOf sub Class Of entailment"``
+
+    No-op for plain lowercase text and for tokens with no CamelCase
+    boundaries (no double-emission cost).
+    """
+    if not text:
+        return text
+    expanded = _CAMEL_BOUNDARY_RE.sub(" ", text)
+    if expanded == text:
+        return text
+    return f"{text} {expanded}"
+
 
 def tokenize(text: str, *, structured_tokens: bool = True) -> list[str]:
     """Tokenize ``text`` for BM25 indexing and query matching.
@@ -212,7 +257,13 @@ def tokenize(text: str, *, structured_tokens: bool = True) -> list[str]:
     a chunk tagged with the same slug instead of leaking into generic ``aria``
     and ``labelledby`` tokens.  Set False to reproduce the pre-Worker-J
     tokenization (used by back-compat regression tests).
+
+    Wave 84: CamelCase boundaries are split BEFORE lowercasing so URI forms
+    like ``NodeShape`` produce both ``nodeshape`` (joined) AND ``node`` +
+    ``shape`` (split). See ``_expand_camel_case`` for the rationale.
     """
+    if structured_tokens:
+        text = _expand_camel_case(text)
     text = text.lower()
     if structured_tokens:
         tokens = _STRUCTURED_TOKEN_RE.findall(text)
@@ -304,14 +355,53 @@ class LazyBM25:
         self.avgdl: float = 0.0
         self._build_index()
 
+    # Wave 84: section_heading injection. The probe diagnosis showed the
+    # NodeShape definition chunk (heading "Node Shapes and Property Shapes")
+    # losing to a sh:and/or/not logical-composition chunk because the
+    # heading — the most signal-dense string in any chunk — was never
+    # indexed. Headings live at chunk.source.section_heading; they are
+    # injected at the front of the indexed string with 3× repetition so
+    # heading terms get a soft boost without overwhelming body text.
+    # Headings are capped at HEADING_TOKEN_CAP words to prevent very long
+    # headings on short chunks from dominating term frequency.
+    HEADING_REPETITIONS = 3
+    HEADING_TOKEN_CAP = 8
+
+    def _heading_for_indexing(self, chunk: dict) -> str:
+        """Return the section heading repeated for indexing, or empty.
+
+        Reads from ``chunk.source.section_heading`` (v4 schema) with a
+        fallback to ``chunk.section_heading`` for any back-compat path.
+        Caps heading length so a verbose heading doesn't dominate the
+        chunk's term-frequency distribution.
+        """
+        source = chunk.get("source") or {}
+        heading = source.get("section_heading") or chunk.get("section_heading") or ""
+        if not heading or not isinstance(heading, str):
+            return ""
+        words = heading.split()
+        if len(words) > self.HEADING_TOKEN_CAP:
+            words = words[: self.HEADING_TOKEN_CAP]
+        capped = " ".join(words)
+        return " ".join([capped] * self.HEADING_REPETITIONS)
+
     def _doc_text_for_indexing(self, chunk: dict) -> str:
         """Return the string to index for a chunk.  Prefers retrieval_text
-        when the chunk carries one and ``use_retrieval_text`` is on."""
+        when the chunk carries one and ``use_retrieval_text`` is on.
+
+        Wave 84: prepends ``section_heading`` (capped + repeated) so the
+        heading contributes term frequency to BM25. Headings are the most
+        signal-dense string per chunk; pre-Wave-84 they were invisible to
+        retrieval, which let same-topic chunks with denser body keyword
+        repetition outscore the actual definition chunk for the topic.
+        """
+        heading_block = self._heading_for_indexing(chunk)
         if self.use_retrieval_text:
             rt = chunk.get("retrieval_text")
             if rt:
-                return str(rt)
-        return chunk.get("text", "")
+                return f"{heading_block} {rt}".strip() if heading_block else str(rt)
+        body = chunk.get("text", "")
+        return f"{heading_block} {body}".strip() if heading_block else body
 
     def _build_index(self):
         """Build BM25 index from chunks."""
@@ -699,6 +789,11 @@ def retrieve_chunks(
     prefer_self_contained: bool = False,  # prereq boost, off by default (niche)
     use_targets_concept_boost: bool = True,  # Wave 71: typed LO→concept edges
     query_bloom_level: Optional[str] = None,  # Wave 71: detected query Bloom for edge-level match bonus
+    # Wave 84 — additive signals (default off so existing callers see no
+    # behavior change). Opt in via ``method`` preset or explicit booleans.
+    use_tag_idf_boost: bool = False,
+    use_chunk_type_intent_boost: bool = False,
+    method: Optional[str] = None,  # preset selector — overrides individual flags above
     lo_filter: Optional[list[str]] = None,
     boost_weights: Optional[dict] = None,
     use_retrieval_text: bool = True,
@@ -715,6 +810,24 @@ def retrieve_chunks(
     are unaffected.  Opt into the rationale payload and metadata-aware
     scoring explicitly.
     """
+    # Wave 84: ``method`` preset overrides individual boost flags so
+    # callers can A/B retrieval configurations without juggling 6 booleans.
+    # Unknown method names raise ValueError (fail loudly on typos).
+    if method is not None:
+        preset = resolve_method_preset(method)
+        if "metadata_scoring" in preset:
+            metadata_scoring = bool(preset["metadata_scoring"])
+        if "use_concept_graph_boost" in preset:
+            use_concept_graph_boost = bool(preset["use_concept_graph_boost"])
+        if "use_lo_match_boost" in preset:
+            use_lo_match_boost = bool(preset["use_lo_match_boost"])
+        if "use_targets_concept_boost" in preset:
+            use_targets_concept_boost = bool(preset["use_targets_concept_boost"])
+        if "use_tag_idf_boost" in preset:
+            use_tag_idf_boost = bool(preset["use_tag_idf_boost"])
+        if "use_chunk_type_intent_boost" in preset:
+            use_chunk_type_intent_boost = bool(preset["use_chunk_type_intent_boost"])
+
     # Phase 1: Filter courses by metadata
     if course_slug:
         course_dir = repo_root / "courses" / course_slug
@@ -755,7 +868,27 @@ def retrieve_chunks(
         hierarchy_level=hierarchy_level,
     )
 
-    candidate_budget = max(limit * 10, 100)
+    # Wave 84: previously ``candidate_budget = max(limit * 10, 100)`` —
+    # the budget capped at 100 by default for limit=10, so
+    # ``_collect_filtered_chunks`` returned the FIRST 100 chunks in
+    # file/stream order (which mirrors module/week order), then BM25
+    # scored only that subset. For any course with > 100 chunks, gold
+    # chunks past the first 100 (later weeks/modules) were invisible
+    # to retrieval — a candidate-collection bug, not a tokenization
+    # issue. The audit's rdf-shacl-551-2 probe revealed it as a
+    # 60% Hit@10 ceiling (6/15 queries' gold chunks lived past chunk_00100).
+    #
+    # Fix: for single-course queries (``course_slug`` set) the budget
+    # is effectively the whole course (10K hard cap, well above any
+    # realistic course size). For multi-course queries we still bound
+    # so cross-corpus searches don't index a million chunks; bumped
+    # the floor from 100 to 1000 so even small limits get a representative
+    # pool. ``sample_per_course`` still bounds per-course collection
+    # for diversity-shaping cross-corpus queries.
+    if course_slug:
+        candidate_budget = 10000
+    else:
+        candidate_budget = max(limit * 10, 1000)
     candidates = _collect_filtered_chunks(
         courses=courses,
         repo_root=repo_root,
@@ -802,6 +935,23 @@ def retrieve_chunks(
     # multiplicative, bounded by MAX_TOTAL_BOOST, and attributable per-boost
     # in the rationale payload.
     q_tokens_lower = _lower_tokens_for_rationale(query)
+
+    # Wave 84: pre-compute IDF over the candidate pool's tag distribution.
+    # Doing this once over candidates (not the global corpus) keeps the
+    # signal sensitive to the active filter — e.g. when narrowed to a
+    # single course/week, "rdf" becomes high-IDF if it's rare in that
+    # subset. Empty when no boost requested (cheap short-circuit).
+    tag_idf_weights: dict[str, float] = (
+        compute_tag_idf(c.get("concept_tags", []) for c, _, _, _ in scored_with_components)
+        if metadata_scoring and use_tag_idf_boost
+        else {}
+    )
+    query_intents = (
+        detect_query_intent(query)
+        if metadata_scoring and use_chunk_type_intent_boost
+        else set()
+    )
+
     results: list[tuple[RetrievalResult, float]] = []
     for chunk, blended, bm25_score, ngram_score in scored_with_components:
         slug = chunk.get("_course_slug", "")
@@ -835,6 +985,16 @@ def retrieve_chunks(
                 q_concepts,
                 targets_concept_edges,
                 query_bloom_level=query_bloom_level,
+            )
+        # Wave 84: separately-fused IDF-weighted tag overlap.
+        if metadata_scoring and use_tag_idf_boost and tag_idf_weights:
+            contributions.tag_idf_overlap = tag_idf_overlap_score(
+                chunk, q_tokens_lower, tag_idf_weights,
+            )
+        # Wave 84: chunk_type intent prior (define / explain / example / ...).
+        if metadata_scoring and use_chunk_type_intent_boost and query_intents:
+            contributions.chunk_type_intent = chunk_type_intent_prior(
+                chunk, query_intents,
             )
 
         final_score, capped_boost = combine_bm25_with_boosts(

@@ -1181,5 +1181,439 @@ def retrieval_eval(ctx, course: str, gold_queries: Optional[str], report: Option
     print(f"\n  report: {rpt.get('gold_queries_path')} → evaluation_results.json")
 
 
+@main.command("retrieval-compare")
+@click.option("--course", "-c", required=True, help="Course slug to evaluate")
+@click.option(
+    "--probe",
+    type=click.Path(exists=True),
+    help="Path to probe JSON. Default: courses/<slug>/quality/retrieval_probe.json",
+)
+@click.option(
+    "--methods",
+    default="bm25,bm25+graph,hybrid",
+    help="Comma-separated method presets. Valid: bm25, bm25+graph, bm25+intent, bm25+tag, hybrid",
+)
+@click.option("--limit", type=int, default=10, help="Retrieval limit per query (default: 10)")
+@click.option(
+    "--report",
+    type=click.Path(),
+    help="Path to write the comparison report JSON. Default: courses/<slug>/quality/retrieval_compare_<timestamp>.json",
+)
+@click.option("--no-save", is_flag=True, help="Print results to stdout only; do not write a report file.")
+@click.pass_context
+def retrieval_compare(
+    ctx,
+    course: str,
+    probe: Optional[str],
+    methods: str,
+    limit: int,
+    report: Optional[str],
+    no_save: bool,
+):
+    """A/B compare retrieval-method presets over a probe-query set.
+
+    \b
+    Example:
+        libv2 retrieval-compare --course rdf-shacl-551-2 \\
+            --methods bm25,bm25+intent,hybrid
+
+    Probe JSON shape — same as eval-set ``EvalQuery`` (query_id, query_text,
+    expected_chunk_ids[], optional chunk_type/difficulty/notes).
+    """
+    from datetime import datetime as _dt
+    from .eval_harness import compare_retrieval_methods
+
+    repo_root = ctx.obj["repo_root"]
+    course_dir = repo_root / "courses" / course
+    if not course_dir.exists():
+        print_error(f"Course not found: {course_dir}")
+        sys.exit(1)
+
+    probe_path = Path(probe) if probe else (course_dir / "quality" / "retrieval_probe.json")
+    if not probe_path.exists():
+        print_error(f"Probe set not found: {probe_path}")
+        sys.exit(1)
+
+    method_list = [m.strip() for m in methods.split(",") if m.strip()]
+    if not method_list:
+        print_error("No methods provided.")
+        sys.exit(1)
+
+    try:
+        result = compare_retrieval_methods(
+            repo_root=repo_root,
+            course_slug=course,
+            probe_path=probe_path,
+            methods=method_list,
+            retrieval_limit=limit,
+        )
+    except (FileNotFoundError, ValueError) as e:
+        print_error(str(e))
+        sys.exit(1)
+
+    # Print summary table
+    print_success(
+        f"Compared {result['total_queries']} probe queries across "
+        f"{len(method_list)} method(s) for {course}"
+    )
+    if RICH_AVAILABLE:
+        table = Table(title="Aggregate Metrics", show_header=True)
+        table.add_column("method")
+        table.add_column("Hit@1", justify="right")
+        table.add_column("Hit@5", justify="right")
+        table.add_column("Hit@10", justify="right")
+        table.add_column("MRR", justify="right")
+        table.add_column("MAP@10", justify="right")
+        table.add_column("ms/q", justify="right")
+        for m in method_list:
+            agg = result["aggregate"].get(m, {})
+            table.add_row(
+                m,
+                f"{agg.get('hit_at_1', 0):.3f}",
+                f"{agg.get('hit_at_5', 0):.3f}",
+                f"{agg.get('hit_at_10', 0):.3f}",
+                f"{agg.get('mrr', 0):.4f}",
+                f"{agg.get('map_at_10', 0):.4f}",
+                f"{agg.get('avg_latency_ms', 0):.1f}",
+            )
+        console.print(table)
+    else:
+        print()
+        header = f"{'method':<14} {'Hit@1':>6} {'Hit@5':>6} {'Hit@10':>7} {'MRR':>7} {'MAP@10':>7} {'ms/q':>7}"
+        print(header)
+        print("-" * len(header))
+        for m in method_list:
+            agg = result["aggregate"].get(m, {})
+            print(
+                f"{m:<14} {agg.get('hit_at_1', 0):>6.3f} "
+                f"{agg.get('hit_at_5', 0):>6.3f} {agg.get('hit_at_10', 0):>7.3f} "
+                f"{agg.get('mrr', 0):>7.4f} {agg.get('map_at_10', 0):>7.4f} "
+                f"{agg.get('avg_latency_ms', 0):>7.1f}"
+            )
+
+    # Per-query diff: rows where methods disagree at hit@1
+    diff_rows = []
+    for row in result["per_query"]:
+        h1 = {m: row["results"].get(m, {}).get("hit_at_1", False) for m in method_list}
+        if len(set(h1.values())) > 1:
+            diff_rows.append((row["query_id"], h1, row["results"]))
+    if diff_rows:
+        print()
+        print(f"Queries with disagreement at Hit@1 ({len(diff_rows)}/{result['total_queries']}):")
+        for qid, h1, results in diff_rows:
+            cells = " | ".join(f"{m}={'✓' if h1[m] else '✗'}" for m in method_list)
+            top1s = " | ".join(
+                f"{m}→{results.get(m, {}).get('top1', '?')[-25:]}" for m in method_list
+            )
+            print(f"  {qid}: {cells}")
+            print(f"    top1:  {top1s}")
+
+    # Write the report
+    if not no_save:
+        if report:
+            output_path = Path(report)
+        else:
+            ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+            output_path = course_dir / "quality" / f"retrieval_compare_{ts}.json"
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w") as f:
+            json.dump(result, f, indent=2)
+        print(f"\nReport: {output_path}")
+
+
+@main.command("ask")
+@click.argument("query")
+@click.option("--course", "-c", help="Course slug to query (omit for cross-course)")
+@click.option("--method", "-m", default="bm25+intent",
+              help="Retrieval preset: bm25, bm25+graph, bm25+intent, bm25+tag, hybrid")
+@click.option("--limit", "-n", type=int, default=10,
+              help="Max chunks to retrieve (capped at 50 by LibV2 policy)")
+@click.option("--answer", "-a", "one_shot_answer",
+              help="Pre-supply Claude's answer to record in the same step")
+@click.option("--force", is_flag=True,
+              help="Bypass cache; force fresh retrieval and a new record")
+@click.option("--output", "-o", type=click.Choice(["text", "json"]), default="text")
+@click.pass_context
+def ask(ctx, query: str, course: Optional[str], method: str, limit: int,
+        one_shot_answer: Optional[str], force: bool, output: str):
+    """Ask the LibV2 corpus a question; persist Q&A alongside the source.
+
+    Cache-first by default: if an answered record exists for the same
+    query (case- and whitespace-normalized), the cached answer is
+    returned without re-running retrieval. Pass ``--force`` to bypass
+    the cache and create a fresh record.
+
+    Per-course queries land in ``courses/<slug>/queries/``; cross-course
+    queries (no ``--course``) land in ``catalog/queries/``. After
+    reading the retrieved chunks below, attach a synthesized answer
+    with ``libv2 answer <query_id> "<text>"``.
+
+    \b
+    Examples:
+        libv2 ask "How do I model SHACL property paths?" --course rdf-shacl-551-2
+        libv2 ask "compare UDL vs differentiated instruction" --method hybrid
+        libv2 ask "How does owl:sameAs entail?" --course rdf-shacl-551-2 --force
+    """
+    from .retriever import retrieve_chunks
+    from .query_log import (
+        write_query_record,
+        attach_answer,
+        compact_retrieval_result,
+        find_answered_query,
+        load_record,
+        query_path,
+        resolve_storage_dir,
+    )
+
+    if limit > 50:
+        print_warning("LibV2 RAG policy caps results at 50; clamping.")
+        limit = 50
+
+    repo_root: Path = ctx.obj["repo_root"]
+    if course:
+        course_dir = repo_root / "courses" / course
+        if not course_dir.exists():
+            print_error(f"Course not found: {course_dir}")
+            sys.exit(1)
+
+    # Cache lookup: a previously-answered record for the same query is
+    # returned as-is unless --force is set. The synthesis is the
+    # expensive part; retrieval is cheap. Without this, every re-ask
+    # would invisibly bypass the stored answers.
+    if not force and not one_shot_answer:
+        cached = find_answered_query(repo_root, course, query)
+        if cached is not None:
+            cache_path = query_path(resolve_storage_dir(repo_root, course), cached["query_id"])
+            if output == "json":
+                cached["_cache_hit"] = True
+                print(json.dumps(cached, indent=2))
+                return
+            print_success(f"Cache hit: {cached['query_id']}")
+            print(f"  Path:     {cache_path}")
+            print(f"  Asked:    {cached['asked_at']}")
+            print(f"  Answered: {cached['answered_at']}")
+            print(f"\nQuery: {query}\n")
+            chunks = cached.get("retrieved_chunks") or []
+            if chunks:
+                print(f"Retrieved {len(chunks)} chunk(s) (cached):")
+                for c in chunks:
+                    print(f"  [{c['rank']}] {c['chunk_id']}  ({c.get('course_slug', '')})")
+                    if c.get("section_heading"):
+                        print(f"      heading: {c['section_heading']}")
+            print(f"\nAnswer:\n{cached['answer']}")
+            print("\n(Use --force to bypass cache and create a fresh record.)")
+            return
+
+    try:
+        results = retrieve_chunks(
+            repo_root=repo_root,
+            query=query,
+            course_slug=course,
+            limit=limit,
+            method=method,
+        )
+    except ValueError as e:
+        print_error(str(e))
+        sys.exit(1)
+
+    compact = [compact_retrieval_result(r, i + 1).to_dict() for i, r in enumerate(results)]
+    record_path = write_query_record(
+        repo_root=repo_root,
+        course_slug=course,
+        query_text=query,
+        method=method,
+        limit=limit,
+        retrieved=compact,
+    )
+    record = load_record(repo_root, course, json.loads(record_path.read_text())["query_id"])
+    qid = record["query_id"]
+
+    if one_shot_answer:
+        attach_answer(repo_root, course, qid, one_shot_answer)
+        record = load_record(repo_root, course, qid)
+
+    if output == "json":
+        print(json.dumps(record, indent=2))
+        return
+
+    print_success(f"Recorded query: {qid}")
+    print(f"  Path:   {record_path}")
+    print(f"  Scope:  {'course=' + course if course else 'cross-course'}")
+    print(f"  Method: {method} | limit={limit}")
+    print(f"\nQuery: {query}\n")
+
+    if not compact:
+        print_warning("No chunks retrieved — refine the query or pick a different method.")
+    else:
+        print(f"Retrieved {len(compact)} chunk(s):")
+        for c in compact:
+            print(f"\n  [{c['rank']}] score={c['score']:.3f}  {c['chunk_id']}  ({c['course_slug']})")
+            if c["section_heading"]:
+                print(f"      heading: {c['section_heading']}")
+            if c["concept_tags"]:
+                print(f"      tags:    {', '.join(c['concept_tags'][:5])}")
+            print(f"      {c['snippet']}")
+
+    if record["status"] != "answered":
+        scope_flag = f" --course {course}" if course else ""
+        print(
+            f"\nNext: read the chunks above, then attach your answer:\n"
+            f"  libv2 answer {qid}{scope_flag} \"<your synthesized answer>\""
+        )
+
+
+@main.command("answer")
+@click.argument("query_id")
+@click.argument("answer_text")
+@click.option("--course", "-c", help="Course slug the query was scoped to (omit for cross-course)")
+@click.pass_context
+def answer_cmd(ctx, query_id: str, answer_text: str, course: Optional[str]):
+    """Attach Claude's synthesized answer to a previously-asked query."""
+    from .query_log import attach_answer
+
+    repo_root: Path = ctx.obj["repo_root"]
+    try:
+        path = attach_answer(repo_root, course, query_id, answer_text)
+    except FileNotFoundError as e:
+        print_error(str(e))
+        sys.exit(1)
+
+    print_success(f"Answer recorded: {query_id}")
+    print(f"  Path: {path}")
+
+
+@main.group("queries")
+def queries_group():
+    """Browse the Q&A log Claude has built up against LibV2 corpora."""
+    pass
+
+
+@queries_group.command("list")
+@click.option("--course", "-c", help="Course slug (omit for cross-course log)")
+@click.option("--status", type=click.Choice(["open", "answered", "all"]), default="all")
+@click.pass_context
+def queries_list(ctx, course: Optional[str], status: str):
+    """List queries asked against a corpus (sorted by asked_at)."""
+    from .query_log import list_queries
+
+    repo_root: Path = ctx.obj["repo_root"]
+    items = list_queries(repo_root, course)
+    if status != "all":
+        items = [q for q in items if q.get("status") == status]
+
+    if not items:
+        scope = f"course={course}" if course else "cross-course"
+        print(f"No queries found ({scope}, status={status}).")
+        return
+
+    for q in items:
+        marker = "[A]" if q.get("status") == "answered" else "[ ]"
+        text = (q.get("query_text") or "")[:80]
+        print(f"  {marker} {q['query_id']}  {text}")
+
+
+@queries_group.command("show")
+@click.argument("query_id")
+@click.option("--course", "-c", help="Course slug the query was scoped to")
+@click.option("--output", "-o", type=click.Choice(["text", "json"]), default="text")
+@click.pass_context
+def queries_show(ctx, query_id: str, course: Optional[str], output: str):
+    """Show a stored Q&A record."""
+    from .query_log import load_record
+
+    repo_root: Path = ctx.obj["repo_root"]
+    try:
+        record = load_record(repo_root, course, query_id)
+    except FileNotFoundError as e:
+        print_error(str(e))
+        sys.exit(1)
+
+    if output == "json":
+        print(json.dumps(record, indent=2))
+        return
+
+    print(f"Query ID:   {record['query_id']}")
+    print(f"Status:     {record['status']}")
+    print(f"Scope:      {record['scope']}" + (f" ({record['course_slug']})" if record.get("course_slug") else ""))
+    print(f"Method:     {record['method']} | limit={record['limit']}")
+    print(f"Asked:      {record['asked_at']} by {record['asked_by']}")
+    if record.get("answered_at"):
+        print(f"Answered:   {record['answered_at']} by {record.get('answered_by') or 'claude'}")
+    print(f"\nQuery:\n  {record['query_text']}")
+    chunks = record.get("retrieved_chunks") or []
+    if chunks:
+        print(f"\nRetrieved {len(chunks)} chunk(s):")
+        for c in chunks:
+            print(f"  [{c['rank']}] {c['chunk_id']} ({c.get('course_slug', '')})")
+            if c.get("section_heading"):
+                print(f"      heading: {c['section_heading']}")
+    if record.get("answer"):
+        print(f"\nAnswer:\n{record['answer']}")
+    else:
+        print("\nAnswer: (open — no answer recorded yet)")
+
+
+@main.command("export-rdf")
+@click.argument("slug")
+@click.option(
+    "--output-dir", "-o", type=click.Path(file_okay=False),
+    help="Output directory (default: courses/<slug>/rdf/)",
+)
+@click.option(
+    "--format", "-f", "output_format",
+    type=click.Choice(["turtle", "trig", "nquads", "ntriples", "xml"]),
+    default="turtle",
+    help="RDF serialization format (default: turtle)",
+)
+@click.pass_context
+def export_rdf(ctx, slug: str, output_dir: Optional[str], output_format: str):
+    """Export a course's JSON artifacts as RDF using the Phase 1 JSON-LD contexts.
+
+    Materializes Turtle (or TriG / N-Quads / etc.) files alongside the
+    JSON artifacts so downstream RDF tooling (Protégé, SPARQL stores,
+    pyshacl) can ingest the package without a JSON-LD-aware parser.
+
+    Reads the per-artifact @context files from
+    ``schemas/context/*_v1.jsonld`` and applies pyld + rdflib to
+    materialize the triples.
+
+    \b
+    Example:
+        libv2 export-rdf rdf-shacl-551-2
+        libv2 export-rdf rdf-shacl-551-2 --format trig -o /tmp/rdf-out/
+    """
+    from .rdf_export import export_course
+
+    repo_root: Path = ctx.obj["repo_root"]
+    course_dir = repo_root / "courses" / slug
+    if not course_dir.exists():
+        print_error(f"Course not found: {course_dir}")
+        sys.exit(1)
+
+    out_dir = Path(output_dir) if output_dir else course_dir / "rdf"
+
+    try:
+        results = export_course(
+            repo_root=repo_root,
+            course_slug=slug,
+            output_dir=out_dir,
+            output_format=output_format,
+        )
+    except FileNotFoundError as e:
+        print_error(str(e))
+        sys.exit(1)
+    except Exception as e:
+        print_error(f"RDF export failed: {e}")
+        sys.exit(1)
+
+    if not results:
+        print_warning(f"No exportable artifacts found under {course_dir}")
+        return
+
+    print_success(f"Exported {len(results)} artifact(s) to {out_dir}")
+    for r in results:
+        print(f"  {r.artifact_relpath} → {r.output_path} ({r.triple_count:,} triples)")
+
+
 if __name__ == "__main__":
     main()

@@ -554,6 +554,193 @@ def compare_reports(
     return comparison
 
 
+# ---------------------------------------------------------------------------
+# Wave 84: A/B comparison across retrieval method presets
+# ---------------------------------------------------------------------------
+
+
+def _evaluate_query_with_method(
+    query: EvalQuery,
+    repo_root: Path,
+    course_slug: str,
+    method: str,
+    retrieval_limit: int,
+) -> EvalResult:
+    """Evaluate a single query under a specific retrieval method preset.
+
+    Wraps ``retrieve_chunks`` with ``method=method`` and computes the same
+    metrics ``RetrievalEvaluator.evaluate_query`` does. Lifted out so the
+    comparison harness can iterate methods without instantiating an
+    Evaluator per method.
+    """
+    expected_set = set(query.expected_chunk_ids)
+    t0 = time.perf_counter()
+    results = retrieve_chunks(
+        repo_root=repo_root,
+        query=query.query_text,
+        course_slug=course_slug,
+        chunk_type=query.chunk_type,
+        difficulty=query.difficulty,
+        limit=retrieval_limit,
+        method=method,
+    )
+    latency_ms = (time.perf_counter() - t0) * 1000
+
+    retrieved_ids = [r.chunk_id for r in results]
+    hit_at_1 = bool(expected_set & set(retrieved_ids[:1]))
+    hit_at_5 = bool(expected_set & set(retrieved_ids[:5]))
+    hit_at_10 = bool(expected_set & set(retrieved_ids[:10]))
+
+    rr = 0.0
+    for i, cid in enumerate(retrieved_ids, 1):
+        if cid in expected_set:
+            rr = 1.0 / i
+            break
+    relevant_in_top_10 = len(expected_set & set(retrieved_ids[:10]))
+    p10 = relevant_in_top_10 / min(10, len(retrieved_ids)) if retrieved_ids else 0.0
+
+    return EvalResult(
+        query_id=query.query_id,
+        query_text=query.query_text,
+        hit_at_1=hit_at_1,
+        hit_at_5=hit_at_5,
+        hit_at_10=hit_at_10,
+        reciprocal_rank=rr,
+        precision_at_10=p10,
+        latency_ms=latency_ms,
+        retrieved_chunk_ids=retrieved_ids,
+        expected_chunk_ids=query.expected_chunk_ids,
+        matched_chunks=list(expected_set & set(retrieved_ids)),
+    )
+
+
+def compare_retrieval_methods(
+    repo_root: Path,
+    course_slug: str,
+    probe_path: Path,
+    methods: List[str],
+    retrieval_limit: int = 10,
+) -> Dict:
+    """Run a probe set under every named retrieval-method preset.
+
+    Returns a dict of shape::
+
+        {
+          "course_slug": ...,
+          "probe_path": ...,
+          "total_queries": N,
+          "methods": ["bm25", "hybrid", ...],
+          "aggregate": {
+            "bm25":   {"hit_at_1": .., "hit_at_5": .., "hit_at_10": ..,
+                       "mrr": .., "map_at_10": .., "avg_latency_ms": ..},
+            "hybrid": {...},
+          },
+          "per_query": [
+            {"query_id": "...", "query_text": "...",
+             "expected_chunk_ids": [...],
+             "results": {
+                "bm25":   {"hit_at_1": bool, "rr": float, "top1": "..."},
+                "hybrid": {...},
+             }},
+            ...
+          ],
+        }
+
+    Pure: no I/O beyond reading the probe file and dispatching retrievals
+    through ``retrieve_chunks`` with the given method preset. Caller can
+    write the result wherever they like.
+    """
+    repo_root = Path(repo_root)
+    probe_path = Path(probe_path)
+    if not probe_path.exists():
+        raise FileNotFoundError(f"Probe set not found: {probe_path}")
+    with open(probe_path) as f:
+        data = json.load(f)
+    eval_set = EvalSet.from_dict(
+        {
+            "course_slug": data.get("course_slug", course_slug),
+            "created_timestamp": data.get(
+                "created_timestamp", datetime.now().isoformat()
+            ),
+            "version": data.get("version", "1.0"),
+            "queries": data.get("queries", []),
+            "description": data.get("description"),
+        }
+    )
+    if not eval_set.queries:
+        raise ValueError(f"No queries in probe set: {probe_path}")
+
+    aggregate: Dict[str, Dict[str, float]] = {}
+    per_query: List[Dict] = []
+
+    # Run each query under each method. Outer loop = query so we can build
+    # the per-query diff table inline.
+    for q in eval_set.queries:
+        row: Dict = {
+            "query_id": q.query_id,
+            "query_text": q.query_text,
+            "expected_chunk_ids": q.expected_chunk_ids,
+            "results": {},
+        }
+        for method in methods:
+            r = _evaluate_query_with_method(
+                q, repo_root, course_slug, method, retrieval_limit
+            )
+            row["results"][method] = {
+                "hit_at_1": r.hit_at_1,
+                "hit_at_5": r.hit_at_5,
+                "hit_at_10": r.hit_at_10,
+                "rr": round(r.reciprocal_rank, 4),
+                "precision_at_10": round(r.precision_at_10, 4),
+                "latency_ms": round(r.latency_ms, 2),
+                "top1": r.retrieved_chunk_ids[0] if r.retrieved_chunk_ids else None,
+                "matched_in_top_10": r.matched_chunks,
+            }
+            agg = aggregate.setdefault(
+                method,
+                {
+                    "_n": 0,
+                    "_h1": 0,
+                    "_h5": 0,
+                    "_h10": 0,
+                    "_rr": 0.0,
+                    "_p10": 0.0,
+                    "_lat": 0.0,
+                },
+            )
+            agg["_n"] += 1
+            agg["_h1"] += int(r.hit_at_1)
+            agg["_h5"] += int(r.hit_at_5)
+            agg["_h10"] += int(r.hit_at_10)
+            agg["_rr"] += r.reciprocal_rank
+            agg["_p10"] += r.precision_at_10
+            agg["_lat"] += r.latency_ms
+        per_query.append(row)
+
+    # Finalize aggregates
+    final_aggregate: Dict[str, Dict[str, float]] = {}
+    for method, agg in aggregate.items():
+        n = max(agg["_n"], 1)
+        final_aggregate[method] = {
+            "hit_at_1": round(agg["_h1"] / n, 4),
+            "hit_at_5": round(agg["_h5"] / n, 4),
+            "hit_at_10": round(agg["_h10"] / n, 4),
+            "mrr": round(agg["_rr"] / n, 4),
+            "map_at_10": round(agg["_p10"] / n, 4),
+            "avg_latency_ms": round(agg["_lat"] / n, 2),
+        }
+
+    return {
+        "course_slug": course_slug,
+        "probe_path": str(probe_path),
+        "eval_timestamp": datetime.now().isoformat(),
+        "total_queries": len(eval_set.queries),
+        "methods": list(methods),
+        "aggregate": final_aggregate,
+        "per_query": per_query,
+    }
+
+
 if __name__ == "__main__":
     import sys
     logging.basicConfig(level=logging.INFO)
