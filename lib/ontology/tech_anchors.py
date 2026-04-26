@@ -73,6 +73,103 @@ _PATTERNS: Dict[str, List[re.Pattern[str]]] = {
         re.compile(r"\bowl:sameAs\b"),
         re.compile(r"\bsameAs\b"),
     ],
+    # ---------------------------------------------------------------
+    # Wave 84 — serialization formats beyond the Wave 82 set.
+    # The audit found 36 chunks (worked-example pages spanning multiple
+    # syntaxes) tagged with only the headline standards but missing the
+    # specific format slugs they discussed.
+    # ---------------------------------------------------------------
+    "trig": [
+        re.compile(r"\bTriG\b"),  # case-sensitive: distinct from "trig" (math fn)
+    ],
+    "n-quads": [
+        re.compile(r"\bN-Quads\b", re.IGNORECASE),
+        re.compile(r"\bNQuads\b", re.IGNORECASE),
+    ],
+    "rdf-xml": [
+        # The W3C-spec rendering uses a slash; alias map normalises the
+        # hyphenated form. Both surface forms must hit.
+        re.compile(r"\bRDF/XML\b"),
+        re.compile(r"\bRDFXML\b", re.IGNORECASE),
+    ],
+    # ---------------------------------------------------------------
+    # Wave 84 — RDF foundational vocabulary. These concepts appeared
+    # in 90%+ of weak-chunk text but never surfaced as concept_tags
+    # because the surface form ``IRI`` / ``literal`` / ``datatype`` /
+    # ``blank node`` matched no existing pattern.
+    # ---------------------------------------------------------------
+    "iri": [
+        # Match standalone IRI but not URI/IRI compounds; the audit's
+        # "IRI as Resource Identifier" chunk uses both freely so we
+        # accept either.
+        re.compile(r"\bIRI\b"),
+        re.compile(r"\bIRIs\b"),
+    ],
+    "literal": [
+        # RDF literal — only fires when adjacent to RDF/datatype context
+        # so we don't over-match the English word ``literal``. Anchors:
+        # "RDF literal", "literal value", "lexical literal", "datatype literal".
+        re.compile(r"\bRDF\s+literals?\b", re.IGNORECASE),
+        re.compile(r"\bdatatype[d-]?\s+literals?\b", re.IGNORECASE),
+        re.compile(r"\blexical\s+literals?\b", re.IGNORECASE),
+        re.compile(r"\bliteral\s+values?\b", re.IGNORECASE),
+    ],
+    "datatype": [
+        # ``datatype`` is overloaded; require RDF/SHACL/XSD context to fire.
+        re.compile(r"\bdatatypes?\b", re.IGNORECASE),
+    ],
+    "blank-node": [
+        re.compile(r"\bblank\s+nodes?\b", re.IGNORECASE),
+        re.compile(r"\b_:[A-Za-z][A-Za-z0-9_]*\b"),  # Turtle blank-node syntax
+    ],
+    "rdf-dataset": [
+        # The W3C dataset / quad model. Distinct from generic "dataset".
+        re.compile(r"\bRDF\s+datasets?\b", re.IGNORECASE),
+        re.compile(r"\bnamed\s+graphs?\b", re.IGNORECASE),
+    ],
+    # ---------------------------------------------------------------
+    # Wave 84 — SHACL-specific shape vocabulary. Audit's
+    # SHACL queries (NodeShape, PropertyShape) had to retrieve via
+    # raw text match because the slugs weren't in concept_tags.
+    # ---------------------------------------------------------------
+    "node-shape": [
+        re.compile(r"\bsh:NodeShape\b"),
+        re.compile(r"\bNodeShape\b"),
+        re.compile(r"\bnode\s+shapes?\b", re.IGNORECASE),
+    ],
+    "property-shape": [
+        re.compile(r"\bsh:PropertyShape\b"),
+        re.compile(r"\bPropertyShape\b"),
+        re.compile(r"\bproperty\s+shapes?\b", re.IGNORECASE),
+    ],
+    # ---------------------------------------------------------------
+    # Wave 84 — RDFS predicates. ``subclassof`` and ``subpropertyof``
+    # are first-class concepts on the entailment chunks; the audit
+    # named ``subClassOf entailment`` as the headline retrieval miss.
+    # ---------------------------------------------------------------
+    "subclassof": [
+        re.compile(r"\brdfs:subClassOf\b"),
+        re.compile(r"\bsubClassOf\b"),
+        re.compile(r"\bsubclass\s+of\b", re.IGNORECASE),
+    ],
+    "subpropertyof": [
+        re.compile(r"\brdfs:subPropertyOf\b"),
+        re.compile(r"\bsubPropertyOf\b"),
+        re.compile(r"\bsubproperty\s+of\b", re.IGNORECASE),
+    ],
+    "rdf-type": [
+        # The most-used RDF predicate. Surface: ``rdf:type``, ``a`` in
+        # Turtle (too noisy to match standalone), ``is a`` (English).
+        re.compile(r"\brdf:type\b"),
+    ],
+    # ---------------------------------------------------------------
+    # Wave 84 — Turtle/SPARQL syntax keywords. Conservative: only the
+    # ones distinctive enough that they reliably indicate the topic.
+    # ---------------------------------------------------------------
+    "turtle-prefix": [
+        re.compile(r"@prefix\b"),  # Turtle prefix declaration
+        re.compile(r"\bPREFIX\s+[a-z]"),  # SPARQL PREFIX
+    ],
 }
 
 

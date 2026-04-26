@@ -4351,12 +4351,18 @@ def _build_tool_registry() -> dict:
                 week_entries: dict = {}
                 for page_id, target_bag in pages_for_week.items():
                     if not target_bag:
-                        # Degenerate fallback: assign the nth DART block
-                        # round-robin as primary.
+                        # Wave 84 fix: degenerate fallback (no topic bag)
+                        # used to round-robin a DART block as PRIMARY at
+                        # confidence 0.3. That stamped a low-confidence
+                        # alphabetically-first block on every page in the
+                        # course, masking actually-relevant sources from
+                        # data-cf-source-ids. Now we emit it as
+                        # ``contributing`` so any genuine primary from
+                        # the content-generator's grounding takes precedence.
                         fallback = dart_blocks[(week_num - 1) % len(dart_blocks)]
                         week_entries[page_id] = {
-                            "primary": [fallback["source_id"]],
-                            "contributing": [],
+                            "primary": [],
+                            "contributing": [fallback["source_id"]],
                             "confidence": 0.3,
                         }
                         chunk_ids.add(fallback["source_id"])
@@ -4374,22 +4380,39 @@ def _build_tool_registry() -> dict:
                     primary_ids: list = []
                     contributing_ids: list = []
                     top_score = scored[0][0] if scored else 0.0
-                    # Strong threshold: top-K (K=1 for content pages,
-                    # K=2 when multiple blocks clearly overlap).
+                    # Wave 84: only emit primary refs when the top-scoring
+                    # block clears a confidence floor (0.15 Jaccard). Below
+                    # that floor the router can't tell which block is
+                    # primary, so it cedes the role to the content-
+                    # generator's data-cf-source-primary attribute (which
+                    # picks the actual source the LLM used). Lower-scoring
+                    # blocks still ride along as contributing so the page
+                    # has provenance breadth.
+                    PRIMARY_CONFIDENCE_FLOOR = 0.15
                     for score, overlap, blk in scored:
-                        if score >= max(0.15, top_score * 0.8) and len(primary_ids) < 2:
+                        if (
+                            score >= max(PRIMARY_CONFIDENCE_FLOOR, top_score * 0.8)
+                            and len(primary_ids) < 2
+                        ):
                             primary_ids.append(blk["source_id"])
                         elif score >= 0.05 and len(contributing_ids) < 3:
                             contributing_ids.append(blk["source_id"])
                     if not primary_ids and scored:
-                        # Still assign the top match even when all scores
-                        # are low — better than producing no provenance.
-                        primary_ids.append(scored[0][2]["source_id"])
-                    if not primary_ids:
-                        # No overlap at all: round-robin a DART block as
-                        # primary with low confidence.
+                        # Top score is below the floor → emit the top match
+                        # as CONTRIBUTING (not primary). That preserves
+                        # provenance breadth without polluting the primary
+                        # role with a guess.
+                        candidate = scored[0][2]["source_id"]
+                        if candidate not in contributing_ids and len(contributing_ids) < 3:
+                            contributing_ids.append(candidate)
+                    if not primary_ids and not contributing_ids:
+                        # Wave 84: no overlap at all — round-robin a DART
+                        # block as CONTRIBUTING (was primary) so a chunk
+                        # always has some provenance for trace, but the
+                        # primary slot stays open for content-generator
+                        # grounding.
                         fallback = dart_blocks[(week_num - 1) % len(dart_blocks)]
-                        primary_ids.append(fallback["source_id"])
+                        contributing_ids.append(fallback["source_id"])
                         top_score = 0.2
                     for sid in primary_ids:
                         chunk_ids.add(sid)
