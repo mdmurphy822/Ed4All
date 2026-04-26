@@ -397,6 +397,12 @@ def is_droppable_class(klass: str) -> bool:
 # slugs depending on the upstream punctuation. The mapping below
 # canonicalizes any equivalent variant onto a single concept slug so
 # the graph doesn't carry near-duplicate nodes.
+#
+# Wave 82 (Phase C2): extended with W3C-standard surface-form aliases
+# so non-canonical query terms route to the canonical anchor slugs
+# emitted by ``lib/ontology/tech_anchors.py``. Pairs with the Phase C1
+# wiring that seeds the canonical nodes when
+# TRAINFORGE_SEED_TECH_CONCEPTS=true.
 KNOWN_EQUIVALENT_ALIASES: Dict[str, str] = {
     "rdfxml": "rdf-xml",
     "rdf-xml": "rdf-xml",  # canonical
@@ -408,6 +414,18 @@ KNOWN_EQUIVALENT_ALIASES: Dict[str, str] = {
     "n-quads": "n-quads",
     "turtle": "turtle",
     "ttl": "turtle",
+    # Wave 82 — W3C standards full-name → acronym slug.
+    "rdf-schema": "rdfs",
+    "rdfs": "rdfs",
+    "web-ontology-language": "owl",
+    "owl": "owl",
+    "shapes-constraint-language": "shacl",
+    "shacl": "shacl",
+    # Wave 82 — owl:sameAs surface variants → predicate slug.
+    "owlsameas": "same-as",
+    "owl-sameas": "same-as",
+    "sameas": "same-as",
+    "same-as": "same-as",
 }
 
 

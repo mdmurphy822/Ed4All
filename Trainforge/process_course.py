@@ -2553,6 +2553,18 @@ class CourseProcessor:
             if any(p.search(text) for p in patterns):
                 _try_add(canonical)
 
+        # Wave 82 (Phase C): W3C tech-anchor seeding. The audit found
+        # rdf-shacl-551-2 missing standalone concept nodes for foundational
+        # tech (RDF, RDFS, OWL, SHACL, SPARQL, Turtle, JSON-LD, N-Triples,
+        # owl:sameAs) — chunks reference them across the corpus but the
+        # canonical concept slugs never enter concept_tags via the
+        # pattern/seed paths above. Behaviour-flagged so legacy corpora
+        # don't shift their tag distributions on a Wave 82 rebuild.
+        if os.getenv("TRAINFORGE_SEED_TECH_CONCEPTS", "").lower() == "true":
+            from lib.ontology.tech_anchors import detect_anchors
+            for slug in detect_anchors(text):
+                _try_add(slug)
+
         return tags[:20]
 
     def _extract_objective_refs(
