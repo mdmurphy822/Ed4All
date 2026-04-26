@@ -3515,7 +3515,10 @@ class CourseProcessor:
             node_id = _make_concept_id(tag, course_id)
             # Label stays human-readable (no course_id prefix) regardless
             # of scoping mode; only ``id`` is composite when the flag is on.
-            label = tag.replace("-", " ").title()
+            # Wave 82: acronym-aware title-case so ``owl-2-rl`` becomes
+            # ``OWL 2 RL`` rather than ``Owl 2 Rl``.
+            from lib.ontology.labels import slug_to_label
+            label = slug_to_label(tag)
             node: Dict[str, Any] = {
                 "id": node_id,
                 "label": label,
@@ -3900,9 +3903,20 @@ class CourseProcessor:
 
     @staticmethod
     def _html_is_well_formed(html: str) -> bool:
-        """True iff ``html`` has non-empty content and every opened tag is closed."""
+        """True iff ``html`` is balanced (every opened non-void tag closes in order).
+
+        Wave 82 (Phase D3) reconciliation: empty / whitespace-only HTML
+        is now ``True`` (well-formed by vacuity) rather than ``False``.
+        Pre-Wave-82 the legacy False return conflated "no HTML to check"
+        with "balance violation", inflating the
+        ``html_balance_violations`` count in ``quality_report.json``.
+        The rdf-shacl-551 audit caught this: 205/295 reported vs 116/295
+        on independent HTMLParser recount. Empty-html (text-only chunks
+        where the renderer dropped HTML) deserves its own metric, not
+        miscategorization as unbalanced.
+        """
         if not html or not html.strip():
-            return False
+            return True
         return _BalanceChecker.check(html)
 
     @staticmethod

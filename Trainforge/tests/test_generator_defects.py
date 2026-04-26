@@ -283,7 +283,14 @@ class TestQualityReportHonesty:
 
         assert CourseProcessor._html_is_well_formed("<p>hi</p>") is True
         assert CourseProcessor._html_is_well_formed("<div><p>hi</p>") is False
-        assert CourseProcessor._html_is_well_formed("") is False
+        # Wave 82 (Phase D3) reconciliation: empty/whitespace-only HTML
+        # is "well-formed by vacuity" — there's nothing to be unbalanced.
+        # Pre-Wave-82 returned False, conflating "no HTML" with "unclosed
+        # tags" and inflating html_balance_violations counts. The
+        # rdf-shacl-551 audit caught this (205/295 reported vs 116/295
+        # on independent recount).
+        assert CourseProcessor._html_is_well_formed("") is True
+        assert CourseProcessor._html_is_well_formed("   \n\t  ") is True
         assert CourseProcessor._html_is_well_formed("<br/><hr>plain") is True
 
     def test_metrics_semantic_version_is_written(self):

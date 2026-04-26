@@ -763,10 +763,12 @@ def build_pedagogy_graph(
     def _emit_concept(slug: str) -> None:
         if slug in concept_nodes_emitted:
             return
+        # Wave 82: acronym-aware title-case for the default label.
+        from lib.ontology.labels import slug_to_label
         node = {
             "id": f"concept:{slug}",
             "class": "Concept",
-            "label": concept_label.get(slug, slug.replace("-", " ").title()),
+            "label": concept_label.get(slug, slug_to_label(slug)),
             "slug": slug,
         }
         if course_id:
@@ -825,7 +827,9 @@ def build_pedagogy_graph(
             for slug in targets:
                 if slug:
                     mc_to_concepts[mc_node_id].add(slug)
-                    concept_label.setdefault(slug, slug.replace("-", " ").title())
+                    # Wave 82: acronym-aware label.
+                    from lib.ontology.labels import slug_to_label as _slbl
+                    concept_label.setdefault(slug, _slbl(slug))
                     if slug not in concept_to_week:
                         _src = c.get("source") or {}
                         _top = _module_top_slice(
