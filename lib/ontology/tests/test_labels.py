@@ -82,6 +82,30 @@ class TestPlainTitleCase:
 # ---------------------------------------------------------------------------
 
 
+class TestCompoundAcronymOverrides:
+    """Slug-level overrides for compound acronyms whose canonical form keeps the hyphen."""
+
+    def test_json_ld_preserves_hyphen(self):
+        assert slug_to_label("json-ld") == "JSON-LD"
+
+    def test_n_triples_preserves_hyphen(self):
+        assert slug_to_label("n-triples") == "N-Triples"
+
+    def test_n_quads_preserves_hyphen(self):
+        assert slug_to_label("n-quads") == "N-Quads"
+
+    def test_rdf_xml_preserves_slash(self):
+        # RDF/XML canonical form uses a slash, not a hyphen — round-trip
+        # the slug to its W3C-spec rendering.
+        assert slug_to_label("rdf-xml") == "RDF/XML"
+
+    def test_compound_prefix_does_not_match_override(self):
+        # "json-ld-context" is NOT in the override table, so it falls
+        # through to the standard hyphen-stripping → "JSON LD Context".
+        # Exact-slug matching prevents over-broad rewrites.
+        assert slug_to_label("json-ld-context") == "JSON LD Context"
+
+
 class TestEdgeCases:
     def test_empty_input(self):
         assert slug_to_label("") == ""
