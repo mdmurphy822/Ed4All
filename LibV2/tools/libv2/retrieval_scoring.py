@@ -82,6 +82,13 @@ def extract_query_concepts(query: str, graph_node_ids: Set[str]) -> Set[str]:
     2-gram ``color-contrast`` and ``contrast-body`` forms.  Bigrams are
     cheap and dramatically lift recall against chunks whose concept_tags
     are hyphenated compounds.
+
+    Each candidate token is also passed through
+    :func:`lib.ontology.concept_classifier.canonicalize_alias` so query
+    surface forms like ``ttl`` / ``rdfxml`` resolve to the same canonical
+    slug (``turtle`` / ``rdf-xml``) the chunk-emit path applies. Without
+    this, the emit→query asymmetry causes graph-assisted retrieval to
+    miss chunks for any non-canonical surface form.
     """
     if not graph_node_ids:
         return set()
@@ -92,7 +99,16 @@ def extract_query_concepts(query: str, graph_node_ids: Set[str]) -> Set[str]:
     q_tokens |= set(_WORD_RE.findall((query or "").lower()))
     for i in range(len(words) - 1):
         q_tokens.add(f"{words[i]}-{words[i + 1]}")
-    return q_tokens & graph_node_ids
+    # Optional alias canonicalization: mirrors the emit-side normalization in
+    # ``Trainforge.process_course._extract_concept_tags``. Soft import keeps
+    # the retriever usable in repos that don't ship the lib/ontology layer.
+    try:
+        from lib.ontology.concept_classifier import canonicalize_alias
+    except Exception:
+        canonical: Set[str] = set()
+    else:
+        canonical = {canonicalize_alias(t) for t in q_tokens}
+    return (q_tokens | canonical) & graph_node_ids
 
 
 def load_concept_graph_node_ids(course_dir: Path) -> Set[str]:
