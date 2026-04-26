@@ -885,6 +885,23 @@ workflows:
               on_error: fail_closed
             description: Wave 78 — fail-closed packet integrity (coverage + typing)
 
+          # Wave 82: silent-zero detection on the typed concept graph.
+          # Closes the rdf-shacl-551 audit's load-bearing finding: 5 of 7
+          # inference rules emitted zero edges with byte-identical
+          # rule_versions while the pipeline reported success. Off by
+          # default (TRAINFORGE_VALIDATE_RULE_OUTPUTS=true to enable);
+          # warning severity so first-run corpora without a baseline
+          # pass cleanly.
+          - gate_id: semantic_graph_rule_output
+            validator: lib.validators.semantic_graph_rule_output.SemanticGraphRuleOutputValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Wave 82 — detect silent-zero regressions in concept_graph_semantic.json rules
+
       - name: finalization
         agents: [brightspace-packager]
         parallel: false
