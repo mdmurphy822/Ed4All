@@ -2758,13 +2758,99 @@ class CourseProcessor:
 
     @staticmethod
     def _extract_section_html(html: str, heading: str) -> str:
-        if not heading:
+        """Return the HTML fragment for the given heading, respecting section
+        boundaries.
+
+        Wave 83 (Phase B) replaces the legacy heading-to-heading regex slice
+        with a section-boundary-aware extractor. The legacy slice ran from
+        ``<hN>{heading}`` to the next ``<h[1-6]`` and ignored
+        ``<section>...</section>`` wrappers entirely. When two adjacent
+        headings lived in different ``<section>`` blocks (the canonical
+        Courseforge layout), the slice would clip a closing ``</section>``
+        from one fragment and an opening ``<section>`` from the next —
+        leaving every chunk's HTML unbalanced. This was the load-bearing
+        cause of the rdf-shacl-551 audit's 203/295 unbalanced-section
+        chunks.
+
+        New behavior:
+          - If the heading lives **inside** a ``<section>``, return the
+            full enclosing section (open tag → matching close tag).
+            Balanced HTML guaranteed.
+          - If the heading lives **outside** any ``<section>`` (e.g. a
+            page-title ``<h1>``), return just the heading element itself.
+            No spurious section tags.
+          - If the heading isn't found, return ``""`` (legacy behavior).
+
+        Implementation: regex-locate the heading, regex-locate every
+        ``<section>``/``</section>`` event, walk events to determine
+        enclosure depth at the heading's position, slice the input string
+        accordingly. No new dependencies. The output is always a
+        substring of the input HTML, so any well-formedness in the source
+        is preserved verbatim.
+        """
+        if not heading or not html:
             return ""
-        # Match from the opening <hN> tag containing this heading text
-        # through to the next <hN> tag or end of string
-        pattern = r"<h[1-6][^>]*>\s*" + re.escape(heading) + r".*?(?=<h[1-6]|$)"
-        match = re.search(pattern, html, re.DOTALL | re.IGNORECASE)
-        return match.group(0) if match else ""
+
+        # Step 1: locate the heading element. Match tolerantly across
+        # whitespace and inline content within the heading body.
+        heading_re = re.compile(
+            r"<h([1-6])\b[^>]*>\s*" + re.escape(heading) + r"\s*</h\1>",
+            re.DOTALL | re.IGNORECASE,
+        )
+        h_match = heading_re.search(html)
+        if not h_match:
+            return ""
+        h_start, h_end = h_match.span()
+
+        # Step 2: collect every <section> open/close event with its byte span.
+        # ``</section\s*>`` allows whitespace before the closing bracket but
+        # nothing else (per HTML5).
+        section_event_re = re.compile(
+            r"<section\b[^>]*>|</section\s*>", re.IGNORECASE
+        )
+
+        # Step 3: walk events to determine section enclosure at h_start.
+        # Events strictly before the heading update an open-section stack;
+        # events strictly after are saved for the close-search step.
+        open_stack: List[int] = []  # stack of section-open START offsets
+        events_after_heading: List[Tuple[int, int, bool]] = []  # (start, end, is_open)
+        for m in section_event_re.finditer(html):
+            is_open = m.group(0).lower().startswith("<section")
+            s, e = m.span()
+            if e <= h_start:
+                if is_open:
+                    open_stack.append(s)
+                elif open_stack:
+                    open_stack.pop()
+                # Mismatched </section> with empty stack: ignore (defensive).
+            elif s >= h_end:
+                events_after_heading.append((s, e, is_open))
+            # Events overlapping the heading (e.g. heading nested inside a
+            # section's start tag) are exotic and ignored.
+
+        if not open_stack:
+            # Heading is outside any section → return just the heading element.
+            return html[h_start:h_end]
+
+        # Step 4: the innermost enclosing section starts at open_stack[-1].
+        # Walk forward through events_after_heading tracking depth (we're
+        # already 1-deep inside the enclosing section). Stop when we hit
+        # the matching close.
+        section_start = open_stack[-1]
+        depth = 1
+        for s, e, is_open in events_after_heading:
+            if is_open:
+                depth += 1
+            else:
+                depth -= 1
+                if depth == 0:
+                    return html[section_start:e]
+
+        # Source HTML is unbalanced (section never closes). Best-effort:
+        # return from section_start to end. Caller's HTML balance check
+        # will flag this as a real source defect, distinct from the
+        # legacy clipping bug.
+        return html[section_start:]
 
     @staticmethod
     def _strip_assessment_feedback(html: str) -> str:
