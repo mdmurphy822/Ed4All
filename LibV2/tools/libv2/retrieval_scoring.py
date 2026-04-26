@@ -30,6 +30,17 @@ DEFAULT_BOOST_WEIGHTS: Dict[str, float] = {
     # Boosts chunks whose referenced LOs explicitly target the query's
     # concepts (with a bonus when the Bloom level matches too).
     "targets_concept": 0.25,
+    # Wave 84: separately-fused IDF-weighted concept-tag overlap. Distinct
+    # from concept_graph_overlap_boost (which is a graph-node Jaccard) —
+    # this one rewards chunks with rare query-relevant tags. Conservative
+    # weight: prior empirical work on rdf-shacl-551-2 showed this signal
+    # alone is near-zero net positive, so default weight is small.
+    "tag_idf_overlap": 0.15,
+    # Wave 84: query-intent → chunk_type prior. Detect verbs like
+    # "define", "explain", "example", "procedure", "assess" in the query
+    # and reward chunks whose chunk_type matches. Audit on rdf-shacl-551-2
+    # showed this alone gave +16% MRR over BM25 — material lift.
+    "chunk_type_intent": 0.25,
 }
 
 # Caps the multiplicative effect of all enabled boosts combined.
@@ -404,6 +415,224 @@ def load_pedagogy_model(course_dir: Path) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Wave 84: IDF-weighted concept-tag overlap (separately-fused signal)
+# ---------------------------------------------------------------------------
+
+def compute_tag_idf(corpus_tags: Iterable[Iterable[str]]) -> Dict[str, float]:
+    """Compute per-tag IDF weights over the corpus.
+
+    ``corpus_tags`` is an iterable of per-chunk tag iterables (typically
+    ``[chunk["concept_tags"] for chunk in candidates]``). Returns a
+    ``{tag_lower: idf}`` map where ``idf = log(N / df)`` with smoothing.
+    Generic high-frequency tags (e.g. ``rdf`` in an RDF-only corpus) end
+    up near zero; rare specific tags (e.g. ``subclassof``) end up high.
+
+    Pure function. Empty corpus → empty dict.
+    """
+    df: Dict[str, int] = {}
+    n = 0
+    for tags in corpus_tags:
+        n += 1
+        seen_local: Set[str] = set()
+        for t in tags or ():
+            if not isinstance(t, str) or not t:
+                continue
+            key = t.lower()
+            if key in seen_local:
+                continue
+            seen_local.add(key)
+            df[key] = df.get(key, 0) + 1
+    if n == 0:
+        return {}
+    import math as _math
+
+    return {
+        tag: _math.log((n + 1) / (count + 0.5))
+        for tag, count in df.items()
+    }
+
+
+def tag_idf_overlap_score(
+    chunk: Mapping[str, Any],
+    query_terms: Iterable[str],
+    idf_weights: Mapping[str, float],
+) -> float:
+    """IDF-weighted overlap between query terms and chunk concept_tags.
+
+    Score is the sum of IDFs for tags appearing in BOTH ``query_terms``
+    and ``chunk.concept_tags``, normalized by the chunk's total tag IDF
+    mass so tag-rich chunks aren't unfairly penalized. Returns 0.0 when
+    no overlap.
+
+    Distinct from ``concept_graph_overlap_boost`` which compares against
+    graph nodes; this one looks at the chunk's own tags directly with
+    rarity weighting. Use both together (different signals) or one alone.
+    """
+    if not query_terms or not idf_weights:
+        return 0.0
+    q = {str(t).lower() for t in query_terms if t}
+    if not q:
+        return 0.0
+    tags = {str(t).lower() for t in chunk.get("concept_tags", []) if t}
+    if not tags:
+        return 0.0
+    inter = q & tags
+    if not inter:
+        return 0.0
+    overlap_idf = sum(idf_weights.get(t, 0.0) for t in inter)
+    chunk_idf_mass = sum(idf_weights.get(t, 0.0) for t in tags)
+    if chunk_idf_mass <= 0:
+        return 0.0
+    return min(1.0, overlap_idf / chunk_idf_mass)
+
+
+# ---------------------------------------------------------------------------
+# Wave 84: query-intent → chunk_type prior
+# ---------------------------------------------------------------------------
+
+# Maps intent verbs/keywords in the query to chunk_type values that should
+# be rewarded. Conservative — only the strongest signals.
+_INTENT_TO_CHUNK_TYPE: Dict[str, Tuple[str, ...]] = {
+    "define": ("definition", "explanation"),
+    "definition": ("definition", "explanation"),
+    "what is": ("definition", "explanation"),
+    "what are": ("definition", "explanation"),
+    "explain": ("explanation",),
+    "describe": ("explanation",),
+    "example": ("example",),
+    "examples": ("example",),
+    "show me": ("example",),
+    "demonstrate": ("example",),
+    "how to": ("procedure", "example"),
+    "how do": ("procedure", "example"),
+    "procedure": ("procedure",),
+    "steps": ("procedure",),
+    "test": ("assessment", "self_check"),
+    "quiz": ("assessment", "self_check"),
+    "check": ("self_check", "assessment"),
+    "exercise": ("self_check", "assessment"),
+}
+
+
+def detect_query_intent(query: str) -> Set[str]:
+    """Detect chunk_type intent signals from the query.
+
+    Returns the set of chunk_type values that match query verb/phrase
+    patterns. Empty set when the query carries no identifiable intent
+    (e.g. a noun-only query like ``"subClassOf entailment"``).
+
+    Pure, deterministic. Case-insensitive. Phrase matching for multi-word
+    keys; substring matching for single-word verbs.
+    """
+    if not query:
+        return set()
+    q = query.lower().strip()
+    out: Set[str] = set()
+    for marker, types in _INTENT_TO_CHUNK_TYPE.items():
+        if " " in marker:
+            if marker in q:
+                out.update(types)
+        else:
+            # Word-boundary match for single tokens to avoid e.g. "test" in "context"
+            if re.search(rf"\b{re.escape(marker)}\b", q):
+                out.update(types)
+    return out
+
+
+def chunk_type_intent_prior(
+    chunk: Mapping[str, Any],
+    query_intents: Iterable[str],
+    *,
+    match_score: float = 1.0,
+) -> float:
+    """Score 1.0 when the chunk's chunk_type matches the query intent,
+    else 0.0. Returns 0.0 when ``query_intents`` is empty (no detectable
+    intent) so the prior doesn't penalize intent-less queries.
+    """
+    intents = {str(i).lower() for i in query_intents if i}
+    if not intents:
+        return 0.0
+    ct = chunk.get("chunk_type")
+    if not isinstance(ct, str) or not ct:
+        return 0.0
+    return match_score if ct.lower() in intents else 0.0
+
+
+# ---------------------------------------------------------------------------
+# Wave 84: retrieval method presets
+# ---------------------------------------------------------------------------
+
+# Preset method names → boost-flag overrides. Used by retrieve_chunks
+# and the retrieval-compare CLI to A/B test retrieval configurations
+# without callers having to remember which booleans go together.
+RETRIEVAL_METHOD_PRESETS: Dict[str, Dict[str, Any]] = {
+    "bm25": {
+        # Pure BM25 baseline. Disables every metadata signal.
+        "metadata_scoring": False,
+    },
+    "bm25+graph": {
+        # Current default behavior of retrieve_chunks: BM25 + graph + LO
+        # + targets_concept. NO tag-IDF, NO chunk-type intent prior.
+        "metadata_scoring": True,
+        "use_concept_graph_boost": True,
+        "use_lo_match_boost": True,
+        "use_targets_concept_boost": True,
+        "use_tag_idf_boost": False,
+        "use_chunk_type_intent_boost": False,
+    },
+    "bm25+intent": {
+        # BM25 + chunk-type intent prior only. The audit's empirical
+        # winner on rdf-shacl-551-2 (Hit@1 7/13, MRR 0.603, +16% over bm25).
+        "metadata_scoring": True,
+        "use_concept_graph_boost": False,
+        "use_lo_match_boost": False,
+        "use_targets_concept_boost": False,
+        "use_tag_idf_boost": False,
+        "use_chunk_type_intent_boost": True,
+    },
+    "bm25+tag": {
+        # BM25 + IDF-weighted tag overlap only. Probably weak in
+        # practice (the audit's parameter sweep zeroed this out for
+        # rdf-shacl-551-2) but kept as an A/B point.
+        "metadata_scoring": True,
+        "use_concept_graph_boost": False,
+        "use_lo_match_boost": False,
+        "use_targets_concept_boost": False,
+        "use_tag_idf_boost": True,
+        "use_chunk_type_intent_boost": False,
+    },
+    "hybrid": {
+        # Full-fat: every signal on. Use as the upper bound when
+        # comparing against narrower configurations.
+        "metadata_scoring": True,
+        "use_concept_graph_boost": True,
+        "use_lo_match_boost": True,
+        "use_targets_concept_boost": True,
+        "use_tag_idf_boost": True,
+        "use_chunk_type_intent_boost": True,
+    },
+}
+
+
+def resolve_method_preset(method: Optional[str]) -> Dict[str, Any]:
+    """Return the boost-flag dict for a method preset.
+
+    ``method=None`` returns an empty dict (callers keep their defaults).
+    Unknown method names raise ``ValueError`` so typos fail loudly rather
+    than silently selecting BM25.
+    """
+    if method is None:
+        return {}
+    key = method.lower().strip()
+    if key not in RETRIEVAL_METHOD_PRESETS:
+        valid = ", ".join(sorted(RETRIEVAL_METHOD_PRESETS))
+        raise ValueError(
+            f"Unknown retrieval method preset: {method!r}. Valid: {valid}"
+        )
+    return dict(RETRIEVAL_METHOD_PRESETS[key])
+
+
+# ---------------------------------------------------------------------------
 # Composition
 # ---------------------------------------------------------------------------
 
@@ -414,6 +643,8 @@ class BoostContributions:
     lo_match: float = 0.0
     prereq_coverage: float = 0.0
     targets_concept: float = 0.0  # Wave 71
+    tag_idf_overlap: float = 0.0  # Wave 84
+    chunk_type_intent: float = 0.0  # Wave 84
 
     def to_dict(self) -> Dict[str, float]:
         return {
@@ -421,6 +652,8 @@ class BoostContributions:
             "lo_match": round(self.lo_match, 4),
             "prereq_coverage": round(self.prereq_coverage, 4),
             "targets_concept": round(self.targets_concept, 4),
+            "tag_idf_overlap": round(self.tag_idf_overlap, 4),
+            "chunk_type_intent": round(self.chunk_type_intent, 4),
         }
 
 
@@ -444,6 +677,8 @@ def combine_bm25_with_boosts(
         + contributions.lo_match * w.get("lo_match", 0.0)
         + contributions.prereq_coverage * w.get("prereq_coverage", 0.0)
         + contributions.targets_concept * w.get("targets_concept", 0.0)  # Wave 71
+        + contributions.tag_idf_overlap * w.get("tag_idf_overlap", 0.0)  # Wave 84
+        + contributions.chunk_type_intent * w.get("chunk_type_intent", 0.0)  # Wave 84
     )
     # Negative penalties from prereq violations can reduce the score but not below 0.
     capped = max(-max_total_boost, min(max_total_boost, raw))

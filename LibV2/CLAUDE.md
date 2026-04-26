@@ -91,6 +91,52 @@ python -m tools.libv2.cli multi-retrieve "assessment strategies for stem" \
 - Multi-concept queries ("how does X affect Y")
 - Complex research questions
 
+### Ask + Answer (Persistent Q&A Log — cache-first)
+
+`libv2 ask` runs retrieval and persists the query + retrieved chunks
+under the queried corpus so Claude's interactions with LibV2 leave a
+durable trail alongside the source data. After Claude reads the
+chunks and synthesizes an answer, `libv2 answer <query_id> "<text>"`
+attaches the answer to the same record.
+
+**Cache-first behavior**: re-asking a query that already has a stored
+answer (case- and whitespace-normalized match) returns the cached
+record without re-running retrieval or re-synthesizing — the synthesis
+is the expensive step, and silent re-synthesis would erase the
+durability of the log. Pass `--force` to bypass the cache when you
+genuinely want fresh retrieval (corpus changed, method changed, or
+the prior answer is suspect).
+
+```bash
+# Ask a question scoped to one course (record lands at
+# courses/<slug>/queries/<query_id>.json):
+libv2 ask "How does SHACL distinguish NodeShape from PropertyShape?" \
+  --course rdf-shacl-551-2 --limit 10
+
+# Cross-course query (record lands at catalog/queries/<query_id>.json):
+libv2 ask "compare UDL vs differentiated instruction" --method hybrid
+
+# Attach Claude's synthesized answer to a previously-asked query:
+libv2 answer q_20260426_204818_7c65277e --course rdf-shacl-551-2 \
+  "<synthesized answer text>"
+
+# Browse the log:
+libv2 queries list --course rdf-shacl-551-2
+libv2 queries show q_20260426_204818_7c65277e --course rdf-shacl-551-2
+
+# Force fresh retrieval (skip cache):
+libv2 ask "How does owl:sameAs entail?" --course rdf-shacl-551-2 --force
+```
+
+Default retrieval method is `bm25+intent`; override with `--method
+{bm25, bm25+graph, bm25+intent, bm25+tag, hybrid}`. Limit is capped
+at 50 to honor the policy above.
+
+The Q&A log is the canonical place to look when reviewing what Claude
+asked the corpus and what it synthesized — useful for auditing
+RDF/SHACL enrichment work, building evals, and detecting recurring
+gaps in coverage.
+
 ### For Metadata (No Token Cost)
 
 Use catalog commands instead of retrieval:
