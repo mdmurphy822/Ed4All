@@ -1587,6 +1587,16 @@ class CourseProcessor:
         buffer_type = "explanation"
         buffer_template_type: Optional[str] = None
         buffer_source_ids: List[str] = []
+        # Wave 83 (Bug 1 fix): track buffer initialization explicitly rather
+        # than via ``buffer_wc == 0``. The legacy entry condition broke when
+        # a zero-word section (typically a Courseforge page-title ``<h1>``
+        # with no body before the first ``<h2>``) was first in the input —
+        # buffer_wc stayed 0 after assignment, so the next iteration
+        # re-entered the entry branch and silently REPLACED the buffer
+        # instead of merging into it. This dropped the h1 section, shifted
+        # all downstream merge anchors by one, and was the upstream cause
+        # of the rdf-shacl-551 audit's 203/295 unbalanced-section chunks.
+        buffer_started = False
 
         def _resolve_buffer_type() -> str:
             # Wave 81: prefer template_type when present and canonical.
@@ -1599,14 +1609,16 @@ class CourseProcessor:
             section_src = list(getattr(section, "source_references", []) or [])
             section_template = getattr(section, "template_type", None)
 
-            if buffer_wc == 0:
-                # Start a new buffer
+            if not buffer_started:
+                # Start a new buffer (first iteration only, regardless of
+                # this section's word_count — fixes Wave 83 Bug 1).
                 buffer_heading = section.heading
                 buffer_text = section.content
                 buffer_wc = section.word_count
                 buffer_type = section_type
                 buffer_template_type = section_template
                 buffer_source_ids = list(section_src)
+                buffer_started = True
             elif buffer_wc + section.word_count <= self.MAX_CHUNK_SIZE:
                 # Merge into buffer
                 buffer_text += "\n\n" + section.content
