@@ -139,8 +139,8 @@ Thumbs.db
 *.log
 state/GENERATION_PROGRESS.md
 
-# Examples output
-examples/output/
+# Examples — sample fixtures + generated output, kept local-only
+examples/
 
 # Planning artifacts — scratch docs, reviews, sub-plans; kept local-only
 plans/
