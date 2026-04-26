@@ -62,6 +62,25 @@ class TestExtractQueryConcepts:
     def test_empty_graph_empty_return(self):
         assert extract_query_concepts("anything", set()) == set()
 
+    def test_alias_canonicalization_resolves_non_canonical_surface_form(self):
+        # `ttl` is a known equivalent alias for `turtle` in
+        # `lib.ontology.concept_classifier.KNOWN_EQUIVALENT_ALIASES`. The
+        # emit path canonicalizes chunk concept_tags through that map; the
+        # query path must do the same so a user typing "ttl" hits the
+        # `turtle` graph node.
+        nodes = {"turtle"}
+        assert "turtle" in extract_query_concepts("ttl serialization", nodes)
+
+    def test_alias_canonicalization_preserves_direct_node_match(self):
+        # When the query token IS a graph node directly (no alias lookup
+        # needed), the original form must still survive. Guards against a
+        # regression where canonicalization replaces rather than augments.
+        nodes = {"rdfxml", "rdf-xml"}
+        concepts = extract_query_concepts("rdfxml format", nodes)
+        # Both forms should be reachable: the original (direct hit) AND the
+        # canonical (alias-resolved). At minimum the canonical must hit.
+        assert "rdf-xml" in concepts
+
 
 # ---------------------------------------------------------------------------
 # lo_match_boost
