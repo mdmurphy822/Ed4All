@@ -137,9 +137,15 @@ _PEDAGOGY_PATTERN_RE = re.compile(
 # are course logistics, not domain concepts. ``content-N-X-Y`` is
 # Courseforge's section-numbering pattern (Section 1.1 → ``content-1``)
 # and the trailing tokens are heading-fragment text.
+#
+# Wave 82 (Phase D2): adds ``step-N`` to the logistics filter — the
+# rdf-shacl-551 audit found ``step-1`` and ``step-2`` showing up as
+# top-frequency concepts because procedural-instruction headings of
+# the shape "Step 1: ..." were slugified verbatim and entered the
+# concept stream.
 _LOGISTICS_PREFIX_RE = re.compile(
     r"^(?:module|week|unit|lesson|chapter|section|content|pitfall|"
-    r"objective|outcome)-\d+(?:-|$)",
+    r"objective|outcome|step)-\d+(?:-|$)",
     re.IGNORECASE,
 )
 
@@ -244,6 +250,13 @@ PEDAGOGICAL_MARKERS: Set[str] = frozenset({
     "checkpoint",
     "milestone",
     "self-checks",
+    # Wave 82 (Phase D2): procedural-instruction verbs the rdf-shacl-551
+    # audit caught masquerading as top-frequency domain concepts. "Plan"
+    # and "Verify" are common imperative-mood headings ("Plan your
+    # approach", "Verify the validation report") — pedagogical
+    # scaffolding, not domain vocabulary.
+    "plan",
+    "verify",
 })
 
 # Rule 4 stoplist: low-signal stop-word-like artifacts. These tend to
