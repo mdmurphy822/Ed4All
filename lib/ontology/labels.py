@@ -99,6 +99,20 @@ def _token_or_acronym(token: str) -> str:
     return token.title()
 
 
+# Slug-level overrides for compound acronyms whose canonical W3C form
+# keeps the hyphen (``JSON-LD``, ``N-Triples``). Without these the
+# default ``replace("-", " ")`` pass would emit ``JSON LD`` /
+# ``N Triples``. Match is exact-slug; broader prefixes (e.g.
+# ``json-ld-context``) fall through to the standard hyphen-stripping
+# logic.
+_SLUG_LABEL_OVERRIDES: dict[str, str] = {
+    "json-ld": "JSON-LD",
+    "n-triples": "N-Triples",
+    "n-quads": "N-Quads",
+    "rdf-xml": "RDF/XML",
+}
+
+
 def slug_to_label(slug: str) -> str:
     """Convert a concept slug to a human label, preserving acronyms.
 
@@ -107,6 +121,10 @@ def slug_to_label(slug: str) -> str:
     label-emit sites in ``Trainforge/process_course.py`` and
     ``Trainforge/pedagogy_graph_builder.py``.
 
+    Compound-acronym slugs (``json-ld``, ``n-triples``) consult
+    :data:`_SLUG_LABEL_OVERRIDES` first to preserve their canonical
+    hyphenated form (``JSON-LD``, ``N-Triples``).
+
     Examples:
         >>> slug_to_label("owl-2-rl")
         'OWL 2 RL'
@@ -114,9 +132,14 @@ def slug_to_label(slug: str) -> str:
         'RDF Graph'
         >>> slug_to_label("blank-node")
         'Blank Node'
+        >>> slug_to_label("json-ld")
+        'JSON-LD'
     """
     if not slug:
         return ""
+    override = _SLUG_LABEL_OVERRIDES.get(slug.lower())
+    if override is not None:
+        return override
     return titlecase_with_acronyms(slug.replace("-", " "))
 
 
