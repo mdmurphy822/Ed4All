@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "WCAG 2.2 AA Compliance Schema for Educational Templates",
-  "description": "Comprehensive accessibility schema based on research findings from academic templates and WCAG 2.2 AA requirements",
+  "description": "Reference matrix of WCAG 2.2 AA compliance requirements (4 principles + Success Criteria) for educational templates. Authoring / audit reference doc — runtime accessibility validation is performed by lib.validators.wcag.WCAGValidator (gate-wired in config/workflows.yaml as wcag_compliance / wcag_aa_compliance), which encodes the same SC matrix in code rather than $ref'ing this file. Cross-referenced from Courseforge/schemas/README.md + Courseforge/schemas/Claude.md + schemas/ONTOLOGY.md § 4 / § 10.",
   "version": "2.0.0",
   "type": "object",
   "properties": {

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "urn:ed4all:schemas:hash_chained_event_schema",
   "title": "Hash-Chained Event",
-  "description": "Schema for tamper-evident hash-chained events",
+  "description": "Reference schema for tamper-evident hash-chained event records emitted by lib/hash_chain.py::HashChainedLog. Documents the on-disk JSONL row shape (seq, prev_hash, event_hash, timestamp, event) so external auditors and replay tooling have a typed contract; the writer enforces invariants in code (lib/hash_chain.py) rather than by JSON-Schema validation, so this file currently has no automated $ref-loaded consumer. Listed in schemas/ONTOLOGY.md § 7 + § 10 + § 0 diagram.",
   "type": "object",
   "required": ["seq", "prev_hash", "event_hash", "timestamp", "event"],
   "properties": {
