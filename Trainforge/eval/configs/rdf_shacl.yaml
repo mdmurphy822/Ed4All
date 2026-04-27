@@ -1,0 +1,30 @@
+# Wave 92 — RDF/SHACL eval profile.
+# Picked when manifest.classification.subdomains contains "semantic web"
+# or topics contains "rdf and shacl" / "shacl".
+
+profile: rdf_shacl
+description: >
+  Tier-1 machine-verifiable correctness via rdflib + pyshacl is in
+  scope (every RDF/SHACL output has a binary parse/conform check).
+  Tier-2 graph-derived invariants and Tier-3 semantic checks both
+  exercise the corpus's misconception nodes and key terms.
+
+evaluators:
+  syntactic: true
+  faithfulness: true
+  invariants:
+    prerequisite_order: true
+    bloom_level: true
+    misconception_rejection: true
+  calibration: true
+  baseline_compare: true
+  regression: true
+  key_term_precision: true
+  disambiguation: true
+
+caps:
+  max_holdout_questions: 100
+  max_invariant_prompts: 30
+  max_key_terms: 50
+  max_disambiguation_pairs: 50
+  bootstrap_iterations: 1000

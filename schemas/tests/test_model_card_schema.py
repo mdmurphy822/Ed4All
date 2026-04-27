@@ -88,6 +88,7 @@ def _valid_card(**overrides: Any) -> Dict[str, Any]:
             "preference_pairs_hash": _OTHER_HASH64,
             "concept_graph_hash": _HASH64,
             "vocabulary_ttl_hash": _OTHER_HASH64,
+            "holdout_graph_hash": _HASH64,
         },
         "created_at": "2026-04-26T18:30:00Z",
     }
@@ -150,6 +151,7 @@ def test_provenance_requires_six_hashes():
         "preference_pairs_hash",
         "concept_graph_hash",
         "vocabulary_ttl_hash",
+        "holdout_graph_hash",
     }
 
 
@@ -264,6 +266,7 @@ def test_missing_provenance_block_fails():
         "preference_pairs_hash",
         "concept_graph_hash",
         "vocabulary_ttl_hash",
+        "holdout_graph_hash",
     ],
 )
 def test_missing_provenance_hash_fails(missing_hash):

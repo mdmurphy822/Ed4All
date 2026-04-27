@@ -182,6 +182,9 @@ def test_provenance_hashes_match_source_files(libv2_root: Path):
         "vocabulary_ttl_hash": _sha256_path(
             course_dir / "graph" / "courseforge_v1.vocabulary.ttl"
         ),
+        # Wave 92: holdout split is optional at runtime; absent in this
+        # fixture so the runner substitutes the empty-bytes sha256.
+        "holdout_graph_hash": hashlib.sha256(b"").hexdigest(),
     }
     assert card["provenance"] == expected
 
