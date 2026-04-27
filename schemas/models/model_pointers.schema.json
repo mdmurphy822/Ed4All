@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/schemas/models/model_pointers.schema.json",
+  "title": "ModelPointers",
+  "description": "Pointer file at courses/<slug>/models/_pointers.json that names the currently-promoted model_id for a LibV2 course and records the promotion/demotion history. Wave 93 (slm-training-2026-04-26).",
+  "type": "object",
+  "required": ["current", "history"],
+  "additionalProperties": false,
+  "properties": {
+    "current": {
+      "type": ["string", "null"],
+      "description": "Currently-promoted model_id (kebab-case shape from model_card.schema.json::model_id), or null when no model has been promoted yet for this course.",
+      "minLength": 1
+    },
+    "history": {
+      "type": "array",
+      "description": "Append-only log of promotion/demotion events. Each entry records when a model_id became current and (when superseded) when it was demoted. The most-recent entry whose demoted_at is null mirrors the value in 'current'.",
+      "items": {
+        "type": "object",
+        "required": ["model_id", "promoted_at"],
+        "additionalProperties": false,
+        "properties": {
+          "model_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The model_id this history event refers to."
+          },
+          "promoted_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "ISO 8601 timestamp the model_id became current."
+          },
+          "promoted_by": {
+            "type": ["string", "null"],
+            "description": "Optional actor identifier (CLI user, automation tag, etc.)."
+          },
+          "demoted_at": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "ISO 8601 timestamp the model_id was superseded by another. Null while still current."
+          }
+        }
+      }
+    }
+  }
+}
