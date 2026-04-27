@@ -47,6 +47,11 @@ SUPPORTED_WORKFLOWS = {
     "intake_remediation",
     "batch_dart",
     "rag_training",
+    # Wave 90 — post-import SLM adapter training stage. Generic
+    # workflow path: ``ed4all run trainforge_train --course-name TST_101``
+    # creates the workflow state via create_workflow_impl, then the
+    # ``training`` phase dispatches Trainforge/train_course.py.
+    "trainforge_train",
 }
 
 

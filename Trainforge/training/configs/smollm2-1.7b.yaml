@@ -1,0 +1,11 @@
+# Wave 90 — default training config for the SmolLM2-1.7B base.
+# Open weights, no HF gating; ChatML template like Qwen.
+
+base_model: smollm2-1.7b
+learning_rate: 2.0e-4
+epochs: 3
+lora_rank: 16
+lora_alpha: 32
+max_seq_length: 2048
+batch_size: 4
+seed: 42

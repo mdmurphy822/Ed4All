@@ -974,6 +974,37 @@ workflows:
           - package_path
           - course_slug
 
+  # Trainforge Train: post-import SLM adapter training (Wave 90)
+  # Consumes an already-imported LibV2 course and writes
+  # ``models/<model_id>/`` back into the same slug. Single-phase
+  # workflow today; validation gates land in Wave 92 alongside
+  # libv2_model gate wiring + import-model CLI.
+  trainforge_train:
+    description: Train a course-pinned adapter on a LibV2-imported course (Wave 90)
+
+    retry_policy:
+      max_retries: 1
+      retry_delay_seconds: [60]
+      transient_error_classes:
+        - timeout
+        - rate_limit
+      permanent_error_classes:
+        - validation_error
+        - missing_input
+
+    poison_pill:
+      threshold: 2
+      window_seconds: 600
+
+    phases:
+      - name: training
+        agents: [training-synthesizer]
+        parallel: false
+        max_concurrent: 1
+        depends_on: []
+        timeout_minutes: 720
+        description: Dispatch one training run via Trainforge.train_course
+
 # Default settings applied to all workflows
 defaults:
   task_timeout_minutes: 60
