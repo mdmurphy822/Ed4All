@@ -163,19 +163,15 @@ def _misconception_id(
     but inner whitespace is preserved, so cosmetic edits do not churn
     IDs but real text edits do.
     """
-    mt = (misconception_text or "").strip()
-    ct = (correction_text or "").strip()
-    bl = (bloom_level or "").strip().lower()
     # Wave 72: two-segment seed for bloom-less misconceptions so legacy
     # corpora keep the pre-Wave-69 hash. The graph-side call site
     # (``CourseProcessor._build_misconceptions_for_graph``) applies the
     # same branch to stay in lock-step.
-    if bl:
-        content = f"{mt}|{ct}|{bl}"
-    else:
-        content = f"{mt}|{ct}"
-    digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
-    return f"mc_{digest}"
+    # Wave 99: extracted to ``lib.ontology.misconception_id.canonical_mc_id``
+    # so this site, ``process_course._build_misconceptions_for_graph``, and
+    # ``pedagogy_graph_builder._mc_id`` share one source of truth.
+    from lib.ontology.misconception_id import canonical_mc_id
+    return canonical_mc_id(misconception_text, correction_text, bloom_level)
 
 
 def _clamp_length(text: str, lo: int, hi: int, pad_hint: str) -> str:

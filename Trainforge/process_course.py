@@ -3248,11 +3248,11 @@ class CourseProcessor:
                 # legacy / pre-Wave-60 corpora don't rehash. Pre-Wave-72 an
                 # empty bloom_level produced "statement|correction|" (trailing
                 # pipe), which broke cross-run IDs for every bloom-less entry.
-                if bloom_level:
-                    seed = f"{statement}|{correction}|{bloom_level}"
-                else:
-                    seed = f"{statement}|{correction}"
-                mc_id = "mc_" + hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+                # Wave 99: routed through the canonical helper so this site,
+                # ``preference_factory._misconception_id``, and
+                # ``pedagogy_graph_builder._mc_id`` are byte-equivalent.
+                from lib.ontology.misconception_id import canonical_mc_id
+                mc_id = canonical_mc_id(statement, correction, bloom_level)
                 if mc_id in seen:
                     continue
                 seen.add(mc_id)

@@ -150,6 +150,7 @@ from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from lib.ontology.bloom import BLOOM_LEVELS
+from lib.ontology.misconception_id import canonical_mc_id
 
 __all__ = ["build_pedagogy_graph", "load_objectives_with_fallback"]
 
@@ -254,10 +255,26 @@ def _module_sort_key(module_id: str) -> Tuple[int, str]:
     return (10**9, module_id)
 
 
-def _mc_id(text: str) -> str:
-    """Stable misconception id from text content (matches schema)."""
-    h = hashlib.sha256(text.strip().lower().encode("utf-8")).hexdigest()
-    return f"mc_{h[:16]}"
+def _mc_id(statement: str, correction: str = "", bloom_level: str = "") -> str:
+    """Stable misconception id (canonical 3-input content hash).
+
+    Wave 99: routes through ``lib.ontology.misconception_id.canonical_mc_id``
+    so the builder's hash matches byte-for-byte the IDs minted by:
+
+    * ``Trainforge/process_course.py::_build_misconceptions_for_graph``
+    * ``Trainforge/generators/preference_factory.py::_misconception_id``
+
+    Pre-Wave-99 the builder hashed text-only (statement, lowercased, with no
+    correction or bloom_level seed). That drift caused 34 pedagogy-graph
+    ``mc_*`` nodes in ``rdf-shacl-551-2`` to disagree with chunk-level +
+    DPO-pair IDs; Wave 97 rebuilt the on-disk file as a one-shot, Wave 99
+    fixes the underlying builder so the drift can't recur.
+
+    Call sites in this builder must supply ``correction`` and
+    ``bloom_level`` from the same misconception entry — both default to
+    ``""`` for legacy paths (e.g. when ``mc`` is a bare string).
+    """
+    return canonical_mc_id(statement, correction, bloom_level)
 
 
 # Wave 82: chunk IDs are stamped by ``process_course._chunk_content`` with
@@ -798,15 +815,26 @@ def build_pedagogy_graph(
         for mc in misconceptions:
             if isinstance(mc, dict):
                 text = (mc.get("misconception") or mc.get("text") or "").strip()
+                # Wave 99: thread the same 3-input seed used by
+                # ``process_course._build_misconceptions_for_graph`` and
+                # ``preference_factory._misconception_id`` so the builder's
+                # mc_node_id matches byte-for-byte. Empty-string fallbacks
+                # are the canonical defaults — a chunk that legitimately
+                # has no correction or bloom_level still produces a
+                # deterministic ID.
+                correction_text = (mc.get("correction") or "").strip()
+                bloom_level_value = (mc.get("bloom_level") or "").strip().lower()
                 concept_id = mc.get("concept_id") or mc.get("targets")
             elif isinstance(mc, str):
                 text = mc.strip()
+                correction_text = ""
+                bloom_level_value = ""
                 concept_id = None
             else:
                 continue
             if not text:
                 continue
-            mc_node_id = _mc_id(text)
+            mc_node_id = _mc_id(text, correction_text, bloom_level_value)
             if mc_node_id not in mc_seen:
                 mc_seen[mc_node_id] = {
                     "id": mc_node_id,
