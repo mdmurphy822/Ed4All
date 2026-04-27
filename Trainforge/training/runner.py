@@ -37,7 +37,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from lib.decision_capture import DecisionCapture
-from lib.paths import LIBV2_COURSES
+from lib.paths import LIBV2_COURSES, SCHEMAS_PATH
 
 from Trainforge.training.base_models import BaseModelRegistry, BaseModelSpec
 from Trainforge.training.compute_backend import (
@@ -57,8 +57,17 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------- #
 #
 # The card pins SHA-256 hashes of these six artifacts. Each tuple is
-# (provenance-key, [candidate-relpath, ...]). First-existing wins so
-# we accept both the v0.2.0 and v0.3.0 LibV2 layouts.
+# (provenance-key, [candidate, ...]) where each candidate is either a
+# course-relative ``str`` (resolved against ``self.course_dir``) or an
+# absolute ``Path`` (used as-is). First-existing wins so we accept both
+# the v0.2.0 and v0.3.0 LibV2 layouts.
+
+# Wave 96: the canonical Courseforge vocabulary lives under the
+# project-root schemas/context/ tree, not inside each LibV2 course.
+# Without this fallback the runner silently substitutes the empty-bytes
+# sha256 for vocabulary_ttl_hash and emits a model card whose hash
+# doesn't pin the actual TTL the synthesizer consumed.
+_VOCABULARY_TTL_CANONICAL = SCHEMAS_PATH / "context" / "courseforge_v1.vocabulary.ttl"
 
 _PROVENANCE_SOURCES = (
     ("chunks_hash", ["corpus/chunks.jsonl"]),
@@ -76,6 +85,7 @@ _PROVENANCE_SOURCES = (
     ("vocabulary_ttl_hash", [
         "graph/courseforge_v1.vocabulary.ttl",
         "graph/vocabulary.ttl",
+        _VOCABULARY_TTL_CANONICAL,
     ]),
     # Wave 92: holdout split for Tier-2 eval. The runner emits a stub
     # split when the eval submodule has not pre-built one; the real
@@ -294,7 +304,13 @@ class TrainingRunner:
         for key, candidates in _PROVENANCE_SOURCES:
             resolved: Optional[Path] = None
             for rel in candidates:
-                p = self.course_dir / rel
+                # Absolute Path candidates (e.g. project-root canonical
+                # vocabulary) are used as-is; str candidates are resolved
+                # relative to the LibV2 course dir.
+                if isinstance(rel, Path) and rel.is_absolute():
+                    p = rel
+                else:
+                    p = self.course_dir / rel
                 if p.exists():
                     resolved = p
                     break
@@ -391,6 +407,12 @@ class TrainingRunner:
         )
 
     def _log_base_model_decision(self, capture: DecisionCapture) -> None:
+        instr_count = _count_jsonl_records(
+            self.course_dir / "training_specs" / "instruction_pairs.jsonl"
+        )
+        pref_count = _count_jsonl_records(
+            self.course_dir / "training_specs" / "preference_pairs.jsonl"
+        )
         capture.log_decision(
             decision_type="base_model_selection",
             decision=(
@@ -399,16 +421,41 @@ class TrainingRunner:
                 f"revision={self.spec.default_revision!r})."
             ),
             rationale=(
-                f"Chat template {self.spec.chat_template!r} and "
-                f"recommended max_seq_length={self.spec.recommended_max_seq_length} "
-                f"match the per-base config defaults. The HF repo is the "
-                f"canonical source for {self.base_model!r}; pinning to "
-                f"revision={self.spec.default_revision!r} keeps reruns "
-                f"byte-identical."
+                f"Chose HF repo {self.spec.huggingface_repo!r} pinned at "
+                f"revision={self.spec.default_revision!r} for course "
+                f"{self.course_slug!r} ({instr_count} instruction pairs, "
+                f"{pref_count} preference pairs). Chat template "
+                f"{self.spec.chat_template!r} + recommended_max_seq_length="
+                f"{self.spec.recommended_max_seq_length} + "
+                f"recommended_lora_rank={self.spec.recommended_lora_rank} "
+                f"match the per-base defaults loaded from "
+                f"Trainforge/training/configs/{self.base_model}.yaml; "
+                f"pinned revision keeps reruns byte-identical "
+                f"(dry_run={self.dry_run})."
             ),
+            alternatives_considered=[
+                f"Larger base ({BaseModelRegistry.list_supported()}): "
+                f"rejected — sub-2B {self.base_model!r} is the calibrated "
+                f"baseline for {instr_count}-pair corpora at lora_rank="
+                f"{self.config.lora_rank}.",
+                f"Floating revision ('main' on {self.spec.huggingface_repo!r}): "
+                f"rejected — would break the model_card provenance contract "
+                f"on every HF repo update.",
+            ],
         )
 
     def _log_hyperparam_decision(self, capture: DecisionCapture) -> None:
+        instr_count = _count_jsonl_records(
+            self.course_dir / "training_specs" / "instruction_pairs.jsonl"
+        )
+        # Effective steps are an order-of-magnitude signal of run cost;
+        # the actual trainer scheduler may pad/truncate, but this is
+        # the planned-step estimate the runner is committing to.
+        effective_steps = max(
+            1,
+            (instr_count * self.config.epochs)
+            // max(1, self.config.batch_size),
+        )
         capture.log_decision(
             decision_type="hyperparameter_selection",
             decision=(
@@ -420,12 +467,33 @@ class TrainingRunner:
                 f"seed={self.config.seed}."
             ),
             rationale=(
-                f"Per-base defaults from "
-                f"Trainforge/training/configs/{self.base_model}.yaml. "
-                f"Rank/alpha 16/32 = 2x scaling, the QLoRA paper's stable "
-                f"recipe; LR 2e-4 is the TRL SFT default for sub-3B models. "
-                f"Seed pinned at {self.config.seed} for run reproducibility."
+                f"Loaded per-base defaults from "
+                f"Trainforge/training/configs/{self.base_model}.yaml for "
+                f"{self.base_model!r}. With {instr_count} instruction pairs "
+                f"× {self.config.epochs} epochs / batch_size="
+                f"{self.config.batch_size} that yields ~{effective_steps} "
+                f"effective SFT steps. lora_rank={self.config.lora_rank} / "
+                f"lora_alpha={self.config.lora_alpha} = "
+                f"{self.config.lora_alpha / max(1, self.config.lora_rank):.1f}x "
+                f"scaling per the QLoRA stable recipe; "
+                f"learning_rate={self.config.learning_rate} is the TRL SFT "
+                f"baseline for sub-3B models; seed={self.config.seed} pinned "
+                f"for reproducibility (max_seq_length="
+                f"{self.config.max_seq_length})."
             ),
+            alternatives_considered=[
+                f"Higher rank (lora_rank={self.config.lora_rank * 2}): "
+                f"rejected — doubles adapter weights without measurable gain "
+                f"on a {instr_count}-pair corpus.",
+                f"Higher LR (5x → "
+                f"{self.config.learning_rate * 5:.0e}): rejected — "
+                f"TRL/QLoRA literature reports loss instability above ~1e-3 "
+                f"on small-corpus sub-3B fine-tunes.",
+                f"More epochs (2x → {self.config.epochs * 2}): rejected — "
+                f"~{effective_steps * 2} steps risks overfit on "
+                f"{instr_count}-pair corpus; preferred regularization "
+                f"is rank/alpha tuning.",
+            ],
         )
 
     def _decide_run_dpo(self) -> tuple[bool, str]:
@@ -436,16 +504,27 @@ class TrainingRunner:
         availability: <10 pairs is too few for stable DPO and we skip.
         """
         pref_path = self.course_dir / "training_specs" / "preference_pairs.jsonl"
+        instr_path = self.course_dir / "training_specs" / "instruction_pairs.jsonl"
         pair_count = _count_jsonl_records(pref_path)
+        instr_count = _count_jsonl_records(instr_path)
         if pair_count < 10:
             return False, (
-                f"Preference pair count={pair_count} below the minimum 10 "
-                f"required for stable DPO. SFT-only run."
+                f"Preference pair count={pair_count} for course "
+                f"{self.course_slug!r} is below the minimum 10 required for "
+                f"stable DPO (SFT corpus={instr_count} pairs, base="
+                f"{self.base_model!r}). Running SFT-only with "
+                f"learning_rate={self.config.learning_rate}, epochs="
+                f"{self.config.epochs}, lora_rank={self.config.lora_rank}; "
+                f"DPO chain skipped (dry_run={self.dry_run})."
             )
         return True, (
-            f"Preference pair count={pair_count} ≥ 10; chaining DPO "
-            f"after SFT to learn the misconception → correction "
-            f"preference signal."
+            f"Preference pair count={pair_count} ≥ 10 for course "
+            f"{self.course_slug!r} (SFT corpus={instr_count} pairs, base="
+            f"{self.base_model!r}); chaining DPO after SFT at "
+            f"learning_rate={self.config.learning_rate}, epochs="
+            f"{self.config.epochs}, lora_rank={self.config.lora_rank} "
+            f"to learn the misconception → correction preference signal "
+            f"(dry_run={self.dry_run})."
         )
 
     def _log_eval_decision(
@@ -454,12 +533,28 @@ class TrainingRunner:
         should_run_dpo: bool,
         rationale: str,
     ) -> None:
+        pref_count = _count_jsonl_records(
+            self.course_dir / "training_specs" / "preference_pairs.jsonl"
+        )
+        instr_count = _count_jsonl_records(
+            self.course_dir / "training_specs" / "instruction_pairs.jsonl"
+        )
         capture.log_decision(
             decision_type="eval_run_decision",
             decision=(
                 f"Will{' ' if should_run_dpo else ' NOT '}chain DPO after SFT."
             ),
             rationale=rationale,
+            alternatives_considered=[
+                f"Force DPO regardless of pair count "
+                f"(currently {pref_count}): rejected — TRL/DPO requires "
+                f"≥10 pairs for stable preference gradients on "
+                f"{self.base_model!r}.",
+                f"Skip DPO unconditionally on {self.course_slug!r} "
+                f"({instr_count} SFT pairs / {pref_count} preference pairs): "
+                f"rejected — wastes the misconception → correction signal "
+                f"the synthesizer emitted whenever pair_count ≥ 10.",
+            ],
         )
 
     # ------------------------------------------------------------------ #

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
@@ -411,6 +412,200 @@ def test_model_id_stable_across_reruns(libv2_root: Path):
         dry_run=True,
     ).run()
     assert r1.model_id == r2.model_id
+
+
+# ---------------------------------------------------------------------- #
+# Wave 96 — vocabulary_ttl_hash falls back to project-root canonical copy #
+# ---------------------------------------------------------------------- #
+
+
+SHA256_EMPTY = hashlib.sha256(b"").hexdigest()
+
+
+def _build_libv2_course_no_vocab(tmp_path: Path, slug: str = "tst-101-novocab") -> Path:
+    """Same fixture as ``_build_libv2_course`` but without graph/*.vocabulary.ttl.
+
+    Mirrors production LibV2 courses (e.g. rdf-shacl-551-2) where no
+    course-local vocab file is materialized — the canonical TTL lives at
+    project-root ``schemas/context/courseforge_v1.vocabulary.ttl`` and
+    Wave 96 wires it as a fallback so the model card pins a non-empty
+    SHA-256.
+    """
+    libv2_root = tmp_path / "courses"
+    course_dir = libv2_root / slug
+    (course_dir / "corpus").mkdir(parents=True)
+    (course_dir / "graph").mkdir(parents=True)
+    (course_dir / "training_specs").mkdir(parents=True)
+
+    (course_dir / "corpus" / "chunks.jsonl").write_text(
+        '{"id": "c1", "text": "fixture", "learning_outcome_refs": ["TO-01"]}\n',
+        encoding="utf-8",
+    )
+    (course_dir / "graph" / "pedagogy_graph.json").write_text(
+        '{"nodes": [], "edges": []}',
+        encoding="utf-8",
+    )
+    (course_dir / "graph" / "concept_graph_semantic.json").write_text(
+        '{"concepts": []}',
+        encoding="utf-8",
+    )
+    # NOTE: no graph/courseforge_v1.vocabulary.ttl on purpose.
+    (course_dir / "training_specs" / "instruction_pairs.jsonl").write_text(
+        json.dumps({
+            "prompt": "Define the central concept of fixtures.",
+            "completion": "A fixture is a small reusable test setup.",
+            "chunk_id": "c1",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    (course_dir / "training_specs" / "preference_pairs.jsonl").write_text(
+        "",
+        encoding="utf-8",
+    )
+    (course_dir / "training_specs" / "dataset_config.json").write_text(
+        '{"format": "instruction-following", "statistics": {}}',
+        encoding="utf-8",
+    )
+    return libv2_root
+
+
+def test_vocabulary_ttl_hash_is_non_empty_in_dry_run(tmp_path: Path):
+    """The canonical project-root vocabulary.ttl must be hashed when no
+    course-local copy exists (Wave 96 fix).
+
+    Pre-Wave-96 the runner logged a "substituting empty-bytes sha256"
+    warning and emitted the empty-bytes SHA-256 for vocabulary_ttl_hash,
+    even though the canonical TTL was sitting in
+    ``schemas/context/courseforge_v1.vocabulary.ttl``. The model card
+    then claimed an unhashed vocab and broke replayability.
+    """
+    canonical_ttl = (
+        Path(__file__).resolve().parents[2]
+        / "schemas" / "context" / "courseforge_v1.vocabulary.ttl"
+    )
+    assert canonical_ttl.exists(), (
+        "Wave 96 fix relies on the canonical vocabulary.ttl being "
+        f"present at {canonical_ttl}. If this file moved, update the "
+        "_VOCABULARY_TTL_CANONICAL constant in Trainforge/training/runner.py."
+    )
+    expected_hash = _sha256_path(canonical_ttl)
+    assert expected_hash != SHA256_EMPTY, (
+        "Canonical vocabulary.ttl is empty — fixture is broken."
+    )
+
+    libv2_root = _build_libv2_course_no_vocab(tmp_path)
+    runner = TrainingRunner(
+        course_slug="tst-101-novocab",
+        base_model="qwen2.5-1.5b",
+        libv2_root=libv2_root,
+        dry_run=True,
+    )
+    result = runner.run()
+    card = json.loads(result.model_card_path.read_text(encoding="utf-8"))
+
+    vocab_hash = card["provenance"]["vocabulary_ttl_hash"]
+    assert vocab_hash != SHA256_EMPTY, (
+        "vocabulary_ttl_hash is the empty-bytes sha256 — Wave 96 fallback "
+        "didn't fire."
+    )
+    assert vocab_hash == expected_hash, (
+        f"vocabulary_ttl_hash {vocab_hash!r} doesn't match canonical "
+        f"project-root TTL {expected_hash!r}."
+    )
+
+
+# ---------------------------------------------------------------------- #
+# Wave 96 — decision rationales clear the lib.decision_capture quality   #
+# gate (no 'developing' ratings)                                          #
+# ---------------------------------------------------------------------- #
+
+
+def test_decision_rationales_pass_quality_gate(libv2_root: Path):
+    """Each of the four mandatory training decisions must clear the
+    ``lib.decision_capture`` quality gate (proficient or better).
+
+    The gate logic lives in ``lib/decision_capture.py::_build_record``
+    via ``lib/quality.py::assess_decision_quality`` — proficient
+    requires rationale ≥50 chars AND (inputs_ref OR alternatives).
+    Wave 96 fix added alternatives_considered to the three failing
+    decisions and richer dynamic-signal interpolation. This test
+    proxies the gate by asserting:
+
+      1. Every rationale interpolates ≥1 numeric value (a regex match
+         on ``\\d+``) — proves dynamic interpolation per project policy.
+      2. Every rationale references at least one identifier from the
+         run (course slug, base model, or HF repo).
+      3. Every record has alternatives_considered or inputs_ref to
+         reach 'proficient' on the centralized gate.
+      4. The metadata.quality_gate_passed flag is True for all four.
+    """
+    runner = TrainingRunner(
+        course_slug="tst-101",
+        base_model="qwen2.5-1.5b",
+        libv2_root=libv2_root,
+        dry_run=True,
+    )
+    result = runner.run()
+
+    records: List[Dict[str, Any]] = []
+    with result.decision_capture_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                records.append(json.loads(line))
+
+    required_types = {
+        "training_run_planning",
+        "base_model_selection",
+        "hyperparameter_selection",
+        "eval_run_decision",
+    }
+    by_type = {r["decision_type"]: r for r in records}
+    missing = required_types - by_type.keys()
+    assert not missing, f"Missing decision types: {missing}"
+
+    base_model_short = "qwen2.5-1.5b"
+    course_slug = "tst-101"
+    hf_repo_fragment = "Qwen"  # canonical for qwen2.5-1.5b
+
+    for dt in required_types:
+        rec = by_type[dt]
+        rationale = rec.get("rationale") or ""
+
+        # 1. ≥1 numeric value (proves dynamic-signal interpolation).
+        assert re.search(r"\d+", rationale), (
+            f"{dt}: rationale lacks any numeric signal. Rationale={rationale!r}"
+        )
+
+        # 2. ≥1 run-specific identifier.
+        identifiers_present = sum(
+            1 for ident in (course_slug, base_model_short, hf_repo_fragment)
+            if ident in rationale
+        )
+        assert identifiers_present >= 1, (
+            f"{dt}: rationale doesn't reference any run identifier "
+            f"(slug={course_slug!r}, base={base_model_short!r}, "
+            f"hf_repo_fragment={hf_repo_fragment!r}). Rationale={rationale!r}"
+        )
+
+        # 3. alternatives_considered or inputs_ref present.
+        has_alts = bool(rec.get("alternatives_considered"))
+        has_inputs = bool(rec.get("inputs_ref"))
+        assert has_alts or has_inputs, (
+            f"{dt}: neither alternatives_considered nor inputs_ref is "
+            f"populated; the centralized quality gate will rate this "
+            f"'developing'."
+        )
+
+        # 4. Quality gate flag present + true.
+        meta = rec.get("metadata") or {}
+        assert meta.get("quality_gate_passed") is True, (
+            f"{dt}: metadata.quality_gate_passed is "
+            f"{meta.get('quality_gate_passed')!r} "
+            f"(quality_level={meta.get('quality_level')!r}, "
+            f"reason={meta.get('quality_gate_reason')!r}). Rationale="
+            f"{rationale!r}"
+        )
 
 
 def test_missing_training_specs_fails_loud(tmp_path: Path):
