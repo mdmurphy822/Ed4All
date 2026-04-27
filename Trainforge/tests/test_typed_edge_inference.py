@@ -86,7 +86,12 @@ def test_is_a_fires_when_both_terms_are_nodes():
     e = edges[0]
     assert e["source"] == "aria-role"
     assert e["target"] == "accessibility-attribute"
-    assert e["type"] == "is-a"
+    # Both endpoints are concept-graph nodes (cf:Concept instances), so
+    # the rule emits ``broader-than`` (skos:broader) — the W3C-canonical
+    # predicate for SKOS-concept hierarchy. ``is-a`` (rdfs:subClassOf)
+    # remains reserved for class-level subsumption (see
+    # lib/ontology/edge_predicates.py).
+    assert e["type"] == "broader-than"
     assert e["provenance"]["rule"] == "is_a_from_key_terms"
 
 
@@ -230,14 +235,17 @@ def test_precedence_is_a_beats_related_to():
         }
     ]
     graph_out = build_semantic_graph(chunks, None, graph, now=FIXED_NOW)
-    # The (aria-role, accessibility-attribute) pair should appear as is-a,
-    # not as related-to.
+    # The (aria-role, accessibility-attribute) pair should appear as
+    # ``broader-than`` (the canonical SKOS-concept hierarchy slug; both
+    # endpoints are cf:Concept instances), not as related-to. Both the
+    # broader-than and is-a slugs share the same precedence tier, so
+    # the precedence semantics versus related-to are unchanged.
     pair_edges = [
         e for e in graph_out["edges"]
         if set([e["source"], e["target"]]) == {"aria-role", "accessibility-attribute"}
     ]
     assert len(pair_edges) == 1, pair_edges
-    assert pair_edges[0]["type"] == "is-a"
+    assert pair_edges[0]["type"] == "broader-than"
 
 
 # ---------------------------------------------------------------------------

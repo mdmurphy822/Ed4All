@@ -1,15 +1,15 @@
 {
   "kind": "concept_semantic",
   "expected_edge_tuples": [
+    ["broader-than", "aria-role", "accessibility-attribute"],
     ["derived-from-objective", "c1", "co-01"],
     ["derived-from-objective", "c2", "co-01"],
     ["derived-from-objective", "c3", "co-02"],
     ["derived-from-objective", "c4", "co-03"],
-    ["is-a", "aria-role", "accessibility-attribute"],
     ["prerequisite", "pour", "accessibility-attribute"],
     ["prerequisite", "pour", "aria-role"],
     ["prerequisite", "pour", "wcag"],
     ["related-to", "accessibility-attribute", "wcag"]
   ],
-  "notes": "Edge tuples are (type, source, target) pairs ordered the same way the orchestrator sorts its output (by type, then source, then target). The four derived-from-objective edges materialize the existing chunk.learning_outcome_refs pointers as explicit typed edges (REC-LNK-04, Worker U Wave 5.2). Defined-by, exemplifies, misconception-of, and assesses rules emit nothing on this fixture: concept_graph nodes carry no occurrences[] (pre-Wave-5.1 fixture shape), there are no example chunks, and no misconception/question kwargs are threaded through. There is no (aria-role, accessibility-attribute) related-to edge because that pair has co-occurrence weight 1 — below the default threshold of 3 — so no precedence conflict is possible."
+  "notes": "Edge tuples are (type, source, target) pairs ordered the same way the orchestrator sorts its output (by type, then source, then target). The four derived-from-objective edges materialize the existing chunk.learning_outcome_refs pointers as explicit typed edges (REC-LNK-04, Worker U Wave 5.2). Defined-by, exemplifies, misconception-of, and assesses rules emit nothing on this fixture: concept_graph nodes carry no occurrences[] (pre-Wave-5.1 fixture shape), there are no example chunks, and no misconception/question kwargs are threaded through. There is no (aria-role, accessibility-attribute) related-to edge because that pair has co-occurrence weight 1 — below the default threshold of 3 — so no precedence conflict is possible. The aria-role -> accessibility-attribute edge is emitted as `broader-than` (skos:broader) — both endpoints are cf:Concept instances and the W3C-canonical predicate for SKOS-concept hierarchy is skos:broader, not rdfs:subClassOf. ``is-a`` (rdfs:subClassOf) remains reserved for class-level subsumption."
 }

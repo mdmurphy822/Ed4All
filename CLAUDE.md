@@ -640,6 +640,7 @@ Source of truth: `config/workflows.yaml::validation_gates`. Phase column below s
 | `textbook_to_course` | `trainforge_assessment` | `assessment_quality` | AssessmentQualityValidator |
 | `textbook_to_course` | `trainforge_assessment` | `assessment_objective_alignment` | AssessmentObjectiveAlignmentValidator |
 | `textbook_to_course` | `libv2_archival` | `libv2_manifest` | LibV2ManifestValidator |
+| `textbook_to_course` | `libv2_archival` | `kg_quality_report` | KGQualityValidator (warning) |
 | `rag_training` | `assessment_generation` | `assessment_quality` | AssessmentQualityValidator |
 | `rag_training` | `assessment_generation` | `bloom_alignment` | BloomAlignmentValidator (warning) |
 | `rag_training` | `assessment_generation` | `leak_check` | LeakCheckValidator |
@@ -708,6 +709,7 @@ Validators under `lib/validators/` (see Active Gates above for wiring):
 - `lib/validators/assessment_objective_alignment.py` — fail-loud gate keeping every assessment question's `objective_id` covered by at least one chunk's `learning_outcome_refs`.
 - `lib/validators/source_refs.py` — verifies every emitted Courseforge `sourceId` resolves against the DART staging manifest.
 - `lib/validators/libv2_manifest.py` — validates LibV2 manifest JSON, scaffold completeness, and on-disk artifact hash/size agreement.
+- `lib/validators/kg_quality.py` — advisory KG-quality report (completeness / consistency / accuracy / coverage); thin wrapper over `Trainforge/rag/kg_quality_report.py::KGQualityReporter`. Default thresholds 0.0 (advisory at roll-out).
 
 **Canonical LO helper**: `lib/ontology/learning_objectives.py` owns the single source of truth for LO identity (`mint_lo_id`, `validate_lo_id`, `hierarchy_from_id`, `split_terminal_chapter`). Pattern `^[A-Z]{2,}-\\d{2,}$` mirrors `schemas/knowledge/courseforge_jsonld_v1.schema.json`. `schemas/knowledge/course.schema.json` is the canonical shape for Trainforge-emitted `course.json` consumed by LibV2.
 

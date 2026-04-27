@@ -59,6 +59,26 @@ ed4all:DefinedByRule
     rdfs:label "defined_by_from_first_mention" ;
     sh:order 0 ;
     sh:prefixes ed4all: ;
+    # sh:condition gates rule firing: pyshacl skips focus nodes that
+    # don't conform to the embedded NodeShape, so the SPARQL CONSTRUCT
+    # never runs against a Concept whose ed4all:occurrence list is
+    # empty. Two benefits:
+    #   1. Performance — short-circuits the sub-SELECT on focus
+    #      nodes that would yield zero rows anyway.
+    #   2. Correctness — under shape-incomplete input data (a
+    #      Concept node materialized without occurrences[]), the
+    #      rule no longer fires with a UNDEF firstChunk; pyshacl's
+    #      group-by-on-empty corner case is bypassed entirely.
+    # The condition mirrors the WHERE clause's implicit minimum: at
+    # least one ed4all:occurrence must be present. Equivalent to the
+    # Python rule's "no occurrences -> no edge" semantics.
+    sh:condition [
+      a sh:NodeShape ;
+      sh:property [
+        sh:path ed4all:occurrence ;
+        sh:minCount 1 ;
+      ] ;
+    ] ;
     sh:construct """
       PREFIX ed4all: <https://ed4all.dev/ns/courseforge/v1#>
       CONSTRUCT { $this ed4all:isDefinedBy ?firstChunk . }

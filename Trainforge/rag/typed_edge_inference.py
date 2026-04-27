@@ -96,6 +96,17 @@ def _make_concept_id(slug: str, course_id: Optional[str]) -> str:
 # ties among tier-2 rules break by fixed rule-invocation order.
 _PRECEDENCE: Dict[str, int] = {
     "is-a": 3,
+    # SKOS hierarchy slugs share the top tier with ``is-a``: both
+    # express directional taxonomic subsumption between two
+    # cf:Concept instances. ``broader-than`` is what
+    # ``is_a_from_key_terms`` emits when both endpoints are concept
+    # nodes (the canonical case under the W3C-canonical SKOS pattern);
+    # ``narrower-than`` is reserved for the inverse-direction
+    # emit-side and held at the same tier so a future emitter that
+    # produces it doesn't get silently dropped against a
+    # ``related-to`` collision.
+    "broader-than": 3,
+    "narrower-than": 3,
     "assesses": 2,
     "defined-by": 2,
     "derived-from-objective": 2,

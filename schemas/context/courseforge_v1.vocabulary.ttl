@@ -304,9 +304,19 @@ ed4all:bloomRange
 # rdfs:domain / rdfs:range pointing at the ed4all: classes declared above.
 
 ed4all:hasPrerequisite
-  a rdf:Property, owl:ObjectProperty ;
+  a rdf:Property, owl:ObjectProperty, owl:TransitiveProperty ;
   rdfs:label "has prerequisite" ;
-  rdfs:comment "Slug 'prerequisite' (Trainforge/rag/inference_rules/prerequisite_from_lo_order.py): heuristic edge derived from learning-outcome order. If concept A first appears in a chunk tagged to an earlier LO than concept B, then B depends on A — emitted as B hasPrerequisite A. Direction: subject depends on object." ;
+  rdfs:comment "Slug 'prerequisite' (Trainforge/rag/inference_rules/prerequisite_from_lo_order.py): heuristic edge derived from learning-outcome order. If concept A first appears in a chunk tagged to an earlier LO than concept B, then B depends on A — emitted as B hasPrerequisite A. Direction: subject depends on object. Declared owl:TransitiveProperty so an OWL-RL reasoner derives chained prereq closure for free (A hasPrerequisite B AND B hasPrerequisite C ⊨ A hasPrerequisite C) — consumers no longer need a SPARQL `+` path. Paired with cf:isPrerequisiteOf via owl:inverseOf so traversals work in both directions. Note: cf:follows is intentionally NOT transitive (sequencing semantics — only adjacent module ties are emitted by design)." ;
+  owl:inverseOf ed4all:isPrerequisiteOf ;
+  rdfs:domain ed4all:Concept ;
+  rdfs:range ed4all:Concept ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:isPrerequisiteOf
+  a rdf:Property, owl:ObjectProperty, owl:TransitiveProperty ;
+  rdfs:label "is prerequisite of" ;
+  rdfs:comment "Inverse of cf:hasPrerequisite. Direction: subject is required for object (A isPrerequisiteOf B iff B hasPrerequisite A). Declared owl:TransitiveProperty + owl:inverseOf cf:hasPrerequisite so OWL-RL reasoners get bidirectional chained closure without SPARQL property paths. Not currently emitted by any Trainforge rule — present so downstream consumers (e.g. SPARQL queries asking 'what concepts depend on A?') can either traverse the inverse path under OWL-RL or query the predicate directly when an emitter materializes it." ;
+  owl:inverseOf ed4all:hasPrerequisite ;
   rdfs:domain ed4all:Concept ;
   rdfs:range ed4all:Concept ;
   rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .

@@ -31,7 +31,21 @@ RULE_NAME = "is_a_from_key_terms"
 # behind TRAINFORGE_SOURCE_PROVENANCE but the version bump is unconditional
 # so consumers see the schema-generation shift regardless of flag state.
 RULE_VERSION = 2
+# Default emit slug for the legacy case (e.g. when an endpoint isn't
+# in the concept graph as a cf:Concept instance — that case is filtered
+# out at emit time so this default rarely fires).
 EDGE_TYPE = "is-a"
+
+# W3C-canonical Concept-layer hierarchy slug. Both endpoints in the
+# concept graph are ``cf:Concept`` instances (subclasses of
+# ``skos:Concept``); subsumption between two ``skos:Concept`` instances
+# is properly modeled by ``skos:broader``, not ``rdfs:subClassOf``
+# (which targets class-level subsumption). The rule below emits this
+# slug when both endpoints resolve to nodes in the concept graph (the
+# canonical case); it falls back to ``EDGE_TYPE`` only when the
+# heuristic ever sees a non-Concept endpoint, which the current
+# emission path filters out anyway.
+EDGE_TYPE_BROADER = "broader-than"
 
 # Wave 11: opt-in flag gates the evidence-arm source_references[] emission.
 # Captured at module import time so tests that need to toggle should
@@ -237,10 +251,26 @@ def infer(
                     refs = _chunk_source_references(chunk)
                     if refs:
                         evidence["source_references"] = refs
+                # Both child_id and parent_id resolved against
+                # ``concept_graph`` node IDs (the candidate-parent and
+                # child-id checks above guarantee this). Concept-graph
+                # nodes are all ``cf:Concept`` instances (the
+                # vocabulary declares ``cf:Concept rdfs:subClassOf
+                # skos:Concept``), so the W3C-canonical predicate for
+                # this directed subsumption between two skos:Concept
+                # instances is ``skos:broader`` — emitted here under
+                # the ``broader-than`` slug. The legacy ``is-a``
+                # (rdfs:subClassOf) slug is reserved for class-level
+                # subsumption (rdfs:Class on the source).
+                emitted_type = (
+                    EDGE_TYPE_BROADER
+                    if (child_id in node_ids and parent_id in node_ids)
+                    else EDGE_TYPE
+                )
                 seen[key] = {
                     "source": child_id,
                     "target": parent_id,
-                    "type": EDGE_TYPE,
+                    "type": emitted_type,
                     "confidence": 0.8,
                     "provenance": {
                         "rule": RULE_NAME,
