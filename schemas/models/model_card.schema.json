@@ -160,6 +160,7 @@
     "eval_scores": {
       "type": "object",
       "additionalProperties": false,
+      "required": ["scoring_commit", "tolerance_band"],
       "properties": {
         "faithfulness": {
           "type": "number",
@@ -178,6 +179,79 @@
           "minimum": -1,
           "maximum": 1,
           "description": "Trained-minus-baseline score on the same prompt set. Negative = regression."
+        },
+        "hallucination_rate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Wave 102: 1 - faithfulness, surfaced as its own metric for the ablation table."
+        },
+        "source_match": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Wave 102: fraction of probes where the model cited the ground-truth chunk_id."
+        },
+        "calibration_ece": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Wave 102: optional shadow copy of the eval_report calibration ECE for verifier consumption."
+        },
+        "profile": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Wave 102: the eval profile name the report was scored under (e.g. rdf_shacl, generic)."
+        },
+        "scoring_commit": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$",
+          "description": "Wave 102: 40-char SHA-1 commit pinned by reproduce_eval.sh; verify_eval re-checks the working tree against this."
+        },
+        "tolerance_band": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "description": "Wave 102: per-metric absolute-tolerance bands the verifier accepts before emitting DRIFT (e.g. {accuracy: 0.0, faithfulness: 0.05, hallucination_rate: 0.05, source_match: 0.0})."
+        },
+        "headline_table": {
+          "type": "array",
+          "description": "Wave 102: optional shadow of the headline 4-row ablation table (base | base+RAG | adapter | adapter+RAG).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["setup"],
+            "properties": {
+              "setup": {"type": "string", "minLength": 1},
+              "accuracy": {"type": ["number", "null"]},
+              "faithfulness": {"type": ["number", "null"]},
+              "hallucination_rate": {"type": ["number", "null"]},
+              "source_match": {"type": ["number", "null"]},
+              "qualitative_score": {"type": ["number", "null"]}
+            }
+          }
+        },
+        "retrieval_method_table": {
+          "type": "array",
+          "description": "Wave 102: optional shadow of the 5-row retrieval-method ablation table (one row per LibV2 method preset).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["method"],
+            "properties": {
+              "method": {
+                "type": "string",
+                "enum": ["bm25", "bm25+intent", "bm25+graph", "bm25+tag", "hybrid"]
+              },
+              "accuracy": {"type": ["number", "null"]},
+              "faithfulness": {"type": ["number", "null"]},
+              "source_match": {"type": ["number", "null"]},
+              "mean_latency_ms": {"type": ["number", "null"]}
+            }
+          }
         }
       }
     },

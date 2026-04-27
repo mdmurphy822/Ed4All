@@ -200,6 +200,7 @@ def write_hf_readme(
     *,
     base_model_repo: Optional[str] = None,
     extra_tags: Optional[List[str]] = None,
+    ablation_report: Optional[Dict[str, Any]] = None,
 ) -> Path:
     """Render ``<run_dir>/README.md`` with HF-format YAML frontmatter.
 
@@ -270,6 +271,7 @@ def write_hf_readme(
         base_model=base_model,
         model_id=model_id,
         model_card=model_card,
+        ablation_report=ablation_report,
     )
 
     yaml_block = yaml.safe_dump(
@@ -324,6 +326,7 @@ def _render_body(
     base_model: str,
     model_id: str,
     model_card: Dict[str, Any],
+    ablation_report: Optional[Dict[str, Any]] = None,
 ) -> str:
     """Render the README body (post-frontmatter) sections."""
     provenance = model_card.get("provenance") or {}
@@ -365,6 +368,15 @@ def _render_body(
     # --- Evaluation ------------------------------------------- #
     lines.append("## Evaluation")
     lines.append("")
+    # Wave 102: open with the verbatim thesis statement so any reader
+    # who only skims the README sees the procurement claim up front.
+    lines.append(
+        "> This benchmark evaluates whether a domain adapter improves "
+        "grounded reasoning over structured educational knowledge "
+        "packages, using held-out questions, expected evidence chunks, "
+        "and reproducible scoring scripts."
+    )
+    lines.append("")
     lines.append(
         f"Evaluated on the held-out split of the {course_slug} corpus "
         f"using the Trainforge SLM eval harness "
@@ -379,18 +391,32 @@ def _render_body(
         ("coverage", "Coverage"),
         ("baseline_delta", "Baseline delta (trained - base)"),
         ("calibration_ece", "Calibration ECE"),
+        ("source_match", "Source-Match"),
     )
     lines.append("| Metric | Value |")
     lines.append("|--------|-------|")
     for key, label in score_keys:
         if key in eval_report and eval_report[key] is not None:
             lines.append(f"| {label} | {_round(eval_report[key])} |")
+    # Wave 102: surface hallucination_rate as its own row so it doesn't
+    # have to be reconstructed from faithfulness by the reader.
+    metrics_block = eval_report.get("metrics") or {}
+    if "hallucination_rate" in metrics_block and metrics_block["hallucination_rate"] is not None:
+        lines.append(
+            f"| Hallucination rate (1 - faithfulness) | "
+            f"{_round(metrics_block['hallucination_rate'])} |"
+        )
     per_inv = eval_report.get("per_invariant") or {}
     for inv_name, payload in sorted(per_inv.items()):
         pr = _extract_pass_rate(payload)
         if pr is not None:
             lines.append(f"| {inv_name}_pass_rate | {_round(pr)} |")
     lines.append("")
+
+    # Wave 102: render the headline + retrieval-method ablation tables.
+    if ablation_report:
+        lines.extend(_render_headline_table(ablation_report))
+        lines.extend(_render_retrieval_method_table(ablation_report))
 
     # --- Limitations ------------------------------------------ #
     lines.append("## Limitations")
@@ -409,7 +435,22 @@ def _render_body(
         "- Calibration: ECE is computed on a Bloom-stratified holdout "
         "split; rare-class confidence may be under-sampled."
     )
+    # Wave 102: name the non-deterministic synthesis step so reviewers
+    # know which dimension carries the +/- 0.03 paraphrase drift.
+    instruction_pairs_hash = provenance.get("instruction_pairs_hash") or "<unset>"
+    lines.append(
+        "- Synthesis non-determinism: the instruction-pair corpus is "
+        "paraphrased through a Claude Code subagent, which is the only "
+        "non-deterministic stage in the pipeline. The pairs are pinned "
+        f"by `instruction_pairs_hash={instruction_pairs_hash}`; "
+        "re-paraphrasing under a different model snapshot would shift "
+        "headline metrics by approximately +/- 0.03 (calibration "
+        "baseline from the v1 corpus)."
+    )
     lines.append("")
+
+    # Wave 102: reproducibility envelope.
+    lines.extend(_render_reproducing_section(model_card))
 
     # --- Provenance ------------------------------------------- #
     lines.append("## Provenance")
@@ -443,6 +484,117 @@ def _render_body(
     )
     lines.append("")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------- #
+# Wave 102 helpers                                                        #
+# ---------------------------------------------------------------------- #
+
+
+def _render_headline_table(ablation_report: Dict[str, Any]) -> List[str]:
+    """Render the 4-row headline ablation table (4 or 5 columns).
+
+    The qualitative_score column is included only when at least one
+    row carries a non-None value; otherwise we render a 4-column
+    table.
+    """
+    rows = ablation_report.get("headline_table") or []
+    if not rows:
+        return []
+    has_qualitative = any(
+        r.get("qualitative_score") is not None for r in rows
+    )
+
+    lines: List[str] = ["### Headline Ablation", ""]
+    headers = [
+        "Setup", "Accuracy", "Faithfulness",
+        "Hallucination rate", "Source-Match",
+    ]
+    if has_qualitative:
+        headers.append("Qualitative (1-5)")
+    lines.append("| " + " | ".join(headers) + " |")
+    lines.append("|" + "|".join(["---"] * len(headers)) + "|")
+    for row in rows:
+        cells = [
+            str(row.get("setup", "?")),
+            _fmt_or_dash(row.get("accuracy")),
+            _fmt_or_dash(row.get("faithfulness")),
+            _fmt_or_dash(row.get("hallucination_rate")),
+            _fmt_or_dash(row.get("source_match")),
+        ]
+        if has_qualitative:
+            cells.append(_fmt_or_dash(row.get("qualitative_score")))
+        lines.append("| " + " | ".join(cells) + " |")
+    lines.append("")
+    return lines
+
+
+def _render_retrieval_method_table(ablation_report: Dict[str, Any]) -> List[str]:
+    """Render the 5-row retrieval-method comparison table."""
+    rows = ablation_report.get("retrieval_method_table") or []
+    if not rows:
+        return []
+    lines: List[str] = ["### Retrieval-Method Comparison", ""]
+    lines.append(
+        "| Method | Accuracy | Faithfulness | Source-Match | "
+        "Mean latency (ms) |"
+    )
+    lines.append("|---|---|---|---|---|")
+    for row in rows:
+        cells = [
+            str(row.get("method", "?")),
+            _fmt_or_dash(row.get("accuracy")),
+            _fmt_or_dash(row.get("faithfulness")),
+            _fmt_or_dash(row.get("source_match")),
+            _fmt_or_dash(row.get("mean_latency_ms"), digits=2),
+        ]
+        lines.append("| " + " | ".join(cells) + " |")
+    lines.append("")
+    return lines
+
+
+def _render_reproducing_section(model_card: Dict[str, Any]) -> List[str]:
+    """Render the 'Reproducing These Numbers' subsection."""
+    eval_scores = model_card.get("eval_scores") or {}
+    scoring_commit = eval_scores.get("scoring_commit") or "<unset>"
+    tolerance_band = eval_scores.get("tolerance_band") or {}
+    provenance = model_card.get("provenance") or {}
+
+    lines: List[str] = ["## Reproducing These Numbers", ""]
+    lines.append(
+        "Run `bash reproduce_eval.sh` from this directory. The script "
+        "pins the commit SHA, model id, and eval profile, then invokes "
+        "`python -m Trainforge.eval.verify_eval` against the stored "
+        "`eval_report.json` + `ablation_report.json`. Verification "
+        "re-reads the metrics rather than re-running the model, so no "
+        "GPU is required."
+    )
+    lines.append("")
+    lines.append(f"- Scoring commit: `{scoring_commit}`")
+    if tolerance_band:
+        bands_pretty = ", ".join(
+            f"{k}={v}" for k, v in sorted(tolerance_band.items())
+        )
+        lines.append(f"- Tolerance band: `{bands_pretty}`")
+    if provenance:
+        lines.append(
+            "- Pinned hashes: see the `Provenance` section below for "
+            "the seven SHA-256 hashes covering chunks, pedagogy graph, "
+            "training pairs, concept graph, vocabulary TTL, and the "
+            "holdout split."
+        )
+    lines.append("")
+    return lines
+
+
+def _fmt_or_dash(value: Any, digits: int = 4) -> str:
+    """Render a number to ``digits`` dp; return em dash for None."""
+    if value is None:
+        return "—"
+    try:
+        return f"{round(float(value), digits)}"
+    except (TypeError, ValueError):
+        return "—"
 
 
 __all__ = ["eval_report_to_model_index", "write_hf_readme"]

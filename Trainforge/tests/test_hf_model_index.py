@@ -318,3 +318,184 @@ def test_write_hf_readme_partial_eval_report(tmp_path):
     # Two metric entries (faithfulness + coverage)
     metrics = front["model-index"][0]["results"]
     assert 1 <= len(metrics) <= 4
+
+
+# ---------------------------------------------------------------------- #
+# Wave 102 - thesis statement + ablation tables + reproducing section     #
+# ---------------------------------------------------------------------- #
+
+
+def _build_ablation_report() -> dict:
+    return {
+        "headline_table": [
+            {"setup": "base", "accuracy": 0.40, "faithfulness": 0.50,
+             "hallucination_rate": 0.50, "source_match": 0.10,
+             "qualitative_score": None},
+            {"setup": "base+rag", "accuracy": 0.55, "faithfulness": 0.65,
+             "hallucination_rate": 0.35, "source_match": 0.40,
+             "qualitative_score": None},
+            {"setup": "adapter", "accuracy": 0.65, "faithfulness": 0.70,
+             "hallucination_rate": 0.30, "source_match": 0.20,
+             "qualitative_score": None},
+            {"setup": "adapter+rag", "accuracy": 0.85, "faithfulness": 0.88,
+             "hallucination_rate": 0.12, "source_match": 0.60,
+             "qualitative_score": None},
+        ],
+        "retrieval_method_table": [
+            {"method": "bm25", "accuracy": 0.85, "faithfulness": 0.88,
+             "source_match": 0.60, "mean_latency_ms": 12.0},
+            {"method": "bm25+intent", "accuracy": 0.87, "faithfulness": 0.89,
+             "source_match": 0.62, "mean_latency_ms": 14.2},
+            {"method": "bm25+graph", "accuracy": 0.83, "faithfulness": 0.86,
+             "source_match": 0.55, "mean_latency_ms": 18.5},
+            {"method": "bm25+tag", "accuracy": 0.86, "faithfulness": 0.88,
+             "source_match": 0.61, "mean_latency_ms": 13.5},
+            {"method": "hybrid", "accuracy": 0.88, "faithfulness": 0.90,
+             "source_match": 0.65, "mean_latency_ms": 22.0},
+        ],
+    }
+
+
+def test_readme_includes_thesis_statement(tmp_path):
+    from Trainforge.eval.hf_model_index import write_hf_readme
+
+    readme_path = write_hf_readme(
+        run_dir=tmp_path,
+        eval_report=_build_eval_report(),
+        course_slug="rdf-shacl-551-2",
+        base_model="qwen2.5-1.5b",
+        model_id="m-01",
+        model_card=_build_model_card(),
+    )
+    text = readme_path.read_text(encoding="utf-8")
+    # Verbatim thesis statement
+    assert (
+        "This benchmark evaluates whether a domain adapter improves "
+        "grounded reasoning over structured educational knowledge "
+        "packages, using held-out questions, expected evidence chunks, "
+        "and reproducible scoring scripts."
+    ) in text
+
+
+def test_readme_renders_headline_4row_table(tmp_path):
+    from Trainforge.eval.hf_model_index import write_hf_readme
+
+    readme_path = write_hf_readme(
+        run_dir=tmp_path,
+        eval_report=_build_eval_report(),
+        course_slug="rdf-shacl-551-2",
+        base_model="qwen2.5-1.5b",
+        model_id="m-01",
+        model_card=_build_model_card(),
+        ablation_report=_build_ablation_report(),
+    )
+    text = readme_path.read_text(encoding="utf-8")
+    assert "### Headline Ablation" in text
+    # All four setups appear as rows
+    for setup in ("base", "base+rag", "adapter", "adapter+rag"):
+        assert f"| {setup} |" in text
+    # No qualitative column when every row is None
+    assert "Qualitative" not in text
+
+
+def test_readme_renders_qualitative_column_when_provided(tmp_path):
+    from Trainforge.eval.hf_model_index import write_hf_readme
+
+    abl = _build_ablation_report()
+    abl["headline_table"][3]["qualitative_score"] = 4.5
+    readme_path = write_hf_readme(
+        run_dir=tmp_path,
+        eval_report=_build_eval_report(),
+        course_slug="rdf-shacl-551-2",
+        base_model="qwen2.5-1.5b",
+        model_id="m-01",
+        model_card=_build_model_card(),
+        ablation_report=abl,
+    )
+    text = readme_path.read_text(encoding="utf-8")
+    assert "Qualitative (1-5)" in text
+    assert "4.5" in text
+
+
+def test_readme_renders_retrieval_method_5row_table(tmp_path):
+    from Trainforge.eval.hf_model_index import write_hf_readme
+
+    readme_path = write_hf_readme(
+        run_dir=tmp_path,
+        eval_report=_build_eval_report(),
+        course_slug="rdf-shacl-551-2",
+        base_model="qwen2.5-1.5b",
+        model_id="m-01",
+        model_card=_build_model_card(),
+        ablation_report=_build_ablation_report(),
+    )
+    text = readme_path.read_text(encoding="utf-8")
+    assert "### Retrieval-Method Comparison" in text
+    for method in ("bm25", "bm25+intent", "bm25+graph", "bm25+tag", "hybrid"):
+        assert f"| {method} |" in text
+    assert "Mean latency" in text
+
+
+def test_readme_includes_reproducing_section(tmp_path):
+    from Trainforge.eval.hf_model_index import write_hf_readme
+
+    card = _build_model_card()
+    card["eval_scores"] = {
+        "faithfulness": 0.84,
+        "scoring_commit": "f" * 40,
+        "tolerance_band": {
+            "accuracy": 0.0, "faithfulness": 0.05,
+            "hallucination_rate": 0.05, "source_match": 0.0,
+        },
+    }
+    readme_path = write_hf_readme(
+        run_dir=tmp_path,
+        eval_report=_build_eval_report(),
+        course_slug="rdf-shacl-551-2",
+        base_model="qwen2.5-1.5b",
+        model_id="m-01",
+        model_card=card,
+    )
+    text = readme_path.read_text(encoding="utf-8")
+    assert "## Reproducing These Numbers" in text
+    assert "reproduce_eval.sh" in text
+    assert ("f" * 40) in text  # scoring_commit
+    assert "tolerance_band" in text.lower() or "Tolerance band" in text
+
+
+def test_readme_includes_limitations_with_synthesis_drift_note(tmp_path):
+    from Trainforge.eval.hf_model_index import write_hf_readme
+
+    readme_path = write_hf_readme(
+        run_dir=tmp_path,
+        eval_report=_build_eval_report(),
+        course_slug="rdf-shacl-551-2",
+        base_model="qwen2.5-1.5b",
+        model_id="m-01",
+        model_card=_build_model_card(),
+    )
+    text = readme_path.read_text(encoding="utf-8")
+    assert "## Limitations" in text
+    # Wave 102: paraphrase-drift caveat with hash pin
+    assert "instruction_pairs_hash" in text
+    assert "paraphrase" in text.lower() or "paraphrasing" in text.lower()
+
+
+def test_readme_includes_hallucination_rate_row(tmp_path):
+    from Trainforge.eval.hf_model_index import write_hf_readme
+
+    report = _build_eval_report()
+    report["metrics"] = {"hallucination_rate": 0.15, "source_match": 0.55}
+    report["source_match"] = 0.55
+
+    readme_path = write_hf_readme(
+        run_dir=tmp_path,
+        eval_report=report,
+        course_slug="rdf-shacl-551-2",
+        base_model="qwen2.5-1.5b",
+        model_id="m-01",
+        model_card=_build_model_card(),
+    )
+    text = readme_path.read_text(encoding="utf-8")
+    assert "Hallucination rate" in text
+    assert "Source-Match" in text

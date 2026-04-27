@@ -430,7 +430,38 @@ class LibV2ModelValidator:
                 ),
                 location=str(card_path),
             )]
-        return []
+        # Wave 102: when eval_scores is populated, the reproducibility
+        # surface (scoring_commit + tolerance_band) is required so
+        # verify_eval can run end-to-end without external context.
+        issues: List[GateIssue] = []
+        if not isinstance(eval_scores, dict):
+            return issues
+        if not eval_scores.get("scoring_commit"):
+            issues.append(GateIssue(
+                severity="critical",
+                code="EVAL_SCORES_MISSING_SCORING_COMMIT",
+                message=(
+                    "eval_scores.scoring_commit is required when "
+                    "eval_scores is present. Wave 102 reproduce_eval.sh "
+                    "pins this 40-char SHA so the verifier can detect "
+                    "working-tree drift."
+                ),
+                location=str(card_path),
+            ))
+        tolerance = eval_scores.get("tolerance_band")
+        if not isinstance(tolerance, dict) or not tolerance:
+            issues.append(GateIssue(
+                severity="critical",
+                code="EVAL_SCORES_MISSING_TOLERANCE_BAND",
+                message=(
+                    "eval_scores.tolerance_band is required when "
+                    "eval_scores is present. Wave 102 verify_eval reads "
+                    "the per-metric bands to decide whether to flag "
+                    "DRIFT."
+                ),
+                location=str(card_path),
+            ))
+        return issues
 
     @staticmethod
     def _check_license_declared(

@@ -94,6 +94,15 @@ def _make_card(
             "faithfulness": 0.83,
             "coverage": 0.91,
             "baseline_delta": 0.12,
+            # Wave 102: scoring_commit + tolerance_band are required
+            # whenever eval_scores is present.
+            "scoring_commit": "f" * 40,
+            "tolerance_band": {
+                "accuracy": 0.0,
+                "faithfulness": 0.05,
+                "hallucination_rate": 0.05,
+                "source_match": 0.0,
+            },
         },
         "license": "apache-2.0",
     }
