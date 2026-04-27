@@ -6,14 +6,20 @@ LibV2 is a large-scale repository (1000+ entries) for SLM (Small Language Model)
 
 ## Pipeline Position
 
-LibV2 is the **final stage** of the Ed4All core pipeline.
+LibV2 is the **final stage** of the Ed4All core pipeline. SLM training is a post-import sub-stage that operates on already-imported courses.
 
 ```
-DART ───> Courseforge ───> TrainForge ───> LibV2 (this)
+DART ───> Courseforge ───> Trainforge ─────────────────> LibV2 (this)
+                                │                          │
+                                └─── training_specs/ ────> models/<model_id>/
+                                          ↓                       ↑
+                                    [Trainforge.train_course] ────┘
+                                          ↓
+                                    (eval harness — Trainforge/eval/)
 ```
 
-**Receives:** Processed training artifacts from TrainForge
-**Role:** Store, index, and organize training data for SLM model training
+**Receives:** Processed training artifacts from Trainforge (corpus / graph / training_specs / pedagogy / quality).
+**Role:** Store, index, and organize training data for SLM model training, AND host trained adapters under `courses/<slug>/models/<model_id>/` (Wave 93). Promotion ledger at `models/_pointers.json` per `schemas/models/model_pointers.schema.json`.
 
 ## CRITICAL: RAG Query Restrictions
 

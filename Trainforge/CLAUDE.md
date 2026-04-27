@@ -274,6 +274,188 @@ Alongside per-gate validation, `CourseProcessor._write_metadata` folds an `asses
 
 ---
 
+## Training Pipeline
+
+Trainforge produces SLM (Small Language Model) adapters from already-imported LibV2 courses. End-state: `LibV2/courses/<slug>/models/<model_id>/` carries `adapter.safetensors` + `model_card.json` + `eval_report.json` + `training_run.jsonl`. The model card pins seven SHA-256 provenance hashes to the LibV2 paths that produced the adapter, making the run independently auditable. Hugging Face is the upload target.
+
+### Architectural call
+
+Training is a **post-import LibV2 stage**, not a step in `Trainforge/process_course.py`. Consequences:
+
+- `process_course.py` stays deterministic + CPU-only. Anyone can re-chunk a corpus on a laptop.
+- Retraining on a new base model does **not** require re-chunking — the trainer reads `training_specs/*.jsonl` from the imported course and writes a new `models/<model_id>/`.
+- Provenance hashes in `model_card.json` point at LibV2 paths (the auditable surface), not at transient runtime files.
+- The trainer never mutates the source corpus; `models/` is purely additive alongside `corpus/`, `graph/`, `training_specs/`, `pedagogy/`, `quality/`.
+
+### The five waves (89-93)
+
+| Wave | Commit | Surface |
+|------|--------|---------|
+| 89   | `f654847` | Foundation — `schemas/models/model_card.schema.json`, `LibV2ModelValidator`, 5 training-related `decision_type` enum additions + `trainforge-training` phase. |
+| 90   | `3298330` | Training core — `Trainforge/training/` submodule (runner, peft_trainer, base_models, compute_backend, configs) + `Trainforge/train_course.py` CLI. |
+| 91   | `985dbfe` | Synthesis quality fixes — `_anthropic_provider.py`, graph-required default, `MinEdgeCountValidator`, `SynthesisDiversityValidator`, kg_quality threshold promotion. |
+| 92   | `0101ec4` | Eval — `Trainforge/eval/` submodule (5 layers × 3 tiers), harness wired into runner, `holdout_graph_hash` added to model card provenance. |
+| 93   | `dc06ba1` | LibV2 integration — `models/` subdir, `import_model`, `_pointers.json` promotion ledger, four new `libv2 models {list,promote,eval}` + `libv2 import-model` CLI subcommands. |
+
+### Training command
+
+```bash
+# Direct entry point (works today end-to-end via Python module):
+python -m Trainforge.train_course --course-code <slug> --base-model <name> [--dry-run] [--backend local|runpod]
+
+# Examples
+python -m Trainforge.train_course --course-code rdf-shacl-551-2 --base-model qwen2.5-1.5b --dry-run
+python -m Trainforge.train_course --course-code phys-101 --base-model llama-3.2-3b --backend runpod
+
+# Via the unified CLI (Wave 90 registered the workflow in config/workflows.yaml):
+ed4all run trainforge_train --course-code rdf-shacl-551-2 --base-model qwen2.5-1.5b
+```
+
+`--dry-run` produces a runner plan JSON dump without invoking the trainer (no GPU, no network). All non-dry-run modes require:
+
+```bash
+pip install ed4all[training]    # pulls torch>=2.1, transformers>=4.40, trl>=0.8, peft>=0.10, accelerate>=0.30, bitsandbytes>=0.43, datasets>=2.18, safetensors>=0.4
+```
+
+The `[training]` extra is **not** part of the default install — CPU-only dev installs (DART/Courseforge/Trainforge synthesis) stay slim.
+
+### Supported base models
+
+`Trainforge/training/base_models.py::SUPPORTED_BASES` registers exactly five short-name keys; unknown values raise on resolve. Each entry pins HF repo + revision + chat template + recommended seq length / rank / alpha.
+
+| Short name | HF repo | Gating |
+|------------|---------|--------|
+| `qwen2.5-1.5b` | `Qwen/Qwen2.5-1.5B` | Open. **Default base for first-run.** |
+| `llama-3.2-1b` | `meta-llama/Llama-3.2-1B` | HF gated — set `HF_TOKEN`. |
+| `llama-3.2-3b` | `meta-llama/Llama-3.2-3B` | HF gated — set `HF_TOKEN`. |
+| `smollm2-1.7b` | `HuggingFaceTB/SmolLM2-1.7B` | Open. |
+| `phi-3.5-mini` | `microsoft/Phi-3.5-mini-instruct` | HF gated — set `HF_TOKEN`. |
+
+`format_instruction()` handles the chatml / llama3 / phi3 templates so `instruction_pairs.jsonl` formats correctly per base.
+
+### Provider configuration (synthesis)
+
+`Trainforge/synthesize_training.py` gates the chunk → instruction-pair paraphrase pass behind a provider parameter:
+
+| Provider | Behavior | Required env |
+|----------|----------|--------------|
+| `mock` (default in `synthesize_training.py` until you opt in) | Deterministic 30-template × 6-Bloom factory. **Trains a template-recognizer SLM.** Use only for plumbing tests. | None. |
+| `anthropic` | Real-LLM paraphrase via `Trainforge/generators/_anthropic_provider.py`. Default model `claude-sonnet-4-6`; override via `ANTHROPIC_SYNTHESIS_MODEL`. Prompt-cached on chunk text. | `ANTHROPIC_API_KEY`. Fail-loud on absence (no silent mock fallback). |
+
+**Always pass `provider="anthropic"` for any run whose output you intend to actually train on.** Wave 90 ships the trainer; Wave 91 ships the real provider; running Wave 90's trainer against a Wave 91-default `mock` synthesizer would bake a template-recognizer adapter.
+
+### Eval — 5 generic layers × 3 corpus-aware tiers
+
+Eval lives in `Trainforge/eval/` and runs after training inside the runner. Two orthogonal axes:
+
+| Layer (generic) | Module | Question answered |
+|-----------------|--------|-------------------|
+| 1 — Faithfulness | `faithfulness.py` | Held-out edge probes: do trained generations align with held-out KG facts? |
+| 2 — Behavioral invariants | `invariants.py` | Prerequisite ordering, Bloom level, misconception rejection. |
+| 3 — Calibration | `calibration.py` | Confidence elicitation + ECE. |
+| 4 — Comparative delta | `baseline_compare.py` | Paired-bootstrap CI of trained-vs-base on the same prompts. The procurement-claim headline. |
+| 5 — Regression | `regression.py` | Pointer-file-aware version-vs-version comparator (reads `models/_pointers.json`). |
+
+| Tier (corpus-aware) | Cost | Coverage |
+|---------------------|------|----------|
+| Tier 1 — Machine-verifiable | Free, deterministic | rdflib parses, pyshacl conformance, SPARQL syntax — every RDF/SHACL output binary-checked. |
+| Tier 2 — Graph-derived | GPU inference | Holds out edges from the pedagogy graph + queries via prompt templates. |
+| Tier 3 — Semantic | GPU inference | Embedding-or-Jaccard similarity (`key_term_precision.py`) + `interferes_with`-anchored disambiguation. |
+
+Profiles select the active matrix: `Trainforge/eval/configs/rdf_shacl.yaml` (all three tiers on) and `generic.yaml` (Tier 1 omitted — not every domain has machine-verifiable surfaces). The harness emits `eval_report.json` shaped to drop directly into `model_card.json::eval_scores`.
+
+### Required validators (pre-training synthesis gates)
+
+Three validators gate the `training_synthesis` phase under `textbook_to_course`. All must pass before any training run consumes the synthesis output. Source of truth: `config/workflows.yaml`.
+
+| Gate | Validator | Threshold | Severity |
+|------|-----------|-----------|----------|
+| `min_edge_count` | `lib.validators.min_edge_count.MinEdgeCountValidator` | ≥100 edges, ≥4 distinct edge types, ≥50 concept nodes | critical |
+| `synthesis_diversity` | `lib.validators.synthesis_diversity.SynthesisDiversityValidator` | top-3 templates ≤60%, single template ≤35%, ≥8 distinct templates | critical |
+| `kg_quality_report` | `lib.validators.kg_quality.KGQualityValidator` | completeness 0.95 / consistency 0.95 / accuracy 0.95 / coverage 0.5 | critical (Wave 91 promotion from advisory) |
+
+`min_edge_count` refuses synthesis on a thin pedagogy/concept graph (closes the Wave 82-style silent zero-edge regression class). `synthesis_diversity` refuses template-collapsed pair output — even with a healthy graph, a mock-only run can emit ~22 templates total, top-3 share ~47%, which is the calibration baseline from `rdf-shacl-551-2`.
+
+### Model card provenance — 7 SHA-256 hashes
+
+`model_card.json::provenance` pins the run to seven canonical artifacts in the LibV2 course tree. Validated against `schemas/models/model_card.schema.json` on every emit. Hash mismatch on import fails closed via `LibV2ModelValidator`.
+
+| Hash field | Source path |
+|------------|-------------|
+| `chunks_hash` | `LibV2/courses/<slug>/corpus/chunks.jsonl` |
+| `pedagogy_graph_hash` | `LibV2/courses/<slug>/graph/pedagogy_graph.json` |
+| `instruction_pairs_hash` | `LibV2/courses/<slug>/training_specs/instruction_pairs.jsonl` |
+| `preference_pairs_hash` | `LibV2/courses/<slug>/training_specs/preference_pairs.jsonl` |
+| `concept_graph_hash` | `LibV2/courses/<slug>/graph/concept_graph_semantic.json` |
+| `vocabulary_ttl_hash` | `LibV2/courses/<slug>/graph/vocabulary.ttl` |
+| `holdout_graph_hash` | Wave 92 — Bloom-stratified KG holdout split, SHA-256 over canonicalised payload. |
+
+On `libv2 import-model`, the importer populates `CourseManifest.slm_processing` from the model card so retrieval consumers can fast-skip courses without a trained adapter.
+
+### Promotion workflow
+
+Each course's `models/_pointers.json` is the promotion ledger. Schema: `schemas/models/model_pointers.schema.json` (Draft 2020-12, strict).
+
+```bash
+# Import a Wave 90 run dir into the course tree (no auto-promotion):
+libv2 import-model runtime/training/<run_id>/ --course rdf-shacl-551-2
+
+# Same as above, but also flip _pointers.json.current to this model_id:
+libv2 import-model runtime/training/<run_id>/ --course rdf-shacl-551-2 --promote
+
+# Promote an already-imported model_id (demotes the previous current,
+# appends to history[]):
+libv2 models promote rdf-shacl-551-2 rdf-shacl-551-2-qwen2.5-1.5b-a3f9c1e2
+
+# Inspect:
+libv2 models list rdf-shacl-551-2          # stars current
+libv2 models eval rdf-shacl-551-2 <model_id>  # prints cached eval_report.json
+```
+
+`history[]` is append-only — every promotion + demotion event lands there with `model_id`, `promoted_at`, `promoted_by`, `demoted_at`. The pointer file is written through tmpfile + rename for atomicity.
+
+### Decision capture for training
+
+Five mandatory decision events fire during a training run; all under phase `trainforge-training`. The phase value + the five `decision_type` values are canonical-enum members in `schemas/events/decision_event.schema.json` so `DECISION_VALIDATION_STRICT=true` does **not** fail-close on training emits.
+
+| `decision_type` | Fired at | Captures |
+|-----------------|----------|----------|
+| `training_run_planning` | Once per run, in the runner | Course slug, base model, config overrides, computed model_id, all 7 provenance hashes. |
+| `base_model_selection` | Once per run | Short name + HF repo + revision + tokenizer kwargs + chat template, with rationale. |
+| `hyperparameter_selection` | Once per training step type (SFT / DPO) | Seed, LR, epochs, lora_rank, lora_alpha, max_seq_length, batch_size. |
+| `eval_run_decision` | Once per harness invocation | Profile (rdf_shacl / generic), enabled layers + tiers, prompt cap, baseline-compare bootstrap iterations. |
+| `model_promotion_decision` | Once per `libv2 models promote` invocation | Promoted model_id, demoted model_id (if any), eval_report deltas if available. |
+| `synthesis_provider_call` | Once per Anthropic synthesis call (Wave 91) | Model ID, max_tokens, prompt-cache hit/miss, retry count on malformed JSON. |
+
+All training captures land at `training-captures/trainforge/<COURSE_CODE>/phase_trainforge-training/decisions_YYYYMMDD_HHMMSS.jsonl`.
+
+### End-to-end: from imported course to promoted adapter
+
+```bash
+# 1. Confirm the course is imported and has training_specs/.
+libv2 info rdf-shacl-551-2
+
+# 2. (Optional) plan-only sanity check.
+python -m Trainforge.train_course --course-code rdf-shacl-551-2 \
+  --base-model qwen2.5-1.5b --dry-run
+
+# 3. Real training run. ANTHROPIC_API_KEY only needed if synthesis is
+#    re-run; the trainer itself reads the existing training_specs/.
+pip install ed4all[training]
+python -m Trainforge.train_course --course-code rdf-shacl-551-2 \
+  --base-model qwen2.5-1.5b --backend local
+
+# 4. Import + promote the adapter.
+libv2 import-model runtime/training/<run_id>/ \
+  --course rdf-shacl-551-2 --promote
+
+# 5. Verify.
+libv2 models list rdf-shacl-551-2
+libv2 models eval rdf-shacl-551-2 <model_id>
+```
+
+---
+
 ## Validation Loop
 
 ```
