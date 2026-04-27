@@ -1615,5 +1615,208 @@ def export_rdf(ctx, slug: str, output_dir: Optional[str], output_format: str):
         print(f"  {r.artifact_relpath} → {r.output_path} ({r.triple_count:,} triples)")
 
 
+@main.group("models")
+def models_group():
+    """Manage trained adapters attached to a course.
+
+    Wave 93 — adapters trained by Trainforge land under
+    ``courses/<slug>/models/<model_id>/`` alongside ``corpus/``,
+    ``graph/``, etc. ``_pointers.json`` records which model_id is
+    currently promoted.
+    """
+    pass
+
+
+@models_group.command("list")
+@click.argument("slug")
+@click.option("--output", "-o", type=click.Choice(["text", "json"]), default="text")
+@click.pass_context
+def models_list(ctx, slug: str, output: str):
+    """List all imported models for a course; star the current one.
+
+    \b
+    Example:
+        libv2 models list rdf-shacl-551-2
+    """
+    from .importer import list_course_models
+
+    repo_root: Path = ctx.obj["repo_root"]
+    try:
+        info = list_course_models(slug, repo_root)
+    except FileNotFoundError as e:
+        print_error(str(e))
+        sys.exit(1)
+
+    if output == "json":
+        print(json.dumps(info, indent=2))
+        return
+
+    models = info.get("models", [])
+    current = info.get("current")
+    if not models:
+        print(f"No models imported for course {slug}.")
+        return
+
+    print(f"Models for {slug} (current = {current or '<none>'}):")
+    if RICH_AVAILABLE:
+        table = Table(show_header=True)
+        table.add_column("", justify="center")
+        table.add_column("model_id", style="cyan")
+        table.add_column("base_model")
+        table.add_column("adapter_format")
+        table.add_column("created_at")
+        table.add_column("faithfulness", justify="right")
+        for m in models:
+            star = "*" if m.get("is_current") else " "
+            base = (m.get("base_model") or {}).get("name", "?")
+            scores = m.get("eval_scores") or {}
+            faith = scores.get("faithfulness")
+            faith_str = f"{faith:.3f}" if isinstance(faith, (int, float)) else "-"
+            table.add_row(
+                star,
+                m.get("model_id", "?"),
+                base,
+                m.get("adapter_format") or "?",
+                m.get("created_at") or "?",
+                faith_str,
+            )
+        console.print(table)
+    else:
+        for m in models:
+            marker = "*" if m.get("is_current") else " "
+            base = (m.get("base_model") or {}).get("name", "?")
+            print(f"  {marker} {m.get('model_id')}  base={base}  "
+                  f"format={m.get('adapter_format')}  created={m.get('created_at')}")
+
+
+@models_group.command("promote")
+@click.argument("slug")
+@click.argument("model_id")
+@click.option("--promoted-by", help="Optional actor identifier recorded in history")
+@click.pass_context
+def models_promote(ctx, slug: str, model_id: str, promoted_by: Optional[str]):
+    """Flip _pointers.json.current; demote the previous current.
+
+    \b
+    Example:
+        libv2 models promote rdf-shacl-551-2 qwen2-5-1-5b-rdf-shacl-551-2-3a4f8c92
+    """
+    from .importer import promote_model
+
+    repo_root: Path = ctx.obj["repo_root"]
+    try:
+        path = promote_model(slug, model_id, repo_root, promoted_by=promoted_by)
+    except FileNotFoundError as e:
+        print_error(str(e))
+        sys.exit(1)
+    except ValueError as e:
+        print_error(f"Pointer file write rejected: {e}")
+        sys.exit(1)
+
+    print_success(f"Promoted: {model_id}")
+    print(f"  Pointers: {path}")
+
+
+@models_group.command("eval")
+@click.argument("slug")
+@click.argument("model_id")
+@click.option("--output", "-o", type=click.Choice(["text", "json"]), default="text")
+@click.pass_context
+def models_eval_cmd(ctx, slug: str, model_id: str, output: str):
+    """Print the cached eval_report.json for a model.
+
+    Surfaces the report Trainforge.eval.SLMEvalHarness wrote alongside
+    the model card. Wave 93 does NOT run a fresh evaluation — the bridge
+    from a saved adapter to a model_callable is left as
+    ``NotImplementedError`` in the runner (see Wave 92 deferred items
+    in ``plans/slm-training-2026-04-26.md``).
+
+    \b
+    Example:
+        libv2 models eval rdf-shacl-551-2 qwen2-5-1-5b-rdf-shacl-551-2-3a4f8c92
+    """
+    from .importer import get_model_eval_report
+
+    repo_root: Path = ctx.obj["repo_root"]
+    course_dir = repo_root / "courses" / slug
+    if not course_dir.exists():
+        print_error(f"Course not found: {course_dir}")
+        sys.exit(1)
+    model_dir = course_dir / "models" / model_id
+    if not model_dir.exists():
+        print_error(f"Model not found: {model_dir}")
+        sys.exit(1)
+
+    report = get_model_eval_report(slug, model_id, repo_root)
+    if report is None:
+        print_warning(
+            f"No eval_report.json found for {model_id}. Evaluation has not "
+            f"run for this model — invoke `python -m Trainforge.train_course "
+            f"--course-code {slug}` to train and score together; or wire the "
+            f"model-callable bridge in a follow-up wave."
+        )
+        return
+
+    if output == "json":
+        print(json.dumps(report, indent=2))
+        return
+
+    print(f"Eval report for {slug} / {model_id}:")
+    for key in ("faithfulness", "coverage", "baseline_delta", "calibration_ece", "profile"):
+        if key in report:
+            print(f"  {key}: {report[key]}")
+    if "per_tier" in report:
+        print("  per_tier:")
+        for tier, vals in (report.get("per_tier") or {}).items():
+            print(f"    {tier}: {vals}")
+
+
+@main.command("import-model")
+@click.argument("run_dir", type=click.Path(exists=True, file_okay=False))
+@click.option("--course", "-c", required=True, help="Course slug to attach the model to")
+@click.option("--promote", is_flag=True, help="Promote the new model as current after import")
+@click.option("--promoted-by", help="Optional actor identifier recorded in history")
+@click.pass_context
+def import_model_cmd(ctx, run_dir: str, course: str, promote: bool,
+                     promoted_by: Optional[str]):
+    """Import a TrainingRunner output dir into a LibV2 course.
+
+    Validates ``model_card.json`` against LibV2ModelValidator (Wave 89);
+    fails loud on critical issues. Optionally promotes the new model
+    as current with ``--promote``.
+
+    \b
+    Example:
+        libv2 import-model /path/to/run-dir --course rdf-shacl-551-2 --promote
+    """
+    from .importer import import_model
+    from .validator import ValidationError
+
+    repo_root: Path = ctx.obj["repo_root"]
+    try:
+        target = import_model(
+            course_slug=course,
+            run_dir=Path(run_dir),
+            repo_root=repo_root,
+            promote=promote,
+            promoted_by=promoted_by,
+        )
+    except FileNotFoundError as e:
+        print_error(str(e))
+        sys.exit(1)
+    except FileExistsError as e:
+        print_error(str(e))
+        sys.exit(1)
+    except ValidationError as e:
+        print_error(f"Model card validation failed: {e}")
+        sys.exit(1)
+
+    print_success(f"Imported model into: {target}")
+    if promote:
+        print(f"  Promoted as current model for course {course!r}.")
+    else:
+        print("  Run with --promote to set as current.")
+
+
 if __name__ == "__main__":
     main()
