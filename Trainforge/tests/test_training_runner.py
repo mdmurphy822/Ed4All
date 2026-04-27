@@ -624,3 +624,303 @@ def test_missing_training_specs_fails_loud(tmp_path: Path):
             dry_run=True,
         ).run()
     assert "training" in str(excinfo.value).lower()
+
+
+# ---------------------------------------------------------------------- #
+# Wave 100 — runner emits model_card + training_run.jsonl when eval is   #
+# unwired (Bug 5)                                                         #
+# ---------------------------------------------------------------------- #
+
+
+def test_runner_writes_card_when_eval_unwired(libv2_root: Path, monkeypatch):
+    """Bug 5: training success ≠ eval success. The runner must write
+    model_card.json + training_run.jsonl AFTER training succeeds but
+    BEFORE attempting eval, so a failure from ``_run_eval_harness``
+    doesn't void the provenance card and decision log.
+
+    Wave 101: the eval bridge is now wired (no longer raises
+    NotImplementedError unconditionally), but it can still fail on a
+    CPU-only test machine (no transformers / peft installed) or when
+    the adapter dir is missing fragments. The runner's broadened
+    except clause catches NotImplementedError, ImportError, and
+    FileNotFoundError so the no-eval-scores fallback still fires.
+    """
+    from Trainforge.training.compute_backend import TrainingJobResult
+
+    runner = TrainingRunner(
+        course_slug="tst-101",
+        base_model="qwen2.5-1.5b",
+        libv2_root=libv2_root,
+        dry_run=False,  # IMPORTANT: real-run path, not dry-run
+    )
+
+    # Stub _dispatch_training to "succeed" without invoking the GPU
+    # backend. We materialise the adapter file on disk so the
+    # adapter-presence guard doesn't trip.
+    def _fake_dispatch(run_dir: Path, run_dpo: bool) -> TrainingJobResult:
+        adapter = run_dir / "adapter_model.safetensors"
+        adapter.write_bytes(b"stub-trained-bytes")
+        return TrainingJobResult(
+            adapter_path=adapter,
+            metrics={"backend": "stub", "final_train_loss": 1.37},
+        )
+
+    monkeypatch.setattr(runner, "_dispatch_training", _fake_dispatch)
+
+    # Wave 101: force the eval bridge to fail with NotImplementedError
+    # so the test exercises the runner's fallback path regardless of
+    # whether the test box has transformers/peft installed. In real
+    # CPU-only runs, ImportError gets caught the same way.
+    def _eval_unwired(run_dir: Path, adapter_path):
+        raise NotImplementedError("test-stub: eval bridge skipped")
+
+    monkeypatch.setattr(runner, "_run_eval_harness", _eval_unwired)
+
+    result = runner.run()
+
+    # 1. Adapter persisted.
+    assert result.adapter_path is not None
+    assert result.adapter_path.exists()
+
+    # 2. model_card.json on disk (the central Bug 5 assertion).
+    assert result.model_card_path.exists(), (
+        "model_card.json must be written even when eval is unwired."
+    )
+    card = json.loads(result.model_card_path.read_text(encoding="utf-8"))
+    # eval_scores is absent (or empty) since the harness was skipped.
+    assert "eval_scores" not in card or not card["eval_scores"], (
+        "Eval was unwired, so eval_scores must be absent from the card."
+    )
+
+    # 3. training_run.jsonl on disk with the 4 required decisions.
+    assert result.decision_capture_path.exists(), (
+        "training_run.jsonl must be written even when eval is unwired."
+    )
+    records: List[Dict[str, Any]] = []
+    with result.decision_capture_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                records.append(json.loads(line))
+    decision_types = {rec["decision_type"] for rec in records}
+    required = {
+        "training_run_planning",
+        "base_model_selection",
+        "hyperparameter_selection",
+        "eval_run_decision",
+    }
+    assert required.issubset(decision_types), (
+        f"Missing required decision types: {required - decision_types}. "
+        f"Got: {sorted(decision_types)}"
+    )
+
+
+# ---------------------------------------------------------------------- #
+# Wave 100 — fit_sft returns the actual TRL-written filename (Bug 2)     #
+# ---------------------------------------------------------------------- #
+
+
+def test_fit_sft_adapter_filename(tmp_path: Path, monkeypatch):
+    """Bug 2: TRL's ``save_model()`` writes
+    ``adapter_model.safetensors`` (with underscore), not
+    ``adapter.safetensors``. ``fit_sft`` must return the actual on-disk
+    path so the runner's adapter-presence guard finds the file.
+    """
+    pytest.importorskip("trl", reason="Bug 2 test exercises TRL save path")
+    pytest.importorskip("peft", reason="fit_sft requires peft")
+
+    # Stub the heavy ML imports so we don't actually load a 1.5B model
+    # weight set on a CPU-only CI box. The test only cares about the
+    # filename round-trip: we install fakes for SFTTrainer +
+    # AutoTokenizer + LoraConfig + Dataset + torch + bitsandbytes that
+    # let fit_sft execute the save_model side-effect without touching
+    # GPU/network.
+    from Trainforge.training.peft_trainer import PEFTTrainer
+
+    output_dir = tmp_path / "stub_run"
+    output_dir.mkdir()
+
+    class _FakeTrainer:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def train(self):
+            pass
+
+        def save_model(self, path: str):
+            # TRL writes the file with the underscore form.
+            (Path(path) / "adapter_model.safetensors").write_bytes(b"x")
+
+    class _FakeTokenizer:
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            return cls()
+
+    class _FakeDataset:
+        @classmethod
+        def from_dict(cls, mapping):
+            return cls()
+
+    class _FakeLoraConfig:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class _FakeSFTConfig:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    # Bypass _require_training_deps so the test runs even without
+    # bitsandbytes installed (CI may not have CUDA wheels).
+    monkeypatch.setattr(
+        "Trainforge.training.peft_trainer._require_training_deps",
+        lambda: None,
+    )
+
+    # Patch the modules pulled in by fit_sft. Use sys.modules patching
+    # because fit_sft does ``from peft import LoraConfig`` etc. at call
+    # time.
+    import types
+    fake_torch = types.ModuleType("torch")
+    fake_peft = types.ModuleType("peft")
+    fake_peft.LoraConfig = _FakeLoraConfig
+    fake_transformers = types.ModuleType("transformers")
+    fake_transformers.AutoTokenizer = _FakeTokenizer
+    fake_trl = types.ModuleType("trl")
+    fake_trl.SFTTrainer = _FakeTrainer
+    fake_trl.SFTConfig = _FakeSFTConfig
+    fake_datasets = types.ModuleType("datasets")
+    fake_datasets.Dataset = _FakeDataset
+
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "peft", fake_peft)
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+    monkeypatch.setitem(sys.modules, "trl", fake_trl)
+    monkeypatch.setitem(sys.modules, "datasets", fake_datasets)
+
+    trainer = PEFTTrainer(
+        base_model="qwen2.5-1.5b",
+        training_config={"epochs": 1, "batch_size": 1},
+    )
+    pairs = [{"prompt": "Q?", "completion": "A.", "chunk_id": "c1"}]
+    returned = trainer.fit_sft(pairs, output_dir)
+
+    # The returned path must equal the actual file TRL writes.
+    expected = output_dir / "adapter_model.safetensors"
+    assert returned == expected, (
+        f"fit_sft returned {returned!r} but TRL writes {expected!r}. "
+        f"This drift would trip the runner's adapter-presence guard."
+    )
+    assert expected.exists(), (
+        "Stub TRL save_model didn't materialise the expected file."
+    )
+
+
+# ---------------------------------------------------------------------- #
+# Wave 100 — Wave 96 quality_gate_passed assertion against ON-DISK JSONL #
+# (Bug 4 flavour)                                                        #
+# ---------------------------------------------------------------------- #
+
+
+def test_decision_rationales_pass_quality_gate_on_disk(libv2_root: Path):
+    """Variant of ``test_decision_rationales_pass_quality_gate`` that
+    explicitly reads from ``training_run.jsonl`` on disk (not the
+    in-memory ``capture.decisions`` list) — proves the on-disk emit
+    path carries the same ``metadata.quality_gate_passed=True`` flag
+    Wave 96 asserted against in-memory.
+
+    Bug 4 of Wave 100: the Wave 99 worker reported finding
+    ``quality_gate_passed=None`` on disk; the actual root cause was a
+    pre-Wave-96 build that emitted thinner rationales (``developing``
+    quality, gate=False). This test pins the contract that
+    ``training_run.jsonl`` records the True flag for all four mandatory
+    decisions in the current code tree.
+    """
+    runner = TrainingRunner(
+        course_slug="tst-101",
+        base_model="qwen2.5-1.5b",
+        libv2_root=libv2_root,
+        dry_run=True,
+    )
+    result = runner.run()
+
+    # ON-DISK read — this is the surface real consumers see.
+    on_disk_path = result.decision_capture_path
+    assert on_disk_path.exists()
+    assert on_disk_path.name == "training_run.jsonl"
+
+    records: List[Dict[str, Any]] = []
+    with on_disk_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                records.append(json.loads(line))
+
+    required_types = {
+        "training_run_planning",
+        "base_model_selection",
+        "hyperparameter_selection",
+        "eval_run_decision",
+    }
+    by_type = {r["decision_type"]: r for r in records}
+    missing = required_types - by_type.keys()
+    assert not missing, f"Missing decision types on disk: {missing}"
+
+    for dt in required_types:
+        rec = by_type[dt]
+        meta = rec.get("metadata") or {}
+        assert meta.get("quality_gate_passed") is True, (
+            f"{dt} (on disk): metadata.quality_gate_passed is "
+            f"{meta.get('quality_gate_passed')!r} "
+            f"(quality_level={meta.get('quality_level')!r}, "
+            f"reason={meta.get('quality_gate_reason')!r})."
+        )
+
+
+# ---------------------------------------------------------------------- #
+# Wave 101 — eval bridge happy path with fully mocked harness            #
+# ---------------------------------------------------------------------- #
+
+
+def test_runner_eval_bridge_wired_in_dry_run(libv2_root: Path, monkeypatch):
+    """Wave 101 happy path: when _run_eval_harness returns a real
+    eval_scores dict, the runner folds it into a SECOND model_card.json
+    write so the card on disk carries the canonical eval keys."""
+    from Trainforge.training.compute_backend import TrainingJobResult
+
+    runner = TrainingRunner(
+        course_slug="tst-101",
+        base_model="qwen2.5-1.5b",
+        libv2_root=libv2_root,
+        dry_run=False,
+    )
+
+    def _fake_dispatch(run_dir: Path, run_dpo: bool) -> TrainingJobResult:
+        adapter = run_dir / "adapter_model.safetensors"
+        adapter.write_bytes(b"stub-trained-bytes")
+        return TrainingJobResult(
+            adapter_path=adapter,
+            metrics={"backend": "stub", "final_train_loss": 0.42},
+        )
+
+    monkeypatch.setattr(runner, "_dispatch_training", _fake_dispatch)
+
+    # Mock the eval bridge to return canonical scores.
+    def _fake_eval(run_dir: Path, adapter_path):
+        return {
+            "faithfulness": 0.75,
+            "coverage": 0.62,
+            "baseline_delta": 0.13,
+        }
+
+    monkeypatch.setattr(runner, "_run_eval_harness", _fake_eval)
+
+    result = runner.run()
+
+    # Card on disk carries the eval scores (filtered to canonical
+    # keys per the schema's additionalProperties=false guard).
+    assert result.model_card_path.exists()
+    card = json.loads(result.model_card_path.read_text(encoding="utf-8"))
+    assert "eval_scores" in card
+    assert card["eval_scores"]["faithfulness"] == 0.75
+    assert card["eval_scores"]["coverage"] == 0.62
+    assert card["eval_scores"]["baseline_delta"] == 0.13

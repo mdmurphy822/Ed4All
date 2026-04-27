@@ -99,9 +99,12 @@ class PEFTTrainer:
                 and TRL's checkpoint dirs.
 
         Returns:
-            Path to ``output_dir / "adapter.safetensors"`` (the
+            Path to ``output_dir / "adapter_model.safetensors"`` (the
             consolidated adapter the runner will hash + record in
-            ``model_card.json``).
+            ``model_card.json``). NOTE: TRL ``save_model()`` writes the
+            file as ``adapter_model.safetensors`` (with underscore), not
+            ``adapter.safetensors`` — the Wave 100 fix renames the
+            returned path to match.
         """
         _require_training_deps()
 
@@ -156,7 +159,11 @@ class PEFTTrainer:
         trainer.train()
         trainer.save_model(str(output_dir))
 
-        adapter_path = output_dir / "adapter.safetensors"
+        # TRL's save_model() writes adapter_model.safetensors (with
+        # underscore). Wave 99 worker found the old "adapter.safetensors"
+        # return value tripped the runner's adapter-presence guard
+        # because the file on disk was actually adapter_model.safetensors.
+        adapter_path = output_dir / "adapter_model.safetensors"
         return adapter_path
 
     # ------------------------------------------------------------------ #
@@ -176,9 +183,15 @@ class PEFTTrainer:
                 :func:`Trainforge.generators.preference_factory.synthesize_preference_pair`
                 / misconception-DPO emit. Must carry ``prompt``,
                 ``chosen``, ``rejected`` keys.
-            sft_adapter_path: Path returned by :meth:`fit_sft`.
+            sft_adapter_path: Path returned by :meth:`fit_sft`. Wave 100
+                accepts both the legacy file path
+                (``output_dir/adapter_model.safetensors``) and a
+                directory path; either way ``DPOTrainer`` is given the
+                parent directory because TRL's ``DPOTrainer(model=...)``
+                expects a model directory or HF repo ID, not a single
+                weights file.
             output_dir: Run dir; the DPO adapter overwrites the SFT
-                weights at ``output_dir / "adapter.safetensors"``.
+                weights at ``output_dir / "adapter_model.safetensors"``.
 
         Returns:
             Path to the consolidated DPO+SFT adapter.
@@ -186,6 +199,8 @@ class PEFTTrainer:
         _require_training_deps()
 
         from datasets import Dataset  # type: ignore
+        from peft import PeftModel  # type: ignore
+        from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
         from trl import DPOConfig, DPOTrainer  # type: ignore
 
         rows = {
@@ -203,14 +218,58 @@ class PEFTTrainer:
             seed=int(self.training_config.get("seed", 42)),
         )
 
+        # Wave 100: DPOTrainer expects a model directory or HF repo ID,
+        # NOT a file path. Wave 90 mistakenly passed the
+        # ``adapter_model.safetensors`` file string, which raised an
+        # ``HFValidationError`` / ``OSError`` at DPOTrainer init time.
+        # Resolve the parent directory so TRL can load the SFT-trained
+        # adapter via the standard from_pretrained flow.
+        sft_adapter_path = Path(sft_adapter_path)
+        if sft_adapter_path.is_file():
+            sft_model_dir = sft_adapter_path.parent
+        else:
+            sft_model_dir = sft_adapter_path
+
+        # Wave 100: TRL 0.12+'s DPOTrainer requires `processing_class`
+        # (the renamed tokenizer arg). The SFT save_model() path saves
+        # the tokenizer alongside the adapter; base-model fallback
+        # covers legacy SFT dirs that don't carry the tokenizer.
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(str(sft_model_dir))
+        except (OSError, ValueError):
+            tokenizer = AutoTokenizer.from_pretrained(
+                self.spec.huggingface_repo,
+                revision=self.spec.default_revision,
+            )
+
+        # Wave 100: stacking DPO on a saved PEFT-SFT adapter requires
+        # loading the adapter via ``PeftModel.from_pretrained(...,
+        # is_trainable=True)``. Passing the sft_model_dir as a string
+        # to ``DPOTrainer(model=...)`` triggered
+        # ``RuntimeError: element 0 of tensors does not require grad``
+        # because TRL's auto-load path materialised a frozen merged
+        # model rather than a trainable LoRA. Loading the adapter
+        # explicitly + passing the live PeftModel object keeps the
+        # LoRA layers trainable for the DPO update.
+        base_model = AutoModelForCausalLM.from_pretrained(
+            self.spec.huggingface_repo,
+            revision=self.spec.default_revision,
+        )
+        peft_model = PeftModel.from_pretrained(
+            base_model,
+            str(sft_model_dir),
+            is_trainable=True,
+        )
+
         trainer = DPOTrainer(
-            model=str(sft_adapter_path),
+            model=peft_model,
             args=dpo_args,
             train_dataset=dataset,
+            processing_class=tokenizer,
         )
         trainer.train()
         trainer.save_model(str(output_dir))
-        return output_dir / "adapter.safetensors"
+        return output_dir / "adapter_model.safetensors"
 
 
 __all__ = ["PEFTTrainer"]

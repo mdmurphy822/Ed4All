@@ -50,15 +50,30 @@ dev = [
 # server don't pull in 5+GB of CUDA wheels. RunPod SDK is reserved
 # for the follow-up wave; LocalBackend uses HF transformers + TRL +
 # PEFT + bitsandbytes for QLoRA.
+#
+# Wave 100: pin trl 0.12.x + transformers 4.46–4.49 because trl 0.13+
+# renamed SFTConfig.max_seq_length → max_length and tightened the
+# DPOTrainer model arg shape, breaking Wave 90's
+# Trainforge/training/peft_trainer.py wiring. The Wave 99 worker
+# manually downgraded to trl==0.12.2 + transformers==4.46.3 +
+# tokenizers==0.20.3 to make training work; this pin makes that
+# combination the default resolved set for ``ed4all[training]``.
 training = [
     "torch>=2.1.0",
-    "transformers>=4.40.0,<5.0.0",
-    "trl>=0.8.0,<1.0.0",
+    "transformers>=4.46.0,<4.50.0",
+    "trl>=0.12,<0.13",
     "peft>=0.10.0,<1.0.0",
     "accelerate>=0.30.0",
     "bitsandbytes>=0.43.0",
     "datasets>=2.18.0",
     "safetensors>=0.4.0",
+    # Wave 101: optional generic-benchmark sanity floor via the
+    # EleutherAI lm-evaluation-harness. Wired through
+    # ``Trainforge/eval/lm_eval_wrapper.py``; gated at runtime by
+    # ``LM_EVAL_ENABLED=true`` because a 3-task sweep adds ~5 min on
+    # an RTX 3070. The wrapper handles missing-package gracefully so
+    # this pin is only required when LM_EVAL_ENABLED is set.
+    "lm-eval>=0.4.0,<1.0.0",
 ]
 full = ["ed4all[dart,server,dev]"]
 
