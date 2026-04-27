@@ -113,12 +113,22 @@ def test_harness_emits_eval_scores_compatible_report(tmp_path):
     # schema's eval_scores subschema.
     schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
     eval_subschema = schema["properties"]["eval_scores"]
-    # Build a stripped version with only canonical scores.
+    # Build a stripped version with only canonical scores. Wave 102
+    # added required scoring_commit + tolerance_band to eval_scores;
+    # the harness emits the metric values, but the surrounding
+    # reproducibility envelope is stamped by the runner (Wave 102
+    # reproduce_eval.sh path), so we synthesize the required fields
+    # here to validate the metric subset shape only.
     canonical = {
         k: report[k]
-        for k in ("faithfulness", "coverage", "baseline_delta")
+        for k in (
+            "faithfulness", "coverage", "baseline_delta",
+            "calibration_ece", "source_match",
+        )
         if k in report
     }
+    canonical["scoring_commit"] = "0" * 40
+    canonical["tolerance_band"] = {"faithfulness": 0.05}
     jsonschema.validate(canonical, eval_subschema)
 
 

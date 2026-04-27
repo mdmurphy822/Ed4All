@@ -73,6 +73,8 @@ class EvalReport:
     per_invariant: Dict[str, Any]
     calibration_ece: Optional[float]
     profile: str
+    # Wave 102 additive: source-match precision + named hallucination rate.
+    source_match: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {
@@ -86,6 +88,17 @@ class EvalReport:
             out["baseline_delta"] = round(self.baseline_delta, 4)
         if self.calibration_ece is not None:
             out["calibration_ece"] = round(self.calibration_ece, 4)
+        if self.source_match is not None:
+            out["source_match"] = round(self.source_match, 4)
+        # Wave 102: hallucination_rate is the named inverse of
+        # faithfulness so the ablation renderer can show it as its own
+        # column without recomputing.
+        out.setdefault("metrics", {})
+        out["metrics"]["hallucination_rate"] = round(
+            max(0.0, min(1.0, 1.0 - float(self.faithfulness))), 4,
+        )
+        if self.source_match is not None:
+            out["metrics"]["source_match"] = round(self.source_match, 4)
         return out
 
 
@@ -140,6 +153,7 @@ class SLMEvalHarness:
         from Trainforge.eval.calibration import CalibrationEvaluator
         from Trainforge.eval.key_term_precision import KeyTermPrecisionEvaluator
         from Trainforge.eval.disambiguation import DisambiguationEvaluator
+        from Trainforge.eval.source_match import SourceMatchEvaluator
 
         evaluators = self.profile.get("evaluators", {})
         caps = self.profile.get("caps", {})
@@ -241,6 +255,22 @@ class SLMEvalHarness:
             per_invariant["disambiguation"] = dis
             invariant_pass_rates.append(dis["pass_rate"])
 
+        # --- Source-match (Wave 102 - precision companion to faithfulness)
+        source_match_score: Optional[float] = None
+        if evaluators.get("source_match"):
+            cap = self.max_holdout_questions or caps.get("max_holdout_questions")
+            sm = SourceMatchEvaluator(
+                holdout_split=holdout_path,
+                model_callable=self.model_callable,
+                max_questions=cap,
+            ).evaluate()
+            source_match_score = sm["source_match_rate"]
+            per_tier["source_match"] = {
+                "rate": sm["source_match_rate"],
+                "scored": sm["scored_total"],
+                "matches": sm["matches"],
+            }
+
         # Recompute coverage proxy with the Tier-3 contributions
         if invariant_pass_rates:
             avg_invariant_pass = sum(invariant_pass_rates) / len(invariant_pass_rates)
@@ -257,6 +287,7 @@ class SLMEvalHarness:
             per_invariant=per_invariant,
             calibration_ece=calibration_ece,
             profile=self.profile_name,
+            source_match=source_match_score,
         )
 
         if output_path is None:

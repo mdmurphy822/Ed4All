@@ -183,6 +183,13 @@ def test_fully_populated_card_round_trips():
             "faithfulness": 0.83,
             "coverage": 0.91,
             "baseline_delta": 0.12,
+            "scoring_commit": "f" * 40,
+            "tolerance_band": {
+                "accuracy": 0.0,
+                "faithfulness": 0.05,
+                "hallucination_rate": 0.05,
+                "source_match": 0.0,
+            },
         },
         license="apache-2.0",
         description="QLoRA SFT+DPO adapter for tst-101 trained on Qwen2.5-1.5B.",
@@ -394,11 +401,87 @@ def test_extra_field_on_eval_scores_rejected():
             "faithfulness": 0.5,
             "coverage": 0.5,
             "baseline_delta": 0.0,
+            "scoring_commit": "a" * 40,
+            "tolerance_band": {"faithfulness": 0.05},
             "extra_metric": 0.9,
         },
     )
     errors = list(validator.iter_errors(card))
     assert errors, "Extra fields on eval_scores must be rejected"
+
+
+# ---------------------------------------------------------------------------
+# Wave 102: scoring_commit + tolerance_band reproducibility surface
+# ---------------------------------------------------------------------------
+
+
+def test_eval_scores_requires_scoring_commit():
+    """When eval_scores is present, scoring_commit must be supplied."""
+    validator = _validator()
+    card = _valid_card(eval_scores={
+        "faithfulness": 0.8,
+        "tolerance_band": {"faithfulness": 0.05},
+    })
+    errors = list(validator.iter_errors(card))
+    assert errors, "Missing eval_scores.scoring_commit must fail"
+
+
+def test_eval_scores_requires_tolerance_band():
+    """When eval_scores is present, tolerance_band must be supplied."""
+    validator = _validator()
+    card = _valid_card(eval_scores={
+        "faithfulness": 0.8,
+        "scoring_commit": "a" * 40,
+    })
+    errors = list(validator.iter_errors(card))
+    assert errors, "Missing eval_scores.tolerance_band must fail"
+
+
+def test_scoring_commit_pattern_enforced():
+    """scoring_commit must be a 40-char lowercase-hex SHA."""
+    validator = _validator()
+    for bad in ("", "abc", "Z" * 40, "a" * 39, "a" * 41, "g" * 40):
+        card = _valid_card(eval_scores={
+            "faithfulness": 0.5,
+            "scoring_commit": bad,
+            "tolerance_band": {"faithfulness": 0.05},
+        })
+        errors = list(validator.iter_errors(card))
+        assert errors, f"scoring_commit={bad!r} must fail"
+
+
+def test_eval_scores_accepts_headline_table():
+    """Optional headline_table validates row shape."""
+    validator = _validator()
+    card = _valid_card(eval_scores={
+        "faithfulness": 0.8,
+        "scoring_commit": "a" * 40,
+        "tolerance_band": {"faithfulness": 0.05},
+        "headline_table": [
+            {"setup": "base", "accuracy": 0.4, "faithfulness": 0.5,
+             "hallucination_rate": 0.5, "source_match": 0.1,
+             "qualitative_score": None},
+            {"setup": "adapter+rag", "accuracy": 0.85, "faithfulness": 0.9,
+             "hallucination_rate": 0.1, "source_match": 0.6,
+             "qualitative_score": 4.5},
+        ],
+    })
+    errors = list(validator.iter_errors(card))
+    assert errors == [], [e.message for e in errors]
+
+
+def test_eval_scores_retrieval_method_enum_locked():
+    """retrieval_method_table.method must be one of the five presets."""
+    validator = _validator()
+    card = _valid_card(eval_scores={
+        "scoring_commit": "a" * 40,
+        "tolerance_band": {"faithfulness": 0.05},
+        "retrieval_method_table": [
+            {"method": "not-a-method", "accuracy": 0.5},
+        ],
+    })
+    errors = list(validator.iter_errors(card))
+    assert errors, "Unknown retrieval method must fail enum check"
 
 
 # ---------------------------------------------------------------------------
@@ -445,7 +528,13 @@ def test_training_config_zero_in_positive_int_field_fails(field):
 )
 def test_eval_scores_out_of_range_fails(score, value):
     validator = _validator()
-    card = _valid_card(eval_scores={"faithfulness": 0.5, "coverage": 0.5, "baseline_delta": 0.0})
+    card = _valid_card(eval_scores={
+        "faithfulness": 0.5,
+        "coverage": 0.5,
+        "baseline_delta": 0.0,
+        "scoring_commit": "a" * 40,
+        "tolerance_band": {"faithfulness": 0.05},
+    })
     card["eval_scores"][score] = value
     errors = list(validator.iter_errors(card))
     assert errors, f"eval_scores.{score}={value} must fail range check"
