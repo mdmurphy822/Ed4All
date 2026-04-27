@@ -467,6 +467,351 @@ ed4all:interferesWith
   rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
 
 # ---------------------------------------------------------------------------
+# Wave 87 — Chunk v4 anchor classes (KeyTerm, SourceReference)
+# ---------------------------------------------------------------------------
+#
+# Phase 1.2 (chunk_v4_v1.jsonld) introduced two structural sub-shapes that
+# the Phase 2.1 vocabulary file did not yet declare: KeyTerm (term +
+# definition pair on a chunk) and SourceReference (DART/Courseforge
+# provenance entry threaded through chunks via source.source_references[]).
+# Wave 87 declares both as classes so the chunk-side predicates that point
+# at them (cf:hasKeyTerm, cf:hasSource, cf:sourceReference) carry well-typed
+# rdfs:range targets rather than blank-typed resources.
+
+ed4all:KeyTerm
+  a rdfs:Class, owl:Class ;
+  rdfs:label "Key Term" ;
+  rdfs:comment "Wave 87: a structured term + definition pair carried on a chunk via cf:hasKeyTerm. Canonical shape: schemas/knowledge/chunk_v4.schema.json $defs/KeyTerm (required: term, definition; additionalProperties=false). Mirrors the JSON-LD chunk_v4_v1.jsonld 'key_terms' sub-shape. Subclass of schema:DefinedTerm so Schema.org tooling can traverse term-definition without learning ed4all:." ;
+  rdfs:subClassOf schema:DefinedTerm ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:SourceReference
+  a rdfs:Class, owl:Class ;
+  rdfs:label "Source Reference" ;
+  rdfs:comment "Wave 87: a DART/Courseforge provenance entry threaded through chunks (and Courseforge JSON-LD blocks). Canonical shape: schemas/knowledge/source_reference.schema.json. Carries sourceId, role (primary / contributing / corroborating), weight, confidence, pages, extractor. Range of cf:hasSource and cf:sourceReference — both pointers on a chunk's source.source_references[] sub-shape resolve to instances of this class. Subclass of prov:Entity so PROV-O reasoners can treat each ref as a typed provenance node." ;
+  rdfs:subClassOf prov:Entity ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+# ---------------------------------------------------------------------------
+# Wave 87 — Chunk v4 structural predicates (33 minted)
+# ---------------------------------------------------------------------------
+#
+# The Phase 1.2 chunk_v4_v1.jsonld @context (schemas/context/chunk_v4_v1.jsonld)
+# uses these IRIs against real chunk records (corpus/chunks.jsonl) but the
+# vocabulary file did not yet declare them; they were tracked in that file's
+# `_phase2_followup.predicates[]` block. Wave 87 closes the gap so RDFS
+# reasoning over chunks materialised through the Phase 1.2 bridge has
+# domain/range entailments to work with.
+#
+# Domain/range targets are sourced from chunk_v4.schema.json — every
+# predicate listed here corresponds to a JSON property whose carrier is a
+# chunk (cf:Chunk), or a sub-shape rooted on a chunk (cf:KeyTerm,
+# cf:Misconception, cf:TargetedConcept, cf:SourceReference). One predicate,
+# `metadataTrace` (chunk_v4_v1.jsonld `_metadata_trace`), is intentionally
+# left untyped here: the JSON shape is an opaque dict whose keys are
+# enrichment-field names — the open-shape problem makes a useful
+# rdfs:range target undecidable today. It remains tracked in
+# `_phase3_followup` for a later wave.
+#
+# `cf:hasSource` is declared with rdfs:range cf:SourceReference per the
+# Wave 87 minting decision: although the JSON property `source` carries a
+# nested object (see chunk_v4.schema.json $defs/Source), the meaningful
+# RDF-side referent the chunk_v4 @context surfaces under cf:hasSource is
+# the SourceReference list inside that block. SHACL shapes can later
+# tighten this with a sh:or constraint if needed.
+
+# ---- Identity / version --------------------------------------------------
+
+ed4all:schemaVersion
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "schema version" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'schema_version' literal (always 'v4'). Carried on every chunk so downstream readers can dispatch parser versions without re-reading manifest.json. Subproperty of schema:version for downstream tools that already understand Schema.org versioning." ;
+  rdfs:subPropertyOf schema:version ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:chunkType
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "chunk type" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'chunk_type'. One of the canonical content_type chunk-type slugs (assessment_item, overview, summary, exercise, explanation, example) declared in schemas/taxonomies/v1/content_type.schema.json. Range is skos:Concept because the @context binds chunk_type to a vocab-relative SKOS scheme at https://ed4all.io/vocab/chunk-type#." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range skos:Concept ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+# ---- Body / surface ------------------------------------------------------
+
+ed4all:html
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "html" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'html'. The original HTML fragment the chunk was derived from, preserved for downstream rendering. Distinct from schema:text (the plain-text retrieval surface) carried on the same chunk." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:summary
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "summary" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'summary'. Deterministic extractive summary from Trainforge/generators/summary_factory.py, used for dense-retrieval recall augmentation." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:retrievalText
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "retrieval text" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'retrieval_text'. summary + ' ' + key_terms_joined; emitted only when key_terms is present. Benchmarked in Trainforge/rag/retrieval_benchmark.py." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+# ---- Sequence / position -------------------------------------------------
+
+ed4all:followsChunk
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "follows chunk" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'follows_chunk'. ID of the immediately preceding chunk in the same module, or null for the first chunk. Direction: subject follows object. Intentionally NOT declared owl:TransitiveProperty: only adjacent links are emitted by design (chain traversal must walk the predicate explicitly), mirroring cf:follows on Modules." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range ed4all:Chunk ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:positionInModule
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "position in module" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'position_in_module' (chunk's ordinal within its module, zero-based)." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range xsd:nonNegativeInteger ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+# ---- Module / lesson scope ----------------------------------------------
+
+ed4all:moduleId
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "module id" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'module_id'. IMSCC module identifier the chunk belongs to. Required field on chunk source provenance." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:moduleTitle
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "module title" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'module_title'. Human-readable module title; optional for non-Courseforge IMSCC imports that lack module naming." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:lessonId
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "lesson id" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'lesson_id'. IMSCC lesson identifier the chunk belongs to. Required field on chunk source provenance." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:lessonTitle
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "lesson title" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'lesson_title'. Human-readable lesson title." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:resourceType
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "resource type" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'resource_type'. IMSCC resource type identifier (e.g., 'webcontent', 'imsqti_xmlv1p2')." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:sectionHeading
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "section heading" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'section_heading'. Heading of the section this chunk came from. May carry '(part N)' suffix for multi-part text blocks." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+# ---- Audit-trail (HTML element resolution) -------------------------------
+
+ed4all:htmlXPath
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "html xpath" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'html_xpath'. XPath into the source IMSCC HTML element. Audit-trail: enables element_text = resolve_xpath(raw_html, html_xpath) for Section 508 / ADA Title II round-trip." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:charSpan
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "char span" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'char_span'. [start, end] character offset range within the xpath-resolved element. The JSON-LD @context emits this as an @list-typed two-element xsd:integer sequence; the literal range here is xsd:integer (the list members)." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range xsd:integer ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:itemPath
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "item path" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'item_path'. IMSCC-relative path to the source HTML file, for auditor navigation without imsmanifest.xml traversal." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+# ---- Concept tags / LO refs ---------------------------------------------
+
+ed4all:hasConceptTag
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "has concept tag" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'concept_tags'. Set-valued tie from a chunk to the canonical concept slugs it carries (output of process_course.py::_extract_concept_tags). Each value is a Concept node in the concept graph (cf:Concept). Subproperty of schema:about so Schema.org consumers can read 'what is this chunk about?' without learning ed4all:." ;
+  rdfs:subPropertyOf schema:about ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range ed4all:Concept ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:learningOutcomeRef
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "learning outcome ref" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'learning_outcome_refs'. Set-valued tie from a chunk to the LO IDs (TO-NN / CO-NN) it supports. The chunk_v4_v1.jsonld @context maps the JSON key 'learning_outcome_refs' onto cf:loId for symmetry with concept-graph LO refs; cf:learningOutcomeRef is the structural predicate declared here for the chunk-side link. The two are co-extensive — a future wave may add an owl:equivalentProperty bridge." ;
+  rdfs:subPropertyOf schema:teaches ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range ed4all:LearningObjective ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+# ---- Difficulty + token / word counts -----------------------------------
+
+ed4all:difficulty
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "difficulty" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'difficulty'. One of foundational / intermediate / advanced. Range is the typed DifficultyLevel node already declared at Phase 2.6; cf:chunkAtDifficulty (also declared at Phase 2.6) is the pedagogy-graph-side predicate emitting the same tie. The two names co-exist by design — chunk-emit uses cf:difficulty, pedagogy-emit uses cf:chunkAtDifficulty. Both target cf:DifficultyLevel." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range ed4all:DifficultyLevel ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:tokensEstimate
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "tokens estimate" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'tokens_estimate'. Approximate token count (word_count * 1.3)." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range xsd:nonNegativeInteger ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:wordCount
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "word count" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'word_count'. Plain word count of the chunk text body." ;
+  rdfs:subPropertyOf schema:wordCount ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range xsd:nonNegativeInteger ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+# ---- Bloom-level provenance / secondary ---------------------------------
+
+ed4all:bloomLevelSource
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "bloom level source" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'bloom_level_source'. Provenance tag for the chunk's bloom_level (one of section_jsonld, page_jsonld, lo_inherited, verbs, default). Only emitted when source is 'verbs' or 'default' — the low-confidence paths from process_course.py:1145." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:bloomLevelSecondary
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "bloom level secondary" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'bloom_level_secondary'. Secondary (lower) Bloom level when the source declared a compound bloom_level (e.g. 'remember-apply'); the higher level becomes the canonical bloom_level and the lower stored here. Range is skos:Concept in the bloom: scheme — same scheme as cf:bloomLevel." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range skos:Concept ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+# ---- Chunk -> structured sub-entities (key terms, source, targeted concepts) ---
+
+ed4all:hasKeyTerm
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "has key term" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'key_terms'. Set-valued tie from a chunk to its structured KeyTerm sub-entities (term + definition pairs). Range is cf:KeyTerm (declared at Wave 87 above)." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range ed4all:KeyTerm ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:hasTargetedConcept
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "has targeted concept" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'targeted_concepts'. Set-valued tie from a chunk to its Bloom-qualified TargetedConcept reified-edge sub-entities (Wave 69 propagation from cited LOs' targetedConcepts[]). Distinct from cf:targetsConcept (the LO-side edge, range cf:TargetedConcept too): cf:hasTargetedConcept's subject is a chunk; cf:targetsConcept's subject is a learning objective." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range ed4all:TargetedConcept ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:hasSource
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "has source" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'source'. Tie from a chunk to its Source provenance block. Per the Wave 87 minting decision, rdfs:range is declared as cf:SourceReference: although the JSON property nests a multi-field provenance object (chunk_v4.schema.json $defs/Source), the meaningful RDF-side referents the chunk_v4 @context surfaces under cf:hasSource are the SourceReference instances inside that block. SHACL shapes can later tighten this with a sh:or constraint if a richer Source class is minted." ;
+  rdfs:subPropertyOf prov:wasDerivedFrom ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range ed4all:SourceReference ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+# ---- SourceReference attributes -----------------------------------------
+
+ed4all:sourceId
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "source id" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld SourceReference 'sourceId'. Stable identifier for the upstream DART/Courseforge source block. Resolves against the DART staging manifest (validated by lib/validators/source_refs.py)." ;
+  rdfs:domain ed4all:SourceReference ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:sourceRole
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "source role" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld SourceReference 'role'. One of primary / contributing / corroborating per schemas/knowledge/source_reference.schema.json. JSON-LD refs carry authoritative roles; HTML-attr-only refs auto-role as contributing." ;
+  rdfs:domain ed4all:SourceReference ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:sourceWeight
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "source weight" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld SourceReference 'weight'. Float weight from the source-router's TF-IDF + confidence scoring (Trainforge/rag/typed_edge_inference.py). Higher weight ≈ stronger source attribution." ;
+  rdfs:domain ed4all:SourceReference ;
+  rdfs:range xsd:decimal ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:sourceConfidence
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "source confidence" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld SourceReference 'confidence'. Float in [0, 1] expressing extractor confidence per DART/CLAUDE.md § Source provenance scale." ;
+  rdfs:domain ed4all:SourceReference ;
+  rdfs:range xsd:decimal ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:sourcePages
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "source pages" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld SourceReference 'pages'. Ordered list of source PDF page numbers backing this reference. The JSON-LD @context emits these as an @list of xsd:integer; the literal range here is xsd:integer (the list members)." ;
+  rdfs:domain ed4all:SourceReference ;
+  rdfs:range xsd:integer ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:sourceExtractor
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "source extractor" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld SourceReference 'extractor'. Identifier of the extractor / strategy that produced this reference (e.g., 'dart-llm-classifier', 'dart-heuristic-headings'). Used for downstream provenance audits." ;
+  rdfs:domain ed4all:SourceReference ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+# ---- Misconception (alternate statement predicate) -----------------------
+
+ed4all:misconceptionStatement
+  a rdf:Property, owl:DatatypeProperty ;
+  rdfs:label "misconception statement" ;
+  rdfs:comment "Wave 87 — chunk_v4_v1.jsonld 'misconception' / 'statement' (Misconception sub-entity). The text of the misconception itself (paired with cf:correction). Both JSON keys 'misconception' and 'statement' (Wave 74+ alias) bind to this predicate; per chunk_v4.schema.json $defs/Misconception, at least one must be present alongside the required 'correction' field." ;
+  rdfs:domain ed4all:Misconception ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+# ---------------------------------------------------------------------------
 # SKOS Concept Schemes
 # ---------------------------------------------------------------------------
 
