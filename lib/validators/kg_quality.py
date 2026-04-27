@@ -1,14 +1,33 @@
 """KG-quality gate — thin wrapper around ``KGQualityReporter``.
 
-Wired into ``config/workflows.yaml`` as a non-blocking
-``warning``-severity gate on the ``textbook_to_course::libv2_archival``
-phase. Default thresholds are 0.0 across the board so the gate is
-purely advisory at roll-out — it surfaces the four KG-quality
-dimensions (completeness, consistency, accuracy, coverage) without
-hard-failing any pipeline run while the team builds confidence in
-the metric distributions.
+Wired into ``config/workflows.yaml`` as a blocking ``critical``-severity
+gate on the ``textbook_to_course::libv2_archival`` phase. The gate
+surfaces the four KG-quality dimensions (completeness, consistency,
+accuracy, coverage).
 
 Improvement #4 from the post-Wave 85 corpus-grounded gap analysis.
+
+Wave 91 calibration baseline (run on
+``LibV2/courses/rdf-shacl-551-2/`` against an empty SHACL validation
+report — i.e. zero violations, the steady-state expected at
+libv2_archival):
+
+    completeness: 1.0
+    consistency:  1.0
+    accuracy:     1.0
+    coverage:     0.5248
+    composite:    0.8812 (unweighted mean)
+
+Promoted thresholds (max(spec_default, baseline - 0.05)):
+
+    min_completeness: 0.95   (baseline 1.0 - 0.05)
+    min_consistency:  0.95   (baseline 1.0 - 0.05)
+    min_accuracy:     0.95   (baseline 1.0 - 0.05)
+    min_coverage:     0.50   (spec default; baseline 0.5248 - 0.05 = 0.4748 floors at spec)
+
+Severity flipped from ``warning`` to ``critical`` and ``on_fail`` from
+``warn`` to ``block``. The fixture corpus passes at the chosen
+thresholds (smallest margin: coverage at 0.5248 vs floor 0.50, +0.025).
 
 Inputs (passed via the gate framework):
     course_slug: Required. Course slug for the report context.

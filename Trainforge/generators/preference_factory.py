@@ -305,24 +305,31 @@ def synthesize_preference_pair(
     seed: int,
     provider: str = "mock",
     misconception_index: int = 0,
+    *,
+    anthropic_provider: Optional[Any] = None,
 ) -> PreferenceSynthesisResult:
     """Synthesize one preference pair from an enriched chunk.
 
     Args:
         chunk: Enriched chunk dict. Must have non-empty ``learning_outcome_refs``.
         seed: Deterministic seed.
-        provider: "mock" (implemented) or "anthropic" (future).
+        provider: ``"mock"`` (deterministic) or ``"anthropic"`` (Wave 91:
+            paraphrase the mock draft via Claude).
         misconception_index: Which misconception in the chunk to target.
             If the chunk has fewer than ``misconception_index+1`` misconceptions,
             falls back to rule-synthesized rejection.
+        anthropic_provider: Optional :class:`AnthropicSynthesisProvider`
+            instance. Tests inject a mocked instance here; production
+            paths leave it ``None`` and a default instance is built
+            (requires ``ANTHROPIC_API_KEY`` in the environment).
 
     Returns:
         PreferenceSynthesisResult. ``pair`` is None if a hard gate failed.
     """
-    if provider != "mock":
+    if provider not in ("mock", "anthropic"):
         raise NotImplementedError(
             f"preference synthesis provider '{provider}' is not implemented; "
-            f"only 'mock' is wired in this release."
+            f"valid choices are 'mock' and 'anthropic'."
         )
 
     chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
@@ -443,6 +450,18 @@ def synthesize_preference_pair(
         "provider": provider,
         "schema_version": "v1",
     }
+
+    # Wave 91 Action A: paraphrase the mock draft via Anthropic when
+    # provider="anthropic". Same fail-loud contract as the instruction
+    # factory: missing key raises, malformed JSON retries up to 3x.
+    if provider == "anthropic":
+        provider_instance = anthropic_provider
+        if provider_instance is None:
+            from Trainforge.generators._anthropic_provider import (
+                AnthropicSynthesisProvider,
+            )
+            provider_instance = AnthropicSynthesisProvider()
+        pair = provider_instance.paraphrase_preference(pair, chunk)
 
     return PreferenceSynthesisResult(
         pair=pair,

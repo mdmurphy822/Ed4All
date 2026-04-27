@@ -843,6 +843,40 @@ workflows:
           - instruction_pairs_count
           - preference_pairs_count
 
+        # Wave 91 Action C + E: pre/post-synthesis quality gates.
+        # MinEdgeCount fires before training-synthesizer runs to refuse
+        # synthesis on a thin upstream graph; SynthesisDiversity fires
+        # after to refuse template-collapsed pair output. Both block
+        # the libv2_archival phase (training_synthesis is its
+        # dependency) when triggered.
+        validation_gates:
+          - gate_id: min_edge_count
+            validator: lib.validators.min_edge_count.MinEdgeCountValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+              min_edges: 100
+              min_edge_types: 4
+              min_concept_nodes: 50
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Wave 91 — refuse synthesis on a thin pedagogy/concept graph
+
+          - gate_id: synthesis_diversity
+            validator: lib.validators.synthesis_diversity.SynthesisDiversityValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+              max_top3_share: 0.6
+              max_single_share: 0.35
+              min_distinct_templates: 8
+              min_total_pairs: 100
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Wave 91 — refuse template-collapsed instruction pair output
+
       - name: libv2_archival
         agents: [libv2-archivist]
         parallel: false
@@ -936,19 +970,27 @@ workflows:
           # KG-quality metric surface (improvement #4 from the post-Wave 85
           # corpus-grounded gap analysis). Computes the four KG-quality
           # dimensions (completeness, consistency, accuracy, coverage)
-          # and emits kg_quality_report.json. Advisory at roll-out:
-          # default min thresholds are 0.0 so the gate surfaces metric
-          # distributions without hard-failing any pipeline run while
-          # the team builds confidence in the numbers.
+          # and emits kg_quality_report.json.
+          #
+          # Wave 91 Action D promoted thresholds off 0.0 and severity
+          # from warning to critical. Baseline run on rdf-shacl-551-2
+          # (empty SHACL validation report) yielded
+          # completeness=1.0, consistency=1.0, accuracy=1.0,
+          # coverage=0.5248. Thresholds picked at max(spec_default,
+          # baseline - 0.05) so the fixture corpus passes with a small
+          # margin and any genuine regression blocks the pipeline.
+          # See lib/validators/kg_quality.py for full calibration notes.
           - gate_id: kg_quality_report
             validator: lib.validators.kg_quality.KGQualityValidator
-            severity: warning
+            severity: critical
             threshold:
-              min_completeness: 0.0
-              min_consistency: 0.0
+              min_completeness: 0.95
+              min_consistency: 0.95
+              min_accuracy: 0.95
+              min_coverage: 0.5
             behavior:
-              on_fail: warn
-              on_error: warn
+              on_fail: block
+              on_error: fail_closed
             description: KG-quality metric surface (completeness / consistency / accuracy / coverage)
 
       - name: finalization

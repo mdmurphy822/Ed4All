@@ -508,6 +508,12 @@ def run_synthesis(
     # is active so a missing graph fails loud instead of silently degrading
     # to chunk-id ordering. The build itself is cheap (sub-1k concept dict
     # build + Kahn's pass) so doing it once here is fine.
+    #
+    # Wave 91 Action B: graph is now REQUIRED by default. Workflow runs
+    # default to ``--curriculum-from-graph=true`` so synthesis never
+    # silently produces graph-less ordering. Set ``--no-graph`` (or
+    # ``allow_no_graph=True`` programmatically) to opt out for legacy
+    # corpora that lack a pedagogy graph.
     curriculum_ctx = None
     chunks_by_id: Dict[str, Dict[str, Any]] = {}
     if curriculum_from_graph or prereq_windowed:
@@ -516,7 +522,8 @@ def run_synthesis(
             raise FileNotFoundError(
                 "--curriculum-from-graph / --prereq-windowed require "
                 f"pedagogy_graph.json under {corpus_dir} (looked in graph/, "
-                f"pedagogy/, and the corpus root)."
+                f"pedagogy/, and the corpus root). Pass --no-graph to "
+                f"opt out of the Wave-91 graph-required default."
             )
         graph = load_pedagogy_graph(graph_path)
         curriculum_ctx = build_curriculum_context(graph, chunks)
@@ -1084,15 +1091,30 @@ def build_parser() -> argparse.ArgumentParser:
             "<corpus>/training_specs/."
         ),
     )
-    # Wave 79 Worker B
+    # Wave 79 Worker B (Wave 91: now default-on; --no-graph to opt out).
     p.add_argument(
         "--curriculum-from-graph",
         action="store_true",
+        default=True,
         help=(
             "Order emitted pairs by topological sort over pedagogy_graph "
-            "prerequisite_of edges. Each pair anchors at the latest concept "
-            "its chunk references; pairs whose chunks reference no concepts "
-            "go to the end. Cycle-break: (first_seen_week, concept_id) asc."
+            "prerequisite_of edges (Wave 91: default ON). Each pair anchors "
+            "at the latest concept its chunk references; pairs whose chunks "
+            "reference no concepts go to the end. Cycle-break: "
+            "(first_seen_week, concept_id) asc."
+        ),
+    )
+    # Wave 91 Action B: opt-out flag for legacy corpora that lack a
+    # pedagogy graph. Without it, missing graph raises FileNotFoundError
+    # at run time so the silent-degrade-to-chunk-id-order regression is
+    # impossible.
+    p.add_argument(
+        "--no-graph",
+        action="store_true",
+        default=False,
+        help=(
+            "Opt out of the Wave-91 graph-required default. Use only for "
+            "legacy corpora that have no pedagogy_graph.json on disk."
         ),
     )
     p.add_argument(
@@ -1136,7 +1158,11 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
     diff_curriculum = bool(getattr(args, "difficulty_curriculum", False))
     max_pairs_cap = getattr(args, "max_pairs", None)
     output_dir = Path(args.output) if getattr(args, "output", None) else None
-    curriculum_graph = bool(getattr(args, "curriculum_from_graph", False))
+    # Wave 91 Action B: graph-required by default; --no-graph opts out.
+    no_graph = bool(getattr(args, "no_graph", False))
+    curriculum_graph = bool(getattr(args, "curriculum_from_graph", True))
+    if no_graph:
+        curriculum_graph = False
     prereq_windowed = bool(getattr(args, "prereq_windowed", False))
     prereq_ctx_tokens = int(
         getattr(args, "prereq_context_tokens", DEFAULT_PREREQ_CONTEXT_TOKENS)
