@@ -1,0 +1,302 @@
+# Concept-graph alias equivalences AND cross-namespace vocabulary bridges
+# — Phase 2.2 + Phase 2.5 of the RDF/SHACL enrichment plan
+# (plans/rdf-shacl-enrichment-2026-04-26.md).
+#
+# This file plays TWO complementary roles:
+#
+#   ROLE 1 (Phase 2.2 — slug-canonicalization aliases). It declares the
+#   canonical-form synonyms that previously lived in
+#   `lib/ontology/concept_classifier.py::KNOWN_EQUIVALENT_ALIASES`
+#   (e.g., `rdfxml` ↔ `rdf-xml`, `jsonld` ↔ `json-ld`, the same-as
+#   surface-form family). All such aliases live entirely inside the
+#   `ed4all:` namespace at `https://ed4all.io/vocab/` and are walked
+#   by the union-find closure in `lib/ontology/aliases.py` to produce
+#   a slug → canonical-slug map.
+#
+#   ROLE 2 (Phase 2.5 — cross-namespace vocabulary bridges). It bridges
+#   the parallel terms that exist in both of Ed4All's two production
+#   namespaces:
+#     * `ed4all:` = `https://ed4all.io/vocab/`  — used by every JSON-LD
+#       @context file (concept_graph_semantic, chunk_v4, course,
+#       pedagogy_graph). Carries document-shape predicates AND most
+#       domain predicates emitted at JSON-LD round-trip time.
+#     * `cf:`     = `https://ed4all.dev/ns/courseforge/v1#`  — used by
+#       `schemas/context/courseforge_v1.vocabulary.ttl`, the formal
+#       RDFS/OWL declaration. Carries the typed classes and the
+#       Wave 57+/Phase 2.1 predicate vocabulary with full
+#       rdfs:domain / rdfs:range axioms.
+#   The two surfaces use the SAME local names for the same intent —
+#   `ed4all:Concept` and `cf:Concept` are the same class, just written
+#   under different host namespaces by accident of evolution. Phase 2.5
+#   formally reconciles them with `owl:equivalentClass` /
+#   `owl:equivalentProperty` axioms here so an RDFS/OWL reasoner sees
+#   them as the same term and can join data emitted under either
+#   namespace without alias gymnastics.
+#
+# Why owl:equivalentProperty (and owl:equivalentClass), not owl:sameAs?
+#   Per LibV2 corpus Q9 (q_20260426_205704_f9dc2230) and Q11
+#   (q_20260426_205705_7c3f954f), `owl:sameAs` is reserved for INDIVIDUAL
+#   identity — every triple about one individual is entailed about the
+#   other in both directions, with full substitution. Using sameAs for
+#   either surface-form synonyms or cross-namespace term equivalence
+#   would (a) be type-incorrect (these IRIs name CLASSES or PREDICATES,
+#   not individuals) and (b) trigger the "sameAs explosion" pitfall
+#   under OWL 2 RL reasoning. `owl:equivalentProperty` and
+#   `owl:equivalentClass` are the structurally correct vocabularies:
+#   they are symmetric, type-respecting (property↔property,
+#   class↔class), and bounded in scope. The canonical reference
+#   example from the corpus (chunk_00091, HealthIntegrity scenario) is
+#   `foaf:name owl:equivalentProperty schema:name` — exactly the
+#   pattern used here for `ed4all:bloomLevel ↔ cf:bloomLevel` etc.
+#
+# Closure semantics:
+#   Both `owl:equivalentProperty` and `owl:equivalentClass` are symmetric
+#   and transitive (RDF Semantics §11; OWL 2 Direct Semantics). The
+#   Python loader builds the equivalence-class closure via union-find
+#   so any term in a class canonicalizes to the same representative.
+#   For Role-1 aliases the representative is the slug whose IRI carries
+#   the `ed4all:isCanonical "true"^^xsd:boolean` annotation; for Role-2
+#   bridges the representative is whichever side carries the annotation
+#   (currently the `ed4all:` side, since the JSON-LD @context files are
+#   the primary emit surface and the bridges are the runtime consumer's
+#   path back to the formal cf: vocabulary). If none is annotated, the
+#   loader falls back to lexicographic order.
+#
+# Adding new aliases or bridges:
+#   1. For Role 1, mint an `ed4all:<slug>` IRI for the new alias.
+#      Declare `<alias> owl:equivalentProperty <existing-canonical>`.
+#   2. For Role 2, add `ed4all:<term> owl:equivalentProperty cf:<term>`
+#      (or `owl:equivalentClass` for class-typed terms). Both IRIs must
+#      already exist — the bridge is purely declarative; we never mint
+#      new predicates here.
+#   3. Add an `rdfs:label` for the human-readable surface form.
+#   4. Add a parity / bridge test entry to
+#      `lib/ontology/tests/test_aliases.py`.
+
+@prefix rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl:    <http://www.w3.org/2002/07/owl#> .
+@prefix xsd:    <http://www.w3.org/2001/XMLSchema#> .
+@prefix ed4all: <https://ed4all.io/vocab/> .
+@prefix cf:     <https://ed4all.dev/ns/courseforge/v1#> .
+
+# ---------------------------------------------------------------------------
+# Ontology header
+# ---------------------------------------------------------------------------
+
+<https://ed4all.io/vocab/aliases>
+    a owl:Ontology ;
+    rdfs:label "Ed4All Concept-Graph Slug Aliases" ;
+    rdfs:comment "Canonical slug equivalence classes for the concept-graph extractor. Phase 2.2 — Wave 83." ;
+    owl:versionInfo "1.0.0" .
+
+# ---------------------------------------------------------------------------
+# Annotation property — flags the canonical representative of an
+# equivalence class so the closure walk can pick a deterministic
+# canonical without resorting to lexicographic ordering.
+# ---------------------------------------------------------------------------
+
+ed4all:isCanonical
+    a owl:AnnotationProperty ;
+    rdfs:label "is canonical" ;
+    rdfs:comment "When true on a property IRI in an owl:equivalentProperty class, marks that IRI as the canonical representative for closure-walk resolution." .
+
+# ---------------------------------------------------------------------------
+# Family 1: RDF/XML serialization format
+# ---------------------------------------------------------------------------
+
+ed4all:rdf-xml
+    a owl:DatatypeProperty ;
+    rdfs:label "RDF/XML" ;
+    ed4all:isCanonical true .
+
+ed4all:rdfxml
+    a owl:DatatypeProperty ;
+    rdfs:label "rdfxml" ;
+    owl:equivalentProperty ed4all:rdf-xml .
+
+# ---------------------------------------------------------------------------
+# Family 2: JSON-LD serialization format
+# ---------------------------------------------------------------------------
+
+ed4all:json-ld
+    a owl:DatatypeProperty ;
+    rdfs:label "JSON-LD" ;
+    ed4all:isCanonical true .
+
+ed4all:jsonld
+    a owl:DatatypeProperty ;
+    rdfs:label "jsonld" ;
+    owl:equivalentProperty ed4all:json-ld .
+
+# ---------------------------------------------------------------------------
+# Family 3: N-Triples serialization format
+# ---------------------------------------------------------------------------
+
+ed4all:n-triples
+    a owl:DatatypeProperty ;
+    rdfs:label "N-Triples" ;
+    ed4all:isCanonical true .
+
+ed4all:ntriples
+    a owl:DatatypeProperty ;
+    rdfs:label "ntriples" ;
+    owl:equivalentProperty ed4all:n-triples .
+
+# ---------------------------------------------------------------------------
+# Family 4: N-Quads serialization format
+# ---------------------------------------------------------------------------
+
+ed4all:n-quads
+    a owl:DatatypeProperty ;
+    rdfs:label "N-Quads" ;
+    ed4all:isCanonical true .
+
+ed4all:nquads
+    a owl:DatatypeProperty ;
+    rdfs:label "nquads" ;
+    owl:equivalentProperty ed4all:n-quads .
+
+# ---------------------------------------------------------------------------
+# Family 5: Turtle serialization format
+# ---------------------------------------------------------------------------
+
+ed4all:turtle
+    a owl:DatatypeProperty ;
+    rdfs:label "Turtle" ;
+    ed4all:isCanonical true .
+
+ed4all:ttl
+    a owl:DatatypeProperty ;
+    rdfs:label "ttl" ;
+    owl:equivalentProperty ed4all:turtle .
+
+# ---------------------------------------------------------------------------
+# Family 6: RDF Schema (W3C standard)
+# Canonical: the acronym slug `rdfs` matches the W3C namespace prefix
+# emitted by `lib/ontology/tech_anchors.py` (Wave 82 Phase C2).
+# ---------------------------------------------------------------------------
+
+ed4all:rdfs
+    a owl:DatatypeProperty ;
+    rdfs:label "RDFS" ;
+    rdfs:comment "Canonical slug for the W3C RDF Schema standard." ;
+    ed4all:isCanonical true .
+
+ed4all:rdf-schema
+    a owl:DatatypeProperty ;
+    rdfs:label "RDF Schema" ;
+    owl:equivalentProperty ed4all:rdfs .
+
+# ---------------------------------------------------------------------------
+# Family 7: Web Ontology Language (W3C standard)
+# ---------------------------------------------------------------------------
+
+ed4all:owl
+    a owl:DatatypeProperty ;
+    rdfs:label "OWL" ;
+    rdfs:comment "Canonical slug for the W3C Web Ontology Language." ;
+    ed4all:isCanonical true .
+
+ed4all:web-ontology-language
+    a owl:DatatypeProperty ;
+    rdfs:label "Web Ontology Language" ;
+    owl:equivalentProperty ed4all:owl .
+
+# ---------------------------------------------------------------------------
+# Family 8: Shapes Constraint Language (W3C standard)
+# ---------------------------------------------------------------------------
+
+ed4all:shacl
+    a owl:DatatypeProperty ;
+    rdfs:label "SHACL" ;
+    rdfs:comment "Canonical slug for the W3C Shapes Constraint Language." ;
+    ed4all:isCanonical true .
+
+ed4all:shapes-constraint-language
+    a owl:DatatypeProperty ;
+    rdfs:label "Shapes Constraint Language" ;
+    owl:equivalentProperty ed4all:shacl .
+
+# ---------------------------------------------------------------------------
+# Family 9: owl:sameAs surface variants
+#
+# Per Q11, owl:sameAs is itself the predicate; users in body text
+# spell it many ways (`owlsameas`, `owl-sameas`, `sameas`). The slug
+# `same-as` is the canonical concept-graph anchor. Note: the equivalence
+# below is BETWEEN SURFACE FORMS — it does not assert that any data
+# triple uses owl:sameAs as a relation.
+# ---------------------------------------------------------------------------
+
+ed4all:same-as
+    a owl:DatatypeProperty ;
+    rdfs:label "owl:sameAs (surface form)" ;
+    rdfs:comment "Canonical concept-graph anchor for the owl:sameAs predicate. Distinct from the predicate itself (http://www.w3.org/2002/07/owl#sameAs)." ;
+    ed4all:isCanonical true .
+
+ed4all:owlsameas
+    a owl:DatatypeProperty ;
+    rdfs:label "owlsameas" ;
+    owl:equivalentProperty ed4all:same-as .
+
+ed4all:owl-sameas
+    a owl:DatatypeProperty ;
+    rdfs:label "owl-sameas" ;
+    owl:equivalentProperty ed4all:same-as .
+
+ed4all:sameas
+    a owl:DatatypeProperty ;
+    rdfs:label "sameas" ;
+    owl:equivalentProperty ed4all:same-as .
+
+# ---------------------------------------------------------------------------
+# Phase 2.5 — Cross-namespace vocabulary bridges.
+#
+# Bridges between `ed4all:` (https://ed4all.io/vocab/, used by all four
+# JSON-LD @context files) and `cf:` (https://ed4all.dev/ns/courseforge/v1#,
+# used by the formal RDFS/OWL declaration in
+# `schemas/context/courseforge_v1.vocabulary.ttl`). Both surfaces use
+# the same local names for the same intent; these axioms make that
+# equivalence explicit so reasoners and the union-find closure walker
+# treat the two IRIs as a single equivalence class.
+#
+# Enumeration method: every `cf:<localName>` declared in
+# `courseforge_v1.vocabulary.ttl` was checked against every
+# `ed4all:<localName>` referenced in the four JSON-LD context files.
+# A term appears below ONLY when both surfaces carry the same local
+# name with the same intent. Terms unique to one surface (e.g.,
+# `cf:CourseModule`, `cf:bloomDistribution`, the chunk-structural
+# predicates listed in chunk_v4_v1.jsonld's `_phase2_followup` block)
+# are intentionally not bridged — there is no parallel IRI to bridge to.
+#
+# Class bridges (5).
+# ---------------------------------------------------------------------------
+
+ed4all:Concept owl:equivalentClass cf:Concept .
+ed4all:LearningObjective owl:equivalentClass cf:LearningObjective .
+ed4all:Misconception owl:equivalentClass cf:Misconception .
+ed4all:Chunk owl:equivalentClass cf:Chunk .
+ed4all:TargetedConcept owl:equivalentClass cf:TargetedConcept .
+
+# ---------------------------------------------------------------------------
+# Property bridges (13).
+#
+# Object properties — relations between resources.
+# ---------------------------------------------------------------------------
+
+ed4all:bloomLevel owl:equivalentProperty cf:bloomLevel .
+ed4all:cognitiveDomain owl:equivalentProperty cf:cognitiveDomain .
+ed4all:hierarchyLevel owl:equivalentProperty cf:hierarchyLevel .
+ed4all:targetsConcept owl:equivalentProperty cf:targetsConcept .
+ed4all:hasMisconception owl:equivalentProperty cf:hasMisconception .
+ed4all:hasPrerequisite owl:equivalentProperty cf:hasPrerequisite .
+ed4all:isDefinedBy owl:equivalentProperty cf:isDefinedBy .
+ed4all:isDerivedFromObjective owl:equivalentProperty cf:isDerivedFromObjective .
+ed4all:exemplifiedBy owl:equivalentProperty cf:exemplifiedBy .
+ed4all:isMisconceptionOf owl:equivalentProperty cf:isMisconceptionOf .
+ed4all:assessesObjective owl:equivalentProperty cf:assessesObjective .
+
+# Datatype properties — literal-valued.
+
+ed4all:bloomVerb owl:equivalentProperty cf:bloomVerb .
+ed4all:correction owl:equivalentProperty cf:correction .

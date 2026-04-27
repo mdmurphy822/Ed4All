@@ -250,3 +250,297 @@ def test_every_cognitive_domain_has_skos_concept(vocab_graph):
         assert iri in declared_concepts, (
             f"Cognitive domain {domain!r} missing skos:Concept in vocabulary"
         )
+
+
+# ---------------------------------------------------------------------- #
+# 6. Phase 2.1 — Concept-graph edge-predicate alignment
+#
+# The 9-slug edge enum in concept_graph_semantic.schema.json is mapped to
+# real RDF predicates via lib/ontology/edge_predicates.py. These tests
+# enforce three invariants:
+#
+#   (a) Every slug in the JSON enum has a registered IRI.
+#   (b) Every minted ed4all: predicate parses out of the Turtle vocab
+#       with the declared rdfs:domain + rdfs:range we promised.
+#   (c) The slug -> IRI -> slug round-trip is exact (registry is bijective).
+# ---------------------------------------------------------------------- #
+
+
+import json  # noqa: E402
+
+
+_CONCEPT_GRAPH_SEMANTIC_SCHEMA = (
+    _PROJECT_ROOT
+    / "schemas"
+    / "knowledge"
+    / "concept_graph_semantic.schema.json"
+)
+
+
+def _load_edge_type_enum():
+    """Read the source-of-truth slug enum from the JSON schema."""
+    with _CONCEPT_GRAPH_SEMANTIC_SCHEMA.open() as fh:
+        schema = json.load(fh)
+    return schema["properties"]["edges"]["items"]["properties"]["type"]["enum"]
+
+
+def test_every_json_edge_slug_has_registered_iri():
+    """The JSON enum is the source of truth for which slugs exist; every
+    one of those slugs must have a registered IRI in the edge-predicate
+    registry. Drift here means the JSON-LD bridge breaks for that slug."""
+    from lib.ontology.edge_predicates import SLUG_TO_IRI
+
+    enum_slugs = set(_load_edge_type_enum())
+    registered_slugs = set(SLUG_TO_IRI.keys())
+    missing = enum_slugs - registered_slugs
+    assert not missing, (
+        f"Edge-type slugs declared in concept_graph_semantic.schema.json "
+        f"but absent from lib.ontology.edge_predicates.SLUG_TO_IRI: "
+        f"{sorted(missing)}. Add a slug -> IRI binding (and the matching "
+        f"predicate declaration in courseforge_v1.vocabulary.ttl)."
+    )
+
+
+def test_slug_iri_roundtrip_is_exact():
+    """Round-trip: for every slug s, IRI_TO_SLUG[SLUG_TO_IRI[s]] == s.
+    Failure means the registry is non-bijective (two slugs share an IRI),
+    which would make consumer round-trip parsing ambiguous."""
+    from lib.ontology.edge_predicates import IRI_TO_SLUG, SLUG_TO_IRI
+
+    for slug, iri in SLUG_TO_IRI.items():
+        assert IRI_TO_SLUG[iri] == slug, (
+            f"Round-trip mismatch: SLUG_TO_IRI[{slug!r}] -> {iri} -> "
+            f"IRI_TO_SLUG[{iri!r}] = {IRI_TO_SLUG.get(iri)!r}, expected {slug!r}. "
+            f"Two slugs may share an IRI — break the collision."
+        )
+
+
+# Predicates minted in this phase. (is-a / related-to reuse W3C predicates
+# and are NOT declared in our Turtle file — they're imported by reference.)
+# Each tuple: (slug, predicate IRI, expected rdfs:domain, expected rdfs:range).
+_PHASE_2_1_MINTED_EDGE_PREDICATES = [
+    ("prerequisite", ED4ALL.hasPrerequisite, ED4ALL.Concept, ED4ALL.Concept),
+    ("defined-by", ED4ALL.isDefinedBy, ED4ALL.Concept, ED4ALL.Chunk),
+    (
+        "derived-from-objective",
+        ED4ALL.isDerivedFromObjective,
+        ED4ALL.Chunk,
+        ED4ALL.LearningObjective,
+    ),
+    ("exemplifies", ED4ALL.exemplifiedBy, ED4ALL.Chunk, ED4ALL.Concept),
+    (
+        "misconception-of",
+        ED4ALL.isMisconceptionOf,
+        ED4ALL.Misconception,
+        ED4ALL.Concept,
+    ),
+    (
+        "assesses",
+        ED4ALL.assessesObjective,
+        ED4ALL.AssessmentQuestion,
+        ED4ALL.LearningObjective,
+    ),
+    # 'targets-concept' is NOT in this list — its predicate
+    # (ed4all:targetsConcept) was minted in Wave 57 with the reified-edge
+    # range ed4all:TargetedConcept (carrying the Bloom qualifier on the
+    # qualifier node). The existing
+    # test_targets_concept_domain_and_range covers that declaration.
+]
+
+
+@pytest.mark.parametrize(
+    "slug,predicate_iri,expected_domain,expected_range",
+    _PHASE_2_1_MINTED_EDGE_PREDICATES,
+)
+def test_minted_edge_predicates_declared_with_domain_and_range(
+    vocab_graph, slug, predicate_iri, expected_domain, expected_range
+):
+    """Every Phase 2.1 minted ed4all: predicate must be declared in the
+    Turtle vocabulary as rdf:Property with rdfs:domain + rdfs:range
+    pointing at the right ed4all: classes. Without these declarations
+    RDFS reasoners can't infer the type of edge endpoints."""
+    # Declared as an rdf:Property (we also typed it as owl:ObjectProperty,
+    # but rdf:Property is the minimal claim we make here).
+    is_rdf_prop = (predicate_iri, RDF.type, RDF.Property) in vocab_graph
+    is_owl_obj_prop = (predicate_iri, RDF.type, OWL.ObjectProperty) in vocab_graph
+    assert is_rdf_prop or is_owl_obj_prop, (
+        f"Slug {slug!r} -> {predicate_iri} must be declared as "
+        f"rdf:Property or owl:ObjectProperty in courseforge_v1.vocabulary.ttl"
+    )
+    assert (predicate_iri, RDFS.domain, expected_domain) in vocab_graph, (
+        f"Slug {slug!r} -> {predicate_iri} must declare "
+        f"rdfs:domain {expected_domain}"
+    )
+    assert (predicate_iri, RDFS.range, expected_range) in vocab_graph, (
+        f"Slug {slug!r} -> {predicate_iri} must declare "
+        f"rdfs:range {expected_range}"
+    )
+
+
+def test_phase_2_1_classes_declared(vocab_graph):
+    """Phase 2.1 added three new ed4all: classes that anchor the new
+    edge-predicate domains/ranges: Concept, Chunk, AssessmentQuestion."""
+    for cls in (ED4ALL.Concept, ED4ALL.Chunk, ED4ALL.AssessmentQuestion):
+        assert (cls, RDF.type, RDFS.Class) in vocab_graph or (
+            cls,
+            RDF.type,
+            OWL.Class,
+        ) in vocab_graph, f"Phase 2.1 class {cls} must be declared"
+
+
+def test_concept_class_subclass_of_skos_concept(vocab_graph):
+    """ed4all:Concept rdfs:subClassOf skos:Concept lets SKOS tooling
+    treat our concept graph as a SKOS concept scheme without learning
+    ed4all:."""
+    assert (ED4ALL.Concept, RDFS.subClassOf, SKOS.Concept) in vocab_graph
+
+
+# ---------------------------------------------------------------------- #
+# 7. Phase 2.6 — Pedagogy-graph edge predicates (mint the remaining 9)
+#
+# pedagogy_graph_builder.py emits 13 distinct relation_type slugs; four
+# overlap with Phase 2.1 (or normalize back to it via Phase 2.7). The nine
+# below were unminted before this phase and rounded-tripped through the
+# JSON-LD @vocab fallback only. These tests enforce four invariants:
+#
+#   (a) Each predicate is declared as rdf:Property / owl:ObjectProperty.
+#   (b) Each carries the rdfs:domain / rdfs:range we promised.
+#   (c) Each carries an English rdfs:label.
+#   (d) The slug -> IRI -> slug round-trip via SLUG_TO_IRI / IRI_TO_SLUG
+#       is exact (registry stays bijective after the 9-entry extension).
+#
+# Domain/range targets were verified against the rdf-shacl-551-2 fixture
+# (LibV2/courses/rdf-shacl-551-2/graph/pedagogy_graph.json) — see Phase
+# 2.6 implementation notes.
+# ---------------------------------------------------------------------- #
+
+
+_PHASE_2_6_MINTED_EDGE_PREDICATES = [
+    # (slug, predicate IRI, expected rdfs:domain, expected rdfs:range)
+    ("teaches", ED4ALL.teaches, ED4ALL.Chunk, ED4ALL.LearningObjective),
+    (
+        "belongs_to_module",
+        ED4ALL.belongsToModule,
+        ED4ALL.Chunk,
+        ED4ALL.Module,
+    ),
+    (
+        "supports_outcome",
+        ED4ALL.supportsOutcome,
+        ED4ALL.LearningObjective,
+        ED4ALL.LearningObjective,
+    ),
+    (
+        "at_bloom_level",
+        ED4ALL.atBloomLevel,
+        ED4ALL.LearningObjective,
+        ED4ALL.BloomLevel,
+    ),
+    ("follows", ED4ALL.follows, ED4ALL.Module, ED4ALL.Module),
+    (
+        "concept_supports_outcome",
+        ED4ALL.conceptSupportsOutcome,
+        ED4ALL.Concept,
+        ED4ALL.LearningObjective,
+    ),
+    (
+        "assessment_validates_outcome",
+        ED4ALL.assessmentValidatesOutcome,
+        ED4ALL.Chunk,
+        ED4ALL.LearningObjective,
+    ),
+    (
+        "chunk_at_difficulty",
+        ED4ALL.chunkAtDifficulty,
+        ED4ALL.Chunk,
+        ED4ALL.DifficultyLevel,
+    ),
+    (
+        "interferes_with",
+        ED4ALL.interferesWith,
+        ED4ALL.Misconception,
+        ED4ALL.Concept,
+    ),
+]
+
+
+def test_phase_2_6_anchor_classes_declared(vocab_graph):
+    """Phase 2.6 introduces three new anchor classes (Module, BloomLevel,
+    DifficultyLevel) used as rdfs:domain / rdfs:range targets for the
+    nine new pedagogy edge predicates. Without these declarations the
+    new predicates would point at undeclared resources and RDFS
+    reasoners couldn't infer endpoint types."""
+    for cls in (ED4ALL.Module, ED4ALL.BloomLevel, ED4ALL.DifficultyLevel):
+        assert (cls, RDF.type, RDFS.Class) in vocab_graph or (
+            cls,
+            RDF.type,
+            OWL.Class,
+        ) in vocab_graph, f"Phase 2.6 anchor class {cls} must be declared"
+
+
+@pytest.mark.parametrize(
+    "slug,predicate_iri,expected_domain,expected_range",
+    _PHASE_2_6_MINTED_EDGE_PREDICATES,
+)
+def test_phase_2_6_predicate_declared_with_domain_and_range(
+    vocab_graph, slug, predicate_iri, expected_domain, expected_range
+):
+    """Every Phase 2.6 minted predicate must be declared as
+    rdf:Property / owl:ObjectProperty with rdfs:domain + rdfs:range
+    pointing at the right ed4all: classes. Domain/range targets were
+    confirmed empirically against the rdf-shacl-551-2 pedagogy_graph.json
+    fixture (see Phase 2.6 implementation notes)."""
+    is_rdf_prop = (predicate_iri, RDF.type, RDF.Property) in vocab_graph
+    is_owl_obj_prop = (predicate_iri, RDF.type, OWL.ObjectProperty) in vocab_graph
+    assert is_rdf_prop or is_owl_obj_prop, (
+        f"Slug {slug!r} -> {predicate_iri} must be declared as "
+        f"rdf:Property or owl:ObjectProperty in courseforge_v1.vocabulary.ttl"
+    )
+    assert (predicate_iri, RDFS.domain, expected_domain) in vocab_graph, (
+        f"Slug {slug!r} -> {predicate_iri} must declare "
+        f"rdfs:domain {expected_domain}"
+    )
+    assert (predicate_iri, RDFS.range, expected_range) in vocab_graph, (
+        f"Slug {slug!r} -> {predicate_iri} must declare "
+        f"rdfs:range {expected_range}"
+    )
+
+
+@pytest.mark.parametrize(
+    "slug,predicate_iri,_d,_r",
+    _PHASE_2_6_MINTED_EDGE_PREDICATES,
+)
+def test_phase_2_6_predicate_has_english_label(
+    vocab_graph, slug, predicate_iri, _d, _r
+):
+    """Every Phase 2.6 predicate carries a non-empty rdfs:label so
+    SPARQL endpoints / SHACL result authoring can surface a human name
+    without having to learn the cf: namespace."""
+    labels = list(vocab_graph.objects(predicate_iri, RDFS.label))
+    assert labels, f"Slug {slug!r} -> {predicate_iri} missing rdfs:label"
+    # The vocabulary file declares plain string labels (no @en tag in
+    # Turtle); rdflib parses these as Literal values whose ``.language``
+    # is None. Enforce that the label string is non-empty either way —
+    # the project convention is English labels regardless of language tag.
+    assert any(str(lbl).strip() for lbl in labels), (
+        f"Slug {slug!r} -> {predicate_iri} has only empty rdfs:label values"
+    )
+
+
+@pytest.mark.parametrize(
+    "slug,predicate_iri,_d,_r",
+    _PHASE_2_6_MINTED_EDGE_PREDICATES,
+)
+def test_phase_2_6_slug_iri_roundtrip(slug, predicate_iri, _d, _r):
+    """Phase 2.6 extension keeps SLUG_TO_IRI / IRI_TO_SLUG bijective:
+    every new slug round-trips slug -> IRI -> slug exactly."""
+    from lib.ontology.edge_predicates import IRI_TO_SLUG, SLUG_TO_IRI
+
+    assert SLUG_TO_IRI.get(slug) == str(predicate_iri), (
+        f"SLUG_TO_IRI[{slug!r}] = {SLUG_TO_IRI.get(slug)!r}; "
+        f"expected {str(predicate_iri)!r}"
+    )
+    assert IRI_TO_SLUG.get(str(predicate_iri)) == slug, (
+        f"IRI_TO_SLUG[{str(predicate_iri)!r}] = "
+        f"{IRI_TO_SLUG.get(str(predicate_iri))!r}; expected {slug!r}"
+    )

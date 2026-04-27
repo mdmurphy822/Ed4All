@@ -416,6 +416,18 @@ def is_droppable_class(klass: str) -> bool:
 # emitted by ``lib/ontology/tech_anchors.py``. Pairs with the Phase C1
 # wiring that seeds the canonical nodes when
 # TRAINFORGE_SEED_TECH_CONCEPTS=true.
+#
+# Wave 83 / Phase 2.2 — RDF/SHACL enrichment:
+# This dict has been demoted to a TRANSITION CACHE. The source of
+# truth is now ``schemas/context/aliases.ttl`` (loaded by
+# ``lib.ontology.aliases``). ``canonicalize_alias`` consults the
+# Turtle path first and falls back to this dict only when the Turtle
+# load returns the slug unchanged but a dict entry exists. The dict
+# stays in place during the rollout to insure against rdflib import
+# failures and incomplete Turtle coverage; it will be removed once
+# parity is proven across all corpora — see
+# ``lib/ontology/tests/test_aliases.py::test_known_aliases_dict_parity``
+# which asserts every entry below is reachable via the Turtle path.
 KNOWN_EQUIVALENT_ALIASES: Dict[str, str] = {
     "rdfxml": "rdf-xml",
     "rdf-xml": "rdf-xml",  # canonical
@@ -445,10 +457,28 @@ KNOWN_EQUIVALENT_ALIASES: Dict[str, str] = {
 def canonicalize_alias(slug: str) -> str:
     """Return the canonical slug for known equivalent variants.
 
-    Pass-through for slugs not in :data:`KNOWN_EQUIVALENT_ALIASES`.
+    Wave 83 (Phase 2.2): consults
+    ``schemas/context/aliases.ttl`` via :mod:`lib.ontology.aliases`
+    first. Falls back to :data:`KNOWN_EQUIVALENT_ALIASES` only when the
+    Turtle path returns the slug unchanged AND the dict has a mapping
+    — this preserves the original return contract for the (legacy)
+    edge case where rdflib isn't installed or the Turtle file is
+    out-of-date.
+
+    Pass-through for slugs not in either source.
     """
     if not slug:
         return slug
+    # Defer the import so a missing rdflib at module load time doesn't
+    # break the entire concept_classifier module — only the Turtle
+    # path becomes a no-op via the aliases module's internal try/except.
+    from lib.ontology import aliases as _aliases_module
+
+    canonical = _aliases_module.canonicalize(slug)
+    if canonical != slug:
+        return canonical
+    # Turtle-path miss (or pass-through). Fall back to the transition
+    # cache for any entries the Turtle file hasn't picked up yet.
     return KNOWN_EQUIVALENT_ALIASES.get(slug.lower(), slug)
 
 
