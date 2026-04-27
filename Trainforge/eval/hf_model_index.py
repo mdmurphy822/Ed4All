@@ -36,7 +36,7 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
-_DATASET_NAMESPACE = "ed4all"
+_DATASET_NAMESPACE = "ed4all-bench"
 _DATASET_SPLIT = "holdout"
 
 
@@ -201,6 +201,7 @@ def write_hf_readme(
     base_model_repo: Optional[str] = None,
     extra_tags: Optional[List[str]] = None,
     ablation_report: Optional[Dict[str, Any]] = None,
+    diagnostic_findings: Optional[List[Dict[str, Any]]] = None,
 ) -> Path:
     """Render ``<run_dir>/README.md`` with HF-format YAML frontmatter.
 
@@ -239,7 +240,12 @@ def write_hf_readme(
         except (KeyError, ImportError):
             base_model_repo = base_model
 
-    tags = ["education", "qlora", "peft", "trainforge", course_slug]
+    tags = [
+        "education", "qlora", "peft", "trainforge", course_slug,
+        # Wave 103: ED4ALL-Bench branding tags so HF Hub discovery
+        # routes leaderboard searches to this adapter.
+        "ed4all-bench", "grounded-slm-benchmark",
+    ]
     # Heuristic: if the slug mentions semantic-web vocabularies tag for
     # discoverability on the HF Hub.
     slug_lower = course_slug.lower()
@@ -272,6 +278,7 @@ def write_hf_readme(
         model_id=model_id,
         model_card=model_card,
         ablation_report=ablation_report,
+        diagnostic_findings=diagnostic_findings,
     )
 
     yaml_block = yaml.safe_dump(
@@ -281,11 +288,56 @@ def write_hf_readme(
         allow_unicode=True,
     )
 
-    content = "---\n" + yaml_block + "---\n\n" + body
+    # Wave 103: render the headline sentence as the very first
+    # user-visible line - even before the YAML frontmatter the body
+    # consumer would otherwise greet. Anything skimming the README
+    # sees the procurement claim immediately.
+    headline_sentence = _render_headline_sentence(
+        ablation_report=ablation_report,
+        course_slug=course_slug,
+        model_card=model_card,
+    )
+
+    content_parts: List[str] = []
+    if headline_sentence:
+        content_parts.append(headline_sentence)
+        content_parts.append("")
+    content_parts.append("---")
+    content_parts.append(yaml_block.rstrip("\n"))
+    content_parts.append("---")
+    content_parts.append("")
+    content_parts.append(body)
+    content = "\n".join(content_parts)
 
     readme_path = Path(run_dir) / "README.md"
     readme_path.write_text(content, encoding="utf-8")
     return readme_path
+
+
+def _render_headline_sentence(
+    *,
+    ablation_report: Optional[Dict[str, Any]],
+    course_slug: str,
+    model_card: Dict[str, Any],
+) -> str:
+    """Render the ED4ALL-Bench v1.0 headline sentence.
+
+    Returns an empty string when no ablation report is provided
+    (nothing to render off of).
+    """
+    if not ablation_report:
+        return ""
+    from Trainforge.eval.headline_delta import compute_headline_delta
+
+    eval_scores = model_card.get("eval_scores") or {}
+    provenance = model_card.get("provenance") or {}
+    delta = compute_headline_delta(
+        ablation_report,
+        course_slug=course_slug,
+        holdout_hash=str(provenance.get("holdout_graph_hash") or "<unset>"),
+        scoring_commit=str(eval_scores.get("scoring_commit") or "<unset>"),
+    )
+    return delta.get("headline_sentence", "") or ""
 
 
 # ------------------------------------------------------------------ #
@@ -327,6 +379,7 @@ def _render_body(
     model_id: str,
     model_card: Dict[str, Any],
     ablation_report: Optional[Dict[str, Any]] = None,
+    diagnostic_findings: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Render the README body (post-frontmatter) sections."""
     provenance = model_card.get("provenance") or {}
@@ -417,6 +470,18 @@ def _render_body(
     if ablation_report:
         lines.extend(_render_headline_table(ablation_report))
         lines.extend(_render_retrieval_method_table(ablation_report))
+
+    # Wave 103: surface auto-detected diagnostic findings so a human
+    # reviewer sees the qualitative signal alongside the tables.
+    if diagnostic_findings:
+        lines.append("## Diagnostic Findings")
+        lines.append("")
+        for finding in diagnostic_findings:
+            label = str(finding.get("finding", "?"))
+            severity = str(finding.get("severity", "info"))
+            rationale = str(finding.get("rationale", ""))
+            lines.append(f"- **{label}** ({severity}): {rationale}")
+        lines.append("")
 
     # --- Limitations ------------------------------------------ #
     lines.append("## Limitations")

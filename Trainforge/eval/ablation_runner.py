@@ -33,6 +33,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from Trainforge.eval.eval_config import LoadedEvalConfig, load_eval_config
+from Trainforge.eval.evidence_trace import (
+    EvidenceTrace,
+    TraceWriter,
+    classify_failure_mode,
+    extract_citations,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +52,10 @@ _RETRIEVAL_METHODS = (
     "bm25+tag",
     "hybrid",
 )
+
+
+_DEFAULT_BENCHMARK = "ED4ALL-Bench"
+_DEFAULT_BENCHMARK_VERSION = "1.0"
 
 
 @dataclass
@@ -112,6 +124,8 @@ class AblationRunner:
         *,
         profile: Optional[str] = None,
         max_holdout_questions: Optional[int] = None,
+        eval_config: Optional[LoadedEvalConfig] = None,
+        trace_writer: Optional[TraceWriter] = None,
     ) -> None:
         self.course_path = Path(course_path)
         self.setups = list(setups)
@@ -120,6 +134,24 @@ class AblationRunner:
         self.profile = profile
         self.max_holdout_questions = max_holdout_questions
         self.harness_factory = harness_factory or self._default_harness_factory
+
+        # Wave 103: pin the eval config so top_k / temperature / etc.
+        # come from the per-course lockfile rather than constructor
+        # arguments. When the per-course config is missing the loader
+        # falls back to schemas/eval/default_eval_config.yaml and logs
+        # a warning.
+        if eval_config is None:
+            try:
+                eval_config = load_eval_config(self.course_path)
+            except FileNotFoundError as exc:
+                logger.warning(
+                    "AblationRunner: load_eval_config failed (%s); "
+                    "ablation will run without locked variables.",
+                    exc,
+                )
+                eval_config = None
+        self.eval_config = eval_config
+        self.trace_writer = trace_writer
 
     def _default_harness_factory(
         self, course_path: Path, model_callable: Callable[[str], str],
@@ -135,13 +167,34 @@ class AblationRunner:
 
     def run(self, output_path: Optional[Path] = None) -> Path:
         """Run both tables and emit ``ablation_report.json``."""
-        headline_rows = self._run_headline_table()
-        retrieval_rows = self._run_retrieval_method_table()
+        # Wave 103: open a trace writer if none was injected, so every
+        # run materialises eval_traces.jsonl alongside the report.
+        owned_trace_writer = False
+        if self.trace_writer is None:
+            trace_path = self.course_path / "eval" / "eval_traces.jsonl"
+            self.trace_writer = TraceWriter(trace_path)
+            owned_trace_writer = True
 
-        report = {
+        try:
+            headline_rows = self._run_headline_table()
+            retrieval_rows = self._run_retrieval_method_table()
+        finally:
+            if owned_trace_writer and self.trace_writer is not None:
+                self.trace_writer.close()
+
+        report: Dict[str, Any] = {
+            "benchmark": _DEFAULT_BENCHMARK,
+            "benchmark_version": _DEFAULT_BENCHMARK_VERSION,
             "headline_table": headline_rows,
             "retrieval_method_table": retrieval_rows,
         }
+
+        if self.eval_config is not None:
+            report["eval_config_hash"] = self.eval_config.eval_config_hash
+            report["eval_prompt_template_hash"] = (
+                self.eval_config.eval_prompt_template_hash
+            )
+            report["eval_config_is_default"] = self.eval_config.is_default
 
         if output_path is None:
             output_path = self.course_path / "eval" / "ablation_report.json"
@@ -151,6 +204,95 @@ class AblationRunner:
             encoding="utf-8",
         )
         return output_path
+
+    # ------------------------------------------------------------------ #
+    # Wave 103 helpers                                                    #
+    # ------------------------------------------------------------------ #
+
+    def _emit_traces_for_setup(
+        self,
+        *,
+        setup_label: str,
+        retrieval_method: Optional[str],
+        eval_report: Dict[str, Any],
+    ) -> None:
+        """Append one trace row per probe to the trace writer.
+
+        Falls back to a single synthetic trace when the eval_report
+        does not expose per-probe records (the unit-test fixtures
+        write only aggregates). Production harnesses emit
+        ``per_question`` records that carry probe / response / chunk
+        metadata.
+        """
+        if self.trace_writer is None:
+            return
+        probes: List[Dict[str, Any]] = []
+        for key in ("per_question", "faithfulness_per_question"):
+            arr = eval_report.get(key)
+            if isinstance(arr, list) and arr:
+                probes = arr
+                break
+
+        if not probes:
+            # Aggregate-only fallback: emit one synthetic row so the
+            # diagnostic / verification tooling still has a record per
+            # setup. retrieved_chunks is empty; failure_mode falls
+            # through to "none".
+            self.trace_writer.append(EvidenceTrace(
+                probe_id=f"{setup_label}:aggregate",
+                setup=setup_label,
+                retrieval_method=retrieval_method,
+                prompt=str(eval_report.get("profile", "")),
+                model_output="",
+                ground_truth_chunk_id=None,
+                retrieved_at_top_k=False,
+                cited_correct_chunk=False,
+                answer_correct=bool(eval_report.get("coverage", 0)),
+                failure_mode="none",
+            ))
+            return
+
+        for i, probe in enumerate(probes):
+            chunks = probe.get("retrieved_chunks") or []
+            ground_truth = probe.get("ground_truth_chunk_id")
+            chunk_ids = [
+                str(c.get("chunk_id"))
+                for c in chunks if c.get("chunk_id") is not None
+            ]
+            retrieved_at_top_k = (
+                ground_truth is not None and ground_truth in chunk_ids
+            )
+            response = str(probe.get("response", ""))
+            citations = extract_citations(response)
+            cited_correct = (
+                ground_truth is not None and ground_truth in citations
+            )
+            answer_correct = bool(
+                probe.get("correct", probe.get("answer_correct", False))
+            )
+            model_used_context = bool(citations) or any(
+                cid in response for cid in chunk_ids
+            )
+            failure_mode = classify_failure_mode(
+                retrieved_at_top_k=retrieved_at_top_k,
+                cited_correct_chunk=cited_correct,
+                answer_correct=answer_correct,
+                model_used_context=model_used_context,
+            )
+            self.trace_writer.append(EvidenceTrace(
+                probe_id=str(probe.get("probe_id", f"{setup_label}:{i}")),
+                setup=setup_label,
+                retrieval_method=retrieval_method,
+                prompt=str(probe.get("probe", "")),
+                retrieved_chunks=list(chunks),
+                ground_truth_chunk_id=ground_truth,
+                retrieved_at_top_k=retrieved_at_top_k,
+                model_output=response,
+                extracted_citations=citations,
+                cited_correct_chunk=cited_correct,
+                answer_correct=answer_correct,
+                failure_mode=failure_mode,
+            ))
 
     # ------------------------------------------------------------------ #
     # Headline table                                                      #
@@ -182,6 +324,15 @@ class AblationRunner:
                 "qualitative_score": qualitative,
             }
             rows.append(row)
+            # Wave 103: trace probes for this setup. Headline rows
+            # never specify a retrieval method (the headline ablation
+            # is anchored on bm25 by convention, not as a method
+            # sweep); record None to keep the schema consistent.
+            self._emit_traces_for_setup(
+                setup_label=setup.setup,
+                retrieval_method=None,
+                eval_report=eval_report,
+            )
         return rows
 
     @staticmethod
@@ -261,6 +412,14 @@ class AblationRunner:
                     else None
                 ),
             })
+            # Wave 103: trace each probe under the
+            # adapter+rag-method-sweep label, tagging the active
+            # retrieval method.
+            self._emit_traces_for_setup(
+                setup_label="adapter+rag-method-sweep",
+                retrieval_method=method,
+                eval_report=eval_report,
+            )
         return rows
 
 

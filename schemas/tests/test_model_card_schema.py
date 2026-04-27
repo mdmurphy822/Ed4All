@@ -545,6 +545,52 @@ def test_eval_scores_out_of_range_fails(score, value):
 # ---------------------------------------------------------------------------
 
 
+def test_eval_scores_accepts_eval_config_hashes():
+    """Wave 103: optional eval_config_hash + eval_prompt_template_hash."""
+    validator = _validator()
+    card = _valid_card(eval_scores={
+        "scoring_commit": "a" * 40,
+        "tolerance_band": {"faithfulness": 0.05},
+        "eval_config_hash": "c" * 64,
+        "eval_prompt_template_hash": "d" * 64,
+        "benchmark": "ED4ALL-Bench",
+        "benchmark_version": "1.0",
+    })
+    errors = list(validator.iter_errors(card))
+    assert errors == [], [e.message for e in errors]
+
+
+@pytest.mark.parametrize(
+    "bad_hash",
+    ["", "abcd", "a" * 63, "a" * 65, "g" * 64, "A" * 64],
+)
+def test_eval_config_hash_pattern_enforced(bad_hash):
+    """Wave 103: eval_config_hash must be 64 lowercase hex chars."""
+    validator = _validator()
+    card = _valid_card(eval_scores={
+        "scoring_commit": "a" * 40,
+        "tolerance_band": {"faithfulness": 0.05},
+        "eval_config_hash": bad_hash,
+    })
+    errors = list(validator.iter_errors(card))
+    assert errors, f"eval_config_hash={bad_hash!r} must fail"
+
+
+@pytest.mark.parametrize(
+    "bad_hash",
+    ["", "abcd", "a" * 63, "a" * 65, "g" * 64, "A" * 64],
+)
+def test_eval_prompt_template_hash_pattern_enforced(bad_hash):
+    validator = _validator()
+    card = _valid_card(eval_scores={
+        "scoring_commit": "a" * 40,
+        "tolerance_band": {"faithfulness": 0.05},
+        "eval_prompt_template_hash": bad_hash,
+    })
+    errors = list(validator.iter_errors(card))
+    assert errors, f"eval_prompt_template_hash={bad_hash!r} must fail"
+
+
 def test_load_does_not_mutate_schema():
     """Two independent loads produce the same dict (no global mutation)."""
     a = _load_schema()

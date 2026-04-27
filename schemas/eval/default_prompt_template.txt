@@ -1,0 +1,17 @@
+# This is the default template - replace before any procurement claim.
+# Required placeholders: {context_section}, {question}.
+# Per-course copies live at LibV2/courses/<slug>/eval/prompt_template.txt
+# and are tracked by the per-course eval_config.yaml hash.
+You are answering a question grounded in a domain knowledge corpus.
+
+{context_section}
+
+Question: {question}
+
+Instructions:
+- Answer concisely using only facts supported by the context.
+- Cite the chunk id in [brackets] when you reference a fact.
+- If the context doesn't contain enough information, say "I don't know"
+  rather than guess.
+
+Answer:

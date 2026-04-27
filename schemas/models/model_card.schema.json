@@ -208,6 +208,26 @@
           "pattern": "^[a-f0-9]{40}$",
           "description": "Wave 102: 40-char SHA-1 commit pinned by reproduce_eval.sh; verify_eval re-checks the working tree against this."
         },
+        "eval_config_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Wave 103: SHA-256 of the canonical-JSON eval_config.yaml (per-course or default). verify_eval re-hashes the on-disk config and asserts equality before publishing scores."
+        },
+        "eval_prompt_template_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Wave 103: SHA-256 of the prompt_template.txt the ablation runner used. verify_eval re-hashes the on-disk template and asserts equality."
+        },
+        "benchmark": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Wave 103: ED4ALL-Bench branding. Locked to 'ED4ALL-Bench' for this release."
+        },
+        "benchmark_version": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Wave 103: ED4ALL-Bench version (e.g. '1.0')."
+        },
         "tolerance_band": {
           "type": "object",
           "additionalProperties": {

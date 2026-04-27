@@ -131,7 +131,8 @@ def test_eval_report_to_model_index_dataset_namespace():
     )
     for entry in results:
         ds = entry["dataset"]
-        assert ds["type"] == "ed4all/rdf-shacl-551-2"
+        # Wave 103: dataset namespace flipped from "ed4all" to "ed4all-bench".
+        assert ds["type"] == "ed4all-bench/rdf-shacl-551-2"
         assert ds["split"] == "holdout"
 
 
@@ -479,6 +480,96 @@ def test_readme_includes_limitations_with_synthesis_drift_note(tmp_path):
     # Wave 102: paraphrase-drift caveat with hash pin
     assert "instruction_pairs_hash" in text
     assert "paraphrase" in text.lower() or "paraphrasing" in text.lower()
+
+
+def test_readme_opens_with_headline_sentence(tmp_path):
+    """Wave 103: ED4ALL-Bench headline sentence ships as the README's
+    very first user-visible line - before the YAML frontmatter."""
+    from Trainforge.eval.hf_model_index import write_hf_readme
+
+    readme_path = write_hf_readme(
+        run_dir=tmp_path,
+        eval_report=_build_eval_report(),
+        course_slug="rdf-shacl-551-2",
+        base_model="qwen2.5-1.5b",
+        model_id="m-01",
+        model_card=_build_model_card(),
+        ablation_report=_build_ablation_report(),
+    )
+    text = readme_path.read_text(encoding="utf-8")
+    # First non-empty line carries the headline sentence
+    first_line = next(
+        line for line in text.splitlines() if line.strip()
+    )
+    assert "ED4ALL-Bench v1.0" in first_line
+    # The YAML frontmatter still appears, AFTER the headline.
+    headline_idx = text.index("ED4ALL-Bench v1.0")
+    fm_idx = text.index("---\n")
+    assert headline_idx < fm_idx
+
+
+def test_readme_renders_diagnostic_findings_when_provided(tmp_path):
+    from Trainforge.eval.hf_model_index import write_hf_readme
+
+    findings = [
+        {
+            "finding": "adapter_tone_only", "severity": "warning",
+            "rationale": "Synthetic finding seeded for the renderer test.",
+        },
+        {
+            "finding": "dataset_too_easy", "severity": "warning",
+            "rationale": "Base accuracy already clears the 0.7 bar.",
+        },
+    ]
+    readme_path = write_hf_readme(
+        run_dir=tmp_path,
+        eval_report=_build_eval_report(),
+        course_slug="rdf-shacl-551-2",
+        base_model="qwen2.5-1.5b",
+        model_id="m-01",
+        model_card=_build_model_card(),
+        ablation_report=_build_ablation_report(),
+        diagnostic_findings=findings,
+    )
+    text = readme_path.read_text(encoding="utf-8")
+    assert "## Diagnostic Findings" in text
+    assert "adapter_tone_only" in text
+    assert "dataset_too_easy" in text
+
+
+def test_readme_omits_diagnostic_section_when_no_findings(tmp_path):
+    from Trainforge.eval.hf_model_index import write_hf_readme
+
+    readme_path = write_hf_readme(
+        run_dir=tmp_path,
+        eval_report=_build_eval_report(),
+        course_slug="rdf-shacl-551-2",
+        base_model="qwen2.5-1.5b",
+        model_id="m-01",
+        model_card=_build_model_card(),
+        ablation_report=_build_ablation_report(),
+        diagnostic_findings=[],
+    )
+    text = readme_path.read_text(encoding="utf-8")
+    assert "## Diagnostic Findings" not in text
+
+
+def test_readme_tags_include_ed4all_bench_branding(tmp_path):
+    from Trainforge.eval.hf_model_index import write_hf_readme
+
+    readme_path = write_hf_readme(
+        run_dir=tmp_path,
+        eval_report=_build_eval_report(),
+        course_slug="rdf-shacl-551-2",
+        base_model="qwen2.5-1.5b",
+        model_id="m-01",
+        model_card=_build_model_card(),
+    )
+    text = readme_path.read_text(encoding="utf-8")
+    parts = text.split("---\n", 2)
+    front = yaml.safe_load(parts[1])
+    assert "ed4all-bench" in front["tags"]
+    assert "grounded-slm-benchmark" in front["tags"]
 
 
 def test_readme_includes_hallucination_rate_row(tmp_path):
