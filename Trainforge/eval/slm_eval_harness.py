@@ -24,6 +24,7 @@ standalone via the module's CLI.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from dataclasses import dataclass
@@ -33,6 +34,13 @@ from typing import Any, Callable, Dict, List, Optional
 import yaml
 
 logger = logging.getLogger(__name__)
+
+
+# Wave 105: SHA-256 of empty bytes — used as a placeholder marker in
+# legacy / stub holdout_split.json files. When the harness sees this
+# hash it must refuse to score Tier-2 evaluators because the holdout
+# set is untrustworthy (running them anyway risks train-on-test leak).
+_EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 
 
 _CONFIG_DIR = Path(__file__).resolve().parent / "configs"
@@ -161,6 +169,52 @@ class SLMEvalHarness:
         holdout_path = self.course_path / "eval" / "holdout_split.json"
         if not holdout_path.exists():
             HoldoutBuilder(self.course_path).build()
+
+        # Wave 105: refuse to score Tier-2 (graph-derived) evaluators
+        # when the holdout split is a placeholder. SHA-256(b"") is
+        # the canonical "empty content" hash — when the holdout
+        # builder was a stub, the file landed on disk with this
+        # hash. Running Tier-2 against an empty / unverified split
+        # risks train-on-test contamination, so we drop those
+        # evaluators and stamp the report's ``tier_2_status`` field
+        # so the model card reviewer sees the gap.
+        tier_2_status: Optional[str] = None
+        try:
+            holdout_payload = json.loads(
+                holdout_path.read_text(encoding="utf-8"),
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.critical(
+                "SLMEvalHarness: cannot read holdout_split at %s "
+                "(%s); skipping Tier-2 evaluators.", holdout_path, exc,
+            )
+            holdout_payload = {}
+            tier_2_status = "skipped: holdout_split unreadable"
+
+        declared_hash = (
+            (holdout_payload or {}).get("holdout_graph_hash") or ""
+        )
+        if declared_hash in ("", _EMPTY_SHA256):
+            logger.critical(
+                "SLMEvalHarness: holdout_split.json at %s carries an "
+                "empty-bytes hash (%r); refusing to score Tier-2 "
+                "evaluators. Rebuild the holdout split with "
+                "HoldoutBuilder before re-running.",
+                holdout_path, declared_hash,
+            )
+            # Drop Tier-2 evaluators (faithfulness, invariants,
+            # source-match) so they don't run against an
+            # untrustworthy holdout. Tier-1 syntactic + Tier-3
+            # semantic checks remain available because they don't
+            # depend on the holdout split.
+            evaluators = dict(evaluators)
+            for k in ("faithfulness", "invariants", "source_match",
+                      "calibration", "baseline_compare"):
+                if k in evaluators:
+                    evaluators[k] = (
+                        {} if isinstance(evaluators[k], dict) else False
+                    )
+            tier_2_status = "skipped: holdout_split is placeholder"
 
         per_tier: Dict[str, Any] = {}
         per_invariant: Dict[str, Any] = {}
@@ -371,6 +425,10 @@ class SLMEvalHarness:
         if mean_latency is not None:
             out_dict.setdefault("metrics", {})
             out_dict["metrics"]["mean_latency_ms"] = round(float(mean_latency), 2)
+        # Wave 105: surface the Tier-2 holdout status so reviewers see
+        # exactly why those metrics may be absent. Carries either
+        # "ok" (default) or a "skipped: ..." reason.
+        out_dict["tier_2_status"] = tier_2_status or "ok"
 
         if output_path is None:
             output_path = self.course_path / "eval" / "eval_report.json"

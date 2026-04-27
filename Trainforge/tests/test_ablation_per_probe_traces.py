@@ -227,6 +227,217 @@ def test_latency_picked_up_from_eval_report_when_callable_lacks_it(tmp_path):
         assert row["mean_latency_ms"] == pytest.approx(25.0)
 
 
+def test_rag_recorder_chunks_match_per_probe(tmp_path):
+    """Verify per-probe chunk attachment with a harness that calls the
+    wrapped callable for each probe."""
+    from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
+    from Trainforge.eval.evidence_trace import load_traces
+
+    n = 4
+
+    class _CallingHarness:
+        def __init__(self, course_path, model_callable):
+            self.course_path = course_path
+            self.model_callable = model_callable
+
+        def run_all(self, output_path: Path) -> Path:
+            # Build per_question payload, but actually invoke the
+            # callable for each probe so the recording proxy can
+            # capture per-prompt retrieved chunks.
+            per_question = []
+            for i in range(n):
+                probe = f"probe-{i}"
+                resp = self.model_callable(probe)
+                per_question.append({
+                    "probe": probe,
+                    "response": resp,
+                    "ground_truth_chunk_id": f"chunk_{i:04d}",
+                    "outcome": "pass",
+                    "correct": True,
+                })
+            payload = {
+                "faithfulness": 1.0,
+                "coverage": 1.0,
+                "source_match": 1.0,
+                "per_question": per_question,
+                "metrics": {"hallucination_rate": 0.0, "source_match": 1.0},
+                "per_tier": {},
+                "per_invariant": {},
+                "profile": "rdf_shacl",
+            }
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(payload), encoding="utf-8")
+            return output_path
+
+    def factory(course_path, model_callable):
+        return _CallingHarness(course_path, model_callable)
+
+    class _StubRAGCallable:
+        def __init__(self):
+            self.last_retrieved_chunks: List[Dict[str, Any]] = []
+            self._call = 0
+
+        def __call__(self, prompt: str) -> str:
+            i = self._call
+            self.last_retrieved_chunks = [
+                {"chunk_id": f"chunk_{i:04d}", "score": 1.0, "snippet": "x"},
+            ]
+            self._call += 1
+            return f"reply [chunk_{i:04d}]"
+
+    stub = _StubRAGCallable()
+    setups = [AblationSetup(setup="adapter+rag", callable=stub)]
+    runner = AblationRunner(
+        course_path=tmp_path,
+        setups=setups,
+        harness_factory=factory,
+    )
+    runner.run()
+
+    traces = load_traces(tmp_path / "eval" / "eval_traces.jsonl")
+    assert len(traces) == n
+    # Every trace must carry a non-empty retrieved_chunks list — the
+    # original Wave 104 bug had retrieved_chunks=[] in every row.
+    for i, t in enumerate(traces):
+        assert len(t.retrieved_chunks) == 1
+        assert t.retrieved_chunks[0]["chunk_id"] == f"chunk_{i:04d}"
+
+
+def test_rag_inert_health_flag_when_majority_empty(tmp_path, caplog):
+    """Wave 105: a +rag setup that returns empty chunks for >50% of
+    probes is flagged with ``health="rag_inert"`` and triggers a
+    CRITICAL log line."""
+    import logging as _logging
+    from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
+
+    n = 6  # 4/6 = 66% empty -> trips the threshold
+
+    class _CallingHarness:
+        def __init__(self, course_path, model_callable):
+            self.course_path = course_path
+            self.model_callable = model_callable
+
+        def run_all(self, output_path: Path) -> Path:
+            per_question = []
+            for i in range(n):
+                probe = f"probe-{i}"
+                resp = self.model_callable(probe)
+                per_question.append({
+                    "probe": probe, "response": resp,
+                    "ground_truth_chunk_id": f"chunk_{i:04d}",
+                    "outcome": "fail", "correct": False,
+                })
+            payload = {
+                "faithfulness": 0.0, "coverage": 0.0, "source_match": 0.0,
+                "per_question": per_question,
+                "metrics": {"hallucination_rate": 1.0, "source_match": 0.0},
+                "per_tier": {}, "per_invariant": {}, "profile": "rdf_shacl",
+            }
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(payload), encoding="utf-8")
+            return output_path
+
+    class _MostlyEmptyRAG:
+        def __init__(self):
+            self.last_retrieved_chunks: List[Dict[str, Any]] = []
+            self._call = 0
+
+        def __call__(self, prompt: str) -> str:
+            i = self._call
+            # Empty for first 4 probes, populated for last 2.
+            if i < 4:
+                self.last_retrieved_chunks = []
+            else:
+                self.last_retrieved_chunks = [
+                    {"chunk_id": f"chunk_{i:04d}", "score": 1.0, "snippet": "x"},
+                ]
+            self._call += 1
+            return ""
+
+    setups = [AblationSetup(setup="adapter+rag", callable=_MostlyEmptyRAG())]
+    runner = AblationRunner(
+        course_path=tmp_path,
+        setups=setups,
+        harness_factory=lambda course_path, model_callable: _CallingHarness(
+            course_path, model_callable,
+        ),
+    )
+    with caplog.at_level(_logging.CRITICAL):
+        runner.run()
+
+    out = tmp_path / "eval" / "ablation_report.json"
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    rows = payload["headline_table"]
+    assert len(rows) == 1
+    assert rows[0]["health"] == "rag_inert"
+
+    # CRITICAL log message must be emitted with the diagnostic format.
+    critical_msgs = [
+        rec for rec in caplog.records
+        if rec.levelno == _logging.CRITICAL
+        and "RAG path appears broken" in rec.message
+    ]
+    assert critical_msgs, "expected a CRITICAL 'RAG path appears broken' log"
+
+
+def test_rag_health_not_flagged_when_chunks_present(tmp_path):
+    """When the +rag setup returns chunks for ≥50% of probes, no
+    ``health`` field is stamped on the row."""
+    from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
+
+    n = 4
+
+    class _CallingHarness:
+        def __init__(self, course_path, model_callable):
+            self.course_path = course_path
+            self.model_callable = model_callable
+
+        def run_all(self, output_path: Path) -> Path:
+            per_question = []
+            for i in range(n):
+                probe = f"probe-{i}"
+                resp = self.model_callable(probe)
+                per_question.append({
+                    "probe": probe, "response": resp,
+                    "ground_truth_chunk_id": f"chunk_{i:04d}",
+                    "outcome": "pass", "correct": True,
+                })
+            payload = {
+                "faithfulness": 1.0, "coverage": 1.0, "source_match": 1.0,
+                "per_question": per_question,
+                "metrics": {"hallucination_rate": 0.0, "source_match": 1.0},
+                "per_tier": {}, "per_invariant": {}, "profile": "rdf_shacl",
+            }
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(json.dumps(payload), encoding="utf-8")
+            return output_path
+
+    class _AlwaysHasChunks:
+        def __init__(self):
+            self.last_retrieved_chunks: List[Dict[str, Any]] = []
+
+        def __call__(self, prompt: str) -> str:
+            self.last_retrieved_chunks = [
+                {"chunk_id": "chunk_0", "score": 1.0, "snippet": "x"},
+            ]
+            return "ok"
+
+    setups = [AblationSetup(setup="adapter+rag", callable=_AlwaysHasChunks())]
+    runner = AblationRunner(
+        course_path=tmp_path,
+        setups=setups,
+        harness_factory=lambda course_path, model_callable: _CallingHarness(
+            course_path, model_callable,
+        ),
+    )
+    runner.run()
+
+    out = tmp_path / "eval" / "ablation_report.json"
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    rows = payload["headline_table"]
+    assert "health" not in rows[0]
+
+
 def test_aggregate_fallback_still_used_when_no_per_question(tmp_path):
     """Backwards compat: legacy fixtures emit one synthetic row per setup."""
     from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup

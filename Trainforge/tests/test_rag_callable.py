@@ -169,3 +169,95 @@ def test_rag_callable_passes_method_and_limit_to_cli():
     assert args[args.index("-o") + 1] == "json"
     # ask --force keeps the call deterministic w.r.t. cache state.
     assert "--force" in args
+
+
+# ---------------------------------------------------------------------------
+# Wave 105: per-call last_retrieved_chunks surface
+# ---------------------------------------------------------------------------
+
+
+def test_rag_callable_records_last_retrieved_chunks_on_each_call():
+    """Wave 105: after every __call__ the RAGCallable must expose the
+    chunks that were actually retrieved so the trace writer in the
+    AblationRunner can attach them to the EvidenceTrace."""
+    from Trainforge.eval.rag_callable import RAGCallable
+
+    chunks = [
+        {"rank": 1, "chunk_id": "chunk_aaa", "text": "RDF is a triple model.", "score": 5.2},
+        {"rank": 2, "chunk_id": "chunk_bbb", "text": "SHACL validates RDF graphs.", "score": 4.1},
+        {"rank": 3, "chunk_id": "chunk_ccc", "text": "OWL adds axioms.", "score": 3.0},
+    ]
+    rag = RAGCallable(
+        base_callable=lambda p: "ok",
+        course_slug="rdf-shacl-551-2",
+        method="bm25",
+        limit=5,
+        cli_runner=_build_cli_runner(chunks),
+    )
+    rag("first probe")
+    last = rag.last_retrieved_chunks
+    assert len(last) == 3
+    assert last[0]["chunk_id"] == "chunk_aaa"
+    assert last[0]["score"] == 5.2
+    assert "snippet" in last[0]
+    # Snippet is bounded so traces don't explode.
+    assert len(last[0]["snippet"]) <= 200
+
+
+def test_rag_callable_truncates_long_chunk_text_in_snippet():
+    """Snippets must be clipped so trace files stay reasonable in size."""
+    from Trainforge.eval.rag_callable import RAGCallable
+
+    long_text = "x " * 500  # 1000 chars
+    chunks = [{"chunk_id": "chunk_a", "text": long_text, "score": 1.0}]
+    rag = RAGCallable(
+        base_callable=lambda p: "",
+        course_slug="slug",
+        method="bm25",
+        cli_runner=_build_cli_runner(chunks),
+    )
+    rag("ask")
+    last = rag.last_retrieved_chunks
+    assert len(last) == 1
+    assert len(last[0]["snippet"]) <= 200
+
+
+def test_rag_callable_last_retrieved_chunks_overwritten_per_call():
+    """Each new call replaces the previous retrieval — no accumulation."""
+    from Trainforge.eval.rag_callable import RAGCallable
+
+    sequence = [
+        [{"chunk_id": "chunk_a", "text": "first"}],
+        [{"chunk_id": "chunk_b", "text": "second"}, {"chunk_id": "chunk_c", "text": "third"}],
+    ]
+    runs = iter(sequence)
+
+    def _runner(_args):
+        return {"retrieved_chunks": next(runs)}
+
+    rag = RAGCallable(
+        base_callable=lambda p: "",
+        course_slug="slug",
+        method="bm25",
+        cli_runner=_runner,
+    )
+    rag("p1")
+    assert [c["chunk_id"] for c in rag.last_retrieved_chunks] == ["chunk_a"]
+    rag("p2")
+    assert [c["chunk_id"] for c in rag.last_retrieved_chunks] == [
+        "chunk_b", "chunk_c",
+    ]
+
+
+def test_rag_callable_last_retrieved_chunks_empty_on_failure():
+    """When the CLI returns no chunks, last_retrieved_chunks is []."""
+    from Trainforge.eval.rag_callable import RAGCallable
+
+    rag = RAGCallable(
+        base_callable=lambda p: "",
+        course_slug="slug",
+        method="bm25",
+        cli_runner=_build_cli_runner([]),
+    )
+    rag("ask")
+    assert rag.last_retrieved_chunks == []

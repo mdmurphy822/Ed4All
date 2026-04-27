@@ -123,6 +123,13 @@ class RAGCallable:
         self._cli_runner = cli_runner or _default_cli_runner
         self._last_latency_ms: Optional[float] = None
         self._latencies: List[float] = []
+        # Wave 105: surface the chunks retrieved for the most recent
+        # __call__ so the AblationRunner trace writer can attach them
+        # to per-probe EvidenceTrace rows. Mirrors the
+        # _last_latency_ms pattern. Empty when retrieval failed or
+        # returned nothing. Each entry is a compact dict with
+        # {"chunk_id", "score", "snippet"} so traces don't explode.
+        self._last_retrieved_chunks: List[Dict[str, Any]] = []
         self.eval_config = eval_config
 
     @property
@@ -136,6 +143,17 @@ class RAGCallable:
         if not self._latencies:
             return None
         return sum(self._latencies) / len(self._latencies)
+
+    @property
+    def last_retrieved_chunks(self) -> List[Dict[str, Any]]:
+        """Chunks returned by the most recent retrieval (Wave 105).
+
+        Wave 104 left ``retrieved_chunks=[]`` in every trace because
+        the metadata never bubbled out of this callable. The
+        AblationRunner now reads this attribute after each call and
+        copies the entries into the EvidenceTrace.
+        """
+        return list(self._last_retrieved_chunks)
 
     def __call__(self, prompt: str) -> str:
         """Retrieve, format prelude, dispatch to the wrapped callable."""
@@ -162,6 +180,11 @@ class RAGCallable:
         self._latencies.append(latency_ms)
 
         chunks = record.get("retrieved_chunks") or []
+        # Wave 105: stash a compacted view of the retrieved chunks so
+        # the trace writer can attach them to the EvidenceTrace for
+        # this probe. Snippets are clipped to ~200 chars so traces
+        # don't explode on a 50-chunk run.
+        self._last_retrieved_chunks = _summarize_chunks_for_trace(chunks)
         context = _format_chunks(chunks)
         if not chunks:
             # No retrieval -> fall back to the bare prompt; the wrapped
@@ -349,6 +372,52 @@ def _render_template(
         out = out.replace("{prompt}", prompt)
         out = out.replace("{question}", prompt)
         return out
+
+
+_TRACE_SNIPPET_MAX = 200
+
+
+def _summarize_chunks_for_trace(
+    chunks: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Compact the LibV2 chunk records for trace storage (Wave 105).
+
+    Each entry in the trace gets ``{"chunk_id", "score", "snippet"}``.
+    The snippet is the first ~200 characters of ``text`` (or
+    ``excerpt`` / ``section_heading`` fallback) with newlines
+    flattened so the JSONL row stays single-line. Score is whatever
+    the LibV2 retriever ranked the chunk at; tolerates float, int, or
+    a missing score.
+    """
+    out: List[Dict[str, Any]] = []
+    for chunk in chunks or []:
+        chunk_id = chunk.get("chunk_id")
+        if chunk_id is None:
+            continue
+        body = (
+            chunk.get("text")
+            or chunk.get("excerpt")
+            or chunk.get("section_heading")
+            or ""
+        )
+        body_str = str(body).strip().replace("\n", " ")
+        if len(body_str) > _TRACE_SNIPPET_MAX:
+            body_str = body_str[: _TRACE_SNIPPET_MAX - 1] + "…"
+        score_raw = chunk.get("score")
+        score: Optional[float]
+        if score_raw is None:
+            score = None
+        else:
+            try:
+                score = float(score_raw)
+            except (TypeError, ValueError):
+                score = None
+        out.append({
+            "chunk_id": str(chunk_id),
+            "score": score,
+            "snippet": body_str,
+        })
+    return out
 
 
 def _format_chunks(chunks: List[Dict[str, Any]]) -> str:

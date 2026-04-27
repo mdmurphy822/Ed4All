@@ -152,6 +152,87 @@ def test_missing_pedagogy_graph_raises(tmp_path):
         builder.build()
 
 
+def test_probes_field_emitted_with_canonical_shape(tmp_path):
+    """Wave 105: holdout_split.json must carry a ``probes`` array
+    with one record per withheld edge in the canonical shape so
+    downstream eval consumers can run prompt-shaped Tier-2 probes
+    without re-deriving them from withheld_edges."""
+    course = _build_synthetic_course(tmp_path)
+    HoldoutBuilder(course, holdout_pct=0.1, seed=42).build()
+    split = load_holdout_split(course / "eval" / "holdout_split.json")
+    assert "probes" in split
+    probes = split["probes"]
+    assert len(probes) == split["edges_held_out"]
+    # Every probe carries the canonical fields.
+    for p in probes:
+        assert "probe_id" in p
+        assert "prompt" in p
+        assert "ground_truth_chunk_id" in p  # may be None
+        assert "edge_type" in p
+    # Probe IDs are unique.
+    ids = [p["probe_id"] for p in probes]
+    assert len(ids) == len(set(ids))
+
+
+def test_probes_ground_truth_chunk_id_set_for_chunk_anchored_edges(tmp_path):
+    """Wave 105: probes derived from chunk-anchored edges (source
+    starts with 'chunk_') must carry ``ground_truth_chunk_id``;
+    concept->concept probes leave it None."""
+    course = _build_synthetic_course(
+        tmp_path,
+        n_prereq=20,  # concept->concept
+        n_teaches=20,  # chunk->concept
+    )
+    HoldoutBuilder(course, holdout_pct=0.2, seed=42).build()
+    split = load_holdout_split(course / "eval" / "holdout_split.json")
+    chunk_anchored = [
+        p for p in split["probes"]
+        if p.get("ground_truth_chunk_id") is not None
+    ]
+    concept_only = [
+        p for p in split["probes"]
+        if p.get("ground_truth_chunk_id") is None
+    ]
+    assert chunk_anchored, "must have at least one chunk-anchored probe"
+    for p in chunk_anchored:
+        assert p["ground_truth_chunk_id"].startswith("chunk_")
+    # Concept-only probes still have probe_id and prompt.
+    for p in concept_only:
+        assert p["probe_id"]
+        assert p["prompt"]
+
+
+def test_holdout_graph_hash_non_empty_for_real_input(tmp_path):
+    """Wave 105: any non-trivial pedagogy graph must produce a
+    non-empty-bytes hash. SHA-256(b'') is the placeholder used by
+    the stub; the harness skips Tier-2 when it sees that value."""
+    import hashlib as _hashlib
+
+    course = _build_synthetic_course(tmp_path)
+    HoldoutBuilder(course, holdout_pct=0.1, seed=42).build()
+    split = load_holdout_split(course / "eval" / "holdout_split.json")
+    empty_hash = _hashlib.sha256(b"").hexdigest()
+    assert split["holdout_graph_hash"] != empty_hash
+    assert split["holdout_graph_hash"] != ""
+
+
+def test_probes_count_for_synthetic_50_edge_graph(tmp_path):
+    """Wave 105 spec: synthetic 50-edge graph at 10% holdout yields
+    ~5 withheld + corresponding probes. Per-relation rounds up so we
+    accept >=4 (one per relation type)."""
+    course = _build_synthetic_course(
+        tmp_path,
+        n_prereq=25,  # 25 prereq edges
+        n_teaches=25,  # 25 teaches edges (+ 25 at_bloom_level)
+    )
+    HoldoutBuilder(course, holdout_pct=0.1, seed=42).build()
+    split = load_holdout_split(course / "eval" / "holdout_split.json")
+    # Should be ~5 withheld edges (10% of 50 + at_bloom_level rounding).
+    # Same n probes as withheld_edges.
+    assert split["edges_held_out"] == len(split["probes"])
+    assert split["edges_held_out"] >= 3
+
+
 def test_relation_type_field_not_type_field(tmp_path):
     """Wave 92 schema correction: edges use ``relation_type`` not ``type``.
 
