@@ -1,0 +1,35 @@
+# Wave 92 — Generic-domain eval profile.
+# Used for any course whose manifest.classification doesn't match a
+# Tier-1-capable domain (currently only rdf-shacl). Tier-1 is OFF
+# because we have no machine-verifiable surface for arbitrary
+# textbooks; layers 1+2+3+4+5 carry the eval.
+
+profile: generic
+description: >
+  Generic-domain profile: Tier 1 (rdflib/pyshacl/SPARQL) is disabled
+  because not every domain has machine-verifiable outputs. The
+  generic-layers carry the eval (faithfulness, invariants,
+  calibration, baseline-compare, regression, plus the Tier-3 semantic
+  layers — key-term precision, disambiguation — which still apply
+  because every corpus has key_terms + misconceptions in the
+  pedagogy graph).
+
+evaluators:
+  syntactic: false
+  faithfulness: true
+  invariants:
+    prerequisite_order: true
+    bloom_level: true
+    misconception_rejection: true
+  calibration: true
+  baseline_compare: true
+  regression: true
+  key_term_precision: true
+  disambiguation: true
+
+caps:
+  max_holdout_questions: 100
+  max_invariant_prompts: 30
+  max_key_terms: 50
+  max_disambiguation_pairs: 50
+  bootstrap_iterations: 1000

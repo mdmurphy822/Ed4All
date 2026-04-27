@@ -87,6 +87,7 @@ def _make_card(
             "preference_pairs_hash": h,
             "concept_graph_hash": h,
             "vocabulary_ttl_hash": h,
+            "holdout_graph_hash": h,
         },
         "created_at": "2026-04-26T18:30:00Z",
         "eval_scores": {

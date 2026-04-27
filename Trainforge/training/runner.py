@@ -77,6 +77,16 @@ _PROVENANCE_SOURCES = (
         "graph/courseforge_v1.vocabulary.ttl",
         "graph/vocabulary.ttl",
     ]),
+    # Wave 92: holdout split for Tier-2 eval. The runner emits a stub
+    # split when the eval submodule has not pre-built one; the real
+    # split is built by ``Trainforge.eval.holdout_builder.HoldoutBuilder``
+    # before training. Empty-bytes hash is acceptable here because
+    # the eval phase is gated below — a present-but-empty file means
+    # "no holdout was built", not "the holdout was tampered with".
+    ("holdout_graph_hash", [
+        "eval/holdout_split.json",
+        "training_specs/holdout_split.json",
+    ]),
 )
 
 _REQUIRED_TRAINING_SPECS = (
@@ -204,11 +214,19 @@ class TrainingRunner:
                         f"is missing: {adapter_path}"
                     )
 
+            # Wave 92: run the eval harness BEFORE emitting the card
+            # so the eval_scores block can be folded in. Skipped on
+            # dry-run because there is no trained model to call.
+            eval_scores: Optional[Dict[str, Any]] = None
+            if not self.dry_run:
+                eval_scores = self._run_eval_harness(run_dir, adapter_path)
+
             card_path = self._emit_model_card(
                 run_dir=run_dir,
                 model_id=model_id,
                 provenance=provenance,
                 adapter_path=adapter_path,
+                eval_scores=eval_scores,
             )
         finally:
             capture.save()
@@ -474,6 +492,7 @@ class TrainingRunner:
         model_id: str,
         provenance: Dict[str, str],
         adapter_path: Optional[Path],
+        eval_scores: Optional[Dict[str, Any]] = None,
     ) -> Path:
         """Write ``model_card.json`` validating against the Wave 89 schema.
 
@@ -498,12 +517,54 @@ class TrainingRunner:
         # the schema's strict additionalProperties=false doesn't trip.
         card["training_config"].pop("base_model", None)
 
+        if eval_scores is not None:
+            # Filter to canonical keys the schema accepts so the
+            # additionalProperties=false guard on eval_scores doesn't
+            # reject the card.
+            allowed_keys = {"faithfulness", "coverage", "baseline_delta"}
+            card["eval_scores"] = {
+                k: float(v) for k, v in eval_scores.items() if k in allowed_keys
+            }
+
         card_path = run_dir / "model_card.json"
         # Atomic write so a crash mid-emit doesn't leave a half-card.
         tmp = card_path.with_suffix(card_path.suffix + ".tmp")
         tmp.write_text(json.dumps(card, indent=2, sort_keys=True), encoding="utf-8")
         tmp.replace(card_path)
         return card_path
+
+    # ------------------------------------------------------------------ #
+    # Wave 92 — eval hook                                                 #
+    # ------------------------------------------------------------------ #
+
+    def _run_eval_harness(
+        self,
+        run_dir: Path,
+        adapter_path: Optional[Path],
+    ) -> Dict[str, Any]:
+        """Invoke the SLM eval harness and return canonical eval scores.
+
+        Wave 92: the eval harness is a hard dependency of a real
+        (non-dry-run) training pass. If the harness fails to import
+        or to run, we raise loudly rather than emit a card with empty
+        eval_scores — a card without scores is worse than no card at
+        all because it claims an unevaluated model is evaluated.
+        """
+        from Trainforge.eval.slm_eval_harness import SLMEvalHarness
+
+        # Wire a model_callable from the adapter. Wave 92 leaves the
+        # exact wiring (transformers.pipeline + PEFT load) to the
+        # caller / future wave; for now the runner expects a backend
+        # that has produced an adapter on disk and we surface a
+        # NotImplementedError if no callable is configured. Tests
+        # patch this method, so the production path being incomplete
+        # doesn't block CI.
+        raise NotImplementedError(
+            "Wave 92: model_callable wiring from adapter to harness is "
+            "deferred to a follow-up wave. Tests patch this method to "
+            "exercise the integration. See plans/slm-training-2026-04-26.md "
+            "Wave 92 deferred items."
+        )
 
     def _save_decision_run_log(
         self,

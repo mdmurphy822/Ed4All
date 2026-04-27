@@ -110,7 +110,8 @@
         "instruction_pairs_hash",
         "preference_pairs_hash",
         "concept_graph_hash",
-        "vocabulary_ttl_hash"
+        "vocabulary_ttl_hash",
+        "holdout_graph_hash"
       ],
       "additionalProperties": false,
       "properties": {
@@ -143,6 +144,11 @@
           "type": "string",
           "pattern": "^[a-f0-9]{64}$",
           "description": "SHA-256 of the SHACL vocabulary TTL the run pinned to."
+        },
+        "holdout_graph_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "Wave 92: SHA-256 over the canonicalised holdout split JSON used to seed Tier-2 eval. Pins the exact set of withheld edges + their Bloom stratification so the eval harness can be replayed against any future model version."
         }
       }
     },
