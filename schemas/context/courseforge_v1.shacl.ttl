@@ -122,6 +122,7 @@ cfshapes:CourseModuleShape
     sh:path ed4all:hasMisconception ;
     sh:nodeKind sh:BlankNodeOrIRI ;
     sh:node cfshapes:MisconceptionShape ;
+    sh:message "Each value of ed4all:hasMisconception (misconceptions[]) must conform to cfshapes:MisconceptionShape." ;
   ] ;
 
   sh:property [
@@ -129,6 +130,7 @@ cfshapes:CourseModuleShape
     sh:maxCount 1 ;
     sh:nodeKind sh:BlankNodeOrIRI ;
     sh:node cfshapes:BloomDistributionShape ;
+    sh:message "bloomDistribution (when present, at most one) must be a single object conforming to cfshapes:BloomDistributionShape." ;
   ] .
 
 # ---------------------------------------------------------------------------
@@ -197,6 +199,7 @@ cfshapes:LearningObjectiveShape
     sh:path ed4all:targetsConcept ;
     sh:nodeKind sh:BlankNodeOrIRI ;
     sh:node cfshapes:TargetedConceptShape ;
+    sh:message "Each value of ed4all:targetsConcept (targetedConcepts[]) must conform to cfshapes:TargetedConceptShape." ;
   ] .
 
 # ---------------------------------------------------------------------------
@@ -310,6 +313,7 @@ cfshapes:MisconceptionShape
       cogdomain:procedural
       cogdomain:metacognitive
     ) ;
+    sh:message "Misconception.cognitiveDomain (when present) must be one of cogdomain:factual / conceptual / procedural / metacognitive." ;
   ] .
 
 # ---------------------------------------------------------------------------
