@@ -1499,7 +1499,7 @@ class CourseProcessor:
             # Merge adjacent small sections into larger pedagogical units
             merged = self._merge_small_sections(item["sections"])
 
-            for heading, text, chunk_type, section_source_ids in merged:
+            for heading, text, chunk_type, section_source_ids, merged_headings in merged:
                 if not text.strip():
                     continue
                 # Strip feedback from quiz section text (sections were parsed before HTML stripping)
@@ -1522,6 +1522,7 @@ class CourseProcessor:
                     follows_chunk_id=prev_chunk_id,
                     position_in_module=position_in_module,
                     section_source_ids=section_source_ids,
+                    merged_headings=merged_headings,
                 )
                 chunks.extend(item_chunks)
                 chunk_counter += len(item_chunks)
@@ -1562,12 +1563,23 @@ class CourseProcessor:
         """
         Merge adjacent sections that are below MIN_CHUNK_SIZE into combined blocks.
 
-        Returns list of (heading, combined_text, chunk_type, merged_source_ids)
-        tuples. ``merged_source_ids`` is the union of every section's
-        ``data-cf-source-ids`` attribute (stringified) across all sections
-        that collapsed into the same chunk (Wave 10); dedupe + insertion-
-        order preserved so downstream role-precedence resolution stays
-        deterministic.
+        Returns list of (heading, combined_text, chunk_type,
+        merged_source_ids, merged_headings) tuples. ``merged_source_ids``
+        is the union of every section's ``data-cf-source-ids`` attribute
+        (stringified) across all sections that collapsed into the same
+        chunk (Wave 10); dedupe + insertion-order preserved so downstream
+        role-precedence resolution stays deterministic.
+
+        Wave 84 (Bug 1 fix): ``merged_headings`` is the ordered list of
+        every section heading that collapsed into the buffer. Threaded
+        through so JSON-LD section-metadata lookup (``_extract_section_metadata``,
+        ``_resolve_chunk_source_references``) can match against ANY of
+        the merged headings, not just the buffer's anchor heading. The
+        merger picks the FIRST section as the buffer's heading, so post-
+        merge chunks whose JSON-LD entry is keyed off a sub-heading
+        previously fell through to ``none_heading_mismatch`` — 109/295
+        chunks (37%) on rdf-shacl-551-2 lost content_type_label and
+        key_terms because of this single mismatch.
 
         Wave 81 (Worker A): when any section in a merge group carries
         ``data-cf-template-type`` (propagated via
@@ -1580,13 +1592,16 @@ class CourseProcessor:
         back to the legacy ``_type_from_heading`` heuristic when no section
         in the group carries a template label.
         """
-        merged: List[Tuple[str, str, str, List[str]]] = []
+        merged: List[Tuple[str, str, str, List[str], List[str]]] = []
         buffer_heading = ""
         buffer_text = ""
         buffer_wc = 0
         buffer_type = "explanation"
         buffer_template_type: Optional[str] = None
         buffer_source_ids: List[str] = []
+        # Wave 84 (Bug 1 fix): track every heading that collapsed into the
+        # buffer so downstream metadata extraction can match against any.
+        buffer_headings: List[str] = []
         # Wave 83 (Bug 1 fix): track buffer initialization explicitly rather
         # than via ``buffer_wc == 0``. The legacy entry condition broke when
         # a zero-word section (typically a Courseforge page-title ``<h1>``
@@ -1618,6 +1633,7 @@ class CourseProcessor:
                 buffer_type = section_type
                 buffer_template_type = section_template
                 buffer_source_ids = list(section_src)
+                buffer_headings = [section.heading]
                 buffer_started = True
             elif buffer_wc + section.word_count <= self.MAX_CHUNK_SIZE:
                 # Merge into buffer
@@ -1632,19 +1648,21 @@ class CourseProcessor:
                 if not buffer_template_type and section_template:
                     buffer_template_type = section_template
                 self._merge_section_source_ids(buffer_source_ids, section_src)
+                buffer_headings.append(section.heading)
             else:
                 # Flush buffer and start new
-                merged.append((buffer_heading, buffer_text, _resolve_buffer_type(), buffer_source_ids))
+                merged.append((buffer_heading, buffer_text, _resolve_buffer_type(), buffer_source_ids, list(buffer_headings)))
                 buffer_heading = section.heading
                 buffer_text = section.content
                 buffer_wc = section.word_count
                 buffer_type = section_type
                 buffer_template_type = section_template
                 buffer_source_ids = list(section_src)
+                buffer_headings = [section.heading]
 
         # Flush remaining
         if buffer_text.strip():
-            merged.append((buffer_heading, buffer_text, _resolve_buffer_type(), buffer_source_ids))
+            merged.append((buffer_heading, buffer_text, _resolve_buffer_type(), buffer_source_ids, list(buffer_headings)))
 
         return merged
 
@@ -1654,6 +1672,7 @@ class CourseProcessor:
         follows_chunk_id: Optional[str] = None,
         position_in_module: int = 0,
         section_source_ids: Optional[List[str]] = None,
+        merged_headings: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Split a text block into chunks of appropriate size.
 
@@ -1734,6 +1753,7 @@ class CourseProcessor:
                 html_xpath=container_xpath,
                 char_span=char_span,
                 section_source_ids=section_source_ids,
+                merged_headings=merged_headings,
             ))
         else:
             # Split by sentences. Locate each sub_text independently,
@@ -1764,6 +1784,7 @@ class CourseProcessor:
                     html_xpath=container_xpath,
                     char_span=char_span,
                     section_source_ids=section_source_ids,
+                    merged_headings=merged_headings,
                 ))
                 last_chunk_id = this_chunk_id
 
@@ -1777,6 +1798,7 @@ class CourseProcessor:
         html_xpath: Optional[str] = None,
         char_span: Optional[List[int]] = None,
         section_source_ids: Optional[List[str]] = None,
+        merged_headings: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         words = text.split()
         word_count = len(words)
@@ -1851,6 +1873,7 @@ class CourseProcessor:
             item=item,
             section_heading=section_heading,
             section_source_ids=section_source_ids or [],
+            merged_headings=merged_headings,
         )
         if resolved_refs:
             source["source_references"] = resolved_refs
@@ -1882,7 +1905,7 @@ class CourseProcessor:
         # a bloom_level; bloom_level_source records where it came from so
         # downstream consumers can weight low-confidence sources.
         bloom_level, content_type_label, key_terms, section_trace = self._extract_section_metadata(
-            item, section_heading
+            item, section_heading, merged_headings=merged_headings,
         )
         bloom_source = "section_jsonld" if bloom_level else None
 
@@ -2139,6 +2162,7 @@ class CourseProcessor:
         item: Dict[str, Any],
         section_heading: str,
         section_source_ids: List[str],
+        merged_headings: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Wave 10: resolve the chunk's source_references[] array.
 
@@ -2193,19 +2217,28 @@ class CourseProcessor:
         # into item["source_references"] so step 1 typically covers this,
         # but we re-walk here to ensure per-chunk specificity when
         # sections carry refs that aren't in the page-level set.
-        chunk_heading_norm = re.sub(
-            r'\s*\(part\s+\d+\)\s*$', '', section_heading or ''
-        ).lower()
+        # Wave 84: walk every merged heading, not just the anchor, so a
+        # post-merge chunk picks up sourceReferences from any of the
+        # sub-sections that collapsed into it.
+        def _norm_h(h: str) -> str:
+            return re.sub(r'\s*\(part\s+\d+\)\s*$', '', h or '').lower()
+
+        candidate_headings: List[str] = [_norm_h(section_heading)]
+        for h in (merged_headings or []):
+            nh = _norm_h(h)
+            if nh and nh not in candidate_headings:
+                candidate_headings.append(nh)
         cf_meta = item.get("courseforge_metadata") or {}
-        for sec in cf_meta.get("sections", []) or []:
-            if not isinstance(sec, dict):
-                continue
-            if sec.get("heading", "").lower() != chunk_heading_norm:
-                continue
-            for entry in sec.get("sourceReferences", []) or []:
-                if isinstance(entry, dict):
-                    _add(entry)
-            break
+        for cand in candidate_headings:
+            for sec in cf_meta.get("sections", []) or []:
+                if not isinstance(sec, dict):
+                    continue
+                if sec.get("heading", "").lower() != cand:
+                    continue
+                for entry in sec.get("sourceReferences", []) or []:
+                    if isinstance(entry, dict):
+                        _add(entry)
+                break
 
         # 3. Section-level data-cf-source-ids (stringified; auto-roled).
         # These come from ``_merge_small_sections`` which already unioned
@@ -2217,12 +2250,22 @@ class CourseProcessor:
         return refs
 
     def _extract_section_metadata(
-        self, item: Dict[str, Any], section_heading: str
+        self, item: Dict[str, Any], section_heading: str,
+        *,
+        merged_headings: Optional[List[str]] = None,
     ) -> Tuple[Optional[str], Optional[str], List[Dict[str, str]], Dict[str, str]]:
         """Extract bloom_level, content_type_label, and key_terms for a section.
 
         Checks JSON-LD sections metadata first, then falls back to
         ContentSection data-cf-* attributes.
+
+        Wave 84 (Bug 1 fix): ``merged_headings`` is the ordered list of
+        every section heading that collapsed into this chunk's buffer (via
+        ``_merge_small_sections``). When provided, the JSON-LD section
+        match tries each heading in order so post-merge chunks whose
+        anchor heading drifted from the JSON-LD-keyed heading still find
+        their metadata. Falls back to the single ``section_heading`` when
+        ``merged_headings`` is empty (back-compat).
 
         Returns a 4-tuple: (bloom_level, content_type_label, key_terms, trace).
         ``trace`` is a Worker M1 diagnostic (VERSIONING.md §4.4a) naming the
@@ -2259,7 +2302,19 @@ class CourseProcessor:
 
         # Normalize heading: strip "(part N)" suffix added by _chunk_text_block
         # so multi-part chunks still match their JSON-LD / data-cf-* metadata.
-        chunk_heading = re.sub(r'\s*\(part\s+\d+\)\s*$', '', section_heading).lower()
+        def _norm(h: str) -> str:
+            return re.sub(r'\s*\(part\s+\d+\)\s*$', '', h or '').lower()
+
+        chunk_heading = _norm(section_heading)
+        # Wave 84: ordered list of headings to try, in priority order.
+        # Anchor heading first (so single-section chunks behave identically
+        # to pre-Wave-84), then any merged headings that aren't already in
+        # the list.
+        candidate_headings: List[str] = [chunk_heading]
+        for h in (merged_headings or []):
+            nh = _norm(h)
+            if nh and nh not in candidate_headings:
+                candidate_headings.append(nh)
 
         # Signals for hypothesis discrimination (Worker M1 instrumentation).
         cf_meta = item.get("courseforge_metadata")
@@ -2267,46 +2322,59 @@ class CourseProcessor:
         jsonld_parse_failed = bool(item.get("_jsonld_parse_failed"))
         section_match_found = False
 
-        # Try JSON-LD sections metadata
+        # Try JSON-LD sections metadata. Walk candidate headings in order —
+        # the first matching JSON-LD section wins (anchor heading is
+        # checked first to preserve back-compat).
         if jsonld_has_sections:
-            for sec in cf_meta["sections"]:
-                if sec.get("heading", "").lower() == chunk_heading:
-                    section_match_found = True
-                    sec_content_type = sec.get("contentType")
-                    if sec_content_type:
-                        content_type_label = sec_content_type
-                        trace["content_type_label"] = "jsonld_section_match"
-                    bloom_range = sec.get("bloomRange", [])
-                    if bloom_range:
-                        bloom_level = bloom_range[0] if isinstance(bloom_range, list) else bloom_range
-                    for kt in sec.get("keyTerms", []):
-                        if isinstance(kt, dict) and kt.get("term"):
-                            key_terms.append({"term": kt["term"], "definition": kt.get("definition", "")})
-                    if key_terms:
-                        trace["key_terms"] = "jsonld_section_match"
-                    elif content_type_label:
-                        # H3 signature: section matched, contentType set,
-                        # but keyTerms empty on the section. The data-cf-*
-                        # fallback below is gated by `if not content_type_label`
-                        # so it never runs — key_terms stays empty.
-                        trace["key_terms"] = "jsonld_section_match_empty"
-                    break
+            for cand in candidate_headings:
+                matched_sec = None
+                for sec in cf_meta["sections"]:
+                    if sec.get("heading", "").lower() == cand:
+                        matched_sec = sec
+                        break
+                if not matched_sec:
+                    continue
+                section_match_found = True
+                sec_content_type = matched_sec.get("contentType")
+                if sec_content_type:
+                    content_type_label = sec_content_type
+                    trace["content_type_label"] = "jsonld_section_match"
+                bloom_range = matched_sec.get("bloomRange", [])
+                if bloom_range:
+                    bloom_level = bloom_range[0] if isinstance(bloom_range, list) else bloom_range
+                for kt in matched_sec.get("keyTerms", []):
+                    if isinstance(kt, dict) and kt.get("term"):
+                        key_terms.append({"term": kt["term"], "definition": kt.get("definition", "")})
+                if key_terms:
+                    trace["key_terms"] = "jsonld_section_match"
+                elif content_type_label:
+                    # H3 signature: section matched, contentType set,
+                    # but keyTerms empty on the section. The data-cf-*
+                    # fallback below is gated by `if not content_type_label`
+                    # so it never runs — key_terms stays empty.
+                    trace["key_terms"] = "jsonld_section_match_empty"
+                break
 
         # Fallback: data-cf-* attributes from parsed sections.
-        # NOTE: the original gate is ``if not content_type_label`` which is
-        # exactly the H3 short-circuit — if JSON-LD provided contentType but
-        # not keyTerms, the data-cf-* path never fills key_terms. Preserved
-        # here verbatim so the diagnostic sees the current (un-fixed) behaviour.
+        # Walk candidate headings the same way for symmetry with the
+        # JSON-LD path — a merged sub-section's data-cf-* attributes
+        # should still be reachable when the anchor heading drifts.
         if not content_type_label:
-            for section in item.get("sections", []):
-                if section.heading.lower() == chunk_heading:
-                    if section.content_type:
-                        content_type_label = section.content_type
-                        trace["content_type_label"] = "data_cf_fallback"
-                    if section.key_terms:
-                        key_terms = [{"term": t, "definition": ""} for t in section.key_terms]
-                        trace["key_terms"] = "data_cf_fallback"
-                    break
+            for cand in candidate_headings:
+                matched_section = None
+                for section in item.get("sections", []):
+                    if section.heading.lower() == cand:
+                        matched_section = section
+                        break
+                if not matched_section:
+                    continue
+                if matched_section.content_type:
+                    content_type_label = matched_section.content_type
+                    trace["content_type_label"] = "data_cf_fallback"
+                if matched_section.key_terms:
+                    key_terms = [{"term": t, "definition": ""} for t in matched_section.key_terms]
+                    trace["key_terms"] = "data_cf_fallback"
+                break
 
         # Categorize remaining `none` values by hypothesis so the trace report
         # can attribute each failure to H1/H2/H4/H5.
@@ -3259,7 +3327,11 @@ class CourseProcessor:
         input) can materialize the Wave 57 ``targetedConcepts[]`` as
         typed ``targets-concept`` edges.
         """
-        from Trainforge.rag.typed_edge_inference import build_semantic_graph
+        from Trainforge.rag.typed_edge_inference import (
+            build_semantic_graph,
+            build_semantic_graph_with_dataset,
+        )
+        from Trainforge.rag import named_graph_writer
 
         llm_callable = None
         if self.typed_edges_llm:
@@ -3285,6 +3357,30 @@ class CourseProcessor:
         objectives_metadata = self._build_objectives_metadata_for_graph(
             parsed_items or []
         )
+
+        # Phase 3 (plans/rdf-shacl-enrichment-2026-04-26.md): when
+        # TRAINFORGE_EMIT_TRIG is on, additionally compose an
+        # rdflib.Dataset of per-rule named graphs and write a sibling
+        # concept_graph_semantic.trig file. JSON output is byte-identical
+        # whether the flag is on or off — the named-graph emit is purely
+        # additive provenance metadata.
+        if named_graph_writer.EMIT_TRIG:
+            json_dict, dataset = build_semantic_graph_with_dataset(
+                chunks=chunks,
+                course=course,
+                concept_graph=concept_graph,
+                llm_enabled=self.typed_edges_llm and llm_callable is not None,
+                llm_callable=llm_callable,
+                decision_capture=self.capture,
+                misconceptions=misconceptions or None,
+                questions=questions or None,
+                objectives_metadata=objectives_metadata or None,
+                emit_trig=True,
+            )
+            # Stash the dataset for the metadata writer to serialise
+            # alongside concept_graph_semantic.json.
+            self._semantic_graph_trig_dataset = dataset
+            return json_dict
 
         return build_semantic_graph(
             chunks=chunks,
@@ -4741,6 +4837,23 @@ class CourseProcessor:
             _write(self.graph_dir / "pedagogy_graph.json", pedagogy_graph)
         if semantic_graph is not None:
             _write(self.graph_dir / "concept_graph_semantic.json", semantic_graph)
+            # Phase 3: additionally emit a TriG file with per-rule named
+            # graphs when TRAINFORGE_EMIT_TRIG is on. Default off → this
+            # branch never fires for legacy consumers.
+            trig_dataset = getattr(self, "_semantic_graph_trig_dataset", None)
+            if trig_dataset is not None:
+                try:
+                    from Trainforge.rag import named_graph_writer
+                    trig_path = self.graph_dir / "concept_graph_semantic.trig"
+                    trig_path.write_text(
+                        named_graph_writer.serialize_trig(trig_dataset),
+                        encoding="utf-8",
+                    )
+                except Exception as exc:  # pragma: no cover — defensive
+                    print(
+                        f"[warn] TRAINFORGE_EMIT_TRIG: failed to write "
+                        f"concept_graph_semantic.trig: {exc}"
+                    )
         _write(self.quality_dir / "quality_report.json", quality_report)
 
         # Pedagogy model (full: module sequence, bloom progression, prereq chain).

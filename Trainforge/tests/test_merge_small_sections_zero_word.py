@@ -81,7 +81,7 @@ class TestZeroWordH1Merge:
         # MAX_CHUNK_SIZE is hit. With 0+22+269+238=529 ≤ 800, all four
         # sections merge into ONE chunk anchored to the h1 heading.
         assert len(merged) == 1
-        heading, text, chunk_type, source_ids = merged[0]
+        heading, text, chunk_type, source_ids, _ = merged[0]
         assert heading == "RDF Triples and the Graph Model", (
             f"Expected merge buffer to anchor to h1 page title; got {heading!r}. "
             "Pre-Wave-83 the h1 was silently dropped by the buffer_wc==0 "
@@ -99,7 +99,7 @@ class TestZeroWordH1Merge:
         ]
         merged = proc._merge_small_sections(sections)
         assert len(merged) == 1
-        heading, text, _, _ = merged[0]
+        heading, text, _, _, _ = merged[0]
         assert heading == "Page Title"
         # Both h2 sections' text bodies should appear in the merged text.
         assert "w0" in text and "w49" in text  # words from the placeholder content
@@ -119,7 +119,7 @@ class TestNonZeroFirstSection:
         merged = proc._merge_small_sections(sections)
         # All three fit within MAX_CHUNK_SIZE=800 → one merged chunk.
         assert len(merged) == 1
-        heading, _, _, _ = merged[0]
+        heading, _, _, _, _ = merged[0]
         assert heading == "First Real Section"
 
 
@@ -172,7 +172,7 @@ class TestMultipleZeroWordSections:
         # All three merge (0+0+100=100 ≤ 800) → one chunk anchored to the
         # FIRST section's heading.
         assert len(merged) == 1
-        heading, _, _, _ = merged[0]
+        heading, _, _, _, _ = merged[0]
         assert heading == "Empty A"
 
 
