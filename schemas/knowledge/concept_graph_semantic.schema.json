@@ -76,7 +76,9 @@
               "misconception-of",
               "derived-from-objective",
               "defined-by",
-              "targets-concept"
+              "targets-concept",
+              "broader-than",
+              "narrower-than"
             ]
           },
           "confidence": {

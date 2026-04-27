@@ -933,6 +933,24 @@ workflows:
               on_error: warn
             description: Wave 82 — detect silent-zero regressions in concept_graph_semantic.json rules
 
+          # KG-quality metric surface (improvement #4 from the post-Wave 85
+          # corpus-grounded gap analysis). Computes the four KG-quality
+          # dimensions (completeness, consistency, accuracy, coverage)
+          # and emits kg_quality_report.json. Advisory at roll-out:
+          # default min thresholds are 0.0 so the gate surfaces metric
+          # distributions without hard-failing any pipeline run while
+          # the team builds confidence in the numbers.
+          - gate_id: kg_quality_report
+            validator: lib.validators.kg_quality.KGQualityValidator
+            severity: warning
+            threshold:
+              min_completeness: 0.0
+              min_consistency: 0.0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: KG-quality metric surface (completeness / consistency / accuracy / coverage)
+
       - name: finalization
         agents: [brightspace-packager]
         parallel: false

@@ -277,6 +277,12 @@ def test_edge_enum_includes_new_types():
         "derived-from-objective",
         "defined-by",
         "targets-concept",
+        # SKOS Concept-layer hierarchy slugs (W3C-canonical pattern).
+        # Emitted by ``is_a_from_key_terms`` when both endpoints are
+        # concept-graph nodes (cf:Concept instances). ``narrower-than``
+        # is the inverse-direction slot held open for future emitters.
+        "broader-than",
+        "narrower-than",
     }
 
     # Sanity: validate a synthetic artifact containing all 5 new edge types.
@@ -329,7 +335,11 @@ def test_edge_enum_includes_new_types():
 
 
 def test_precedence_new_types_do_not_drop_is_a():
-    """is-a (tier 3) still wins over a tier-2 pedagogical edge on the same pair."""
+    """``is-a``/``broader-than`` (tier 3) still wins over a tier-2
+    pedagogical edge on the same pair. ``is_a_from_key_terms`` emits
+    ``broader-than`` when both endpoints are concept-graph nodes
+    (cf:Concept instances), but the precedence semantics versus
+    tier-2 are unchanged."""
     graph = {
         "kind": "concept",
         "nodes": [
@@ -356,10 +366,10 @@ def test_precedence_new_types_do_not_drop_is_a():
         e for e in artifact["edges"]
         if {e["source"], e["target"]} == {"widget", "gadget"}
     ]
-    # is-a fires on (widget, gadget); no new pedagogical edge targets that
-    # same concept↔concept pair, so is-a stands alone.
+    # broader-than fires on (widget, gadget); no new pedagogical edge
+    # targets that same concept↔concept pair, so it stands alone.
     assert len(pair_edges) == 1
-    assert pair_edges[0]["type"] == "is-a"
+    assert pair_edges[0]["type"] == "broader-than"
 
 
 def test_precedence_exemplifies_beats_related_to_on_same_pair():

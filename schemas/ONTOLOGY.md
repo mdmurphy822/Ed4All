@@ -1254,11 +1254,11 @@ Eight canonical taxonomy files ship under `schemas/taxonomies/` — all loadable
 
 `moduleType` enum, cited on the Page class in § 2, is now `{overview, content, application, self_check, summary, discussion}`. The `discussion` value was surfaced by Worker B (decision capture), schematized by Worker F, and persists in `schemas/taxonomies/module_type.json`.
 
-### 8 edge types in the concept graph
+### 10 edge types in the concept graph
 
 Three taxonomic edges (unchanged):
-- `is-a` — from `is_a_from_key_terms` rule.
-- `prerequisite` — from `prerequisite_from_lo_order` rule.
+- `is-a` — from `is_a_from_key_terms` rule. **Reserved for class-level subsumption.** When both endpoints are `cf:Concept` instances (the canonical case), the rule emits `broader-than` instead — see SKOS edges below.
+- `prerequisite` — from `prerequisite_from_lo_order` rule. The underlying `cf:hasPrerequisite` predicate is declared `owl:TransitiveProperty` and paired with `cf:isPrerequisiteOf` via `owl:inverseOf` (Wave 86), so OWL-RL reasoning materializes indirect prereq chains for free.
 - `related-to` — from `related_from_cooccurrence` rule (co-occurrence reuse).
 
 Five pedagogical edges (Wave 5, Worker U):
@@ -1268,7 +1268,11 @@ Five pedagogical edges (Wave 5, Worker U):
 - `derived-from-objective` — chunk → LO (`derived_from_lo_ref`, materializes existing `learning_outcome_refs`).
 - `defined-by` — concept → chunk, using `occurrences[0]` as canonical first mention (`defined_by_from_first_mention`).
 
-All eight are listed in `concept_graph_semantic.schema.json::properties.edges.items.properties.type.enum`. Heterogeneous endpoints (chunk IDs, LO IDs, misconception IDs, question IDs, concept IDs) are federated-by-convention: consumers resolve by ID-namespace prefix; no new node types are added to the schema.
+Two SKOS edges (Wave 86):
+- `broader-than` → `skos:broader`. Concept-layer hierarchy. Emitted by `is_a_from_key_terms` when both endpoints are `cf:Concept` instances (the W3C-canonical concept-hierarchy pattern). The previous behavior collapsed concept-layer subsumption onto class-level `is-a`; the split lets SKOS-aware consumers walk the hierarchy via standard SPARQL property paths.
+- `narrower-than` → `skos:narrower`. Reserved for the inverse direction; not currently emitted by any rule but registered in `lib/ontology/edge_predicates.py::SLUG_TO_IRI` for future taxonomy-expansion work.
+
+All ten are listed in `concept_graph_semantic.schema.json::properties.edges.items.properties.type.enum`. Heterogeneous endpoints (chunk IDs, LO IDs, misconception IDs, question IDs, concept IDs) are federated-by-convention: consumers resolve by ID-namespace prefix; no new node types are added to the schema.
 
 ### Per-rule evidence discriminator (REC-PRV-02, Wave 6)
 
@@ -1431,6 +1435,8 @@ Cross-namespace bridges are declared in `schemas/context/aliases.ttl` via `owl:e
 ### Reified-edge pattern (canonical for per-edge provenance)
 
 Edges in `concept_graph_semantic_v1.jsonld` materialize as typed `ed4all:TypedEdge` blank nodes carrying `(rule, rule_version, evidence, run_id, created_at)` rather than collapsing to bare `<source> <type> <target>` triples. This preserves per-edge metadata as a reachable subgraph that SPARQL can join against. **Convention:** any new artifact that needs per-edge metadata should follow the same reified-blank-node pattern (Q46 corpus guidance). The pedagogy_graph context applies it consistently.
+
+**RDF-star is superseded here, not deferred.** The reified-blank-node pattern above plus the named-graph provenance shipped in Phase 3 of `plans/rdf-shacl-enrichment-2026-04-26.md` cover the per-edge-metadata use case that originally motivated RDF-star evaluation. Q49's tooling-maturity caveat still holds, but the design has moved past needing RDF-star — do not add it back without a use case that named graphs and reified TypedEdges genuinely cannot model.
 
 ### Cross-artifact join
 

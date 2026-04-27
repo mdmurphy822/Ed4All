@@ -55,6 +55,8 @@ from typing import Dict, Final, Optional
 # Pre-existing W3C / SKOS predicate IRIs (reused, not minted).
 _RDFS_SUBCLASS_OF: Final[str] = "http://www.w3.org/2000/01/rdf-schema#subClassOf"
 _SKOS_RELATED: Final[str] = "http://www.w3.org/2004/02/skos/core#related"
+_SKOS_BROADER: Final[str] = "http://www.w3.org/2004/02/skos/core#broader"
+_SKOS_NARROWER: Final[str] = "http://www.w3.org/2004/02/skos/core#narrower"
 
 # ed4all: namespace base — must match the @prefix declaration in
 # schemas/context/courseforge_v1.vocabulary.ttl line 41.
@@ -69,6 +71,13 @@ SLUG_TO_IRI: Final[Dict[str, str]] = {
     # Phase 2.1 — concept_graph_semantic.schema.json::edges[].type enum.
     "is-a": _RDFS_SUBCLASS_OF,
     "related-to": _SKOS_RELATED,
+    # SKOS Concept-layer hierarchy: when the canonical W3C-shaped
+    # ``broader``/``narrower`` SKOS pattern applies between two
+    # ed4all:Concept instances (which are subclasses of skos:Concept),
+    # emit these slugs instead of ``is-a``. ``is-a`` (rdfs:subClassOf)
+    # remains the right choice for class-level subsumption.
+    "broader-than": _SKOS_BROADER,
+    "narrower-than": _SKOS_NARROWER,
     "prerequisite": _ed4all("hasPrerequisite"),
     "defined-by": _ed4all("isDefinedBy"),
     "derived-from-objective": _ed4all("isDerivedFromObjective"),

@@ -541,7 +541,13 @@ def test_build_semantic_graph_flag_on_evidence_refs_present(flag_on):
     with_refs_types = set()
     without_refs_but_chunk_anchored = set()
     chunk_anchored_edge_types = {
-        "is-a", "exemplifies", "derived-from-objective",
+        # ``is_a_from_key_terms`` emits ``broader-than`` when both
+        # endpoints are cf:Concept instances (the canonical case here:
+        # cognitive-load and mental-effort are both concept-graph
+        # nodes). ``is-a`` is kept in the set for forward-compat with
+        # any future class-level subsumption emit.
+        "is-a", "broader-than",
+        "exemplifies", "derived-from-objective",
         "defined-by", "assesses",
     }
     for edge in artifact["edges"]:
