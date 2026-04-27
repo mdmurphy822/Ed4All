@@ -167,6 +167,7 @@ class SLMEvalHarness:
 
         # --- Faithfulness (Layer 1) -------------------------------- #
         faithfulness_score = 0.0
+        faithfulness_per_question: List[Dict[str, Any]] = []
         if evaluators.get("faithfulness"):
             cap = self.max_holdout_questions or caps.get("max_holdout_questions")
             fr = FaithfulnessEvaluator(
@@ -180,10 +181,53 @@ class SLMEvalHarness:
                 "correct": fr["correct"],
             }
             faithfulness_score = fr["accuracy"]
+            # Wave 104: surface per-question records for the trace
+            # writer in the ablation runner. Each row carries the
+            # probe text, model response, ground-truth chunk id (for
+            # chunk-anchored edges), and pass/fail outcome.
+            for r in fr.get("per_question_results", []) or []:
+                edge = r.get("edge", {}) or {}
+                source = edge.get("source")
+                gt_chunk = source if isinstance(source, str) and source.startswith("chunk_") else None
+                faithfulness_per_question.append({
+                    "probe": r.get("probe", ""),
+                    "response": r.get("response") or "",
+                    "ground_truth_chunk_id": gt_chunk,
+                    "edge": edge,
+                    "outcome": r.get("outcome", "ambiguous"),
+                    "correct": r.get("outcome") == "correct",
+                })
 
         # --- Behavioral invariants (Layer 2) ---------------------- #
         invariant_pass_rates: List[float] = []
         inv_cfg = evaluators.get("invariants") or {}
+        # Wave 104: collect per-prompt records across invariants so the
+        # ablation runner can emit per-probe traces. We retain the
+        # invariant name as the prefix for probe_id disambiguation.
+        invariant_per_prompt: List[Dict[str, Any]] = []
+
+        def _collect_invariant_probes(invariant_name: str, result: Dict[str, Any]) -> None:
+            for i, p in enumerate(result.get("per_prompt", []) or []):
+                edge = p.get("edge") or {}
+                source = edge.get("source") if isinstance(edge, dict) else None
+                gt_chunk = (
+                    source if isinstance(source, str) and source.startswith("chunk_")
+                    else (
+                        p.get("chunk_id")
+                        if isinstance(p.get("chunk_id"), str) and p["chunk_id"].startswith("chunk_")
+                        else None
+                    )
+                )
+                invariant_per_prompt.append({
+                    "probe_id": f"{invariant_name}:{i}",
+                    "probe": p.get("prompt", ""),
+                    "response": p.get("response") or "",
+                    "ground_truth_chunk_id": gt_chunk,
+                    "outcome": p.get("outcome", "ambiguous"),
+                    "correct": p.get("outcome") == "pass",
+                    "invariant": invariant_name,
+                })
+
         if inv_cfg.get("prerequisite_order"):
             r = PrerequisiteOrderInvariant(
                 self.course_path,
@@ -191,6 +235,7 @@ class SLMEvalHarness:
             ).evaluate(self.model_callable)
             per_invariant["prerequisite_order"] = r
             invariant_pass_rates.append(r["pass_rate"])
+            _collect_invariant_probes("prerequisite_order", r)
         if inv_cfg.get("bloom_level"):
             r = BloomLevelInvariant(
                 self.course_path,
@@ -198,10 +243,12 @@ class SLMEvalHarness:
             ).evaluate(self.model_callable)
             per_invariant["bloom_level"] = r
             invariant_pass_rates.append(r["pass_rate"])
+            _collect_invariant_probes("bloom_level", r)
         if inv_cfg.get("misconception_rejection"):
             r = MisconceptionRejectionInvariant(self.course_path).evaluate(self.model_callable)
             per_invariant["misconception_rejection"] = r
             invariant_pass_rates.append(r["pass_rate"])
+            _collect_invariant_probes("misconception_rejection", r)
 
         avg_invariant_pass = (
             sum(invariant_pass_rates) / len(invariant_pass_rates)
@@ -257,6 +304,7 @@ class SLMEvalHarness:
 
         # --- Source-match (Wave 102 - precision companion to faithfulness)
         source_match_score: Optional[float] = None
+        source_match_per_question: List[Dict[str, Any]] = []
         if evaluators.get("source_match"):
             cap = self.max_holdout_questions or caps.get("max_holdout_questions")
             sm = SourceMatchEvaluator(
@@ -270,6 +318,15 @@ class SLMEvalHarness:
                 "scored": sm["scored_total"],
                 "matches": sm["matches"],
             }
+            for r in sm.get("per_question", []) or []:
+                source_match_per_question.append({
+                    "probe": r.get("probe", ""),
+                    "response": r.get("response") or "",
+                    "ground_truth_chunk_id": r.get("ground_truth_chunk_id"),
+                    "cited_chunk_ids": r.get("cited_chunk_ids", []),
+                    "outcome": r.get("outcome", "miss"),
+                    "correct": r.get("outcome") == "match",
+                })
 
         # Recompute coverage proxy with the Tier-3 contributions
         if invariant_pass_rates:
@@ -290,11 +347,36 @@ class SLMEvalHarness:
             source_match=source_match_score,
         )
 
+        # Wave 104: aggregate per-question records into a single
+        # `per_question` array so the ablation runner can emit one
+        # trace per probe per setup. Records carry probe text, model
+        # response, ground-truth chunk id (where known), and a
+        # boolean correctness signal for failure-mode classification.
+        per_question_all: List[Dict[str, Any]] = []
+        per_question_all.extend(faithfulness_per_question)
+        per_question_all.extend(invariant_per_prompt)
+        per_question_all.extend(source_match_per_question)
+
+        # Wave 104: surface mean retrieval latency when the model
+        # callable is RAG-backed. Both BaseOnlyCallable / AdapterCallable
+        # leave this attribute unset; RAGCallable exposes it as a
+        # rolling mean over its retrieval calls.
+        mean_latency = getattr(self.model_callable, "mean_latency_ms", None)
+
+        out_dict = report.to_dict()
+        if per_question_all:
+            out_dict["per_question"] = per_question_all
+        if faithfulness_per_question:
+            out_dict["faithfulness_per_question"] = faithfulness_per_question
+        if mean_latency is not None:
+            out_dict.setdefault("metrics", {})
+            out_dict["metrics"]["mean_latency_ms"] = round(float(mean_latency), 2)
+
         if output_path is None:
             output_path = self.course_path / "eval" / "eval_report.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(
-            json.dumps(report.to_dict(), indent=2, sort_keys=True),
+            json.dumps(out_dict, indent=2, sort_keys=True),
             encoding="utf-8",
         )
         return output_path
