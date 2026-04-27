@@ -116,6 +116,45 @@ def test_enum_covers_known_trainforge_values():
 
 
 @pytest.mark.unit
+def test_enum_covers_wave89_slm_training_values():
+    """Wave 89 (slm-training) adds five decision_type values for the
+    upcoming Wave 90 trainforge-training pipeline. Pre-staging them in
+    the canonical enum unblocks Wave 90's runner from running afoul
+    of DECISION_VALIDATION_STRICT=true on first emit.
+    """
+    allowed = _load_enum()
+    required = {
+        "base_model_selection",
+        "eval_run_decision",
+        "hyperparameter_selection",
+        "model_promotion_decision",
+        "training_run_planning",
+    }
+    missing = sorted(required - allowed)
+    assert not missing, (
+        f"decision_event.schema.json is missing Wave 89 SLM-training enum "
+        f"values: {missing}. Add to properties.decision_type.enum "
+        f"(alphabetised)."
+    )
+
+
+@pytest.mark.unit
+def test_phase_enum_covers_wave89_trainforge_training():
+    """Wave 89 also adds a new phase value: ``trainforge-training``.
+    Without this, the Wave 90 runner's DecisionCapture will fail-close
+    under DECISION_VALIDATION_STRICT=true when it tries to log a
+    decision under that phase.
+    """
+    with open(SCHEMA_PATH, encoding="utf-8") as f:
+        schema = json.load(f)
+    phase_enum = {v for v in schema["properties"]["phase"]["enum"] if isinstance(v, str)}
+    assert "trainforge-training" in phase_enum, (
+        "decision_event.schema.json phase enum is missing 'trainforge-training' "
+        "(Wave 89 SLM-training pipeline phase value)."
+    )
+
+
+@pytest.mark.unit
 def test_enum_is_alphabetised_and_unique():
     """Enum values must be alphabetised and unique (maintenance guard)."""
     with open(SCHEMA_PATH, encoding="utf-8") as f:
