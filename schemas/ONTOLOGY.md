@@ -261,6 +261,8 @@ Each describes an inline HTML component produced by Courseforge (accordions for 
                "evidence":{"container":"constructivism","member":"scaffolding"}}}
 ```
 
+See § JSON-LD round-trip for the RDF projection of this shape (edges reify as `ed4all:TypedEdge` blank nodes that carry the `provenance` block).
+
 ### KeyTerm
 
 **Definition:** Appears in two surfaces:
@@ -923,6 +925,8 @@ Shape (trimmed):
 
 Consumer: `Trainforge/process_course.py::_extract_section_metadata` (priority chain documented in `Trainforge/CLAUDE.md` metadata-extraction section: JSON-LD > `data-cf-*` > regex heuristic).
 
+See § JSON-LD round-trip for the four `@context` files that wrap this and the other JSON artifacts as RDF (Phase 1.1–1.2 of the RDF/SHACL plan).
+
 ### 6.2 `data-cf-*` attribute vocabulary
 
 See the full table in § 4. Emit sites: `Courseforge/scripts/generate_course.py` (`_render_objectives`, `_render_flip_cards`, `_render_self_check`, `_render_activities`, `_render_content_sections`). Consumer: `Trainforge/parsers/html_content_parser.py` extracts these attributes during chunk alignment; `_CHROME_TAGS` skip filter (`html_content_parser.py:140`) drops `data-cf-role="template-chrome"` subtrees so navigation headers/footers don't pollute chunks.
@@ -1401,3 +1405,54 @@ Not landed in v0.2.0 (tracked for future waves):
 - Concept aliases / cross-course equivalence edges (would add a new edge sub-type and touch the Worker O scoped-ID path).
 - Flipping any opt-in flag default to "on" (waits on a regeneration cycle of legacy LibV2 corpora).
 - `SectionContentType` enforcement (companion to `TRAINFORGE_ENFORCE_CONTENT_TYPE` — Worker T addressed ChunkType only).
+
+---
+
+## JSON-LD round-trip
+
+Wave 1+2 of the RDF/SHACL enrichment plan (`plans/rdf-shacl-enrichment-2026-04-26.md`) added a JSON-LD `@context` to four of the canonical artifacts above so each round-trips losslessly to RDF without a JSON rewrite. This section documents the resulting surface for maintainers — the JSON shapes themselves are unchanged.
+
+### Context files and the artifacts they wrap
+
+- `schemas/context/concept_graph_semantic_v1.jsonld` — wraps `concept_graph_semantic.json` (nodes + reified `TypedEdge` blank nodes carrying per-rule provenance; see § 2 TypedEdge, § 5.2).
+- `schemas/context/chunk_v4_v1.jsonld` — wraps the `chunk_v4.schema.json` shape; reuses 14 concept-graph predicates verbatim and inline-flags 39 chunk-structural predicates as `_phase2_followup` for the next vocabulary extension.
+- `schemas/context/course_v1.jsonld` — wraps `course.json`; mints `ed4all:hasLearningObjective`, `ed4all:courseCode`, `ed4all:loSubtype`. LO IRIs minted at `https://ed4all.io/lo/<id>` via a course-scoped `@base` override.
+- `schemas/context/pedagogy_graph_v1.jsonld` — wraps `pedagogy_graph.json`; concept references resolve into the same IRI universe as the concept-graph context (see "cross-artifact join" below).
+
+### The two namespaces (Phase 2.5)
+
+The contexts split predicates across two namespaces by deliberate policy:
+
+- `ed4all:` → `https://ed4all.io/vocab/`. Document-shape predicates (`hasNode`, `hasEdge`, `edgeType`, `edgeSource`, `edgeTarget`) and most domain predicates (`hasPrerequisite`, `isMisconceptionOf`, `assessesObjective`, …).
+- `cf:` → `https://ed4all.dev/ns/courseforge/v1#`. Typed classes (`cf:Concept`, `cf:LearningObjective`, `cf:Misconception`, `cf:Chunk`) and the Wave 57+ vocabulary that already lived in `schemas/context/courseforge_v1.vocabulary.ttl`.
+
+Cross-namespace bridges are declared in `schemas/context/aliases.ttl` via `owl:equivalentProperty` / `owl:equivalentClass` rather than `owl:sameAs` (Q11 corpus guidance: never collapse vocabulary identity onto individual identity). `lib/ontology/aliases.py` walks the equivalence closure at load time.
+
+### Reified-edge pattern (canonical for per-edge provenance)
+
+Edges in `concept_graph_semantic_v1.jsonld` materialize as typed `ed4all:TypedEdge` blank nodes carrying `(rule, rule_version, evidence, run_id, created_at)` rather than collapsing to bare `<source> <type> <target>` triples. This preserves per-edge metadata as a reachable subgraph that SPARQL can join against. **Convention:** any new artifact that needs per-edge metadata should follow the same reified-blank-node pattern (Q46 corpus guidance). The pedagogy_graph context applies it consistently.
+
+### Cross-artifact join
+
+All four contexts share `@base: https://ed4all.io/concept/`, so `concept:foo` (pedagogy_graph) and the bare `foo` slug (concept_graph) both expand to the same IRI `https://ed4all.io/concept/foo`. Wave 2 evidence: 672/672 pedagogy concept IRIs join cleanly to the 1,100-IRI concept_graph universe on the `rdf-shacl-551-2` fixture. This is what makes pedagogy ↔ concept_graph SPARQL queries trivial — no ID translation layer is needed.
+
+### Round-trip tests
+
+Four regression suites under `Trainforge/tests/` enforce triple-count parity through pyld expand → rdflib parse → Turtle serialize → re-parse:
+
+- `test_concept_graph_jsonld_roundtrip.py` (4 tests) — node + edge + reified-provenance triple-count delta = 0.
+- `test_chunk_v4_jsonld_roundtrip.py` (4 tests) — chunk shape including the typed `ed4all:SourceReference` sub-shape.
+- `test_course_jsonld_roundtrip.py` (6 tests) — course + LO IRI minting under the scoped `@base`.
+- `test_pedagogy_graph_jsonld_roundtrip.py` (5 tests, incl. cross-artifact concept IRI join).
+
+### Authoring a new context
+
+- Consult `lib/ontology/edge_predicates.py::SLUG_TO_IRI` for canonical slug ↔ IRI mappings before minting anything.
+- Reuse predicates from prior contexts where the semantics match; the chunk context reuses 14 predicates from concept_graph verbatim.
+- Inline-flag genuinely new predicates with an `_phase2_followup` marker so the next vocabulary-extension wave knows what to mint formally.
+- Keep document-shape predicates in `ed4all:`; mint typed classes and edge predicates with `rdfs:domain` / `rdfs:range` in `cf:` (the namespace policy above).
+- Land a round-trip test alongside the context: load a real fixture, parse via pyld + rdflib, serialize to Turtle, re-parse, and assert triple-count delta = 0.
+
+### rdflib runtime dependency
+
+`rdflib>=7.0.0,<8.0.0` is declared in `[project.dependencies]` in `pyproject.toml` (not just under the `pyshacl` dev-extra) because `lib/ontology/aliases.py` imports it at runtime to walk the equivalence closure during `concept_classifier.canonicalize_alias` calls.

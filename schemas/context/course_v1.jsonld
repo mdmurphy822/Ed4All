@@ -1,0 +1,51 @@
+{
+  "_description": "Course JSON-LD @context v1 — Phase 1.2 of plans/rdf-shacl-enrichment-2026-04-26.md. Layered on top of course.json (schemas/knowledge/course.schema.json) so the existing JSON round-trips as RDF triples without rewriting the data. The Trainforge course.json emit pipeline does NOT yet inject this context — Phase 1 is consumer-side only (tests, on-demand Turtle exports). This per-artifact context composes with concept_graph_semantic_v1.jsonld: the LO IRIs minted here (https://ed4all.io/lo/<id>) are the same identifiers that ed4all:targetsConcept, ed4all:assessesObjective, ed4all:isDerivedFromObjective, and ed4all:hierarchyLevel point at from the concept-graph side, so a TriG dataset that loads both contexts joins LOs across the two graphs without alias gymnastics. Four design decisions worth flagging: (1) Canonical ed4all: namespace URI is https://ed4all.io/vocab/ to match Worker A's concept_graph_semantic context. The Wave 65 vocabulary.ttl uses a parallel https://ed4all.dev/ns/courseforge/v1# namespace under a different host; this is a known divergence carried forward from the Wave 62/65 emit pipeline. The Phase 2.1 vocabulary.ttl declares ed4all:LearningObjective, ed4all:bloomLevel, ed4all:bloomVerb, ed4all:hierarchyLevel, ed4all:cognitiveDomain — and Worker A's concept-graph context references them under https://ed4all.io/vocab/ — so this file follows Worker A. Cross-host equivalence (owl:sameAs / owl:equivalentClass) between the two ed4all: namespaces is a deferred Phase 2.5 alignment concern, not Phase 1.2. (2) Each learning_outcome[] member's `id` field expands to a global IRI via @base = https://ed4all.io/lo/. Lowercase IDs (`to-01`, `co-01`) are already URL-safe and re-run-stable per course.schema.json::pattern (^[a-zA-Z]{2,}-\\d{2,}$), so the @id is deterministic across regenerations. Cross-course collisions are out of scope here: a course.json document only carries one course's LOs by design (course_code is the document-level key). Cross-course graphs that scope LOs by course_code can override @base at load time. (3) `key_concepts[]` slugs expand to ed4all:Concept IRIs under https://ed4all.io/concept/ via the inner @vocab — same base Worker A's concept context uses for nodes[].id — so an LO's key_concepts list joins directly against the concept graph's hasConcept set. Datatype properties stay literal (bloom_level / bloom_verb on the wire); the SKOS bloom: scheme is registered under https://ed4all.io/vocab/bloom# so consumers that recognize SKOS get bloomLevel as a typed concept reference. (4) JSON-LD has no native way to default `@type` on each member of an array of plain objects. Consumers that want every LO typed as ed4all:LearningObjective MUST inject `\"@type\": \"LearningObjective\"` on each learning_outcomes[] item BEFORE expansion (the round-trip test does this explicitly). The class alias `LearningObjective: ed4all:LearningObjective` is registered here so the injected token resolves correctly without further plumbing. This sibling '_description' key lives outside the @context block so JSON-LD 1.1 processors don't parse it as a term definition.",
+  "@context": {
+    "@version": 1.1,
+    "@base": "https://ed4all.io/lo/",
+
+    "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+    "skos": "http://www.w3.org/2004/02/skos/core#",
+    "owl": "http://www.w3.org/2002/07/owl#",
+    "dcterms": "http://purl.org/dc/terms/",
+    "schema": "http://schema.org/",
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+    "ed4all": "https://ed4all.io/vocab/",
+
+    "Course": "ed4all:Course",
+    "LearningObjective": "ed4all:LearningObjective",
+    "Concept": "ed4all:Concept",
+
+    "course_code": { "@id": "ed4all:courseCode", "@type": "xsd:string" },
+    "title": { "@id": "dcterms:title", "@type": "xsd:string" },
+
+    "learning_outcomes": {
+      "@id": "ed4all:hasLearningObjective",
+      "@container": "@set",
+      "@context": {
+        "@base": "https://ed4all.io/lo/",
+        "id": "@id",
+        "statement": { "@id": "rdfs:label", "@type": "xsd:string" },
+        "hierarchy_level": {
+          "@id": "ed4all:hierarchyLevel",
+          "@type": "@vocab",
+          "@context": { "@vocab": "https://ed4all.io/vocab/hierarchy#" }
+        },
+        "bloom_level": {
+          "@id": "ed4all:bloomLevel",
+          "@type": "@vocab",
+          "@context": { "@vocab": "https://ed4all.io/vocab/bloom#" }
+        },
+        "bloom_verb": { "@id": "ed4all:bloomVerb", "@type": "xsd:string" },
+        "key_concepts": {
+          "@id": "ed4all:targetsConcept",
+          "@container": "@set",
+          "@type": "@vocab",
+          "@context": { "@vocab": "https://ed4all.io/concept/" }
+        },
+        "type": { "@id": "ed4all:loSubtype", "@type": "xsd:string" }
+      }
+    }
+  }
+}

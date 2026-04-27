@@ -1,0 +1,97 @@
+{
+  "_description": "Pedagogy Graph JSON-LD @context v1 — Phase 1.2 of plans/rdf-shacl-enrichment-2026-04-26.md. Layered on top of pedagogy_graph.json (emitted by Trainforge/pedagogy_graph_builder.py::build_pedagogy_graph) so the existing JSON round-trips as RDF triples without rewriting the data. The Trainforge emit pipeline does NOT inject this context — Phase 1 is consumer-side only (tests, on-demand Turtle exports). Five design decisions worth flagging: (1) Two ed4all: namespaces co-exist by intent. `ed4all:` (https://ed4all.io/vocab/) is the Phase 1.1 namespace shared with concept_graph_semantic_v1.jsonld for document-level shape (hasNode, hasEdge, hasProvenance) — keeps the two contexts congruent for cross-artifact merges. `cf:` (https://ed4all.dev/ns/courseforge/v1#) is the Phase 2.1 vocabulary namespace declared in schemas/context/courseforge_v1.vocabulary.ttl — used for typed-class IRIs (Concept, LearningObjective, Misconception) and for the four edge predicates that ARE registered in lib/ontology/edge_predicates.py::SLUG_TO_IRI. The two namespaces never collide on a local name. (2) The `concept:` prefix is declared as https://ed4all.io/concept/ so that `concept:rdf` (CURIE in a pedagogy_graph node ID) expands to the SAME IRI that concept_graph.json's bare `rdf` slug produces under concept_graph_semantic_v1.jsonld's `@base: https://ed4all.io/concept/`. This is the cross-artifact join key — without it, a SPARQL query joining concept_graph and pedagogy_graph on concept identity would fail. (3) Edge slugs route via @vocab to https://ed4all.io/vocab/edge-type# so every relation_type emits an ed4all:edgeType triple regardless of registry coverage. JSON-LD @context cannot dispatch on the VALUE of a key (only on the key name), so the slug-to-canonical-IRI mapping declared in lib/ontology/edge_predicates.py::SLUG_TO_IRI (`prerequisite`->cf:hasPrerequisite, `derived-from-objective`->cf:isDerivedFromObjective, `exemplifies`->cf:exemplifiedBy, `assesses`->cf:assessesObjective) is deferred to a Phase 2 vocabulary alignment (owl:equivalentProperty between ed4all:edge-type#prerequisite_of and cf:hasPrerequisite). This is the exact pattern Phase 1.1 used for the concept_graph context. Pedagogy-graph also has nine slugs NOT registered in SLUG_TO_IRI (`teaches`, `belongs_to_module`, `supports_outcome`, `at_bloom_level`, `follows`, `concept_supports_outcome`, `assessment_validates_outcome`, `chunk_at_difficulty`, `interferes_with`) — they materialize via @vocab as ed4all-edge-type:teaches etc., flagged in the Phase 1.2 report so the registry extension is a deliberate Phase 2 act, not a silent invention here. Note that the registry's `prerequisite` and `derived-from-objective` slugs use hyphens; pedagogy_graph emits underscored `prerequisite_of` and `derived_from_objective` — the convention-mismatch is documented in the report and a normalizer is the right Phase-2 fix. (4) ID prefixes: `concept:` https://ed4all.io/concept/, `bloom:` https://ed4all.dev/vocab/bloom# (matches vocabulary.ttl), `module:` https://ed4all.io/module/, `difficulty:` https://ed4all.dev/vocab/difficulty#. Bare-slug LO IDs (TO-01, CO-NN), chunk IDs (rdf_shacl_551_chunk_NNNNN), and misconception IDs (mc_<hash16>) resolve against the document `@base` https://ed4all.io/pedagogy/ so they materialize as URI references rather than blank nodes. (5) Each edge becomes a blank node typed as ed4all:TypedEdge (mirroring the concept_graph_semantic shape) with source/target as @id references, the relation_type slug exposed via ed4all:edgeType, and a `confidence` literal where present. Order-preserving fields (learning_outcome_refs, nodes, edges) use @container: @list / @set as appropriate. This sibling '_description' key lives outside the @context block so JSON-LD 1.1 processors don't parse it as a term definition.",
+  "@context": {
+    "@version": 1.1,
+    "@base": "https://ed4all.io/pedagogy/",
+
+    "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+    "skos": "http://www.w3.org/2004/02/skos/core#",
+    "owl": "http://www.w3.org/2002/07/owl#",
+    "dcterms": "http://purl.org/dc/terms/",
+    "prov": "http://www.w3.org/ns/prov#",
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+    "schema": "http://schema.org/",
+
+    "ed4all": "https://ed4all.io/vocab/",
+    "cf": "https://ed4all.dev/ns/courseforge/v1#",
+
+    "concept": "https://ed4all.io/concept/",
+    "bloom": "https://ed4all.dev/vocab/bloom#",
+    "module": "https://ed4all.io/module/",
+    "difficulty": "https://ed4all.dev/vocab/difficulty#",
+
+    "PedagogyGraph": "ed4all:PedagogyGraph",
+    "TypedEdge": "ed4all:TypedEdge",
+
+    "Concept": "cf:Concept",
+    "LearningObjective": "cf:LearningObjective",
+    "Misconception": "cf:Misconception",
+    "Outcome": "cf:LearningObjective",
+    "ComponentObjective": "cf:LearningObjective",
+    "Chunk": "cf:Chunk",
+    "Module": "ed4all:Module",
+    "BloomLevel": "ed4all:BloomLevel",
+    "DifficultyLevel": "ed4all:DifficultyLevel",
+
+    "id": "@id",
+    "kind": {
+      "@id": "rdf:type",
+      "@type": "@vocab",
+      "@context": { "@vocab": "https://ed4all.io/vocab/" }
+    },
+    "schema_version": { "@id": "ed4all:schemaVersion", "@type": "xsd:string" },
+    "course_id": { "@id": "ed4all:courseId", "@type": "xsd:string" },
+    "generated_at": { "@id": "dcterms:issued", "@type": "xsd:dateTime" },
+
+    "nodes": { "@id": "ed4all:hasNode", "@container": "@set" },
+    "edges": { "@id": "ed4all:hasEdge", "@container": "@set" },
+
+    "class": {
+      "@id": "rdf:type",
+      "@type": "@vocab"
+    },
+    "label": { "@id": "rdfs:label", "@type": "xsd:string" },
+    "statement": { "@id": "skos:definition", "@type": "xsd:string" },
+    "slug": { "@id": "ed4all:slug", "@type": "xsd:string" },
+    "level": {
+      "@id": "skos:notation",
+      "@type": "xsd:string"
+    },
+    "bloom_level": {
+      "@id": "cf:bloomLevel",
+      "@type": "@vocab",
+      "@context": { "@vocab": "https://ed4all.dev/vocab/bloom#" }
+    },
+    "parent_terminal": {
+      "@id": "cf:parentObjective",
+      "@type": "@id"
+    },
+    "week": { "@id": "ed4all:week", "@type": "xsd:integer" },
+    "first_seen_week": { "@id": "ed4all:firstSeenWeek", "@type": "xsd:integer" },
+    "module_id": { "@id": "ed4all:moduleId", "@type": "xsd:string" },
+    "order": { "@id": "ed4all:order", "@type": "xsd:integer" },
+    "chunk_type": { "@id": "ed4all:chunkType", "@type": "xsd:string" },
+    "learning_outcome_refs": {
+      "@id": "ed4all:learningOutcomeRef",
+      "@type": "xsd:string",
+      "@container": "@set"
+    },
+
+    "source": { "@id": "ed4all:edgeSource", "@type": "@id" },
+    "target": { "@id": "ed4all:edgeTarget", "@type": "@id" },
+    "relation_type": {
+      "@id": "ed4all:edgeType",
+      "@type": "@vocab",
+      "@context": { "@vocab": "https://ed4all.io/vocab/edge-type#" }
+    },
+    "confidence": { "@id": "ed4all:confidence", "@type": "xsd:decimal" },
+    "weight": { "@id": "ed4all:weight", "@type": "xsd:decimal" },
+
+    "stats": "ed4all:stats",
+    "node_count": { "@id": "ed4all:nodeCount", "@type": "xsd:integer" },
+    "edge_count": { "@id": "ed4all:edgeCount", "@type": "xsd:integer" },
+    "nodes_by_class": { "@id": "ed4all:nodesByClass", "@container": "@index" },
+    "edges_by_relation": { "@id": "ed4all:edgesByRelation", "@container": "@index" }
+  }
+}

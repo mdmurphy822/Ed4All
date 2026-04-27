@@ -87,6 +87,27 @@ ed4all:Misconception
   rdfs:comment "A documented learner error paired with its correction. Wave 60 adds optional Bloom level + cognitive domain." ;
   rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
 
+ed4all:Concept
+  a rdfs:Class, owl:Class ;
+  rdfs:label "Concept" ;
+  rdfs:comment "Phase 2.1 (RDF/SHACL enrichment): a node in the Trainforge concept graph — a slugified noun-phrase derived from chunk co-occurrence + key terms. Subclass of skos:Concept so SKOS tooling (broader/narrower, prefLabel) works without learning ed4all:. Identity is the slug under flat IDs, or '{course_id}:{slug}' under TRAINFORGE_SCOPE_CONCEPT_IDS=true." ;
+  rdfs:subClassOf skos:Concept ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:Chunk
+  a rdfs:Class, owl:Class ;
+  rdfs:label "Content Chunk" ;
+  rdfs:comment "Phase 2.1: a Trainforge content chunk (canonical shape: schemas/knowledge/chunk_v4.schema.json) — the indexed unit of retrieval, anchored to a section heading, optional Bloom level, key terms, and source references. Range of ed4all:isDefinedBy and ed4all:exemplifiedBy." ;
+  rdfs:subClassOf schema:CreativeWork ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:AssessmentQuestion
+  a rdfs:Class, owl:Class ;
+  rdfs:label "Assessment Question" ;
+  rdfs:comment "Phase 2.1: a Trainforge-generated or IMSCC-extracted assessment question (MCQ, short-answer, essay, etc.) carrying objective_id + bloom_level + distractors. Domain of ed4all:assessesObjective." ;
+  rdfs:subClassOf schema:Question ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
 ed4all:TargetedConcept
   a rdfs:Class, owl:Class ;
   rdfs:label "Targeted Concept" ;
@@ -97,6 +118,41 @@ ed4all:BloomDistribution
   a rdfs:Class, owl:Class ;
   rdfs:label "Bloom Distribution" ;
   rdfs:comment "Wave 61: per-page aggregate counts of learning objectives by Bloom's level and cognitive domain." ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+# ---------------------------------------------------------------------------
+# Phase 2.6 (RDF/SHACL enrichment): pedagogy-graph anchor classes
+# ---------------------------------------------------------------------------
+#
+# The pedagogy-graph emit (Trainforge/pedagogy_graph_builder.py) introduces
+# three node classes that the Phase 2.1 vocabulary did not yet declare:
+# Module (top-level week slice grouping a set of Chunks), BloomLevel
+# (typed-node form of the SKOS Bloom concept — used as the range of the
+# pedagogy ``at_bloom_level`` edge so the range is a class, not a literal),
+# and DifficultyLevel (the foundational/intermediate/advanced enum carried
+# on each chunk). Declared here so Phase 2.6's nine new pedagogy edge
+# predicates can point ``rdfs:domain`` / ``rdfs:range`` at well-typed
+# anchor classes rather than blank-typed resources.
+
+ed4all:Module
+  a rdfs:Class, owl:Class ;
+  rdfs:label "Module" ;
+  rdfs:comment "Phase 2.6: a top-level week slice in a Trainforge pedagogy graph (e.g., ``module:week_01``). Groups a set of Chunks via ``cf:belongsToModule`` and chains to the next module via ``cf:follows``. Distinct from cf:CourseModule (a single Courseforge HTML page); a Module owns one or more CourseModules." ;
+  rdfs:subClassOf schema:CreativeWork ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:BloomLevel
+  a rdfs:Class, owl:Class ;
+  rdfs:label "Bloom Level" ;
+  rdfs:comment "Phase 2.6: typed-node form of a Bloom's cognitive-process level (Remember / Understand / Apply / Analyze / Evaluate / Create). Instances live in the ``https://ed4all.dev/vocab/bloom#`` SKOS scheme declared at the bottom of this file; the class node is what serves as ``rdfs:range`` for the pedagogy ``cf:atBloomLevel`` edge so the range is a class IRI, not skos:Concept directly. Subclass of skos:Concept so SKOS reasoners traverse the scheme without learning ed4all:." ;
+  rdfs:subClassOf skos:Concept ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:DifficultyLevel
+  a rdfs:Class, owl:Class ;
+  rdfs:label "Difficulty Level" ;
+  rdfs:comment "Phase 2.6: typed-node form of the chunk-level cognitive-load enum (foundational / intermediate / advanced). Instances live under ``https://ed4all.dev/vocab/difficulty#`` (referenced by Trainforge/pedagogy_graph_builder.py::DIFFICULTY_LEVELS). Range of the pedagogy ``cf:chunkAtDifficulty`` edge." ;
+  rdfs:subClassOf skos:Concept ;
   rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
 
 # ---------------------------------------------------------------------------
@@ -222,6 +278,182 @@ ed4all:bloomRange
   rdfs:label "Bloom range" ;
   rdfs:comment "Section-level span of Bloom levels. Values are SKOS concepts in the bloom scheme." ;
   rdfs:range skos:Concept ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+# ---------------------------------------------------------------------------
+# Phase 2.1 (RDF/SHACL enrichment): Concept-graph edge predicates
+# ---------------------------------------------------------------------------
+#
+# The Trainforge concept-graph emit (Trainforge/rag/typed_edge_inference.py)
+# carries 9 edge types as opaque slugs in the JSON-LD. Phase 2 of
+# plans/rdf-shacl-enrichment-2026-04-26.md aligns each slug to a specific
+# RDF predicate so consumers get real semantics rather than free-text
+# strings. The slug-to-IRI registry lives at lib/ontology/edge_predicates.py.
+#
+# Two slugs reuse pre-existing W3C predicates rather than mint new ones:
+#
+#   * `is-a`       → rdfs:subClassOf  (genuine class subsumption — the
+#                    parent term is a category the child belongs to;
+#                    inheritance entailment falls out of RDFS reasoning)
+#   * `related-to` → skos:related     (symmetric associative tie between
+#                    SKOS concepts; the lowest-precedence typed edge in
+#                    Trainforge — dropped when is-a or prerequisite covers
+#                    the same pair)
+#
+# The remaining 7 slugs mint new ed4all: predicates; each is paired with
+# rdfs:domain / rdfs:range pointing at the ed4all: classes declared above.
+
+ed4all:hasPrerequisite
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "has prerequisite" ;
+  rdfs:comment "Slug 'prerequisite' (Trainforge/rag/inference_rules/prerequisite_from_lo_order.py): heuristic edge derived from learning-outcome order. If concept A first appears in a chunk tagged to an earlier LO than concept B, then B depends on A — emitted as B hasPrerequisite A. Direction: subject depends on object." ;
+  rdfs:domain ed4all:Concept ;
+  rdfs:range ed4all:Concept ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:isDefinedBy
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "is defined by" ;
+  rdfs:comment "Slug 'defined-by' (Trainforge/rag/inference_rules/defined_by_from_first_mention.py): materializes the canonical first-mention chunk of a concept as a typed edge. Source is occurrences[0] (first chunk by sorted-ID order). Confidence 0.7 — first-mention-by-ID-sort is a stable proxy for the pedagogical first-definition until a dedicated detector lands." ;
+  rdfs:domain ed4all:Concept ;
+  rdfs:range ed4all:Chunk ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:isDerivedFromObjective
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "is derived from objective" ;
+  rdfs:comment "Slug 'derived-from-objective' (Trainforge/rag/inference_rules/derived_from_lo_ref.py): materializes the chunk-to-LO reference already present on chunks via learning_outcome_refs. Confidence 1.0 — the reference is explicit, not inferred." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range ed4all:LearningObjective ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:exemplifiedBy
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "exemplified by" ;
+  rdfs:comment "Slug 'exemplifies' (Trainforge/rag/inference_rules/exemplifies_from_example_chunks.py): each chunk flagged by chunk_type=='example' or content_type_label=='example' emits one edge per concept_tags entry that resolves in the concept graph. Direction: chunk exemplifies concept (chunk → concept). Confidence 0.8." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range ed4all:Concept ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:isMisconceptionOf
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "is misconception of" ;
+  rdfs:comment "Slug 'misconception-of' (Trainforge/rag/inference_rules/misconception_of_from_misconception_ref.py): materializes the explicit misconception->concept_id pointer from the first-class Misconception entity (schemas/knowledge/misconception.schema.json). Confidence 1.0 — the reference is explicit." ;
+  rdfs:domain ed4all:Misconception ;
+  rdfs:range ed4all:Concept ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:assessesObjective
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "assesses objective" ;
+  rdfs:comment "Slug 'assesses' (Trainforge/rag/inference_rules/assesses_from_question_lo.py): materializes the explicit Question.objective_id pointer as an edge from question to LO. Confidence 1.0 — the reference is explicit, not inferred." ;
+  rdfs:domain ed4all:AssessmentQuestion ;
+  rdfs:range ed4all:LearningObjective ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+# Note: ed4all:targetsConcept (slug 'targets-concept') is already declared
+# above under "Object properties" — Wave 57 wired it as a Bloom-qualified
+# reified edge with range ed4all:TargetedConcept. Phase 2.1 does NOT
+# redeclare or override that predicate; the slug-to-IRI registry maps
+# 'targets-concept' to the existing ed4all:targetsConcept IRI. The
+# Trainforge rule (targets_concept_from_lo) emits the LO->concept tie via
+# the reified TargetedConcept node so the Bloom level is carried as a
+# property on the qualifier node.
+
+# ---------------------------------------------------------------------------
+# Phase 2.6 (RDF/SHACL enrichment): pedagogy-graph edge predicates
+# ---------------------------------------------------------------------------
+#
+# The Trainforge pedagogy-graph emit (Trainforge/pedagogy_graph_builder.py
+# ::build_pedagogy_graph) carries 13 distinct ``relation_type`` slugs;
+# Phase 2.1 minted four (``assesses``, ``exemplifies``,
+# ``derived-from-objective`` via ``derived_from_objective``,
+# ``misconception-of`` via the concept_graph_semantic mirror). The nine
+# below close the gap so every pedagogy slug resolves through
+# lib/ontology/edge_predicates.py::SLUG_TO_IRI to a typed predicate with
+# real rdfs:domain / rdfs:range, instead of round-tripping via JSON-LD's
+# ``@vocab`` fallback at edge-type#<slug>.
+#
+# Domain/range targets were verified against the rdf-shacl-551-2 fixture
+# (see plans/rdf-shacl-enrichment-2026-04-26.md § Phase 2.6). The
+# pedagogy JSON-LD context maps both Outcome (TO-NN) and ComponentObjective
+# (CO-NN) onto cf:LearningObjective, so predicates that point at either
+# subtype declare rdfs:range cf:LearningObjective.
+
+ed4all:teaches
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "teaches" ;
+  rdfs:comment "Phase 2.6 — slug 'teaches' (Trainforge/pedagogy_graph_builder.py): emitted for every non-assessment chunk pointing at a learning_outcome_ref that resolves to a known Outcome / ComponentObjective. Contrast cf:isDerivedFromObjective (provenance) and cf:assessesObjective (assessment): teaches captures the pedagogical intent that the chunk's content body covers the LO." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range ed4all:LearningObjective ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:belongsToModule
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "belongs to module" ;
+  rdfs:comment "Phase 2.6 — slug 'belongs_to_module' (Trainforge/pedagogy_graph_builder.py): emitted for every chunk whose source.module_id resolves to a top-level week slice (Module). Declared rdfs:subPropertyOf dcterms:isPartOf so DCTerms tooling can traverse chunk -> module containment without learning the ed4all: namespace." ;
+  rdfs:subPropertyOf dcterms:isPartOf ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range ed4all:Module ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:supportsOutcome
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "supports outcome" ;
+  rdfs:comment "Phase 2.6 — slug 'supports_outcome' (Trainforge/pedagogy_graph_builder.py): emitted for every ComponentObjective (CO-NN) whose parent_terminal points at a known Outcome (TO-NN). Direction: subject (CO) supports object (TO). Semantically overlaps with cf:parentObjective (the Wave 57 isPartOf-style CO->TO edge); the rdfs:subPropertyOf dcterms:isPartOf declaration here keeps the entailment story consistent without coupling the two predicates' identity (separate naming preserves emit-side trace from each artifact)." ;
+  rdfs:subPropertyOf dcterms:isPartOf ;
+  rdfs:domain ed4all:LearningObjective ;
+  rdfs:range ed4all:LearningObjective ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:atBloomLevel
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "at Bloom level" ;
+  rdfs:comment "Phase 2.6 — slug 'at_bloom_level' (Trainforge/pedagogy_graph_builder.py): emitted for every Outcome / ComponentObjective whose ``bloom_level`` attribute resolves to one of the six canonical Bloom levels. Declared rdfs:subPropertyOf cf:bloomLevel (the existing Wave 60 LO/Question/Misconception attribute predicate) — pedagogy at_bloom_level IS a more specific assertion of cf:bloomLevel pinned to the LO/BloomLevel domain pair." ;
+  rdfs:subPropertyOf ed4all:bloomLevel ;
+  rdfs:domain ed4all:LearningObjective ;
+  rdfs:range ed4all:BloomLevel ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:follows
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "follows" ;
+  rdfs:comment "Phase 2.6 — slug 'follows' (Trainforge/pedagogy_graph_builder.py): emitted between adjacent Modules in display order (zip(modules, modules[1:])) so traversals can walk the course week-by-week. Direction: subject follows object iff subject is the NEXT module after object; symmetric inverse would be 'precedes'. Intentionally NOT declared rdfs:subPropertyOf skos:related (which would entail symmetric reasoning) — sequencing is inherently directional. Not declared transitive either: week_01 follows week_02 follows week_03 should NOT entail week_01 follows week_03 (only adjacent links are emitted by design)." ;
+  rdfs:domain ed4all:Module ;
+  rdfs:range ed4all:Module ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:conceptSupportsOutcome
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "concept supports outcome" ;
+  rdfs:comment "Phase 2.6 — slug 'concept_supports_outcome' (Trainforge/pedagogy_graph_builder.py § 9b): a derived rollup edge. Emitted iff at least one chunk contains the concept as a tag AND that chunk's learning_outcome_refs (rolled up CO -> parent_TO) include the outcome. Carries a confidence weight = count of supporting chunks. Distinct from cf:assessesObjective (a Concept here is not an assessment) and from cf:isDerivedFromObjective (whose subject is a Chunk, not a Concept)." ;
+  rdfs:domain ed4all:Concept ;
+  rdfs:range ed4all:LearningObjective ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:assessmentValidatesOutcome
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "assessment validates outcome" ;
+  rdfs:comment "Phase 2.6 — slug 'assessment_validates_outcome' (Trainforge/pedagogy_graph_builder.py): emitted for every chunk_type='assessment_item' chunk that references a CO-NN whose parent_terminal is a known TO-NN. Emits at the rolled-up Outcome (TO) level. DELIBERATELY DISTINCT from cf:assessesObjective: assessesObjective targets the chunk's direct LO ref (CO or TO); assessmentValidatesOutcome targets only the parent-terminal Outcome via rollup. The two are NOT declared rdfs:subPropertyOf one another because cf:assessesObjective has rdfs:domain cf:AssessmentQuestion (Phase 2.1's concept-graph subject) while this predicate has rdfs:domain cf:Chunk (pedagogy's assessment_item chunk subject); a subPropertyOf bridge would force domain unification across two emit paths that the schemas keep separate by design." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range ed4all:LearningObjective ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:chunkAtDifficulty
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "chunk at difficulty" ;
+  rdfs:comment "Phase 2.6 — slug 'chunk_at_difficulty' (Trainforge/pedagogy_graph_builder.py): emitted for every chunk whose ``difficulty`` attribute is one of the canonical levels (foundational / intermediate / advanced). Range is the typed DifficultyLevel node (instances at https://ed4all.dev/vocab/difficulty#)." ;
+  rdfs:domain ed4all:Chunk ;
+  rdfs:range ed4all:DifficultyLevel ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:interferesWith
+  a rdf:Property, owl:ObjectProperty ;
+  rdfs:label "interferes with" ;
+  rdfs:comment "Phase 2.6 — slug 'interferes_with' (Trainforge/pedagogy_graph_builder.py): emitted for every Misconception node pointing at the concept_tags of the chunk it was extracted from (filtered to DomainConcept-classified targets, Wave 76). Direction: misconception INTERFERES WITH the concept the learner is supposed to acquire. Declared rdfs:subPropertyOf cf:isMisconceptionOf (the Phase 2.1 concept-graph predicate with the same Misconception->Concept domain/range pair) — interferes_with IS a more specific pedagogy-side assertion of the same misconception->concept pointer that misconception-of materialises in the concept graph." ;
+  rdfs:subPropertyOf ed4all:isMisconceptionOf ;
+  rdfs:domain ed4all:Misconception ;
+  rdfs:range ed4all:Concept ;
   rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
 
 # ---------------------------------------------------------------------------

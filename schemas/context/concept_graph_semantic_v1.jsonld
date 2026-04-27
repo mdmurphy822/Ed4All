@@ -1,0 +1,136 @@
+{
+  "_description": "Concept Graph Semantic JSON-LD @context v1 — Phase 1.1 of plans/rdf-shacl-enrichment-2026-04-26.md. Layered on top of concept_graph_semantic.json (schemas/knowledge/concept_graph_semantic.schema.json) so the existing JSON round-trips as RDF triples without rewriting the data. The Trainforge concept-graph emit pipeline does NOT yet inject this context — Phase 1 is consumer-side only (tests, on-demand Turtle exports). Canonical namespace URI: https://ed4all.io/vocab/. Three design decisions worth flagging: (1) Edge slugs round-trip via @vocab — `\"type\": \"is-a\"` expands to `ed4all:isA`, NOT to `rdfs:subClassOf` directly, because JSON-LD context cannot route one literal value to per-value predicates. The vocabulary alignment (Phase 2.1: `ed4all:isA owl:equivalentProperty rdfs:subClassOf`) is the right place for that mapping. Each edge_type term IS aliased to its W3C predicate where one exists (rdfs:subClassOf for isA, skos:related for relatedTo) so a JSON-LD processor that recognizes those terms emits the canonical predicate; the ed4all: terms remain as the projection target for `type`. (2) Each edge becomes a blank node typed as `ed4all:TypedEdge`, with source/target as `@id` references and the `type` slug exposed via `ed4all:edgeType`. This keeps per-edge provenance reachable (rule, rule_version, evidence, run_id, created_at) by preserving the edge as a first-class node rather than collapsing it to a single triple. Phase 3 (named-graph provenance) will move the per-rule metadata into named-graph IRIs; until then, the blank-node-edge shape is the simplest fidelity-preserving projection. (3) Lists where document order matters use @container: @list (occurrences[], source_refs[], rule_versions ordered map alike); unordered sets use @container: @set. `nodes[].id` and edge `source`/`target` get `@id` so they materialize as IRIs (relative to the document base; tests + Turtle exports inject https://ed4all.io/concept/). This sibling '_description' key lives outside the @context block so JSON-LD 1.1 processors don't parse it as a term definition.",
+  "@context": {
+    "@version": 1.1,
+    "@base": "https://ed4all.io/concept/",
+
+    "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+    "skos": "http://www.w3.org/2004/02/skos/core#",
+    "owl": "http://www.w3.org/2002/07/owl#",
+    "dcterms": "http://purl.org/dc/terms/",
+    "prov": "http://www.w3.org/ns/prov#",
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+    "ed4all": "https://ed4all.io/vocab/",
+
+    "ConceptGraph": "ed4all:ConceptGraph",
+    "Concept": "ed4all:Concept",
+    "DomainConcept": "ed4all:DomainConcept",
+    "TypedEdge": "ed4all:TypedEdge",
+
+    "id": "@id",
+    "kind": {
+      "@id": "rdf:type",
+      "@type": "@vocab",
+      "@context": { "@vocab": "https://ed4all.io/vocab/" }
+    },
+    "generated_at": { "@id": "dcterms:issued", "@type": "xsd:dateTime" },
+    "rule_versions": { "@id": "ed4all:ruleVersion", "@container": "@index" },
+
+    "nodes": { "@id": "ed4all:hasConcept", "@container": "@set" },
+    "edges": { "@id": "ed4all:hasEdge", "@container": "@set" },
+
+    "label": { "@id": "rdfs:label", "@type": "xsd:string" },
+    "frequency": { "@id": "ed4all:frequency", "@type": "xsd:integer" },
+    "class": {
+      "@id": "rdf:type",
+      "@type": "@vocab"
+    },
+    "course_id": { "@id": "ed4all:courseId", "@type": "xsd:string" },
+    "occurrences": {
+      "@id": "ed4all:occursInChunk",
+      "@type": "@id",
+      "@container": "@list"
+    },
+    "source_refs": { "@id": "ed4all:sourceReference", "@container": "@set" },
+
+    "source": { "@id": "ed4all:edgeSource", "@type": "@id" },
+    "target": { "@id": "ed4all:edgeTarget", "@type": "@id" },
+    "type": {
+      "@id": "ed4all:edgeType",
+      "@type": "@vocab",
+      "@context": { "@vocab": "https://ed4all.io/vocab/edge-type#" }
+    },
+    "confidence": { "@id": "ed4all:confidence", "@type": "xsd:decimal" },
+    "weight": { "@id": "ed4all:weight", "@type": "xsd:decimal" },
+
+    "provenance": "ed4all:hasProvenance",
+    "rule": {
+      "@id": "ed4all:rule",
+      "@type": "@vocab",
+      "@context": { "@vocab": "https://ed4all.io/vocab/rule#" }
+    },
+    "rule_version": { "@id": "ed4all:ruleVersionApplied", "@type": "xsd:integer" },
+    "evidence": "ed4all:evidence",
+
+    "chunk_id": { "@id": "ed4all:chunkId", "@type": "xsd:string" },
+    "term": { "@id": "ed4all:term", "@type": "xsd:string" },
+    "definition_excerpt": { "@id": "ed4all:definitionExcerpt", "@type": "xsd:string" },
+    "pattern": { "@id": "ed4all:pattern", "@type": "xsd:string" },
+    "concept_slug": { "@id": "ed4all:conceptSlug", "@type": "xsd:string" },
+    "concept_id": { "@id": "ed4all:conceptId", "@type": "@id" },
+    "objective_id": { "@id": "ed4all:objectiveId", "@type": "xsd:string" },
+    "question_id": { "@id": "ed4all:questionId", "@type": "xsd:string" },
+    "source_chunk_id": { "@id": "ed4all:sourceChunkId", "@type": "xsd:string" },
+    "misconception_id": { "@id": "ed4all:misconceptionId", "@type": "xsd:string" },
+    "lo_id": { "@id": "ed4all:loId", "@type": "xsd:string" },
+    "bloom_level": {
+      "@id": "ed4all:bloomLevel",
+      "@type": "@vocab",
+      "@context": { "@vocab": "https://ed4all.io/vocab/bloom#" }
+    },
+    "content_type": {
+      "@id": "ed4all:evidenceContentType",
+      "@type": "@vocab",
+      "@context": { "@vocab": "https://ed4all.io/vocab/evidence-content-type#" }
+    },
+    "first_mention_position": { "@id": "ed4all:firstMentionPosition", "@type": "xsd:integer" },
+    "target_first_lo": { "@id": "ed4all:targetFirstLo", "@type": "xsd:string" },
+    "target_first_lo_position": { "@id": "ed4all:targetFirstLoPosition", "@type": "xsd:integer" },
+    "source_first_lo": { "@id": "ed4all:sourceFirstLo", "@type": "xsd:string" },
+    "source_first_lo_position": { "@id": "ed4all:sourceFirstLoPosition", "@type": "xsd:integer" },
+    "cooccurrence_weight": { "@id": "ed4all:cooccurrenceWeight", "@type": "xsd:integer" },
+    "threshold": { "@id": "ed4all:threshold", "@type": "xsd:integer" },
+    "source_references": { "@id": "ed4all:sourceReference", "@container": "@set" },
+
+    "run_id": { "@id": "prov:wasGeneratedBy", "@type": "@id" },
+    "created_at": { "@id": "dcterms:created", "@type": "xsd:dateTime" },
+
+    "isA": {
+      "@id": "ed4all:isA",
+      "@type": "@id"
+    },
+    "prerequisite": {
+      "@id": "ed4all:hasPrerequisite",
+      "@type": "@id"
+    },
+    "relatedTo": {
+      "@id": "skos:related",
+      "@type": "@id"
+    },
+    "assesses": {
+      "@id": "ed4all:assessesObjective",
+      "@type": "@id"
+    },
+    "exemplifies": {
+      "@id": "ed4all:exemplifiedBy",
+      "@type": "@id"
+    },
+    "misconceptionOf": {
+      "@id": "ed4all:isMisconceptionOf",
+      "@type": "@id"
+    },
+    "derivedFromObjective": {
+      "@id": "ed4all:isDerivedFromObjective",
+      "@type": "@id"
+    },
+    "definedBy": {
+      "@id": "ed4all:isDefinedBy",
+      "@type": "@id"
+    },
+    "targetsConcept": {
+      "@id": "ed4all:targetsConcept",
+      "@type": "@id"
+    }
+  }
+}
