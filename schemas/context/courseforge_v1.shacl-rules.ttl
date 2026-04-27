@@ -1,0 +1,89 @@
+# Courseforge SHACL Rules v1 — Phase 5 (RDF/SHACL enrichment)
+#
+# This file hosts SHACL-AF *rules* (sh:TripleRule, sh:SPARQLRule) that
+# DERIVE typed-edge triples for the Trainforge concept graph. It is
+# intentionally separate from courseforge_v1.shacl.ttl (which holds
+# validation-only Core constraints) so that rule firing and constraint
+# checking can be reasoned about independently:
+#
+#   * courseforge_v1.shacl.ttl       — validation only (no sh:rule)
+#   * courseforge_v1.shacl-rules.ttl — derivation only (sh:rule on every shape)
+#
+# The rules are gated at runtime by the TRAINFORGE_USE_SHACL_RULES env
+# var (see Trainforge/rag/shacl_rule_runner.py). Default off — the
+# Python rules under Trainforge/rag/inference_rules/ remain canonical
+# until equivalence is proven across the corpus.
+#
+# Predicate identity reuses the Phase 2.1 vocabulary
+# (schemas/context/courseforge_v1.vocabulary.ttl) — no parallel
+# predicates are minted.
+
+@prefix rdf:    <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:   <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix sh:     <http://www.w3.org/ns/shacl#> .
+@prefix xsd:    <http://www.w3.org/2001/XMLSchema#> .
+@prefix ed4all: <https://ed4all.dev/ns/courseforge/v1#> .
+
+# ---------------------------------------------------------------------------
+# Phase 5.1 — `defined-by` derivation (proof-of-concept)
+# ---------------------------------------------------------------------------
+#
+# Python rule of record:
+#   Trainforge/rag/inference_rules/defined_by_from_first_mention.py
+#
+# Semantics: for every Concept node carrying one or more
+# ed4all:occurrence triples (the inverted-index back-references to
+# chunks that mention the concept), derive a single
+# ed4all:isDefinedBy triple pointing at the first occurrence by
+# ASC sort over the chunk-IRI lexicographic order. Concepts with
+# zero occurrences produce no edge.
+#
+# Why sh:SPARQLRule instead of sh:TripleRule:
+#
+#   sh:TripleRule's node expressions support paths, filters, and
+#   sub-shapes but no ORDER BY / LIMIT (corpus chunk_00181, cache
+#   query q_20260426_205717_834f3a35). First-occurrence-by-sort
+#   requires SPARQL row ordering and bounding, which only a
+#   CONSTRUCT/WHERE body can express.
+#
+# Equivalence with the Python rule is asserted by
+# Trainforge/tests/test_shacl_rules_defined_by.py.
+
+ed4all:DefinedByRule
+  a sh:NodeShape ;
+  rdfs:label "DefinedByRule" ;
+  rdfs:comment "Phase 5.1 SHACL-AF derivation rule: emits one ed4all:isDefinedBy edge per Concept whose ed4all:occurrence values are non-empty, picking the lex-min chunk IRI as the first-mention. Equivalent to Trainforge/rag/inference_rules/defined_by_from_first_mention.py under TRAINFORGE_USE_SHACL_RULES=true." ;
+  sh:targetClass ed4all:Concept ;
+  sh:rule [
+    a sh:SPARQLRule ;
+    rdfs:label "defined_by_from_first_mention" ;
+    sh:order 0 ;
+    sh:prefixes ed4all: ;
+    sh:construct """
+      PREFIX ed4all: <https://ed4all.dev/ns/courseforge/v1#>
+      CONSTRUCT { $this ed4all:isDefinedBy ?firstChunk . }
+      WHERE {
+        {
+          SELECT $this (MIN(?occ) AS ?firstChunk)
+          WHERE {
+            $this ed4all:occurrence ?occ .
+          }
+          GROUP BY $this
+        }
+      }
+    """ ;
+  ] .
+
+# Note on the SPARQL body:
+#
+# The SHACL-AF spec requires CONSTRUCT bodies to contain only the
+# CONSTRUCT/WHERE clauses (no top-level ORDER BY / LIMIT modifiers
+# on the outer query). To pick the lex-min ?occ deterministically,
+# we wrap the WHERE inner pattern in a sub-SELECT with `MIN(?occ)`
+# and `GROUP BY $this`. SPARQL's MIN over xsd:string-typed (or IRI-
+# typed) values is lex-order — byte-identical to Python's
+# `sorted(occurrences)[0]` on ASCII chunk-IDs.
+#
+# `sh:prefixes ed4all:` declares the namespace used in the body.
+# pyshacl's advanced=True path resolves this against the ontology
+# header it imports along with the shapes graph.

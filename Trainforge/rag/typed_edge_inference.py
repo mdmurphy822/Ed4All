@@ -28,7 +28,7 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple  # noqa: F401
 
 from Trainforge.rag.inference_rules import assesses_from_question_lo as _assesses_mod
 from Trainforge.rag.inference_rules import defined_by_from_first_mention as _defined_by_mod
@@ -52,6 +52,7 @@ from Trainforge.rag.inference_rules import (
 from Trainforge.rag.inference_rules import prerequisite_from_lo_order as _prereq_mod
 from Trainforge.rag.inference_rules import related_from_cooccurrence as _related_mod
 from Trainforge.rag.inference_rules import targets_concept_from_lo as _targets_concept_mod
+from Trainforge.rag import shacl_rule_runner as _shacl_runner
 
 logger = logging.getLogger(__name__)
 
@@ -307,6 +308,83 @@ def _llm_escalate(
     return normalized
 
 
+def build_semantic_graph_with_dataset(
+    chunks: List[Dict[str, Any]],
+    course: Optional[Dict[str, Any]],
+    concept_graph: Dict[str, Any],
+    *,
+    llm_enabled: bool = False,
+    llm_callable: Optional[Callable[..., List[Dict[str, Any]]]] = None,
+    decision_capture: Any = None,
+    related_threshold: int = _related_mod.DEFAULT_THRESHOLD,
+    now: Optional[datetime] = None,
+    run_id: Optional[str] = None,
+    misconceptions: Optional[List[Dict[str, Any]]] = None,
+    questions: Optional[List[Dict[str, Any]]] = None,
+    objectives_metadata: Optional[List[Dict[str, Any]]] = None,
+    emit_trig: Optional[bool] = None,
+) -> Tuple[Dict[str, Any], Optional[Any]]:
+    """Phase 3 sibling of ``build_semantic_graph`` that additionally
+    composes an ``rdflib.Dataset`` of per-rule named graphs.
+
+    Returns ``(json_dict, dataset)``. ``json_dict`` is byte-identical to
+    what ``build_semantic_graph`` returns for the same inputs (the JSON
+    contract is preserved). ``dataset`` is an ``rdflib.Dataset`` when the
+    flag is on and rdflib is importable; ``None`` otherwise.
+
+    Flag resolution: ``emit_trig`` kwarg overrides the module flag when
+    set. When ``None`` (default), falls back to
+    ``Trainforge.rag.named_graph_writer.EMIT_TRIG``. Tests can either
+    pass ``emit_trig=True`` directly or monkeypatch the module flag.
+
+    All other kwargs are forwarded verbatim to the underlying rule
+    pipeline; see ``build_semantic_graph`` for full documentation.
+    """
+    from Trainforge.rag import named_graph_writer
+
+    if emit_trig is None:
+        emit_trig = named_graph_writer.EMIT_TRIG
+
+    json_dict, rule_outputs = _build_semantic_graph_internal(
+        chunks=chunks,
+        course=course,
+        concept_graph=concept_graph,
+        llm_enabled=llm_enabled,
+        llm_callable=llm_callable,
+        decision_capture=decision_capture,
+        related_threshold=related_threshold,
+        now=now,
+        run_id=run_id,
+        misconceptions=misconceptions,
+        questions=questions,
+        objectives_metadata=objectives_metadata,
+    )
+
+    if not emit_trig:
+        return json_dict, None
+
+    try:
+        dataset = named_graph_writer.build_dataset(
+            rule_outputs,
+            run_id=run_id
+            or (
+                getattr(decision_capture, "run_id", None)
+                if decision_capture is not None
+                else None
+            ),
+            generated_at=json_dict["generated_at"],
+            input_chunk_count=len(chunks),
+        )
+    except ImportError as exc:  # pragma: no cover — rdflib missing
+        logger.warning(
+            "TRAINFORGE_EMIT_TRIG is on but rdflib is unavailable: %s",
+            exc,
+        )
+        return json_dict, None
+
+    return json_dict, dataset
+
+
 def build_semantic_graph(
     chunks: List[Dict[str, Any]],
     course: Optional[Dict[str, Any]],
@@ -364,6 +442,54 @@ def build_semantic_graph(
     Returns:
         Dict matching ``schemas/knowledge/concept_graph_semantic.schema.json``.
     """
+    json_dict, _ = _build_semantic_graph_internal(
+        chunks=chunks,
+        course=course,
+        concept_graph=concept_graph,
+        llm_enabled=llm_enabled,
+        llm_callable=llm_callable,
+        decision_capture=decision_capture,
+        related_threshold=related_threshold,
+        now=now,
+        run_id=run_id,
+        misconceptions=misconceptions,
+        questions=questions,
+        objectives_metadata=objectives_metadata,
+    )
+    return json_dict
+
+
+def _build_semantic_graph_internal(
+    chunks: List[Dict[str, Any]],
+    course: Optional[Dict[str, Any]],
+    concept_graph: Dict[str, Any],
+    *,
+    llm_enabled: bool,
+    llm_callable: Optional[Callable[..., List[Dict[str, Any]]]],
+    decision_capture: Any,
+    related_threshold: int,
+    now: Optional[datetime],
+    run_id: Optional[str],
+    misconceptions: Optional[List[Dict[str, Any]]],
+    questions: Optional[List[Dict[str, Any]]],
+    objectives_metadata: Optional[List[Dict[str, Any]]],
+) -> Tuple[Dict[str, Any], List[Any]]:
+    """Phase 3 internal: compute the JSON artifact AND the per-rule
+    output list (``RuleOutput`` records) so the TriG writer can emit
+    even-zero-edge named graphs.
+
+    Returns ``(json_dict, rule_outputs)``. ``rule_outputs`` is a list of
+    ``named_graph_writer.RuleOutput`` records — one per rule invoked,
+    in fixed invocation order. The list is *pre-precedence*: each
+    rule's emit is preserved exactly as the rule produced it
+    (post-stamp), which is what Wave 82 self-detection needs (the
+    JSON layer drops collisions; the named-graph layer keeps the raw
+    per-rule emit so SPARQL can diff per-rule edge counts across runs).
+    """
+    # Lazy import to keep the rule-only callers (legacy
+    # ``build_semantic_graph``) free of rdflib at import time.
+    from Trainforge.rag.named_graph_writer import RuleOutput
+
     # REC-PRV-01: resolve effective run_id / created_at once so every node
     # and edge in the artifact shares the same stamp. ``created_at`` equals
     # the artifact-level ``generated_at`` deliberately — the graph is an
@@ -379,6 +505,20 @@ def build_semantic_graph(
 
     rule_edges: List[Dict[str, Any]] = []
     rule_versions: Dict[str, int] = {}
+    rule_outputs: List[Any] = []
+
+    # Phase 5: when TRAINFORGE_USE_SHACL_RULES=true, route the
+    # ``defined-by`` slot through the SHACL-AF rule runner instead of
+    # the Python rule. The runner exposes the same
+    # ``(chunks, course, concept_graph) -> list[edge dict]`` signature
+    # so the dispatch loop is otherwise unchanged. Equivalence with
+    # the Python rule is pinned by
+    # ``Trainforge/tests/test_shacl_rules_defined_by.py``.
+    defined_by_fn = (
+        _shacl_runner.shacl_defined_by_edges
+        if _shacl_runner.USE_SHACL_RULES
+        else infer_defined_by
+    )
 
     # Rules are invoked in a fixed order so that equal-precedence ties
     # break deterministically. Taxonomic rules (is-a, prerequisite,
@@ -390,7 +530,7 @@ def build_semantic_graph(
         (infer_prerequisite, _prereq_mod, {}),
         (infer_related, _related_mod, {"threshold": related_threshold}),
         (infer_assesses, _assesses_mod, {"questions": questions}),
-        (infer_defined_by, _defined_by_mod, {}),
+        (defined_by_fn, _defined_by_mod, {}),
         (infer_derived_from_objective, _derived_lo_mod, {}),
         (infer_exemplifies, _exemplifies_mod, {}),
         (infer_misconception_of, _misconception_mod, {"misconceptions": misconceptions}),
@@ -412,6 +552,16 @@ def build_semantic_graph(
             _stamp_provenance(edge, effective_run_id, created_at)
         rule_edges.extend(produced)
         rule_versions[rule_mod.RULE_NAME] = rule_mod.RULE_VERSION
+        # Phase 3: capture the per-rule emit verbatim (even when empty)
+        # so the named-graph writer can register a zero-edge graph for
+        # Wave 82 self-detection.
+        rule_outputs.append(
+            RuleOutput(
+                rule_name=rule_mod.RULE_NAME,
+                rule_version=rule_mod.RULE_VERSION,
+                edges=list(produced),
+            )
+        )
 
     # Apply precedence over the rule-based edges first so the LLM pass only
     # sees what the deterministic layer produced.
@@ -431,6 +581,16 @@ def build_semantic_graph(
         if extra:
             rule_versions["llm_typed_edge"] = 1
             resolved = _apply_precedence(rule_resolved + extra)
+            # Capture LLM-escalated edges as their own pseudo-rule output
+            # so the TriG dataset reflects them too. Distinct rule_name
+            # keeps it from colliding with deterministic rules.
+            rule_outputs.append(
+                RuleOutput(
+                    rule_name="llm_typed_edge",
+                    rule_version=1,
+                    edges=list(extra),
+                )
+            )
         else:
             resolved = rule_resolved
     else:
@@ -438,13 +598,14 @@ def build_semantic_graph(
 
     generated_at = effective_now.isoformat()
 
-    return {
+    json_dict = {
         "kind": ARTIFACT_KIND,
         "generated_at": generated_at,
         "rule_versions": dict(sorted(rule_versions.items())),
         "nodes": nodes,
         "edges": resolved,
     }
+    return json_dict, rule_outputs
 
 
 __all__ = [
@@ -452,4 +613,5 @@ __all__ = [
     "SCOPE_CONCEPT_IDS",
     "_make_concept_id",
     "build_semantic_graph",
+    "build_semantic_graph_with_dataset",
 ]

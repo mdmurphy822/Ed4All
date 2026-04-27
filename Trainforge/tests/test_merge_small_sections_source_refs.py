@@ -87,7 +87,12 @@ def _mk_section(heading: str, content: str, source_ids: List[str]):
 
 
 def test_merge_returns_4_tuples_with_source_ids():
-    """Contract: (heading, text, chunk_type, merged_source_ids)."""
+    """Contract: (heading, text, chunk_type, merged_source_ids, merged_headings).
+
+    Wave 84 added the merged_headings field. The legacy four-element
+    contract is preserved through the first four positions; this test
+    pins both the arity (5) and the source_ids type for back-compat.
+    """
     processor = _make_processor()
     sections = [
         _mk_section("Sec A", "short text A", ["dart:a#s0_p0"]),
@@ -96,9 +101,12 @@ def test_merge_returns_4_tuples_with_source_ids():
     merged = processor._merge_small_sections(sections)
     assert merged, "expected at least one merged tuple"
     for entry in merged:
-        assert len(entry) == 4
-        heading, text, chunk_type, source_ids = entry
+        assert len(entry) == 5
+        heading, text, chunk_type, source_ids, merged_headings = entry
         assert isinstance(source_ids, list)
+        assert isinstance(merged_headings, list)
+        # Anchor heading must be the first merged heading.
+        assert merged_headings[0] == heading
 
 
 def test_merge_unions_source_ids_across_sections():
@@ -112,7 +120,7 @@ def test_merge_unions_source_ids_across_sections():
     ]
     merged = processor._merge_small_sections(sections)
     assert len(merged) == 1, f"Expected 1 merged tuple, got {len(merged)}"
-    _, _, _, source_ids = merged[0]
+    _, _, _, source_ids, _ = merged[0]
     assert set(source_ids) == {
         "dart:a#s0_p0",
         "dart:b#s0_p0",
@@ -128,7 +136,7 @@ def test_merge_dedupes_duplicate_source_ids():
         _mk_section("B", "sB text", ["dart:shared#s0_p0", "dart:b#s0_p0"]),
     ]
     merged = processor._merge_small_sections(sections)
-    _, _, _, source_ids = merged[0]
+    _, _, _, source_ids, _ = merged[0]
     assert source_ids.count("dart:shared#s0_p0") == 1
     # All three unique IDs present.
     assert set(source_ids) == {
@@ -147,7 +155,7 @@ def test_merge_preserves_insertion_order():
         _mk_section("C", "text c", ["dart:first#s0_p0", "dart:third#s0_p0"]),
     ]
     merged = processor._merge_small_sections(sections)
-    _, _, _, source_ids = merged[0]
+    _, _, _, source_ids, _ = merged[0]
     assert source_ids == [
         "dart:first#s0_p0",
         "dart:second#s0_p0",
@@ -163,7 +171,7 @@ def test_merge_empty_source_ids_when_no_refs():
         _mk_section("B", "text b", []),
     ]
     merged = processor._merge_small_sections(sections)
-    _, _, _, source_ids = merged[0]
+    _, _, _, source_ids, _ = merged[0]
     assert source_ids == []
 
 

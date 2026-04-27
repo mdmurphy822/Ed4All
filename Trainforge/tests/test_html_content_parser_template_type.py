@@ -181,7 +181,7 @@ def test_chunker_honors_template_type_over_heading_heuristic():
     ]
     merged = proc._merge_small_sections(sections)
     assert merged
-    _, _, chunk_type, _ = merged[0]
+    _, _, chunk_type, _, _ = merged[0]
     assert chunk_type == "procedure", (
         f"expected template_type to override heading heuristic, got {chunk_type}"
     )
@@ -205,7 +205,7 @@ def test_chunker_falls_back_to_heading_heuristic_when_template_type_absent():
     ]
     merged = proc._merge_small_sections(sections)
     assert merged
-    _, _, chunk_type, _ = merged[0]
+    _, _, chunk_type, _, _ = merged[0]
     assert chunk_type == "example", (
         f"expected legacy heading heuristic when template_type is None, "
         f"got {chunk_type}"
@@ -230,7 +230,7 @@ def test_chunker_rejects_non_canonical_template_type():
         ),
     ]
     merged = proc._merge_small_sections(sections)
-    _, _, chunk_type, _ = merged[0]
+    _, _, chunk_type, _, _ = merged[0]
     assert chunk_type == "example"
 
 
@@ -261,5 +261,5 @@ def test_chunker_first_section_template_type_wins_in_merge_group():
     assert len(merged) == 1, (
         "small sections should collapse into one merge group"
     )
-    _, _, chunk_type, _ = merged[0]
+    _, _, chunk_type, _, _ = merged[0]
     assert chunk_type == "common_pitfall"
