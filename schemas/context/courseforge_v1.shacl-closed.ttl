@@ -1,0 +1,140 @@
+# Courseforge SHACL Closed-World Overlay v1 — Wave 88
+#
+# This file is an *overlay* on courseforge_v1.shacl.ttl. The runner
+# (lib/validators/shacl_runner.py) loads it INTO THE SAME SHAPES GRAPH as
+# courseforge_v1.shacl.ttl when TRAINFORGE_SHACL_CLOSED_WORLD=true. The
+# semantics: predicates already declared on cfshapes:ChunkShape and
+# cfshapes:TypedEdgeShape (open-world property constraints in the base
+# file) are unchanged; this overlay adds the SHACL closure axiom
+# (sh:closed true) plus sh:ignoredProperties (rdf:type) so an unminted
+# predicate on a chunk / typed-edge node fires
+# sh:ClosedConstraintComponent.
+#
+# Why a separate overlay rather than baking sh:closed true straight into
+# the base file: closed-world is an opt-in production-readiness shift,
+# not the default semantics. Wave 87 minted the 33 predicates that would
+# previously have mass-violated; Wave 88 ships the closure but holds it
+# behind a flag so existing corpora don't trip.
+#
+# Why an overlay file (and not pure runtime triple injection): keeps the
+# closure declaration on disk, where the Phase 7 governance test
+# auto-discovers it (via the schemas/context/*.shacl*.ttl glob in
+# schemas/tests/test_shacl_governance.py) and enforces the authored
+# sh:message rule against it.
+#
+# How to read this file: each block restates the shape IRI and adds
+# `sh:closed true ; sh:ignoredProperties (rdf:type) ; sh:message ...`.
+# rdflib parses the same subject IRI across multiple files into one
+# canonical node; pyshacl reads the union as a single shape graph.
+
+@prefix sh:      <http://www.w3.org/ns/shacl#> .
+@prefix rdf:     <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:    <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix cfshapes: <https://ed4all.dev/ns/courseforge/v1/shapes#> .
+
+# ---------------------------------------------------------------------------
+# ChunkShape — close against the Wave 87 minted predicate set
+# ---------------------------------------------------------------------------
+# Authoritative predicates for cf:Chunk per chunk_v4_v1.jsonld. Listed
+# implicitly: any predicate whose subject is a cf:Chunk and which is
+# DECLARED on the base ChunkShape (currently schema:identifier) OR on
+# any of the property constraints on Chunk in the base validation file
+# is in-set. Beyond those, the predicates listed below are accepted
+# without an explicit sh:property block — pyshacl's ClosedConstraint
+# walks every triple `(focus, ?p, ?o)` and admits any `?p` matched by
+# either an enclosing sh:property block OR an entry in
+# sh:ignoredProperties.
+#
+# Implementation note: the simplest portable closure shape declares
+# `sh:closed true ; sh:ignoredProperties (rdf:type ...full set...)`.
+# Predicates that are constrained via sh:property on the base shape do
+# NOT need to be re-listed here (pyshacl already considers them
+# in-set). We list rdf:type explicitly because an `a ed4all:Chunk`
+# triple is universal on every chunk node and the SHACL spec requires
+# rdf:type to be ignored explicitly when sh:closed is in effect.
+#
+# The full Wave 87 minted set:
+#   schema:identifier (already on base)
+#   cf:schemaVersion, cf:chunkType, cf:html, cf:summary, cf:retrievalText,
+#   cf:followsChunk, cf:positionInModule, cf:moduleId, cf:moduleTitle,
+#   cf:lessonId, cf:lessonTitle, cf:resourceType, cf:sectionHeading,
+#   cf:htmlXPath, cf:charSpan, cf:itemPath, cf:hasConceptTag,
+#   cf:learningOutcomeRef, cf:difficulty, cf:tokensEstimate, cf:wordCount,
+#   cf:bloomLevel, cf:bloomLevelSource, cf:bloomLevelSecondary,
+#   cf:hasKeyTerm, cf:hasTargetedConcept, cf:hasSource,
+#   cf:hasMisconception
+#
+# We don't need to enumerate the full set on sh:ignoredProperties: the
+# correct approach is to wrap each predicate in an explicit sh:property
+# block (which auto-admits it under closed-shape semantics). Since
+# enumerating 32 sh:property blocks here would duplicate the vocabulary
+# file, we instead cover the gap by adding bare `sh:property [ sh:path
+# <pred> ]` no-op admissions for every Wave 87 predicate. Each carries
+# only sh:path — no min/max/datatype constraints — so it admits the
+# predicate without imposing extra rules beyond what closure adds.
+
+cfshapes:ChunkShape
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  sh:message "CW-CHUNK-01: Closed-world: cfshapes:ChunkShape declares an authoritative predicate set per chunk_v4_v1.jsonld (Wave 87 minted 32 structural predicates plus schema:identifier). Predicates outside that set are violations — minted them in courseforge_v1.vocabulary.ttl + chunk_v4_v1.jsonld first." ;
+
+  # Wave 87 chunk structural predicates (admitted under closure).
+  # Each is a no-op sh:property block carrying only sh:path; no
+  # cardinality / datatype constraints are added here so the base
+  # ChunkShape stays the canonical place to harden any one of these.
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#schemaVersion> ; sh:message "CW-CHUNK-02: schemaVersion admitted under closed-world; constraint detail lives on the open ChunkShape." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#chunkType> ; sh:message "CW-CHUNK-03: chunkType admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#html> ; sh:message "CW-CHUNK-04: html admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#summary> ; sh:message "CW-CHUNK-05: summary admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#retrievalText> ; sh:message "CW-CHUNK-06: retrievalText admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#followsChunk> ; sh:message "CW-CHUNK-07: followsChunk admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#positionInModule> ; sh:message "CW-CHUNK-08: positionInModule admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#moduleId> ; sh:message "CW-CHUNK-09: moduleId admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#moduleTitle> ; sh:message "CW-CHUNK-10: moduleTitle admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#lessonId> ; sh:message "CW-CHUNK-11: lessonId admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#lessonTitle> ; sh:message "CW-CHUNK-12: lessonTitle admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#resourceType> ; sh:message "CW-CHUNK-13: resourceType admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#sectionHeading> ; sh:message "CW-CHUNK-14: sectionHeading admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#htmlXPath> ; sh:message "CW-CHUNK-15: htmlXPath admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#charSpan> ; sh:message "CW-CHUNK-16: charSpan admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#itemPath> ; sh:message "CW-CHUNK-17: itemPath admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#hasConceptTag> ; sh:message "CW-CHUNK-18: hasConceptTag admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#learningOutcomeRef> ; sh:message "CW-CHUNK-19: learningOutcomeRef admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#difficulty> ; sh:message "CW-CHUNK-20: difficulty admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#tokensEstimate> ; sh:message "CW-CHUNK-21: tokensEstimate admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#wordCount> ; sh:message "CW-CHUNK-22: wordCount admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#bloomLevel> ; sh:message "CW-CHUNK-23: bloomLevel admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#bloomLevelSource> ; sh:message "CW-CHUNK-24: bloomLevelSource admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#bloomLevelSecondary> ; sh:message "CW-CHUNK-25: bloomLevelSecondary admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#hasKeyTerm> ; sh:message "CW-CHUNK-26: hasKeyTerm admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#hasTargetedConcept> ; sh:message "CW-CHUNK-27: hasTargetedConcept admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#hasSource> ; sh:message "CW-CHUNK-28: hasSource admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#hasMisconception> ; sh:message "CW-CHUNK-29: hasMisconception admitted under closed-world." ] .
+
+# ---------------------------------------------------------------------------
+# TypedEdgeShape — close against the reified-edge predicate set
+# ---------------------------------------------------------------------------
+# Authoritative predicates for cf:TypedEdge per concept_graph_semantic_v1.jsonld
+# + pedagogy_graph_v1.jsonld. The base TypedEdgeShape already requires
+# ed4all:edgeType, ed4all:source, ed4all:target — those are auto-admitted.
+# Below we admit the remaining provenance predicates the contexts emit.
+
+cfshapes:TypedEdgeShape
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  sh:message "CW-EDGE-01: Closed-world: cfshapes:TypedEdgeShape declares an authoritative predicate set for reified TypedEdge nodes per concept_graph_semantic_v1.jsonld + pedagogy_graph_v1.jsonld. Predicates outside that set are violations — extend the @context first." ;
+
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#confidence> ; sh:message "CW-EDGE-02: confidence admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#rule> ; sh:message "CW-EDGE-03: rule admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#ruleVersion> ; sh:message "CW-EDGE-04: ruleVersion admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#ruleVersionApplied> ; sh:message "CW-EDGE-05: ruleVersionApplied admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#sourceReference> ; sh:message "CW-EDGE-06: sourceReference admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#sourceChunkId> ; sh:message "CW-EDGE-07: sourceChunkId admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#targetFirstLo> ; sh:message "CW-EDGE-08: targetFirstLo admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#targetFirstLoPosition> ; sh:message "CW-EDGE-09: targetFirstLoPosition admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#sourceFirstLo> ; sh:message "CW-EDGE-10: sourceFirstLo admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#sourceFirstLoPosition> ; sh:message "CW-EDGE-11: sourceFirstLoPosition admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#evidenceContentType> ; sh:message "CW-EDGE-12: evidenceContentType admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#cooccurrenceWeight> ; sh:message "CW-EDGE-13: cooccurrenceWeight admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#order> ; sh:message "CW-EDGE-14: order admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#pattern> ; sh:message "CW-EDGE-15: pattern admitted under closed-world." ] .

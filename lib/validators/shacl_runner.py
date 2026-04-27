@@ -42,6 +42,7 @@ validator framework verbatim.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -61,6 +62,39 @@ CANONICAL_COURSEFORGE_CONTEXT_URL = "https://ed4all.dev/ns/courseforge/v1"
 SHAPES_DIR = Path(__file__).resolve().parent / "shacl"
 
 
+#: Wave 88 closed-world overlay file. When
+#: ``TRAINFORGE_SHACL_CLOSED_WORLD=true``, the runner merges this overlay
+#: into the shapes graph alongside the primary shapes file. The overlay
+#: declares ``sh:closed true ; sh:ignoredProperties (rdf:type)`` on
+#: ``cfshapes:ChunkShape`` and ``cfshapes:TypedEdgeShape`` (defined as
+#: open shapes in courseforge_v1.shacl.ttl). The flag defaults off.
+#:
+#: Architecture choice (file-based overlay rather than runtime triple
+#: injection): keeps the closure declaration on disk where the Phase 7
+#: governance test auto-discovers it via the
+#: ``schemas/context/*.shacl*.ttl`` glob and enforces the authored
+#: ``sh:message`` rule. Runtime injection would also have worked but
+#: would have left the closure invisible to grep + governance.
+SHACL_CLOSED_WORLD_OVERLAY = (
+    Path(__file__).resolve().parents[2]
+    / "schemas"
+    / "context"
+    / "courseforge_v1.shacl-closed.ttl"
+)
+
+
+def _closed_world_enabled() -> bool:
+    """Return True when ``TRAINFORGE_SHACL_CLOSED_WORLD`` is set to ``true``.
+
+    Reads the env var at call time (per-validate, not module load) so
+    test fixtures using ``monkeypatch.setenv`` get the expected
+    behavior without an ``importlib.reload``. Mirrors the Phase 5
+    ``TRAINFORGE_USE_SHACL_RULES`` flag's read-site convention but
+    sidesteps the module-level cache that file used.
+    """
+    return os.environ.get("TRAINFORGE_SHACL_CLOSED_WORLD", "").lower() == "true"
+
+
 _SH_NS = "http://www.w3.org/ns/shacl#"
 _RDF_NS = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
 
@@ -75,6 +109,7 @@ _SEVERITY_MAP = {
 __all__ = [
     "CANONICAL_COURSEFORGE_CONTEXT_URL",
     "SHAPES_DIR",
+    "SHACL_CLOSED_WORLD_OVERLAY",
     "ShaclDepsMissing",
     "ShaclViolation",
     "PageObjectivesShaclValidator",
@@ -301,6 +336,15 @@ def run_shacl(
     shapes_graph = Graph()
     shapes_graph.parse(shapes_path, format="turtle")
 
+    # Wave 88: when TRAINFORGE_SHACL_CLOSED_WORLD=true, merge the
+    # closed-world overlay (sh:closed true on ChunkShape +
+    # TypedEdgeShape) into the shapes graph. The overlay restates the
+    # same shape IRIs declared in courseforge_v1.shacl.ttl; rdflib
+    # parses both files into one canonical node set, so pyshacl reads
+    # the union as a single hardened shape.
+    if _closed_world_enabled() and SHACL_CLOSED_WORLD_OVERLAY.exists():
+        shapes_graph.parse(SHACL_CLOSED_WORLD_OVERLAY, format="turtle")
+
     conforms, results_graph, _results_text = pyshacl.validate(
         data_graph=graph,
         shacl_graph=shapes_graph,
@@ -359,6 +403,12 @@ def run_shacl_with_report_graph(
 
     shapes_graph = Graph()
     shapes_graph.parse(shapes_path, format="turtle")
+
+    # Wave 88: see run_shacl above for rationale. Mirror the overlay
+    # merge here so the report-graph variant validates under the same
+    # closed-world semantics as the simpler run_shacl path.
+    if _closed_world_enabled() and SHACL_CLOSED_WORLD_OVERLAY.exists():
+        shapes_graph.parse(SHACL_CLOSED_WORLD_OVERLAY, format="turtle")
 
     conforms, results_graph, _results_text = pyshacl.validate(
         data_graph=graph,

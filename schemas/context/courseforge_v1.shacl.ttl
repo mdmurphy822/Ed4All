@@ -334,3 +334,78 @@ cfshapes:BloomDistributionShape
     sh:minInclusive 0 ;
     sh:message "BloomDistribution.total is required and must be a non-negative integer." ;
   ] .
+
+# ---------------------------------------------------------------------------
+# ChunkShape — Wave 88 (closed-world ready)
+# ---------------------------------------------------------------------------
+# Targets ed4all:Chunk. Declares the authoritative predicate set for chunk
+# nodes per chunk_v4_v1.jsonld (Wave 87 minted the 32 structural predicates +
+# anchor classes). Shape-level constraint is identifier-only here; the
+# closed-world assertion (sh:closed true) lives in the
+# courseforge_v1.shacl-closed.ttl overlay, gated by
+# TRAINFORGE_SHACL_CLOSED_WORLD=true. With the flag off, this shape simply
+# requires every Chunk node carry a schema:identifier — the rest of the
+# vocabulary stays open. With the flag on, the overlay adds sh:closed true
+# and any predicate not in the {schema:identifier, cf:schemaVersion,
+# cf:chunkType, cf:html, cf:summary, cf:retrievalText, cf:followsChunk,
+# cf:positionInModule, cf:moduleId, cf:moduleTitle, cf:lessonId,
+# cf:lessonTitle, cf:resourceType, cf:sectionHeading, cf:htmlXPath,
+# cf:charSpan, cf:itemPath, cf:hasConceptTag, cf:learningOutcomeRef,
+# cf:difficulty, cf:tokensEstimate, cf:wordCount, cf:bloomLevel,
+# cf:bloomLevelSource, cf:bloomLevelSecondary, cf:hasKeyTerm,
+# cf:hasTargetedConcept, cf:hasSource, cf:hasMisconception,
+# cf:metadataTrace} authoritative set fires a closure violation.
+
+cfshapes:ChunkShape
+  a sh:NodeShape ;
+  sh:targetClass ed4all:Chunk ;
+  rdfs:label "Courseforge Chunk Shape" ;
+  rdfs:comment "Wave 88: validates Trainforge content chunks emitted under chunk_v4_v1.jsonld. Open-world by default; closed-world enforcement is opt-in via courseforge_v1.shacl-closed.ttl when TRAINFORGE_SHACL_CLOSED_WORLD=true. Wave 87 minted the 32 structural predicates this shape would close against; Wave 88 ships the shape itself + the closed-world overlay." ;
+
+  sh:property [
+    sh:path schema:identifier ;
+    sh:minCount 1 ;
+    sh:minLength 1 ;
+    sh:message "Chunk.identifier (schema:identifier) is required and non-empty." ;
+  ] .
+
+# ---------------------------------------------------------------------------
+# TypedEdgeShape — Wave 88 (closed-world ready)
+# ---------------------------------------------------------------------------
+# Targets ed4all:TypedEdge. The reified-blank-node pattern used by
+# concept_graph_semantic_v1.jsonld and pedagogy_graph_v1.jsonld emits each
+# edge as an ed4all:TypedEdge instance carrying ed4all:source,
+# ed4all:target, ed4all:edgeType, ed4all:confidence, plus per-rule
+# provenance (ed4all:rule, ed4all:ruleVersionApplied, etc.). Shape-level
+# constraint here is "edge_type required, source+target required" — the
+# closed-world assertion lives in the overlay, gated by the same flag as
+# ChunkShape.
+
+cfshapes:TypedEdgeShape
+  a sh:NodeShape ;
+  sh:targetClass ed4all:TypedEdge ;
+  rdfs:label "Courseforge TypedEdge Shape" ;
+  rdfs:comment "Wave 88: validates the reified-blank-node TypedEdge pattern used by concept_graph_semantic_v1.jsonld + pedagogy_graph_v1.jsonld. Open-world by default; closed-world enforcement is opt-in via courseforge_v1.shacl-closed.ttl when TRAINFORGE_SHACL_CLOSED_WORLD=true." ;
+
+  sh:property [
+    sh:path ed4all:edgeType ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+    sh:message "TypedEdge.edgeType (ed4all:edgeType) is required exactly once." ;
+  ] ;
+
+  sh:property [
+    sh:path ed4all:source ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+    sh:nodeKind sh:IRI ;
+    sh:message "TypedEdge.source (ed4all:source) is required and must be an IRI." ;
+  ] ;
+
+  sh:property [
+    sh:path ed4all:target ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+    sh:nodeKind sh:IRI ;
+    sh:message "TypedEdge.target (ed4all:target) is required and must be an IRI." ;
+  ] .
