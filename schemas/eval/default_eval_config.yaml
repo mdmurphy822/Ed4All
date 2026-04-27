@@ -1,0 +1,13 @@
+# ED4ALL-Bench locked variables - default copy.
+# Wave 103: per-course copies live at
+# LibV2/courses/<slug>/eval/eval_config.yaml. Editing this file affects
+# only courses that have not been initialised via `libv2 eval init`.
+benchmark: ED4ALL-Bench
+benchmark_version: "1.0"
+top_k: 5
+temperature: 0.0
+top_p: 1.0
+max_new_tokens: 256
+seed: 42
+prompt_template_file: prompt_template.txt
+rubric_file: rubric.md

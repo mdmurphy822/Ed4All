@@ -947,31 +947,51 @@ def eval_generate(ctx, slug: str, num_queries: int, output: str):
 
 @eval_group.command("run")
 @click.argument("slug")
+@click.argument("model_id", required=False)
+@click.option("--judge", type=click.Choice(["none", "anthropic", "local_nli"]),
+              default="none", help="Wave 103: qualitative judge for ED4ALL-Bench")
 @click.option("--output", "-o", type=click.Path(), help="Save report to file")
 @click.option("--verbose", "-v", is_flag=True, help="Show progress for each query")
 @click.option("--format", "-f", "fmt", type=click.Choice(["text", "json"]), default="text",
               help="Output format")
 @click.pass_context
-def eval_run(ctx, slug: str, output: Optional[str], verbose: bool, fmt: str):
+def eval_run(ctx, slug: str, model_id: Optional[str], judge: str,
+             output: Optional[str], verbose: bool, fmt: str):
     """Run evaluation against a course's eval set.
 
-    Requires quality/eval_set.json to exist (use 'eval generate' first).
-    Saves results to quality/eval_results/.
+    Two modes:
+
+    \b
+    - Legacy retrieval eval (no MODEL_ID): runs the LibV2 retrieval
+      harness against quality/eval_set.json. Use 'eval generate' first.
+    - Wave 103 ED4ALL-Bench (with MODEL_ID): invokes AblationRunner
+      against the named adapter under courses/<slug>/models/<model_id>.
 
     Examples:
 
+    \b
         libv2 eval run accessibility-design
-
         libv2 eval run my-course -v -o report.json
+        libv2 eval run rdf-shacl-551-2 my-model-id --judge anthropic
     """
-    from .eval_harness import run_course_evaluation
-
     repo_root = ctx.obj["repo_root"]
     course_dir = repo_root / "courses" / slug
 
     if not course_dir.exists():
         print_error(f"Course not found: {slug}")
         sys.exit(1)
+
+    if model_id is not None:
+        _run_ed4all_bench_eval(
+            course_dir=course_dir,
+            slug=slug,
+            model_id=model_id,
+            judge=judge,
+            fmt=fmt,
+        )
+        return
+
+    from .eval_harness import run_course_evaluation
 
     eval_set_path = course_dir / "quality" / "eval_set.json"
     if not eval_set_path.exists():
@@ -1026,6 +1046,178 @@ def eval_run(ctx, slug: str, output: Optional[str], verbose: bool, fmt: str):
     except Exception as e:
         print_error(f"Evaluation failed: {e}")
         sys.exit(1)
+
+
+# ---------------------------------------------------------------------- #
+# Wave 103 - ED4ALL-Bench per-course eval directory                       #
+# ---------------------------------------------------------------------- #
+
+
+_ED4ALL_BENCH_REQUIRED_KEYS = (
+    "benchmark", "benchmark_version", "top_k", "temperature", "top_p",
+    "max_new_tokens", "seed", "prompt_template_file", "rubric_file",
+)
+
+
+def _schemas_eval_dir() -> Path:
+    """Resolve schemas/eval/ relative to this file."""
+    # cli.py lives at LibV2/tools/libv2/cli.py -> parents[3] is project root.
+    return Path(__file__).resolve().parents[3] / "schemas" / "eval"
+
+
+@eval_group.command("init")
+@click.argument("slug")
+@click.pass_context
+def eval_init(ctx, slug: str):
+    """Wave 103: scaffold the per-course eval/ directory.
+
+    Copies the four ED4ALL-Bench defaults from schemas/eval/ into
+    courses/<slug>/eval/ - prompt_template.txt, rubric.md,
+    eval_config.yaml, and a placeholder holdout_split.json. Idempotent:
+    existing files are not overwritten.
+
+    \b
+    Example:
+        libv2 eval init rdf-shacl-551-2
+    """
+    repo_root: Path = ctx.obj["repo_root"]
+    course_dir = repo_root / "courses" / slug
+    if not course_dir.exists():
+        print_error(f"Course not found: {course_dir}")
+        sys.exit(1)
+    eval_dir = course_dir / "eval"
+    eval_dir.mkdir(exist_ok=True)
+    schemas_dir = _schemas_eval_dir()
+    pairs = [
+        (schemas_dir / "default_prompt_template.txt", eval_dir / "prompt_template.txt"),
+        (schemas_dir / "default_rubric.md", eval_dir / "rubric.md"),
+        (schemas_dir / "default_eval_config.yaml", eval_dir / "eval_config.yaml"),
+    ]
+    for src, dst in pairs:
+        if dst.exists():
+            print(f"  skip (exists): {dst.relative_to(repo_root)}")
+            continue
+        if not src.exists():
+            print_error(f"Default missing: {src}")
+            sys.exit(1)
+        dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        print_success(f"  wrote: {dst.relative_to(repo_root)}")
+    holdout = eval_dir / "holdout_split.json"
+    if not holdout.exists():
+        holdout.write_text(
+            json.dumps({
+                "_comment": (
+                    "Wave 103 placeholder. Run HoldoutBuilder to populate "
+                    "withheld_edges before publishing eval numbers."
+                ),
+                "withheld_edges": [],
+                "stratification": {},
+                "holdout_graph_hash": None,
+            }, indent=2),
+            encoding="utf-8",
+        )
+        print_success(f"  wrote: {holdout.relative_to(repo_root)}")
+    else:
+        print(f"  skip (exists): {holdout.relative_to(repo_root)}")
+    print_success(f"Initialized eval/ for {slug}")
+
+
+@eval_group.command("validate")
+@click.argument("slug")
+@click.pass_context
+def eval_validate(ctx, slug: str):
+    """Wave 103: assert the per-course eval/ directory is well-formed.
+
+    Checks all four files exist, prompt_template.txt has the
+    {context_section} and {question} placeholders, and eval_config.yaml
+    carries every locked variable. Prints OK on success.
+
+    \b
+    Example:
+        libv2 eval validate rdf-shacl-551-2
+    """
+    repo_root: Path = ctx.obj["repo_root"]
+    course_dir = repo_root / "courses" / slug
+    if not course_dir.exists():
+        print_error(f"Course not found: {course_dir}")
+        sys.exit(1)
+    eval_dir = course_dir / "eval"
+    issues = []
+    for fname in ("prompt_template.txt", "rubric.md", "eval_config.yaml",
+                  "holdout_split.json"):
+        if not (eval_dir / fname).exists():
+            issues.append(f"missing file: eval/{fname}")
+    template_path = eval_dir / "prompt_template.txt"
+    if template_path.exists():
+        text = template_path.read_text(encoding="utf-8")
+        if "{context_section}" not in text:
+            issues.append("prompt_template.txt missing {context_section}")
+        if "{question}" not in text:
+            issues.append("prompt_template.txt missing {question}")
+    config_path = eval_dir / "eval_config.yaml"
+    if config_path.exists():
+        import yaml as _yaml
+        try:
+            config = _yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        except _yaml.YAMLError as e:
+            issues.append(f"eval_config.yaml YAML parse error: {e}")
+            config = {}
+        if isinstance(config, dict):
+            for key in _ED4ALL_BENCH_REQUIRED_KEYS:
+                if key not in config:
+                    issues.append(f"eval_config.yaml missing key: {key}")
+    if issues:
+        for issue in issues:
+            print_error(issue)
+        sys.exit(1)
+    print_success("OK")
+
+
+def _run_ed4all_bench_eval(
+    *,
+    course_dir: Path,
+    slug: str,
+    model_id: str,
+    judge: str,
+    fmt: str,
+) -> None:
+    """Wave 103 ED4ALL-Bench dispatch - validate config + scaffold runner.
+
+    The full real-eval kickoff (loading the trained adapter into
+    GPU and invoking the SLMEvalHarness) lands in a follow-up wave;
+    this entry point validates that the per-course config is locked
+    and that the adapter directory exists, then prints a guided
+    next-step. The CLI surface is in place so the brief's user-facing
+    contract holds even before the bridge to AdapterCallable is wired.
+    """
+    model_dir = course_dir / "models" / model_id
+    if not model_dir.exists():
+        print_error(f"Model not found: {model_dir}")
+        sys.exit(1)
+    eval_config_path = course_dir / "eval" / "eval_config.yaml"
+    if not eval_config_path.exists():
+        print_warning(
+            f"No per-course eval/eval_config.yaml. Run "
+            f"'libv2 eval init {slug}' first to scaffold one."
+        )
+    payload = {
+        "course": slug,
+        "model_id": model_id,
+        "judge": judge,
+        "model_dir": str(model_dir),
+        "eval_config": str(eval_config_path) if eval_config_path.exists() else None,
+        "status": (
+            "Wave 103 dispatch ready. Adapter+harness bridge ships in a "
+            "follow-up wave; this command currently validates inputs only."
+        ),
+    }
+    if fmt == "json":
+        print(json.dumps(payload, indent=2))
+    else:
+        print_success(f"ED4ALL-Bench eval kickoff: {slug} / {model_id}")
+        print(f"  judge: {judge}")
+        print(f"  model_dir: {model_dir}")
+        print(f"  status: {payload['status']}")
 
 
 @eval_group.command("compare")

@@ -96,7 +96,16 @@ class RAGCallable:
         prompt_template: Optional[str] = None,
         *,
         cli_runner: Optional[Callable[[List[str]], Dict[str, Any]]] = None,
+        eval_config: Optional[Any] = None,
     ) -> None:
+        # Wave 103: when an eval_config (LoadedEvalConfig) is supplied,
+        # its top_k and prompt_template override constructor args. The
+        # config is the lockfile - the constructor args are advisory.
+        if eval_config is not None:
+            cfg = eval_config.config or {}
+            limit = int(cfg.get("top_k", limit))
+            prompt_template = eval_config.prompt_template
+
         if method not in _VALID_METHODS:
             raise ValueError(
                 f"RAGCallable: unknown method={method!r}. "
@@ -114,6 +123,7 @@ class RAGCallable:
         self._cli_runner = cli_runner or _default_cli_runner
         self._last_latency_ms: Optional[float] = None
         self._latencies: List[float] = []
+        self.eval_config = eval_config
 
     @property
     def last_latency_ms(self) -> Optional[float]:
@@ -153,7 +163,8 @@ class RAGCallable:
             # rows when retrieval is empty.
             augmented = prompt
         else:
-            augmented = self.prompt_template.format(
+            augmented = _render_template(
+                self.prompt_template,
                 n=len(chunks),
                 context=context,
                 prompt=prompt,
@@ -183,15 +194,24 @@ class BaseOnlyCallable:
         temperature: float = 0.0,
         device: Optional[str] = None,
         base_model_short_name: Optional[str] = None,
+        eval_config: Optional[Any] = None,
     ) -> None:
         from Trainforge.training.base_models import (
             BaseModelRegistry,
             BaseModelSpec,
         )
 
+        # Wave 103: eval_config wins when supplied; constructor args
+        # are advisory.
+        if eval_config is not None:
+            cfg = eval_config.config or {}
+            max_new_tokens = int(cfg.get("max_new_tokens", max_new_tokens))
+            temperature = float(cfg.get("temperature", temperature))
+
         self.base_model_repo = base_model_repo
         self.max_new_tokens = int(max_new_tokens)
         self.temperature = float(temperature)
+        self.eval_config = eval_config
 
         import torch  # type: ignore
         from transformers import (  # type: ignore
@@ -279,6 +299,49 @@ class BaseOnlyCallable:
 # ---------------------------------------------------------------------- #
 # Helpers                                                                 #
 # ---------------------------------------------------------------------- #
+
+
+def _render_template(
+    template: str,
+    *,
+    n: int,
+    context: str,
+    prompt: str,
+) -> str:
+    """Render a RAG prompt template, tolerating two placeholder dialects.
+
+    The legacy default template uses ``{n}``, ``{context}``, and
+    ``{prompt}``. Wave 103 per-course templates use the
+    ``{context_section}`` + ``{question}`` shape (matches ED4ALL-Bench
+    prompt-template conventions). We try the legacy substitution first
+    (with all three keys); if that raises a ``KeyError`` we fall back
+    to a manual replace of the per-course placeholders.
+    """
+    # Build the per-course "context section" string: when chunks are
+    # present, prefix with a one-line label so the model sees a
+    # discrete block rather than a wall of text.
+    context_section = (
+        f"Context (top {n} retrieved passages):\n{context}"
+        if context else ""
+    )
+    try:
+        return template.format(
+            n=n,
+            context=context,
+            context_section=context_section,
+            prompt=prompt,
+            question=prompt,
+        )
+    except (KeyError, IndexError):
+        # Bracket character that .format() can't resolve - fall back to
+        # plain substitution.
+        out = template
+        out = out.replace("{n}", str(n))
+        out = out.replace("{context}", context)
+        out = out.replace("{context_section}", context_section)
+        out = out.replace("{prompt}", prompt)
+        out = out.replace("{question}", prompt)
+        return out
 
 
 def _format_chunks(chunks: List[Dict[str, Any]]) -> str:
