@@ -298,7 +298,15 @@ def _build_misconception_dpo_pair(
         return None
 
     chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
-    bloom = str(chunk.get("bloom_level") or "").lower() or None
+    chunk_bloom = str(chunk.get("bloom_level") or "").lower() or None
+    # Wave 95: use the misconception's OWN bloom_level (not the chunk's)
+    # for mc_id computation. This mirrors
+    # ``CourseProcessor._build_misconceptions_for_graph`` which seeds the
+    # hash off ``entry.get("bloom_level")``. Using the chunk's bloom level
+    # produced misconception_ids that didn't match the pedagogy graph
+    # nodes, breaking misconception-coverage audits and downstream KG
+    # lookups.
+    mc_bloom = str(misconception.get("bloom_level") or "").strip().lower() or None
     refs = chunk.get("learning_outcome_refs") or []
     primary_concept = ""
     tags = chunk.get("concept_tags") or []
@@ -313,7 +321,7 @@ def _build_misconception_dpo_pair(
         f"Explain {primary_concept} clearly enough for a new learner to "
         f"avoid the most common misconception."
     )
-    mc_id = _misconception_id(mc_text, correction, bloom)
+    mc_id = _misconception_id(mc_text, correction, mc_bloom)
     pair = {
         "id": f"mcp_{chunk_id}_{pair_index:03d}",
         "chunk_id": chunk_id,
@@ -322,7 +330,7 @@ def _build_misconception_dpo_pair(
         "rejected": mc_text,
         "source": "misconception_editorial",
         "misconception_id": mc_id,
-        "bloom_level": bloom or "unknown",
+        "bloom_level": chunk_bloom or "unknown",
         "learning_outcome_refs": list(refs),
         "seed": pair_index,
     }
