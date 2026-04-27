@@ -1,0 +1,192 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/schemas/models/model_card.schema.json",
+  "title": "ModelCard",
+  "description": "Canonical shape for a trained-adapter model card pinned to a LibV2 course. Lives at courses/<slug>/models/<model_id>/model_card.json. Provenance hashes pin the exact LibV2 artifacts the run consumed (chunks, pedagogy graph, training_specs, concept graph, vocabulary TTL) so a card is fully replayable post-hoc. Wave 89 (slm-training-2026-04-26).",
+  "type": "object",
+  "required": [
+    "model_id",
+    "course_slug",
+    "base_model",
+    "adapter_format",
+    "training_config",
+    "provenance",
+    "created_at"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "model_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "description": "Stable kebab-case identifier (e.g. 'qwen2-5-1-5b-tst-101-v1'). Lowercase a-z0-9, hyphen-separated tokens; no leading/trailing hyphen."
+    },
+    "course_slug": {
+      "type": "string",
+      "minLength": 1,
+      "description": "LibV2 course slug this adapter was trained for. Must be a slug under LibV2/courses/."
+    },
+    "base_model": {
+      "type": "object",
+      "required": ["name", "revision", "huggingface_repo"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short human-friendly name (e.g. 'qwen2.5-1.5b'). Matches a key in Trainforge/training/base_models.py."
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Pinned HF revision/tag/sha so reruns resolve the same weights."
+        },
+        "huggingface_repo": {
+          "type": "string",
+          "pattern": "^[\\w-]+/[\\w.-]+$",
+          "description": "HF repo identifier in 'org/name' form."
+        }
+      }
+    },
+    "adapter_format": {
+      "type": "string",
+      "enum": ["safetensors", "gguf", "merged_safetensors"],
+      "description": "Storage format of the trained weights. safetensors=PEFT/LoRA adapter; gguf=llama.cpp serving weights; merged_safetensors=full merged model."
+    },
+    "training_config": {
+      "type": "object",
+      "required": [
+        "seed",
+        "learning_rate",
+        "epochs",
+        "lora_rank",
+        "lora_alpha",
+        "max_seq_length",
+        "batch_size"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "RNG seed used for the run."
+        },
+        "learning_rate": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "Optimizer learning rate."
+        },
+        "epochs": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of training epochs."
+        },
+        "lora_rank": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "LoRA rank (r)."
+        },
+        "lora_alpha": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "LoRA alpha (scaling factor)."
+        },
+        "max_seq_length": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Max sequence length for tokenization."
+        },
+        "batch_size": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Per-device training batch size."
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "chunks_hash",
+        "pedagogy_graph_hash",
+        "instruction_pairs_hash",
+        "preference_pairs_hash",
+        "concept_graph_hash",
+        "vocabulary_ttl_hash"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "chunks_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 of corpus/chunks.jsonl as ingested."
+        },
+        "pedagogy_graph_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 of the pedagogy graph artifact (pedagogy/model.json or equivalent)."
+        },
+        "instruction_pairs_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 of training_specs/instruction_pairs.jsonl."
+        },
+        "preference_pairs_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 of training_specs/preference_pairs.jsonl."
+        },
+        "concept_graph_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 of the concept graph artifact (graph/edges.jsonl or equivalent)."
+        },
+        "vocabulary_ttl_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 of the SHACL vocabulary TTL the run pinned to."
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp the card was emitted."
+    },
+    "eval_scores": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "faithfulness": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Answer-vs-graph faithfulness score in [0, 1]. Wave 91 emits this."
+        },
+        "coverage": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Fraction of held-out objectives the trained model can answer correctly."
+        },
+        "baseline_delta": {
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1,
+          "description": "Trained-minus-baseline score on the same prompt set. Negative = regression."
+        }
+      }
+    },
+    "license": {
+      "type": ["string", "null"],
+      "description": "SPDX identifier or short license name for the trained adapter (the base model has its own license, not declared here)."
+    },
+    "description": {
+      "type": ["string", "null"],
+      "description": "Optional human-readable summary of the model."
+    },
+    "tags": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "Optional free-form tags for catalog surfacing."
+    }
+  }
+}
