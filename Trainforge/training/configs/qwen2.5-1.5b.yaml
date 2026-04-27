@@ -1,0 +1,12 @@
+# Wave 90 — default training config for the Qwen2.5-1.5B base.
+# Loaded by ``Trainforge.training.configs.load_config("qwen2.5-1.5b")``.
+# Course-level overrides may override any field; see TrainingConfig.
+
+base_model: qwen2.5-1.5b
+learning_rate: 2.0e-4
+epochs: 3
+lora_rank: 16
+lora_alpha: 32
+max_seq_length: 2048
+batch_size: 4
+seed: 42

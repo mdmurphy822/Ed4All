@@ -45,6 +45,21 @@ dev = [
     "pyld>=2.0.0,<4.0.0",
     "pyshacl>=0.25.0,<1.0.0",
 ]
+# Wave 90: heavy ML deps for the Trainforge.training submodule.
+# Kept out of the default install so CPU-only dev boxes / the MCP
+# server don't pull in 5+GB of CUDA wheels. RunPod SDK is reserved
+# for the follow-up wave; LocalBackend uses HF transformers + TRL +
+# PEFT + bitsandbytes for QLoRA.
+training = [
+    "torch>=2.1.0",
+    "transformers>=4.40.0,<5.0.0",
+    "trl>=0.8.0,<1.0.0",
+    "peft>=0.10.0,<1.0.0",
+    "accelerate>=0.30.0",
+    "bitsandbytes>=0.43.0",
+    "datasets>=2.18.0",
+    "safetensors>=0.4.0",
+]
 full = ["ed4all[dart,server,dev]"]
 
 [project.scripts]
