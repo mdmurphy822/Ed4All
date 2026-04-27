@@ -83,6 +83,24 @@ workflows:
               on_fail: block
               on_error: fail_closed
 
+          # Phase 4 PoC of plans/rdf-shacl-enrichment-2026-04-26.md
+          # (sub-plan: plans/phase-4-validators-to-shacl.md). Parallel
+          # SHACL gate alongside the Python page_objectives gate above —
+          # NOT a replacement. Severity is intentionally `warning` so
+          # the Python gate stays authoritative during the PoC window
+          # while the SHACL output is informational. Inputs (content_dir
+          # + objectives_path) are routed via the same
+          # _build_page_objectives builder.
+          - gate_id: page_objectives_shacl
+            validator: lib.validators.shacl_runner.PageObjectivesShaclValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: "Phase 4 PoC SHACL parallel of page_objectives. Informational; Python gate remains authoritative."
+
       - name: validation
         agents: [oscqr-course-evaluator, quality-assurance]
         parallel: true
@@ -695,6 +713,19 @@ workflows:
             behavior:
               on_fail: block
               on_error: fail_closed
+
+          # Phase 4 PoC SHACL parallel — see textbook_to_course note above
+          # in course_generation.packaging for rationale. Severity is
+          # `warning` so the Python gate at this phase stays authoritative.
+          - gate_id: page_objectives_shacl
+            validator: lib.validators.shacl_runner.PageObjectivesShaclValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: "Phase 4 PoC SHACL parallel of page_objectives. Informational; Python gate remains authoritative."
 
       - name: trainforge_assessment
         agents: [assessment-generator]

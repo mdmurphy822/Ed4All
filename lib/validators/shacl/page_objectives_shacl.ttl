@@ -1,0 +1,52 @@
+# Phase 4 PoC — SHACL parallel of PageObjectivesValidator
+#
+# Source: plans/phase-4-validators-to-shacl.md (sub-plan of
+# plans/rdf-shacl-enrichment-2026-04-26.md). This file expresses the
+# structural part of the page_objectives gate in SHACL Core: every
+# Courseforge CourseModule (each generated week_*.html page) must declare
+# at least one learning objective via schema:teaches.
+#
+# Wired as a parallel `page_objectives_shacl` gate at:
+#   - course_generation.packaging
+#   - textbook_to_course.packaging
+# Severity is `warning` so the SHACL gate is INFORMATIONAL during the
+# PoC window — the existing Python gate at the same phase remains
+# authoritative. See sub-plan §8.
+#
+# Namespaces are canonical (sub-plan §10): no new IRI scheme is minted.
+# Target: ed4all:CourseModule (Wave 62 @context aliases "@type":
+# "CourseModule" -> ed4all:CourseModule). Path: schema:teaches (the
+# Wave 62 @context aliases the "learningObjectives" JSON key onto
+# schema:teaches with @container:@set). Constraint: sh:minCount 1.
+#
+# Result message (sh:message at the SHAPE level — pyshacl copies onto
+# every produced sh:resultMessage) follows Q43 authoring rules:
+#   - domain-language constraint name
+#   - expected vs found
+#   - actionable suggestion
+#   - stable code prefix (PO-001) for downstream tooling routing.
+#
+# Discrepancy with the Python gate (sub-plan §9.2): the Python validator
+# treats `learningObjectives: []` as pass (no LO-specificity violation
+# in an empty allowed-set). The SHACL shape REJECTS empty-LO pages —
+# this is richer-diagnostics-for-free, the LO-fanout failure mode the
+# Python gate was meant to catch but currently silently allows.
+
+@prefix sh:       <http://www.w3.org/ns/shacl#> .
+@prefix rdfs:     <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix schema:   <http://schema.org/> .
+@prefix ed4all:   <https://ed4all.dev/ns/courseforge/v1#> .
+@prefix cfshapes: <https://ed4all.dev/ns/courseforge/v1/shapes#> .
+
+cfshapes:PageObjectivesMinCountShape
+  a sh:NodeShape ;
+  sh:targetClass ed4all:CourseModule ;
+  rdfs:label "Page Objectives Min-Count Shape (Phase 4 PoC)" ;
+  rdfs:comment "Phase 4 PoC of plans/rdf-shacl-enrichment-2026-04-26.md. Parallel of PageObjectivesValidator's structural per-page LO presence check. Each ed4all:CourseModule (one per generated HTML page) must declare at least one learning objective. Critical-severity violation in shape land; surfaced as a `warning` gate during the PoC so the existing Python gate stays authoritative." ;
+
+  sh:property [
+    sh:path schema:teaches ;
+    sh:minCount 1 ;
+    sh:severity sh:Violation ;
+    sh:message "PO-001: every CourseModule must declare at least one learning objective via schema:teaches (expected at least 1, found 0). Add a learningObjectives entry referencing a canonical TO-NN or CO-NN ID for this page's week. See plans/phase-4-validators-to-shacl.md." ;
+  ] .

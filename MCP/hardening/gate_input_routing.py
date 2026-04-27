@@ -575,6 +575,13 @@ def default_router() -> GateInputRouter:
         "lib.validators.page_objectives.PageObjectivesValidator",
         _build_page_objectives,
     )
+    # Phase 4 PoC: SHACL parallel of page_objectives. Reuses the
+    # Python-validator's input contract (content_dir + objectives_path)
+    # verbatim so workflow-config drift is impossible.
+    r.register(
+        "lib.validators.shacl_runner.PageObjectivesShaclValidator",
+        _build_page_objectives,
+    )
     r.register(
         "lib.validators.source_refs.PageSourceRefValidator",
         _build_source_refs,
