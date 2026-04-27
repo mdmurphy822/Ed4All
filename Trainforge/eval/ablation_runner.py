@@ -58,6 +58,72 @@ _DEFAULT_BENCHMARK = "ED4ALL-Bench"
 _DEFAULT_BENCHMARK_VERSION = "1.0"
 
 
+# Wave 105: when a setup tagged as +rag produces empty retrieved_chunks
+# for more than this fraction of probes, the runner emits a CRITICAL
+# log line and stamps `setup.health = "rag_inert"` on that row.
+_RAG_INERT_FRACTION_THRESHOLD = 0.5
+
+
+def _is_rag_setup_label(setup_label: str) -> bool:
+    """True when a setup label denotes a RAG-augmented row.
+
+    Handles the headline labels (``base+rag`` / ``adapter+rag``) and
+    the retrieval-method-sweep label
+    (``adapter+rag-method-sweep``) used by the runner.
+    """
+    return "rag" in (setup_label or "").lower()
+
+
+class _RAGRecordingProxy:
+    """Wave 105: wrap a RAG-backed callable to capture per-prompt chunks.
+
+    The harness invokes the model callable once per probe but doesn't
+    know about retrieval. We need the chunks the underlying RAGCallable
+    pulled for each prompt so the AblationRunner can attach them to
+    the EvidenceTrace it writes for that probe.
+
+    This proxy delegates ``__call__`` to the wrapped callable,
+    snapshots ``last_retrieved_chunks`` after the call, and stores
+    the result in ``self.records[prompt]``. The ablation runner reads
+    ``records`` after the harness completes.
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+        self.records: Dict[str, List[Dict[str, Any]]] = {}
+        self._call_order: List[str] = []
+
+    def __call__(self, prompt: str) -> str:
+        out = self._inner(prompt)
+        chunks_attr = getattr(self._inner, "last_retrieved_chunks", None)
+        chunks: List[Dict[str, Any]]
+        if callable(chunks_attr):
+            try:
+                chunks = list(chunks_attr() or [])
+            except Exception:  # noqa: BLE001
+                chunks = []
+        elif isinstance(chunks_attr, list):
+            chunks = list(chunks_attr)
+        else:
+            chunks = []
+        self.records[prompt] = chunks
+        self._call_order.append(prompt)
+        return out
+
+    @property
+    def mean_latency_ms(self) -> Optional[float]:
+        return getattr(self._inner, "mean_latency_ms", None)
+
+    @property
+    def last_retrieved_chunks(self) -> List[Dict[str, Any]]:
+        return list(getattr(self._inner, "last_retrieved_chunks", []) or [])
+
+    def __getattr__(self, item: str) -> Any:
+        # Delegate anything we don't override to the wrapped callable
+        # so existing AdapterCallable / RAGCallable APIs still work.
+        return getattr(self._inner, item)
+
+
 @dataclass
 class AblationSetup:
     """One row in the headline table."""
@@ -270,12 +336,43 @@ class AblationRunner:
     # Wave 103 helpers                                                    #
     # ------------------------------------------------------------------ #
 
+    def _evaluate_rag_health(
+        self,
+        *,
+        setup_label: str,
+        recorder: Optional["_RAGRecordingProxy"],
+        eval_report: Dict[str, Any],
+    ) -> Optional[str]:
+        """Wave 105: classify RAG health for a setup row.
+
+        Returns ``"rag_inert"`` when more than
+        :data:`_RAG_INERT_FRACTION_THRESHOLD` of the probes a
+        recorder observed produced empty retrieved_chunks. Emits a
+        CRITICAL log at the same time so the breakage is loud at
+        eval time. Returns ``None`` when no recorder was wired (the
+        setup wasn't RAG-tagged) or when the threshold isn't met.
+        """
+        if recorder is None or not recorder.records:
+            return None
+        total = len(recorder.records)
+        empties = sum(1 for v in recorder.records.values() if not v)
+        if total == 0:
+            return None
+        if empties / total > _RAG_INERT_FRACTION_THRESHOLD:
+            logger.critical(
+                "AblationRunner: RAG path appears broken — %s has "
+                "%d/%d empty retrievals", setup_label, empties, total,
+            )
+            return "rag_inert"
+        return None
+
     def _emit_traces_for_setup(
         self,
         *,
         setup_label: str,
         retrieval_method: Optional[str],
         eval_report: Dict[str, Any],
+        rag_recorder: Optional["_RAGRecordingProxy"] = None,
     ) -> None:
         """Append one trace row per probe to the trace writer.
 
@@ -318,6 +415,16 @@ class AblationRunner:
             # `ground_truth_chunk_id` directly; older fixtures may
             # carry a `retrieved_chunks` array. Tolerate both shapes.
             chunks = probe.get("retrieved_chunks") or []
+            # Wave 105: when the harness didn't surface chunks per
+            # probe, look the chunks up via the per-prompt recorder
+            # populated by the RAGCallable. Match against the probe
+            # text first; if absent, leave chunks empty (the runner
+            # health check upstream will have already flagged this).
+            if not chunks and rag_recorder is not None:
+                probe_text = str(probe.get("probe", ""))
+                recorded = rag_recorder.records.get(probe_text)
+                if recorded:
+                    chunks = list(recorded)
             ground_truth = probe.get("ground_truth_chunk_id")
             if ground_truth is None:
                 edge = probe.get("edge") or {}
@@ -381,9 +488,16 @@ class AblationRunner:
     def _run_headline_table(self) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
         for setup in self.setups:
+            # Wave 105: wrap +rag callables so we can capture
+            # retrieved_chunks per probe and write them into traces.
+            recorder: Optional[_RAGRecordingProxy] = None
+            run_callable = setup.callable
+            if _is_rag_setup_label(setup.setup):
+                recorder = _RAGRecordingProxy(setup.callable)
+                run_callable = recorder
             harness = self.harness_factory(
                 course_path=self.course_path,
-                model_callable=setup.callable,
+                model_callable=run_callable,
             )
             scratch = self.course_path / "eval" / f"_ablation_{setup.setup}.json"
             harness.run_all(output_path=scratch)
@@ -407,6 +521,15 @@ class AblationRunner:
                 "source_match": _round(metrics["source_match"]),
                 "qualitative_score": qualitative,
             }
+            # Wave 105: stamp setup.health and emit a CRITICAL log if the
+            # +rag path produced empty retrievals on >50% of probes.
+            health = self._evaluate_rag_health(
+                setup_label=setup.setup,
+                recorder=recorder,
+                eval_report=eval_report,
+            )
+            if health is not None:
+                row["health"] = health
             rows.append(row)
             # Wave 103: trace probes for this setup. Headline rows
             # never specify a retrieval method (the headline ablation
@@ -416,6 +539,7 @@ class AblationRunner:
                 setup_label=setup.setup,
                 retrieval_method=None,
                 eval_report=eval_report,
+                rag_recorder=recorder,
             )
         return rows
 
@@ -474,9 +598,13 @@ class AblationRunner:
         rows: List[Dict[str, Any]] = []
         for method in _RETRIEVAL_METHODS:
             method_callable = self.retrieval_method_factory(method)
+            # Wave 105: every method-sweep row is implicitly +rag; wrap
+            # the callable to capture retrieved_chunks for traces.
+            recorder = _RAGRecordingProxy(method_callable)
+            run_callable = recorder
             harness = self.harness_factory(
                 course_path=self.course_path,
-                model_callable=method_callable,
+                model_callable=run_callable,
             )
             scratch = (
                 self.course_path / "eval"
@@ -494,7 +622,7 @@ class AblationRunner:
                 mean_latency = (
                     eval_report.get("metrics", {}).get("mean_latency_ms")
                 )
-            rows.append({
+            row = {
                 "method": method,
                 "accuracy": _round(metrics["accuracy"]),
                 "faithfulness": _round(metrics["faithfulness"]),
@@ -503,7 +631,15 @@ class AblationRunner:
                     round(float(mean_latency), 2) if mean_latency is not None
                     else None
                 ),
-            })
+            }
+            health = self._evaluate_rag_health(
+                setup_label=f"adapter+rag-method-sweep:{method}",
+                recorder=recorder,
+                eval_report=eval_report,
+            )
+            if health is not None:
+                row["health"] = health
+            rows.append(row)
             # Wave 103: trace each probe under the
             # adapter+rag-method-sweep label, tagging the active
             # retrieval method.
@@ -511,6 +647,7 @@ class AblationRunner:
                 setup_label="adapter+rag-method-sweep",
                 retrieval_method=method,
                 eval_report=eval_report,
+                rag_recorder=recorder,
             )
         return rows
 

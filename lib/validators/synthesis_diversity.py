@@ -33,9 +33,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
 
@@ -46,6 +47,17 @@ DEFAULT_MAX_TOP3_SHARE = 0.60
 DEFAULT_MAX_SINGLE_SHARE = 0.35
 DEFAULT_MIN_DISTINCT_TEMPLATES = 8
 DEFAULT_MIN_TOTAL_PAIRS = 100
+
+# Wave 105: prefix-bigram diversity defaults. Catches template-collapse
+# at the answer level even when ``template_id`` is well distributed.
+# Example: rdf-shacl-551-2 had 11 distinct template_ids but 80% of
+# completions started with "the treatment" — the trained model
+# memorised that phrase, not 11 templates.
+DEFAULT_MAX_PREFIX_TOP1_SHARE = 0.15
+DEFAULT_MAX_PREFIX_TOP3_SHARE = 0.30
+
+
+_PREFIX_WORD_RE = re.compile(r"[a-zA-Z']+")
 
 # The instruction_factory tags every emitted pair with ``template_id``
 # (e.g. "remember.explanation"). Newer corpora may also carry
@@ -115,6 +127,7 @@ class SynthesisDiversityValidator:
 
         # Read JSONL, tolerating empty / blank lines.
         template_counts: Counter = Counter()
+        prefix_counts: Counter = Counter()
         total = 0
         try:
             with path.open("r", encoding="utf-8") as fh:
@@ -135,6 +148,14 @@ class SynthesisDiversityValidator:
                     total += 1
                     tid = self._extract_template_id(rec)
                     template_counts[tid] += 1
+                    # Wave 105: track the prefix bigram of the
+                    # completion text. If ``completion`` is missing
+                    # we fall back to "answer" or "response" since
+                    # different emit revisions used different keys;
+                    # records that have neither contribute nothing.
+                    bigram = self._extract_prefix_bigram(rec)
+                    if bigram is not None:
+                        prefix_counts[bigram] += 1
         except OSError as exc:
             return GateResult(
                 gate_id=gate_id,
@@ -223,6 +244,31 @@ class SynthesisDiversityValidator:
                     ),
                 ))
 
+            # ---------- Prefix-bigram diversity (Wave 105) ----------
+            # Flags template-collapse at the COMPLETION text level: if
+            # the same first 2 words show up in a large fraction of
+            # responses, the trained adapter will memorise that phrase
+            # instead of the underlying behaviour. The Wave 104 eval
+            # of rdf-shacl-551-2 had 11 distinct template_ids (passing
+            # the older check) but 80% of completions started with
+            # "the treatment" — exactly the failure mode this catches.
+            self._check_response_prefix_diversity(
+                prefix_counts=prefix_counts,
+                total_with_prefix=sum(prefix_counts.values()),
+                max_top1=float(
+                    inputs.get("max_prefix_top1_share",
+                               DEFAULT_MAX_PREFIX_TOP1_SHARE)
+                    or DEFAULT_MAX_PREFIX_TOP1_SHARE
+                ),
+                max_top3=float(
+                    inputs.get("max_prefix_top3_share",
+                               DEFAULT_MAX_PREFIX_TOP3_SHARE)
+                    or DEFAULT_MAX_PREFIX_TOP3_SHARE
+                ),
+                issues=issues,
+                path=path,
+            )
+
         critical = sum(1 for i in issues if i.severity == "critical")
         passed = critical == 0
         # Score: 1.0 - top-3 share (approximate diversity index, capped
@@ -251,6 +297,97 @@ class SynthesisDiversityValidator:
                 return str(v)
         return "unknown"
 
+    @staticmethod
+    def _extract_prefix_bigram(
+        rec: Dict[str, Any],
+    ) -> Tuple[str, str] | None:
+        """First-2-words bigram from the completion text (Wave 105).
+
+        Lowercased, punctuation stripped (handled via
+        :data:`_PREFIX_WORD_RE`). Falls back through a few key names
+        because emit revisions across waves used different fields
+        (``completion`` is canonical; ``response`` / ``answer`` show
+        up in older / paraphrase-style records).
+        """
+        for k in ("completion", "response", "answer", "output"):
+            v = rec.get(k)
+            if not v:
+                continue
+            words = _PREFIX_WORD_RE.findall(str(v).lower())
+            if len(words) >= 2:
+                return (words[0], words[1])
+            return None
+        return None
+
+    @staticmethod
+    def _check_response_prefix_diversity(
+        *,
+        prefix_counts: Counter,
+        total_with_prefix: int,
+        max_top1: float,
+        max_top3: float,
+        issues: List[GateIssue],
+        path: Path,
+    ) -> None:
+        """Top-1 / top-3 prefix-bigram concentration check.
+
+        Mirrors the template-id checks; thresholds are tighter
+        because prefix bigrams are intrinsically less concentrated
+        in healthy corpora (any natural-language paraphrase pass
+        produces a long tail).
+        """
+        if total_with_prefix < 5:
+            # Too few records to assess; the volume warning above
+            # already surfaces the small-corpus signal.
+            return
+        top1_bigram, top1_count = prefix_counts.most_common(1)[0]
+        top1_share = top1_count / total_with_prefix
+        top3_share = (
+            sum(c for _, c in prefix_counts.most_common(3))
+            / total_with_prefix
+        )
+        if top1_share > max_top1:
+            issues.append(GateIssue(
+                severity="critical",
+                code="PREFIX_BIGRAM_TOP1_DOMINANCE",
+                message=(
+                    f"top-1 completion prefix bigram "
+                    f"{top1_bigram!r} accounts for "
+                    f"{top1_share:.2%} of completions (> "
+                    f"max_prefix_top1_share={max_top1:.2%}); "
+                    f"trained model will memorise this phrase."
+                ),
+                location=str(path),
+                suggestion=(
+                    "Inspect the synthesizer's paraphrase prompt — "
+                    "high top-1 prefix concentration usually means "
+                    "the LLM is locking onto a single stem like "
+                    "'The treatment of...' or 'The core idea...'. "
+                    "Vary the request, increase temperature, or "
+                    "force the model to vary its opening."
+                ),
+            ))
+        if top3_share > max_top3:
+            top3 = prefix_counts.most_common(3)
+            issues.append(GateIssue(
+                severity="critical",
+                code="PREFIX_BIGRAM_TOP3_DOMINANCE",
+                message=(
+                    f"top-3 completion prefix bigrams account for "
+                    f"{top3_share:.2%} of completions (> "
+                    f"max_prefix_top3_share={max_top3:.2%}); "
+                    f"top-3 bigrams: {top3}."
+                ),
+                location=str(path),
+                suggestion=(
+                    "Even with diverse template_ids, the answer "
+                    "text is template-collapsed at the prefix "
+                    "level. The trained model will pattern-match "
+                    "these prefixes rather than learn the "
+                    "underlying behaviour."
+                ),
+            ))
+
 
 __all__ = [
     "SynthesisDiversityValidator",
@@ -258,4 +395,77 @@ __all__ = [
     "DEFAULT_MAX_SINGLE_SHARE",
     "DEFAULT_MIN_DISTINCT_TEMPLATES",
     "DEFAULT_MIN_TOTAL_PAIRS",
+    "DEFAULT_MAX_PREFIX_TOP1_SHARE",
+    "DEFAULT_MAX_PREFIX_TOP3_SHARE",
 ]
+
+
+def _main() -> int:  # pragma: no cover - manual CLI helper
+    """Wave 105: ``python -m lib.validators.synthesis_diversity <path>``.
+
+    Run the validator on an instruction_pairs.jsonl and print the
+    issue codes + the prefix-bigram distribution. Useful for
+    confirming template-collapse on an existing corpus without
+    spinning up the full validation gate framework.
+    """
+    import argparse
+    import sys
+
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run SynthesisDiversityValidator against an "
+            "instruction_pairs.jsonl and print the report."
+        ),
+    )
+    parser.add_argument(
+        "instruction_pairs_path",
+        type=str,
+        help="Path to instruction_pairs.jsonl.",
+    )
+    args = parser.parse_args()
+
+    result = SynthesisDiversityValidator().validate({
+        "instruction_pairs_path": args.instruction_pairs_path,
+    })
+
+    print(f"passed={result.passed}  score={result.score}")
+    print(f"issues ({len(result.issues)}):")
+    for i in result.issues:
+        print(f"  [{i.severity}] {i.code}: {i.message}")
+
+    # Re-read the file so we can print the prefix-bigram distribution
+    # — handy for the Wave 105 verification step.
+    prefix_counts: Counter = Counter()
+    total = 0
+    with open(args.instruction_pairs_path, "r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            bigram = SynthesisDiversityValidator._extract_prefix_bigram(rec)
+            if bigram is not None:
+                total += 1
+                prefix_counts[bigram] += 1
+    print(f"\nprefix-bigram distribution (n={total}):")
+    for bigram, count in prefix_counts.most_common(10):
+        print(
+            f"  {bigram!r}: {count} "
+            f"({100 * count / max(total, 1):.1f}%)"
+        )
+    if total:
+        top1_share = prefix_counts.most_common(1)[0][1] / total
+        top3_share = (
+            sum(c for _, c in prefix_counts.most_common(3)) / total
+        )
+        print(f"top1_share = {100*top1_share:.2f}%")
+        print(f"top3_share = {100*top3_share:.2f}%")
+
+    return 0 if result.passed else 1
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(_main())

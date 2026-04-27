@@ -138,6 +138,16 @@ class HoldoutBuilder:
 
         bloom_strata = self._compute_bloom_strata(edges, withheld, bloom_by_chunk)
 
+        # Wave 105: emit a `probes` array alongside `withheld_edges`
+        # so downstream eval consumers (slm_eval_harness, evaluators)
+        # have a stable, prompt-shaped surface even when the edge
+        # carries no chunk anchor. Each probe carries the
+        # canonical fields required by the Wave 105 contract:
+        # ``probe_id`` / ``prompt`` / ``ground_truth_chunk_id`` /
+        # ``edge_type``. ``ground_truth_chunk_id`` is null when the
+        # edge isn't chunk-anchored (concept->concept edges).
+        probes = self._build_probes(withheld)
+
         payload: Dict[str, Any] = {
             "course_slug": self.course_path.name,
             "seed": self.seed,
@@ -154,6 +164,7 @@ class HoldoutBuilder:
                 }
                 for e in withheld
             ],
+            "probes": probes,
         }
 
         # Hash the canonicalised payload (without the hash field) so
@@ -248,6 +259,46 @@ class HoldoutBuilder:
             }
             for level in sorted(totals.keys())
         }
+
+    @staticmethod
+    def _build_probes(
+        withheld: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Wave 105: derive prompt-shaped probes from withheld edges.
+
+        Each probe is keyed by a deterministic ``probe_id`` so reruns
+        with the same seed produce stable IDs. ``ground_truth_chunk_id``
+        is set when the edge's ``source`` is chunk-anchored
+        (``chunk_*``); otherwise it's ``None``. ``prompt`` is a
+        terse paraphrase of the edge so RAG callables can be evaluated
+        against the same surface as ``faithfulness._format_probe``.
+        """
+        out: List[Dict[str, Any]] = []
+        for i, edge in enumerate(withheld):
+            src = edge.get("source")
+            tgt = edge.get("target")
+            rel = edge.get("relation_type")
+            # Wave 105: a chunk source can be either the canonical
+            # ``chunk_NNNN`` form or a corpus-prefixed
+            # ``<corpus>_chunk_NNNN`` form (the rdf-shacl-551-2 graph
+            # uses the prefixed form). Detect both — substring search
+            # for ``chunk_`` is sufficient because no other node class
+            # in the pedagogy graph contains that token.
+            gt_chunk = (
+                src if isinstance(src, str) and "chunk_" in src
+                else None
+            )
+            prompt = (
+                f"Does the relation '{rel}' hold between "
+                f"{src!r} and {tgt!r}?"
+            )
+            out.append({
+                "probe_id": f"holdout-{i:04d}",
+                "prompt": prompt,
+                "ground_truth_chunk_id": gt_chunk,
+                "edge_type": rel,
+            })
+        return out
 
     def _resolve_output_path(self) -> Path:
         return self.course_path / "eval" / "holdout_split.json"

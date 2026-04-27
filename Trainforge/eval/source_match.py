@@ -33,10 +33,29 @@ from typing import Any, Callable, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-# Default citation pattern: ``[chunk_<hex_or_underscore>]`` form.
-# Permissive enough to catch both legacy ``chunk_abc123`` IDs and the
-# Wave 75-style ``chunk_<16 hex>`` content-hashed IDs.
-_DEFAULT_CITATION_RE = r"\[(chunk_[0-9a-zA-Z_]+)\]"
+# Wave 105: the default citation regex now accepts the four
+# citation forms observed in trained-model output. RDF/SHACL corpus
+# uses ``rdf_shacl_551_chunk_NNNNN`` IDs; we accept multiple
+# citation formats and normalize back to the canonical ``chunk_NNNNN``
+# form before comparison.
+#
+# Accepted forms (all extracted by the same alternation):
+#   1. ``[chunk_00270]``                  — bracketed (the canonical form)
+#   2. ``'chunk_00270'``                  — single-quoted bare suffix
+#   3. ``'rdf_shacl_551_chunk_00270'``    — single-quoted full ID
+#   4. ``chunk_00270``                    — bare token (no delimiter)
+#
+# Group 1 carries the matched chunk reference (with optional corpus
+# prefix). The matcher strips the optional corpus prefix in
+# :meth:`_normalize_citation` so a model that emits the long form is
+# still credited when the ground-truth chunk_id is the short form.
+_DEFAULT_CITATION_RE = (
+    r"(?:"
+    r"\[((?:[a-z0-9_]+_)?chunk_[0-9a-zA-Z_]+)\]"          # form 1: brackets
+    r"|'((?:[a-z0-9_]+_)?chunk_[0-9a-zA-Z_]+)'"            # forms 2+3: single-quoted
+    r"|(?<![A-Za-z0-9_'\[])((?:[a-z0-9_]+_)?chunk_[0-9a-zA-Z_]+)(?![A-Za-z0-9_'\]])"  # form 4: bare
+    r")"
+)
 
 
 _CHUNK_PREFIXES = ("chunk_",)
@@ -47,6 +66,23 @@ def _is_chunk_id(value: Any) -> bool:
     if not isinstance(value, str):
         return False
     return any(value.startswith(p) for p in _CHUNK_PREFIXES)
+
+
+def _normalize_citation(raw: str) -> str:
+    """Strip an optional corpus prefix (e.g. ``rdf_shacl_551_``) so
+    citations align with the canonical ``chunk_NNNNN`` ID space.
+
+    A model can emit either ``chunk_00270`` or
+    ``rdf_shacl_551_chunk_00270``; both should count as a match
+    against ground_truth ``chunk_00270``. We find the rightmost
+    occurrence of ``chunk_`` and keep everything from there.
+    """
+    if not raw:
+        return raw
+    idx = raw.rfind("chunk_")
+    if idx == -1:
+        return raw
+    return raw[idx:]
 
 
 class SourceMatchEvaluator:
@@ -115,8 +151,22 @@ class SourceMatchEvaluator:
                 })
                 continue
 
-            cited = self.citation_re.findall(str(response))
-            cited_set = list(dict.fromkeys(cited))  # de-dupe, preserve order
+            # Wave 105: regex carries multiple alternation groups; pick
+            # whichever group fired for each match, then normalize to
+            # strip optional corpus prefix.
+            raw_matches = self.citation_re.findall(str(response))
+            cited_raw: List[str] = []
+            for m in raw_matches:
+                if isinstance(m, tuple):
+                    # First non-empty alternation group is the citation.
+                    citation = next((g for g in m if g), None)
+                    if citation:
+                        cited_raw.append(citation)
+                else:
+                    cited_raw.append(m)
+            cited_set = list(dict.fromkeys(
+                _normalize_citation(c) for c in cited_raw
+            ))  # de-dupe, preserve order
             score = 1.0 if ground_truth in cited_set else 0.0
             if score == 1.0:
                 matches += 1

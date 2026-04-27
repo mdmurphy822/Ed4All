@@ -118,6 +118,98 @@ def test_source_match_partial(tmp_path):
     assert result["source_match_rate"] == pytest.approx(1.0 / 3.0)
 
 
+def test_source_match_accepts_bracket_form(tmp_path):
+    """Wave 105: form 1 — canonical [chunk_NNNN] still works."""
+    from Trainforge.eval.source_match import SourceMatchEvaluator
+
+    holdout = tmp_path / "h.json"
+    edges = [
+        {"source": "chunk_00270", "target": "concept", "relation_type": "teaches"},
+    ]
+    _write_holdout_split(holdout, edges)
+    result = SourceMatchEvaluator(
+        holdout_split=holdout,
+        model_callable=lambda _p: "see [chunk_00270] for details",
+    ).evaluate()
+    assert result["matches"] == 1
+    assert result["source_match_rate"] == pytest.approx(1.0)
+
+
+def test_source_match_accepts_single_quoted_short_form(tmp_path):
+    """Wave 105: form 2 — single-quoted bare suffix 'chunk_NNNN'.
+
+    The trained model emitted this exact form in the Wave 104 eval
+    (e.g. 'rdf_shacl_551_chunk_00270') so source-match must not
+    discount it.
+    """
+    from Trainforge.eval.source_match import SourceMatchEvaluator
+
+    holdout = tmp_path / "h.json"
+    edges = [
+        {"source": "chunk_00270", "target": "concept", "relation_type": "teaches"},
+    ]
+    _write_holdout_split(holdout, edges)
+    result = SourceMatchEvaluator(
+        holdout_split=holdout,
+        model_callable=lambda _p: "the answer is in 'chunk_00270'",
+    ).evaluate()
+    assert result["matches"] == 1
+
+
+def test_source_match_accepts_single_quoted_full_corpus_id(tmp_path):
+    """Wave 105: form 3 — 'rdf_shacl_551_chunk_NNNN' single-quoted
+    full corpus ID, normalized to ``chunk_NNNN``."""
+    from Trainforge.eval.source_match import SourceMatchEvaluator
+
+    holdout = tmp_path / "h.json"
+    edges = [
+        {"source": "chunk_00270", "target": "concept", "relation_type": "teaches"},
+    ]
+    _write_holdout_split(holdout, edges)
+    result = SourceMatchEvaluator(
+        holdout_split=holdout,
+        model_callable=lambda _p: "from 'rdf_shacl_551_chunk_00270' we know",
+    ).evaluate()
+    assert result["matches"] == 1
+
+
+def test_source_match_accepts_bare_token_form(tmp_path):
+    """Wave 105: form 4 — bare ``chunk_NNNN`` without delimiters."""
+    from Trainforge.eval.source_match import SourceMatchEvaluator
+
+    holdout = tmp_path / "h.json"
+    edges = [
+        {"source": "chunk_00270", "target": "concept", "relation_type": "teaches"},
+    ]
+    _write_holdout_split(holdout, edges)
+    result = SourceMatchEvaluator(
+        holdout_split=holdout,
+        model_callable=lambda _p: "as chunk_00270 explains, ...",
+    ).evaluate()
+    assert result["matches"] == 1
+
+
+def test_source_match_score_non_none_when_holdout_has_chunk_ids(tmp_path):
+    """Wave 105: a ground-truth chunk_id present in the holdout means
+    source-match returns a numeric score (not None) regardless of
+    whether the model cites it."""
+    from Trainforge.eval.source_match import SourceMatchEvaluator
+
+    holdout = tmp_path / "h.json"
+    edges = [
+        {"source": "chunk_a", "target": "concept", "relation_type": "teaches"},
+        {"source": "chunk_b", "target": "concept", "relation_type": "exemplifies"},
+    ]
+    _write_holdout_split(holdout, edges)
+    result = SourceMatchEvaluator(
+        holdout_split=holdout,
+        model_callable=lambda _p: "no citation",
+    ).evaluate()
+    assert result["source_match_rate"] is not None
+    assert isinstance(result["source_match_rate"], float)
+    assert result["scored_total"] == 2
+
+
 def test_source_match_handles_callable_error(tmp_path):
     from Trainforge.eval.source_match import SourceMatchEvaluator
 
