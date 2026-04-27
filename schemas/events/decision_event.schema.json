@@ -115,6 +115,7 @@
         "source_usage",
         "strategy_decision",
         "structure_detection",
+        "synthesis_provider_call",
         "textbook_integration",
         "training_run_planning",
         "typed_edge_inference",

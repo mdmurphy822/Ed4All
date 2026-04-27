@@ -283,6 +283,8 @@ def synthesize_instruction_pair(
     chunk: Dict[str, Any],
     seed: int,
     provider: str = "mock",
+    *,
+    anthropic_provider: Optional[Any] = None,
 ) -> InstructionSynthesisResult:
     """Synthesize one instruction pair from an enriched chunk.
 
@@ -290,16 +292,22 @@ def synthesize_instruction_pair(
         chunk: Enriched chunk dict from corpus/chunks.jsonl. Must have
             ``learning_outcome_refs`` (enforced by caller).
         seed: Deterministic seed. Same chunk + same seed -> same pair.
-        provider: "mock" (implemented) or "anthropic" (future; raises for now).
+        provider: ``"mock"`` (deterministic templates) or ``"anthropic"``
+            (Wave 91: paraphrase the mock draft via Claude).
+        anthropic_provider: Optional :class:`AnthropicSynthesisProvider`
+            instance. When ``provider="anthropic"`` and this is None,
+            a default instance is constructed (which requires
+            ``ANTHROPIC_API_KEY`` in the environment). Tests inject a
+            mocked instance here.
 
     Returns:
         InstructionSynthesisResult. ``pair`` is None if any hard gate failed;
         ``quality`` explains which.
     """
-    if provider != "mock":
+    if provider not in ("mock", "anthropic"):
         raise NotImplementedError(
             f"instruction synthesis provider '{provider}' is not implemented; "
-            f"only 'mock' is wired in this release."
+            f"valid choices are 'mock' and 'anthropic'."
         )
 
     chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
@@ -381,10 +389,26 @@ def synthesize_instruction_pair(
         "schema_version": "v1",
     }
 
+    # Wave 91 Action A: when provider="anthropic", paraphrase the mock
+    # draft through Claude. The mock pair already passed every length /
+    # leakage / grounding gate above; the LLM step is anchored against
+    # the chunk text via prompt caching and only paraphrases — it must
+    # not introduce new facts. Failures (missing API key, parse retry
+    # exhaustion) raise loudly per Action A spec.
+    if provider == "anthropic":
+        provider_instance = anthropic_provider
+        if provider_instance is None:
+            from Trainforge.generators._anthropic_provider import (
+                AnthropicSynthesisProvider,
+            )
+            provider_instance = AnthropicSynthesisProvider()
+        pair = provider_instance.paraphrase_instruction(pair, chunk)
+
     rationale = (
         f"Selected template '{template_id}' for bloom='{bloom}' content_type='{content_type}' "
         f"targeting topic='{topic}'. Completion grounded in key_terms/concept_tags with a "
-        f"bloom-level-specific closing sentence. Verbatim-span check against chunk.text passed."
+        f"bloom-level-specific closing sentence. Verbatim-span check against chunk.text passed. "
+        f"Provider='{provider}' (anthropic = paraphrase pass over the mock draft)."
     )
 
     return InstructionSynthesisResult(
