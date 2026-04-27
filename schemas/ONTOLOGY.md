@@ -1107,12 +1107,13 @@ Every version counter currently in use:
 | `schemas/academic/course_metadata.schema.json` | Course, Module | Full academic course metadata (MIT OCW shape) |
 | `schemas/academic/learning_objectives.schema.json` | LearningObjective | Extracted LO hierarchy (course/chapter/section/subsection) |
 | `schemas/academic/textbook_structure.schema.json` | Section, ContentBlock, TOC entry, key-term / definition / procedure / example records | DART-processed textbook semantic structure |
-| `schemas/compliance/wcag22_compliance.schema.json` | WCAGCompliance | WCAG 2.2 AA requirements (4 principles + SC codes) |
+| `schemas/academic/courseforge_page_types.schema.json` | CourseforgePageType (enum) | Authoritative academic-domain page-type enum (`overview` / `content` / `application` / `assessment` / `summary` / `discussion`). Reference doc — enum values intentionally duplicate `schemas/taxonomies/module_type.json` per REC-CTR-02 so academic-schema consumers and pure-taxonomy consumers each have a domain-local `$ref` target. |
+| `schemas/compliance/wcag22_compliance.schema.json` | WCAGCompliance | WCAG 2.2 AA requirements (4 principles + SC codes). Reference doc — runtime gate is `lib.validators.wcag.WCAGValidator`, which encodes the same SC matrix in code rather than `$ref`-loading this file. |
 | `schemas/config/workflows_meta.schema.json` | WorkflowMeta | Meta-schema for `config/workflows.yaml` (phase routing, gate shape, inputs_from references) |
 | `schemas/events/decision_event.schema.json` | DecisionEvent | Base Claude-decision ledger record |
 | `schemas/events/trainforge_decision.schema.json` | TrainforgeDecisionEvent | Decision ledger + assessment/rag/alignment context (allOf) |
 | `schemas/events/audit_event.schema.json` | AuditEvent | Unified audit event w/ event-type-keyed details |
-| `schemas/events/hash_chained_event.schema.json` | HashChainedEvent | Tamper-evident hash chain wrapper |
+| `schemas/events/hash_chained_event.schema.json` | HashChainedEvent | Tamper-evident hash chain wrapper. Reference doc — `lib/hash_chain.py::HashChainedLog` enforces the contract in code; no `$ref`-loaded validator consumes the file. |
 | `schemas/events/session_annotation.schema.json` | SessionAnnotation | Aggregated session summary across decisions |
 | `schemas/events/run_manifest.schema.json` | RunManifest | Immutable run initialization snapshot |
 | `schemas/knowledge/chunk_v4.schema.json` | Chunk | Trainforge chunk contract (gated by `TRAINFORGE_VALIDATE_CHUNKS`) |
@@ -1301,7 +1302,7 @@ Concept nodes optionally carry `occurrences: List[str]` — the sorted-ASC list 
 
 ### Opt-in flags (behavior toggles)
 
-Eleven environment-variable flags gate opt-in behavior to preserve backward-compat with legacy corpora. All default off; each flag represents a toggle a regeneration run can flip to enforce the newer contract.
+Environment-variable flags gate opt-in behavior to preserve backward-compat with legacy corpora. All default off; each flag represents a toggle a regeneration run can flip to enforce the newer contract. Wave 98 sweep added the five Wave 82 / 84-85 / Worker-L rule-graph + provenance-test flags that had been live in code without doc rows. Root `CLAUDE.md` carries the canonical table; this table mirrors the v0.2.0 / Wave 82-85 subset.
 
 | Flag | When on |
 | ---- | ------- |
@@ -1315,6 +1316,11 @@ Eleven environment-variable flags gate opt-in behavior to preserve backward-comp
 | `DECISION_VALIDATION_STRICT` | Fails closed on unknown `decision_type` values in decision captures. |
 | `DART_LLM_CLASSIFICATION` | DART's block classifier routes through Claude via `LLMClassifier` instead of heuristic regex. Requires an injected `LLMBackend`. |
 | `LOCAL_DISPATCHER_ALLOW_STUB` | Permits `LocalDispatcher` to emit a stubbed `PhaseOutput` when no `agent_tool` callable is wired in. Tests / dry-run only; production `--mode local` runs fail loudly without it set. |
+| `TRAINFORGE_PROVENANCE_CORPUS` | Worker L: absolute path to a locally regenerated `chunks.jsonl` consumed by `Trainforge/tests/test_provenance.py` to assert 100% `source.html_xpath` + `source.char_span` coverage. Unset / pre-Worker-E corpora → those tests `pytest.skip`. Test-only — no production code path reads this flag. |
+| `TRAINFORGE_SEED_TECH_CONCEPTS` | Wave 82 Phase C: enables `lib/ontology/tech_anchors.py::detect_anchors`, which scans chunk text for W3C foundational-tech surface forms (RDF, RDFS, OWL, SHACL, SPARQL, Turtle, JSON-LD, `owl:sameAs`, …) and appends matching anchor slugs to `concept_tags` so the 2-chunk co-occurrence gate admits standalone concept nodes for them. Default off so legacy corpora don't shift tag distributions on rebuild. |
+| `TRAINFORGE_VALIDATE_RULE_OUTPUTS` | Wave 82: activates `lib.validators.semantic_graph_rule_output.SemanticGraphRuleOutputValidator` (warning-severity gate on `textbook_to_course::libv2_archival`). Flags any rule that had ≥10 edges in baseline but zero in current with an unchanged `rule_version` (silent-zero regression class). Default off so corpora without a baseline path keep passing. |
+| `TRAINFORGE_EMIT_TRIG` | Wave 84-85 Phase 3 (rdf-shacl-enrichment plan): emits a sibling `concept_graph_semantic.trig` whose per-rule named graphs are scoped by `(run_id, rule_name)` IRI and carry `ed4all:edgeCount` / `ed4all:inputChunkCount` for SPARQL diff across runs. JSON output is byte-identical regardless. Default off keeps `rdflib`-less environments clean. |
+| `TRAINFORGE_USE_SHACL_RULES` | Wave 84-85 Phase 5 (rdf-shacl-enrichment plan): routes `defined_by_from_first_mention` derivation through `schemas/context/courseforge_v1.shacl-rules.ttl` via pyshacl `advanced=True, inplace=True`. Equivalence with the Python rule pinned by `Trainforge/tests/test_shacl_rules_defined_by.py`. Default off → Python rule stays authoritative. |
 
 ### Always-emit provenance fields
 
