@@ -141,19 +141,43 @@ class LocalBackend(ComputeBackend):
             base_model=spec.base_model,
             training_config=spec.training_config,
         )
-        adapter_path = spec.output_dir / "adapter.safetensors"
-        adapter_path.parent.mkdir(parents=True, exist_ok=True)
+        # Wave 100: ensure the run-dir parent exists for TRL/PEFT
+        # checkpoint emit. The actual adapter filename is owned by
+        # PEFTTrainer.fit_sft (returns adapter_model.safetensors per
+        # Bug 2 fix); we only need the directory here.
+        spec.output_dir.mkdir(parents=True, exist_ok=True)
 
         sft_pairs = _read_jsonl(spec.instruction_pairs_path)
         sft_out = trainer.fit_sft(sft_pairs, spec.output_dir)
+        adapter_out = sft_out
+        metrics: Dict[str, Any] = {"backend": self.name}
 
         if spec.run_dpo and spec.preference_pairs_path.exists():
             pref_pairs = _read_jsonl(spec.preference_pairs_path)
-            sft_out = trainer.fit_dpo(pref_pairs, sft_out, spec.output_dir)
+            # Wave 100 Bug 5 extension: DPO failure must not void the
+            # SFT adapter. SFT has already saved adapter_model.safetensors
+            # to disk; if DPO crashes (e.g. peft-DPO grad_fn drift,
+            # OOM during the higher-memory DPO pass), the runner still
+            # has a usable trained adapter to point the model card at.
+            try:
+                adapter_out = trainer.fit_dpo(
+                    pref_pairs, sft_out, spec.output_dir,
+                )
+                metrics["dpo_completed"] = True
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "LocalBackend: DPO chain failed (%s: %s). Falling "
+                    "back to SFT-only adapter at %s. Model card will "
+                    "be emitted against the SFT weights.",
+                    type(exc).__name__, exc, sft_out,
+                )
+                metrics["dpo_completed"] = False
+                metrics["dpo_error"] = f"{type(exc).__name__}: {exc}"
+                adapter_out = sft_out
 
         return TrainingJobResult(
-            adapter_path=sft_out,
-            metrics={"backend": self.name},
+            adapter_path=adapter_out,
+            metrics=metrics,
         )
 
 

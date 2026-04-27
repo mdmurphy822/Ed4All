@@ -224,24 +224,75 @@ class TrainingRunner:
                         f"is missing: {adapter_path}"
                     )
 
-            # Wave 92: run the eval harness BEFORE emitting the card
-            # so the eval_scores block can be folded in. Skipped on
-            # dry-run because there is no trained model to call.
-            eval_scores: Optional[Dict[str, Any]] = None
-            if not self.dry_run:
-                eval_scores = self._run_eval_harness(run_dir, adapter_path)
-
+            # Wave 100 Bug 5: emit the model_card.json + training_run.jsonl
+            # BEFORE running the eval harness. Wave 92's eval bridge is
+            # still unwired in production (raises NotImplementedError);
+            # without this restructure, a fully-successful training run
+            # produces no provenance card and no decision log on disk.
+            #
+            # The flow is now:
+            #   1. _dispatch_training succeeds → adapter on disk
+            #   2. emit model_card.json (eval_scores omitted)
+            #   3. emit training_run.jsonl
+            #   4. attempt eval; on success, REWRITE model_card.json
+            #      with eval_scores folded in. On NotImplementedError
+            #      (eval-bridge unwired), log warning and exit cleanly.
             card_path = self._emit_model_card(
                 run_dir=run_dir,
                 model_id=model_id,
                 provenance=provenance,
                 adapter_path=adapter_path,
-                eval_scores=eval_scores,
+                eval_scores=None,
             )
+
+            # Mirror the decision capture into the run dir as
+            # training_run.jsonl. Even if eval blows up below, the
+            # decision log is preserved on disk.
+            decisions_path = self._save_decision_run_log(capture, run_dir)
+
+            eval_scores: Optional[Dict[str, Any]] = None
+            if not self.dry_run:
+                try:
+                    eval_scores = self._run_eval_harness(run_dir, adapter_path)
+                except (
+                    NotImplementedError,
+                    ImportError,
+                    FileNotFoundError,
+                ) as exc:
+                    # Wave 101: eval-bridge errors fall through to the
+                    # no-eval-scores path so a successful training run
+                    # never voids its provenance card on a downstream
+                    # eval failure.
+                    #   * NotImplementedError - legacy Wave 92 boundary
+                    #     (kept for back-compat with stubs).
+                    #   * ImportError - heavy ML deps missing
+                    #     (CPU-only dev box; ed4all[training] not
+                    #     installed).
+                    #   * FileNotFoundError - adapter dir or course
+                    #     artifacts missing.
+                    logger.warning(
+                        "TrainingRunner: eval harness skipped (%s). "
+                        "Model card emitted without eval_scores; "
+                        "adapter at %s is still trained and persisted.",
+                        exc, adapter_path,
+                    )
+                    eval_scores = None
+
+            # Wave 100: if eval succeeded, fold scores into a SECOND
+            # model_card.json write (overwriting the first). The
+            # _emit_model_card helper does an atomic tmpfile + rename,
+            # so a partial overwrite never leaves a half-card on disk.
+            if eval_scores is not None:
+                card_path = self._emit_model_card(
+                    run_dir=run_dir,
+                    model_id=model_id,
+                    provenance=provenance,
+                    adapter_path=adapter_path,
+                    eval_scores=eval_scores,
+                )
         finally:
             capture.save()
 
-        decisions_path = self._save_decision_run_log(capture, run_dir)
         return TrainingRunResult(
             model_id=model_id,
             run_dir=run_dir,
@@ -639,27 +690,119 @@ class TrainingRunner:
     ) -> Dict[str, Any]:
         """Invoke the SLM eval harness and return canonical eval scores.
 
-        Wave 92: the eval harness is a hard dependency of a real
-        (non-dry-run) training pass. If the harness fails to import
-        or to run, we raise loudly rather than emit a card with empty
-        eval_scores — a card without scores is worse than no card at
-        all because it claims an unevaluated model is evaluated.
+        Wave 101 wires the bridge: build an
+        :class:`Trainforge.eval.adapter_callable.AdapterCallable`
+        around the saved adapter dir, hand it to
+        :class:`SLMEvalHarness`, parse the resulting
+        ``eval_report.json``, and (optionally) run the
+        ``lm-evaluation-harness`` generic-benchmark sweep on the side.
+        Returns a dict shaped to drop into
+        ``model_card.json::eval_scores`` (the runner filters to the
+        canonical keys before writing).
+
+        Failure modes:
+        * Adapter dir missing or unreadable -> ``FileNotFoundError``.
+        * Heavy ML deps not installed -> ``ImportError``; the runner's
+          calling try/except converts this into the same fall-back
+          path as Wave 100's NotImplementedError did
+          (model_card emitted without ``eval_scores``).
         """
+        import os
+
+        from Trainforge.eval.adapter_callable import AdapterCallable
+        from Trainforge.eval.hf_model_index import write_hf_readme
         from Trainforge.eval.slm_eval_harness import SLMEvalHarness
 
-        # Wire a model_callable from the adapter. Wave 92 leaves the
-        # exact wiring (transformers.pipeline + PEFT load) to the
-        # caller / future wave; for now the runner expects a backend
-        # that has produced an adapter on disk and we surface a
-        # NotImplementedError if no callable is configured. Tests
-        # patch this method, so the production path being incomplete
-        # doesn't block CI.
-        raise NotImplementedError(
-            "Wave 92: model_callable wiring from adapter to harness is "
-            "deferred to a follow-up wave. Tests patch this method to "
-            "exercise the integration. See plans/slm-training-2026-04-26.md "
-            "Wave 92 deferred items."
+        if adapter_path is None:
+            raise FileNotFoundError(
+                "Wave 101: cannot run eval harness without a saved "
+                "adapter (adapter_path is None)."
+            )
+        # The adapter file lives at run_dir/adapter_model.safetensors;
+        # AdapterCallable wants the directory.
+        adapter_dir = Path(adapter_path).parent if Path(adapter_path).is_file() else Path(adapter_path)
+
+        callable_kwargs: Dict[str, Any] = {
+            "base_model_short_name": self.spec.name,
+        }
+        adapter_callable = AdapterCallable(
+            adapter_dir=adapter_dir,
+            base_model_repo=self.spec.huggingface_repo,
+            **callable_kwargs,
         )
+
+        course_path = self.course_dir
+        harness = SLMEvalHarness(
+            course_path=course_path,
+            model_callable=adapter_callable,
+        )
+        report_path = harness.run_all(
+            output_path=run_dir / "eval_report.json",
+        )
+        eval_report = json.loads(report_path.read_text(encoding="utf-8"))
+
+        # Render the HF README alongside eval_report.json. Failures
+        # here shouldn't void the eval pass - log + continue.
+        try:
+            # Read the just-emitted (no-eval-scores) model card for the
+            # provenance + license fields the README pulls in.
+            card_path = run_dir / "model_card.json"
+            model_card = (
+                json.loads(card_path.read_text(encoding="utf-8"))
+                if card_path.exists() else {}
+            )
+            write_hf_readme(
+                run_dir=run_dir,
+                eval_report=eval_report,
+                course_slug=self.course_slug,
+                base_model=self.base_model,
+                model_id=Path(run_dir).name,
+                model_card=model_card,
+                base_model_repo=self.spec.huggingface_repo,
+            )
+        except Exception:  # noqa: BLE001 - README is best-effort
+            logger.exception(
+                "Wave 101: write_hf_readme failed; eval_report.json "
+                "still on disk."
+            )
+
+        # Optional: lm-eval generic-benchmark sweep when explicitly
+        # opted in via env var. Default off because a 3-task sweep
+        # costs ~5 min on an RTX 3070.
+        lm_eval_summary: Optional[Dict[str, Any]] = None
+        if os.environ.get("LM_EVAL_ENABLED", "").lower() == "true":
+            try:
+                from Trainforge.eval.lm_eval_wrapper import (
+                    run_lm_eval,
+                    summarize_lm_eval,
+                )
+                results_path = run_lm_eval(
+                    adapter_dir=adapter_dir,
+                    base_model_repo=self.spec.huggingface_repo,
+                    run_dir=run_dir,
+                )
+                if results_path is not None:
+                    lm_eval_summary = summarize_lm_eval(results_path)
+            except Exception:  # noqa: BLE001 - optional telemetry
+                logger.exception(
+                    "Wave 101: lm-eval sweep failed; main eval scores "
+                    "still recorded."
+                )
+
+        eval_scores: Dict[str, Any] = {}
+        if "faithfulness" in eval_report and eval_report["faithfulness"] is not None:
+            eval_scores["faithfulness"] = eval_report["faithfulness"]
+        if "coverage" in eval_report and eval_report["coverage"] is not None:
+            eval_scores["coverage"] = eval_report["coverage"]
+        if "baseline_delta" in eval_report and eval_report["baseline_delta"] is not None:
+            eval_scores["baseline_delta"] = eval_report["baseline_delta"]
+        if lm_eval_summary:
+            # The runner filters to the canonical keys before writing
+            # the card so the schema's additionalProperties=false
+            # guard isn't broken; lm_eval_summary is informational
+            # and lands in the run dir's lm_eval_results/ instead.
+            eval_scores["lm_eval_summary"] = lm_eval_summary
+        return eval_scores
 
     def _save_decision_run_log(
         self,
