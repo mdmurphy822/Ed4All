@@ -139,8 +139,15 @@ class RAGCallable:
 
     def __call__(self, prompt: str) -> str:
         """Retrieve, format prelude, dispatch to the wrapped callable."""
+        # Wave 104: use ``sys.executable`` so the LibV2 CLI runs under
+        # the same interpreter that loaded this module. Bare ``python``
+        # is not always on PATH when the venv is invoked by absolute
+        # path (instead of activated), and the resulting silent CLI
+        # failure was the root cause of all-zero RAG accuracy in the
+        # Wave 103 eval re-run.
+        import sys as _sys
         args = [
-            "python", "-m", "LibV2.tools.libv2.cli", "ask", prompt,
+            _sys.executable, "-m", "LibV2.tools.libv2.cli", "ask", prompt,
             "--course", self.course_slug,
             "--method", self.method,
             "--limit", str(self.limit),
@@ -368,14 +375,34 @@ def _default_cli_runner(args: List[str]) -> Dict[str, Any]:
     or ``{"retrieved_chunks": []}`` when the call fails. Failures are
     logged but not raised - the eval harness must keep going on a
     single retrieval blip rather than crash the whole batch.
+
+    Wave 104: rewrites ``-m LibV2.tools.libv2.cli`` -> ``-m
+    tools.libv2.cli`` and invokes from the LibV2 directory because
+    the CLI's ``get_repo_root`` walks up from cwd looking for
+    ``courses/`` + ``catalog/``. Without this fix every retrieval
+    call returned a 'Course not found' error and the RAG rows
+    silently scored at zero.
     """
+    # Locate the LibV2 directory; it sits at the project root.
+    import os as _os
+    from pathlib import Path as _Path
+    libv2_dir = _Path(__file__).resolve().parents[2] / "LibV2"
+    fixed_args = list(args)
+    # Rewrite the module path if the caller still passes the legacy
+    # `LibV2.tools.libv2.cli` form (which only resolves when invoked
+    # from the project root - and even then doesn't see courses/).
+    for i, a in enumerate(fixed_args):
+        if a == "LibV2.tools.libv2.cli":
+            fixed_args[i] = "tools.libv2.cli"
+            break
     try:
         result = subprocess.run(
-            args,
+            fixed_args,
             check=True,
             capture_output=True,
             text=True,
             timeout=120,
+            cwd=str(libv2_dir),
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         logger.warning(

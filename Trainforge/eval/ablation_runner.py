@@ -175,6 +175,15 @@ class AblationRunner:
             self.trace_writer = TraceWriter(trace_path)
             owned_trace_writer = True
 
+        # Wave 104: collect per-setup eval_reports so we can emit a
+        # consolidated `eval_report.json` next to ablation_report.json.
+        # The consolidated report carries the canonical Wave 92 EvalReport
+        # shape (faithfulness / coverage / per_tier / per_invariant)
+        # for the headline `adapter+rag` setup when present, falling
+        # through to the strongest setup otherwise. Tier metadata for
+        # the other setups lives under `per_setup`.
+        self._eval_reports_by_setup: Dict[str, Dict[str, Any]] = {}
+
         try:
             headline_rows = self._run_headline_table()
             retrieval_rows = self._run_retrieval_method_table()
@@ -203,7 +212,59 @@ class AblationRunner:
             json.dumps(report, indent=2, sort_keys=True),
             encoding="utf-8",
         )
+
+        # Wave 104: consolidated eval_report.json. The harness writes
+        # one per scratch setup; the runner picks the canonical setup
+        # (adapter+rag if present, else the strongest setup by
+        # accuracy) and copies its payload to eval_report.json
+        # alongside the ablation report. Per-setup payloads remain
+        # accessible at `eval/_ablation_<setup>.json`.
+        self._write_consolidated_eval_report(output_path.parent)
+
         return output_path
+
+    def _write_consolidated_eval_report(self, eval_dir: Path) -> None:
+        """Emit `eval_report.json` next to ablation_report.json.
+
+        Picks the canonical setup (adapter+rag if available, else the
+        setup with the highest coverage) and copies its eval_report
+        payload to `eval/eval_report.json`. The Wave 92 contract
+        requires this file to exist next to model_card.json provenance
+        hashes; the ablation runner overrides per-setup output paths
+        to scratch files, so we re-emit the canonical here.
+        """
+        if not self._eval_reports_by_setup:
+            return
+        priority = ("adapter+rag", "adapter", "base+rag", "base")
+        chosen_key: Optional[str] = None
+        for k in priority:
+            if k in self._eval_reports_by_setup:
+                chosen_key = k
+                break
+        if chosen_key is None:
+            chosen_key = max(
+                self._eval_reports_by_setup.keys(),
+                key=lambda s: float(
+                    self._eval_reports_by_setup[s].get("coverage") or 0.0
+                ),
+            )
+        payload = dict(self._eval_reports_by_setup[chosen_key])
+        payload["selected_setup"] = chosen_key
+        payload["per_setup"] = {
+            k: {
+                "faithfulness": v.get("faithfulness"),
+                "coverage": v.get("coverage"),
+                "source_match": v.get("source_match"),
+                "metrics": v.get("metrics"),
+                "profile": v.get("profile"),
+            }
+            for k, v in self._eval_reports_by_setup.items()
+        }
+        out_path = eval_dir / "eval_report.json"
+        out_path.write_text(
+            json.dumps(payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
 
     # ------------------------------------------------------------------ #
     # Wave 103 helpers                                                    #
@@ -253,17 +314,36 @@ class AblationRunner:
             return
 
         for i, probe in enumerate(probes):
+            # Wave 104: harness-emitted per_question records carry
+            # `ground_truth_chunk_id` directly; older fixtures may
+            # carry a `retrieved_chunks` array. Tolerate both shapes.
             chunks = probe.get("retrieved_chunks") or []
             ground_truth = probe.get("ground_truth_chunk_id")
+            if ground_truth is None:
+                edge = probe.get("edge") or {}
+                src = edge.get("source") if isinstance(edge, dict) else None
+                if isinstance(src, str) and src.startswith("chunk_"):
+                    ground_truth = src
             chunk_ids = [
                 str(c.get("chunk_id"))
                 for c in chunks if c.get("chunk_id") is not None
             ]
+            # When the probe was answered through a RAG-augmented
+            # callable but per-probe retrieved_chunks aren't surfaced
+            # by the harness (the current shape), we still record the
+            # cited chunk ids so source-match and prompting-failure
+            # diagnostics light up.
+            cited_chunk_ids = probe.get("cited_chunk_ids") or []
             retrieved_at_top_k = (
-                ground_truth is not None and ground_truth in chunk_ids
+                ground_truth is not None and (
+                    ground_truth in chunk_ids
+                    or ground_truth in cited_chunk_ids
+                )
             )
             response = str(probe.get("response", ""))
             citations = extract_citations(response)
+            if cited_chunk_ids and not citations:
+                citations = list(cited_chunk_ids)
             cited_correct = (
                 ground_truth is not None and ground_truth in citations
             )
@@ -313,6 +393,10 @@ class AblationRunner:
                 # Keep the per-setup scratch file alongside the report;
                 # cheap on disk and useful for post-hoc auditing.
                 pass
+            # Wave 104: stash the eval_report so `run()` can write a
+            # consolidated `eval_report.json` after the loop.
+            if hasattr(self, "_eval_reports_by_setup"):
+                self._eval_reports_by_setup[setup.setup] = eval_report
             metrics = _extract_metrics(eval_report)
             qualitative = self._maybe_score_qualitative(setup, eval_report)
             row = {
@@ -401,7 +485,15 @@ class AblationRunner:
             harness.run_all(output_path=scratch)
             eval_report = json.loads(scratch.read_text(encoding="utf-8"))
             metrics = _extract_metrics(eval_report)
+            # Wave 104: prefer the callable's mean_latency_ms (rolling
+            # mean over its retrieval calls); fall back to the
+            # harness's persisted metric in eval_report.metrics for
+            # cases where the callable itself didn't surface latency.
             mean_latency = getattr(method_callable, "mean_latency_ms", None)
+            if mean_latency is None:
+                mean_latency = (
+                    eval_report.get("metrics", {}).get("mean_latency_ms")
+                )
             rows.append({
                 "method": method,
                 "accuracy": _round(metrics["accuracy"]),
