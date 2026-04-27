@@ -60,6 +60,7 @@ python server.py
 | `intake_remediation` | Import and remediate IMSCC | 4 |
 | `batch_dart` | Batch PDF to HTML conversion | 4 |
 | `rag_training` | Trainforge assessment generation | 5 |
+| `trainforge_train` | Train a course-pinned SLM adapter (Wave 90; post-import LibV2 stage) | 1 |
 
 ---
 
@@ -533,6 +534,9 @@ test MUST assert that the capture fires on the call path. Precedents:
 - DART pipeline entry point: `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html`
   → one `pipeline_run_attribution` capture per run (see
   `DART/tests/test_pipeline_run_attribution.py`).
+- Trainforge synthesis provider: `Trainforge/generators/_anthropic_provider.py`
+  → one `synthesis_provider_call` capture per call (see
+  `Trainforge/tests/test_anthropic_synthesis_provider.py`).
 
 ### Assessment Quality (Trainforge)
 
@@ -639,8 +643,10 @@ Source of truth: `config/workflows.yaml::validation_gates`. Phase column below s
 | `textbook_to_course` | `trainforge_assessment` | `imscc_input_valid` | IMSCCValidator (pre-assessment) |
 | `textbook_to_course` | `trainforge_assessment` | `assessment_quality` | AssessmentQualityValidator |
 | `textbook_to_course` | `trainforge_assessment` | `assessment_objective_alignment` | AssessmentObjectiveAlignmentValidator |
+| `textbook_to_course` | `training_synthesis` | `min_edge_count` | MinEdgeCountValidator (Wave 91) |
+| `textbook_to_course` | `training_synthesis` | `synthesis_diversity` | SynthesisDiversityValidator (Wave 91) |
 | `textbook_to_course` | `libv2_archival` | `libv2_manifest` | LibV2ManifestValidator |
-| `textbook_to_course` | `libv2_archival` | `kg_quality_report` | KGQualityValidator (warning) |
+| `textbook_to_course` | `libv2_archival` | `kg_quality_report` | KGQualityValidator (Wave 91 promotion: critical, thresholds 0.95/0.95/0.95/0.5) |
 | `rag_training` | `assessment_generation` | `assessment_quality` | AssessmentQualityValidator |
 | `rag_training` | `assessment_generation` | `bloom_alignment` | BloomAlignmentValidator (warning) |
 | `rag_training` | `assessment_generation` | `leak_check` | LeakCheckValidator |
@@ -690,6 +696,7 @@ Ten environment-variable toggles gate opt-in strict / stable-ID / provenance beh
 | `ED4ALL_AGENT_TIMEOUT_SECONDS` | Wave 74: override the default 1800 s mailbox timeout for per-task subagent dispatches. Longer than Wave 73's 120 s default because content-generator / remediation subagents can legitimately take 10+ min to produce a full week's module output. |
 | `ED4ALL_STAGE_MODE` | Wave 74 cleanup: selects how `stage_dart_outputs` materialises DART HTML / `_synthesized.json` / `.quality.json` / `{stem}_figures/` into `Courseforge/inputs/textbooks/{run_id}/`. Values: `copy` (legacy deep-copy), `symlink` (default — single-inode references back to DART output), `hardlink` (Windows fallback when symlinks are blocked). Saves ~70MB per textbook-to-course run. Manifest format and downstream readers are unchanged regardless of mode. |
 | `TRAINFORGE_SHACL_CLOSED_WORLD` | Wave 88: merges `schemas/context/courseforge_v1.shacl-closed.ttl` into the SHACL shapes graph at validation time, declaring `sh:closed true ; sh:ignoredProperties (rdf:type)` on `cfshapes:ChunkShape` and `cfshapes:TypedEdgeShape`. Unminted predicates on chunk / typed-edge nodes fire `sh:ClosedConstraintComponent` violations. Default off; Wave 87 minted the 33 chunk-structural predicates + 2 anchor classes that this closure asserts against, so flipping the flag on a clean Wave 87+ corpus is mass-violation-free. Closed-world overhead measured at ~0.5s on a 1000-node fixture. |
+| `ANTHROPIC_SYNTHESIS_MODEL` | Wave 91: overrides the default `claude-sonnet-4-6` Anthropic model used by `Trainforge/generators/_anthropic_provider.py` for the chunk → instruction-pair paraphrase pass. `ANTHROPIC_API_KEY` is the hard prerequisite; this flag is purely the model-ID dial. Captured per call in the `synthesis_provider_call` decision event. |
 
 ---
 
@@ -710,7 +717,10 @@ Validators under `lib/validators/` (see Active Gates above for wiring):
 - `lib/validators/assessment_objective_alignment.py` — fail-loud gate keeping every assessment question's `objective_id` covered by at least one chunk's `learning_outcome_refs`.
 - `lib/validators/source_refs.py` — verifies every emitted Courseforge `sourceId` resolves against the DART staging manifest.
 - `lib/validators/libv2_manifest.py` — validates LibV2 manifest JSON, scaffold completeness, and on-disk artifact hash/size agreement.
-- `lib/validators/kg_quality.py` — advisory KG-quality report (completeness / consistency / accuracy / coverage); thin wrapper over `Trainforge/rag/kg_quality_report.py::KGQualityReporter`. Default thresholds 0.0 (advisory at roll-out).
+- `lib/validators/libv2_model.py` — validates emitted `model_card.json` against `schemas/models/model_card.schema.json`. Critical: schema match, weights file presence + size + sha256 agreement, `pedagogy_graph_hash` resolves to extant graph in same course. Warning: missing eval scores, missing license, malformed HF repo regex. Wired as the `libv2_model` gate (Wave 89).
+- `lib/validators/kg_quality.py` — KG-quality report (completeness / consistency / accuracy / coverage); thin wrapper over `Trainforge/rag/kg_quality_report.py::KGQualityReporter`. Wave 91 promotion: thresholds 0.95 / 0.95 / 0.95 / 0.5 (was advisory 0.0 at roll-out).
+- `lib/validators/min_edge_count.py` — Wave 91. Pre-synthesis gate: critical-fails on pedagogy graph with <100 edges, <4 distinct edge types, or concept graph with <50 nodes. Closes the silent zero-edge regression class for the synthesis surface.
+- `lib/validators/synthesis_diversity.py` — Wave 91. Post-synthesis gate: critical-fails when top-3 templates >60% of pairs, single template >35%, or distinct templates <8. Warns when total pairs <100.
 
 **Canonical LO helper**: `lib/ontology/learning_objectives.py` owns the single source of truth for LO identity (`mint_lo_id`, `validate_lo_id`, `hierarchy_from_id`, `split_terminal_chapter`). Pattern `^[A-Z]{2,}-\\d{2,}$` mirrors `schemas/knowledge/courseforge_jsonld_v1.schema.json`. `schemas/knowledge/course.schema.json` is the canonical shape for Trainforge-emitted `course.json` consumed by LibV2.
 
@@ -724,6 +734,18 @@ Validators under `lib/validators/` (see Active Gates above for wiring):
 - **LibV2**: `LibV2/CLAUDE.md`
 - **Ontology map + v0.2.0 changes**: `schemas/ONTOLOGY.md`
 - **KG-quality review (source of v0.2.0 work)**: `plans/kg-quality-review-2026-04/review.md`
+
+---
+
+## Training Pipeline (Waves 89–93)
+
+SLM training is a **post-import LibV2 stage**, not a step in `Trainforge/process_course.py`. The trainer reads `training_specs/*.jsonl` from an already-imported LibV2 course and writes `LibV2/courses/<slug>/models/<model_id>/`. End-state: courses carry trained QLoRA adapters with model card + eval report + decision log; Hugging Face is the upload target.
+
+- **Top-level command**: `ed4all run trainforge_train --course-code <slug> --base-model qwen2.5-1.5b` (Wave 90 registered the workflow in `config/workflows.yaml::trainforge_train`).
+- **Direct entry point**: `python -m Trainforge.train_course --course-code <slug> --base-model <name> [--dry-run] [--backend local|runpod]`. Requires `pip install ed4all[training]` for non-dry-run mode.
+- **Schemas**: `schemas/models/model_card.schema.json` (Wave 89 + Wave 92's `holdout_graph_hash` extension) and `schemas/models/model_pointers.schema.json` (Wave 93 promotion ledger).
+- **Deep dive**: `Trainforge/CLAUDE.md` § "Training Pipeline" — base model registry, provider configuration, 5×3 eval matrix, 7-hash provenance, promotion workflow, decision-capture contract.
+- **Stage diagram**: see `LibV2/CLAUDE.md` for the post-import sub-stage ASCII.
 
 ---
 
