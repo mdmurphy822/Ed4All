@@ -1419,7 +1419,7 @@ Wave 1+2 of the RDF/SHACL enrichment plan (`plans/rdf-shacl-enrichment-2026-04-2
 ### Context files and the artifacts they wrap
 
 - `schemas/context/concept_graph_semantic_v1.jsonld` — wraps `concept_graph_semantic.json` (nodes + reified `TypedEdge` blank nodes carrying per-rule provenance; see § 2 TypedEdge, § 5.2).
-- `schemas/context/chunk_v4_v1.jsonld` — wraps the `chunk_v4.schema.json` shape; reuses 14 concept-graph predicates verbatim and inline-flags 39 chunk-structural predicates as `_phase2_followup` for the next vocabulary extension.
+- `schemas/context/chunk_v4_v1.jsonld` — wraps the `chunk_v4.schema.json` shape; reuses 14 concept-graph predicates verbatim. Wave 87 minted 33 predicates + 2 anchor classes (`cf:KeyTerm`, `cf:SourceReference`) into `courseforge_v1.vocabulary.ttl`, closing the bulk of the `_phase2_followup` queue. The single residual `_phase3_followup` entry is `ed4all:metadataTrace` (an open-shape diagnostic dict whose canonical class is unresolved; deferred until the dict shape is either codified or removed from chunks).
 - `schemas/context/course_v1.jsonld` — wraps `course.json`; mints `ed4all:hasLearningObjective`, `ed4all:courseCode`, `ed4all:loSubtype`. LO IRIs minted at `https://ed4all.io/lo/<id>` via a course-scoped `@base` override.
 - `schemas/context/pedagogy_graph_v1.jsonld` — wraps `pedagogy_graph.json`; concept references resolve into the same IRI universe as the concept-graph context (see "cross-artifact join" below).
 
@@ -1455,7 +1455,7 @@ Four regression suites under `Trainforge/tests/` enforce triple-count parity thr
 
 - Consult `lib/ontology/edge_predicates.py::SLUG_TO_IRI` for canonical slug ↔ IRI mappings before minting anything.
 - Reuse predicates from prior contexts where the semantics match; the chunk context reuses 14 predicates from concept_graph verbatim.
-- Inline-flag genuinely new predicates with an `_phase2_followup` marker so the next vocabulary-extension wave knows what to mint formally.
+- Inline-flag genuinely new predicates with a `_phase3_followup` marker so the next vocabulary-extension wave knows what to mint formally. (Phase-numbered marker convention: `_phaseN_followup` where N is the next planned mint wave; updated when a predicate's mint is deferred for a known reason.)
 - Keep document-shape predicates in `ed4all:`; mint typed classes and edge predicates with `rdfs:domain` / `rdfs:range` in `cf:` (the namespace policy above).
 - Land a round-trip test alongside the context: load a real fixture, parse via pyld + rdflib, serialize to Turtle, re-parse, and assert triple-count delta = 0.
 
