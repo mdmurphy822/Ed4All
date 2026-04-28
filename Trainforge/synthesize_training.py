@@ -105,6 +105,10 @@ class SynthesisStats:
     pairs_with_prereq_recap: int = 0
     source_grounded_pairs: int = 0
     instruction_variants_per_chunk: int = 1
+    # Wave 111 / Phase E: budget telemetry surfaced to callers.
+    capped_at_max_dispatches: bool = False
+    dispatched_count: int = 0
+    cache_hits_count: int = 0
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -784,7 +788,19 @@ def run_synthesis(
         # expectation that capping is per-file, not the combined total).
         per_artifact_cap = max_pairs
 
+        # Wave 111 / Phase E: graceful SynthesisBudgetExceeded handling.
+        # When the claude_session provider hits its dispatch cap mid-loop,
+        # we stop emitting + persist whatever we have so far so the
+        # caller can write a pilot_progress.json snapshot and return
+        # SynthesisStats with capped_at_max_dispatches=True.
+        from Trainforge.generators._session_budget import (
+            SynthesisBudgetExceeded as _SBE,
+        )
+        _budget_exhausted_exc: Optional[_SBE] = None
+
         for idx, chunk in iter_chunks:
+            if _budget_exhausted_exc is not None:
+                break
             # --- Instruction pair ---
             for variant_index in range(instruction_variants):
                 inst_capped = (
@@ -795,12 +811,16 @@ def run_synthesis(
                     stats.capped_at_max_pairs = True
                     break
                 pair_seed = seed + idx + (variant_index * 100_000)
-                inst_result = synthesize_instruction_pair(
-                    chunk,
-                    seed=pair_seed,
-                    provider=provider,
-                    paraphrase_provider=paraphrase_provider,
-                )
+                try:
+                    inst_result = synthesize_instruction_pair(
+                        chunk,
+                        seed=pair_seed,
+                        provider=provider,
+                        paraphrase_provider=paraphrase_provider,
+                    )
+                except _SBE as exc:
+                    _budget_exhausted_exc = exc
+                    break
                 if inst_result.pair is None:
                     stats.instruction_pairs_rejected += 1
                     reason = inst_result.quality.get("reason") or "gate_failed"
@@ -859,12 +879,16 @@ def run_synthesis(
             if pref_capped:
                 stats.capped_at_max_pairs = True
             else:
-                pref_result = synthesize_preference_pair(
-                    chunk,
-                    seed=pair_seed,
-                    provider=provider,
-                    paraphrase_provider=paraphrase_provider,
-                )
+                try:
+                    pref_result = synthesize_preference_pair(
+                        chunk,
+                        seed=pair_seed,
+                        provider=provider,
+                        paraphrase_provider=paraphrase_provider,
+                    )
+                except _SBE as exc:
+                    _budget_exhausted_exc = exc
+                    break
                 if pref_result.pair is None:
                     stats.preference_pairs_rejected += 1
                     reason = pref_result.quality.get("reason") or "gate_failed"
@@ -936,6 +960,40 @@ def run_synthesis(
                     preference_records.append(pair)
                     stats.preference_pairs_emitted += 1
                     stats.misconception_dpo_pairs_emitted += 1
+
+        # Wave 111 / Phase E: surface budget telemetry on stats whether
+        # the loop completed normally OR hit the dispatch cap.
+        if paraphrase_provider is not None and hasattr(paraphrase_provider, "budget"):
+            bsum = paraphrase_provider.budget.summary()
+            stats.dispatched_count = int(bsum.get("dispatched", 0))
+            stats.cache_hits_count = int(bsum.get("cache_hits", 0))
+
+        if _budget_exhausted_exc is not None:
+            stats.capped_at_max_dispatches = True
+            stats.dispatched_count = _budget_exhausted_exc.dispatched
+            stats.cache_hits_count = _budget_exhausted_exc.cache_hits
+            progress_payload = {
+                "dispatched": _budget_exhausted_exc.dispatched,
+                "cache_hits": _budget_exhausted_exc.cache_hits,
+                "max_dispatches": _budget_exhausted_exc.max_dispatches,
+                "instruction_pairs_emitted": stats.instruction_pairs_emitted,
+                "preference_pairs_emitted": stats.preference_pairs_emitted,
+                "message": (
+                    f"Hit max_dispatches={_budget_exhausted_exc.max_dispatches} "
+                    f"after {_budget_exhausted_exc.dispatched} dispatches + "
+                    f"{_budget_exhausted_exc.cache_hits} cache hits. Re-run "
+                    f"with a higher --max-dispatches to resume from the "
+                    f"cache; cached calls cost zero new dispatches."
+                ),
+            }
+            progress_path = training_specs_dir / "pilot_progress.json"
+            progress_path.write_text(
+                json.dumps(progress_payload, indent=2), encoding="utf-8",
+            )
+            logger.warning(
+                "run_synthesis hit max_dispatches=%s; wrote progress to %s",
+                _budget_exhausted_exc.max_dispatches, progress_path,
+            )
 
         # --- Persist artifacts ------------------------------------------------
         # Default ordering: by chunk_id (deterministic, byte-stable across runs).
