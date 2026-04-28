@@ -1097,6 +1097,14 @@ def register_pipeline_tools(mcp):
                   ``TOGETHER_API_KEY``). Together's ToS explicitly
                   permits using the output as training data — this is
                   the ToS-clean teacher pass for SLM corpora.
+                * ``"local"`` — a local OpenAI-compatible model server
+                  (Ollama / vLLM / llama.cpp / LM Studio). Default base
+                  URL ``http://localhost:11434/v1`` (override via
+                  ``LOCAL_SYNTHESIS_BASE_URL``); default model
+                  ``qwen2.5:14b-instruct-q4_K_M`` (override via
+                  ``LOCAL_SYNTHESIS_MODEL``). API key optional. Zero
+                  per-call cost, zero ToS exposure (fully offline /
+                  air-gapped friendly); tradeoff is local hardware.
             seed: Optional base seed for determinism.
 
         Returns:
@@ -3615,14 +3623,20 @@ def _build_tool_registry() -> dict:
           (default; deterministic template factory), ``"anthropic"``
           (Anthropic SDK; requires ``ANTHROPIC_API_KEY``),
           ``"claude_session"`` (Claude Code session via LocalDispatcher),
-          or ``"together"`` (Together AI's OpenAI-compatible endpoint;
+          ``"together"`` (Together AI's OpenAI-compatible endpoint;
           default model ``meta-llama/Llama-3.3-70B-Instruct-Turbo``,
           override via ``TOGETHER_SYNTHESIS_MODEL``; requires
-          ``TOGETHER_API_KEY``). Together's ToS permits training-data
-          generation, unlike Anthropic's. When ``None`` is explicitly
-          set AND no LLM backend is resolvable, the function logs a
-          skip warning and returns an empty-results shell rather than
-          crashing.
+          ``TOGETHER_API_KEY``), or ``"local"`` (a local
+          OpenAI-compatible model server: Ollama / vLLM / llama.cpp /
+          LM Studio. Default base URL ``http://localhost:11434/v1``,
+          override via ``LOCAL_SYNTHESIS_BASE_URL``; default model
+          ``qwen2.5:14b-instruct-q4_K_M``, override via
+          ``LOCAL_SYNTHESIS_MODEL``; API key optional). Together's ToS
+          permits training-data generation, unlike Anthropic's; the
+          local provider is fully offline and ToS-free. When ``None``
+          is explicitly set AND no LLM backend is resolvable, the
+          function logs a skip warning and returns an empty-results
+          shell rather than crashing.
         * ``seed`` (int, default ``DEFAULT_SEED`` from
           ``synthesize_training`` so re-runs are byte-identical).
 

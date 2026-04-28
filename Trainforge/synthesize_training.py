@@ -773,6 +773,20 @@ def run_synthesis(
             TogetherSynthesisProvider,
         )
         paraphrase_provider = TogetherSynthesisProvider(capture=capture)
+    elif provider == "local":
+        # Wave 113: third synthesis path — a local OpenAI-compatible
+        # model server (Ollama / vLLM / llama.cpp / LM Studio). Same
+        # HTTP wire shape as Together, so the provider subclasses
+        # ``TogetherSynthesisProvider`` and only overrides the
+        # endpoint / model / auth-required hooks. Zero cost per call
+        # after hardware setup, zero ToS exposure (fully offline /
+        # air-gapped friendly). Like ``together``, no session-budget
+        # tracking — the provider is HTTP-driven, not Claude-session
+        # rate-limited.
+        from Trainforge.generators._local_provider import (
+            LocalSynthesisProvider,
+        )
+        paraphrase_provider = LocalSynthesisProvider(capture=capture)
 
     instruction_records: List[Dict[str, Any]] = []
     preference_records: List[Dict[str, Any]] = []
@@ -1346,7 +1360,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--provider",
         default="mock",
-        choices=["mock", "anthropic", "claude_session", "together"],
+        choices=["mock", "anthropic", "claude_session", "together", "local"],
         help=(
             "Synthesis provider. 'mock' = template factory (plumbing tests "
             "only — produces template-recognizer adapters). 'anthropic' = "
@@ -1358,7 +1372,13 @@ def build_parser() -> argparse.ArgumentParser:
             "(default model meta-llama/Llama-3.3-70B-Instruct-Turbo, "
             "override via TOGETHER_SYNTHESIS_MODEL; requires TOGETHER_API_KEY). "
             "Together's ToS permits using the output as training data for "
-            "another model — Anthropic's does not."
+            "another model — Anthropic's does not. 'local' = a local "
+            "OpenAI-compatible model server (Ollama default "
+            "http://localhost:11434/v1, override via LOCAL_SYNTHESIS_BASE_URL; "
+            "default model qwen2.5:14b-instruct-q4_K_M, override via "
+            "LOCAL_SYNTHESIS_MODEL). API key optional — local servers ignore "
+            "auth. Zero cost per call, zero ToS exposure; tradeoff is local "
+            "hardware requirement."
         ),
     )
     p.add_argument(
