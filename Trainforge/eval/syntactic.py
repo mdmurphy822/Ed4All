@@ -356,10 +356,114 @@ def evaluate_owl_entailment(
     }
 
 
+# ---------------------------------------------------------------------- #
+# Strict-mode predicate-usage check (Wave 108 / Phase B)                  #
+# ---------------------------------------------------------------------- #
+
+
+_DEFAULT_PREDICATE_NAMESPACES = {
+    "rdf": "http://www.w3.org/1999/02/22-rdf-syntax-ns#",
+    "rdfs": "http://www.w3.org/2000/01/rdf-schema#",
+    "owl": "http://www.w3.org/2002/07/owl#",
+    "sh": "http://www.w3.org/ns/shacl#",
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+    "skos": "http://www.w3.org/2004/02/skos/core#",
+    "dc": "http://purl.org/dc/elements/1.1/",
+    "dct": "http://purl.org/dc/terms/",
+}
+
+
+def _resolve_predicate(token: str, namespaces: Dict[str, str]) -> Optional[str]:
+    """Resolve a predicate token (CURIE ``prefix:local`` or full
+    ``<http://...>`` URI) to its full URI string. Returns None on
+    unparsable input or unknown prefix."""
+    token = token.strip()
+    if token.startswith("<") and token.endswith(">"):
+        return token[1:-1]
+    if ":" in token:
+        prefix, local = token.split(":", 1)
+        ns = namespaces.get(prefix)
+        if ns is None:
+            return None
+        return f"{ns}{local}"
+    return None
+
+
+def evaluate_predicate_usage(
+    generated: str,
+    *,
+    required_predicates: List[str],
+    extra_namespaces: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """Strict-mode predicate-usage check (Wave 108 / Phase B).
+
+    Parses ``generated`` as Turtle, then asserts that EACH entry in
+    ``required_predicates`` appears as a predicate in the graph. Each
+    entry may be either a CURIE (``sh:datatype``) or a full URI in
+    angle brackets (``<http://www.w3.org/ns/shacl#datatype>``).
+
+    The match is by full URI only — a synonym predicate (e.g. the
+    model emitted ``sh:class`` instead of ``sh:datatype``) is NOT
+    credited.
+
+    Returns:
+        ``{"uses_all": bool, "used": List[str], "missing": List[str],
+        "errors": List[str]}``
+    """
+    rdflib = _try_import_rdflib()
+    if rdflib is None:
+        return {
+            "uses_all": False,
+            "used": [],
+            "missing": list(required_predicates),
+            "errors": ["rdflib not installed; cannot evaluate predicate usage"],
+        }
+
+    namespaces = dict(_DEFAULT_PREDICATE_NAMESPACES)
+    if extra_namespaces:
+        namespaces.update(extra_namespaces)
+
+    g = rdflib.Graph()
+    try:
+        g.parse(data=generated, format="turtle")
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "uses_all": False,
+            "used": [],
+            "missing": list(required_predicates),
+            "errors": [f"parse failed: {type(exc).__name__}: {exc}"],
+        }
+
+    used_uris = {str(p) for _s, p, _o in g}
+    # Merge graph-declared prefixes (override defaults).
+    for prefix, ns in g.namespaces():
+        namespaces[prefix] = str(ns)
+
+    used: List[str] = []
+    missing: List[str] = []
+    for token in required_predicates:
+        resolved = _resolve_predicate(token, namespaces)
+        if resolved is None:
+            missing.append(token)
+            continue
+        if resolved in used_uris:
+            used.append(token)
+        else:
+            missing.append(token)
+
+    return {
+        "uses_all": not missing,
+        "used": used,
+        "missing": missing,
+        "errors": [],
+    }
+
+
 __all__ = [
     "evaluate_turtle",
     "evaluate_sparql",
     "evaluate_shacl_shape",
     "evaluate_shacl_validation",
     "evaluate_owl_entailment",
+    "evaluate_predicate_usage",
 ]

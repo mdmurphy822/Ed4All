@@ -221,3 +221,39 @@ def test_owl_entailment_invalid_source_returns_error():
     out = evaluate_owl_entailment("garbled", ["@prefix : <a:> . :a :b :c ."])
     assert out["entailed"] is False
     assert out["errors"]
+
+
+def test_evaluate_predicate_usage_accepts_curie_and_uri() -> None:
+    """A graph that uses sh:datatype should match required={'sh:datatype'}
+    AND required={'<http://www.w3.org/ns/shacl#datatype>'}."""
+    pytest.importorskip("rdflib")
+    from Trainforge.eval.syntactic import evaluate_predicate_usage
+    g = """
+    @prefix sh: <http://www.w3.org/ns/shacl#> .
+    @prefix ex: <http://example.org/> .
+    ex:NodeShape1 sh:datatype <http://www.w3.org/2001/XMLSchema#string> .
+    """
+    r1 = evaluate_predicate_usage(g, required_predicates=["sh:datatype"])
+    assert r1["uses_all"] is True
+    assert "sh:datatype" in r1["used"]
+    assert not r1["missing"]
+
+    r2 = evaluate_predicate_usage(
+        g, required_predicates=["<http://www.w3.org/ns/shacl#datatype>"]
+    )
+    assert r2["uses_all"] is True
+
+
+def test_evaluate_predicate_usage_flags_missing_predicate() -> None:
+    """The strict-mode regression class: model used sh:type instead of
+    sh:datatype. Must surface as missing."""
+    pytest.importorskip("rdflib")
+    from Trainforge.eval.syntactic import evaluate_predicate_usage
+    g = """
+    @prefix sh: <http://www.w3.org/ns/shacl#> .
+    @prefix ex: <http://example.org/> .
+    ex:NodeShape1 sh:class <http://example.org/Person> .
+    """
+    r = evaluate_predicate_usage(g, required_predicates=["sh:datatype"])
+    assert r["uses_all"] is False
+    assert r["missing"] == ["sh:datatype"]
