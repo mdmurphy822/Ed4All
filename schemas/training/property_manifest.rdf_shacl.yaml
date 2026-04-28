@@ -42,7 +42,13 @@ properties:
     surface_forms:
       - "sh:PropertyShape"
       - "<http://www.w3.org/ns/shacl#PropertyShape>"
-    min_pairs: 8
+    # Wave 118: lowered from 8 to 5 to match corpus reality. The
+    # rdf-shacl-551-2 corpus (audited 2026-04-28) only contains 5
+    # chunks with the sh:PropertyShape surface form; floor=5 keeps
+    # a regression-detection floor while letting a clean full-corpus
+    # rebuild pass the gate. Other 5 properties retain min_pairs=8
+    # because the corpus has 18-66 chunks with each of their forms.
+    min_pairs: 5
     min_accuracy: 0.40
 
   - id: rdfs_subclassof
