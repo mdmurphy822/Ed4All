@@ -395,7 +395,28 @@ class ClaudeSessionProvider:
                 continue
             if entry.get("provider_version") != self._provider_version:
                 continue
-            self._cache[entry["key"]] = entry["outputs"]
+            # Wave 112 Task 7: validate the cached outputs before storing
+            # them. A poisoned cache file (e.g. one row with
+            # ``"prompt": null`` written by a pre-Wave-112 build) would
+            # otherwise silently survive load and serve the bad string
+            # on the next cache hit. Fail loud — the same posture as
+            # _dispatch's value check (Task 3) and paraphrase_*'s length
+            # gate (Task 4) — so the operator notices and clears or
+            # regenerates the cache file.
+            outputs = entry.get("outputs") or {}
+            kind = entry.get("kind", "instruction")
+            chunk_id = entry.get("chunk_id") or None
+            if kind not in _KIND_KEYS:
+                # Unknown kind = unrecognised cache shape; treat as
+                # malformed and refuse to admit it.
+                raise SynthesisProviderError(
+                    f"_load_cache: unknown kind={kind!r} on cache row "
+                    f"key={entry.get('key')!r}; cache file is corrupt.",
+                    code="empty_field",
+                    chunk_id=chunk_id,
+                )
+            _validate_lengths(outputs, kind=kind, chunk_id=chunk_id)
+            self._cache[entry["key"]] = outputs
 
     def _cache_key(self, *, kind: str, chunk_id: str, draft: Dict[str, Any]) -> str:
         # Serialize draft keys deterministically; only the load-bearing fields

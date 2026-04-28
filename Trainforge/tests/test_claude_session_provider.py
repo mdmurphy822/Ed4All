@@ -537,6 +537,52 @@ def test_paraphrase_preference_rejects_short_chosen() -> None:
     assert ei.value.code == "chosen_below_minimum"
 
 
+def test_load_cache_rejects_poisoned_outputs(tmp_path: Path) -> None:
+    """Wave 112 Task 7: a JSONL cache row with null/empty `outputs` must
+    be rejected at load time rather than silently surviving and serving
+    a poisoned string on the next cache hit."""
+    from Trainforge.generators._anthropic_provider import SynthesisProviderError
+
+    cache_path = tmp_path / "synthesis_cache.jsonl"
+    valid_entry = {
+        "key": "k_valid",
+        "kind": "instruction",
+        "chunk_id": "chunk_a",
+        "provider_version": "v1",
+        "outputs": {
+            "prompt": _ok_prompt("valid"),
+            "completion": _ok_completion("valid"),
+        },
+    }
+    poisoned_entry = {
+        "key": "k_poisoned",
+        "kind": "instruction",
+        "chunk_id": "chunk_b",
+        "provider_version": "v1",
+        "outputs": {
+            "prompt": None,
+            "completion": _ok_completion("ok"),
+        },
+    }
+    cache_path.write_text(
+        json.dumps(valid_entry, sort_keys=True) + "\n"
+        + json.dumps(poisoned_entry, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    async def agent_tool(**_kwargs: object) -> dict:  # pragma: no cover
+        raise AssertionError("dispatcher must not be hit during load")
+
+    with pytest.raises(SynthesisProviderError) as ei:
+        ClaudeSessionProvider(
+            dispatcher=FakeLocalDispatcher(agent_tool=agent_tool),
+            cache_path=cache_path,
+        )
+    # The error code should be the prompt-empty discriminator (None
+    # value tripped the empty-field rail in _validate_lengths).
+    assert ei.value.code in ("empty_field", "prompt_below_minimum")
+
+
 def test_circuit_opens_after_repeated_dispatcher_failures(tmp_path: Path) -> None:
     """Three MAILBOX_TIMEOUT in a row trips the breaker; the 4th call
     raises SynthesisCircuitOpen WITHOUT contacting the dispatcher."""
