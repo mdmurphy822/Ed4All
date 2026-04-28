@@ -850,6 +850,19 @@ workflows:
         # the libv2_archival phase (training_synthesis is its
         # dependency) when triggered.
         validation_gates:
+          # Wave 110 / Phase D: pre-flight dispatch estimate. Warning
+          # severity by default — surfaces a heads-up to operators with
+          # tight Claude Max budgets but never blocks.
+          - gate_id: synthesis_quota
+            validator: lib.validators.synthesis_quota.SynthesisQuotaValidator
+            severity: warning
+            threshold:
+              max_estimated_dispatches: 1500
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Wave 110 — estimate session dispatches; warn when above ceiling
+
           - gate_id: min_edge_count
             validator: lib.validators.min_edge_count.MinEdgeCountValidator
             severity: critical
