@@ -86,6 +86,22 @@ ENV_API_KEY = "LOCAL_SYNTHESIS_API_KEY"
 DEFAULT_TIMEOUT = 60.0
 
 
+# Wave 114: local-class kind bounds. The 40-char prompt floor inherited
+# from ``_anthropic_provider.py::_KIND_BOUNDS`` is too strict for 7B-Q4
+# paraphrases that legitimately compress (e.g. "Explain in your own
+# words what owl:sameAs means and why it matters." -> "What does
+# owl:sameAs mean and why?"). 25 chars still rejects degenerate
+# 3-word stub outputs without rejecting valid compressed paraphrases.
+# Completion floor stays at 50 — a 30-char training-target completion
+# has legitimate quality concerns the prompt floor does not.
+DEFAULT_LOCAL_KIND_BOUNDS: Dict[str, tuple] = {
+    "prompt": (25, PROMPT_MAX),
+    "completion": (COMPLETION_MIN, COMPLETION_MAX),
+    "chosen": (COMPLETION_MIN, COMPLETION_MAX),
+    "rejected": (COMPLETION_MIN, COMPLETION_MAX),
+}
+
+
 class LocalSynthesisProvider:
     """Paraphrases mock-provider drafts via a local OpenAI-compatible server.
 
@@ -118,6 +134,7 @@ class LocalSynthesisProvider:
         timeout: float = DEFAULT_TIMEOUT,
         temperature: float = 0.4,
         max_tokens: int = 800,
+        kind_bounds: Optional[Dict[str, tuple]] = None,
     ) -> None:
         # API-key resolution. Local servers usually ignore auth; we
         # accept absence and substitute a stable placeholder so reverse
@@ -141,6 +158,9 @@ class LocalSynthesisProvider:
         self._timeout = float(timeout)
         self._temperature = float(temperature)
         self._max_tokens = int(max_tokens)
+        self._kind_bounds: Dict[str, tuple] = (
+            dict(kind_bounds) if kind_bounds else dict(DEFAULT_LOCAL_KIND_BOUNDS)
+        )
 
         # Composition: build the LLM-agnostic client. Same client class
         # the Together provider composes — only the configuration
@@ -443,14 +463,13 @@ class LocalSynthesisProvider:
                     return _json.loads(candidate)
         raise ValueError("unbalanced JSON object in response")
 
-    @staticmethod
-    def _clamp(text: str, kind: str, *, chunk_id: Optional[str] = None) -> str:
+    def _clamp(self, text: str, kind: str, *, chunk_id: Optional[str] = None) -> str:
         try:
-            lo, hi = _KIND_BOUNDS[kind]
+            lo, hi = self._kind_bounds[kind]
         except KeyError as exc:
             raise ValueError(
                 f"_clamp: unknown kind={kind!r}; expected one of "
-                f"{sorted(_KIND_BOUNDS)}"
+                f"{sorted(self._kind_bounds)}"
             ) from exc
         s = (text or "").strip()
         if len(s) < lo:
