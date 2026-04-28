@@ -1,0 +1,66 @@
+course_slug: rdf-shacl-551-2
+description: |
+  The 6 RDF/SHACL surface forms the rdf-shacl-551-2 SLM adapter must teach.
+  Coverage and per-property accuracy gates fail closed below the floors below.
+  Wave 109 / Phase C.
+
+properties:
+  - id: sh_datatype
+    uri: http://www.w3.org/ns/shacl#datatype
+    curie: sh:datatype
+    label: SHACL datatype constraint
+    surface_forms:
+      - "sh:datatype"
+      - "<http://www.w3.org/ns/shacl#datatype>"
+    min_pairs: 8
+    min_accuracy: 0.40
+
+  - id: sh_class
+    uri: http://www.w3.org/ns/shacl#class
+    curie: sh:class
+    label: SHACL class constraint
+    surface_forms:
+      - "sh:class"
+      - "<http://www.w3.org/ns/shacl#class>"
+    min_pairs: 8
+    min_accuracy: 0.40
+
+  - id: sh_nodeshape
+    uri: http://www.w3.org/ns/shacl#NodeShape
+    curie: sh:NodeShape
+    label: SHACL node shape declaration
+    surface_forms:
+      - "sh:NodeShape"
+      - "<http://www.w3.org/ns/shacl#NodeShape>"
+    min_pairs: 8
+    min_accuracy: 0.40
+
+  - id: sh_propertyshape
+    uri: http://www.w3.org/ns/shacl#PropertyShape
+    curie: sh:PropertyShape
+    label: SHACL property shape declaration
+    surface_forms:
+      - "sh:PropertyShape"
+      - "<http://www.w3.org/ns/shacl#PropertyShape>"
+    min_pairs: 8
+    min_accuracy: 0.40
+
+  - id: rdfs_subclassof
+    uri: http://www.w3.org/2000/01/rdf-schema#subClassOf
+    curie: rdfs:subClassOf
+    label: RDFS subclass-of relation
+    surface_forms:
+      - "rdfs:subClassOf"
+      - "<http://www.w3.org/2000/01/rdf-schema#subClassOf>"
+    min_pairs: 8
+    min_accuracy: 0.40
+
+  - id: owl_sameas
+    uri: http://www.w3.org/2002/07/owl#sameAs
+    curie: owl:sameAs
+    label: OWL sameAs identity assertion
+    surface_forms:
+      - "owl:sameAs"
+      - "<http://www.w3.org/2002/07/owl#sameAs>"
+    min_pairs: 8
+    min_accuracy: 0.40
