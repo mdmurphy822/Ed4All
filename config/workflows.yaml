@@ -1047,6 +1047,27 @@ workflows:
         timeout_minutes: 720
         description: Dispatch one training run via Trainforge.train_course
 
+      # Wave 108 / Phase B: gate adapter promotion behind eval thresholds.
+      # Reads <model_dir>/eval/eval_report.json and fails closed on
+      # faithfulness regression, yes-bias, no-bias, source-match drop, or
+      # baseline regression — the four gameable-eval holes Phase B closes.
+      - name: post_training_validation
+        agents: []
+        parallel: false
+        max_concurrent: 1
+        depends_on: [training]
+        timeout_minutes: 5
+        description: Gate the trained adapter against eval thresholds before promotion
+        validation_gates:
+          - gate_id: eval_gating
+            validator: lib.validators.eval_gating.EvalGatingValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
 # Default settings applied to all workflows
 defaults:
   task_timeout_minutes: 60

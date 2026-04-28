@@ -654,6 +654,7 @@ Source of truth: `config/workflows.yaml::validation_gates`. Phase column below s
 | `rag_training` | `assessment_generation` | `content_fact_check` | ContentFactValidator (warning) |
 | `rag_training` | `assessment_generation` | `question_quality` | QuestionQualityValidator |
 | `rag_training` | `validation` | `final_quality` | FinalQualityValidator |
+| `trainforge_train` | `post_training_validation` | `eval_gating` | EvalGatingValidator (Wave 108 — fails closed on regression / yes-bias / no-bias / source-match drop) |
 
 ---
 
