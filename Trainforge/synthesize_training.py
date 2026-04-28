@@ -293,17 +293,46 @@ def _build_misconception_dpo_pair(
     chunk: Dict[str, Any],
     misconception: Dict[str, Any],
     pair_index: int,
+    capture: Optional[Any] = None,
 ) -> Optional[Dict[str, Any]]:
     """Convert a single (misconception, correction) entry into a DPO pair.
 
-    Returns None when either side is empty -- silently skipping malformed
-    misconception entries is preferable to crashing the run.
+    Returns None when either side is empty. Wave 112 Task 6: the silent-drop
+    path now emits a ``misconception_pair_skipped`` audit event via
+    ``capture.log_decision`` so a corpus rebuild that quietly loses a
+    property family is still visible in the decision-capture stream.
+    ``capture`` is optional only so legacy unit-tests that exercise this
+    helper in isolation still work — every production call site (Wave 77
+    augmentation loop in ``run_synthesis``) passes one in.
     """
     from Trainforge.generators.preference_factory import _misconception_id
 
+    chunk_id_for_log = str(chunk.get("id") or chunk.get("chunk_id") or "")
     mc_text_for_id = str(misconception.get("misconception", "")).strip()
     correction_for_id = str(misconception.get("correction", "")).strip()
     if not mc_text_for_id or not correction_for_id:
+        empty_field = "misconception" if not mc_text_for_id else "correction"
+        if capture is not None:
+            try:
+                capture.log_decision(
+                    decision_type="misconception_pair_skipped",
+                    decision="dropped",
+                    rationale=(
+                        f"empty {empty_field} on chunk {chunk_id_for_log}: "
+                        f"editorial misconception entry at pair_index="
+                        f"{pair_index} had a blank/whitespace-only "
+                        f"{empty_field} field after strip(); the DPO pair "
+                        f"would carry an empty chosen/rejected side and "
+                        f"violate the preference_pair schema, so the entry "
+                        f"is dropped before emit. Pre-Wave-112 this drop "
+                        f"happened with no audit trail."
+                    ),
+                )
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(
+                    "Failed to log misconception_pair_skipped event for "
+                    "chunk %s: %s", chunk_id_for_log, e,
+                )
         return None
     mc_text = html.unescape(mc_text_for_id)
     correction = html.unescape(correction_for_id)
@@ -951,7 +980,9 @@ def run_synthesis(
                     ):
                         stats.capped_at_max_pairs = True
                         break
-                    pair = _build_misconception_dpo_pair(chunk, mc, mc_index)
+                    pair = _build_misconception_dpo_pair(
+                        chunk, mc, mc_index, capture=capture,
+                    )
                     mc_index += 1
                     if pair is None:
                         continue
