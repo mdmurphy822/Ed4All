@@ -121,7 +121,7 @@ def main() -> int:
     parser.add_argument(
         "--provider",
         default="mock",
-        choices=["mock", "anthropic", "claude_session", "together"],
+        choices=["mock", "anthropic", "claude_session", "together", "local"],
     )
     parser.add_argument("--max-pairs", type=int, default=50)
     parser.add_argument("--seed", type=int, default=11)

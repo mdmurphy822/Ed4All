@@ -57,9 +57,18 @@ logger = logging.getLogger(__name__)
 
 
 DEFAULT_SYNTHESIS_MODEL = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+DEFAULT_BASE_URL = "https://api.together.xyz/v1"
+# Backwards-compat alias for callers that imported the full URL constant
+# directly. Kept identical to the legacy hard-coded value so existing tests
+# keep matching against ``str(req.url) == TOGETHER_API_URL``.
 TOGETHER_API_URL = "https://api.together.xyz/v1/chat/completions"
 ENV_API_KEY = "TOGETHER_API_KEY"
 ENV_MODEL = "TOGETHER_SYNTHESIS_MODEL"
+# Wave 113: the Together provider doesn't accept a base-URL env override.
+# Kept None so subclasses that DO want one (e.g. ``LocalSynthesisProvider``
+# whose server URL varies per Ollama / vLLM / llama.cpp / LM Studio install)
+# can flip it to a real env-var name without touching the base class.
+ENV_BASE_URL: Optional[str] = None
 
 # Hard cap on retry attempts when the endpoint returns a transient error.
 MAX_HTTP_RETRIES = 3
@@ -117,36 +126,99 @@ class TogetherSynthesisProvider:
 
     The HTTP client is owned by the provider and can be supplied via the
     ``client`` kwarg (tests inject one with ``httpx.MockTransport``).
+
+    Subclass hooks (Wave 113 prep — used by
+    :class:`Trainforge.generators._local_provider.LocalSynthesisProvider`):
+
+    - ``_default_base_url``: provider-specific OpenAI-compatible base URL
+      (the ``/chat/completions`` suffix is appended at request time).
+    - ``_default_model``: short / repo-style model identifier.
+    - ``_default_api_key_env`` / ``_default_model_env`` /
+      ``_default_base_url_env``: env var names the constructor reads to
+      populate the resolved value when no explicit kwarg is supplied.
+      ``None`` for ``_default_base_url_env`` (the Together case) means
+      the base URL isn't env-overridable on this provider.
+    - ``_api_key_required``: when ``False``, the constructor accepts
+      callers that didn't set the API-key env var and didn't inject a
+      client — needed for local model servers that ignore auth.
+    - ``_provider_name``: string written to ``out["provider"]`` on every
+      emitted pair AND surfaced in decision-capture events for audit.
     """
+
+    # ------------------------------------------------------------------
+    # Subclass hooks (Wave 113). Keep these as class attributes so
+    # subclasses can flip them without overriding ``__init__``.
+    # ------------------------------------------------------------------
+    _default_base_url: str = DEFAULT_BASE_URL
+    _default_model: str = DEFAULT_SYNTHESIS_MODEL
+    _default_api_key_env: str = ENV_API_KEY
+    _default_model_env: str = ENV_MODEL
+    _default_base_url_env: Optional[str] = ENV_BASE_URL
+    _api_key_required: bool = True
+    _provider_name: str = "together"
 
     def __init__(
         self,
         *,
         api_key: Optional[str] = None,
         model: Optional[str] = None,
+        base_url: Optional[str] = None,
         client: Optional[httpx.Client] = None,
         capture: Optional[Any] = None,
         timeout: float = DEFAULT_TIMEOUT,
         temperature: float = 0.4,
         max_tokens: int = 800,
     ) -> None:
-        resolved_key = api_key or os.environ.get(ENV_API_KEY)
-        if client is None and not resolved_key:
+        env_key_name = self._default_api_key_env
+        resolved_key = api_key or os.environ.get(env_key_name)
+        if (
+            client is None
+            and not resolved_key
+            and self._api_key_required
+        ):
             raise RuntimeError(
-                f"{ENV_API_KEY} required for provider=together; "
+                f"{env_key_name} required for "
+                f"provider={self._provider_name}; "
                 "set the env var or inject a client (tests)."
             )
+        # Wave 113 prep: when the API key isn't required (local servers
+        # that ignore auth), still send *something* in the Authorization
+        # header so reverse-proxy servers that DO check auth get a stable
+        # placeholder rather than an unset-header surprise.
+        if not resolved_key and not self._api_key_required:
+            resolved_key = "local"
         self._api_key = resolved_key
         self._model = (
             model
-            or os.environ.get(ENV_MODEL)
-            or DEFAULT_SYNTHESIS_MODEL
+            or os.environ.get(self._default_model_env)
+            or self._default_model
         )
+        # Wave 113 prep: resolve the base URL with the same precedence
+        # the API key + model use — explicit kwarg, then env override
+        # (when configured), then class default.
+        env_base_url_name = self._default_base_url_env
+        env_base_url = (
+            os.environ.get(env_base_url_name) if env_base_url_name else None
+        )
+        self._base_url = (
+            base_url or env_base_url or self._default_base_url
+        ).rstrip("/")
         self._client = client
         self._capture = capture
         self._timeout = float(timeout)
         self._temperature = float(temperature)
         self._max_tokens = int(max_tokens)
+
+    @property
+    def api_url(self) -> str:
+        """Full chat-completions endpoint URL for this provider.
+
+        Built from ``self._base_url`` so subclasses (and env overrides)
+        flow through automatically. The Together hard-coded constant
+        ``TOGETHER_API_URL`` is preserved for back-compat with callers
+        that import it directly.
+        """
+        return f"{self._base_url}/chat/completions"
 
     # ------------------------------------------------------------------
     # Public API
@@ -176,7 +248,7 @@ class TogetherSynthesisProvider:
         out["completion"] = self._clamp(
             parsed["completion"], kind="completion", chunk_id=chunk_id
         )
-        out["provider"] = "together"
+        out["provider"] = self._provider_name
 
         self._emit_decision(
             kind="instruction",
@@ -214,7 +286,7 @@ class TogetherSynthesisProvider:
         out["rejected"] = self._clamp(
             parsed["rejected"], kind="rejected", chunk_id=chunk_id
         )
-        out["provider"] = "together"
+        out["provider"] = self._provider_name
 
         self._emit_decision(
             kind="preference",
@@ -260,7 +332,7 @@ class TogetherSynthesisProvider:
     def _post_with_retry(
         self, payload: Dict[str, Any]
     ) -> tuple:
-        """POST to Together with bounded retries on transient failures.
+        """POST to the chat-completions endpoint with bounded retries.
 
         Returns ``(parsed_response_dict, retry_count)``. Surfaces
         4xx (other than 429) immediately as
@@ -268,17 +340,22 @@ class TogetherSynthesisProvider:
         status string. Persistent transient failures (5xx / 429)
         after ``MAX_HTTP_RETRIES`` attempts also raise
         ``SynthesisProviderError``.
+
+        URL + log-message provider name are subclass-driven via
+        ``self.api_url`` / ``self._provider_name``.
         """
         headers = {
             "Authorization": f"Bearer {self._api_key}" if self._api_key else "",
             "Content-Type": "application/json",
         }
+        url = self.api_url
+        provider_label = self._provider_name
         last_status: Optional[int] = None
         last_body: str = ""
         for attempt in range(1, MAX_HTTP_RETRIES + 1):
             try:
                 response = self.client.post(
-                    TOGETHER_API_URL,
+                    url,
                     json=payload,
                     headers=headers,
                 )
@@ -287,7 +364,7 @@ class TogetherSynthesisProvider:
                 last_status = None
                 if attempt >= MAX_HTTP_RETRIES:
                     raise SynthesisProviderError(
-                        f"Together AI request failed after "
+                        f"{provider_label} request to {url} failed after "
                         f"{MAX_HTTP_RETRIES} attempts: {exc}",
                         code="transport_error",
                     ) from exc
@@ -300,7 +377,7 @@ class TogetherSynthesisProvider:
                     body = response.json()
                 except ValueError as exc:
                     raise SynthesisProviderError(
-                        f"Together AI returned non-JSON 200 body: {exc}",
+                        f"{provider_label} returned non-JSON 200 body: {exc}",
                         code="malformed_response",
                     ) from exc
                 return body, attempt - 1
@@ -313,8 +390,9 @@ class TogetherSynthesisProvider:
 
             if status in _RETRYABLE_STATUS and attempt < MAX_HTTP_RETRIES:
                 logger.warning(
-                    "together synthesis: transient HTTP %d on attempt "
-                    "%d/%d; retrying", status, attempt, MAX_HTTP_RETRIES,
+                    "%s synthesis: transient HTTP %d on attempt "
+                    "%d/%d; retrying",
+                    provider_label, status, attempt, MAX_HTTP_RETRIES,
                 )
                 self._sleep_for_attempt(attempt)
                 continue
@@ -322,13 +400,13 @@ class TogetherSynthesisProvider:
             # Either non-retryable (4xx other than 429) or retries
             # exhausted on a 5xx / 429.
             raise SynthesisProviderError(
-                f"Together AI returned HTTP {status}: {last_body!r}",
+                f"{provider_label} returned HTTP {status}: {last_body!r}",
                 code=str(status),
             )
 
         # Defensive: loop exits via return / raise above.
         raise SynthesisProviderError(
-            f"Together AI: unreachable retry exit (last_status="
+            f"{provider_label}: unreachable retry exit (last_status="
             f"{last_status}, last_body={last_body!r})",
             code="retry_exhausted",
         )
@@ -372,8 +450,8 @@ class TogetherSynthesisProvider:
             except ValueError as exc:
                 last_err = exc
                 logger.warning(
-                    "together synthesis: parse retry %d/%d: %s",
-                    attempts, MAX_PARSE_RETRIES, exc,
+                    "%s synthesis: parse retry %d/%d: %s",
+                    self._provider_name, attempts, MAX_PARSE_RETRIES, exc,
                 )
                 continue
             missing = [k for k in required_keys if k not in parsed]
@@ -384,7 +462,7 @@ class TogetherSynthesisProvider:
                 continue
             return parsed, last_usage, total_http_retries
         raise SynthesisProviderError(
-            f"TogetherSynthesisProvider: failed to parse a valid JSON "
+            f"{type(self).__name__}: failed to parse a valid JSON "
             f"response after {MAX_PARSE_RETRIES} attempts. "
             f"Last error: {last_err}; tail of last response: "
             f"{last_text[-200:]!r}",
@@ -546,36 +624,86 @@ class TogetherSynthesisProvider:
         try:
             self._capture.log_decision(
                 decision_type="synthesis_provider_call",
-                decision=(
-                    f"Together paraphrase ({kind}) for chunk {chunk_id} "
-                    f"using model {self._model}; "
-                    f"prompt_tokens={prompt_tokens}, "
-                    f"completion_tokens={completion_tokens}, "
-                    f"retry_count={retry_count}."
+                decision=self._build_decision_string(
+                    kind=kind,
+                    chunk_id=chunk_id,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    retry_count=retry_count,
                 ),
-                rationale=(
-                    f"Routing template-generated {kind} draft "
-                    f"(template_id={draft.get('template_id','n/a')}, "
-                    f"draft_prompt_len={len(str(draft.get('prompt','')))}, "
-                    f"chunk_id={chunk_id}) through Together AI's hosted "
-                    f"OSS model {self._model} for paraphrase. Together's "
-                    f"ToS permits using this output as training data for "
-                    f"another model, which Anthropic's ToS forbids — this "
-                    f"is the ToS-clean teacher pass for the SLM corpus. "
-                    f"prompt_tokens={prompt_tokens}, "
-                    f"completion_tokens={completion_tokens}, "
-                    f"http_retries={retry_count}."
+                rationale=self._build_decision_rationale(
+                    kind=kind,
+                    draft=draft,
+                    chunk_id=chunk_id,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    retry_count=retry_count,
                 ),
             )
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning("synthesis_provider_call capture failed: %s", exc)
 
+    # ------------------------------------------------------------------
+    # Decision-capture string builders (Wave 113 prep — subclass hooks).
+    # Subclasses override to interpolate provider-specific signals
+    # (e.g. base_url for the local provider) without copy-pasting the
+    # _emit_decision wiring above.
+    # ------------------------------------------------------------------
+
+    def _build_decision_string(
+        self,
+        *,
+        kind: str,
+        chunk_id: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        retry_count: int,
+    ) -> str:
+        return (
+            f"Together paraphrase ({kind}) for chunk {chunk_id} "
+            f"using model {self._model}; "
+            f"prompt_tokens={prompt_tokens}, "
+            f"completion_tokens={completion_tokens}, "
+            f"retry_count={retry_count}."
+        )
+
+    def _build_decision_rationale(
+        self,
+        *,
+        kind: str,
+        draft: Dict[str, Any],
+        chunk_id: str,
+        prompt_tokens: int,
+        completion_tokens: int,
+        retry_count: int,
+    ) -> str:
+        return (
+            f"Routing template-generated {kind} draft "
+            f"(template_id={draft.get('template_id','n/a')}, "
+            f"draft_prompt_len={len(str(draft.get('prompt','')))}, "
+            f"chunk_id={chunk_id}) through Together AI's hosted "
+            f"OSS model {self._model} for paraphrase. Together's "
+            f"ToS permits using this output as training data for "
+            f"another model, which Anthropic's ToS forbids — this "
+            f"is the ToS-clean teacher pass for the SLM corpus. "
+            f"prompt_tokens={prompt_tokens}, "
+            f"completion_tokens={completion_tokens}, "
+            f"http_retries={retry_count}."
+        )
+
 
 __all__ = [
     "TogetherSynthesisProvider",
     "DEFAULT_SYNTHESIS_MODEL",
+    "DEFAULT_BASE_URL",
     "TOGETHER_API_URL",
+    "ENV_API_KEY",
+    "ENV_MODEL",
+    "ENV_BASE_URL",
     "MAX_HTTP_RETRIES",
     "MAX_PARSE_RETRIES",
+    "DEFAULT_TIMEOUT",
+    "INITIAL_BACKOFF_SECONDS",
+    "_RETRYABLE_STATUS",
     "SynthesisProviderError",
 ]
