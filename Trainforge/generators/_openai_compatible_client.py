@@ -36,7 +36,9 @@ etc.). Rationale ≥20 chars per the project contract.
 
 from __future__ import annotations
 
+import json as _json
 import logging
+import re as _re
 import time
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -100,6 +102,7 @@ class OpenAICompatibleClient:
         provider_label: str = DEFAULT_PROVIDER_LABEL,
         client: Optional[httpx.Client] = None,
         sleep_fn: Optional[Callable[[float], None]] = None,
+        json_mode: bool = False,
     ) -> None:
         """Build an LLM-agnostic chat-completions client.
 
@@ -132,6 +135,18 @@ class OpenAICompatibleClient:
             client: Optional pre-built ``httpx.Client``. Tests inject
                 one with ``httpx.MockTransport``. Production callers
                 let the property build one lazily.
+            json_mode: Wave 113 — when ``True``, every request payload
+                carries BOTH ``"format": "json"`` (the Ollama-style
+                top-level field that triggers JSON-grammar-constrained
+                decoding on Ollama 0.4+) AND
+                ``"response_format": {"type": "json_object"}`` (the
+                OpenAI-spec field). Servers that don't recognize one
+                or the other ignore it silently — being permissive in
+                what we send is cheap and gives defense in depth across
+                hosted-OSS providers (Together, Fireworks, Groq) and
+                local servers (Ollama, vLLM, llama.cpp, LM Studio) at
+                once. Default ``False`` for backward compat — providers
+                explicitly opt in.
         """
         if not base_url:
             raise ValueError("OpenAICompatibleClient requires a non-empty base_url")
@@ -152,6 +167,7 @@ class OpenAICompatibleClient:
         # ``Trainforge.generators._together_provider.time.sleep`` keep
         # working post-refactor. Default is the stdlib ``time.sleep``.
         self._sleep_fn = sleep_fn or time.sleep
+        self._json_mode = bool(json_mode)
 
     # ------------------------------------------------------------------
     # Properties
@@ -271,6 +287,16 @@ class OpenAICompatibleClient:
         headers: Dict[str, str] = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
+        # Wave 113: when json_mode is on, inject BOTH the Ollama-style
+        # top-level ``format`` field AND the OpenAI-spec
+        # ``response_format`` object. Servers ignore whichever they
+        # don't recognize. Caller-supplied values (extra_payload) take
+        # precedence so a future provider can opt out per-call.
+        if self._json_mode:
+            payload.setdefault("format", "json")
+            payload.setdefault(
+                "response_format", {"type": "json_object"}
+            )
         url = self.api_url
         provider_label = self._provider_label
         last_status: Optional[int] = None
@@ -395,6 +421,75 @@ class OpenAICompatibleClient:
         if isinstance(content, str):
             return content
         return ""
+
+    @staticmethod
+    def _extract_json_lenient(text: str) -> Optional[Dict[str, Any]]:
+        """Lenient JSON extraction for 7B-class instruction-model drift.
+
+        7B-class instruction models in 4-bit quantization (e.g.
+        ``qwen2.5:7b-instruct-q4_K_M`` on Ollama) frequently wrap
+        their JSON output in markdown code fences or surround it
+        with leading / trailing prose despite explicit "JSON only"
+        directives. This helper recovers the JSON object across the
+        three common drift patterns; returns ``None`` only when the
+        response is genuinely unrecoverable (e.g. "I cannot help with
+        that.").
+
+        Strategy, in order:
+        1. Direct ``json.loads(text)`` — the happy path.
+        2. Strip enclosing markdown fences (``` ```json ... ``` ``` or
+           ``` ``` ... ``` ```), then retry ``json.loads`` on the
+           stripped body.
+        3. Find the first balanced ``{...}`` substring and ``json.loads``
+           it. Handles ``"Sure! {...} hope this helps"``-style drift.
+
+        Caller decides retry strategy on ``None``. Does not enforce
+        required keys — that's the caller's contract.
+        """
+        if not text or not text.strip():
+            return None
+        s = text.strip()
+        # Strategy 1: direct parse.
+        try:
+            parsed = _json.loads(s)
+        except _json.JSONDecodeError:
+            pass
+        else:
+            return parsed if isinstance(parsed, dict) else None
+
+        # Strategy 2: strip markdown code fences. The fence regex tolerates
+        # the language hint (```json) and arbitrary leading / trailing
+        # whitespace inside the fence.
+        fence = _re.match(
+            r"^```(?:[a-zA-Z0-9_+-]*\n)?\s*(.*?)\s*```\s*$", s, _re.DOTALL
+        )
+        if fence:
+            inner = fence.group(1).strip()
+            try:
+                parsed = _json.loads(inner)
+            except _json.JSONDecodeError:
+                pass
+            else:
+                return parsed if isinstance(parsed, dict) else None
+
+        # Strategy 3: scan for the first balanced JSON object span.
+        start = s.find("{")
+        if start < 0:
+            return None
+        depth = 0
+        for i, ch in enumerate(s[start:], start=start):
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = s[start:i + 1]
+                    try:
+                        parsed = _json.loads(candidate)
+                    except _json.JSONDecodeError:
+                        return None
+                    return parsed if isinstance(parsed, dict) else None
+        return None
 
     @staticmethod
     def _extract_usage(body: Dict[str, Any]) -> Dict[str, int]:

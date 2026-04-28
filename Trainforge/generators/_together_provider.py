@@ -241,6 +241,14 @@ class TogetherSynthesisProvider:
         # ``llm_chat_call`` event is intentionally not wired to keep the
         # legacy decision-capture surface stable. Only one event per
         # paraphrase call lands in the capture stream.
+        #
+        # Wave 113: ``json_mode=True`` defense-in-depth — Together's
+        # hosted Llama-3.3-70B and Qwen2.5-72B are more reliable at
+        # JSON than 7B local models, but the cost of sending both
+        # ``format`` and ``response_format`` is zero (the server ignores
+        # whichever it doesn't recognize) and gives us consistent JSON
+        # output across hosted-OSS providers (Fireworks, Groq, DeepInfra
+        # all accept ``response_format``).
         self._oa_client = OpenAICompatibleClient(
             base_url=self._base_url,
             model=self._model,
@@ -258,6 +266,7 @@ class TogetherSynthesisProvider:
             # (and the equivalent local-provider patch) keep working
             # after the refactor.
             sleep_fn=lambda s: time.sleep(s),
+            json_mode=True,
         )
 
     @property
@@ -457,9 +466,36 @@ class TogetherSynthesisProvider:
         usage = self._oa_client._extract_usage(body)
         return text, usage, retry_count
 
-    @staticmethod
+    # ------------------------------------------------------------------
+    # Strict-JSON directives appended to the user prompt (Wave 113).
+    # Defense in depth: while Together's 70B-class hosted models are
+    # reliable at JSON output via ``response_format``, an explicit
+    # end-of-prompt directive eliminates the rare drift that still
+    # surfaces on Llama-3.3 / Qwen2.5 when the hosted server ignores
+    # ``response_format`` (some hosted-OSS servers do).
+    # ------------------------------------------------------------------
+    _INSTRUCTION_JSON_DIRECTIVE = (
+        "\n\nRESPOND ONLY WITH A JSON OBJECT. Use EXACTLY this shape, "
+        "nothing else:\n"
+        "{\"prompt\": \"<paraphrased prompt>\", "
+        "\"completion\": \"<paraphrased completion>\"}\n"
+        "Do not wrap in markdown. Do not add commentary. Output the "
+        "JSON object only."
+    )
+
+    _PREFERENCE_JSON_DIRECTIVE = (
+        "\n\nRESPOND ONLY WITH A JSON OBJECT. Use EXACTLY this shape, "
+        "nothing else:\n"
+        "{\"prompt\": \"<paraphrased prompt>\", "
+        "\"chosen\": \"<paraphrased chosen>\", "
+        "\"rejected\": \"<paraphrased rejected>\"}\n"
+        "Do not wrap in markdown. Do not add commentary. Output the "
+        "JSON object only."
+    )
+
+    @classmethod
     def _render_instruction_user(
-        draft: Dict[str, Any], chunk_id: str
+        cls, draft: Dict[str, Any], chunk_id: str
     ) -> str:
         return (
             f"Chunk ID: {chunk_id}\n"
@@ -473,11 +509,12 @@ class TogetherSynthesisProvider:
             f"\n"
             f"Rewrite the prompt and completion. Return JSON with keys "
             f"'prompt' and 'completion'."
+            f"{cls._INSTRUCTION_JSON_DIRECTIVE}"
         )
 
-    @staticmethod
+    @classmethod
     def _render_preference_user(
-        draft: Dict[str, Any], chunk_id: str
+        cls, draft: Dict[str, Any], chunk_id: str
     ) -> str:
         return (
             f"Chunk ID: {chunk_id}\n"
@@ -491,6 +528,7 @@ class TogetherSynthesisProvider:
             f"\n"
             f"Rewrite all three. Return JSON with keys 'prompt', "
             f"'chosen', and 'rejected'."
+            f"{cls._PREFERENCE_JSON_DIRECTIVE}"
         )
 
     @staticmethod

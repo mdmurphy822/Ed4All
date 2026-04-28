@@ -145,6 +145,16 @@ class LocalSynthesisProvider:
         # Composition: build the LLM-agnostic client. Same client class
         # the Together provider composes — only the configuration
         # differs.
+        #
+        # Wave 113 hardening: ``json_mode=True`` makes every request
+        # carry both the Ollama-style ``format: "json"`` field AND the
+        # OpenAI-spec ``response_format: {"type": "json_object"}`` field.
+        # 7B-class instruction models in 4-bit quantization (e.g.
+        # ``qwen2.5:7b-instruct-q4_K_M`` on Ollama) are unreliable at
+        # strict-JSON output without grammar-constrained decoding;
+        # ``format: "json"`` triggers Ollama's JSON-grammar mode and
+        # eliminates the natural-language drift that crashed the Wave
+        # 113 Task 10 pilot run after 3 parse retries.
         self._oa_client = OpenAICompatibleClient(
             base_url=self._base_url,
             model=self._model,
@@ -162,6 +172,7 @@ class LocalSynthesisProvider:
             # (per the local test docstring's stated contract) keep
             # working post-refactor.
             sleep_fn=_local_sleep,
+            json_mode=True,
         )
 
     @property
@@ -274,9 +285,23 @@ class LocalSynthesisProvider:
         user_prompt: str,
         required_keys: tuple,
     ) -> Tuple[Dict[str, Any], Dict[str, int], int]:
+        """Call the local server and parse JSON via the lenient extractor.
+
+        Wave 113 hardening: 7B-class instruction models in 4-bit
+        quantization wrap their JSON in markdown code fences or
+        surround it with prose despite explicit "JSON only" prompt
+        directives. The embedded client's
+        :meth:`OpenAICompatibleClient._extract_json_lenient` recovers
+        the JSON across the three common drift patterns before parse
+        failure escalates. After ``MAX_PARSE_RETRIES`` lenient-extract
+        misses, raises ``SynthesisProviderError`` with code
+        ``json_parse_failed_after_lenient_retry`` and a truncated
+        500-char tail of the last response in the message — postmortem
+        visibility on what the model actually emitted.
+        """
         messages = self._build_messages(system_prompt, chunk_text, user_prompt)
         attempts = 0
-        last_err: Optional[Exception] = None
+        last_err: Optional[str] = None
         last_text: str = ""
         total_http_retries = 0
         last_usage: Dict[str, int] = {}
@@ -286,28 +311,32 @@ class LocalSynthesisProvider:
             total_http_retries += http_retries
             last_usage = usage
             last_text = text
-            try:
-                parsed = self._parse_json(text)
-            except ValueError as exc:
-                last_err = exc
+            parsed = self._oa_client._extract_json_lenient(text)
+            if parsed is None:
+                last_err = "lenient JSON extraction returned None"
                 logger.warning(
-                    "%s synthesis: parse retry %d/%d: %s",
-                    self._provider_name, attempts, MAX_PARSE_RETRIES, exc,
+                    "%s synthesis: lenient parse retry %d/%d: "
+                    "no JSON object recoverable from response tail %r",
+                    self._provider_name, attempts, MAX_PARSE_RETRIES,
+                    text[-120:],
                 )
                 continue
             missing = [k for k in required_keys if k not in parsed]
             if missing:
-                last_err = ValueError(
-                    f"response missing required keys: {missing}"
+                last_err = f"response missing required keys: {missing}"
+                logger.warning(
+                    "%s synthesis: lenient parse retry %d/%d: %s",
+                    self._provider_name, attempts, MAX_PARSE_RETRIES,
+                    last_err,
                 )
                 continue
             return parsed, last_usage, total_http_retries
         raise SynthesisProviderError(
-            f"{type(self).__name__}: failed to parse a valid JSON "
-            f"response after {MAX_PARSE_RETRIES} attempts. "
-            f"Last error: {last_err}; tail of last response: "
-            f"{last_text[-200:]!r}",
-            code="parse_retries_exhausted",
+            f"{type(self).__name__}: failed to extract a valid JSON "
+            f"object after {MAX_PARSE_RETRIES} lenient-extraction "
+            f"attempts. Last error: {last_err}; tail of last response: "
+            f"{last_text[-500:]!r}",
+            code="json_parse_failed_after_lenient_retry",
         )
 
     def _chat_completion_raw(
@@ -324,9 +353,35 @@ class LocalSynthesisProvider:
         usage = self._oa_client._extract_usage(body)
         return text, usage, retry_count
 
-    @staticmethod
+    # ------------------------------------------------------------------
+    # Strict-JSON directives. Appended verbatim at the END of the user
+    # message (NOT the system message — keeping the system message
+    # unchanged preserves provider parity with Together / Anthropic).
+    # 7B-class models in 4-bit quantization respect end-of-prompt
+    # directives more reliably than buried-in-system-prompt directives.
+    # ------------------------------------------------------------------
+    _INSTRUCTION_JSON_DIRECTIVE = (
+        "\n\nRESPOND ONLY WITH A JSON OBJECT. Use EXACTLY this shape, "
+        "nothing else:\n"
+        "{\"prompt\": \"<paraphrased prompt>\", "
+        "\"completion\": \"<paraphrased completion>\"}\n"
+        "Do not wrap in markdown. Do not add commentary. Output the "
+        "JSON object only."
+    )
+
+    _PREFERENCE_JSON_DIRECTIVE = (
+        "\n\nRESPOND ONLY WITH A JSON OBJECT. Use EXACTLY this shape, "
+        "nothing else:\n"
+        "{\"prompt\": \"<paraphrased prompt>\", "
+        "\"chosen\": \"<paraphrased chosen>\", "
+        "\"rejected\": \"<paraphrased rejected>\"}\n"
+        "Do not wrap in markdown. Do not add commentary. Output the "
+        "JSON object only."
+    )
+
+    @classmethod
     def _render_instruction_user(
-        draft: Dict[str, Any], chunk_id: str
+        cls, draft: Dict[str, Any], chunk_id: str
     ) -> str:
         return (
             f"Chunk ID: {chunk_id}\n"
@@ -340,11 +395,12 @@ class LocalSynthesisProvider:
             f"\n"
             f"Rewrite the prompt and completion. Return JSON with keys "
             f"'prompt' and 'completion'."
+            f"{cls._INSTRUCTION_JSON_DIRECTIVE}"
         )
 
-    @staticmethod
+    @classmethod
     def _render_preference_user(
-        draft: Dict[str, Any], chunk_id: str
+        cls, draft: Dict[str, Any], chunk_id: str
     ) -> str:
         return (
             f"Chunk ID: {chunk_id}\n"
@@ -358,6 +414,7 @@ class LocalSynthesisProvider:
             f"\n"
             f"Rewrite all three. Return JSON with keys 'prompt', "
             f"'chosen', and 'rejected'."
+            f"{cls._PREFERENCE_JSON_DIRECTIVE}"
         )
 
     @staticmethod

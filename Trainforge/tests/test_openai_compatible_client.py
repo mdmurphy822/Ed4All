@@ -437,3 +437,104 @@ def test_empty_messages_raises_value_error():
     client = _build(transport_handler=lambda r: httpx.Response(200, json={}))
     with pytest.raises(ValueError):
         client.chat_completion([])
+
+
+# ---------------------------------------------------------------------------
+# Wave 113: json_mode + lenient JSON extraction
+# ---------------------------------------------------------------------------
+
+
+def test_json_mode_includes_format_field():
+    """When ``json_mode=True``, the request payload carries BOTH the
+    Ollama-style ``format: "json"`` field AND the OpenAI-spec
+    ``response_format: {"type": "json_object"}`` field. Servers that
+    don't recognize one or the other ignore it silently — defense in
+    depth across hosted-OSS providers + local servers."""
+    import json as _json
+
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=_success_body("ok"))
+
+    transport = httpx.MockTransport(handler)
+    client = OpenAICompatibleClient(
+        base_url="http://localhost:11434/v1",
+        model="qwen2.5:7b-instruct-q4_K_M",
+        api_key=None,
+        client=httpx.Client(transport=transport),
+        sleep_fn=lambda _s: None,
+        json_mode=True,
+    )
+    client.chat_completion([{"role": "user", "content": "hi"}])
+    body = _json.loads(seen[0].content.decode("utf-8"))
+    assert body.get("format") == "json"
+    assert body.get("response_format") == {"type": "json_object"}
+
+
+def test_json_mode_off_does_not_inject_format_fields():
+    """Default ``json_mode=False`` leaves the payload untouched."""
+    import json as _json
+
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=_success_body("ok"))
+
+    client = _build(transport_handler=handler)
+    client.chat_completion([{"role": "user", "content": "hi"}])
+    body = _json.loads(seen[0].content.decode("utf-8"))
+    assert "format" not in body
+    assert "response_format" not in body
+
+
+def test_extract_json_lenient_plain():
+    """Strategy 1: direct ``json.loads`` on a clean JSON object."""
+    out = OpenAICompatibleClient._extract_json_lenient('{"a": 1}')
+    assert out == {"a": 1}
+
+
+def test_extract_json_lenient_markdown_fence():
+    """Strategy 2: strip enclosing markdown code fences (``json...``)."""
+    out = OpenAICompatibleClient._extract_json_lenient(
+        '```json\n{"a": 1}\n```'
+    )
+    assert out == {"a": 1}
+    # Also without the language hint.
+    out2 = OpenAICompatibleClient._extract_json_lenient(
+        '```\n{"b": 2}\n```'
+    )
+    assert out2 == {"b": 2}
+
+
+def test_extract_json_lenient_with_prose():
+    """Strategy 3: scan the first balanced JSON object out of surrounding
+    prose. Handles the natural-language drift Wave 113 Task 10 saw."""
+    out = OpenAICompatibleClient._extract_json_lenient(
+        'Sure! {"a": 1} hope this helps'
+    )
+    assert out == {"a": 1}
+
+
+def test_extract_json_lenient_unrecoverable():
+    """Genuinely unrecoverable response: caller decides retry strategy
+    on ``None``. No exception thrown — caller is responsible for the
+    decision."""
+    out = OpenAICompatibleClient._extract_json_lenient(
+        "I cannot help with that."
+    )
+    assert out is None
+
+
+def test_extract_json_lenient_empty_returns_none():
+    assert OpenAICompatibleClient._extract_json_lenient("") is None
+    assert OpenAICompatibleClient._extract_json_lenient("   \n") is None
+
+
+def test_extract_json_lenient_non_object_returns_none():
+    """Non-object JSON (top-level array, string, number) returns None —
+    the synthesis contract requires an object."""
+    assert OpenAICompatibleClient._extract_json_lenient("[1, 2, 3]") is None
+    assert OpenAICompatibleClient._extract_json_lenient("42") is None
