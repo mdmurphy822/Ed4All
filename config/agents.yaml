@@ -215,7 +215,7 @@ agents:
   # the existing Trainforge/synthesize_training.py entry point.
   training-synthesizer:
     source: Trainforge/synthesize_training.py
-    type: generator
+    type: subagent
     capabilities:
       - instruction_pair_synthesis
       - preference_pair_generation
