@@ -34,6 +34,7 @@ their rationales.
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import logging
 import random
@@ -102,6 +103,8 @@ class SynthesisStats:
     pairs_without_concepts: int = 0
     concepts_without_pairs_count: int = 0
     pairs_with_prereq_recap: int = 0
+    source_grounded_pairs: int = 0
+    instruction_variants_per_chunk: int = 1
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -128,6 +131,8 @@ class SynthesisStats:
             "pairs_without_concepts": self.pairs_without_concepts,
             "concepts_without_pairs_count": self.concepts_without_pairs_count,
             "pairs_with_prereq_recap": self.pairs_with_prereq_recap,
+            "source_grounded_pairs": self.source_grounded_pairs,
+            "instruction_variants_per_chunk": self.instruction_variants_per_chunk,
         }
 
 
@@ -292,9 +297,13 @@ def _build_misconception_dpo_pair(
     """
     from Trainforge.generators.preference_factory import _misconception_id
 
-    mc_text = str(misconception.get("misconception", "")).strip()
-    correction = str(misconception.get("correction", "")).strip()
-    if not mc_text or not correction:
+    mc_text_for_id = str(misconception.get("misconception", "")).strip()
+    correction_for_id = str(misconception.get("correction", "")).strip()
+    if not mc_text_for_id or not correction_for_id:
+        return None
+    mc_text = html.unescape(mc_text_for_id)
+    correction = html.unescape(correction_for_id)
+    if correction.rstrip().endswith(":"):
         return None
 
     chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
@@ -316,12 +325,14 @@ def _build_misconception_dpo_pair(
         primary_concept = f"learning outcome {refs[0]}"
     else:
         primary_concept = "the course topic"
+    correction = _fit_pair_answer(correction, primary_concept)
+    mc_text = _fit_pair_answer(mc_text, primary_concept)
 
     prompt = (
         f"Explain {primary_concept} clearly enough for a new learner to "
         f"avoid the most common misconception."
     )
-    mc_id = _misconception_id(mc_text, correction, mc_bloom)
+    mc_id = _misconception_id(mc_text_for_id, correction_for_id, mc_bloom)
     pair = {
         "id": f"mcp_{chunk_id}_{pair_index:03d}",
         "chunk_id": chunk_id,
@@ -331,10 +342,126 @@ def _build_misconception_dpo_pair(
         "source": "misconception_editorial",
         "misconception_id": mc_id,
         "bloom_level": chunk_bloom or "unknown",
+        "lo_refs": list(refs),
         "learning_outcome_refs": list(refs),
         "seed": pair_index,
     }
     return pair
+
+
+def _chunk_source_references(chunk: Dict[str, Any]) -> List[Dict[str, Any]]:
+    source = chunk.get("source") if isinstance(chunk.get("source"), dict) else {}
+    refs = source.get("source_references") if isinstance(source, dict) else None
+    if not isinstance(refs, list):
+        return []
+    return [dict(r) for r in refs if isinstance(r, dict)]
+
+
+def _append_citation(text: str, chunk_id: str, *, max_len: int = 600) -> str:
+    citation = f" [{chunk_id}]"
+    text = str(text or "").strip()
+    if not chunk_id or citation in text:
+        return text
+    if len(text) + len(citation) <= max_len:
+        return text + citation
+
+    budget = max(0, max_len - len(citation))
+    trimmed = text[:budget].rstrip()
+    boundary = trimmed.rfind(". ")
+    if boundary >= 50:
+        trimmed = trimmed[:boundary + 1].rstrip()
+    return (trimmed + citation).strip()
+
+
+def _append_citation_instruction(prompt: str, *, max_len: int = 400) -> str:
+    tail = " Cite the source chunk in brackets."
+    prompt = str(prompt or "").strip()
+    if "cite the source chunk" in prompt.lower():
+        return prompt
+    if len(prompt) + len(tail) <= max_len:
+        return prompt + tail
+    return prompt
+
+
+def _pad_short_answer(text: str, topic: str, *, min_len: int = 50) -> str:
+    text = str(text or "").strip()
+    if len(text) >= min_len:
+        return text
+    return (
+        f"{text} This correction keeps the learner grounded in {topic} "
+        f"rather than a misleading shortcut."
+    ).strip()
+
+
+def _fit_pair_answer(text: str, topic: str, *, max_len: int = 600) -> str:
+    text = _pad_short_answer(text, topic)
+    if len(text) <= max_len:
+        return text
+    hard = text[:max_len]
+    boundary = hard.rfind(". ")
+    if boundary >= 50:
+        return hard[:boundary + 1].strip()
+    return hard[: max_len - 3].rstrip() + "..."
+
+
+def _attach_source_grounding(
+    pair: Dict[str, Any],
+    chunk: Dict[str, Any],
+    *,
+    cite: Optional[bool] = None,
+) -> bool:
+    """Attach source metadata, adding target citations only when requested."""
+    chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
+    if not chunk_id:
+        return False
+
+    pair["source_chunk_id"] = chunk_id
+    pair["source_references"] = _chunk_source_references(chunk)
+    pair["source_citation"] = f"[{chunk_id}]"
+    if cite is None:
+        cite = bool(pair.get("requires_source_citation"))
+    if not cite:
+        return True
+
+    pair["prompt"] = _append_citation_instruction(str(pair.get("prompt") or ""))
+
+    grounded = False
+    if "completion" in pair:
+        pair["completion"] = _append_citation(str(pair.get("completion") or ""), chunk_id)
+        grounded = True
+    if "chosen" in pair:
+        pair["chosen"] = _append_citation(str(pair.get("chosen") or ""), chunk_id)
+        grounded = True
+    return grounded
+
+
+_INSTRUCTION_PROMPT_FRAMES = (
+    "{prompt}",
+    "For an RDF/SHACL learner, {prompt_lc}",
+    "Give a source-grounded answer: {prompt}",
+)
+
+
+def _apply_instruction_variant(pair: Dict[str, Any], variant_index: int) -> None:
+    pair["instruction_variant"] = int(variant_index)
+    pair["requires_source_citation"] = (
+        variant_index % len(_INSTRUCTION_PROMPT_FRAMES) == 2
+    )
+    if variant_index <= 0:
+        return
+    prompt = str(pair.get("prompt") or "").strip()
+    if not prompt:
+        return
+    frame = _INSTRUCTION_PROMPT_FRAMES[
+        variant_index % len(_INSTRUCTION_PROMPT_FRAMES)
+    ]
+    candidate = frame.format(
+        prompt=prompt,
+        prompt_lc=prompt[:1].lower() + prompt[1:],
+    )
+    # Leave room for the citation instruction appended later.
+    if len(candidate) <= 360:
+        pair["prompt"] = candidate
 
 
 def _update_dataset_config(
@@ -433,6 +560,7 @@ def run_synthesis(
     prereq_context_tokens: int = DEFAULT_PREREQ_CONTEXT_TOKENS,
     pedagogy_graph_path: Optional[Path] = None,
     slug: Optional[str] = None,
+    instruction_variants_per_chunk: int = 1,
 ) -> SynthesisStats:
     """Run the full synthesis stage for one course output directory.
 
@@ -511,6 +639,8 @@ def run_synthesis(
     stats.curriculum_from_graph = bool(curriculum_from_graph)
     stats.prereq_windowed = bool(prereq_windowed)
     stats.prereq_context_tokens = int(prereq_context_tokens)
+    instruction_variants = max(1, int(instruction_variants_per_chunk))
+    stats.instruction_variants_per_chunk = instruction_variants
 
     # Wave 79 Worker B: load the pedagogy graph eagerly when curriculum mode
     # is active so a missing graph fails loud instead of silently degrading
@@ -619,16 +749,16 @@ def run_synthesis(
         per_artifact_cap = max_pairs
 
         for idx, chunk in iter_chunks:
-            pair_seed = seed + idx
-
             # --- Instruction pair ---
-            inst_capped = (
-                per_artifact_cap is not None
-                and stats.instruction_pairs_emitted >= per_artifact_cap
-            )
-            if inst_capped:
-                stats.capped_at_max_pairs = True
-            else:
+            for variant_index in range(instruction_variants):
+                inst_capped = (
+                    per_artifact_cap is not None
+                    and stats.instruction_pairs_emitted >= per_artifact_cap
+                )
+                if inst_capped:
+                    stats.capped_at_max_pairs = True
+                    break
+                pair_seed = seed + idx + (variant_index * 100_000)
                 inst_result = synthesize_instruction_pair(
                     chunk, seed=pair_seed, provider=provider
                 )
@@ -658,11 +788,14 @@ def run_synthesis(
                             ct_value,
                             context=f"instruction_pair.chunk_id={chunk_id}",
                         )
+                    _apply_instruction_variant(inst_result.pair, variant_index)
                     capture.log_decision(
                         decision_type="instruction_pair_synthesis",
                         decision=(
                             f"Emit instruction pair for chunk {inst_result.pair['chunk_id']} "
-                            f"(template={inst_result.template_id}, bloom={inst_result.pair['bloom_level']})."
+                            f"(template={inst_result.template_id}, "
+                            f"variant={variant_index}, "
+                            f"bloom={inst_result.pair['bloom_level']})."
                         ),
                         rationale=inst_result.rationale,
                         alternatives_considered=inst_result.alternatives or None,
@@ -673,10 +806,13 @@ def run_synthesis(
                         ),
                     )
                     inst_result.pair["decision_capture_id"] = _last_event_id(capture)
+                    if _attach_source_grounding(inst_result.pair, chunk):
+                        stats.source_grounded_pairs += 1
                     instruction_records.append(inst_result.pair)
                     stats.instruction_pairs_emitted += 1
 
             # --- Preference pair ---
+            pair_seed = seed + idx
             pref_capped = (
                 per_artifact_cap is not None
                 and stats.preference_pairs_emitted >= per_artifact_cap
@@ -706,6 +842,8 @@ def run_synthesis(
                         context=f"quality={pref_result.quality}",
                     )
                     pref_result.pair["decision_capture_id"] = _last_event_id(capture)
+                    if _attach_source_grounding(pref_result.pair, chunk):
+                        stats.source_grounded_pairs += 1
                     preference_records.append(pref_result.pair)
                     stats.preference_pairs_emitted += 1
 
@@ -751,6 +889,8 @@ def run_synthesis(
                         ),
                     )
                     pair["decision_capture_id"] = _last_event_id(capture)
+                    if _attach_source_grounding(pair, chunk):
+                        stats.source_grounded_pairs += 1
                     preference_records.append(pair)
                     stats.preference_pairs_emitted += 1
                     stats.misconception_dpo_pairs_emitted += 1
@@ -948,6 +1088,7 @@ def run_synthesis_from_libv2(
     prereq_windowed: bool = False,
     prereq_context_tokens: int = DEFAULT_PREREQ_CONTEXT_TOKENS,
     pedagogy_graph_path: Optional[Path] = None,
+    instruction_variants_per_chunk: int = 1,
 ) -> SynthesisStats:
     """Run synthesis directly against a LibV2 course archive.
 
@@ -1003,6 +1144,7 @@ def run_synthesis_from_libv2(
         prereq_context_tokens=prereq_context_tokens,
         pedagogy_graph_path=pedagogy_graph_path,
         slug=slug,
+        instruction_variants_per_chunk=instruction_variants_per_chunk,
     )
 
 
@@ -1154,6 +1296,16 @@ def build_parser() -> argparse.ArgumentParser:
             "corpus root."
         ),
     )
+    p.add_argument(
+        "--instruction-variants-per-chunk",
+        type=int,
+        default=1,
+        help=(
+            "Emit this many SFT instruction variants per eligible chunk "
+            "(default: 1). Preference pairs remain one per chunk plus any "
+            "editorial misconception DPO pairs."
+        ),
+    )
     return p
 
 
@@ -1192,6 +1344,7 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             prereq_windowed=prereq_windowed,
             prereq_context_tokens=prereq_ctx_tokens,
             pedagogy_graph_path=pedagogy_path,
+            instruction_variants_per_chunk=args.instruction_variants_per_chunk,
         )
     else:
         if not args.course_code:
@@ -1213,6 +1366,7 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             prereq_windowed=prereq_windowed,
             prereq_context_tokens=prereq_ctx_tokens,
             pedagogy_graph_path=pedagogy_path,
+            instruction_variants_per_chunk=args.instruction_variants_per_chunk,
         )
 
     print("\n[Synthesis] Complete.")

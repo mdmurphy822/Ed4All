@@ -154,6 +154,19 @@ class LocalBackend(ComputeBackend):
 
         if spec.run_dpo and spec.preference_pairs_path.exists():
             pref_pairs = _read_jsonl(spec.preference_pairs_path)
+            pref_pairs = _filter_dpo_pairs(
+                pref_pairs,
+                str(spec.training_config.get(
+                    "dpo_preference_filter",
+                    "editorial_or_misconception",
+                )),
+            )
+            min_dpo_pairs = int(spec.training_config.get("min_dpo_pairs", 10))
+            if len(pref_pairs) < min_dpo_pairs:
+                raise RuntimeError(
+                    "DPO requested but filtered preference-pair count "
+                    f"{len(pref_pairs)} is below min_dpo_pairs={min_dpo_pairs}."
+                )
             # Wave 100 Bug 5 extension: DPO failure must not void the
             # SFT adapter. SFT has already saved adapter_model.safetensors
             # to disk; if DPO crashes (e.g. peft-DPO grad_fn drift,
@@ -165,6 +178,11 @@ class LocalBackend(ComputeBackend):
                 )
                 metrics["dpo_completed"] = True
             except Exception as exc:  # noqa: BLE001
+                if bool(spec.training_config.get("dpo_fail_hard", True)):
+                    raise RuntimeError(
+                        f"DPO chain failed after SFT; refusing SFT fallback "
+                        f"because dpo_fail_hard=true ({type(exc).__name__}: {exc})."
+                    ) from exc
                 logger.warning(
                     "LocalBackend: DPO chain failed (%s: %s). Falling "
                     "back to SFT-only adapter at %s. Model card will "
@@ -232,6 +250,26 @@ def _read_jsonl(path: Path) -> list:
             if not line:
                 continue
             out.append(json.loads(line))
+    return out
+
+
+def _filter_dpo_pairs(records: list, mode: str) -> list:
+    """Filter DPO pairs down to the high-signal preference sources."""
+    if mode in ("", "all", None):
+        return records
+    if mode != "editorial_or_misconception":
+        raise ValueError(
+            f"Unknown dpo_preference_filter={mode!r}; expected "
+            "'all' or 'editorial_or_misconception'."
+        )
+    out = []
+    for rec in records:
+        source = str(rec.get("source") or rec.get("rejected_source") or "")
+        if rec.get("misconception_id") or source in {
+            "misconception",
+            "misconception_editorial",
+        }:
+            out.append(rec)
     return out
 
 

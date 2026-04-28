@@ -173,6 +173,27 @@ def test_source_match_accepts_single_quoted_full_corpus_id(tmp_path):
     assert result["matches"] == 1
 
 
+def test_source_match_scores_full_corpus_source_ids(tmp_path):
+    """Full RDF/SHACL chunk IDs in holdout source must be scored."""
+    from Trainforge.eval.source_match import SourceMatchEvaluator
+
+    holdout = tmp_path / "h.json"
+    edges = [
+        {
+            "source": "rdf_shacl_551_chunk_00270",
+            "target": "concept",
+            "relation_type": "teaches",
+        },
+    ]
+    _write_holdout_split(holdout, edges)
+    result = SourceMatchEvaluator(
+        holdout_split=holdout,
+        model_callable=lambda _p: "see [rdf_shacl_551_chunk_00270]",
+    ).evaluate()
+    assert result["scored_total"] == 1
+    assert result["matches"] == 1
+
+
 def test_source_match_accepts_bare_token_form(tmp_path):
     """Wave 105: form 4 — bare ``chunk_NNNN`` without delimiters."""
     from Trainforge.eval.source_match import SourceMatchEvaluator

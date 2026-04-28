@@ -67,6 +67,9 @@ class AdapterCallable:
         *,
         max_new_tokens: int = 256,
         temperature: float = 0.0,
+        top_p: float = 1.0,
+        seed: Optional[int] = None,
+        revision: Optional[str] = None,
         device: Optional[str] = None,
         base_model_short_name: Optional[str] = None,
     ) -> None:
@@ -86,6 +89,12 @@ class AdapterCallable:
             temperature: ``0.0`` -> greedy decode (default; matches
                 deterministic-eval requirement). Any value > 0
                 enables sampling via ``do_sample=True``.
+            top_p: Nucleus sampling parameter. Used only when
+                ``temperature`` enables sampling.
+            seed: Optional RNG seed applied before loading/generation.
+            revision: Optional Hugging Face model revision for the
+                base model. Passing the pinned training revision keeps
+                eval replayable when the upstream repo changes.
             device: Override compute device. Defaults to ``"cuda"``
                 when ``torch.cuda.is_available()``, else ``"cpu"``.
             base_model_short_name: Short name to look up the chat
@@ -104,6 +113,9 @@ class AdapterCallable:
         self.base_model_repo = base_model_repo
         self.max_new_tokens = int(max_new_tokens)
         self.temperature = float(temperature)
+        self.top_p = float(top_p)
+        self.seed = int(seed) if seed is not None else None
+        self.revision = revision
 
         # Heavy imports - only here, not at module import time.
         import torch  # type: ignore
@@ -115,6 +127,10 @@ class AdapterCallable:
         from peft import PeftModel  # type: ignore
 
         self._torch = torch
+        if self.seed is not None:
+            torch.manual_seed(self.seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(self.seed)
         if device is None:
             device = "cuda" if torch.cuda.is_available() else "cpu"
         self.device = device
@@ -152,6 +168,7 @@ class AdapterCallable:
         )
         base_model = AutoModelForCausalLM.from_pretrained(
             base_model_repo,
+            revision=revision,
             quantization_config=bnb_config,
             device_map=device,
         )
@@ -162,7 +179,10 @@ class AdapterCallable:
         try:
             tokenizer = AutoTokenizer.from_pretrained(str(adapter_dir))
         except (OSError, ValueError):
-            tokenizer = AutoTokenizer.from_pretrained(base_model_repo)
+            tokenizer = AutoTokenizer.from_pretrained(
+                base_model_repo,
+                revision=revision,
+            )
 
         # Apply the saved LoRA adapter on top of the 4-bit base.
         logger.info(
@@ -214,6 +234,7 @@ class AdapterCallable:
         else:
             gen_kwargs["do_sample"] = True
             gen_kwargs["temperature"] = self.temperature
+            gen_kwargs["top_p"] = self.top_p
 
         with self._torch.no_grad():
             output_ids = self._model.generate(**inputs, **gen_kwargs)

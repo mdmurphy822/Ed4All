@@ -99,6 +99,50 @@
           "type": "integer",
           "minimum": 1,
           "description": "Per-device training batch size."
+        },
+        "lora_dropout": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Dropout applied inside LoRA adapters."
+        },
+        "gradient_accumulation_steps": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of micro-batches accumulated before an optimizer step."
+        },
+        "warmup_ratio": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Fraction of training used for learning-rate warmup."
+        },
+        "weight_decay": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Optimizer weight decay."
+        },
+        "target_modules": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "description": "Module names targeted by LoRA adapters."
+        },
+        "use_4bit": {
+          "type": "boolean",
+          "description": "Whether training loads the base model with 4-bit quantization."
+        },
+        "min_dpo_pairs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Minimum filtered preference pairs required before DPO is enabled."
+        },
+        "dpo_preference_filter": {
+          "type": "string",
+          "description": "Preference-pair filter used before the DPO stage."
+        },
+        "dpo_fail_hard": {
+          "type": "boolean",
+          "description": "Whether a DPO-stage failure fails the run instead of falling back to SFT."
         }
       }
     },

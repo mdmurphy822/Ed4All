@@ -68,7 +68,7 @@ _REGISTRY: Dict[str, BaseModelSpec] = {
     "qwen2.5-1.5b": BaseModelSpec(
         name="qwen2.5-1.5b",
         huggingface_repo="Qwen/Qwen2.5-1.5B",
-        default_revision="main",
+        default_revision="8faed761d45a263340a0528343f099c05c9a4323",
         chat_template="chatml",
         recommended_max_seq_length=2048,
         recommended_lora_rank=16,

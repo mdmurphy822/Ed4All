@@ -752,9 +752,21 @@ def test_fit_sft_adapter_filename(tmp_path: Path, monkeypatch):
             (Path(path) / "adapter_model.safetensors").write_bytes(b"x")
 
     class _FakeTokenizer:
+        eos_token = "<eos>"
+        pad_token = None
+
         @classmethod
         def from_pretrained(cls, *args, **kwargs):
             return cls()
+
+    class _FakeModel:
+        @classmethod
+        def from_pretrained(cls, *args, **kwargs):
+            return cls()
+
+    class _FakeBitsAndBytesConfig:
+        def __init__(self, *args, **kwargs):
+            pass
 
     class _FakeDataset:
         @classmethod
@@ -781,10 +793,19 @@ def test_fit_sft_adapter_filename(tmp_path: Path, monkeypatch):
     # time.
     import types
     fake_torch = types.ModuleType("torch")
+    fake_torch.bfloat16 = "bfloat16"
+    fake_torch.float16 = "float16"
+    fake_torch.cuda = types.SimpleNamespace(
+        is_available=lambda: True,
+        is_bf16_supported=lambda: False,
+    )
     fake_peft = types.ModuleType("peft")
     fake_peft.LoraConfig = _FakeLoraConfig
+    fake_peft.prepare_model_for_kbit_training = lambda model: model
     fake_transformers = types.ModuleType("transformers")
+    fake_transformers.AutoModelForCausalLM = _FakeModel
     fake_transformers.AutoTokenizer = _FakeTokenizer
+    fake_transformers.BitsAndBytesConfig = _FakeBitsAndBytesConfig
     fake_trl = types.ModuleType("trl")
     fake_trl.SFTTrainer = _FakeTrainer
     fake_trl.SFTConfig = _FakeSFTConfig
@@ -924,3 +945,89 @@ def test_runner_eval_bridge_wired_in_dry_run(libv2_root: Path, monkeypatch):
     assert card["eval_scores"]["faithfulness"] == 0.75
     assert card["eval_scores"]["coverage"] == 0.62
     assert card["eval_scores"]["baseline_delta"] == 0.13
+
+
+def test_runner_eval_bridge_uses_eval_config_generation_settings(
+    libv2_root: Path,
+    tmp_path: Path,
+    monkeypatch,
+):
+    """The adapter eval bridge must use the locked per-course
+    eval_config.yaml instead of silently relying on AdapterCallable
+    constructor defaults.
+    """
+    course_dir = libv2_root / "tst-101"
+    eval_dir = course_dir / "eval"
+    eval_dir.mkdir(parents=True)
+    (eval_dir / "prompt_template.txt").write_text(
+        "{context_section}\n{question}\n",
+        encoding="utf-8",
+    )
+    (eval_dir / "rubric.md").write_text("# rubric\n", encoding="utf-8")
+    (eval_dir / "eval_config.yaml").write_text(
+        "\n".join([
+            "benchmark: ED4ALL-Bench",
+            "benchmark_version: '1.0'",
+            "top_k: 5",
+            "temperature: 0.7",
+            "top_p: 0.9",
+            "max_new_tokens: 64",
+            "seed: 123",
+            "prompt_template_file: prompt_template.txt",
+            "rubric_file: rubric.md",
+        ]) + "\n",
+        encoding="utf-8",
+    )
+
+    runner = TrainingRunner(
+        course_slug="tst-101",
+        base_model="qwen2.5-1.5b",
+        libv2_root=libv2_root,
+        dry_run=False,
+    )
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    adapter_path = run_dir / "adapter_model.safetensors"
+    adapter_path.write_bytes(b"adapter")
+    (run_dir / "model_card.json").write_text("{}", encoding="utf-8")
+
+    captured: Dict[str, Any] = {}
+
+    class _FakeAdapterCallable:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        def __call__(self, prompt: str) -> str:
+            return "yes"
+
+    class _FakeHarness:
+        def __init__(self, *, course_path, model_callable):
+            self.course_path = course_path
+            self.model_callable = model_callable
+
+        def run_all(self, *, output_path):
+            Path(output_path).write_text(
+                json.dumps({
+                    "faithfulness": 0.5,
+                    "coverage": 0.25,
+                    "baseline_delta": 0.1,
+                }),
+                encoding="utf-8",
+            )
+            return Path(output_path)
+
+    adapter_module = importlib.import_module("Trainforge.eval.adapter_callable")
+    harness_module = importlib.import_module("Trainforge.eval.slm_eval_harness")
+    hf_index_module = importlib.import_module("Trainforge.eval.hf_model_index")
+    monkeypatch.setattr(adapter_module, "AdapterCallable", _FakeAdapterCallable)
+    monkeypatch.setattr(harness_module, "SLMEvalHarness", _FakeHarness)
+    monkeypatch.setattr(hf_index_module, "write_hf_readme", lambda **kwargs: None)
+
+    scores = runner._run_eval_harness(run_dir, adapter_path)
+
+    assert scores["faithfulness"] == 0.5
+    assert captured["max_new_tokens"] == 64
+    assert captured["temperature"] == 0.7
+    assert captured["top_p"] == 0.9
+    assert captured["seed"] == 123
+    assert captured["revision"] == runner.spec.default_revision

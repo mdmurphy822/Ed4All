@@ -109,9 +109,9 @@ class PEFTTrainer:
         _require_training_deps()
 
         # Heavy imports — only reachable when deps are installed.
-        import torch  # type: ignore  # noqa: F401
-        from peft import LoraConfig  # type: ignore
-        from transformers import AutoTokenizer  # type: ignore
+        import torch  # type: ignore
+        from peft import LoraConfig, prepare_model_for_kbit_training  # type: ignore
+        from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
         from trl import SFTConfig, SFTTrainer  # type: ignore
 
         formatted_texts = [
@@ -126,21 +126,64 @@ class PEFTTrainer:
             self.spec.huggingface_repo,
             revision=self.spec.default_revision,
         )
+        if getattr(tokenizer, "pad_token", None) is None:
+            tokenizer.pad_token = tokenizer.eos_token
 
         lora_config = LoraConfig(
             r=int(self.training_config.get("lora_rank", self.spec.recommended_lora_rank)),
             lora_alpha=int(self.training_config.get(
                 "lora_alpha", self.spec.recommended_lora_alpha,
             )),
+            lora_dropout=float(self.training_config.get("lora_dropout", 0.05)),
+            target_modules=list(self.training_config.get("target_modules") or [
+                "q_proj", "v_proj",
+            ]),
             bias="none",
             task_type="CAUSAL_LM",
         )
+
+        model_kwargs: Dict[str, Any] = {
+            "revision": self.spec.default_revision,
+        }
+        use_4bit = bool(self.training_config.get("use_4bit", True))
+        if use_4bit:
+            from transformers import BitsAndBytesConfig  # type: ignore
+
+            compute_dtype = (
+                torch.bfloat16
+                if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+                else torch.float16
+            )
+            model_kwargs.update({
+                "device_map": "auto",
+                "quantization_config": BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=compute_dtype,
+                    bnb_4bit_use_double_quant=True,
+                ),
+            })
+
+        model = AutoModelForCausalLM.from_pretrained(
+            self.spec.huggingface_repo,
+            **model_kwargs,
+        )
+        if use_4bit:
+            model = prepare_model_for_kbit_training(model)
 
         sft_args = SFTConfig(
             output_dir=str(output_dir),
             num_train_epochs=int(self.training_config.get("epochs", 3)),
             per_device_train_batch_size=int(self.training_config.get("batch_size", 4)),
+            gradient_accumulation_steps=int(
+                self.training_config.get("gradient_accumulation_steps", 1)
+            ),
             learning_rate=float(self.training_config.get("learning_rate", 2e-4)),
+            warmup_ratio=float(self.training_config.get("warmup_ratio", 0.0)),
+            weight_decay=float(self.training_config.get("weight_decay", 0.0)),
+            optim="paged_adamw_8bit" if use_4bit else "adamw_torch",
+            bf16=bool(torch.cuda.is_available() and torch.cuda.is_bf16_supported()),
+            fp16=bool(torch.cuda.is_available() and not torch.cuda.is_bf16_supported()),
             seed=int(self.training_config.get("seed", 42)),
             max_seq_length=int(self.training_config.get(
                 "max_seq_length", self.spec.recommended_max_seq_length,
@@ -150,7 +193,7 @@ class PEFTTrainer:
         )
 
         trainer = SFTTrainer(
-            model=self.spec.huggingface_repo,
+            model=model,
             args=sft_args,
             train_dataset=dataset,
             tokenizer=tokenizer,
@@ -200,6 +243,7 @@ class PEFTTrainer:
 
         from datasets import Dataset  # type: ignore
         from peft import PeftModel  # type: ignore
+        import torch  # type: ignore
         from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
         from trl import DPOConfig, DPOTrainer  # type: ignore
 
@@ -214,7 +258,12 @@ class PEFTTrainer:
             output_dir=str(output_dir),
             num_train_epochs=int(self.training_config.get("epochs", 3)),
             per_device_train_batch_size=int(self.training_config.get("batch_size", 4)),
+            gradient_accumulation_steps=int(
+                self.training_config.get("gradient_accumulation_steps", 1)
+            ),
             learning_rate=float(self.training_config.get("learning_rate", 2e-4)),
+            warmup_ratio=float(self.training_config.get("warmup_ratio", 0.0)),
+            weight_decay=float(self.training_config.get("weight_decay", 0.0)),
             seed=int(self.training_config.get("seed", 42)),
         )
 
@@ -241,6 +290,30 @@ class PEFTTrainer:
                 self.spec.huggingface_repo,
                 revision=self.spec.default_revision,
             )
+        if getattr(tokenizer, "pad_token", None) is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        base_kwargs: Dict[str, Any] = {
+            "revision": self.spec.default_revision,
+        }
+        use_4bit = bool(self.training_config.get("use_4bit", True))
+        if use_4bit:
+            from transformers import BitsAndBytesConfig  # type: ignore
+
+            compute_dtype = (
+                torch.bfloat16
+                if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
+                else torch.float16
+            )
+            base_kwargs.update({
+                "device_map": "auto",
+                "quantization_config": BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_compute_dtype=compute_dtype,
+                    bnb_4bit_use_double_quant=True,
+                ),
+            })
 
         # Wave 100: stacking DPO on a saved PEFT-SFT adapter requires
         # loading the adapter via ``PeftModel.from_pretrained(...,
@@ -253,7 +326,7 @@ class PEFTTrainer:
         # LoRA layers trainable for the DPO update.
         base_model = AutoModelForCausalLM.from_pretrained(
             self.spec.huggingface_repo,
-            revision=self.spec.default_revision,
+            **base_kwargs,
         )
         peft_model = PeftModel.from_pretrained(
             base_model,

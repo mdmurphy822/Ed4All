@@ -14,9 +14,9 @@ the gap is loud, not silent.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 
@@ -39,6 +39,24 @@ class TrainingConfig:
     max_seq_length: int
     batch_size: int
     seed: int
+    lora_dropout: float = 0.05
+    gradient_accumulation_steps: int = 4
+    warmup_ratio: float = 0.03
+    weight_decay: float = 0.01
+    target_modules: List[str] = field(default_factory=lambda: [
+        "q_proj",
+        "k_proj",
+        "v_proj",
+        "o_proj",
+        "gate_proj",
+        "up_proj",
+        "down_proj",
+    ])
+    use_4bit: bool = True
+    min_dpo_pairs: int = 50
+    dpo_preference_filter: str = "editorial_or_misconception"
+    dpo_fail_hard: bool = True
+
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
