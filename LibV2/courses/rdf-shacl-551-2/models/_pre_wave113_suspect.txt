@@ -1,0 +1,18 @@
+# Models trained against pre-Wave-112 pipeline output
+#
+# These adapters consumed instruction_pairs.jsonl synthesized before
+# the Wave 112 integrity hardening (commits bd3dcd1..ea807df). They
+# are superseded by the Wave 114 rebuild and should be considered
+# provisional until eval-gating cross-comparison validates the
+# replacement.
+#
+# Snapshotted: 2026-04-28T14:51:52.308766+00:00
+# Reason: Wave 112 audit identified sentinel-filler poisoning
+#         + missing length validation in claude_session provider
+#
+rdf-shacl-551-2-qwen2-5-1-5b-01e31284
+rdf-shacl-551-2-qwen2-5-1-5b-19788f44
+rdf-shacl-551-2-qwen2-5-1-5b-4690e047
+rdf-shacl-551-2-qwen2-5-1-5b-aec5b13c
+rdf-shacl-551-2-qwen2-5-1-5b-f80f3f9c
+rdf-shacl-551-2-qwen2-5-1-5b-fc103840
