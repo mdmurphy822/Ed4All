@@ -82,6 +82,7 @@
         "content_structure",
         "distractor_generation",
         "error_handling",
+        "eval_gating_decision",
         "eval_run_decision",
         "example_selection",
         "existing_content_usage",
