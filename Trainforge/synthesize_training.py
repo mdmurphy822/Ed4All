@@ -1505,6 +1505,19 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
         print("  Rejected reasons:")
         for reason, count in sorted(stats.rejected_reasons.items()):
             print(f"    {reason}: {count}")
+    # Wave 111 / Phase E: surface session-budget telemetry on
+    # claude_session runs. Counts are 0 for non-session providers.
+    if stats.dispatched_count or stats.cache_hits_count:
+        print(
+            f"  Session budget:     dispatched={stats.dispatched_count}, "
+            f"cache_hits={stats.cache_hits_count}"
+        )
+    if stats.capped_at_max_dispatches:
+        print(
+            "\n[Synthesis] CAPPED at --max-dispatches. See "
+            "training_specs/pilot_progress.json. Re-run with a higher "
+            "--max-dispatches to resume from the cache."
+        )
 
     return stats
 
