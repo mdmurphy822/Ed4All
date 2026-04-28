@@ -146,7 +146,38 @@ class HoldoutBuilder:
         # ``probe_id`` / ``prompt`` / ``ground_truth_chunk_id`` /
         # ``edge_type``. ``ground_truth_chunk_id`` is null when the
         # edge isn't chunk-anchored (concept->concept edges).
-        probes = self._build_probes(withheld)
+        # Wave 108 / Phase B: thread the full edge list so each probe
+        # gets the multi-citation ground_truth_chunk_ids set.
+        probes = self._build_probes(withheld, all_edges=edges)
+
+        # Same index used to populate withheld_edges entries below.
+        gt_chunk_index: Dict[tuple, List[str]] = {}
+        for e in edges:
+            src_e = e.get("source")
+            tgt_e = e.get("target")
+            rel_e = e.get("relation_type")
+            if not (isinstance(src_e, str) and "chunk_" in src_e
+                    and tgt_e is not None and rel_e is not None):
+                continue
+            bucket = gt_chunk_index.setdefault((tgt_e, rel_e), [])
+            if src_e not in bucket:
+                bucket.append(src_e)
+
+        def _withheld_payload(e: Dict[str, Any]) -> Dict[str, Any]:
+            src = e.get("source")
+            tgt = e.get("target")
+            rel = e.get("relation_type")
+            gt_ids = list(gt_chunk_index.get((tgt, rel), []))
+            if isinstance(src, str) and "chunk_" in src and src not in gt_ids:
+                gt_ids.insert(0, src)
+            entry: Dict[str, Any] = {
+                "source": src,
+                "target": tgt,
+                "relation_type": rel,
+            }
+            if gt_ids:
+                entry["ground_truth_chunk_ids"] = gt_ids
+            return entry
 
         # Wave 108 / Phase B: sample negative probes — (source, relation,
         # target) tuples that DON'T exist in the graph. The correct
@@ -163,14 +194,7 @@ class HoldoutBuilder:
             "edges_held_out": len(withheld),
             "per_relation": per_relation_summary,
             "bloom_strata": bloom_strata,
-            "withheld_edges": [
-                {
-                    "source": e.get("source"),
-                    "target": e.get("target"),
-                    "relation_type": e.get("relation_type"),
-                }
-                for e in withheld
-            ],
+            "withheld_edges": [_withheld_payload(e) for e in withheld],
             "probes": probes,
             "negative_probes": negative_probes,
         }
@@ -271,6 +295,7 @@ class HoldoutBuilder:
     @staticmethod
     def _build_probes(
         withheld: List[Dict[str, Any]],
+        all_edges: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """Wave 105: derive prompt-shaped probes from withheld edges.
 
@@ -280,7 +305,30 @@ class HoldoutBuilder:
         (``chunk_*``); otherwise it's ``None``. ``prompt`` is a
         terse paraphrase of the edge so RAG callables can be evaluated
         against the same surface as ``faithfulness._format_probe``.
+
+        Wave 108 / Phase B: when ``all_edges`` is supplied, each probe
+        also carries ``ground_truth_chunk_ids`` — every chunk in the
+        full graph that has the same (relation_type, target) pair —
+        so the multi-citation source_match metric can credit the
+        model when ANY of those chunks is cited.
         """
+        # Build a (target, relation_type) -> [chunk_source...] index
+        # over the full graph so each probe knows the FULL ground-truth
+        # set, not just the held-out edge's own source.
+        gt_chunk_index: Dict[tuple, List[str]] = {}
+        if all_edges is not None:
+            for e in all_edges:
+                src = e.get("source")
+                tgt = e.get("target")
+                rel = e.get("relation_type")
+                if not (isinstance(src, str) and "chunk_" in src
+                        and tgt is not None and rel is not None):
+                    continue
+                key = (tgt, rel)
+                bucket = gt_chunk_index.setdefault(key, [])
+                if src not in bucket:
+                    bucket.append(src)
+
         out: List[Dict[str, Any]] = []
         for i, edge in enumerate(withheld):
             src = edge.get("source")
@@ -296,6 +344,9 @@ class HoldoutBuilder:
                 src if isinstance(src, str) and "chunk_" in src
                 else None
             )
+            gt_chunk_ids = list(gt_chunk_index.get((tgt, rel), []))
+            if gt_chunk and gt_chunk not in gt_chunk_ids:
+                gt_chunk_ids.insert(0, gt_chunk)
             prompt = (
                 f"Does the relation '{rel}' hold between "
                 f"{src!r} and {tgt!r}?"
@@ -304,6 +355,7 @@ class HoldoutBuilder:
                 "probe_id": f"holdout-{i:04d}",
                 "prompt": prompt,
                 "ground_truth_chunk_id": gt_chunk,
+                "ground_truth_chunk_ids": gt_chunk_ids,
                 "edge_type": rel,
             })
         return out
