@@ -57,7 +57,10 @@ _RELATION_TEMPLATES: Dict[str, str] = {
     "follows": "Does '{source}' follow '{target}' in the curriculum order?",
     "belongs_to_module": "Does the chunk '{source}' belong to the module '{target}'?",
     "at_bloom_level": "Is the chunk '{source}' at Bloom level '{target}'?",
-    "chunk_at_difficulty": "Is the chunk '{source}' at difficulty level '{target}'?",
+    # Wave 108 / Phase B: chunk_at_difficulty was dropped — every chunk
+    # has a difficulty level so the probe was trivially-true and only
+    # padded faithfulness scores. Held-out edges of that type fall
+    # through to the generic template now.
     "assessment_validates_outcome": "Does the assessment '{source}' validate the outcome '{target}'?",
 }
 
