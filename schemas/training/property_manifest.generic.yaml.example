@@ -1,0 +1,33 @@
+# Wave 110 / Phase D — property manifest authoring template.
+#
+# Copy this file to schemas/training/property_manifest.<family>.yaml
+# (e.g. property_manifest.chemistry_201.yaml) and edit. The course's
+# slug should be its first two hyphen-separated tokens joined by
+# underscore — e.g. course slug `chemistry-201-organic` -> family
+# `chemistry_201` -> file `property_manifest.chemistry_201.yaml`.
+#
+# Loader resolution: lib.ontology.property_manifest::_family_slug.
+# Validator (PropertyCoverageValidator) no-ops on courses without a
+# manifest, so dropping this file in adds the gate non-destructively.
+
+course_slug: <full-course-slug-here>
+description: |
+  One-paragraph rationale: which surface forms must this course's SLM
+  adapter teach? Cite a textbook chapter / standards doc / topic list
+  if helpful for the next reviewer.
+
+properties:
+  # Each property entry MUST have id, uri, curie, label, surface_forms,
+  # min_pairs. min_accuracy is optional (default 0.40).
+  - id: <slug_with_underscores>           # /^[a-z][a-z0-9_]*$/
+    uri: <full-canonical-uri>             # e.g. http://...
+    curie: <prefix:local>                 # /^[a-z]+:[A-Za-z][A-Za-z0-9_]*$/
+    label: <human-readable-label>
+    surface_forms:
+      # Strings the validator + per-property eval search for inside
+      # prompt + completion text. Include both CURIE and full-URI forms
+      # when the LLM rewriter could use either.
+      - "<curie-form>"
+      - "<<full-uri>>"
+    min_pairs: 8       # PropertyCoverageValidator floor.
+    min_accuracy: 0.40 # EvalGatingValidator per-property floor.
