@@ -561,6 +561,8 @@ def run_synthesis(
     pedagogy_graph_path: Optional[Path] = None,
     slug: Optional[str] = None,
     instruction_variants_per_chunk: int = 1,
+    dispatcher: Optional[Any] = None,
+    cache_path: Optional[Path] = None,
 ) -> SynthesisStats:
     """Run the full synthesis stage for one course output directory.
 
@@ -604,6 +606,15 @@ def run_synthesis(
     Returns:
         :class:`SynthesisStats` with counts.
     """
+    if provider == "claude_session" and dispatcher is None:
+        raise RuntimeError(
+            "--provider claude_session requires a LocalDispatcher to be "
+            "supplied. Invoke via the workflow runner ('ed4all run "
+            "trainforge_train ...') or the synthesize_training MCP tool, "
+            "both of which inject a dispatcher. Standalone CLI invocation "
+            "has no Claude Code session to dispatch to."
+        )
+
     corpus_dir = Path(corpus_dir)
     chunks_path = corpus_dir / "corpus" / "chunks.jsonl"
     if output_dir is not None:
@@ -679,6 +690,23 @@ def run_synthesis(
             streaming=True,
         )
         owns_capture = True
+
+    # Wave 107: construct the claude_session paraphrase provider once per
+    # run. The factory layer dispatches to whichever object is passed via
+    # paraphrase_provider when provider != "mock". Anthropic stays lazily
+    # constructed inside the factory so its API-key precondition only fires
+    # when there's actually an eligible chunk to paraphrase.
+    paraphrase_provider: Optional[Any] = None
+    if provider == "claude_session":
+        from Trainforge.generators._claude_session_provider import (
+            ClaudeSessionProvider,
+        )
+        paraphrase_provider = ClaudeSessionProvider(
+            dispatcher=dispatcher,
+            run_id=course_code,
+            capture=capture,
+            cache_path=cache_path,
+        )
 
     instruction_records: List[Dict[str, Any]] = []
     preference_records: List[Dict[str, Any]] = []
@@ -760,7 +788,10 @@ def run_synthesis(
                     break
                 pair_seed = seed + idx + (variant_index * 100_000)
                 inst_result = synthesize_instruction_pair(
-                    chunk, seed=pair_seed, provider=provider
+                    chunk,
+                    seed=pair_seed,
+                    provider=provider,
+                    paraphrase_provider=paraphrase_provider,
                 )
                 if inst_result.pair is None:
                     stats.instruction_pairs_rejected += 1
@@ -821,7 +852,10 @@ def run_synthesis(
                 stats.capped_at_max_pairs = True
             else:
                 pref_result = synthesize_preference_pair(
-                    chunk, seed=pair_seed, provider=provider
+                    chunk,
+                    seed=pair_seed,
+                    provider=provider,
+                    paraphrase_provider=paraphrase_provider,
                 )
                 if pref_result.pair is None:
                     stats.preference_pairs_rejected += 1
@@ -1190,8 +1224,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--provider",
         default="mock",
-        choices=["mock", "anthropic"],
-        help="Synthesis provider (default: mock).",
+        choices=["mock", "anthropic", "claude_session"],
+        help=(
+            "Synthesis provider. 'mock' = template factory (plumbing tests "
+            "only — produces template-recognizer adapters). 'anthropic' = "
+            "Anthropic SDK (requires ANTHROPIC_API_KEY). 'claude_session' = "
+            "running Claude Code session via LocalDispatcher (Claude Max / "
+            "no-API-key path; requires invocation through the workflow runner "
+            "or MCP tool so a dispatcher is in-context)."
+        ),
     )
     p.add_argument(
         "--seed",

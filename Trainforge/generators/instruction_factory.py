@@ -303,7 +303,7 @@ def synthesize_instruction_pair(
     seed: int,
     provider: str = "mock",
     *,
-    anthropic_provider: Optional[Any] = None,
+    paraphrase_provider: Optional[Any] = None,
 ) -> InstructionSynthesisResult:
     """Synthesize one instruction pair from an enriched chunk.
 
@@ -311,22 +311,28 @@ def synthesize_instruction_pair(
         chunk: Enriched chunk dict from corpus/chunks.jsonl. Must have
             ``learning_outcome_refs`` (enforced by caller).
         seed: Deterministic seed. Same chunk + same seed -> same pair.
-        provider: ``"mock"`` (deterministic templates) or ``"anthropic"``
-            (Wave 91: paraphrase the mock draft via Claude).
-        anthropic_provider: Optional :class:`AnthropicSynthesisProvider`
-            instance. When ``provider="anthropic"`` and this is None,
-            a default instance is constructed (which requires
-            ``ANTHROPIC_API_KEY`` in the environment). Tests inject a
-            mocked instance here.
+        provider: ``"mock"`` (deterministic templates), ``"anthropic"``
+            (Wave 91: paraphrase the mock draft via Claude SDK), or
+            ``"claude_session"`` (Wave 107: paraphrase via the running
+            Claude Code session through LocalDispatcher).
+        paraphrase_provider: Optional provider instance with a
+            ``paraphrase_instruction(draft, chunk) -> dict`` method.
+            Used when ``provider`` is ``"anthropic"`` or
+            ``"claude_session"``. When ``provider="anthropic"`` and this
+            is None, a default :class:`AnthropicSynthesisProvider` is
+            constructed (which requires ``ANTHROPIC_API_KEY`` in env).
+            For ``provider="claude_session"`` the caller MUST supply the
+            instance; there is no lazy fallback because constructing one
+            requires a live ``LocalDispatcher``.
 
     Returns:
         InstructionSynthesisResult. ``pair`` is None if any hard gate failed;
         ``quality`` explains which.
     """
-    if provider not in ("mock", "anthropic"):
+    if provider not in ("mock", "anthropic", "claude_session"):
         raise NotImplementedError(
             f"instruction synthesis provider '{provider}' is not implemented; "
-            f"valid choices are 'mock' and 'anthropic'."
+            f"valid choices are 'mock', 'anthropic', 'claude_session'."
         )
 
     chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
@@ -414,13 +420,20 @@ def synthesize_instruction_pair(
     # the chunk text via prompt caching and only paraphrases — it must
     # not introduce new facts. Failures (missing API key, parse retry
     # exhaustion) raise loudly per Action A spec.
-    if provider == "anthropic":
-        provider_instance = anthropic_provider
+    if provider in ("anthropic", "claude_session"):
+        provider_instance = paraphrase_provider
         if provider_instance is None:
-            from Trainforge.generators._anthropic_provider import (
-                AnthropicSynthesisProvider,
-            )
-            provider_instance = AnthropicSynthesisProvider()
+            if provider == "anthropic":
+                from Trainforge.generators._anthropic_provider import (
+                    AnthropicSynthesisProvider,
+                )
+                provider_instance = AnthropicSynthesisProvider()
+            else:
+                raise RuntimeError(
+                    "provider='claude_session' requires paraphrase_provider "
+                    "to be supplied; no lazy fallback because the provider "
+                    "needs a LocalDispatcher injected by the caller."
+                )
         pair = provider_instance.paraphrase_instruction(pair, chunk)
 
     rationale = (
