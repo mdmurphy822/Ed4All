@@ -643,6 +643,7 @@ Source of truth: `config/workflows.yaml::validation_gates`. Phase column below s
 | `textbook_to_course` | `trainforge_assessment` | `imscc_input_valid` | IMSCCValidator (pre-assessment) |
 | `textbook_to_course` | `trainforge_assessment` | `assessment_quality` | AssessmentQualityValidator |
 | `textbook_to_course` | `trainforge_assessment` | `assessment_objective_alignment` | AssessmentObjectiveAlignmentValidator |
+| `textbook_to_course` | `training_synthesis` | `synthesis_quota` | SynthesisQuotaValidator (Wave 110, warning) |
 | `textbook_to_course` | `training_synthesis` | `min_edge_count` | MinEdgeCountValidator (Wave 91) |
 | `textbook_to_course` | `training_synthesis` | `synthesis_diversity` | SynthesisDiversityValidator (Wave 91) |
 | `textbook_to_course` | `training_synthesis` | `property_coverage` | PropertyCoverageValidator (Wave 109 — no-ops on courses without a property manifest) |
