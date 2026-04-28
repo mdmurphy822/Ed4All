@@ -24,6 +24,9 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from MCP.orchestrator.llm_backend import LLMBackend
+    from Trainforge.generators._curriculum_provider import (
+        CurriculumAlignmentProvider,
+    )
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -511,6 +514,7 @@ def classify_teaching_roles(
     llm_model: str = "claude-haiku-4-5-20251001",
     verbose: bool = False,
     llm: Optional["LLMBackend"] = None,
+    curriculum_provider: Optional["CurriculumAlignmentProvider"] = None,
 ) -> None:
     """Mutate chunks in-place to add teaching_role field.
 
@@ -532,6 +536,14 @@ def classify_teaching_roles(
         llm: Optional pre-built :class:`LLMBackend` instance. When provided,
             overrides the ``llm_provider`` path and routes LLM calls through
             the injected backend — enabling local / api / mock swap-in.
+        curriculum_provider: Optional pre-built
+            :class:`CurriculumAlignmentProvider`. When provided, the
+            ambiguous-chunk fallback path routes through this LLM-agnostic
+            provider (Anthropic / Together / Local selectable) instead of
+            the legacy ``LLMBackend``-driven Anthropic path. Additive —
+            when both ``llm`` and ``curriculum_provider`` are passed,
+            ``curriculum_provider`` wins; when neither is passed, the
+            existing legacy path is unchanged.
     """
     # Belt-and-suspenders: catch schema drift against the canonical
     # teaching_role enum. Soft-imports so standalone Trainforge installs
@@ -583,9 +595,25 @@ def classify_teaching_roles(
             ambiguous_chunks.append(chunk)
 
     # 3. Handle ambiguous chunks via LLM or mock fallback.
-    # Injected LLMBackend takes precedence over provider-string path.
-    use_llm = llm is not None or llm_provider == "anthropic"
-    if use_llm and ambiguous_chunks:
+    # Precedence:
+    #   - injected ``curriculum_provider`` (LLM-agnostic — Anthropic /
+    #     Together / Local selectable) wins when present;
+    #   - else the legacy ``LLMBackend`` path (anthropic-pinned) fires
+    #     when ``llm`` is injected or ``llm_provider == "anthropic"``;
+    #   - else the deterministic mock fallback runs.
+    use_curriculum = curriculum_provider is not None
+    use_llm = (llm is not None or llm_provider == "anthropic") and not use_curriculum
+    if use_curriculum and ambiguous_chunks:
+        _classify_with_curriculum_provider(
+            ambiguous_chunks,
+            concept_first_seen,
+            curriculum_provider,
+            verbose,
+        )
+        for chunk in ambiguous_chunks:
+            chunk.setdefault("teaching_role_source", "llm")
+        llm_count = len(ambiguous_chunks)
+    elif use_llm and ambiguous_chunks:
         _classify_with_llm(
             ambiguous_chunks, concept_first_seen, llm_model, verbose, llm=llm
         )
@@ -601,9 +629,10 @@ def classify_teaching_roles(
             if verbose:
                 print(f"  {chunk['id']}: role={role} (mock)")
 
+    label = "LLM" if (use_curriculum or use_llm) else "mock"
     print(f"  Teaching roles: {deterministic_count} deterministic, "
           f"{heuristic_count} heuristic, "
-          f"{llm_count or len(ambiguous_chunks)} {'LLM' if use_llm else 'mock'}")
+          f"{llm_count or len(ambiguous_chunks)} {label}")
 
 
 def _classify_with_llm(
@@ -691,6 +720,60 @@ def _classify_with_llm(
             print(f"  WARNING: LLM batch failed ({e}), falling back to mock")
             for chunk in batch:
                 chunk["teaching_role"] = _mock_role(chunk, concept_first_seen)
+
+
+def _classify_with_curriculum_provider(
+    chunks: List[Dict],
+    concept_first_seen: Dict[str, int],
+    provider: "CurriculumAlignmentProvider",
+    verbose: bool,
+) -> None:
+    """Classify ambiguous chunks via the LLM-agnostic curriculum provider.
+
+    Per-chunk dispatch (rather than the batch-of-12 the legacy
+    ``_classify_with_llm`` uses) because the curriculum provider's
+    role classification is a single-token output per call — batching
+    via a JSON array prompt loses the four-class accuracy guarantee
+    that the provider's invalid-role validation enforces. On any per-
+    chunk failure (provider error, invalid response, transport
+    error), fall back to the mock heuristic so the downstream pipeline
+    keeps moving rather than failing the whole alignment stage.
+    """
+    for chunk in chunks:
+        chunk_id = str(chunk.get("id") or "")
+        # Pull a small window of neighbors as pedagogical context. The
+        # caller doesn't carry an explicit prev/next pointer; the
+        # _position field built by build_chunk_sequence is the only
+        # ordering surface we have.
+        position = chunk.get("_position", 0)
+        neighbors = [
+            {
+                "id": c.get("id"),
+                "concept_tags": c.get("concept_tags") or [],
+                "text": (c.get("text") or "")[:200],
+            }
+            for c in chunks
+            if c is not chunk
+            and abs(int(c.get("_position", 0)) - int(position)) <= 2
+        ]
+        try:
+            role = provider.classify_teaching_role(
+                str(chunk.get("text") or ""),
+                chunk_id=chunk_id,
+                neighbors=neighbors,
+            )
+            chunk["teaching_role"] = role
+            if verbose:
+                print(
+                    f"  {chunk_id}: role={role} (curriculum-provider)"
+                )
+        except Exception as exc:  # noqa: BLE001
+            if verbose:
+                print(
+                    f"  WARNING: curriculum-provider failed for "
+                    f"{chunk_id} ({exc}); falling back to mock"
+                )
+            chunk["teaching_role"] = _mock_role(chunk, concept_first_seen)
 
 
 # ---------------------------------------------------------------------------

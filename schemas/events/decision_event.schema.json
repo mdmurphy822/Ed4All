@@ -80,6 +80,7 @@
         "content_depth",
         "content_selection",
         "content_structure",
+        "curriculum_alignment_call",
         "distractor_generation",
         "error_handling",
         "eval_gating_decision",
