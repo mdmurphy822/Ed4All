@@ -1,8 +1,8 @@
-course_slug: rdf-shacl-551-2
+family: rdf_shacl
 description: |
-  The 6 RDF/SHACL surface forms the rdf-shacl-551-2 SLM adapter must teach.
-  Coverage and per-property accuracy gates fail closed below the floors below.
-  Wave 109 / Phase C.
+  The 6 RDF/SHACL surface forms every rdf-shacl-* course's SLM adapter
+  must teach. Coverage and per-property accuracy gates fail closed
+  below the floors below. Wave 109 / Phase C.
 
 properties:
   - id: sh_datatype

@@ -1,13 +1,17 @@
 """Wave 109 — Phase C: property-manifest loader.
 
 A property manifest declares the canonical surface forms (URIs / CURIEs /
-text patterns) a course-specific SLM adapter must teach. The synthesis +
+text patterns) a course-FAMILY's SLM adapters must teach. The synthesis +
 eval surfaces both consume the same manifest so coverage gates and
-per-property eval line up.
+per-property eval line up. A single manifest applies to every course in
+the family (e.g. ``property_manifest.rdf_shacl.yaml`` covers every
+``rdf-shacl-*`` course).
 
 Manifests live at ``schemas/training/property_manifest.<family>.yaml``
 and are validated against
-``schemas/training/property_manifest.schema.json`` on load.
+``schemas/training/property_manifest.schema.json`` on load. The manifest
+declares its own ``family`` field; the loader resolves it from a course
+slug via ``_family_slug`` (``rdf-shacl-551-2`` -> ``rdf_shacl``).
 """
 from __future__ import annotations
 
@@ -48,7 +52,7 @@ class PropertyEntry:
 
 @dataclass
 class PropertyManifest:
-    course_slug: str
+    family: str
     properties: List[PropertyEntry]
     description: Optional[str] = None
 
@@ -127,7 +131,7 @@ def load_property_manifest(
         for p in payload["properties"]
     ]
     return PropertyManifest(
-        course_slug=str(payload["course_slug"]),
+        family=str(payload["family"]),
         properties=properties,
         description=payload.get("description"),
     )

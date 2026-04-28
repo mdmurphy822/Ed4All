@@ -7,8 +7,8 @@ committing to a full-corpus rebuild. Does not train.
 Example:
 
     python -m Trainforge.scripts.pilot_synthesis \\
-        --corpus LibV2/courses/rdf-shacl-551-2 \\
-        --course-code rdf-shacl-551-2 \\
+        --corpus LibV2/courses/<course-slug> \\
+        --course-code <course-slug> \\
         --provider mock \\
         --max-pairs 50
 

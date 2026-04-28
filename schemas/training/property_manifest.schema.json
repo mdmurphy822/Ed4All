@@ -4,9 +4,14 @@
   "title": "Property Manifest",
   "description": "Wave 109 / Phase C: Declares the canonical surface forms a course-specific SLM adapter must teach. The synthesis-side PropertyCoverageValidator and the eval-side PerPropertyEvaluator both consume this manifest.",
   "type": "object",
-  "required": ["course_slug", "properties"],
+  "required": ["family", "properties"],
   "properties": {
-    "course_slug": {"type": "string", "minLength": 1},
+    "family": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]+$",
+      "minLength": 1,
+      "description": "Course-family identifier matching `lib.ontology.property_manifest._family_slug(course_slug)` resolution (e.g. `rdf_shacl` for any `rdf-shacl-*` course slug). NOT a specific course slug — a single manifest applies to every course in the family."
+    },
     "description": {"type": "string"},
     "properties": {
       "type": "array",
