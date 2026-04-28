@@ -877,6 +877,19 @@ workflows:
               on_error: fail_closed
             description: Wave 91 — refuse template-collapsed instruction pair output
 
+          # Wave 109 / Phase C: refuse synthesis output that misses any
+          # property declared in the course's property manifest. No-ops
+          # for courses without a manifest so legacy workflows pass.
+          - gate_id: property_coverage
+            validator: lib.validators.property_coverage.PropertyCoverageValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Wave 109 — refuse synthesis output missing declared properties
+
       - name: libv2_archival
         agents: [libv2-archivist]
         parallel: false
