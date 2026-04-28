@@ -335,30 +335,34 @@ def synthesize_preference_pair(
     provider: str = "mock",
     misconception_index: int = 0,
     *,
-    anthropic_provider: Optional[Any] = None,
+    paraphrase_provider: Optional[Any] = None,
 ) -> PreferenceSynthesisResult:
     """Synthesize one preference pair from an enriched chunk.
 
     Args:
         chunk: Enriched chunk dict. Must have non-empty ``learning_outcome_refs``.
         seed: Deterministic seed.
-        provider: ``"mock"`` (deterministic) or ``"anthropic"`` (Wave 91:
-            paraphrase the mock draft via Claude).
+        provider: ``"mock"`` (deterministic), ``"anthropic"`` (Wave 91:
+            paraphrase via Claude SDK), or ``"claude_session"`` (Wave 107:
+            paraphrase via the running Claude Code session).
         misconception_index: Which misconception in the chunk to target.
             If the chunk has fewer than ``misconception_index+1`` misconceptions,
             falls back to rule-synthesized rejection.
-        anthropic_provider: Optional :class:`AnthropicSynthesisProvider`
-            instance. Tests inject a mocked instance here; production
-            paths leave it ``None`` and a default instance is built
-            (requires ``ANTHROPIC_API_KEY`` in the environment).
+        paraphrase_provider: Optional provider instance with a
+            ``paraphrase_preference(draft, chunk) -> dict`` method. Used
+            when ``provider`` is ``"anthropic"`` or ``"claude_session"``.
+            When ``provider="anthropic"`` and this is None, a default
+            :class:`AnthropicSynthesisProvider` is constructed. For
+            ``provider="claude_session"`` the caller MUST supply the
+            instance.
 
     Returns:
         PreferenceSynthesisResult. ``pair`` is None if a hard gate failed.
     """
-    if provider not in ("mock", "anthropic"):
+    if provider not in ("mock", "anthropic", "claude_session"):
         raise NotImplementedError(
             f"preference synthesis provider '{provider}' is not implemented; "
-            f"valid choices are 'mock' and 'anthropic'."
+            f"valid choices are 'mock', 'anthropic', 'claude_session'."
         )
 
     chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
@@ -487,13 +491,20 @@ def synthesize_preference_pair(
     # Wave 91 Action A: paraphrase the mock draft via Anthropic when
     # provider="anthropic". Same fail-loud contract as the instruction
     # factory: missing key raises, malformed JSON retries up to 3x.
-    if provider == "anthropic":
-        provider_instance = anthropic_provider
+    if provider in ("anthropic", "claude_session"):
+        provider_instance = paraphrase_provider
         if provider_instance is None:
-            from Trainforge.generators._anthropic_provider import (
-                AnthropicSynthesisProvider,
-            )
-            provider_instance = AnthropicSynthesisProvider()
+            if provider == "anthropic":
+                from Trainforge.generators._anthropic_provider import (
+                    AnthropicSynthesisProvider,
+                )
+                provider_instance = AnthropicSynthesisProvider()
+            else:
+                raise RuntimeError(
+                    "provider='claude_session' requires paraphrase_provider "
+                    "to be supplied; no lazy fallback because the provider "
+                    "needs a LocalDispatcher injected by the caller."
+                )
         pair = provider_instance.paraphrase_preference(pair, chunk)
 
     return PreferenceSynthesisResult(

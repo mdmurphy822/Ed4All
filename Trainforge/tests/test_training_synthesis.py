@@ -476,3 +476,63 @@ def test_dataset_config_statistics_updated(tmp_path):
     assert cfg["statistics"]["instruction_pairs"] == stats.instruction_pairs_emitted
     assert cfg["statistics"]["preference_pairs"] == stats.preference_pairs_emitted
     assert "synthesis" in cfg and "last_run" in cfg["synthesis"]
+
+
+# ---------------------------------------------------------------------------
+# Wave 107 — Phase A: claude_session provider routing
+# ---------------------------------------------------------------------------
+
+def test_run_synthesis_routes_claude_session_provider_through_dispatcher(tmp_path):
+    """When provider='claude_session' is set and a dispatcher is supplied,
+    run_synthesis must route paraphrase calls through ClaudeSessionProvider
+    and tag emitted rows with provider='claude_session', not 'mock'."""
+    from Trainforge.tests._synthesis_fakes import (
+        FakeLocalDispatcher,
+        make_instruction_response,
+        make_preference_response,
+    )
+
+    async def agent_tool(*, task_params, **_kw):
+        if task_params["kind"] == "instruction":
+            return make_instruction_response(
+                prompt="Paraphrased: explain a key concept from the chunk.",
+                completion=(
+                    "RDFS describes vocabulary semantics — class hierarchy and property "
+                    "domains — in a way that downstream RDF processors can reason about. "
+                    "[" + str(task_params.get("chunk_id", "")) + "]"
+                ),
+            )
+        return make_preference_response(
+            prompt="Which option is correct about the chunk topic?",
+            chosen=(
+                "RDFS describes vocabulary semantics; SHACL validates RDF graphs against "
+                "shape constraints. They are complementary, not interchangeable."
+            ),
+            rejected=(
+                "RDFS validates RDF graphs against shape constraints; SHACL describes "
+                "vocabulary semantics. They are complementary, not interchangeable."
+            ),
+        )
+
+    dispatcher = FakeLocalDispatcher(agent_tool=agent_tool)
+    working = _make_working_copy(tmp_path)
+    cache_path = working / "training_specs" / ".synthesis_cache.jsonl"
+
+    run_synthesis(
+        corpus_dir=working,
+        course_code="MINI_TRAINING_101",
+        provider="claude_session",
+        seed=11,
+        dispatcher=dispatcher,
+        cache_path=cache_path,
+    )
+
+    # The session provider was called at least once for instruction:
+    assert any(c[1]["kind"] == "instruction" for c in dispatcher.calls)
+    # Output JSONL carries provider='claude_session', not 'mock':
+    inst_path = working / "training_specs" / "instruction_pairs.jsonl"
+    rows = _load_jsonl(inst_path)
+    assert rows, "expected at least one instruction pair"
+    assert all(r["provider"] == "claude_session" for r in rows), [
+        r["provider"] for r in rows
+    ]
