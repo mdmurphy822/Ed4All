@@ -609,3 +609,125 @@ def test_run_synthesis_writes_pilot_progress_on_budget_exceeded(tmp_path):
     assert payload["dispatched"] == 1
     assert payload["max_dispatches"] == 1
     assert "resume" in payload["message"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Wave 112 Task 6: audit-log empty-field misconception drops
+# ---------------------------------------------------------------------------
+
+def test_build_misconception_dpo_pair_logs_drop_on_empty_misconception():
+    """When the editorial misconception text is empty, the helper must log
+    a ``misconception_pair_skipped`` decision before returning ``None``.
+
+    Pre-Wave-112, empty/short editorial entries were silently dropped on the
+    floor with no audit trail, so a corpus rebuild that lost a property
+    family looked clean in the captures. This test pins the audit
+    contract so future refactors can't silently drop again.
+    """
+    from Trainforge.synthesize_training import _build_misconception_dpo_pair
+
+    captured: list[dict] = []
+
+    class _RecorderCapture:
+        def log_decision(self, **kwargs):
+            captured.append(kwargs)
+
+    chunk = {
+        "id": "chunk_drop_01",
+        "text": "RDFS describes entailments. SHACL validates closed-world constraints.",
+        "learning_outcome_refs": ["LO-1"],
+        "concept_tags": ["rdfs"],
+        "bloom_level": "understand",
+    }
+    misconception = {
+        "misconception": "",  # empty -> pair must be dropped + logged
+        "correction": "RDFS publishes vocabulary; SHACL validates data.",
+        "bloom_level": "understand",
+    }
+
+    result = _build_misconception_dpo_pair(
+        chunk, misconception, pair_index=0, capture=_RecorderCapture(),
+    )
+    assert result is None
+    assert len(captured) == 1, (
+        "Empty-field misconception drop must emit exactly one decision event"
+    )
+    event = captured[0]
+    assert event["decision_type"] == "misconception_pair_skipped"
+    assert event["decision"] == "dropped"
+    rationale = event["rationale"]
+    assert len(rationale) >= 20
+    # Rationale should name the offending field and the chunk id.
+    assert "misconception" in rationale.lower()
+    assert "chunk_drop_01" in rationale
+
+
+def test_build_misconception_dpo_pair_logs_drop_on_empty_correction():
+    """Symmetric to the misconception-empty case: empty correction must
+    also emit an audit event before the ``None`` return."""
+    from Trainforge.synthesize_training import _build_misconception_dpo_pair
+
+    captured: list[dict] = []
+
+    class _RecorderCapture:
+        def log_decision(self, **kwargs):
+            captured.append(kwargs)
+
+    chunk = {
+        "id": "chunk_drop_02",
+        "text": "Foundational RDF semantics anchor every later SHACL constraint.",
+        "learning_outcome_refs": ["LO-2"],
+        "concept_tags": ["rdf"],
+        "bloom_level": "remember",
+    }
+    misconception = {
+        "misconception": "RDF and SHACL are interchangeable.",
+        "correction": "   ",  # whitespace-only -> empty after strip
+        "bloom_level": "remember",
+    }
+
+    result = _build_misconception_dpo_pair(
+        chunk, misconception, pair_index=1, capture=_RecorderCapture(),
+    )
+    assert result is None
+    assert len(captured) == 1
+    event = captured[0]
+    assert event["decision_type"] == "misconception_pair_skipped"
+    assert event["decision"] == "dropped"
+    assert "correction" in event["rationale"].lower()
+    assert "chunk_drop_02" in event["rationale"]
+
+
+def test_build_misconception_dpo_pair_no_log_when_pair_built():
+    """A well-formed misconception should NOT emit a skip event."""
+    from Trainforge.synthesize_training import _build_misconception_dpo_pair
+
+    captured: list[dict] = []
+
+    class _RecorderCapture:
+        def log_decision(self, **kwargs):
+            captured.append(kwargs)
+
+    chunk = {
+        "id": "chunk_ok_01",
+        "text": "RDFS describes entailments. SHACL validates closed-world constraints.",
+        "learning_outcome_refs": ["LO-1"],
+        "concept_tags": ["shacl"],
+        "bloom_level": "understand",
+    }
+    misconception = {
+        "misconception": "RDFS domain declarations reject bad data like a validator.",
+        "correction": (
+            "RDFS domain declarations infer class membership; SHACL is the "
+            "tool that validates data against explicit constraints."
+        ),
+        "bloom_level": "understand",
+    }
+
+    pair = _build_misconception_dpo_pair(
+        chunk, misconception, pair_index=2, capture=_RecorderCapture(),
+    )
+    assert pair is not None
+    assert captured == [], (
+        "log_decision must NOT fire when the misconception pair is built"
+    )
