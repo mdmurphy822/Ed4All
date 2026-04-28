@@ -140,3 +140,40 @@ def test_missing_required_output_key_raises_runtime_error() -> None:
 
     with pytest.raises(RuntimeError, match="missing key 'completion'"):
         provider.paraphrase_instruction(draft, chunk)
+
+
+class _RecordingCapture:
+    """Minimal DecisionCapture stand-in — records ``log_decision`` calls."""
+
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    def log_decision(self, **kwargs: object) -> None:
+        self.events.append(dict(kwargs))
+
+
+def test_paraphrase_instruction_emits_synthesis_provider_call_capture() -> None:
+    async def agent_tool(**_kwargs: object) -> dict:
+        return make_instruction_response(prompt="p2", completion="c2")
+
+    capture = _RecordingCapture()
+    provider = ClaudeSessionProvider(
+        dispatcher=FakeLocalDispatcher(agent_tool=agent_tool),
+        run_id="run-cap",
+        capture=capture,
+    )
+
+    provider.paraphrase_instruction(
+        draft={"prompt": "p1", "completion": "c1", "template_id": "understand._default"},
+        chunk={"id": "rdf_shacl_551_chunk_00054", "text": "..."},
+    )
+
+    assert len(capture.events) == 1
+    event = capture.events[0]
+    assert event["decision_type"] == "synthesis_provider_call"
+    assert event["decision"] == "claude_session::instruction"
+    rationale = event["rationale"]
+    assert len(rationale) >= 20
+    # Rationale must reference dynamic signals per CLAUDE.md mandate:
+    assert "rdf_shacl_551_chunk_00054" in rationale
+    assert "understand._default" in rationale
