@@ -177,3 +177,72 @@ def test_paraphrase_instruction_emits_synthesis_provider_call_capture() -> None:
     # Rationale must reference dynamic signals per CLAUDE.md mandate:
     assert "rdf_shacl_551_chunk_00054" in rationale
     assert "understand._default" in rationale
+
+
+import json
+from pathlib import Path
+
+
+def test_cache_hit_skips_dispatcher_and_returns_cached_output(tmp_path: Path) -> None:
+    call_count = 0
+
+    async def agent_tool(**_kwargs: object) -> dict:
+        nonlocal call_count
+        call_count += 1
+        return make_instruction_response(prompt=f"p{call_count}", completion=f"c{call_count}")
+
+    cache_path = tmp_path / "synthesis_cache.jsonl"
+    dispatcher = FakeLocalDispatcher(agent_tool=agent_tool)
+    provider = ClaudeSessionProvider(
+        dispatcher=dispatcher,
+        run_id="run-cache",
+        cache_path=cache_path,
+    )
+
+    draft = {
+        "prompt": "P", "completion": "C", "template_id": "apply._default",
+        "chunk_id": "rdf_shacl_551_chunk_00054",
+    }
+    chunk = {"id": "rdf_shacl_551_chunk_00054", "text": "..."}
+
+    first = provider.paraphrase_instruction(draft, chunk)
+    second = provider.paraphrase_instruction(draft, chunk)
+
+    assert first == second
+    assert call_count == 1, "Second call should hit cache, not dispatcher"
+    # Cache file persisted:
+    assert cache_path.exists()
+    lines = [json.loads(l) for l in cache_path.read_text().splitlines() if l.strip()]
+    assert len(lines) == 1
+    assert lines[0]["kind"] == "instruction"
+    assert lines[0]["chunk_id"] == "rdf_shacl_551_chunk_00054"
+    assert lines[0]["provider_version"] == "v1"
+    assert lines[0]["outputs"]["prompt"] == "p1"
+
+
+def test_cache_invalidates_on_provider_version_bump(tmp_path: Path) -> None:
+    call_count = 0
+
+    async def agent_tool(**_kwargs: object) -> dict:
+        nonlocal call_count
+        call_count += 1
+        return make_instruction_response(prompt=f"p{call_count}", completion=f"c{call_count}")
+
+    cache_path = tmp_path / "cache.jsonl"
+    draft = {"prompt": "P", "completion": "C", "template_id": "x", "chunk_id": "c1"}
+    chunk = {"id": "c1", "text": "t"}
+
+    p1 = ClaudeSessionProvider(
+        dispatcher=FakeLocalDispatcher(agent_tool=agent_tool),
+        cache_path=cache_path, provider_version="v1",
+    )
+    p1.paraphrase_instruction(draft, chunk)
+
+    # Same chunk + same draft, but bumped version — should NOT hit cache:
+    p2 = ClaudeSessionProvider(
+        dispatcher=FakeLocalDispatcher(agent_tool=agent_tool),
+        cache_path=cache_path, provider_version="v2",
+    )
+    p2.paraphrase_instruction(draft, chunk)
+
+    assert call_count == 2

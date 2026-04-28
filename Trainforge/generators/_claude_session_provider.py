@@ -13,11 +13,18 @@ Invariants:
   downstream LibV2ModelValidator can audit the synthesis source.
 - Every paraphrase call emits a ``synthesis_provider_call`` decision
   event when ``capture`` is wired (per CLAUDE.md instrumentation mandate).
+- A content-addressed JSONL cache persists outputs keyed on
+  ``sha256(provider_version + kind + chunk_id + draft-load-bearing-fields)``
+  so re-runs against an unchanged corpus reuse paraphrases and the
+  resulting ``instruction_pairs_hash`` stays stable.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
@@ -44,6 +51,7 @@ class ClaudeSessionProvider:
         run_id: Optional[str] = None,
         capture: Optional[Any] = None,
         provider_version: str = "v1",
+        cache_path: Optional[Path] = None,
     ) -> None:
         if dispatcher is None:
             raise RuntimeError(_NO_DISPATCHER_MSG)
@@ -51,6 +59,10 @@ class ClaudeSessionProvider:
         self._run_id = run_id or "synth-standalone"
         self._capture = capture
         self._provider_version = provider_version
+        self._cache_path = cache_path
+        self._cache: Dict[str, Dict[str, Any]] = {}
+        if cache_path is not None and cache_path.exists():
+            self._load_cache()
 
     def paraphrase_instruction(
         self, draft: Dict[str, Any], chunk: Dict[str, Any]
@@ -60,6 +72,14 @@ class ClaudeSessionProvider:
             raise TypeError("draft must be a dict")
         chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
         chunk_text = str(chunk.get("text") or "")
+        key = self._cache_key(kind="instruction", chunk_id=chunk_id, draft=draft)
+        cached = self._cache.get(key)
+        if cached is not None:
+            out = dict(draft)
+            out["prompt"] = str(cached["prompt"])
+            out["completion"] = str(cached["completion"])
+            out["provider"] = "claude_session"
+            return out
 
         outputs = asyncio.run(
             self._dispatch(
@@ -69,6 +89,9 @@ class ClaudeSessionProvider:
                 chunk_text=chunk_text,
                 expected_keys=_INSTRUCTION_KEYS,
             )
+        )
+        self._cache_store(
+            key=key, kind="instruction", chunk_id=chunk_id, outputs=outputs,
         )
         out = dict(draft)
         out["prompt"] = str(outputs["prompt"])
@@ -85,6 +108,15 @@ class ClaudeSessionProvider:
             raise TypeError("draft must be a dict")
         chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
         chunk_text = str(chunk.get("text") or "")
+        key = self._cache_key(kind="preference", chunk_id=chunk_id, draft=draft)
+        cached = self._cache.get(key)
+        if cached is not None:
+            out = dict(draft)
+            out["prompt"] = str(cached["prompt"])
+            out["chosen"] = str(cached["chosen"])
+            out["rejected"] = str(cached["rejected"])
+            out["provider"] = "claude_session"
+            return out
 
         outputs = asyncio.run(
             self._dispatch(
@@ -95,6 +127,9 @@ class ClaudeSessionProvider:
                 expected_keys=_PREFERENCE_KEYS,
             )
         )
+        self._cache_store(
+            key=key, kind="preference", chunk_id=chunk_id, outputs=outputs,
+        )
         out = dict(draft)
         out["prompt"] = str(outputs["prompt"])
         out["chosen"] = str(outputs["chosen"])
@@ -102,27 +137,6 @@ class ClaudeSessionProvider:
         out["provider"] = "claude_session"
         self._emit_decision(kind="preference", draft=draft, chunk_id=chunk_id)
         return out
-
-    def _emit_decision(
-        self,
-        *,
-        kind: str,
-        draft: Dict[str, Any],
-        chunk_id: str,
-    ) -> None:
-        if self._capture is None:
-            return
-        template_id = draft.get("template_id") or "<unknown>"
-        rationale = (
-            f"Routed {kind} paraphrase for chunk_id={chunk_id} "
-            f"template_id={template_id} via claude_session provider "
-            f"(version={self._provider_version}, run_id={self._run_id})."
-        )
-        self._capture.log_decision(
-            decision_type="synthesis_provider_call",
-            decision=f"claude_session::{kind}",
-            rationale=rationale,
-        )
 
     async def _dispatch(
         self,
@@ -159,3 +173,83 @@ class ClaudeSessionProvider:
                     f"for kind={kind}: missing key {key!r}; got {sorted(outputs)!r}"
                 )
         return outputs
+
+    def _emit_decision(
+        self,
+        *,
+        kind: str,
+        draft: Dict[str, Any],
+        chunk_id: str,
+    ) -> None:
+        if self._capture is None:
+            return
+        template_id = draft.get("template_id") or "<unknown>"
+        rationale = (
+            f"Routed {kind} paraphrase for chunk_id={chunk_id} "
+            f"template_id={template_id} via claude_session provider "
+            f"(version={self._provider_version}, run_id={self._run_id})."
+        )
+        self._capture.log_decision(
+            decision_type="synthesis_provider_call",
+            decision=f"claude_session::{kind}",
+            rationale=rationale,
+        )
+
+    def _load_cache(self) -> None:
+        assert self._cache_path is not None
+        for line in self._cache_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if entry.get("provider_version") != self._provider_version:
+                continue
+            self._cache[entry["key"]] = entry["outputs"]
+
+    def _cache_key(self, *, kind: str, chunk_id: str, draft: Dict[str, Any]) -> str:
+        # Serialize draft keys deterministically; only the load-bearing fields
+        # (prompt, completion / chosen / rejected, template_id) participate so
+        # incidental metadata changes don't bust the cache.
+        relevant = {
+            k: draft.get(k)
+            for k in ("prompt", "completion", "chosen", "rejected", "template_id")
+            if k in draft
+        }
+        payload = json.dumps(
+            {
+                "version": self._provider_version,
+                "kind": kind,
+                "chunk_id": chunk_id,
+                "draft": relevant,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _cache_store(
+        self,
+        *,
+        key: str,
+        kind: str,
+        chunk_id: str,
+        outputs: Dict[str, Any],
+    ) -> None:
+        self._cache[key] = outputs
+        if self._cache_path is None:
+            return
+        line = json.dumps(
+            {
+                "key": key,
+                "kind": kind,
+                "chunk_id": chunk_id,
+                "provider_version": self._provider_version,
+                "outputs": outputs,
+            },
+            sort_keys=True,
+        )
+        self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._cache_path.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
