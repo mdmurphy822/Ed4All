@@ -627,3 +627,119 @@ def test_decision_capture_fires_on_preference_call(monkeypatch):
     assert "chunk_id=chunk_001" in captured[0]["rationale"]
     # Default base URL surfaces in the rationale when none supplied.
     assert DEFAULT_BASE_URL in captured[0]["rationale"]
+
+
+# ---------------------------------------------------------------------------
+# Wave 114: per-provider kind_bounds + length-retry + slim system prompts
+# ---------------------------------------------------------------------------
+
+
+def test_local_provider_default_prompt_floor_is_25(monkeypatch):
+    """Wave 114: ``DEFAULT_LOCAL_KIND_BOUNDS`` exposes a 25-char prompt
+    floor (vs the Anthropic 40) so legitimately compressed paraphrases
+    out of a 7B-Q4 model don't trip the length floor. Constructor wires
+    the default into ``self._kind_bounds`` when no override is passed."""
+    from Trainforge.generators._local_provider import (  # noqa: E402
+        DEFAULT_LOCAL_KIND_BOUNDS,
+    )
+
+    assert DEFAULT_LOCAL_KIND_BOUNDS["prompt"] == (25, 400)
+
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    provider = LocalSynthesisProvider()
+    assert provider._kind_bounds["prompt"] == (25, 400)
+    assert provider._kind_bounds["completion"] == (50, 600)
+
+
+def test_local_provider_kind_bounds_constructor_override(monkeypatch):
+    """Wave 114: ``kind_bounds=`` constructor kwarg overrides the
+    module default. Constructor wraps the input in ``dict(kind_bounds)``
+    so post-construction mutation of the caller's dict does not leak
+    into the provider's internal state."""
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    custom_bounds = {
+        "prompt": (15, 200),
+        "completion": (40, 500),
+        "chosen": (40, 500),
+        "rejected": (40, 500),
+    }
+    expected = dict(custom_bounds)
+    provider = LocalSynthesisProvider(kind_bounds=custom_bounds)
+    assert provider._kind_bounds == expected
+
+    # Mutate the caller's dict AFTER construction; the provider's
+    # internal copy must remain unchanged.
+    custom_bounds["prompt"] = (1, 1)
+    custom_bounds["completion"] = (1, 1)
+    assert provider._kind_bounds == expected
+    assert provider._kind_bounds["prompt"] == (15, 200)
+
+
+def test_local_provider_retries_on_short_field_then_succeeds(monkeypatch):
+    """Wave 114: a short ``prompt`` field triggers a length-retry
+    (parallel to the JSON-parse retry path). On retry success, the
+    final paraphrase carries the LONG prompt — proving the retry path
+    accepted the second response and discarded the first."""
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    short_response = json.dumps({
+        "prompt": "short",  # 5 chars — far below the 25-char floor.
+        "completion": (
+            "Topic X anchors every later chapter; recall its formal "
+            "definition before attempting application questions."
+        ),
+    })
+    long_prompt = (
+        "Recall the foundational shacl concept introduced for topic X "
+        "in chapter one of the source material."
+    )
+    long_response = json.dumps({
+        "prompt": long_prompt,
+        "completion": (
+            "Topic X anchors every later chapter; recall its formal "
+            "definition before attempting application questions."
+        ),
+    })
+    client = _client_yielding(
+        httpx.Response(200, json=_success_body(short_response)),
+        httpx.Response(200, json=_success_body(long_response)),
+    )
+    p = LocalSynthesisProvider(client=client)
+    with patch("Trainforge.generators._together_provider.time.sleep"):
+        result = p.paraphrase_instruction(_instruction_draft(), _chunk())
+
+    # Second response was accepted, first was discarded.
+    assert result["prompt"] == long_prompt
+    assert len(result["prompt"]) >= 25
+    assert "shacl" in result["prompt"]
+    assert result["provider"] == "local"
+
+
+def test_local_provider_uses_slim_local_system_prompts():
+    """Wave 114: the local path uses module-level slim system prompts
+    (<50 words each) instead of the verbose Together / Anthropic
+    prompts. 7B-Q4 instruction models attend less reliably to long
+    behavioral preambles; the inlined JSON shape directive in the user
+    message is the most-respected part of the prompt."""
+    from Trainforge.generators._local_provider import (  # noqa: E402
+        _LOCAL_INSTRUCTION_SYSTEM_PROMPT,
+        _LOCAL_PREFERENCE_SYSTEM_PROMPT,
+    )
+
+    instruction_word_count = len(_LOCAL_INSTRUCTION_SYSTEM_PROMPT.split())
+    preference_word_count = len(_LOCAL_PREFERENCE_SYSTEM_PROMPT.split())
+    assert instruction_word_count < 50, (
+        f"_LOCAL_INSTRUCTION_SYSTEM_PROMPT must stay under 50 words; "
+        f"got {instruction_word_count}"
+    )
+    assert preference_word_count < 50, (
+        f"_LOCAL_PREFERENCE_SYSTEM_PROMPT must stay under 50 words; "
+        f"got {preference_word_count}"
+    )
+
+    # Behavioral anchors — task framing per surface.
+    assert "You paraphrase" in _LOCAL_INSTRUCTION_SYSTEM_PROMPT
+    assert "DPO" in _LOCAL_PREFERENCE_SYSTEM_PROMPT
+    # Inlined JSON shape directive — instruction surface enumerates
+    # the ``prompt`` key explicitly so the model sees the required
+    # shape end-to-end.
+    assert '{"prompt"' in _LOCAL_INSTRUCTION_SYSTEM_PROMPT
