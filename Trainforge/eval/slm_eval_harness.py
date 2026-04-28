@@ -199,6 +199,9 @@ class EvalReport:
     profile: str
     # Wave 102 additive: source-match precision + named hallucination rate.
     source_match: Optional[float] = None
+    # Wave 108 / Phase B additive: negative-grounding signals.
+    negative_grounding_accuracy: Optional[float] = None
+    yes_rate: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {
@@ -214,6 +217,12 @@ class EvalReport:
             out["calibration_ece"] = round(self.calibration_ece, 4)
         if self.source_match is not None:
             out["source_match"] = round(self.source_match, 4)
+        if self.negative_grounding_accuracy is not None:
+            out["negative_grounding_accuracy"] = round(
+                self.negative_grounding_accuracy, 4
+            )
+        if self.yes_rate is not None:
+            out["yes_rate"] = round(self.yes_rate, 4)
         # Wave 102: hallucination_rate is the named inverse of
         # faithfulness so the ablation renderer can show it as its own
         # column without recomputing.
@@ -223,6 +232,10 @@ class EvalReport:
         )
         if self.source_match is not None:
             out["metrics"]["source_match"] = round(self.source_match, 4)
+        if self.negative_grounding_accuracy is not None:
+            out["metrics"]["negative_grounding_accuracy"] = round(
+                self.negative_grounding_accuracy, 4
+            )
         return out
 
 
@@ -370,6 +383,7 @@ class SLMEvalHarness:
 
         # --- Faithfulness (Layer 1) -------------------------------- #
         faithfulness_score = 0.0
+        faithfulness_yes_rate: Optional[float] = None
         faithfulness_per_question: List[Dict[str, Any]] = []
         if evaluators.get("faithfulness"):
             cap = self.max_holdout_questions or caps.get("max_holdout_questions")
@@ -388,6 +402,10 @@ class SLMEvalHarness:
                 "correct": fr["correct"],
             }
             faithfulness_score = fr["accuracy"]
+            # Wave 108 / Phase B: yes_rate surfaces yes-bias even when
+            # accuracy is high (every probe is a TRUE statement, so a
+            # 'yes always' model trivially scores 1.0).
+            faithfulness_yes_rate = fr.get("yes_rate")
             # Wave 104: surface per-question records for the trace
             # writer in the ablation runner. Each row carries the
             # probe text, model response, ground-truth chunk id (for
@@ -404,6 +422,33 @@ class SLMEvalHarness:
                     "outcome": r.get("outcome", "ambiguous"),
                     "correct": r.get("outcome") == "correct",
                 })
+
+        # --- Negative grounding (Wave 108 / Phase B) ---------------- #
+        # Same probe-template machinery as faithfulness, but ground-truth
+        # is "no". Catches yes-biased template-recognizer adapters that
+        # answer "yes" to everything (fail open on positive-only probes).
+        negative_grounding_score: Optional[float] = None
+        if evaluators.get("faithfulness"):
+            from Trainforge.eval.negative_grounding import (
+                NegativeGroundingEvaluator,
+            )
+            cap = self.max_holdout_questions or caps.get("max_holdout_questions")
+            negative_probes = (holdout_payload or {}).get("negative_probes", []) or []
+            ng = _run_stage(
+                "negative_grounding",
+                _capped_count(negative_probes, cap),
+                lambda: NegativeGroundingEvaluator(
+                    holdout_split=holdout_path,
+                    model_callable=model_callable,
+                    max_questions=cap,
+                ).evaluate(),
+            )
+            per_tier["negative_grounding"] = {
+                "accuracy": ng.get("negative_grounding_accuracy"),
+                "false_yes_rate": ng.get("false_yes_rate"),
+                "scored": ng.get("scored_total"),
+            }
+            negative_grounding_score = ng.get("negative_grounding_accuracy")
 
         # --- Behavioral invariants (Layer 2) ---------------------- #
         invariant_pass_rates: List[float] = []
@@ -591,6 +636,8 @@ class SLMEvalHarness:
             calibration_ece=calibration_ece,
             profile=self.profile_name,
             source_match=source_match_score,
+            negative_grounding_accuracy=negative_grounding_score,
+            yes_rate=faithfulness_yes_rate,
         )
 
         # Wave 104: aggregate per-question records into a single

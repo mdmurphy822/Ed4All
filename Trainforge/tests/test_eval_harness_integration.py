@@ -230,3 +230,27 @@ def test_unknown_course_raises(tmp_path):
             course_path=tmp_path / "does-not-exist",
             model_callable=_mock_model,
         )
+
+
+def test_eval_report_includes_negative_grounding_and_yes_rate(tmp_path):
+    """Wave 108 / Phase B: the harness emits negative_grounding_accuracy
+    and yes_rate in eval_report.json so the gating validator can read
+    them. A 'no' model gets perfect negative-grounding."""
+    course = _build_course(tmp_path, classification={
+        "subdomains": ["semantic web"],
+        "topics": ["rdf and shacl"],
+    })
+    no_model = lambda _prompt: "No, that statement is false."
+    harness = SLMEvalHarness(
+        course_path=course,
+        model_callable=no_model,
+        max_holdout_questions=10,
+    )
+    out_path = harness.run_all()
+    report = json.loads(out_path.read_text(encoding="utf-8"))
+
+    assert "negative_grounding_accuracy" in report
+    assert "yes_rate" in report
+    # 'No' model has yes_rate ~= 0.0 and negative_grounding_accuracy ~= 1.0:
+    assert report["yes_rate"] == 0.0
+    assert report["negative_grounding_accuracy"] == 1.0
