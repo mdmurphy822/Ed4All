@@ -128,3 +128,42 @@ def test_capture_emits_eval_gating_decision(tmp_path: Path) -> None:
     rationale = capture.events[0]["rationale"]
     assert len(rationale) >= 20
     assert any(s in rationale for s in ("faithfulness", "yes_rate", "baseline_delta"))
+
+
+def test_per_property_accuracy_below_floor_fails_critical(tmp_path: Path) -> None:
+    """A property scoring below its min_accuracy fails the gate."""
+    model_dir = tmp_path / "models" / "test-prop"
+    model_dir.mkdir(parents=True)
+    _write_report(
+        model_dir,
+        per_property_accuracy={
+            "sh_datatype": 0.80,
+            "sh_class": 0.10,        # below 0.40 floor
+            "owl_sameas": None,      # unscored — skipped
+        },
+    )
+    result = EvalGatingValidator().validate({
+        "model_dir": str(model_dir),
+        "thresholds": {"min_per_property_accuracy": 0.40},
+    })
+    assert result.passed is False
+    codes = [i.code for i in result.issues if i.severity == "critical"]
+    assert "EVAL_PER_PROPERTY_BELOW_THRESHOLD" in codes
+    msg = " ".join(i.message for i in result.issues if i.severity == "critical")
+    assert "sh_class" in msg
+
+
+def test_per_property_passes_when_all_scored_above_floor(tmp_path: Path) -> None:
+    model_dir = tmp_path / "models" / "test-prop-pass"
+    model_dir.mkdir(parents=True)
+    _write_report(
+        model_dir,
+        per_property_accuracy={
+            "sh_datatype": 0.50, "sh_class": 0.55, "owl_sameas": None,
+        },
+    )
+    result = EvalGatingValidator().validate({
+        "model_dir": str(model_dir),
+        "thresholds": {"min_per_property_accuracy": 0.40},
+    })
+    assert result.passed is True
