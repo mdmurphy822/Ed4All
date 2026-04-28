@@ -74,6 +74,7 @@ class ClaudeSessionProvider:
         out["prompt"] = str(outputs["prompt"])
         out["completion"] = str(outputs["completion"])
         out["provider"] = "claude_session"
+        self._emit_decision(kind="instruction", draft=draft, chunk_id=chunk_id)
         return out
 
     def paraphrase_preference(
@@ -99,7 +100,29 @@ class ClaudeSessionProvider:
         out["chosen"] = str(outputs["chosen"])
         out["rejected"] = str(outputs["rejected"])
         out["provider"] = "claude_session"
+        self._emit_decision(kind="preference", draft=draft, chunk_id=chunk_id)
         return out
+
+    def _emit_decision(
+        self,
+        *,
+        kind: str,
+        draft: Dict[str, Any],
+        chunk_id: str,
+    ) -> None:
+        if self._capture is None:
+            return
+        template_id = draft.get("template_id") or "<unknown>"
+        rationale = (
+            f"Routed {kind} paraphrase for chunk_id={chunk_id} "
+            f"template_id={template_id} via claude_session provider "
+            f"(version={self._provider_version}, run_id={self._run_id})."
+        )
+        self._capture.log_decision(
+            decision_type="synthesis_provider_call",
+            decision=f"claude_session::{kind}",
+            rationale=rationale,
+        )
 
     async def _dispatch(
         self,
