@@ -17,7 +17,8 @@ Invariants:
 
 from __future__ import annotations
 
-from typing import Any, Optional
+import asyncio
+from typing import Any, Dict, List, Optional
 
 
 _NO_DISPATCHER_MSG = (
@@ -26,6 +27,11 @@ _NO_DISPATCHER_MSG = (
     "(both inject one) when --provider claude_session is set. Standalone CLI "
     "invocation has no Claude Code session to dispatch to."
 )
+
+_DISPATCH_TASK_NAME = "synthesize_training"
+_AGENT_TYPE = "training-synthesizer"
+_INSTRUCTION_KEYS = ["prompt", "completion"]
+_PREFERENCE_KEYS = ["prompt", "chosen", "rejected"]
 
 
 class ClaudeSessionProvider:
@@ -45,3 +51,63 @@ class ClaudeSessionProvider:
         self._run_id = run_id or "synth-standalone"
         self._capture = capture
         self._provider_version = provider_version
+
+    def paraphrase_instruction(
+        self, draft: Dict[str, Any], chunk: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Paraphrase a mock-drafted instruction pair."""
+        if not isinstance(draft, dict):
+            raise TypeError("draft must be a dict")
+        chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
+        chunk_text = str(chunk.get("text") or "")
+
+        outputs = asyncio.run(
+            self._dispatch(
+                kind="instruction",
+                draft=draft,
+                chunk_id=chunk_id,
+                chunk_text=chunk_text,
+                expected_keys=_INSTRUCTION_KEYS,
+            )
+        )
+        out = dict(draft)
+        out["prompt"] = str(outputs["prompt"])
+        out["completion"] = str(outputs["completion"])
+        out["provider"] = "claude_session"
+        return out
+
+    async def _dispatch(
+        self,
+        *,
+        kind: str,
+        draft: Dict[str, Any],
+        chunk_id: str,
+        chunk_text: str,
+        expected_keys: List[str],
+    ) -> Dict[str, Any]:
+        task_params = {
+            "kind": kind,
+            "draft": draft,
+            "chunk_id": chunk_id,
+            "chunk_text": chunk_text,
+            "expected_keys": expected_keys,
+        }
+        result = await self._dispatcher.dispatch_task(
+            task_name=_DISPATCH_TASK_NAME,
+            agent_type=_AGENT_TYPE,
+            task_params=task_params,
+            run_id=self._run_id,
+        )
+        if not result.get("success"):
+            raise RuntimeError(
+                f"training-synthesizer dispatch failed: "
+                f"code={result.get('error_code')!r} error={result.get('error')!r}"
+            )
+        outputs = result.get("outputs") or {}
+        for key in expected_keys:
+            if key not in outputs:
+                raise RuntimeError(
+                    f"training-synthesizer returned malformed output "
+                    f"for kind={kind}: missing key {key!r}; got {sorted(outputs)!r}"
+                )
+        return outputs
