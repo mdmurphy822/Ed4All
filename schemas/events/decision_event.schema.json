@@ -96,6 +96,7 @@
         "leak_check_filtering",
         "learning_objective_mapping",
         "math_conversion",
+        "misconception_pair_skipped",
         "model_promotion_decision",
         "objective_assessment",
         "outcome_signal",
