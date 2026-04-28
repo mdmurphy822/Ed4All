@@ -76,6 +76,31 @@ class ClaudeSessionProvider:
         out["provider"] = "claude_session"
         return out
 
+    def paraphrase_preference(
+        self, draft: Dict[str, Any], chunk: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Paraphrase a mock-drafted preference triple."""
+        if not isinstance(draft, dict):
+            raise TypeError("draft must be a dict")
+        chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
+        chunk_text = str(chunk.get("text") or "")
+
+        outputs = asyncio.run(
+            self._dispatch(
+                kind="preference",
+                draft=draft,
+                chunk_id=chunk_id,
+                chunk_text=chunk_text,
+                expected_keys=_PREFERENCE_KEYS,
+            )
+        )
+        out = dict(draft)
+        out["prompt"] = str(outputs["prompt"])
+        out["chosen"] = str(outputs["chosen"])
+        out["rejected"] = str(outputs["rejected"])
+        out["provider"] = "claude_session"
+        return out
+
     async def _dispatch(
         self,
         *,
