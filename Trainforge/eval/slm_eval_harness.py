@@ -202,6 +202,9 @@ class EvalReport:
     # Wave 108 / Phase B additive: negative-grounding signals.
     negative_grounding_accuracy: Optional[float] = None
     yes_rate: Optional[float] = None
+    # Wave 109 / Phase C additive: per-property accuracy when the
+    # course has a property manifest. None elsewhere; keys are property IDs.
+    per_property_accuracy: Optional[Dict[str, Optional[float]]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {
@@ -236,6 +239,12 @@ class EvalReport:
             out["metrics"]["negative_grounding_accuracy"] = round(
                 self.negative_grounding_accuracy, 4
             )
+        if self.per_property_accuracy:
+            # Round each scored property; preserve None for unscored.
+            rounded: Dict[str, Optional[float]] = {}
+            for k, v in self.per_property_accuracy.items():
+                rounded[k] = round(float(v), 4) if v is not None else None
+            out["per_property_accuracy"] = rounded
         return out
 
 
@@ -450,6 +459,30 @@ class SLMEvalHarness:
             }
             negative_grounding_score = ng.get("negative_grounding_accuracy")
 
+        # --- Per-property eval (Wave 109 / Phase C) ---------------- #
+        # No-ops for courses without a property manifest. Surface
+        # per-property accuracy in eval_report.json so the
+        # EvalGatingValidator can apply per-property thresholds.
+        per_property_accuracy: Optional[Dict[str, Optional[float]]] = None
+        if evaluators.get("faithfulness"):
+            from Trainforge.eval.property_eval import PerPropertyEvaluator
+            try:
+                pp_result = _run_stage(
+                    "per_property",
+                    None,
+                    lambda: PerPropertyEvaluator(
+                        holdout_split=holdout_path,
+                        course_slug=self.course_path.name,
+                        model_callable=model_callable,
+                    ).evaluate(),
+                )
+                per_tier["per_property"] = pp_result
+                pa = pp_result.get("per_property_accuracy")
+                if pa:
+                    per_property_accuracy = pa
+            except Exception as exc:  # noqa: BLE001 — advisory
+                logger.warning("PerPropertyEvaluator failed: %s", exc)
+
         # --- Behavioral invariants (Layer 2) ---------------------- #
         invariant_pass_rates: List[float] = []
         inv_cfg = evaluators.get("invariants") or {}
@@ -638,6 +671,7 @@ class SLMEvalHarness:
             source_match=source_match_score,
             negative_grounding_accuracy=negative_grounding_score,
             yes_rate=faithfulness_yes_rate,
+            per_property_accuracy=per_property_accuracy,
         )
 
         # Wave 104: aggregate per-question records into a single
