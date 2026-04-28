@@ -28,6 +28,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from Trainforge.generators._anthropic_provider import SynthesisProviderError
 from Trainforge.generators._session_budget import (
     SynthesisBudgetExceeded,
     _BudgetTracker,
@@ -259,6 +260,21 @@ class ClaudeSessionProvider:
                 raise RuntimeError(
                     f"training-synthesizer returned malformed output "
                     f"for kind={kind}: missing key {key!r}; got {sorted(outputs)!r}"
+                )
+        # Wave 112 Task 3: tighten value validation. The key-presence loop
+        # above accepted ``""``, ``"   "``, and ``None`` — all of which would
+        # silently poison ``instruction_pairs.jsonl`` downstream. Reject them
+        # here before the cache layer (Task 7) or the length clamp (Task 4)
+        # ever sees the value.
+        for key in expected_keys:
+            value = outputs[key]
+            if not isinstance(value, str) or not value.strip():
+                self._breaker.record_failure(error_code="EMPTY_FIELD")
+                raise SynthesisProviderError(
+                    f"training-synthesizer returned empty/non-string value "
+                    f"for kind={kind}, key={key!r}: got {value!r}",
+                    code="empty_field",
+                    chunk_id=chunk_id or None,
                 )
         self._breaker.record_success()
         return outputs

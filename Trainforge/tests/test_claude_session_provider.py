@@ -332,6 +332,88 @@ def test_telemetry_jsonl_written_once_per_call(tmp_path: Path) -> None:
     assert kinds == ["instruction", "preference"]
 
 
+def test_dispatch_rejects_empty_string_value() -> None:
+    """Wave 112 Task 3: empty-string output values must fail loud rather
+    than silently passing the key-presence check."""
+    from Trainforge.generators._anthropic_provider import SynthesisProviderError
+
+    async def agent_tool(**_kwargs: object) -> dict:
+        return {
+            "success": True,
+            "outputs": {
+                "prompt": "",
+                "completion": "ok-prompt-text-of-sufficient-length",
+            },
+            "artifacts": [],
+        }
+
+    provider = ClaudeSessionProvider(
+        dispatcher=FakeLocalDispatcher(agent_tool=agent_tool),
+        run_id="run-empty-string",
+    )
+    draft = {"prompt": "p", "completion": "c"}
+    chunk = {"id": "c1", "text": "t"}
+
+    with pytest.raises(SynthesisProviderError) as ei:
+        provider.paraphrase_instruction(draft, chunk)
+    assert ei.value.code == "empty_field"
+    assert "prompt" in str(ei.value)
+
+
+def test_dispatch_rejects_whitespace_only_value() -> None:
+    """Whitespace-only output values are equivalent to empty for our purposes."""
+    from Trainforge.generators._anthropic_provider import SynthesisProviderError
+
+    async def agent_tool(**_kwargs: object) -> dict:
+        return {
+            "success": True,
+            "outputs": {
+                "prompt": "ok-prompt-text-of-sufficient-length",
+                "completion": "  ",
+            },
+            "artifacts": [],
+        }
+
+    provider = ClaudeSessionProvider(
+        dispatcher=FakeLocalDispatcher(agent_tool=agent_tool),
+        run_id="run-whitespace",
+    )
+    draft = {"prompt": "p", "completion": "c"}
+    chunk = {"id": "c1", "text": "t"}
+
+    with pytest.raises(SynthesisProviderError) as ei:
+        provider.paraphrase_instruction(draft, chunk)
+    assert ei.value.code == "empty_field"
+    assert "completion" in str(ei.value)
+
+
+def test_dispatch_rejects_none_value() -> None:
+    """A None value (json null) must fail loud as well — non-str sentinel."""
+    from Trainforge.generators._anthropic_provider import SynthesisProviderError
+
+    async def agent_tool(**_kwargs: object) -> dict:
+        return {
+            "success": True,
+            "outputs": {
+                "prompt": None,
+                "completion": "ok-prompt-text-of-sufficient-length",
+            },
+            "artifacts": [],
+        }
+
+    provider = ClaudeSessionProvider(
+        dispatcher=FakeLocalDispatcher(agent_tool=agent_tool),
+        run_id="run-none",
+    )
+    draft = {"prompt": "p", "completion": "c"}
+    chunk = {"id": "c1", "text": "t"}
+
+    with pytest.raises(SynthesisProviderError) as ei:
+        provider.paraphrase_instruction(draft, chunk)
+    assert ei.value.code == "empty_field"
+    assert "prompt" in str(ei.value)
+
+
 def test_circuit_opens_after_repeated_dispatcher_failures(tmp_path: Path) -> None:
     """Three MAILBOX_TIMEOUT in a row trips the breaker; the 4th call
     raises SynthesisCircuitOpen WITHOUT contacting the dispatcher."""
