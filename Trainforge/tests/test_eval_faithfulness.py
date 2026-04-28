@@ -102,3 +102,15 @@ def test_per_question_results_have_probe_text(tmp_path):
         assert "probe" in entry
         assert "edge" in entry
         assert entry["edge"]["relation_type"] == "prerequisite_of"
+
+
+def test_chunk_at_difficulty_template_dropped() -> None:
+    """Wave 108 / Phase B: trivially-true difficulty probes were padding
+    faithfulness scores. The template lookup must NOT carry a
+    chunk_at_difficulty entry; held-out edges of that type fall through
+    to the generic template."""
+    from Trainforge.eval.faithfulness import _RELATION_TEMPLATES
+    assert "chunk_at_difficulty" not in _RELATION_TEMPLATES, (
+        f"chunk_at_difficulty template must be dropped (Phase B); "
+        f"current templates: {sorted(_RELATION_TEMPLATES)}"
+    )
