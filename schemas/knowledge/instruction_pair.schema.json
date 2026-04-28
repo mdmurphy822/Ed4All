@@ -63,7 +63,7 @@
     },
     "provider": {
       "type": "string",
-      "enum": ["mock", "anthropic", "claude_session"],
+      "enum": ["mock", "anthropic", "claude_session", "together"],
       "description": "Which synthesis provider produced the pair."
     },
     "schema_version": {

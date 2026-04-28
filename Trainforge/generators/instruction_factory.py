@@ -329,10 +329,10 @@ def synthesize_instruction_pair(
         InstructionSynthesisResult. ``pair`` is None if any hard gate failed;
         ``quality`` explains which.
     """
-    if provider not in ("mock", "anthropic", "claude_session"):
+    if provider not in ("mock", "anthropic", "claude_session", "together"):
         raise NotImplementedError(
             f"instruction synthesis provider '{provider}' is not implemented; "
-            f"valid choices are 'mock', 'anthropic', 'claude_session'."
+            f"valid choices are 'mock', 'anthropic', 'claude_session', 'together'."
         )
 
     chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
@@ -420,7 +420,7 @@ def synthesize_instruction_pair(
     # the chunk text via prompt caching and only paraphrases — it must
     # not introduce new facts. Failures (missing API key, parse retry
     # exhaustion) raise loudly per Action A spec.
-    if provider in ("anthropic", "claude_session"):
+    if provider in ("anthropic", "claude_session", "together"):
         provider_instance = paraphrase_provider
         if provider_instance is None:
             if provider == "anthropic":
@@ -428,6 +428,11 @@ def synthesize_instruction_pair(
                     AnthropicSynthesisProvider,
                 )
                 provider_instance = AnthropicSynthesisProvider()
+            elif provider == "together":
+                from Trainforge.generators._together_provider import (
+                    TogetherSynthesisProvider,
+                )
+                provider_instance = TogetherSynthesisProvider()
             else:
                 raise RuntimeError(
                     "provider='claude_session' requires paraphrase_provider "

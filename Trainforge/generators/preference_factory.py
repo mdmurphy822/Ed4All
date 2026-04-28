@@ -359,10 +359,10 @@ def synthesize_preference_pair(
     Returns:
         PreferenceSynthesisResult. ``pair`` is None if a hard gate failed.
     """
-    if provider not in ("mock", "anthropic", "claude_session"):
+    if provider not in ("mock", "anthropic", "claude_session", "together"):
         raise NotImplementedError(
             f"preference synthesis provider '{provider}' is not implemented; "
-            f"valid choices are 'mock', 'anthropic', 'claude_session'."
+            f"valid choices are 'mock', 'anthropic', 'claude_session', 'together'."
         )
 
     chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
@@ -491,7 +491,7 @@ def synthesize_preference_pair(
     # Wave 91 Action A: paraphrase the mock draft via Anthropic when
     # provider="anthropic". Same fail-loud contract as the instruction
     # factory: missing key raises, malformed JSON retries up to 3x.
-    if provider in ("anthropic", "claude_session"):
+    if provider in ("anthropic", "claude_session", "together"):
         provider_instance = paraphrase_provider
         if provider_instance is None:
             if provider == "anthropic":
@@ -499,6 +499,11 @@ def synthesize_preference_pair(
                     AnthropicSynthesisProvider,
                 )
                 provider_instance = AnthropicSynthesisProvider()
+            elif provider == "together":
+                from Trainforge.generators._together_provider import (
+                    TogetherSynthesisProvider,
+                )
+                provider_instance = TogetherSynthesisProvider()
             else:
                 raise RuntimeError(
                     "provider='claude_session' requires paraphrase_provider "
