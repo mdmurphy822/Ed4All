@@ -13,6 +13,7 @@ import pytest
 from Trainforge.generators._claude_session_provider import ClaudeSessionProvider
 from Trainforge.tests._synthesis_fakes import (
     FakeLocalDispatcher,
+    make_failure_response,
     make_instruction_response,
     make_preference_response,
 )
@@ -108,3 +109,34 @@ def test_paraphrase_preference_rewrites_chosen_and_rejected() -> None:
     # Dispatcher payload:
     assert dispatcher.calls[0][1]["kind"] == "preference"
     assert dispatcher.calls[0][1]["expected_keys"] == ["prompt", "chosen", "rejected"]
+
+
+def test_dispatcher_failure_raises_runtime_error() -> None:
+    async def agent_tool(**_kwargs: object) -> dict:
+        return make_failure_response(error="agent timed out", error_code="MAILBOX_TIMEOUT")
+
+    provider = ClaudeSessionProvider(
+        dispatcher=FakeLocalDispatcher(agent_tool=agent_tool),
+        run_id="run-fail",
+    )
+    draft = {"prompt": "p", "completion": "c"}
+    chunk = {"id": "c1", "text": "t"}
+
+    with pytest.raises(RuntimeError, match="MAILBOX_TIMEOUT"):
+        provider.paraphrase_instruction(draft, chunk)
+
+
+def test_missing_required_output_key_raises_runtime_error() -> None:
+    async def agent_tool(**_kwargs: object) -> dict:
+        # 'completion' missing from outputs:
+        return {"success": True, "outputs": {"prompt": "ok"}, "artifacts": []}
+
+    provider = ClaudeSessionProvider(
+        dispatcher=FakeLocalDispatcher(agent_tool=agent_tool),
+        run_id="run-malformed",
+    )
+    draft = {"prompt": "p", "completion": "c"}
+    chunk = {"id": "c1", "text": "t"}
+
+    with pytest.raises(RuntimeError, match="missing key 'completion'"):
+        provider.paraphrase_instruction(draft, chunk)
