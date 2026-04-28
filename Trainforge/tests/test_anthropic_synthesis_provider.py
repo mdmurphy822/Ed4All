@@ -29,9 +29,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Trainforge.generators._anthropic_provider import (  # noqa: E402
+    COMPLETION_MIN,
     DEFAULT_SYNTHESIS_MODEL,
     MAX_PARSE_RETRIES,
     AnthropicSynthesisProvider,
+    SynthesisProviderError,
 )
 
 
@@ -362,7 +364,10 @@ def test_decision_capture_fires_per_call():
 
 def test_decision_capture_fires_on_preference_call():
     paraphrased = json.dumps({
-        "prompt": "Briefly explain topic X to a learner.",
+        "prompt": (
+            "Briefly explain topic X to a learner about to encounter the "
+            "common misconception."
+        ),
         "chosen": (
             "Topic X is the foundational concept of the chapter; the "
             "course material grounds every later example in its formal "
@@ -411,6 +416,27 @@ def test_json_fence_response_parsed_correctly():
     p = AnthropicSynthesisProvider(api_key="sk-test", client=client)
     out = p.paraphrase_instruction(_instruction_draft(), _chunk())
     assert "foundational concept" in out["prompt"]
+
+
+# ---------------------------------------------------------------------------
+# Wave 112 Task 2 — sentinel filler removal
+# ---------------------------------------------------------------------------
+
+
+def test_clamp_rejects_under_minimum_completion():
+    """A short paraphrase must raise rather than be padded with a sentinel.
+
+    Wave 112 audit finding #5: the prior `_clamp` body appended a
+    hardcoded "This passage anchors the answer in the source material."
+    string whenever the model returned a completion below COMPLETION_MIN.
+    Every short response then rode the same sentinel into training data,
+    teaching the SLM to parrot the phrase. Replaced with a typed
+    SynthesisProviderError so the caller's retry path triggers a
+    re-paraphrase instead of poisoning the pair.
+    """
+    p = AnthropicSynthesisProvider.__new__(AnthropicSynthesisProvider)
+    with pytest.raises(SynthesisProviderError, match="below minimum"):
+        p._clamp("x" * (COMPLETION_MIN - 5), kind="completion")
 
 
 def test_json_with_preamble_recovered_via_brace_scan():
