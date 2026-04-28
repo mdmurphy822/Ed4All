@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Together AI synthesis provider — Wave 113 prep.
+"""Together AI synthesis provider — composes :class:`OpenAICompatibleClient`.
 
 Wraps the deterministic mock-provider drafts produced by
 :mod:`Trainforge.generators.instruction_factory` and
@@ -12,6 +12,14 @@ is the ToS-clean teacher pass for SLM training-data generation.
 Default model: ``meta-llama/Llama-3.3-70B-Instruct-Turbo``. Override via
 ``TOGETHER_SYNTHESIS_MODEL`` (e.g. ``Qwen/Qwen2.5-72B-Instruct-Turbo``,
 ``deepseek-ai/DeepSeek-V3``).
+
+Architecture (LLM-agnostic refactor): the OpenAI ``/v1/chat/completions``
+HTTP machinery — retries, timeouts, JSON parse, error mapping, decision-
+capture rationale construction — lives once in
+:class:`Trainforge.generators._openai_compatible_client.OpenAICompatibleClient`.
+This provider composes one such client and concentrates on the
+task-specific surface: instruction / preference paraphrase prompts,
+length clamping, JSON parsing of the rendered draft envelope.
 
 Mirrors :class:`AnthropicSynthesisProvider`:
 
@@ -37,10 +45,12 @@ Differences from the Anthropic provider:
 
 from __future__ import annotations
 
+import json as _json
 import logging
 import os
+import re as _re
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
@@ -51,6 +61,9 @@ from Trainforge.generators._anthropic_provider import (  # noqa: F401
     PROMPT_MIN,
     SynthesisProviderError,
     _KIND_BOUNDS,
+)
+from Trainforge.generators._openai_compatible_client import (
+    OpenAICompatibleClient,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,6 +84,7 @@ ENV_MODEL = "TOGETHER_SYNTHESIS_MODEL"
 ENV_BASE_URL: Optional[str] = None
 
 # Hard cap on retry attempts when the endpoint returns a transient error.
+# Surfaced through to the embedded ``OpenAICompatibleClient``.
 MAX_HTTP_RETRIES = 3
 # Hard cap on retry attempts when the model returns malformed JSON.
 MAX_PARSE_RETRIES = 3
@@ -78,7 +92,8 @@ MAX_PARSE_RETRIES = 3
 DEFAULT_TIMEOUT = 60.0
 # Initial backoff in seconds; doubled per retry.
 INITIAL_BACKOFF_SECONDS = 1.0
-# Status codes we treat as transient and retry.
+# Status codes we treat as transient and retry. Mirrored on the embedded
+# client's ``retry_status_codes``.
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
@@ -127,6 +142,12 @@ class TogetherSynthesisProvider:
     The HTTP client is owned by the provider and can be supplied via the
     ``client`` kwarg (tests inject one with ``httpx.MockTransport``).
 
+    Composition: the constructor builds an
+    :class:`OpenAICompatibleClient` with ``provider_label="together"``
+    and stores it as ``self._oa_client``. The paraphrase methods delegate
+    to ``self._oa_client.chat_completion(...)`` for the HTTP call and
+    only own the prompt construction + length clamping + parse-retry.
+
     Subclass hooks (Wave 113 prep — used by
     :class:`Trainforge.generators._local_provider.LocalSynthesisProvider`):
 
@@ -143,6 +164,9 @@ class TogetherSynthesisProvider:
       client — needed for local model servers that ignore auth.
     - ``_provider_name``: string written to ``out["provider"]`` on every
       emitted pair AND surfaced in decision-capture events for audit.
+      Also flowed through to the embedded client's ``provider_label``
+      so the Wave-115 ``llm_chat_call`` audit row identifies the
+      backend.
     """
 
     # ------------------------------------------------------------------
@@ -208,6 +232,33 @@ class TogetherSynthesisProvider:
         self._timeout = float(timeout)
         self._temperature = float(temperature)
         self._max_tokens = int(max_tokens)
+
+        # Composition: build the LLM-agnostic client. The client owns the
+        # HTTP retry loop, JSON parse of the response envelope, and
+        # ``llm_chat_call`` decision-capture emit. This provider keeps
+        # ``synthesis_provider_call`` capture as the higher-level audit
+        # event (one per paraphrase call); the lower-level
+        # ``llm_chat_call`` event is intentionally not wired to keep the
+        # legacy decision-capture surface stable. Only one event per
+        # paraphrase call lands in the capture stream.
+        self._oa_client = OpenAICompatibleClient(
+            base_url=self._base_url,
+            model=self._model,
+            api_key=self._api_key,
+            capture=None,
+            timeout=self._timeout,
+            max_retries=MAX_HTTP_RETRIES,
+            retry_status_codes=tuple(sorted(_RETRYABLE_STATUS)),
+            initial_backoff_seconds=INITIAL_BACKOFF_SECONDS,
+            provider_label=self._provider_name,
+            client=client,
+            # Route the retry-backoff sleep through this module's
+            # ``time`` so existing tests that patch
+            # ``Trainforge.generators._together_provider.time.sleep``
+            # (and the equivalent local-provider patch) keep working
+            # after the refactor.
+            sleep_fn=lambda s: time.sleep(s),
+        )
 
     @property
     def api_url(self) -> str:
@@ -303,119 +354,30 @@ class TogetherSynthesisProvider:
 
     @property
     def client(self) -> httpx.Client:
-        if self._client is None:
-            self._client = httpx.Client(timeout=self._timeout)
-        return self._client
+        """Backwards-compat: return the underlying httpx client.
 
-    def _build_request(
+        The embedded ``OpenAICompatibleClient`` owns the actual transport
+        now; this property surfaces it so existing tests that assert
+        ``provider.client is injected_client`` continue to work.
+        """
+        return self._oa_client.client
+
+    def _build_messages(
         self, system_prompt: str, chunk_text: str, user_prompt: str
-    ) -> Dict[str, Any]:
-        """Build the OpenAI-compatible chat-completions payload.
+    ) -> List[Dict[str, str]]:
+        """Build the OpenAI-compatible messages array.
 
-        Together's chat endpoint takes the standard OpenAI shape; we
-        send the (system_prompt, chunk_text) prefix as the system
-        message and the rendered draft as the user message.
+        The (system_prompt + chunk_text) prefix becomes a single system
+        message; the rendered draft is the user message. The shape +
+        content remain identical to the pre-refactor request.
         """
         full_system = (
             f"{system_prompt}\n\nSource chunk text:\n\n{chunk_text}"
         )
-        return {
-            "model": self._model,
-            "messages": [
-                {"role": "system", "content": full_system},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": self._temperature,
-            "max_tokens": self._max_tokens,
-        }
-
-    def _post_with_retry(
-        self, payload: Dict[str, Any]
-    ) -> tuple:
-        """POST to the chat-completions endpoint with bounded retries.
-
-        Returns ``(parsed_response_dict, retry_count)``. Surfaces
-        4xx (other than 429) immediately as
-        ``SynthesisProviderError`` with ``code`` set to the HTTP
-        status string. Persistent transient failures (5xx / 429)
-        after ``MAX_HTTP_RETRIES`` attempts also raise
-        ``SynthesisProviderError``.
-
-        URL + log-message provider name are subclass-driven via
-        ``self.api_url`` / ``self._provider_name``.
-        """
-        headers = {
-            "Authorization": f"Bearer {self._api_key}" if self._api_key else "",
-            "Content-Type": "application/json",
-        }
-        url = self.api_url
-        provider_label = self._provider_name
-        last_status: Optional[int] = None
-        last_body: str = ""
-        for attempt in range(1, MAX_HTTP_RETRIES + 1):
-            try:
-                response = self.client.post(
-                    url,
-                    json=payload,
-                    headers=headers,
-                )
-            except httpx.HTTPError as exc:
-                last_body = str(exc)
-                last_status = None
-                if attempt >= MAX_HTTP_RETRIES:
-                    raise SynthesisProviderError(
-                        f"{provider_label} request to {url} failed after "
-                        f"{MAX_HTTP_RETRIES} attempts: {exc}",
-                        code="transport_error",
-                    ) from exc
-                self._sleep_for_attempt(attempt)
-                continue
-
-            status = response.status_code
-            if status == 200:
-                try:
-                    body = response.json()
-                except ValueError as exc:
-                    raise SynthesisProviderError(
-                        f"{provider_label} returned non-JSON 200 body: {exc}",
-                        code="malformed_response",
-                    ) from exc
-                return body, attempt - 1
-
-            last_status = status
-            try:
-                last_body = response.text[:500]
-            except Exception:
-                last_body = "<unreadable>"
-
-            if status in _RETRYABLE_STATUS and attempt < MAX_HTTP_RETRIES:
-                logger.warning(
-                    "%s synthesis: transient HTTP %d on attempt "
-                    "%d/%d; retrying",
-                    provider_label, status, attempt, MAX_HTTP_RETRIES,
-                )
-                self._sleep_for_attempt(attempt)
-                continue
-
-            # Either non-retryable (4xx other than 429) or retries
-            # exhausted on a 5xx / 429.
-            raise SynthesisProviderError(
-                f"{provider_label} returned HTTP {status}: {last_body!r}",
-                code=str(status),
-            )
-
-        # Defensive: loop exits via return / raise above.
-        raise SynthesisProviderError(
-            f"{provider_label}: unreachable retry exit (last_status="
-            f"{last_status}, last_body={last_body!r})",
-            code="retry_exhausted",
-        )
-
-    @staticmethod
-    def _sleep_for_attempt(attempt: int) -> None:
-        """Exponential backoff: 1s, 2s, 4s, ... bounded by attempt."""
-        backoff = INITIAL_BACKOFF_SECONDS * (2 ** (attempt - 1))
-        time.sleep(backoff)
+        return [
+            {"role": "system", "content": full_system},
+            {"role": "user", "content": user_prompt},
+        ]
 
     def _call_with_parse(
         self,
@@ -424,15 +386,16 @@ class TogetherSynthesisProvider:
         chunk_text: str,
         user_prompt: str,
         required_keys: tuple,
-    ) -> tuple:
-        """Issue the HTTP call and parse the JSON response.
+    ) -> Tuple[Dict[str, Any], Dict[str, int], int]:
+        """Issue the HTTP call (via the embedded client) and parse JSON.
 
-        Retries on malformed JSON (model returned text that doesn't
-        contain a parseable object with the required keys) up to
-        ``MAX_PARSE_RETRIES`` times. Returns
-        ``(parsed_keys, usage_dict, http_retry_count)``.
+        Retries on malformed JSON (model returned text without a parseable
+        object carrying the required keys) up to ``MAX_PARSE_RETRIES``
+        times. Returns ``(parsed_keys, usage_dict, http_retry_count)``.
+        ``usage_dict`` is the OpenAI-shape token tally extracted from the
+        last successful HTTP response.
         """
-        payload = self._build_request(system_prompt, chunk_text, user_prompt)
+        messages = self._build_messages(system_prompt, chunk_text, user_prompt)
         attempts = 0
         last_err: Optional[Exception] = None
         last_text: str = ""
@@ -440,10 +403,9 @@ class TogetherSynthesisProvider:
         last_usage: Dict[str, int] = {}
         while attempts < MAX_PARSE_RETRIES:
             attempts += 1
-            body, http_retries = self._post_with_retry(payload)
+            text, usage, http_retries = self._chat_completion_raw(messages)
             total_http_retries += http_retries
-            text = self._extract_text(body)
-            last_usage = self._extract_usage(body)
+            last_usage = usage
             last_text = text
             try:
                 parsed = self._parse_json(text)
@@ -468,6 +430,32 @@ class TogetherSynthesisProvider:
             f"{last_text[-200:]!r}",
             code="parse_retries_exhausted",
         )
+
+    def _chat_completion_raw(
+        self, messages: List[Dict[str, str]]
+    ) -> Tuple[str, Dict[str, int], int]:
+        """Run one chat call via the embedded client and return raw shape.
+
+        Returns ``(assistant_text, usage_dict, retry_count)``. Splitting
+        this out from ``_call_with_parse`` keeps the parse-retry loop
+        legible. Each attempt issues exactly one HTTP call (modulo the
+        client's own transient-status retries).
+        """
+        # Direct-route helper used to expose ``_post_with_retry`` results
+        # so this provider's parse-retry loop can layer cleanly on top.
+        # The client's ``chat_completion`` is the public entry point;
+        # this helper mirrors it but exposes the retry count instead of
+        # collapsing it into the decision rationale.
+        payload: Dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "temperature": self._temperature,
+            "max_tokens": self._max_tokens,
+        }
+        body, retry_count = self._oa_client._post_with_retry(payload)
+        text = self._oa_client._extract_text(body)
+        usage = self._oa_client._extract_usage(body)
+        return text, usage, retry_count
 
     @staticmethod
     def _render_instruction_user(
@@ -506,50 +494,13 @@ class TogetherSynthesisProvider:
         )
 
     @staticmethod
-    def _extract_text(body: Dict[str, Any]) -> str:
-        """Extract assistant content from an OpenAI-shaped response.
-
-        Together's payload mirrors OpenAI exactly:
-        ``{"choices": [{"message": {"content": "..."}}], ...}``.
-        """
-        choices = body.get("choices") or []
-        if not choices:
-            return ""
-        first = choices[0]
-        if not isinstance(first, dict):
-            return ""
-        message = first.get("message") or {}
-        content = message.get("content")
-        if isinstance(content, str):
-            return content
-        return ""
-
-    @staticmethod
-    def _extract_usage(body: Dict[str, Any]) -> Dict[str, int]:
-        usage = body.get("usage") or {}
-        if not isinstance(usage, dict):
-            return {}
-
-        def _g(name: str) -> int:
-            v = usage.get(name)
-            try:
-                return int(v) if v is not None else 0
-            except (TypeError, ValueError):
-                return 0
-
-        return {
-            "prompt_tokens": _g("prompt_tokens"),
-            "completion_tokens": _g("completion_tokens"),
-            "total_tokens": _g("total_tokens"),
-        }
-
-    @staticmethod
     def _parse_json(text: str) -> Dict[str, Any]:
-        """Tolerant JSON parser. Strips ```json fences; otherwise scans
-        for the first balanced JSON object span. Mirrors the Anthropic
-        provider's parser shape so downstream behavior is identical."""
-        import json as _json
-        import re as _re
+        """Tolerant JSON parser.
+
+        Strips ```json fences; otherwise scans for the first balanced
+        JSON object span. Mirrors the Anthropic provider's parser shape
+        so downstream behavior is identical.
+        """
         if not text or not text.strip():
             raise ValueError("empty response text")
         s = text.strip()
@@ -644,7 +595,7 @@ class TogetherSynthesisProvider:
             logger.warning("synthesis_provider_call capture failed: %s", exc)
 
     # ------------------------------------------------------------------
-    # Decision-capture string builders (Wave 113 prep — subclass hooks).
+    # Decision-capture string builders (Wave 113 — subclass hooks).
     # Subclasses override to interpolate provider-specific signals
     # (e.g. base_url for the local provider) without copy-pasting the
     # _emit_decision wiring above.

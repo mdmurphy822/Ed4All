@@ -95,6 +95,7 @@
         "instruction_pair_synthesis",
         "leak_check_filtering",
         "learning_objective_mapping",
+        "llm_chat_call",
         "math_conversion",
         "misconception_pair_skipped",
         "model_promotion_decision",
