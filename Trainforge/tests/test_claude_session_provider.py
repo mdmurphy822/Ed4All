@@ -14,6 +14,7 @@ from Trainforge.generators._claude_session_provider import ClaudeSessionProvider
 from Trainforge.tests._synthesis_fakes import (
     FakeLocalDispatcher,
     make_instruction_response,
+    make_preference_response,
 )
 
 
@@ -69,3 +70,41 @@ def test_paraphrase_instruction_returns_rewritten_pair_with_metadata_preserved()
     assert params["chunk_id"] == "rdf_shacl_551_chunk_00054"
     assert params["chunk_text"] == "RDFS allows..."
     assert params["expected_keys"] == ["prompt", "completion"]
+
+
+def test_paraphrase_preference_rewrites_chosen_and_rejected() -> None:
+    async def agent_tool(**_kwargs: object) -> dict:
+        return make_preference_response(
+            prompt="Which statement about RDFS is correct?",
+            chosen="RDFS describes vocabulary semantics. [chunk_00054]",
+            rejected="RDFS validates data graphs against shapes.",
+        )
+
+    dispatcher = FakeLocalDispatcher(agent_tool=agent_tool)
+    provider = ClaudeSessionProvider(dispatcher=dispatcher, run_id="run-test-2")
+
+    draft = {
+        "prompt": "Original Q",
+        "chosen": "Original chosen",
+        "rejected": "Original rejected",
+        "chunk_id": "rdf_shacl_551_chunk_00054",
+        "misconception_id": "mc_abcd1234efgh5678",
+        "seed": 7,
+        "provider": "mock",
+        "rejected_source": "rule_synthesized",
+    }
+    chunk = {"id": "rdf_shacl_551_chunk_00054", "text": "RDFS allows..."}
+
+    out = provider.paraphrase_preference(draft, chunk)
+
+    assert out["prompt"] == "Which statement about RDFS is correct?"
+    assert out["chosen"] == "RDFS describes vocabulary semantics. [chunk_00054]"
+    assert out["rejected"] == "RDFS validates data graphs against shapes."
+    assert out["provider"] == "claude_session"
+    # Metadata preserved:
+    assert out["misconception_id"] == "mc_abcd1234efgh5678"
+    assert out["seed"] == 7
+    assert out["rejected_source"] == "rule_synthesized"
+    # Dispatcher payload:
+    assert dispatcher.calls[0][1]["kind"] == "preference"
+    assert dispatcher.calls[0][1]["expected_keys"] == ["prompt", "chosen", "rejected"]
