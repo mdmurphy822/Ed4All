@@ -24,8 +24,14 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from Trainforge.generators._session_budget import (
+    SynthesisBudgetExceeded,
+    _BudgetTracker,
+)
 
 
 _NO_DISPATCHER_MSG = (
@@ -52,6 +58,8 @@ class ClaudeSessionProvider:
         capture: Optional[Any] = None,
         provider_version: str = "v1",
         cache_path: Optional[Path] = None,
+        max_dispatches: Optional[int] = None,
+        telemetry_path: Optional[Path] = None,
     ) -> None:
         if dispatcher is None:
             raise RuntimeError(_NO_DISPATCHER_MSG)
@@ -63,6 +71,17 @@ class ClaudeSessionProvider:
         self._cache: Dict[str, Dict[str, Any]] = {}
         if cache_path is not None and cache_path.exists():
             self._load_cache()
+        # Wave 110 / Phase D: budget tracking + telemetry persistence.
+        self._budget = _BudgetTracker(
+            telemetry_path=telemetry_path,
+            max_dispatches=max_dispatches,
+        )
+
+    @property
+    def budget(self) -> _BudgetTracker:
+        """Read-only access to the budget tracker for callers that
+        want to log a summary at end of run."""
+        return self._budget
 
     def paraphrase_instruction(
         self, draft: Dict[str, Any], chunk: Dict[str, Any]
@@ -75,12 +94,35 @@ class ClaudeSessionProvider:
         key = self._cache_key(kind="instruction", chunk_id=chunk_id, draft=draft)
         cached = self._cache.get(key)
         if cached is not None:
+            self._budget.record(
+                kind="instruction", chunk_id=chunk_id,
+                cached=True, elapsed_seconds=0.0,
+            )
             out = dict(draft)
             out["prompt"] = str(cached["prompt"])
             out["completion"] = str(cached["completion"])
             out["provider"] = "claude_session"
             return out
 
+        # Wave 110 / Phase D: pre-flight cap so we raise BEFORE
+        # contacting the dispatcher. The cache + telemetry written so
+        # far stay on disk; resume by re-running with a higher cap.
+        if (
+            self._budget.max_dispatches is not None
+            and self._budget.dispatched >= self._budget.max_dispatches
+        ):
+            raise SynthesisBudgetExceeded(
+                f"ClaudeSessionProvider hit max_dispatches="
+                f"{self._budget.max_dispatches} (dispatched="
+                f"{self._budget.dispatched}, cache_hits="
+                f"{self._budget.cache_hits}). Re-run with a higher "
+                f"--max-dispatches to resume from cache.",
+                dispatched=self._budget.dispatched,
+                cache_hits=self._budget.cache_hits,
+                max_dispatches=self._budget.max_dispatches,
+            )
+
+        t0 = time.monotonic()
         outputs = asyncio.run(
             self._dispatch(
                 kind="instruction",
@@ -89,6 +131,11 @@ class ClaudeSessionProvider:
                 chunk_text=chunk_text,
                 expected_keys=_INSTRUCTION_KEYS,
             )
+        )
+        elapsed = time.monotonic() - t0
+        self._budget.record(
+            kind="instruction", chunk_id=chunk_id,
+            cached=False, elapsed_seconds=elapsed,
         )
         self._cache_store(
             key=key, kind="instruction", chunk_id=chunk_id, outputs=outputs,
@@ -111,6 +158,10 @@ class ClaudeSessionProvider:
         key = self._cache_key(kind="preference", chunk_id=chunk_id, draft=draft)
         cached = self._cache.get(key)
         if cached is not None:
+            self._budget.record(
+                kind="preference", chunk_id=chunk_id,
+                cached=True, elapsed_seconds=0.0,
+            )
             out = dict(draft)
             out["prompt"] = str(cached["prompt"])
             out["chosen"] = str(cached["chosen"])
@@ -118,6 +169,23 @@ class ClaudeSessionProvider:
             out["provider"] = "claude_session"
             return out
 
+        # Wave 110 / Phase D: same pre-flight cap as paraphrase_instruction.
+        if (
+            self._budget.max_dispatches is not None
+            and self._budget.dispatched >= self._budget.max_dispatches
+        ):
+            raise SynthesisBudgetExceeded(
+                f"ClaudeSessionProvider hit max_dispatches="
+                f"{self._budget.max_dispatches} (dispatched="
+                f"{self._budget.dispatched}, cache_hits="
+                f"{self._budget.cache_hits}). Re-run with a higher "
+                f"--max-dispatches to resume from cache.",
+                dispatched=self._budget.dispatched,
+                cache_hits=self._budget.cache_hits,
+                max_dispatches=self._budget.max_dispatches,
+            )
+
+        t0 = time.monotonic()
         outputs = asyncio.run(
             self._dispatch(
                 kind="preference",
@@ -126,6 +194,11 @@ class ClaudeSessionProvider:
                 chunk_text=chunk_text,
                 expected_keys=_PREFERENCE_KEYS,
             )
+        )
+        elapsed = time.monotonic() - t0
+        self._budget.record(
+            kind="preference", chunk_id=chunk_id,
+            cached=False, elapsed_seconds=elapsed,
         )
         self._cache_store(
             key=key, kind="preference", chunk_id=chunk_id, outputs=outputs,

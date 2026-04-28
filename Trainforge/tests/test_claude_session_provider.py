@@ -246,3 +246,87 @@ def test_cache_invalidates_on_provider_version_bump(tmp_path: Path) -> None:
     p2.paraphrase_instruction(draft, chunk)
 
     assert call_count == 2
+
+
+def test_max_dispatches_cap_raises_synthesis_budget_exceeded(tmp_path: Path) -> None:
+    """When the cap is hit, the next dispatch raises before contacting
+    the dispatcher — partial work in the cache is preserved."""
+    from Trainforge.generators._session_budget import SynthesisBudgetExceeded
+    call_count = 0
+
+    async def agent_tool(**_kwargs: object) -> dict:
+        nonlocal call_count
+        call_count += 1
+        return make_instruction_response(prompt=f"p{call_count}", completion=f"c{call_count}")
+
+    cache = tmp_path / "cache.jsonl"
+    provider = ClaudeSessionProvider(
+        dispatcher=FakeLocalDispatcher(agent_tool=agent_tool),
+        cache_path=cache,
+        max_dispatches=2,
+        telemetry_path=tmp_path / "telemetry.jsonl",
+    )
+    chunk = lambda i: {"id": f"chunk_{i}", "text": "x"}
+    draft = lambda i: {"prompt": f"P{i}", "completion": f"C{i}", "template_id": "t",
+                       "chunk_id": f"chunk_{i}"}
+    provider.paraphrase_instruction(draft(1), chunk(1))
+    provider.paraphrase_instruction(draft(2), chunk(2))
+    with pytest.raises(SynthesisBudgetExceeded) as ei:
+        provider.paraphrase_instruction(draft(3), chunk(3))
+    assert ei.value.dispatched == 2
+    assert call_count == 2  # 3rd call NEVER reached the dispatcher
+
+
+def test_cache_hits_do_not_tick_dispatch_counter(tmp_path: Path) -> None:
+    """Re-running against a populated cache costs zero dispatches even
+    when max_dispatches is 1."""
+    async def agent_tool(**_kwargs: object) -> dict:
+        return make_instruction_response(prompt="p1", completion="c1")
+
+    cache = tmp_path / "cache.jsonl"
+    p1 = ClaudeSessionProvider(
+        dispatcher=FakeLocalDispatcher(agent_tool=agent_tool),
+        cache_path=cache,
+        max_dispatches=1,
+    )
+    chunk = {"id": "chunk_1", "text": "x"}
+    draft = {"prompt": "P", "completion": "C", "template_id": "t", "chunk_id": "chunk_1"}
+    p1.paraphrase_instruction(draft, chunk)
+
+    p2 = ClaudeSessionProvider(
+        dispatcher=FakeLocalDispatcher(agent_tool=agent_tool),
+        cache_path=cache,
+        max_dispatches=1,
+    )
+    out = p2.paraphrase_instruction(draft, chunk)
+    assert out["prompt"] == "p1"
+    p2.paraphrase_instruction(
+        {"prompt": "P2", "completion": "C2", "template_id": "t", "chunk_id": "chunk_2"},
+        {"id": "chunk_2", "text": "x"},
+    )
+
+
+def test_telemetry_jsonl_written_once_per_call(tmp_path: Path) -> None:
+    async def agent_tool(*, task_params, **_kwargs: object) -> dict:
+        if task_params["kind"] == "instruction":
+            return make_instruction_response(prompt="p", completion="c")
+        return make_preference_response(prompt="p", chosen="c", rejected="r")
+
+    tel = tmp_path / "telemetry.jsonl"
+    provider = ClaudeSessionProvider(
+        dispatcher=FakeLocalDispatcher(agent_tool=agent_tool),
+        telemetry_path=tel,
+    )
+    provider.paraphrase_instruction(
+        {"prompt": "P", "completion": "C", "template_id": "t", "chunk_id": "c1"},
+        {"id": "c1", "text": "x"},
+    )
+    provider.paraphrase_preference(
+        {"prompt": "P", "chosen": "C", "rejected": "R", "template_id": "t",
+         "chunk_id": "c1"},
+        {"id": "c1", "text": "x"},
+    )
+    rows = [json.loads(l) for l in tel.read_text().splitlines() if l.strip()]
+    assert len(rows) == 2
+    kinds = sorted(r["kind"] for r in rows)
+    assert kinds == ["instruction", "preference"]
