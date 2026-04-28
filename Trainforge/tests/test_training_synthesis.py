@@ -551,3 +551,30 @@ def test_run_synthesis_claude_session_without_dispatcher_fails_loud(tmp_path):
             seed=11,
             dispatcher=None,  # the failure case
         )
+
+
+def test_run_synthesis_claude_session_respects_max_dispatches(tmp_path):
+    """Wave 110 / Phase D: run_synthesis stops dispatching once
+    max_dispatches is hit. Cache + partial output preserved."""
+    from Trainforge.generators._session_budget import SynthesisBudgetExceeded
+    from Trainforge.tests._synthesis_fakes import (
+        FakeLocalDispatcher, make_instruction_response, make_preference_response,
+    )
+
+    async def agent_tool(*, task_params, **_kw):
+        if task_params["kind"] == "instruction":
+            return make_instruction_response(prompt="P", completion="C")
+        return make_preference_response(prompt="P", chosen="C", rejected="R")
+
+    dispatcher = FakeLocalDispatcher(agent_tool=agent_tool)
+    working = _make_working_copy(tmp_path)
+
+    with pytest.raises(SynthesisBudgetExceeded) as ei:
+        run_synthesis(
+            corpus_dir=working, course_code="MINI_TRAINING_101",
+            provider="claude_session", seed=11,
+            dispatcher=dispatcher,
+            max_dispatches=1,
+        )
+    assert ei.value.max_dispatches == 1
+    assert ei.value.dispatched == 1
