@@ -548,33 +548,36 @@ class TrainingRunner:
         )
 
     def _decide_run_dpo(self) -> tuple[bool, str]:
-        """Gate the optional DPO chain on the size of preference_pairs.jsonl.
-
-        Pre-Wave-91 we don't yet have an eval harness signaling whether
-        DPO improves the run, so the decision is gated on data
-        availability: <10 pairs is too few for stable DPO and we skip.
-        """
+        """Gate the optional DPO chain on high-signal preference pairs."""
         pref_path = self.course_dir / "training_specs" / "preference_pairs.jsonl"
         instr_path = self.course_dir / "training_specs" / "instruction_pairs.jsonl"
         pair_count = _count_jsonl_records(pref_path)
+        filtered_count = _count_dpo_eligible_records(
+            pref_path,
+            str(self.config.dpo_preference_filter),
+        )
+        min_pairs = int(self.config.min_dpo_pairs)
         instr_count = _count_jsonl_records(instr_path)
-        if pair_count < 10:
+        if filtered_count < min_pairs:
             return False, (
-                f"Preference pair count={pair_count} for course "
-                f"{self.course_slug!r} is below the minimum 10 required for "
-                f"stable DPO (SFT corpus={instr_count} pairs, base="
+                f"Filtered DPO preference pair count={filtered_count} "
+                f"(raw={pair_count}, filter={self.config.dpo_preference_filter!r}) "
+                f"for course {self.course_slug!r} is below min_dpo_pairs="
+                f"{min_pairs} (SFT corpus={instr_count} pairs, base="
                 f"{self.base_model!r}). Running SFT-only with "
                 f"learning_rate={self.config.learning_rate}, epochs="
                 f"{self.config.epochs}, lora_rank={self.config.lora_rank}; "
                 f"DPO chain skipped (dry_run={self.dry_run})."
             )
         return True, (
-            f"Preference pair count={pair_count} ≥ 10 for course "
-            f"{self.course_slug!r} (SFT corpus={instr_count} pairs, base="
-            f"{self.base_model!r}); chaining DPO after SFT at "
+            f"Filtered DPO preference pair count={filtered_count} "
+            f"(raw={pair_count}, filter={self.config.dpo_preference_filter!r}) "
+            f"meets min_dpo_pairs={min_pairs} for course {self.course_slug!r} "
+            f"(SFT corpus={instr_count} pairs, base={self.base_model!r}); "
+            f"chaining DPO after SFT at "
             f"learning_rate={self.config.learning_rate}, epochs="
             f"{self.config.epochs}, lora_rank={self.config.lora_rank} "
-            f"to learn the misconception → correction preference signal "
+            f"to learn the curated misconception/correction preference signal "
             f"(dry_run={self.dry_run})."
         )
 
@@ -587,6 +590,10 @@ class TrainingRunner:
         pref_count = _count_jsonl_records(
             self.course_dir / "training_specs" / "preference_pairs.jsonl"
         )
+        filtered_pref_count = _count_dpo_eligible_records(
+            self.course_dir / "training_specs" / "preference_pairs.jsonl",
+            str(self.config.dpo_preference_filter),
+        )
         instr_count = _count_jsonl_records(
             self.course_dir / "training_specs" / "instruction_pairs.jsonl"
         )
@@ -598,13 +605,16 @@ class TrainingRunner:
             rationale=rationale,
             alternatives_considered=[
                 f"Force DPO regardless of pair count "
-                f"(currently {pref_count}): rejected — TRL/DPO requires "
-                f"≥10 pairs for stable preference gradients on "
-                f"{self.base_model!r}.",
+                f"(raw={pref_count}, filtered={filtered_pref_count}): "
+                f"rejected — this run requires min_dpo_pairs="
+                f"{self.config.min_dpo_pairs} after the "
+                f"{self.config.dpo_preference_filter!r} filter for stable "
+                f"preference gradients on {self.base_model!r}.",
                 f"Skip DPO unconditionally on {self.course_slug!r} "
                 f"({instr_count} SFT pairs / {pref_count} preference pairs): "
-                f"rejected — wastes the misconception → correction signal "
-                f"the synthesizer emitted whenever pair_count ≥ 10.",
+                f"rejected when filtered count={filtered_pref_count} clears "
+                f"the configured threshold because it wastes the curated "
+                f"misconception/correction signal.",
             ],
         )
 
@@ -710,6 +720,7 @@ class TrainingRunner:
         import os
 
         from Trainforge.eval.adapter_callable import AdapterCallable
+        from Trainforge.eval.eval_config import load_eval_config
         from Trainforge.eval.hf_model_index import write_hf_readme
         from Trainforge.eval.slm_eval_harness import SLMEvalHarness
 
@@ -721,17 +732,33 @@ class TrainingRunner:
         # The adapter file lives at run_dir/adapter_model.safetensors;
         # AdapterCallable wants the directory.
         adapter_dir = Path(adapter_path).parent if Path(adapter_path).is_file() else Path(adapter_path)
+        course_path = self.course_dir
+        loaded_eval_config = load_eval_config(course_path)
+        eval_cfg = loaded_eval_config.config
 
         callable_kwargs: Dict[str, Any] = {
             "base_model_short_name": self.spec.name,
+            "max_new_tokens": int(eval_cfg.get("max_new_tokens", 256)),
+            "temperature": float(eval_cfg.get("temperature", 0.0)),
+            "top_p": float(eval_cfg.get("top_p", 1.0)),
+            "seed": int(eval_cfg.get("seed", self.config.seed)),
+            "revision": self.spec.default_revision,
         }
+        logger.info(
+            "TrainingRunner: eval generation config loaded from %s "
+            "(max_new_tokens=%s, temperature=%s, top_p=%s, seed=%s).",
+            loaded_eval_config.config_path,
+            callable_kwargs["max_new_tokens"],
+            callable_kwargs["temperature"],
+            callable_kwargs["top_p"],
+            callable_kwargs["seed"],
+        )
         adapter_callable = AdapterCallable(
             adapter_dir=adapter_dir,
             base_model_repo=self.spec.huggingface_repo,
             **callable_kwargs,
         )
 
-        course_path = self.course_dir
         harness = SLMEvalHarness(
             course_path=course_path,
             model_callable=adapter_callable,
@@ -843,6 +870,32 @@ def _count_jsonl_records(path: Path) -> int:
     with path.open("r", encoding="utf-8") as fh:
         for line in fh:
             if line.strip():
+                count += 1
+    return count
+
+
+def _count_dpo_eligible_records(path: Path, mode: str) -> int:
+    if not path.exists():
+        return 0
+    if mode in ("", "all", None):
+        return _count_jsonl_records(path)
+    if mode != "editorial_or_misconception":
+        return 0
+    count = 0
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            source = str(rec.get("source") or rec.get("rejected_source") or "")
+            if rec.get("misconception_id") or source in {
+                "misconception",
+                "misconception_editorial",
+            }:
                 count += 1
     return count
 

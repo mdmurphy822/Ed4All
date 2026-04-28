@@ -40,6 +40,7 @@ from Trainforge.eval.evidence_trace import (
     classify_failure_mode,
     extract_citations,
 )
+from Trainforge.eval.chunk_ids import chunk_ids_match, is_chunk_id, normalize_chunk_id
 
 
 logger = logging.getLogger(__name__)
@@ -429,7 +430,7 @@ class AblationRunner:
             if ground_truth is None:
                 edge = probe.get("edge") or {}
                 src = edge.get("source") if isinstance(edge, dict) else None
-                if isinstance(src, str) and src.startswith("chunk_"):
+                if is_chunk_id(src):
                     ground_truth = src
             chunk_ids = [
                 str(c.get("chunk_id"))
@@ -442,9 +443,10 @@ class AblationRunner:
             # diagnostics light up.
             cited_chunk_ids = probe.get("cited_chunk_ids") or []
             retrieved_at_top_k = (
-                ground_truth is not None and (
-                    ground_truth in chunk_ids
-                    or ground_truth in cited_chunk_ids
+                ground_truth is not None
+                and any(
+                    chunk_ids_match(ground_truth, candidate)
+                    for candidate in [*chunk_ids, *cited_chunk_ids]
                 )
             )
             response = str(probe.get("response", ""))
@@ -452,13 +454,16 @@ class AblationRunner:
             if cited_chunk_ids and not citations:
                 citations = list(cited_chunk_ids)
             cited_correct = (
-                ground_truth is not None and ground_truth in citations
+                ground_truth is not None
+                and any(chunk_ids_match(ground_truth, c) for c in citations)
             )
             answer_correct = bool(
                 probe.get("correct", probe.get("answer_correct", False))
             )
             model_used_context = bool(citations) or any(
-                cid in response for cid in chunk_ids
+                cid in response
+                or ((norm := normalize_chunk_id(cid)) is not None and norm in response)
+                for cid in chunk_ids
             )
             failure_mode = classify_failure_mode(
                 retrieved_at_top_k=retrieved_at_top_k,

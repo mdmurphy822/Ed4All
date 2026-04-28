@@ -23,6 +23,7 @@ decides whether to drop or keep.
 from __future__ import annotations
 
 import hashlib
+import html
 import logging
 import random
 import re
@@ -125,8 +126,28 @@ def _strip_html(text: str) -> str:
     if not text:
         return ""
     s = _HTML_TAG_RE.sub(" ", text)
+    s = html.unescape(s)
     s = _WHITESPACE_RE.sub(" ", s)
     return s.strip()
+
+
+def _clean_summary(text: str) -> str:
+    """Return a compact factual summary suitable for a training target."""
+    summary = _strip_html(text)
+    summary = re.sub(r"^(?:CO|TO)-\d+:\s*", "", summary)
+    return summary.strip()
+
+
+def _trim_completion(text: str, max_len: int = COMPLETION_MAX) -> str:
+    """Trim long target text on a sentence boundary when possible."""
+    text = _WHITESPACE_RE.sub(" ", str(text or "")).strip()
+    if len(text) <= max_len:
+        return text
+    hard = text[:max_len]
+    last_period = hard.rfind(". ")
+    if last_period > COMPLETION_MIN:
+        return hard[:last_period + 1].strip()
+    return hard.rstrip() + "..."
 
 
 def _contains_verbatim_span(prompt: str, chunk_text: str, max_span: int = MAX_VERBATIM_SPAN) -> bool:
@@ -209,21 +230,27 @@ def _build_completion(chunk: Dict[str, Any], topic: str, bloom: str, content_typ
     """
     parts: List[str] = []
 
-    key_terms = chunk.get("key_terms") or []
-    if key_terms and isinstance(key_terms[0], dict):
-        kt = key_terms[0]
-        term = str(kt.get("term", "")).strip()
-        definition = str(kt.get("definition", "")).strip()
-        if term and definition:
-            # Paraphrase envelope: wrap the definition in a declarative frame.
-            parts.append(f"The central idea behind {topic} is captured by the term '{term}'. {definition}")
-        elif term:
-            parts.append(f"The central idea behind {topic} is captured by the term '{term}'.")
+    summary = _clean_summary(str(chunk.get("summary") or ""))
+    if summary:
+        parts.append(summary)
+    else:
+        key_terms = chunk.get("key_terms") or []
+        if key_terms and isinstance(key_terms[0], dict):
+            kt = key_terms[0]
+            term = str(kt.get("term", "")).strip()
+            definition = _strip_html(str(kt.get("definition", "")).strip())
+            if term and definition:
+                parts.append(f"{term} is the key term for {topic}. {definition}")
+            elif term:
+                parts.append(f"{term} is the key term for {topic}.")
 
-    tags = [str(t) for t in (chunk.get("concept_tags") or []) if t]
+    tags = [str(t).replace("-", " ") for t in (chunk.get("concept_tags") or []) if t]
     if tags and not parts:
         joined = ", ".join(tags[:3])
-        parts.append(f"The treatment of {topic} draws on the related concepts {joined}.")
+        parts.append(
+            f"{topic} should be explained through the concrete RDF/SHACL role "
+            f"of {joined}, not just by listing related labels."
+        )
 
     # Add a bloom-flavored closing sentence so completion length and tone vary.
     bloom_tails = {
@@ -236,7 +263,6 @@ def _build_completion(chunk: Dict[str, Any], topic: str, bloom: str, content_typ
     }
     parts.append(bloom_tails.get(bloom, bloom_tails["understand"]))
 
-    # If still too short, add a content-type-specific tail.
     completion = " ".join(parts).strip()
     if len(completion) < COMPLETION_MIN:
         completion += (
@@ -244,14 +270,7 @@ def _build_completion(chunk: Dict[str, Any], topic: str, bloom: str, content_typ
             f"which shapes how the idea should be used and assessed."
         )
 
-    # Soft-cap at COMPLETION_MAX: trim on a sentence boundary if possible.
-    if len(completion) > COMPLETION_MAX:
-        hard = completion[:COMPLETION_MAX]
-        last_period = hard.rfind(". ")
-        if last_period > COMPLETION_MIN:
-            completion = hard[:last_period + 1]
-        else:
-            completion = hard.rstrip() + "..."
+    completion = _trim_completion(completion)
 
     # Deterministic micro-variation so same-seed+different-chunk pairs differ
     # even when everything else collapses to the same template.

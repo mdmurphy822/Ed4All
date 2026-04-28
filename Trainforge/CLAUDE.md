@@ -287,7 +287,7 @@ Training is a **post-import LibV2 stage**, not a step in `Trainforge/process_cou
 - Provenance hashes in `model_card.json` point at LibV2 paths (the auditable surface), not at transient runtime files.
 - The trainer never mutates the source corpus; `models/` is purely additive alongside `corpus/`, `graph/`, `training_specs/`, `pedagogy/`, `quality/`.
 
-### The five waves (89-93)
+### Wave history
 
 | Wave | Commit | Surface |
 |------|--------|---------|
@@ -296,6 +296,7 @@ Training is a **post-import LibV2 stage**, not a step in `Trainforge/process_cou
 | 91   | `985dbfe` | Synthesis quality fixes — `_anthropic_provider.py`, graph-required default, `MinEdgeCountValidator`, `SynthesisDiversityValidator`, kg_quality threshold promotion. |
 | 92   | `0101ec4` | Eval — `Trainforge/eval/` submodule (5 layers × 3 tiers), harness wired into runner, `holdout_graph_hash` added to model card provenance. |
 | 93   | `dc06ba1` | LibV2 integration — `models/` subdir, `import_model`, `_pointers.json` promotion ledger, four new `libv2 models {list,promote,eval}` + `libv2 import-model` CLI subcommands. |
+| 106  | _this commit_ | Reproducibility wave — `Trainforge/eval/chunk_ids.py` for short-vs-full chunk-ID matching, eval-harness `_EvalProgressTracker` + `eval_progress.jsonl`, per-course `LibV2/courses/<slug>/eval/eval_config.yaml` propagation through `AdapterCallable` (top_p / seed / revision), instruction-variant + source-grounded citation framing in `synthesize_training.py`, expanded `TrainingConfig` (lora_dropout, target_modules, use_4bit, gradient_accumulation_steps, warmup_ratio, weight_decay, min_dpo_pairs, dpo_preference_filter, dpo_fail_hard), Qwen2.5-1.5B `default_revision` pin. |
 
 ### Training command
 
@@ -331,7 +332,30 @@ The `[training]` extra is **not** part of the default install — CPU-only dev i
 | `smollm2-1.7b` | `HuggingFaceTB/SmolLM2-1.7B` | Open. |
 | `phi-3.5-mini` | `microsoft/Phi-3.5-mini-instruct` | HF gated — set `HF_TOKEN`. |
 
-`format_instruction()` handles the chatml / llama3 / phi3 templates so `instruction_pairs.jsonl` formats correctly per base.
+`format_instruction()` handles the chatml / llama3 / phi3 templates so `instruction_pairs.jsonl` formats correctly per base. Each base entry also pins a `default_revision` HF commit SHA so a re-run on a different node loads the same weights — flowed through to both `AutoModelForCausalLM` and `AutoTokenizer` as `revision=`.
+
+### Training configuration knobs
+
+`Trainforge/training/configs/__init__.py::TrainingConfig` is the canonical surface. Per-base YAML (`Trainforge/training/configs/<short-name>.yaml`) materializes the production defaults; the model card persists every populated field for audit. Schema mirrored in `schemas/models/model_card.schema.json::training_config`.
+
+| Field | Default (qwen2.5-1.5b) | Purpose |
+|-------|------------------------|---------|
+| `lora_rank` | 16 | LoRA rank. |
+| `lora_alpha` | 32 | LoRA alpha. |
+| `lora_dropout` | 0.05 | LoRA dropout regularization (Wave 106). |
+| `target_modules` | `[q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]` | Modules to attach LoRA adapters to (Wave 106). |
+| `use_4bit` | `true` | Load base in nf4 + double-quant; `peft_trainer.py` auto-selects `paged_adamw_8bit` + bf16/fp16 (Wave 106). |
+| `batch_size` | 1 | Per-device train batch size. |
+| `gradient_accumulation_steps` | 4 | Effective batch = `batch_size × accumulation` (Wave 106). |
+| `epochs` | 3 | SFT and DPO epochs. |
+| `learning_rate` | 2e-4 | Peak LR. |
+| `warmup_ratio` | 0.03 | LR warmup fraction (Wave 106). |
+| `weight_decay` | 0.01 | AdamW weight decay (Wave 106). |
+| `max_seq_length` | 2048 | Truncation cap. |
+| `seed` | 42 | RNG seed; flowed into AdapterCallable for deterministic eval generation (Wave 106). |
+| `min_dpo_pairs` | 50 | Minimum **filtered** preference-pair count to enable DPO. Replaces the prior hardcoded `< 10` gate (Wave 106). |
+| `dpo_preference_filter` | `editorial_or_misconception` | Restricts the pairs admitted to DPO; `all` admits every preference pair (Wave 106). |
+| `dpo_fail_hard` | `true` | DPO insufficient-data fails the run. Set `false` to allow SFT-only fallback (Wave 106 — breaking change vs. silent fallback). |
 
 ### Provider configuration (synthesis)
 
@@ -343,6 +367,14 @@ The `[training]` extra is **not** part of the default install — CPU-only dev i
 | `anthropic` | Real-LLM paraphrase via `Trainforge/generators/_anthropic_provider.py`. Default model `claude-sonnet-4-6`; override via `ANTHROPIC_SYNTHESIS_MODEL`. Prompt-cached on chunk text. | `ANTHROPIC_API_KEY`. Fail-loud on absence (no silent mock fallback). |
 
 **Always pass `provider="anthropic"` for any run whose output you intend to actually train on.** Wave 90 ships the trainer; Wave 91 ships the real provider; running Wave 90's trainer against a Wave 91-default `mock` synthesizer would bake a template-recognizer adapter.
+
+**Instruction variants (Wave 106).** `--instruction-variants-per-chunk` (default `1`) controls how many SFT instruction pairs each eligible chunk emits. The frames live in `Trainforge/synthesize_training.py::_INSTRUCTION_PROMPT_FRAMES`:
+
+1. variant `0` — bare prompt, `requires_source_citation=False`.
+2. variant `1` — `"For an RDF/SHACL learner, "` prefix, `requires_source_citation=False`.
+3. variant `2` — `"Give a source-grounded answer: "` prefix + `"Cite the source chunk in brackets."` suffix; `requires_source_citation=True`; completion has `[<chunk_id>]` appended via `_attach_source_grounding()`.
+
+Caveat: with the default `1`, only variant `0` is ever emitted, so `requires_source_citation` is always `False` and no citations are appended. Only `--instruction-variants-per-chunk=3` produces the citation-trained variant. The variant logic is mock-agnostic — surface forms still anchor on whatever `template_id` the mock factory selected.
 
 ### Eval — 5 generic layers × 3 corpus-aware tiers
 
@@ -363,6 +395,12 @@ Eval lives in `Trainforge/eval/` and runs after training inside the runner. Two 
 | Tier 3 — Semantic | GPU inference | Embedding-or-Jaccard similarity (`key_term_precision.py`) + `interferes_with`-anchored disambiguation. |
 
 Profiles select the active matrix: `Trainforge/eval/configs/rdf_shacl.yaml` (all three tiers on) and `generic.yaml` (Tier 1 omitted — not every domain has machine-verifiable surfaces). The harness emits `eval_report.json` shaped to drop directly into `model_card.json::eval_scores`.
+
+**Eval observability + reproducibility (Wave 106).** Three additions tightened the eval surface:
+
+- **`eval_progress.jsonl`** — written next to `eval_report.json`. `Trainforge/eval/slm_eval_harness.py::_EvalProgressTracker` emits `stage_start`, `model_call`, `stage_end`, `run_end` events around each of the 8 evaluator/invariant chains. Lets a long-running adapter eval be monitored from another terminal without touching the harness.
+- **Per-course `eval_config.yaml`** — `LibV2/courses/<slug>/eval/eval_config.yaml` (`Trainforge/eval/eval_config.py::load_eval_config`) drives `AdapterCallable` generation parameters (`max_new_tokens`, `temperature`, `top_p`, `seed`, `revision`). The runner passes them explicitly so eval generation is deterministic across trainer invocations on different nodes.
+- **`Trainforge/eval/chunk_ids.py`** — canonical `is_chunk_id` / `normalize_chunk_id` / `chunk_ids_match` helpers. The eval harness, `source_match.py`, and `ablation_runner.py` use them so short (`chunk_00270`) and full (`rdf_shacl_551_chunk_00270`) corpus IDs compare equal. Closes the previous mismatch where `source_match` scored 0 on full-corpus IDs that pointed at the right chunk.
 
 ### Required validators (pre-training synthesis gates)
 

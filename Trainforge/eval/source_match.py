@@ -29,6 +29,12 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from Trainforge.eval.chunk_ids import (
+    chunk_ids_match,
+    is_chunk_id,
+    normalize_chunk_id,
+)
+
 
 logger = logging.getLogger(__name__)
 
@@ -58,14 +64,9 @@ _DEFAULT_CITATION_RE = (
 )
 
 
-_CHUNK_PREFIXES = ("chunk_",)
-
-
 def _is_chunk_id(value: Any) -> bool:
-    """True when ``value`` looks like a ``chunk_*`` identifier."""
-    if not isinstance(value, str):
-        return False
-    return any(value.startswith(p) for p in _CHUNK_PREFIXES)
+    """True when ``value`` looks like a course chunk identifier."""
+    return is_chunk_id(value)
 
 
 def _normalize_citation(raw: str) -> str:
@@ -77,12 +78,8 @@ def _normalize_citation(raw: str) -> str:
     against ground_truth ``chunk_00270``. We find the rightmost
     occurrence of ``chunk_`` and keep everything from there.
     """
-    if not raw:
-        return raw
-    idx = raw.rfind("chunk_")
-    if idx == -1:
-        return raw
-    return raw[idx:]
+    normalized = normalize_chunk_id(raw)
+    return normalized if normalized is not None else raw
 
 
 class SourceMatchEvaluator:
@@ -136,6 +133,7 @@ class SourceMatchEvaluator:
         for edge in chunk_anchored:
             probe = _format_probe(edge)
             ground_truth = edge.get("source")
+            ground_truth_normalized = _normalize_citation(str(ground_truth))
             try:
                 response = self.model_callable(probe)
             except Exception as exc:  # noqa: BLE001
@@ -145,6 +143,7 @@ class SourceMatchEvaluator:
                     "probe": probe,
                     "response": None,
                     "ground_truth_chunk_id": ground_truth,
+                    "ground_truth_chunk_id_normalized": ground_truth_normalized,
                     "cited_chunk_ids": [],
                     "score": 0.0,
                     "outcome": "error",
@@ -167,7 +166,9 @@ class SourceMatchEvaluator:
             cited_set = list(dict.fromkeys(
                 _normalize_citation(c) for c in cited_raw
             ))  # de-dupe, preserve order
-            score = 1.0 if ground_truth in cited_set else 0.0
+            score = 1.0 if any(
+                chunk_ids_match(ground_truth, cited) for cited in cited_set
+            ) else 0.0
             if score == 1.0:
                 matches += 1
             per_question.append({
@@ -175,6 +176,7 @@ class SourceMatchEvaluator:
                 "probe": probe,
                 "response": response,
                 "ground_truth_chunk_id": ground_truth,
+                "ground_truth_chunk_id_normalized": ground_truth_normalized,
                 "cited_chunk_ids": cited_set,
                 "score": score,
                 "outcome": "match" if score == 1.0 else "miss",

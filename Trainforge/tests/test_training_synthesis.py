@@ -181,6 +181,48 @@ def test_length_gates_enforced_on_factory_output():
             assert COMPLETION_MIN <= len(pref["rejected"]) <= COMPLETION_MAX
 
 
+def test_instruction_factory_prefers_chunk_summary_over_relation_scaffold():
+    chunk = {
+        "id": "chunk_summary_01",
+        "text": "RDF statements combine into graphs and preserve meaning under merge.",
+        "summary": "RDF triples combine into graphs so independently produced facts can be merged and queried together.",
+        "learning_outcome_refs": ["LO-1"],
+        "concept_tags": ["rdf", "triple", "graph"],
+        "bloom_level": "understand",
+        "chunk_type": "explanation",
+    }
+    result = synthesize_instruction_pair(chunk, seed=23)
+    assert result.pair is not None
+    completion = result.pair["completion"]
+    assert "RDF triples combine into graphs" in completion
+    assert "related concepts" not in completion.lower()
+
+
+def test_preference_factory_uses_authored_misconception_correction():
+    chunk = {
+        "id": "chunk_pref_01",
+        "text": "RDFS describes entailments. SHACL validates closed-world constraints.",
+        "summary": "RDFS publishes vocabulary meaning while SHACL checks data against explicit constraints.",
+        "learning_outcome_refs": ["LO-1"],
+        "concept_tags": ["rdfs", "shacl"],
+        "misconceptions": [
+            {
+                "misconception": "RDFS domain declarations reject bad data like a schema validator.",
+                "correction": (
+                    "RDFS domain declarations infer class membership; SHACL is the tool "
+                    "that validates data against explicit constraints."
+                ),
+                "bloom_level": "understand",
+            },
+        ],
+    }
+    result = synthesize_preference_pair(chunk, seed=23)
+    assert result.pair is not None
+    assert result.source == "misconception"
+    assert "RDFS domain declarations infer class membership" in result.pair["chosen"]
+    assert result.pair["source"] == "misconception"
+
+
 def test_malformed_pair_rejected_with_diagnostic():
     """A chunk that cannot pass the eligibility filter returns pair=None
     with a clear quality diagnostic, not an exception."""
@@ -248,6 +290,59 @@ def test_emitted_pairs_validate_against_schemas(tmp_path):
             jsonschema.validate(rec, pref_schema)
         except jsonschema.ValidationError as e:
             pytest.fail(f"Preference pair {i} failed schema: {e.message}")
+
+
+def test_editorial_misconception_dpo_pairs_validate_against_schema(tmp_path):
+    working = _make_working_copy(tmp_path)
+    run_synthesis(
+        corpus_dir=working,
+        course_code="MINI_TRAINING_101",
+        provider="mock",
+        seed=17,
+        include_dpo_from_misconceptions=True,
+    )
+
+    pref_schema = _load_schema("knowledge/preference_pair.schema.json")
+    pref = _load_jsonl(working / "training_specs" / "preference_pairs.jsonl")
+    editorial = [r for r in pref if r.get("source") == "misconception_editorial"]
+    assert editorial, "Fixture produced no editorial misconception DPO pairs"
+    for i, rec in enumerate(editorial):
+        try:
+            jsonschema.validate(rec, pref_schema)
+        except jsonschema.ValidationError as e:
+            pytest.fail(f"Editorial DPO pair {i} failed schema: {e.message}")
+
+
+def test_stage_attaches_source_grounding_and_citations(tmp_path):
+    working = _make_working_copy(tmp_path)
+    run_synthesis(
+        corpus_dir=working,
+        course_code="MINI_TRAINING_101",
+        provider="mock",
+        seed=17,
+        instruction_variants_per_chunk=3,
+    )
+
+    inst = _load_jsonl(working / "training_specs" / "instruction_pairs.jsonl")
+    pref = _load_jsonl(working / "training_specs" / "preference_pairs.jsonl")
+    assert inst and pref
+
+    first_inst = inst[0]
+    assert first_inst["source_chunk_id"] == first_inst["chunk_id"]
+    assert first_inst["source_citation"] == f"[{first_inst['chunk_id']}]"
+    assert isinstance(first_inst["source_references"], list)
+    assert first_inst["source_citation"] not in first_inst["completion"]
+    assert "cite the source chunk" not in first_inst["prompt"].lower()
+
+    cited_inst = next(r for r in inst if r.get("requires_source_citation"))
+    assert cited_inst["instruction_variant"] == 2
+    assert cited_inst["source_citation"] in cited_inst["completion"]
+    assert "cite the source chunk" in cited_inst["prompt"].lower()
+
+    first_pref = pref[0]
+    assert first_pref["source_chunk_id"] == first_pref["chunk_id"]
+    assert first_pref["source_citation"] not in first_pref["chosen"]
+    assert "cite the source chunk" not in first_pref["prompt"].lower()
 
 
 # ---------------------------------------------------------------------------

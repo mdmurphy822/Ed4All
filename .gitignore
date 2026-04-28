@@ -151,3 +151,6 @@ inputs/*
 
 # Ad-hoc pipeline testruns (gitignored)
 testruns/
+
+# Codex CLI sentinel — empty marker file the agent leaves; not project state
+.codex

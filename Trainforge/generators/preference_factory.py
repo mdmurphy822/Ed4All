@@ -21,6 +21,7 @@ Design constraints (Worker C plan):
 from __future__ import annotations
 
 import hashlib
+import html
 import logging
 import random
 import re
@@ -84,7 +85,18 @@ def _strip_html(text: str) -> str:
     if not text:
         return ""
     s = _HTML_TAG_RE.sub(" ", text)
+    s = html.unescape(s)
     return _WHITESPACE_RE.sub(" ", s).strip()
+
+
+def _clean_answer_text(text: str) -> str:
+    cleaned = _strip_html(text)
+    cleaned = re.sub(r"^(?:CO|TO)-\d+:\s*", "", cleaned)
+    return cleaned.strip()
+
+
+def _looks_like_fragment(text: str) -> bool:
+    return str(text or "").strip().endswith(":")
 
 
 def _contains_verbatim_span(prompt: str, chunk_text: str, max_span: int = MAX_VERBATIM_SPAN) -> bool:
@@ -193,25 +205,46 @@ def _clamp_length(text: str, lo: int, hi: int, pad_hint: str) -> str:
 # Chosen/Rejected builders
 # ---------------------------------------------------------------------------
 
-def _build_chosen(chunk: Dict[str, Any], topic: str) -> str:
+def _build_chosen(
+    chunk: Dict[str, Any],
+    topic: str,
+    misconception: Optional[Dict[str, Any]] = None,
+) -> str:
     """Build the preferred (chosen) completion -- grounded and correct."""
     parts: List[str] = []
 
+    if misconception:
+        correction = _clean_answer_text(str(misconception.get("correction", "")))
+        if correction and not _looks_like_fragment(correction):
+            return _clamp_length(
+                correction,
+                COMPLETION_MIN,
+                COMPLETION_MAX,
+                pad_hint=(
+                    f"This correction matters for {topic} because it prevents "
+                    f"the learner from applying the wrong mental model."
+                ),
+            )
+
+    summary = _clean_answer_text(str(chunk.get("summary") or ""))
+    if summary:
+        parts.append(summary)
+
     key_terms = chunk.get("key_terms") or []
-    if key_terms and isinstance(key_terms[0], dict):
+    if not parts and key_terms and isinstance(key_terms[0], dict):
         kt = key_terms[0]
         term = str(kt.get("term", "")).strip()
-        definition = str(kt.get("definition", "")).strip()
+        definition = _clean_answer_text(str(kt.get("definition", "")).strip())
         if term and definition:
-            parts.append(f"The idea behind {topic} is best captured by '{term}': {definition}")
+            parts.append(f"{term} is the key term for {topic}: {definition}")
         elif term:
-            parts.append(f"The idea behind {topic} centres on '{term}'.")
+            parts.append(f"{term} is the key term for {topic}.")
 
     tags = [str(t) for t in (chunk.get("concept_tags") or []) if t]
     if tags and not parts:
         parts.append(
-            f"The idea behind {topic} is grounded in the related concepts "
-            f"{', '.join(tags[:3])}, and is handled carefully in the course material."
+            f"{topic} should be explained through the concrete RDF/SHACL role "
+            f"of {', '.join(tags[:3])}, not just by listing related labels."
         )
 
     # Course-level grounding sentence so the answer reads as an explanation
@@ -359,25 +392,28 @@ def synthesize_preference_pair(
         # Rewrite topic generically to guarantee no leakage.
         prompt = prompt_template.format(topic=f"the concept in chunk {chunk_id}")
 
-    chosen = _build_chosen(chunk, topic)
-
     source: str = "rule_synthesized"
     mc_id: Optional[str] = None
     rejected: str = ""
+    selected_mc: Optional[Dict[str, Any]] = None
 
     if normalised_mcs:
         idx = max(0, min(misconception_index, len(normalised_mcs) - 1))
-        mc = normalised_mcs[idx]
-        rejected_candidate = _build_rejected_from_misconception(mc, topic)
+        selected_mc = normalised_mcs[idx]
+
+    chosen = _build_chosen(chunk, topic, selected_mc)
+
+    if selected_mc:
+        rejected_candidate = _build_rejected_from_misconception(selected_mc, topic)
         if rejected_candidate and rejected_candidate != chosen:
             rejected = rejected_candidate
             source = "misconception"
             mc_id = _misconception_id(
-                str(mc.get("misconception", "")),
-                str(mc.get("correction", "")),
+                str(selected_mc.get("misconception", "")),
+                str(selected_mc.get("correction", "")),
                 # Wave 69: bloom-level participates in the seed; lower-cased
                 # via the helper. Absent / None on pre-Wave-60 corpora.
-                str(mc.get("bloom_level") or ""),
+                str(selected_mc.get("bloom_level") or ""),
             )
 
     if not rejected or rejected == chosen:
@@ -442,6 +478,7 @@ def synthesize_preference_pair(
         "lo_refs": lo_refs,
         "seed": int(seed),
         "decision_capture_id": "",
+        "source": source,
         "rejected_source": source,
         "provider": provider,
         "schema_version": "v1",

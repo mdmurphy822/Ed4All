@@ -132,6 +132,34 @@ def test_harness_emits_eval_scores_compatible_report(tmp_path):
     jsonschema.validate(canonical, eval_subschema)
 
 
+def test_harness_writes_eval_progress_artifact(tmp_path):
+    course = _build_course(tmp_path, classification={
+        "subdomains": ["semantic web"],
+        "topics": ["rdf and shacl"],
+    })
+    output_path = course / "eval" / "custom_eval_report.json"
+    harness = SLMEvalHarness(
+        course_path=course,
+        model_callable=_mock_model,
+        max_holdout_questions=2,
+    )
+
+    report_path = harness.run_all(output_path=output_path)
+
+    progress_path = report_path.parent / "eval_progress.jsonl"
+    assert progress_path.exists()
+    records = [
+        json.loads(line)
+        for line in progress_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert records[0]["event"] == "run_start"
+    assert any(r["event"] == "stage_start" for r in records)
+    assert any(r["event"] == "model_call" for r in records)
+    assert records[-1]["event"] == "run_end"
+    assert records[-1]["total_calls"] > 0
+
+
 def test_harness_picks_generic_profile_for_non_semantic_corpus(tmp_path):
     course = _build_course(tmp_path, classification={
         "subdomains": ["mathematics"],

@@ -27,6 +27,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -44,6 +46,120 @@ _EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
 
 
 _CONFIG_DIR = Path(__file__).resolve().parent / "configs"
+
+
+def _progress_interval() -> int:
+    raw = os.environ.get("TRAINFORGE_EVAL_PROGRESS_EVERY", "25")
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning(
+            "SLMEvalHarness: invalid TRAINFORGE_EVAL_PROGRESS_EVERY=%r; "
+            "falling back to 25.",
+            raw,
+        )
+        return 25
+
+
+class _EvalProgressTracker:
+    """Small JSONL + logger progress sink for long adapter eval runs."""
+
+    def __init__(self, progress_path: Path, *, log_every: int) -> None:
+        self.progress_path = Path(progress_path)
+        self.log_every = max(1, int(log_every))
+        self.started_at = time.monotonic()
+        self.total_calls = 0
+        self.stage: Optional[str] = None
+        self.stage_started_at = self.started_at
+        self.stage_calls_started = 0
+        self.progress_path.parent.mkdir(parents=True, exist_ok=True)
+        self.progress_path.write_text("", encoding="utf-8")
+
+    def emit(self, event: str, **payload: Any) -> None:
+        row = {
+            "event": event,
+            "elapsed_seconds": round(time.monotonic() - self.started_at, 3),
+            "total_calls": self.total_calls,
+            **payload,
+        }
+        with self.progress_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, sort_keys=True) + "\n")
+
+    def begin_stage(self, name: str, *, expected_calls: Optional[int] = None) -> None:
+        self.stage = name
+        self.stage_started_at = time.monotonic()
+        self.stage_calls_started = self.total_calls
+        logger.info(
+            "SLMEvalHarness: starting %s%s",
+            name,
+            f" (~{expected_calls} model calls)" if expected_calls is not None else "",
+        )
+        self.emit("stage_start", stage=name, expected_calls=expected_calls)
+
+    def record_call(self) -> None:
+        self.total_calls += 1
+        stage_calls = self.total_calls - self.stage_calls_started
+        if self.total_calls == 1 or self.total_calls % self.log_every == 0:
+            elapsed = max(0.001, time.monotonic() - self.started_at)
+            calls_per_minute = self.total_calls / (elapsed / 60.0)
+            logger.info(
+                "SLMEvalHarness: eval progress %d model calls complete "
+                "(stage=%s, %.2f calls/min).",
+                self.total_calls,
+                self.stage or "unknown",
+                calls_per_minute,
+            )
+            self.emit(
+                "model_call",
+                stage=self.stage,
+                stage_calls=stage_calls,
+                calls_per_minute=round(calls_per_minute, 3),
+            )
+
+    def end_stage(self, name: str) -> None:
+        elapsed = time.monotonic() - self.stage_started_at
+        calls = self.total_calls - self.stage_calls_started
+        logger.info(
+            "SLMEvalHarness: finished %s (%d model calls, %.1fs).",
+            name,
+            calls,
+            elapsed,
+        )
+        self.emit(
+            "stage_end",
+            stage=name,
+            stage_calls=calls,
+            stage_elapsed_seconds=round(elapsed, 3),
+        )
+        self.stage = None
+
+    def finish(self) -> None:
+        elapsed = time.monotonic() - self.started_at
+        logger.info(
+            "SLMEvalHarness: eval complete (%d model calls, %.1fs).",
+            self.total_calls,
+            elapsed,
+        )
+        self.emit(
+            "run_end",
+            total_elapsed_seconds=round(elapsed, 3),
+        )
+
+
+class _ProgressModelCallable:
+    """Callable wrapper that records model-call progress."""
+
+    def __init__(self, wrapped: Callable[[str], str], tracker: _EvalProgressTracker) -> None:
+        self._wrapped = wrapped
+        self._tracker = tracker
+
+    def __call__(self, prompt: str) -> str:
+        response = self._wrapped(prompt)
+        self._tracker.record_call()
+        return response
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._wrapped, name)
 
 
 def _load_profile(name: str) -> Dict[str, Any]:
@@ -162,9 +278,24 @@ class SLMEvalHarness:
         from Trainforge.eval.key_term_precision import KeyTermPrecisionEvaluator
         from Trainforge.eval.disambiguation import DisambiguationEvaluator
         from Trainforge.eval.source_match import SourceMatchEvaluator
+        from Trainforge.eval.chunk_ids import is_chunk_id
 
         evaluators = self.profile.get("evaluators", {})
         caps = self.profile.get("caps", {})
+        if output_path is None:
+            output_path = self.course_path / "eval" / "eval_report.json"
+        output_path = Path(output_path)
+        progress = _EvalProgressTracker(
+            output_path.parent / "eval_progress.jsonl",
+            log_every=_progress_interval(),
+        )
+        model_callable = _ProgressModelCallable(self.model_callable, progress)
+        progress.emit(
+            "run_start",
+            profile=self.profile_name,
+            output_path=str(output_path),
+            progress_path=str(progress.progress_path),
+        )
 
         holdout_path = self.course_path / "eval" / "holdout_split.json"
         if not holdout_path.exists():
@@ -213,8 +344,26 @@ class SLMEvalHarness:
                 if k in evaluators:
                     evaluators[k] = (
                         {} if isinstance(evaluators[k], dict) else False
-                    )
+            )
             tier_2_status = "skipped: holdout_split is placeholder"
+
+        withheld_edges = (holdout_payload or {}).get("withheld_edges", []) or []
+
+        def _capped_count(items: List[Any], cap: Optional[int]) -> int:
+            if cap is None:
+                return len(items)
+            return min(len(items), int(cap))
+
+        def _run_stage(
+            name: str,
+            expected_calls: Optional[int],
+            fn: Callable[[], Any],
+        ) -> Any:
+            progress.begin_stage(name, expected_calls=expected_calls)
+            try:
+                return fn()
+            finally:
+                progress.end_stage(name)
 
         per_tier: Dict[str, Any] = {}
         per_invariant: Dict[str, Any] = {}
@@ -224,11 +373,15 @@ class SLMEvalHarness:
         faithfulness_per_question: List[Dict[str, Any]] = []
         if evaluators.get("faithfulness"):
             cap = self.max_holdout_questions or caps.get("max_holdout_questions")
-            fr = FaithfulnessEvaluator(
-                holdout_split=holdout_path,
-                model_callable=self.model_callable,
-                max_questions=cap,
-            ).evaluate()
+            fr = _run_stage(
+                "faithfulness",
+                _capped_count(withheld_edges, cap),
+                lambda: FaithfulnessEvaluator(
+                    holdout_split=holdout_path,
+                    model_callable=model_callable,
+                    max_questions=cap,
+                ).evaluate(),
+            )
             per_tier["faithfulness"] = {
                 "accuracy": fr["accuracy"],
                 "scored": fr["scored_total"],
@@ -242,7 +395,7 @@ class SLMEvalHarness:
             for r in fr.get("per_question_results", []) or []:
                 edge = r.get("edge", {}) or {}
                 source = edge.get("source")
-                gt_chunk = source if isinstance(source, str) and source.startswith("chunk_") else None
+                gt_chunk = source if is_chunk_id(source) else None
                 faithfulness_per_question.append({
                     "probe": r.get("probe", ""),
                     "response": r.get("response") or "",
@@ -265,10 +418,10 @@ class SLMEvalHarness:
                 edge = p.get("edge") or {}
                 source = edge.get("source") if isinstance(edge, dict) else None
                 gt_chunk = (
-                    source if isinstance(source, str) and source.startswith("chunk_")
+                    source if is_chunk_id(source)
                     else (
                         p.get("chunk_id")
-                        if isinstance(p.get("chunk_id"), str) and p["chunk_id"].startswith("chunk_")
+                        if is_chunk_id(p.get("chunk_id"))
                         else None
                     )
                 )
@@ -283,23 +436,37 @@ class SLMEvalHarness:
                 })
 
         if inv_cfg.get("prerequisite_order"):
-            r = PrerequisiteOrderInvariant(
-                self.course_path,
-                max_prompts=caps.get("max_invariant_prompts", 30),
-            ).evaluate(self.model_callable)
+            r = _run_stage(
+                "invariant:prerequisite_order",
+                None,
+                lambda: PrerequisiteOrderInvariant(
+                    self.course_path,
+                    max_prompts=caps.get("max_invariant_prompts", 30),
+                ).evaluate(model_callable),
+            )
             per_invariant["prerequisite_order"] = r
             invariant_pass_rates.append(r["pass_rate"])
             _collect_invariant_probes("prerequisite_order", r)
         if inv_cfg.get("bloom_level"):
-            r = BloomLevelInvariant(
-                self.course_path,
-                max_per_level=max(2, caps.get("max_invariant_prompts", 30) // 6),
-            ).evaluate(self.model_callable)
+            r = _run_stage(
+                "invariant:bloom_level",
+                None,
+                lambda: BloomLevelInvariant(
+                    self.course_path,
+                    max_per_level=max(2, caps.get("max_invariant_prompts", 30) // 6),
+                ).evaluate(model_callable),
+            )
             per_invariant["bloom_level"] = r
             invariant_pass_rates.append(r["pass_rate"])
             _collect_invariant_probes("bloom_level", r)
         if inv_cfg.get("misconception_rejection"):
-            r = MisconceptionRejectionInvariant(self.course_path).evaluate(self.model_callable)
+            r = _run_stage(
+                "invariant:misconception_rejection",
+                None,
+                lambda: MisconceptionRejectionInvariant(self.course_path).evaluate(
+                    model_callable,
+                ),
+            )
             per_invariant["misconception_rejection"] = r
             invariant_pass_rates.append(r["pass_rate"])
             _collect_invariant_probes("misconception_rejection", r)
@@ -313,11 +480,15 @@ class SLMEvalHarness:
         calibration_ece: Optional[float] = None
         if evaluators.get("calibration"):
             cap = self.max_holdout_questions or caps.get("max_holdout_questions")
-            ce = CalibrationEvaluator(
-                holdout_split=holdout_path,
-                model_callable=self.model_callable,
-                max_questions=cap,
-            ).evaluate()
+            ce = _run_stage(
+                "calibration",
+                _capped_count(withheld_edges, cap),
+                lambda: CalibrationEvaluator(
+                    holdout_split=holdout_path,
+                    model_callable=model_callable,
+                    max_questions=cap,
+                ).evaluate(),
+            )
             calibration_ece = ce["ece"]
             per_tier["calibration"] = {
                 "ece": ce["ece"],
@@ -328,16 +499,28 @@ class SLMEvalHarness:
         # --- Baseline comparator (Layer 4) ------------------------ #
         baseline_delta: Optional[float] = None
         if evaluators.get("baseline_compare") and self.base_callable is not None:
-            baseline_delta = self._run_baseline_compare(holdout_path)
+            cap = self.max_holdout_questions or caps.get("max_holdout_questions")
+            baseline_delta = _run_stage(
+                "baseline_compare",
+                _capped_count(withheld_edges, cap),
+                lambda: self._run_baseline_compare(
+                    holdout_path,
+                    model_callable=model_callable,
+                ),
+            )
             per_tier["baseline_delta"] = baseline_delta
 
         # --- Tier 3: key-term precision --------------------------- #
         if evaluators.get("key_term_precision"):
-            kt = KeyTermPrecisionEvaluator(
-                course_path=self.course_path,
-                model_callable=self.model_callable,
-                max_terms=caps.get("max_key_terms", 50),
-            ).evaluate()
+            kt = _run_stage(
+                "key_term_precision",
+                caps.get("max_key_terms", 50),
+                lambda: KeyTermPrecisionEvaluator(
+                    course_path=self.course_path,
+                    model_callable=model_callable,
+                    max_terms=caps.get("max_key_terms", 50),
+                ).evaluate(),
+            )
             per_tier["key_term_precision"] = {
                 "avg_similarity": kt["avg_similarity"],
                 "required_element_precision": kt["required_element_precision"],
@@ -348,11 +531,15 @@ class SLMEvalHarness:
 
         # --- Tier 3: disambiguation ------------------------------- #
         if evaluators.get("disambiguation"):
-            dis = DisambiguationEvaluator(
-                course_path=self.course_path,
-                model_callable=self.model_callable,
-                max_pairs=caps.get("max_disambiguation_pairs", 50),
-            ).evaluate()
+            dis = _run_stage(
+                "disambiguation",
+                caps.get("max_disambiguation_pairs", 50),
+                lambda: DisambiguationEvaluator(
+                    course_path=self.course_path,
+                    model_callable=model_callable,
+                    max_pairs=caps.get("max_disambiguation_pairs", 50),
+                ).evaluate(),
+            )
             per_invariant["disambiguation"] = dis
             invariant_pass_rates.append(dis["pass_rate"])
 
@@ -361,11 +548,16 @@ class SLMEvalHarness:
         source_match_per_question: List[Dict[str, Any]] = []
         if evaluators.get("source_match"):
             cap = self.max_holdout_questions or caps.get("max_holdout_questions")
-            sm = SourceMatchEvaluator(
-                holdout_split=holdout_path,
-                model_callable=self.model_callable,
-                max_questions=cap,
-            ).evaluate()
+            chunk_edges = [e for e in withheld_edges if is_chunk_id(e.get("source"))]
+            sm = _run_stage(
+                "source_match",
+                _capped_count(chunk_edges, cap),
+                lambda: SourceMatchEvaluator(
+                    holdout_split=holdout_path,
+                    model_callable=model_callable,
+                    max_questions=cap,
+                ).evaluate(),
+            )
             source_match_score = sm["source_match_rate"]
             per_tier["source_match"] = {
                 "rate": sm["source_match_rate"],
@@ -415,7 +607,7 @@ class SLMEvalHarness:
         # callable is RAG-backed. Both BaseOnlyCallable / AdapterCallable
         # leave this attribute unset; RAGCallable exposes it as a
         # rolling mean over its retrieval calls.
-        mean_latency = getattr(self.model_callable, "mean_latency_ms", None)
+        mean_latency = getattr(model_callable, "mean_latency_ms", None)
 
         out_dict = report.to_dict()
         if per_question_all:
@@ -430,16 +622,20 @@ class SLMEvalHarness:
         # "ok" (default) or a "skipped: ..." reason.
         out_dict["tier_2_status"] = tier_2_status or "ok"
 
-        if output_path is None:
-            output_path = self.course_path / "eval" / "eval_report.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(
             json.dumps(out_dict, indent=2, sort_keys=True),
             encoding="utf-8",
         )
+        progress.finish()
         return output_path
 
-    def _run_baseline_compare(self, holdout_path: Path) -> float:
+    def _run_baseline_compare(
+        self,
+        holdout_path: Path,
+        *,
+        model_callable: Optional[Callable[[str], str]] = None,
+    ) -> float:
         """Compose probes from the holdout split and run paired delta."""
         from Trainforge.eval.baseline_compare import BaselineComparator
         from Trainforge.eval.faithfulness import _classify_response, _format_probe
@@ -458,7 +654,7 @@ class SLMEvalHarness:
         prompts = [(_format_probe(e), _score) for e in edges]
         cmp_result = BaselineComparator(
             base_callable=self.base_callable,  # type: ignore[arg-type]
-            trained_callable=self.model_callable,
+            trained_callable=model_callable or self.model_callable,
             prompts=prompts,
             bootstrap_iterations=self.profile.get("caps", {}).get(
                 "bootstrap_iterations", 1000,
