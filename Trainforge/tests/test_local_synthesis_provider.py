@@ -440,6 +440,142 @@ def test_decision_capture_fires_with_base_url_and_chunk_id_in_rationale(
     assert "http://my-rig:11434/v1" in decision
 
 
+# ---------------------------------------------------------------------------
+# Wave 113 hardening: json_mode + lenient JSON parse + strict directive
+# ---------------------------------------------------------------------------
+
+
+def test_local_provider_passes_json_mode_to_client(monkeypatch):
+    """Critical for 7B-class models: ``json_mode=True`` must flow into
+    the embedded client's request payload so Ollama's
+    JSON-grammar-constrained decoding fires on every call."""
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    paraphrased = json.dumps({
+        "prompt": (
+            "Recall the foundational concept introduced for topic X "
+            "in chapter one."
+        ),
+        "completion": (
+            "Topic X anchors every later chapter; recall its formal "
+            "definition before attempting application questions."
+        ),
+    })
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=_success_body(paraphrased))
+
+    client = _make_client(handler)
+    p = LocalSynthesisProvider(client=client)
+    # Direct check of the embedded client config.
+    assert p._oa_client._json_mode is True
+    p.paraphrase_instruction(_instruction_draft(), _chunk())
+    body = json.loads(seen[0].content.decode("utf-8"))
+    # Both fields land in the request: Ollama's top-level ``format``
+    # and OpenAI's ``response_format``.
+    assert body.get("format") == "json"
+    assert body.get("response_format") == {"type": "json_object"}
+
+
+def test_local_provider_recovers_from_markdown_fence_response(monkeypatch):
+    """Happy-path drift recovery: 7B model wraps its JSON in
+    ```json ... ``` despite the strict directive. Lenient extractor
+    strips the fence and the paraphrase succeeds."""
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    inner = json.dumps({
+        "prompt": (
+            "Recall the foundational concept introduced for topic X "
+            "in chapter one."
+        ),
+        "completion": (
+            "Topic X anchors every later chapter; recall its formal "
+            "definition before attempting application questions."
+        ),
+    })
+    drifted_response = f"```json\n{inner}\n```"
+    client = _client_yielding(
+        httpx.Response(200, json=_success_body(drifted_response)),
+    )
+    p = LocalSynthesisProvider(client=client)
+    out = p.paraphrase_instruction(_instruction_draft(), _chunk())
+    assert out["provider"] == "local"
+    assert "Recall the foundational" in out["prompt"]
+
+
+def test_local_provider_recovers_from_prose_drift(monkeypatch):
+    """Drift recovery: 7B model adds prose around the JSON despite
+    the directive. Lenient extractor finds the first balanced object."""
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    inner = json.dumps({
+        "prompt": (
+            "Recall the foundational concept introduced for topic X "
+            "in chapter one."
+        ),
+        "completion": (
+            "Topic X anchors every later chapter; recall its formal "
+            "definition before attempting application questions."
+        ),
+    })
+    drifted_response = f"Sure! Here is the JSON you asked for: {inner}\n\nHope this helps."
+    client = _client_yielding(
+        httpx.Response(200, json=_success_body(drifted_response)),
+    )
+    p = LocalSynthesisProvider(client=client)
+    out = p.paraphrase_instruction(_instruction_draft(), _chunk())
+    assert out["provider"] == "local"
+
+
+def test_local_provider_raises_after_lenient_retry_exhaustion(monkeypatch):
+    """After 3 unrecoverable responses, raise SynthesisProviderError
+    with ``code='json_parse_failed_after_lenient_retry'`` and a
+    truncated tail of the last response in the message — postmortem
+    visibility."""
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    bad_response = (
+        "I cannot help with that request, but here is some other "
+        "text that drifts off into natural language and does not "
+        "contain a JSON object at all. " * 4
+    ) + "DISTINCTIVE_TAIL_MARKER"
+    client = _client_yielding(
+        httpx.Response(200, json=_success_body(bad_response)),
+        httpx.Response(200, json=_success_body(bad_response)),
+        httpx.Response(200, json=_success_body(bad_response)),
+    )
+    p = LocalSynthesisProvider(client=client)
+    with patch("Trainforge.generators._together_provider.time.sleep"):
+        with pytest.raises(SynthesisProviderError) as excinfo:
+            p.paraphrase_instruction(_instruction_draft(), _chunk())
+    assert excinfo.value.code == "json_parse_failed_after_lenient_retry"
+    # Truncated tail of the last response surfaces in the message.
+    assert "DISTINCTIVE_TAIL_MARKER" in str(excinfo.value)
+
+
+def test_local_provider_prompt_contains_strict_json_directive():
+    """The strict-JSON directive must be appended to the user message
+    (NOT the system message — keeping the system message unchanged
+    preserves provider parity with Together / Anthropic)."""
+    user_text = LocalSynthesisProvider._render_instruction_user(
+        _instruction_draft(), "chunk_001"
+    )
+    # End-of-prompt directive, verbatim from the constant.
+    assert "RESPOND ONLY WITH A JSON OBJECT" in user_text
+    assert "Do not wrap in markdown" in user_text
+    assert "Do not add commentary" in user_text
+    # Both required keys explicitly enumerated.
+    assert '"prompt"' in user_text
+    assert '"completion"' in user_text
+
+    pref_user_text = LocalSynthesisProvider._render_preference_user(
+        _preference_draft(), "chunk_001"
+    )
+    assert "RESPOND ONLY WITH A JSON OBJECT" in pref_user_text
+    # All three preference keys explicitly enumerated.
+    assert '"prompt"' in pref_user_text
+    assert '"chosen"' in pref_user_text
+    assert '"rejected"' in pref_user_text
+
+
 def test_decision_capture_fires_on_preference_call(monkeypatch):
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     paraphrased = json.dumps({
