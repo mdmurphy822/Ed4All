@@ -148,6 +148,13 @@ class HoldoutBuilder:
         # edge isn't chunk-anchored (concept->concept edges).
         probes = self._build_probes(withheld)
 
+        # Wave 108 / Phase B: sample negative probes — (source, relation,
+        # target) tuples that DON'T exist in the graph. The correct
+        # ground-truth response is "no", which catches the yes-bias
+        # regression class (template-recognizer adapters trained on
+        # all-positive corpora answer "yes" to everything).
+        negative_probes = self._sample_negative_probes(edges, per_relation_summary)
+
         payload: Dict[str, Any] = {
             "course_slug": self.course_path.name,
             "seed": self.seed,
@@ -165,6 +172,7 @@ class HoldoutBuilder:
                 for e in withheld
             ],
             "probes": probes,
+            "negative_probes": negative_probes,
         }
 
         # Hash the canonicalised payload (without the hash field) so
@@ -299,6 +307,65 @@ class HoldoutBuilder:
                 "edge_type": rel,
             })
         return out
+
+    def _sample_negative_probes(
+        self,
+        edges: List[Dict[str, Any]],
+        per_relation_summary: Dict[str, Dict[str, int]],
+    ) -> List[Dict[str, Any]]:
+        """Wave 108 / Phase B: sample (source, relation, target) tuples
+        that DO NOT exist in the graph.
+
+        Count per relation matches the per-relation held-out count so
+        positive and negative probes are balanced. Strategy: for each
+        relation type with at least one edge, build the set of real
+        (source, target) pairs and the universe of (source, target)
+        candidates as the cartesian of seen sources and seen targets
+        for that relation. Sample candidates not in the real set.
+        Bound retries to avoid infinite loops on tiny graphs.
+        """
+        from collections import defaultdict
+        # +1 so negatives don't share the seed offset that withheld
+        # positives use; same graph + same seed -> deterministic.
+        rng = random.Random(self.seed + 1)
+        per_relation_real: Dict[str, set] = defaultdict(set)
+        per_relation_sources: Dict[str, set] = defaultdict(set)
+        per_relation_targets: Dict[str, set] = defaultdict(set)
+        for e in edges:
+            rt = e.get("relation_type")
+            s = e.get("source")
+            t = e.get("target")
+            if rt is None or s is None or t is None:
+                continue
+            per_relation_real[rt].add((s, t))
+            per_relation_sources[rt].add(s)
+            per_relation_targets[rt].add(t)
+
+        negatives: List[Dict[str, Any]] = []
+        for rt in sorted(per_relation_real.keys()):
+            target_count = per_relation_summary.get(rt, {}).get("held_out", 0)
+            if target_count <= 0:
+                continue
+            sources = sorted(per_relation_sources[rt])
+            targets = sorted(per_relation_targets[rt])
+            real = per_relation_real[rt]
+            seen_neg: set = set()
+            attempts = 0
+            max_attempts = max(target_count * 20, 200)
+            while len(seen_neg) < target_count and attempts < max_attempts:
+                attempts += 1
+                s = rng.choice(sources)
+                t = rng.choice(targets)
+                if (s, t) in real or (s, t) in seen_neg or s == t:
+                    continue
+                seen_neg.add((s, t))
+                negatives.append({
+                    "source": s,
+                    "target": t,
+                    "relation_type": rt,
+                    "ground_truth": "no",
+                })
+        return negatives
 
     def _resolve_output_path(self) -> Path:
         return self.course_path / "eval" / "holdout_split.json"

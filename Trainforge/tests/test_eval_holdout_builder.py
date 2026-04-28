@@ -255,3 +255,60 @@ def test_relation_type_field_not_type_field(tmp_path):
     assert split["edges_total"] == 2  # edges counted toward total
     assert split["edges_held_out"] == 0  # but none could be classified
     assert split["per_relation"] == {}
+
+
+def test_negative_probes_emitted_and_balanced(tmp_path) -> None:
+    """Wave 108 / Phase B: holdout_split.json must include a
+    negative_probes[] array whose tuples (source, relation, target)
+    are guaranteed NOT to appear anywhere in the graph's edges, so the
+    correct ground-truth response is 'no'.
+
+    Count must be balanced against the positive-probe count per
+    relation_type (within +/- 1 to allow for rounding)."""
+    import json
+    from Trainforge.eval.holdout_builder import HoldoutBuilder
+
+    course_dir = tmp_path / "courses" / "tst-101"
+    (course_dir / "graph").mkdir(parents=True)
+    (course_dir / "manifest.json").write_text("{}", encoding="utf-8")
+    graph = {
+        "nodes": [
+            {"id": "concept_a"}, {"id": "concept_b"}, {"id": "concept_c"},
+            {"id": "concept_d"}, {"id": "concept_e"}, {"id": "concept_f"},
+            {"id": "concept_g"}, {"id": "concept_h"}, {"id": "concept_i"},
+            {"id": "concept_j"},
+        ],
+        "edges": [
+            {"source": "concept_a", "target": "concept_b", "relation_type": "prerequisite_of"},
+            {"source": "concept_b", "target": "concept_c", "relation_type": "prerequisite_of"},
+            {"source": "concept_c", "target": "concept_d", "relation_type": "prerequisite_of"},
+            {"source": "concept_d", "target": "concept_e", "relation_type": "prerequisite_of"},
+            {"source": "concept_e", "target": "concept_f", "relation_type": "prerequisite_of"},
+            {"source": "concept_f", "target": "concept_g", "relation_type": "prerequisite_of"},
+            {"source": "concept_g", "target": "concept_h", "relation_type": "prerequisite_of"},
+            {"source": "concept_h", "target": "concept_i", "relation_type": "prerequisite_of"},
+            {"source": "concept_i", "target": "concept_j", "relation_type": "prerequisite_of"},
+            {"source": "concept_a", "target": "concept_c", "relation_type": "prerequisite_of"},
+        ],
+    }
+    (course_dir / "graph" / "pedagogy_graph.json").write_text(
+        json.dumps(graph), encoding="utf-8"
+    )
+
+    out = HoldoutBuilder(course_dir, holdout_pct=0.5, seed=7).build()
+    payload = json.loads(out.read_text(encoding="utf-8"))
+
+    neg = payload.get("negative_probes")
+    assert isinstance(neg, list) and len(neg) >= 1
+    n_pos = payload["edges_held_out"]
+    assert abs(len(neg) - n_pos) <= 1, (
+        f"negative count {len(neg)} not balanced with positive count {n_pos}"
+    )
+
+    real_edges = {
+        (e["source"], e["relation_type"], e["target"]) for e in graph["edges"]
+    }
+    for n in neg:
+        triple = (n["source"], n["relation_type"], n["target"])
+        assert triple not in real_edges, f"negative probe {triple} exists in graph"
+        assert n.get("ground_truth") == "no"
