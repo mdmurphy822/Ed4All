@@ -44,10 +44,8 @@ slightly more likely on a local server, 429 is essentially never.
 
 from __future__ import annotations
 
-import json as _json
 import logging
 import os
-import re as _re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -525,32 +523,6 @@ class LocalSynthesisProvider:
             f"'chosen', and 'rejected'."
             f"{cls._PREFERENCE_JSON_DIRECTIVE}"
         )
-
-    @staticmethod
-    def _parse_json(text: str) -> Dict[str, Any]:
-        if not text or not text.strip():
-            raise ValueError("empty response text")
-        s = text.strip()
-        fence = _re.match(r"^```(?:json)?\s*(.*?)\s*```$", s, _re.DOTALL)
-        if fence:
-            s = fence.group(1).strip()
-        try:
-            return _json.loads(s)
-        except _json.JSONDecodeError:
-            pass
-        start = s.find("{")
-        if start < 0:
-            raise ValueError("no JSON object in response")
-        depth = 0
-        for i, ch in enumerate(s[start:], start=start):
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    candidate = s[start:i + 1]
-                    return _json.loads(candidate)
-        raise ValueError("unbalanced JSON object in response")
 
     def _clamp(self, text: str, kind: str, *, chunk_id: Optional[str] = None) -> str:
         try:
