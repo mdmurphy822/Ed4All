@@ -42,6 +42,8 @@ _DEFAULT_THRESHOLDS = {
     "max_yes_rate": 0.85,
     "max_hallucination_rate": 0.50,
     "max_calibration_ece": 0.30,
+    # Wave 109 / Phase C: per-property accuracy floor.
+    "min_per_property_accuracy": 0.40,
 }
 
 
@@ -165,6 +167,33 @@ class EvalGatingValidator:
                 location=str(report_path),
             ))
 
+        # Wave 109 / Phase C: per-property accuracy gate. Skip
+        # properties with None accuracy (unscored — no probes matched
+        # the surface forms).
+        per_property = report.get("per_property_accuracy") or {}
+        min_pp = thresholds["min_per_property_accuracy"]
+        below_pp = []
+        for prop_id, score in per_property.items():
+            if score is None:
+                continue
+            score_f = _as_float(score)
+            if score_f is None:
+                continue
+            if score_f < min_pp:
+                below_pp.append((prop_id, score_f))
+        if below_pp:
+            details = "; ".join(f"{pid}={s:.3f}" for pid, s in below_pp)
+            issues.append(GateIssue(
+                severity="critical",
+                code="EVAL_PER_PROPERTY_BELOW_THRESHOLD",
+                message=(
+                    f"Per-property accuracy below {min_pp} threshold for: "
+                    f"{details}. Adapter has not learned at least one of "
+                    f"the declared properties; refusing to promote."
+                ),
+                location=str(report_path),
+            ))
+
         # --- Warning advisories ------------------------------------------
         hallucination = _as_float((report.get("metrics") or {}).get("hallucination_rate"))
         if hallucination is not None and hallucination > thresholds["max_hallucination_rate"]:
@@ -204,7 +233,8 @@ class EvalGatingValidator:
                     f"source_match={source_match} "
                     f"baseline_delta={baseline_delta} "
                     f"yes_rate={yes_rate} "
-                    f"negative_grounding_accuracy={neg}. "
+                    f"negative_grounding_accuracy={neg} "
+                    f"per_property={per_property}. "
                     f"Critical issues: {critical_count}; "
                     f"thresholds={thresholds}."
                 )
