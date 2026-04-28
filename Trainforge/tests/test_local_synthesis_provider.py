@@ -454,6 +454,9 @@ def test_decision_capture_fires_with_base_url_and_chunk_id_in_rationale(
     assert "chunk_001" in decision
     assert "http_retries=" in decision
     assert "http://my-rig:11434/v1" in decision
+    # Wave 115: rationale interpolates per-chunk pedagogical signals
+    assert "bloom_level=" in rationale
+    assert "concept_tags=" in rationale
 
 
 # ---------------------------------------------------------------------------
@@ -743,3 +746,45 @@ def test_local_provider_uses_slim_local_system_prompts():
     # the ``prompt`` key explicitly so the model sees the required
     # shape end-to-end.
     assert '{"prompt"' in _LOCAL_INSTRUCTION_SYSTEM_PROMPT
+
+
+def test_rationale_interpolates_chunk_bloom_and_concept_tags(monkeypatch):
+    """Wave 115: rationale string varies per-chunk so the decision
+    capture validator scores it 'proficient' rather than 'developing'."""
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    paraphrased = json.dumps({
+        "prompt": "Recall the foundational concept introduced for topic X in chapter one.",
+        "completion": (
+            "Topic X anchors every later chapter; recall its formal "
+            "definition before attempting application questions."
+        ),
+    })
+
+    captured: List[dict] = []
+
+    class _Capture:
+        def log_decision(self, **kwargs):
+            captured.append(kwargs)
+
+    client = _client_yielding(
+        httpx.Response(200, json=_success_body(paraphrased)),
+    )
+    p = LocalSynthesisProvider(client=client, capture=_Capture())
+
+    chunk_with_signals = {
+        "id": "chunk_001",
+        "text": "Topic X is the foundational concept.",
+        "learning_outcome_refs": ["TO-01"],
+        "bloom_level": "analyze",
+        "concept_tags": ["sh-datatype", "sh-class", "rdfs-subclassof", "owl-sameas"],
+    }
+    p.paraphrase_instruction(_instruction_draft(), chunk_with_signals)
+
+    assert len(captured) == 1
+    rationale = captured[0]["rationale"]
+    assert "bloom_level=analyze" in rationale
+    # Only the first 3 concept_tags interpolate (cap at 3 to bound length).
+    assert "sh-datatype" in rationale
+    assert "sh-class" in rationale
+    assert "rdfs-subclassof" in rationale
+    assert "owl-sameas" not in rationale
