@@ -610,6 +610,7 @@ def run_synthesis(
     cache_path: Optional[Path] = None,
     max_dispatches: Optional[int] = None,
     telemetry_path: Optional[Path] = None,
+    pilot_report_every: int = 20,
 ) -> SynthesisStats:
     """Run the full synthesis stage for one course output directory.
 
@@ -693,6 +694,24 @@ def run_synthesis(
     instruction_progress.parent.mkdir(parents=True, exist_ok=True)
     inst_progress_fh = instruction_progress.open("w", encoding="utf-8")
     pref_progress_fh = preference_progress.open("w", encoding="utf-8")
+
+    # Wave 117: load property manifest once for periodic pilot-report
+    # writes during the chunk loop. No-op when the course has no
+    # manifest — gracefully skip the feature rather than fail the run.
+    pilot_manifest = None
+    pilot_report_path = training_specs_dir / "pilot_report.md"
+    pilot_slug = slug or course_code or corpus_dir.name
+    if pilot_report_every and pilot_report_every > 0 and pilot_slug:
+        try:
+            from lib.ontology.property_manifest import load_property_manifest
+            pilot_manifest = load_property_manifest(pilot_slug)
+        except FileNotFoundError:
+            logger.info(
+                "Wave 117: no property manifest for course %r; skipping "
+                "incremental pilot_report.md writes.",
+                pilot_slug,
+            )
+            pilot_manifest = None
 
     # Validate stratification dimensions early so a typo fails loud rather
     # than silently degrading to no-op.
@@ -900,6 +919,12 @@ def run_synthesis(
         # SynthesisStats with capped_at_max_dispatches=True.
         # ``_SBE`` and ``_budget_exhausted_exc`` are hoisted above the
         # try-block (Wave 116) so the finally-block can reference them.
+
+        # Wave 117: count chunks fully processed (post both instruction
+        # + preference branches) so the periodic pilot_report.md writer
+        # snapshots a consistent view of all pairs from each chunk.
+        chunks_processed_counter = 0
+
         for idx, chunk in iter_chunks:
             if _budget_exhausted_exc is not None:
                 break
@@ -1037,6 +1062,50 @@ def run_synthesis(
                     )
                     pref_progress_fh.flush()
 
+            # Wave 117: every N processed chunks, regenerate the
+            # in-flight pilot_report.md so the operator running a
+            # multi-hour rebuild has live property-coverage /
+            # template-distribution visibility. Atomic tmp-and-rename
+            # write keeps a concurrent ``cat`` / ``less`` from
+            # observing a half-written file.
+            chunks_processed_counter += 1
+            if (
+                pilot_manifest is not None
+                and pilot_report_every > 0
+                and chunks_processed_counter % pilot_report_every == 0
+            ):
+                from Trainforge.scripts.pilot_report_helpers import (
+                    count_property_coverage_from_records,
+                    format_pilot_report,
+                    template_distribution_from_records,
+                    write_pilot_report_atomic,
+                )
+                _counts = count_property_coverage_from_records(
+                    instruction_records, pilot_manifest,
+                )
+                _templates = template_distribution_from_records(
+                    instruction_records,
+                )
+                _report = format_pilot_report(
+                    course_slug=pilot_slug,
+                    provider=provider,
+                    counts=_counts,
+                    manifest=pilot_manifest,
+                    templates=_templates,
+                    total_pairs=len(instruction_records),
+                    chunks_processed=chunks_processed_counter,
+                    chunks_total=len(iter_chunks),
+                    in_flight=True,
+                )
+                try:
+                    write_pilot_report_atomic(pilot_report_path, _report)
+                except OSError as exc:
+                    # Don't kill the run for a report-write failure —
+                    # the JSONL is the source of truth.
+                    logger.warning(
+                        "Wave 117: pilot_report.md write failed: %s", exc,
+                    )
+
         # --- Wave 77: misconception -> DPO pair augmentation -----------------
         # Emit one DPO pair per editorial (misconception, correction) entry
         # found on the eligible chunks. These augment the standard preference
@@ -1134,6 +1203,41 @@ def run_synthesis(
                 "%s and %s",
                 instruction_progress, preference_progress,
             )
+
+        # Wave 117: finalize pilot_report.md (in_flight=False) on every
+        # exit path (normal completion OR budget-cap break). The JSONL
+        # is the source of truth; this is the human-readable companion
+        # artifact.
+        if pilot_manifest is not None:
+            from Trainforge.scripts.pilot_report_helpers import (
+                count_property_coverage_from_records,
+                format_pilot_report,
+                template_distribution_from_records,
+                write_pilot_report_atomic,
+            )
+            _final_counts = count_property_coverage_from_records(
+                instruction_records, pilot_manifest,
+            )
+            _final_templates = template_distribution_from_records(
+                instruction_records,
+            )
+            _final_report = format_pilot_report(
+                course_slug=pilot_slug,
+                provider=provider,
+                counts=_final_counts,
+                manifest=pilot_manifest,
+                templates=_final_templates,
+                total_pairs=len(instruction_records),
+                chunks_processed=chunks_processed_counter,
+                chunks_total=len(iter_chunks),
+                in_flight=False,
+            )
+            try:
+                write_pilot_report_atomic(pilot_report_path, _final_report)
+            except OSError as exc:
+                logger.warning(
+                    "Wave 117: pilot_report.md final write failed: %s", exc,
+                )
 
         # --- Persist artifacts ------------------------------------------------
         # Default ordering: by chunk_id (deterministic, byte-stable across runs).
@@ -1354,6 +1458,7 @@ def run_synthesis_from_libv2(
     prereq_context_tokens: int = DEFAULT_PREREQ_CONTEXT_TOKENS,
     pedagogy_graph_path: Optional[Path] = None,
     instruction_variants_per_chunk: int = 1,
+    pilot_report_every: int = 20,
 ) -> SynthesisStats:
     """Run synthesis directly against a LibV2 course archive.
 
@@ -1410,6 +1515,7 @@ def run_synthesis_from_libv2(
         pedagogy_graph_path=pedagogy_graph_path,
         slug=slug,
         instruction_variants_per_chunk=instruction_variants_per_chunk,
+        pilot_report_every=pilot_report_every,
     )
 
 
@@ -1492,6 +1598,18 @@ def build_parser() -> argparse.ArgumentParser:
             "SynthesisBudgetExceeded; partial output is preserved in "
             "<corpus>/training_specs/.synthesis_cache.jsonl and the next "
             "run resumes for free."
+        ),
+    )
+    p.add_argument(
+        "--pilot-report-every",
+        type=int,
+        default=20,
+        help=(
+            "Wave 117: regenerate training_specs/pilot_report.md every N "
+            "processed chunks during the run, so the operator has live "
+            "property-coverage / template-distribution visibility. Set "
+            "to 0 to disable. No-op when the course has no property "
+            "manifest. Default: 20 chunks."
         ),
     )
     # Wave 77 additions
@@ -1629,6 +1747,8 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
         raise SystemExit(
             "--max-dispatches is only meaningful with --provider claude_session"
         )
+    # Wave 117: incremental pilot_report.md writes during the chunk loop.
+    pilot_report_every = int(getattr(args, "pilot_report_every", 20) or 0)
 
     if getattr(args, "slug", None):
         stats = run_synthesis_from_libv2(
@@ -1646,6 +1766,7 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             prereq_context_tokens=prereq_ctx_tokens,
             pedagogy_graph_path=pedagogy_path,
             instruction_variants_per_chunk=args.instruction_variants_per_chunk,
+            pilot_report_every=pilot_report_every,
         )
     else:
         if not args.course_code:
@@ -1669,6 +1790,7 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             pedagogy_graph_path=pedagogy_path,
             instruction_variants_per_chunk=args.instruction_variants_per_chunk,
             max_dispatches=max_dispatches,
+            pilot_report_every=pilot_report_every,
         )
 
     print("\n[Synthesis] Complete.")
