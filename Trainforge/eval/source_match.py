@@ -132,8 +132,20 @@ class SourceMatchEvaluator:
 
         for edge in chunk_anchored:
             probe = _format_probe(edge)
-            ground_truth = edge.get("source")
-            ground_truth_normalized = _normalize_citation(str(ground_truth))
+            # Wave 108 / Phase B: multi-chunk ground truth. Prefer the
+            # explicit set; fall back to edge.source for legacy splits.
+            gt_ids_raw = edge.get("ground_truth_chunk_ids")
+            if isinstance(gt_ids_raw, list) and gt_ids_raw:
+                ground_truth_ids = [str(g) for g in gt_ids_raw]
+            else:
+                ground_truth_ids = [str(edge.get("source"))]
+            ground_truth_normalized = [
+                _normalize_citation(g) for g in ground_truth_ids
+            ]
+            # Back-compat: keep the legacy singular fields for trace
+            # consumers that read them. The first element is the canonical
+            # ground truth (the held-out edge's source).
+            ground_truth = ground_truth_ids[0]
             try:
                 response = self.model_callable(probe)
             except Exception as exc:  # noqa: BLE001
@@ -143,7 +155,9 @@ class SourceMatchEvaluator:
                     "probe": probe,
                     "response": None,
                     "ground_truth_chunk_id": ground_truth,
-                    "ground_truth_chunk_id_normalized": ground_truth_normalized,
+                    "ground_truth_chunk_id_normalized": ground_truth_normalized[0],
+                    "ground_truth_chunk_ids": ground_truth_ids,
+                    "ground_truth_chunk_ids_normalized": ground_truth_normalized,
                     "cited_chunk_ids": [],
                     "score": 0.0,
                     "outcome": "error",
@@ -166,8 +180,11 @@ class SourceMatchEvaluator:
             cited_set = list(dict.fromkeys(
                 _normalize_citation(c) for c in cited_raw
             ))  # de-dupe, preserve order
+            # Wave 108: credit the model when ANY ground-truth chunk is cited.
             score = 1.0 if any(
-                chunk_ids_match(ground_truth, cited) for cited in cited_set
+                chunk_ids_match(gt, cited)
+                for gt in ground_truth_ids
+                for cited in cited_set
             ) else 0.0
             if score == 1.0:
                 matches += 1
@@ -176,7 +193,9 @@ class SourceMatchEvaluator:
                 "probe": probe,
                 "response": response,
                 "ground_truth_chunk_id": ground_truth,
-                "ground_truth_chunk_id_normalized": ground_truth_normalized,
+                "ground_truth_chunk_id_normalized": ground_truth_normalized[0],
+                "ground_truth_chunk_ids": ground_truth_ids,
+                "ground_truth_chunk_ids_normalized": ground_truth_normalized,
                 "cited_chunk_ids": cited_set,
                 "score": score,
                 "outcome": "match" if score == 1.0 else "miss",
