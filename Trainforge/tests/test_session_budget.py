@@ -63,3 +63,38 @@ def test_summary_dict_for_reporting() -> None:
     assert summary["max_dispatches"] == 10
     assert summary["remaining"] == 7
     assert summary["elapsed_seconds_total"] >= 0.6 - 1e-9
+
+
+def test_circuit_breaker_opens_after_threshold() -> None:
+    from Trainforge.generators._session_budget import (
+        SynthesisCircuitOpen, _CircuitBreaker,
+    )
+    cb = _CircuitBreaker(failures_to_open=3, window_seconds=60.0)
+    cb.record_failure(error_code="MAILBOX_TIMEOUT")
+    cb.before_dispatch()
+    cb.record_failure(error_code="MAILBOX_TIMEOUT")
+    cb.before_dispatch()
+    cb.record_failure(error_code="MAILBOX_TIMEOUT")
+    with pytest.raises(SynthesisCircuitOpen) as ei:
+        cb.before_dispatch()
+    assert "3 failures" in str(ei.value)
+
+
+def test_circuit_breaker_resets_on_success() -> None:
+    from Trainforge.generators._session_budget import _CircuitBreaker
+    cb = _CircuitBreaker(failures_to_open=2, window_seconds=60.0)
+    cb.record_failure(error_code="MAILBOX_TIMEOUT")
+    cb.record_success()
+    cb.record_failure(error_code="MAILBOX_TIMEOUT")
+    cb.before_dispatch()
+
+
+def test_circuit_breaker_window_expires_old_failures() -> None:
+    """Failures outside the window don't count toward opening."""
+    from Trainforge.generators._session_budget import _CircuitBreaker
+    cb = _CircuitBreaker(failures_to_open=2, window_seconds=0.05)
+    cb.record_failure(error_code="MAILBOX_TIMEOUT")
+    import time
+    time.sleep(0.1)
+    cb.record_failure(error_code="MAILBOX_TIMEOUT")
+    cb.before_dispatch()
