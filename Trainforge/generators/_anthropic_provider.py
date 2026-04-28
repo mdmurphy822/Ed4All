@@ -59,6 +59,47 @@ MAX_PARSE_RETRIES = 3
 PROMPT_MIN, PROMPT_MAX = 40, 400
 COMPLETION_MIN, COMPLETION_MAX = 50, 600
 
+# Per-`kind` length bounds, used by ``_clamp`` to look up [lo, hi] without
+# the call site having to thread the bounds through. The ``chosen`` and
+# ``rejected`` arms of a preference pair share the completion bounds.
+_KIND_BOUNDS: Dict[str, tuple] = {
+    "prompt": (PROMPT_MIN, PROMPT_MAX),
+    "completion": (COMPLETION_MIN, COMPLETION_MAX),
+    "chosen": (COMPLETION_MIN, COMPLETION_MAX),
+    "rejected": (COMPLETION_MIN, COMPLETION_MAX),
+}
+
+
+# ---------------------------------------------------------------------------
+# Errors
+# ---------------------------------------------------------------------------
+
+
+class SynthesisProviderError(RuntimeError):
+    """Typed error raised on synthesis-provider validation failures.
+
+    Wave 112 Task 2: replaces the prior sentinel-injection branch in
+    ``_clamp`` (which silently appended a hardcoded filler phrase to any
+    short paraphrase, poisoning training data with a sentinel parrot
+    pattern). Raising a typed error instead lets the caller's retry path
+    fire and forces a re-paraphrase.
+
+    The ``code`` field is a stable string the caller can dispatch on
+    (e.g. ``completion_below_minimum``, ``prompt_below_minimum``);
+    ``chunk_id`` is optional context for log/audit correlation.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: Optional[str] = None,
+        chunk_id: Optional[str] = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.chunk_id = chunk_id
+
 
 # ---------------------------------------------------------------------------
 # System prompt fragments
@@ -190,9 +231,11 @@ class AnthropicSynthesisProvider:
         )
 
         out = dict(draft)
-        out["prompt"] = self._clamp(parsed["prompt"], PROMPT_MIN, PROMPT_MAX)
+        out["prompt"] = self._clamp(
+            parsed["prompt"], kind="prompt", chunk_id=chunk_id
+        )
         out["completion"] = self._clamp(
-            parsed["completion"], COMPLETION_MIN, COMPLETION_MAX
+            parsed["completion"], kind="completion", chunk_id=chunk_id
         )
         out["provider"] = "anthropic"
 
@@ -232,12 +275,14 @@ class AnthropicSynthesisProvider:
         )
 
         out = dict(draft)
-        out["prompt"] = self._clamp(parsed["prompt"], PROMPT_MIN, PROMPT_MAX)
+        out["prompt"] = self._clamp(
+            parsed["prompt"], kind="prompt", chunk_id=chunk_id
+        )
         out["chosen"] = self._clamp(
-            parsed["chosen"], COMPLETION_MIN, COMPLETION_MAX
+            parsed["chosen"], kind="chosen", chunk_id=chunk_id
         )
         out["rejected"] = self._clamp(
-            parsed["rejected"], COMPLETION_MIN, COMPLETION_MAX
+            parsed["rejected"], kind="rejected", chunk_id=chunk_id
         )
         out["provider"] = "anthropic"
 
@@ -451,11 +496,41 @@ class AnthropicSynthesisProvider:
         raise ValueError("unbalanced JSON object in response")
 
     @staticmethod
-    def _clamp(text: str, lo: int, hi: int) -> str:
-        """Clamp paraphrased text to [lo, hi] chars without breaking it."""
+    def _clamp(text: str, kind: str, *, chunk_id: Optional[str] = None) -> str:
+        """Clamp paraphrased text to the [lo, hi] bounds for ``kind``.
+
+        Wave 112 Task 2: short responses now raise
+        ``SynthesisProviderError`` rather than being padded with a
+        hardcoded sentinel phrase. The upper-bound truncation behavior
+        (preserving sentence boundaries when possible) is unchanged.
+
+        Args:
+            text: Paraphrased text from the LLM.
+            kind: One of ``prompt``, ``completion``, ``chosen``,
+                ``rejected``. Selects the [lo, hi] bounds.
+            chunk_id: Optional context for the raised error / audit log.
+
+        Raises:
+            SynthesisProviderError: When the stripped text is below the
+                minimum length for ``kind``. ``code`` is set to
+                ``"{kind}_below_minimum"`` so the caller can dispatch.
+            ValueError: When ``kind`` is not a recognized bound key.
+        """
+        try:
+            lo, hi = _KIND_BOUNDS[kind]
+        except KeyError as exc:
+            raise ValueError(
+                f"_clamp: unknown kind={kind!r}; expected one of "
+                f"{sorted(_KIND_BOUNDS)}"
+            ) from exc
         s = (text or "").strip()
         if len(s) < lo:
-            s = (s + " " + ("This passage anchors the answer in the source material.")).strip()
+            raise SynthesisProviderError(
+                f"{kind} length {len(s)} below minimum {lo}; refusing to "
+                f"inject sentinel filler. Caller should retry the paraphrase.",
+                code=f"{kind}_below_minimum",
+                chunk_id=chunk_id,
+            )
         if len(s) > hi:
             hard = s[:hi]
             period = hard.rfind(". ")
@@ -499,4 +574,12 @@ class AnthropicSynthesisProvider:
             logger.warning("synthesis_provider_call capture failed: %s", exc)
 
 
-__all__ = ["AnthropicSynthesisProvider", "DEFAULT_SYNTHESIS_MODEL"]
+__all__ = [
+    "AnthropicSynthesisProvider",
+    "DEFAULT_SYNTHESIS_MODEL",
+    "SynthesisProviderError",
+    "PROMPT_MIN",
+    "PROMPT_MAX",
+    "COMPLETION_MIN",
+    "COMPLETION_MAX",
+]
