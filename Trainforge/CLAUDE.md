@@ -296,7 +296,8 @@ Training is a **post-import LibV2 stage**, not a step in `Trainforge/process_cou
 | 91   | `985dbfe` | Synthesis quality fixes — `_anthropic_provider.py`, graph-required default, `MinEdgeCountValidator`, `SynthesisDiversityValidator`, kg_quality threshold promotion. |
 | 92   | `0101ec4` | Eval — `Trainforge/eval/` submodule (5 layers × 3 tiers), harness wired into runner, `holdout_graph_hash` added to model card provenance. |
 | 93   | `dc06ba1` | LibV2 integration — `models/` subdir, `import_model`, `_pointers.json` promotion ledger, four new `libv2 models {list,promote,eval}` + `libv2 import-model` CLI subcommands. |
-| 106  | _this commit_ | Reproducibility wave — `Trainforge/eval/chunk_ids.py` for short-vs-full chunk-ID matching, eval-harness `_EvalProgressTracker` + `eval_progress.jsonl`, per-course `LibV2/courses/<slug>/eval/eval_config.yaml` propagation through `AdapterCallable` (top_p / seed / revision), instruction-variant + source-grounded citation framing in `synthesize_training.py`, expanded `TrainingConfig` (lora_dropout, target_modules, use_4bit, gradient_accumulation_steps, warmup_ratio, weight_decay, min_dpo_pairs, dpo_preference_filter, dpo_fail_hard), Qwen2.5-1.5B `default_revision` pin. |
+| 106  | `4a748d2` | Reproducibility wave — `Trainforge/eval/chunk_ids.py` for short-vs-full chunk-ID matching, eval-harness `_EvalProgressTracker` + `eval_progress.jsonl`, per-course `LibV2/courses/<slug>/eval/eval_config.yaml` propagation through `AdapterCallable` (top_p / seed / revision), instruction-variant + source-grounded citation framing in `synthesize_training.py`, expanded `TrainingConfig` (lora_dropout, target_modules, use_4bit, gradient_accumulation_steps, warmup_ratio, weight_decay, min_dpo_pairs, dpo_preference_filter, dpo_fail_hard), Qwen2.5-1.5B `default_revision` pin. |
+| 107  | _this commit_ | Phase A — Claude-Max synthesis bridge: `Trainforge/generators/_claude_session_provider.py` (mirrors `AnthropicSynthesisProvider` interface, dispatches via `LocalDispatcher.dispatch_task`), `Trainforge/agents/training-synthesizer.md` agent spec, `config/agents.yaml::training-synthesizer.type: subagent` flip, `--provider claude_session` CLI flag in `synthesize_training.py`, content-addressed JSONL cache at `.synthesis_cache.jsonl`, `synthesis_provider_call` decision capture wired, factory kwarg rename `anthropic_provider → paraphrase_provider`, and a critical-severity `LibV2ModelValidator` gate (`MOCK_PROVIDER_CORPUS`) that fails closed on `provider="mock"` instruction-pair rows. |
 
 ### Training command
 
@@ -361,12 +362,13 @@ The `[training]` extra is **not** part of the default install — CPU-only dev i
 
 `Trainforge/synthesize_training.py` gates the chunk → instruction-pair paraphrase pass behind a provider parameter:
 
-| Provider | Behavior | Required env |
-|----------|----------|--------------|
+| Provider | Behavior | Required env / context |
+|----------|----------|------------------------|
 | `mock` (default in `synthesize_training.py` until you opt in) | Deterministic 30-template × 6-Bloom factory. **Trains a template-recognizer SLM.** Use only for plumbing tests. | None. |
 | `anthropic` | Real-LLM paraphrase via `Trainforge/generators/_anthropic_provider.py`. Default model `claude-sonnet-4-6`; override via `ANTHROPIC_SYNTHESIS_MODEL`. Prompt-cached on chunk text. | `ANTHROPIC_API_KEY`. Fail-loud on absence (no silent mock fallback). |
+| `claude_session` (Wave 107) | Real-LLM paraphrase via the running Claude Code session. Routes through `LocalDispatcher.dispatch_task(agent_type="training-synthesizer", ...)`; the agent spec at `Trainforge/agents/training-synthesizer.md` drives the subagent prompt. Each call writes to a content-addressed JSONL cache at `<course>/training_specs/.synthesis_cache.jsonl` so re-runs are free and `instruction_pairs_hash` is stable. Cache invalidation via a manual `provider_version` bump. | A `LocalDispatcher` instance — must be invoked through the workflow runner (`ed4all run ...`) or the `synthesize_training` MCP tool. **Standalone `python -m Trainforge.synthesize_training --provider claude_session` fails loud**: there is no Claude Code session to dispatch to. |
 
-**Always pass `provider="anthropic"` for any run whose output you intend to actually train on.** Wave 90 ships the trainer; Wave 91 ships the real provider; running Wave 90's trainer against a Wave 91-default `mock` synthesizer would bake a template-recognizer adapter.
+**Always pass a non-mock provider for any run whose output you intend to actually train on.** Wave 90 ships the trainer; Wave 91 ships `anthropic`; Wave 107 ships `claude_session` (Claude Max users). Wave 107 also adds a critical-severity `LibV2ModelValidator` check that fails closed when `instruction_pairs.jsonl` first row carries `provider: "mock"`, so an accidental mock corpus cannot promote.
 
 **Instruction variants (Wave 106).** `--instruction-variants-per-chunk` (default `1`) controls how many SFT instruction pairs each eligible chunk emits. The frames live in `Trainforge/synthesize_training.py::_INSTRUCTION_PROMPT_FRAMES`:
 
