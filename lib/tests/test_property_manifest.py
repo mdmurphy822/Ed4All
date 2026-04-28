@@ -15,7 +15,7 @@ from lib.ontology.property_manifest import (
 def test_load_rdf_shacl_manifest_returns_six_properties() -> None:
     manifest = load_property_manifest("rdf-shacl-551-2")
     assert isinstance(manifest, PropertyManifest)
-    assert manifest.course_slug == "rdf-shacl-551-2"
+    assert manifest.family == "rdf_shacl"
     assert len(manifest.properties) == 6
     ids = {p.id for p in manifest.properties}
     assert ids == {

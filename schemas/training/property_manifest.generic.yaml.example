@@ -10,7 +10,7 @@
 # Validator (PropertyCoverageValidator) no-ops on courses without a
 # manifest, so dropping this file in adds the gate non-destructively.
 
-course_slug: <full-course-slug-here>
+family: <example-family>
 description: |
   One-paragraph rationale: which surface forms must this course's SLM
   adapter teach? Cite a textbook chapter / standards doc / topic list
