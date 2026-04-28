@@ -563,6 +563,8 @@ def run_synthesis(
     instruction_variants_per_chunk: int = 1,
     dispatcher: Optional[Any] = None,
     cache_path: Optional[Path] = None,
+    max_dispatches: Optional[int] = None,
+    telemetry_path: Optional[Path] = None,
 ) -> SynthesisStats:
     """Run the full synthesis stage for one course output directory.
 
@@ -701,11 +703,17 @@ def run_synthesis(
         from Trainforge.generators._claude_session_provider import (
             ClaudeSessionProvider,
         )
+        # Wave 110 / Phase D: default telemetry_path next to the cache.
+        effective_telemetry = telemetry_path
+        if effective_telemetry is None and cache_path is not None:
+            effective_telemetry = cache_path.parent / ".synthesis_telemetry.jsonl"
         paraphrase_provider = ClaudeSessionProvider(
             dispatcher=dispatcher,
             run_id=course_code,
             capture=capture,
             cache_path=cache_path,
+            max_dispatches=max_dispatches,
+            telemetry_path=effective_telemetry,
         )
 
     instruction_records: List[Dict[str, Any]] = []
@@ -1240,6 +1248,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_SEED,
         help=f"Base deterministic seed (default: {DEFAULT_SEED}).",
     )
+    p.add_argument(
+        "--max-dispatches",
+        type=int,
+        default=None,
+        help=(
+            "Wave 110 / Phase D: hard cap on Claude-Max session dispatches "
+            "(claude_session provider only). When the cap is hit, raises "
+            "SynthesisBudgetExceeded; partial output is preserved in "
+            "<corpus>/training_specs/.synthesis_cache.jsonl and the next "
+            "run resumes for free."
+        ),
+    )
     # Wave 77 additions
     p.add_argument(
         "--stratify",
@@ -1369,6 +1389,12 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
         getattr(args, "prereq_context_tokens", DEFAULT_PREREQ_CONTEXT_TOKENS)
     )
     pedagogy_path = Path(args.pedagogy_graph) if getattr(args, "pedagogy_graph", None) else None
+    # Wave 110 / Phase D: --max-dispatches is meaningful only with claude_session.
+    max_dispatches = getattr(args, "max_dispatches", None)
+    if max_dispatches is not None and args.provider != "claude_session":
+        raise SystemExit(
+            "--max-dispatches is only meaningful with --provider claude_session"
+        )
 
     if getattr(args, "slug", None):
         stats = run_synthesis_from_libv2(
@@ -1408,6 +1434,7 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             prereq_context_tokens=prereq_ctx_tokens,
             pedagogy_graph_path=pedagogy_path,
             instruction_variants_per_chunk=args.instruction_variants_per_chunk,
+            max_dispatches=max_dispatches,
         )
 
     print("\n[Synthesis] Complete.")
