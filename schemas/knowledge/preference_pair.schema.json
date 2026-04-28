@@ -60,7 +60,7 @@
     },
     "provider": {
       "type": "string",
-      "enum": ["mock", "anthropic", "claude_session"]
+      "enum": ["mock", "anthropic", "claude_session", "together"]
     },
     "schema_version": {
       "type": "string",

@@ -1081,8 +1081,22 @@ def register_pipeline_tools(mcp):
             corpus_dir: Trainforge output directory (the one containing
                 ``corpus/`` and ``training_specs/``).
             course_code: Course identifier for decision capture.
-            provider: Synthesis provider (``"mock"`` — default, only one
-                wired today — or the reserved ``"anthropic"``).
+            provider: Synthesis provider. Accepted values:
+
+                * ``"mock"`` (default) — deterministic template factory.
+                * ``"anthropic"`` — Anthropic SDK paraphrase pass
+                  (requires ``ANTHROPIC_API_KEY``). Anthropic's ToS
+                  forbids using the output as training data, so use only
+                  for in-house evaluation, not for SLM training corpora.
+                * ``"claude_session"`` — Claude Code session via
+                  LocalDispatcher (Claude Max path).
+                * ``"together"`` — Together AI's OpenAI-compatible
+                  chat-completions endpoint, default model
+                  ``meta-llama/Llama-3.3-70B-Instruct-Turbo``
+                  (override via ``TOGETHER_SYNTHESIS_MODEL``; requires
+                  ``TOGETHER_API_KEY``). Together's ToS explicitly
+                  permits using the output as training data — this is
+                  the ToS-clean teacher pass for SLM corpora.
             seed: Optional base seed for determinism.
 
         Returns:
@@ -3597,11 +3611,18 @@ def _build_tool_registry() -> dict:
 
         Optional:
 
-        * ``provider`` (``"mock"`` or ``"anthropic"``, default ``"mock"``
-          because the Anthropic provider hook is reserved for a later
-          wave). When ``None`` is explicitly set AND no LLM backend is
-          resolvable, the function logs a skip warning and returns an
-          empty-results shell rather than crashing.
+        * ``provider`` — synthesis provider. Accepted values: ``"mock"``
+          (default; deterministic template factory), ``"anthropic"``
+          (Anthropic SDK; requires ``ANTHROPIC_API_KEY``),
+          ``"claude_session"`` (Claude Code session via LocalDispatcher),
+          or ``"together"`` (Together AI's OpenAI-compatible endpoint;
+          default model ``meta-llama/Llama-3.3-70B-Instruct-Turbo``,
+          override via ``TOGETHER_SYNTHESIS_MODEL``; requires
+          ``TOGETHER_API_KEY``). Together's ToS permits training-data
+          generation, unlike Anthropic's. When ``None`` is explicitly
+          set AND no LLM backend is resolvable, the function logs a
+          skip warning and returns an empty-results shell rather than
+          crashing.
         * ``seed`` (int, default ``DEFAULT_SEED`` from
           ``synthesize_training`` so re-runs are byte-identical).
 

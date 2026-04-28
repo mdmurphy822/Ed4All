@@ -108,3 +108,23 @@ def test_preference_pair_schema_accepts_claude_session_provider():
     schema = _load_schema("knowledge/preference_pair.schema.json")
     pair = _minimal_preference_pair("claude_session")
     jsonschema.validate(pair, schema)
+
+
+# ---------------------------------------------------------------------------
+# Wave 113 prep — Together provider enum extension
+# ---------------------------------------------------------------------------
+
+
+def test_instruction_pair_schema_accepts_together_provider():
+    """TogetherSynthesisProvider sets ``provider="together"`` on every
+    emitted pair; the instruction_pair schema enum must admit it or
+    strict consumers reject every Together-produced row."""
+    schema = _load_schema("knowledge/instruction_pair.schema.json")
+    pair = _minimal_instruction_pair("together")
+    jsonschema.validate(pair, schema)
+
+
+def test_preference_pair_schema_accepts_together_provider():
+    schema = _load_schema("knowledge/preference_pair.schema.json")
+    pair = _minimal_preference_pair("together")
+    jsonschema.validate(pair, schema)

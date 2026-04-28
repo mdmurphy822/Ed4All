@@ -764,6 +764,15 @@ def run_synthesis(
             max_dispatches=max_dispatches,
             telemetry_path=effective_telemetry,
         )
+    elif provider == "together":
+        # Wave 113 prep: ToS-clean OSS-teacher paraphrase via Together
+        # AI's hosted models. HTTP-driven (no SDK dependency); session-
+        # budget tracking is unnecessary because the provider is paid-
+        # per-call rather than rate-limited per Claude session.
+        from Trainforge.generators._together_provider import (
+            TogetherSynthesisProvider,
+        )
+        paraphrase_provider = TogetherSynthesisProvider(capture=capture)
 
     instruction_records: List[Dict[str, Any]] = []
     preference_records: List[Dict[str, Any]] = []
@@ -1337,14 +1346,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--provider",
         default="mock",
-        choices=["mock", "anthropic", "claude_session"],
+        choices=["mock", "anthropic", "claude_session", "together"],
         help=(
             "Synthesis provider. 'mock' = template factory (plumbing tests "
             "only — produces template-recognizer adapters). 'anthropic' = "
             "Anthropic SDK (requires ANTHROPIC_API_KEY). 'claude_session' = "
             "running Claude Code session via LocalDispatcher (Claude Max / "
             "no-API-key path; requires invocation through the workflow runner "
-            "or MCP tool so a dispatcher is in-context)."
+            "or MCP tool so a dispatcher is in-context). 'together' = "
+            "Together AI's OpenAI-compatible chat-completions endpoint "
+            "(default model meta-llama/Llama-3.3-70B-Instruct-Turbo, "
+            "override via TOGETHER_SYNTHESIS_MODEL; requires TOGETHER_API_KEY). "
+            "Together's ToS permits using the output as training data for "
+            "another model — Anthropic's does not."
         ),
     )
     p.add_argument(

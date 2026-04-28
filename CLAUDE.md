@@ -291,7 +291,7 @@ Priority extraction chain (extends the Courseforge chain above): JSON-LD > `data
 | `validate_assessment` | Validate assessment quality |
 | `export_training_data` | Export training captures |
 | `get_trainforge_status` | Get processing status |
-| `synthesize_training` | Synthesize SFT + DPO training pairs from a Trainforge corpus |
+| `synthesize_training` | Synthesize SFT + DPO training pairs from a Trainforge corpus. `provider` accepts `"mock"`, `"anthropic"`, `"claude_session"`, or `"together"` (Together AI's OSS-teacher path; ToS-clean for training-data generation, default model `meta-llama/Llama-3.3-70B-Instruct-Turbo`, override via `TOGETHER_SYNTHESIS_MODEL`; requires `TOGETHER_API_KEY`). |
 
 ### Pipeline Tools
 
@@ -705,6 +705,8 @@ Environment-variable toggles gate opt-in strict / stable-ID / provenance / exper
 | `TRAINFORGE_USE_SHACL_RULES` | Wave 84-85 Phase 5 (rdf-shacl-enrichment plan): when on, `Trainforge/rag/shacl_rule_runner.py` runs `schemas/context/courseforge_v1.shacl-rules.ttl` via pyshacl `advanced=True, inplace=True` and projects inferred `ed4all:isDefinedBy` triples back into the same edge-dict shape `defined_by_from_first_mention.py` emits. Equivalence pinned by `Trainforge/tests/test_shacl_rules_defined_by.py`. Default off → the canonical Python rule stays authoritative until SHACL parity proves out across the project test suite. |
 | `TRAINFORGE_SHACL_CLOSED_WORLD` | Wave 88: merges `schemas/context/courseforge_v1.shacl-closed.ttl` into the SHACL shapes graph at validation time, declaring `sh:closed true ; sh:ignoredProperties (rdf:type)` on `cfshapes:ChunkShape` and `cfshapes:TypedEdgeShape`. Unminted predicates on chunk / typed-edge nodes fire `sh:ClosedConstraintComponent` violations. Default off; Wave 87 minted the 33 chunk-structural predicates + 2 anchor classes that this closure asserts against, so flipping the flag on a clean Wave 87+ corpus is mass-violation-free. Closed-world overhead measured at ~0.5s on a 1000-node fixture. |
 | `ANTHROPIC_SYNTHESIS_MODEL` | Wave 91: overrides the default `claude-sonnet-4-6` Anthropic model used by `Trainforge/generators/_anthropic_provider.py` for the chunk → instruction-pair paraphrase pass. `ANTHROPIC_API_KEY` is the hard prerequisite; this flag is purely the model-ID dial. Captured per call in the `synthesis_provider_call` decision event. |
+| `TOGETHER_API_KEY` | Wave 113 prep: required when `--provider together`. Routes synthesis through Together AI's OpenAI-compatible chat-completions endpoint. Together's ToS permits using the output as training data for another model — unlike Anthropic's ToS, which is the motivation for offering this provider for SLM training-data generation. Missing key with `--provider together` raises `RuntimeError` (no silent mock fallback). |
+| `TOGETHER_SYNTHESIS_MODEL` | Wave 113 prep: overrides the default `meta-llama/Llama-3.3-70B-Instruct-Turbo` used by `Trainforge/generators/_together_provider.py`. Common alternatives: `Qwen/Qwen2.5-72B-Instruct-Turbo`, `deepseek-ai/DeepSeek-V3`. Captured per call in the `synthesis_provider_call` decision event so the audit trail records which OSS teacher produced each pair. |
 
 ---
 
