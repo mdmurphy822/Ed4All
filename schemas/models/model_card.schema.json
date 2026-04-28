@@ -316,6 +316,15 @@
               "mean_latency_ms": {"type": ["number", "null"]}
             }
           }
+        },
+        "per_property_accuracy": {
+          "type": "object",
+          "additionalProperties": {
+            "type": ["number", "null"],
+            "minimum": 0.0,
+            "maximum": 1.0
+          },
+          "description": "Wave 111 / Phase E: per-property accuracy from PerPropertyEvaluator. Keys are property IDs from the course's property manifest (e.g. sh_datatype, owl_sameas); values are 0..1 floats or null when unscored. Surfaces the same numbers EvalGatingValidator gates on so an audit can replay why a promotion was blocked."
         }
       }
     },
