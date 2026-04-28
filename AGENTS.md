@@ -257,6 +257,7 @@ technical paraphrase tasks. If post-rebuild gates fail:
   tensor-parallel.
 - Second escalation: `--provider together` for a hosted larger OSS model
   (still ToS-clean, just paid + networked).
+- The local provider now retries up to 3× on short paraphrase output (Wave 114) and rejects the run with `paraphrase_invalid_after_retry` if the model can't reach the floor. If you see that error code in the pilot, the underlying model is too small for the paraphrase task — escalate to the next size up rather than retrying with the same model.
 - Do **not** fall back to `--provider anthropic` or `claude_session` for
   training-data synthesis — those are ToS-restricted for this use.
 
