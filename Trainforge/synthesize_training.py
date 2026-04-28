@@ -707,10 +707,14 @@ def run_synthesis(
         from Trainforge.generators._claude_session_provider import (
             ClaudeSessionProvider,
         )
-        # Wave 110 / Phase D: default telemetry_path next to the cache.
+        # Wave 110 / Phase D: default telemetry_path under training_specs/.
+        # Wave 111 / Phase E: fall back to training_specs_dir even when no
+        # explicit cache_path is set, so a session run always leaves a
+        # telemetry trail for post-hoc analysis.
         effective_telemetry = telemetry_path
-        if effective_telemetry is None and cache_path is not None:
-            effective_telemetry = cache_path.parent / ".synthesis_telemetry.jsonl"
+        if effective_telemetry is None:
+            base_dir = cache_path.parent if cache_path is not None else training_specs_dir
+            effective_telemetry = base_dir / ".synthesis_telemetry.jsonl"
         paraphrase_provider = ClaudeSessionProvider(
             dispatcher=dispatcher,
             run_id=course_code,
