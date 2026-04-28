@@ -7,9 +7,11 @@ Max run can resume from cache without re-paying for cached calls.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+import time
+from collections import deque
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Deque, Dict, Optional
 
 
 class SynthesisBudgetExceeded(RuntimeError):
@@ -114,4 +116,64 @@ class _BudgetTracker:
         }
 
 
-__all__ = ["SynthesisBudgetExceeded", "_BudgetTracker"]
+class SynthesisCircuitOpen(RuntimeError):
+    """Raised when the dispatcher has produced too many failures within
+    the configured window. The caller should pause + retry later
+    rather than burning the dispatch cap on a likely-rate-limited
+    backend."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        failures_in_window: int,
+        window_seconds: float,
+    ) -> None:
+        super().__init__(message)
+        self.failures_in_window = failures_in_window
+        self.window_seconds = window_seconds
+
+
+@dataclass
+class _CircuitBreaker:
+    """Sliding-window failure tracker for synthesis dispatches.
+
+    Records each failure with a monotonic timestamp; ``before_dispatch()``
+    raises ``SynthesisCircuitOpen`` when ``failures_to_open`` failures
+    have occurred within the last ``window_seconds``. ``record_success()``
+    drops the failure window so a healthy dispatch resets the breaker.
+    """
+
+    failures_to_open: int = 3
+    window_seconds: float = 60.0
+    _failure_times: Deque[float] = field(default_factory=deque)
+
+    def _prune(self) -> None:
+        cutoff = time.monotonic() - self.window_seconds
+        while self._failure_times and self._failure_times[0] < cutoff:
+            self._failure_times.popleft()
+
+    def record_failure(self, *, error_code: Optional[str] = None) -> None:
+        self._failure_times.append(time.monotonic())
+
+    def record_success(self) -> None:
+        self._failure_times.clear()
+
+    def before_dispatch(self) -> None:
+        self._prune()
+        if len(self._failure_times) >= self.failures_to_open:
+            raise SynthesisCircuitOpen(
+                f"Circuit open: {len(self._failure_times)} failures in last "
+                f"{self.window_seconds}s exceeds threshold "
+                f"{self.failures_to_open}. Pause + retry.",
+                failures_in_window=len(self._failure_times),
+                window_seconds=self.window_seconds,
+            )
+
+
+__all__ = [
+    "SynthesisBudgetExceeded",
+    "SynthesisCircuitOpen",
+    "_BudgetTracker",
+    "_CircuitBreaker",
+]
