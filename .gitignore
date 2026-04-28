@@ -154,3 +154,7 @@ testruns/
 
 # Codex CLI sentinel — empty marker file the agent leaves; not project state
 .codex
+
+# Wave 116: sidecar files written incrementally during synthesis runs.
+# Cleaned up at end of clean runs; preserved on budget-exceeded exits.
+*.jsonl.in_progress

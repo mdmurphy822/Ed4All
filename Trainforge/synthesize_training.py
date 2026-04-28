@@ -674,6 +674,26 @@ def run_synthesis(
     preference_out = training_specs_dir / "preference_pairs.jsonl"
     dataset_config_path = training_specs_dir / "dataset_config.json"
 
+    # Wave 116: incremental sidecar write. Each emitted instruction /
+    # preference pair is appended to a ``.jsonl.in_progress`` sibling
+    # file with ``flush()`` after every write so an operator can
+    # ``tail -f`` the synthesis run and so a killed run leaves
+    # inspectable artifacts on disk. The atomic final ``_write_jsonl``
+    # is unchanged; sidecars are unlinked on a clean exit and preserved
+    # on a ``SynthesisBudgetExceeded`` early-exit (or any other
+    # exception that propagates out) for postmortem.
+    instruction_progress = instruction_out.with_suffix(".jsonl.in_progress")
+    preference_progress = preference_out.with_suffix(".jsonl.in_progress")
+    for sidecar in (instruction_progress, preference_progress):
+        if sidecar.exists() and sidecar.stat().st_size > 0:
+            logger.warning(
+                "Wave 116: overwriting stale sidecar from a prior killed run: %s",
+                sidecar,
+            )
+    instruction_progress.parent.mkdir(parents=True, exist_ok=True)
+    inst_progress_fh = instruction_progress.open("w", encoding="utf-8")
+    pref_progress_fh = preference_progress.open("w", encoding="utf-8")
+
     # Validate stratification dimensions early so a typo fails loud rather
     # than silently degrading to no-op.
     stratify_dims: List[str] = []
@@ -791,6 +811,23 @@ def run_synthesis(
     instruction_records: List[Dict[str, Any]] = []
     preference_records: List[Dict[str, Any]] = []
 
+    # Wave 111 / Phase E: budget-exceeded sentinel — hoisted above the
+    # try-body in Wave 116 so the finally-block can reference it
+    # safely even if an exception propagates before the loop assigns
+    # it. Imported eagerly so the symbol exists in the finally scope.
+    from Trainforge.generators._session_budget import (
+        SynthesisBudgetExceeded as _SBE,
+    )
+    _budget_exhausted_exc: Optional[_SBE] = None
+
+    # Wave 116: gate sidecar deletion on a clean exit. The flag is
+    # only set True after the entire try-body completes without any
+    # exception (budget-exceeded or otherwise). The finally block
+    # checks both this flag AND ``_budget_exhausted_exc is None`` so
+    # an exception that propagates past the try-body leaves sidecars
+    # in place for postmortem inspection.
+    clean_exit = False
+
     try:
         # Log a stage-start decision so the capture file is never empty even if
         # the corpus contains zero eligible chunks.
@@ -861,11 +898,8 @@ def run_synthesis(
         # we stop emitting + persist whatever we have so far so the
         # caller can write a pilot_progress.json snapshot and return
         # SynthesisStats with capped_at_max_dispatches=True.
-        from Trainforge.generators._session_budget import (
-            SynthesisBudgetExceeded as _SBE,
-        )
-        _budget_exhausted_exc: Optional[_SBE] = None
-
+        # ``_SBE`` and ``_budget_exhausted_exc`` are hoisted above the
+        # try-block (Wave 116) so the finally-block can reference them.
         for idx, chunk in iter_chunks:
             if _budget_exhausted_exc is not None:
                 break
@@ -937,6 +971,18 @@ def run_synthesis(
                         stats.source_grounded_pairs += 1
                     instruction_records.append(inst_result.pair)
                     stats.instruction_pairs_emitted += 1
+                    # Wave 116: mirror to .in_progress sidecar with
+                    # flush() so ``tail -f`` and post-kill inspection
+                    # see this pair without waiting on OS buffers.
+                    inst_progress_fh.write(
+                        json.dumps(
+                            inst_result.pair,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        )
+                        + "\n"
+                    )
+                    inst_progress_fh.flush()
 
             # --- Preference pair ---
             pair_seed = seed + idx
@@ -980,6 +1026,16 @@ def run_synthesis(
                         stats.source_grounded_pairs += 1
                     preference_records.append(pref_result.pair)
                     stats.preference_pairs_emitted += 1
+                    # Wave 116: mirror to .in_progress sidecar.
+                    pref_progress_fh.write(
+                        json.dumps(
+                            pref_result.pair,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        )
+                        + "\n"
+                    )
+                    pref_progress_fh.flush()
 
         # --- Wave 77: misconception -> DPO pair augmentation -----------------
         # Emit one DPO pair per editorial (misconception, correction) entry
@@ -1030,6 +1086,12 @@ def run_synthesis(
                     preference_records.append(pair)
                     stats.preference_pairs_emitted += 1
                     stats.misconception_dpo_pairs_emitted += 1
+                    # Wave 116: mirror to .in_progress sidecar.
+                    pref_progress_fh.write(
+                        json.dumps(pair, ensure_ascii=False, sort_keys=True)
+                        + "\n"
+                    )
+                    pref_progress_fh.flush()
 
         # Wave 111 / Phase E: surface budget telemetry on stats whether
         # the loop completed normally OR hit the dispatch cap.
@@ -1063,6 +1125,14 @@ def run_synthesis(
             logger.warning(
                 "run_synthesis hit max_dispatches=%s; wrote progress to %s",
                 _budget_exhausted_exc.max_dispatches, progress_path,
+            )
+            # Wave 116: preserve sidecars on budget-exceeded so the
+            # operator can inspect partial output and re-run with a
+            # higher cap to resume from the cache.
+            logger.warning(
+                "Wave 116: synthesis stopped early; sidecars preserved at "
+                "%s and %s",
+                instruction_progress, preference_progress,
             )
 
         # --- Persist artifacts ------------------------------------------------
@@ -1228,7 +1298,32 @@ def run_synthesis(
             ),
         )
 
+        # Wave 116: try-body completed without raising. Mark the run
+        # clean so the finally-block deletes the sidecars. A
+        # SynthesisBudgetExceeded run reaches this line too (it is
+        # caught above and produces ``pilot_progress.json``), so we
+        # additionally check ``_budget_exhausted_exc`` in the finally
+        # to keep the sidecars on cap-exhausted runs.
+        clean_exit = True
+
     finally:
+        # Wave 116: always close sidecar file handles, even on
+        # exception. Delete only on a fully clean exit (no exception
+        # propagated AND no budget cap hit). On budget-exceeded or
+        # any other early exit, the sidecars stay on disk so the
+        # operator has inspectable partial output.
+        try:
+            inst_progress_fh.close()
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Failed to close instruction sidecar: %s", e)
+        try:
+            pref_progress_fh.close()
+        except Exception as e:  # pragma: no cover - defensive
+            logger.warning("Failed to close preference sidecar: %s", e)
+        if clean_exit and _budget_exhausted_exc is None:
+            instruction_progress.unlink(missing_ok=True)
+            preference_progress.unlink(missing_ok=True)
+
         if owns_capture:
             try:
                 capture.save()
