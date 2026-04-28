@@ -509,11 +509,23 @@ def _last_event_id(capture: DecisionCapture) -> str:
     """Return the event_id of the most recent decision written via ``capture``.
 
     ``DecisionCapture.log_decision`` appends to ``capture.decisions``; we pull
-    ``event_id`` off the tail. Empty-string fallback if nothing logged.
+    ``event_id`` off the tail.
+
+    Wave 112 Task 1: this used to fall back to ``""`` when ``capture.decisions``
+    was empty. Empty-string fallback then rode into the emitted JSONL as
+    ``decision_capture_id: ""`` -- a schema-violating value that broke
+    strict-mode pair validation downstream. Every production call site logs a
+    decision before it asks for the event_id, so empty here is unambiguously a
+    bug. Fail loud rather than poisoning the corpus.
     """
-    if capture.decisions:
-        return str(capture.decisions[-1].get("event_id", ""))
-    return ""
+    if not capture.decisions:
+        raise RuntimeError(
+            "no decisions logged: _last_event_id called against an empty "
+            "DecisionCapture. The synthesis loop must capture.log_decision(...) "
+            "before requesting the event_id; an empty fallback would emit a "
+            "schema-violating decision_capture_id=\"\" in the training pair."
+        )
+    return str(capture.decisions[-1].get("event_id", ""))
 
 
 # ---------------------------------------------------------------------------
