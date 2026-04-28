@@ -160,7 +160,10 @@ class LibV2ModelValidator:
         # -- 5. pedagogy_graph_hash resolution against course_dir.
         issues.extend(self._validate_pedagogy_hash_resolves(card, course_dir))
 
-        # -- 6. Warning-severity advisories.
+        # -- 6. Wave 107: critical-fail when training corpus is mock-provider.
+        issues.extend(self._check_instruction_pairs_provider(course_dir))
+
+        # -- 7. Warning-severity advisories.
         issues.extend(self._check_eval_scores_present(card, card_path))
         issues.extend(self._check_license_declared(card, card_path))
         issues.extend(self._check_huggingface_repo_shape(card, card_path))
@@ -409,6 +412,52 @@ class LibV2ModelValidator:
                 ),
             ))
         return issues
+
+    # ------------------------------------------------------------------ #
+    # Critical: training corpus provenance                               #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _check_instruction_pairs_provider(
+        course_dir: Optional[Path],
+    ) -> List[GateIssue]:
+        """Critical-fail when ``instruction_pairs.jsonl`` first row has
+        ``provider == "mock"``.
+
+        Mock-provider corpora are template-factory output and produce
+        template-recognizer adapters (Wave 107 root cause for the
+        rdf-shacl-551-2 regression). No production training run may
+        consume them. When ``course_dir`` is unresolvable or the
+        instruction-pairs file is absent, this check no-ops — the rest
+        of the validator already covers those conditions.
+        """
+        if course_dir is None:
+            return []
+        inst = course_dir / "training_specs" / "instruction_pairs.jsonl"
+        if not inst.exists():
+            return []
+        try:
+            with inst.open("r", encoding="utf-8") as fh:
+                first = fh.readline().strip()
+            if not first:
+                return []
+            row = json.loads(first)
+        except (OSError, json.JSONDecodeError):
+            return []
+        provider = str(row.get("provider", ""))
+        if provider == "mock":
+            return [GateIssue(
+                severity="critical",
+                code="MOCK_PROVIDER_CORPUS",
+                message=(
+                    "instruction_pairs.jsonl first row has provider='mock'; "
+                    "mock corpora train template-recognizers and may not "
+                    "promote. Re-synthesize with provider='claude_session' "
+                    "or 'anthropic'. See Trainforge/CLAUDE.md."
+                ),
+                location=str(inst),
+            )]
+        return []
 
     # ------------------------------------------------------------------ #
     # Warning advisories                                                 #
