@@ -126,6 +126,9 @@ class FaithfulnessEvaluator:
         per_question: List[Dict[str, Any]] = []
         correct = 0
         ambiguous = 0
+        # Wave 108 / Phase B: count affirmative classifications regardless
+        # of correctness so a 'yes always' model surfaces yes_rate=1.0.
+        affirm_count = 0
         errors: List[str] = []
 
         for edge in edges:
@@ -143,6 +146,8 @@ class FaithfulnessEvaluator:
                 continue
 
             classification = _classify_response(str(response))
+            if classification == "affirm":
+                affirm_count += 1
             outcome = "correct" if classification == "affirm" else (
                 "ambiguous" if classification == "ambiguous" else "incorrect"
             )
@@ -160,8 +165,10 @@ class FaithfulnessEvaluator:
         total = len(per_question)
         scored_total = total - sum(1 for r in per_question if r["outcome"] == "error")
         accuracy = correct / scored_total if scored_total > 0 else 0.0
+        yes_rate = affirm_count / scored_total if scored_total > 0 else 0.0
         return {
             "accuracy": accuracy,
+            "yes_rate": yes_rate,
             "total_questions": total,
             "correct": correct,
             "ambiguous": ambiguous,

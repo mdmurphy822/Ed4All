@@ -114,3 +114,28 @@ def test_chunk_at_difficulty_template_dropped() -> None:
         f"chunk_at_difficulty template must be dropped (Phase B); "
         f"current templates: {sorted(_RELATION_TEMPLATES)}"
     )
+
+
+def test_evaluate_emits_yes_rate(tmp_path) -> None:
+    """yes_rate must surface alongside accuracy so the gating validator
+    can detect a yes-biased model even when accuracy looks high (every
+    edge in the holdout split is a TRUE statement, so a 'yes always'
+    model trivially scores 1.0 on faithfulness)."""
+    import json
+    from Trainforge.eval.faithfulness import FaithfulnessEvaluator
+
+    split_path = tmp_path / "holdout_split.json"
+    split_path.write_text(json.dumps({
+        "withheld_edges": [
+            {"source": "concept_a", "target": "concept_b", "relation_type": "prerequisite_of"},
+            {"source": "concept_a", "target": "concept_c", "relation_type": "prerequisite_of"},
+            {"source": "concept_d", "target": "concept_e", "relation_type": "prerequisite_of"},
+        ],
+        "probes": [],
+    }), encoding="utf-8")
+
+    yes_always = lambda _prompt: "Yes."
+    result = FaithfulnessEvaluator(split_path, yes_always).evaluate()
+    assert result["accuracy"] == 1.0
+    assert "yes_rate" in result
+    assert result["yes_rate"] == 1.0
