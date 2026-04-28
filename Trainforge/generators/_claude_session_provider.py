@@ -28,7 +28,14 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from Trainforge.generators._anthropic_provider import SynthesisProviderError
+from Trainforge.generators._anthropic_provider import (
+    COMPLETION_MAX,
+    COMPLETION_MIN,
+    PROMPT_MAX,
+    PROMPT_MIN,
+    SynthesisProviderError,
+    _KIND_BOUNDS,
+)
 from Trainforge.generators._session_budget import (
     SynthesisBudgetExceeded,
     _BudgetTracker,
@@ -47,6 +54,77 @@ _DISPATCH_TASK_NAME = "synthesize_training"
 _AGENT_TYPE = "training-synthesizer"
 _INSTRUCTION_KEYS = ["prompt", "completion"]
 _PREFERENCE_KEYS = ["prompt", "chosen", "rejected"]
+
+# Wave 112 Task 4: which output keys participate in the length-clamp per
+# paraphrase kind. Mirrors the per-kind bounds in
+# ``_anthropic_provider._KIND_BOUNDS`` (``chosen``/``rejected`` reuse the
+# completion bounds). The session provider's keys map 1:1 to bound names.
+_KIND_KEYS: Dict[str, List[str]] = {
+    "instruction": ["prompt", "completion"],
+    "preference": ["prompt", "chosen", "rejected"],
+}
+
+
+def _validate_lengths(
+    outputs: Dict[str, Any],
+    *,
+    kind: str,
+    chunk_id: Optional[str] = None,
+) -> None:
+    """Enforce per-key length bounds on a session-provider response.
+
+    Wave 112 Task 4: parallel to ``_anthropic_provider._clamp``'s raise
+    behavior. Short paraphrases must fail loud rather than silently
+    landing in the cache and the JSONL writer (which would let a
+    too-short prompt poison ``instruction_pairs.jsonl``).
+
+    Args:
+        outputs: The dispatcher response's ``outputs`` dict (already
+            validated to have non-empty string values by ``_dispatch``).
+        kind: ``"instruction"`` or ``"preference"`` — selects which
+            keys to check.
+        chunk_id: Optional context for the raised error.
+
+    Raises:
+        SynthesisProviderError: when any checked key's value falls
+            below the minimum or exceeds the maximum for its bound.
+            The ``code`` is ``f"{key}_below_minimum"`` or
+            ``f"{key}_above_maximum"`` so callers can dispatch.
+    """
+    try:
+        keys = _KIND_KEYS[kind]
+    except KeyError as exc:
+        raise ValueError(
+            f"_validate_lengths: unknown kind={kind!r}; expected one of "
+            f"{sorted(_KIND_KEYS)}"
+        ) from exc
+    for key in keys:
+        value = outputs.get(key)
+        if not isinstance(value, str):
+            # _dispatch already enforced this; defensive only.
+            raise SynthesisProviderError(
+                f"_validate_lengths: expected string for key={key!r}, "
+                f"got {type(value).__name__}",
+                code="empty_field",
+                chunk_id=chunk_id,
+            )
+        lo, hi = _KIND_BOUNDS[key]
+        length = len(value.strip())
+        if length < lo:
+            raise SynthesisProviderError(
+                f"{kind}.{key} length {length} below minimum {lo}; "
+                f"refusing to ship short paraphrase. Caller should "
+                f"retry the dispatch.",
+                code=f"{key}_below_minimum",
+                chunk_id=chunk_id,
+            )
+        if length > hi:
+            raise SynthesisProviderError(
+                f"{kind}.{key} length {length} above maximum {hi}; "
+                f"subagent must constrain output.",
+                code=f"{key}_above_maximum",
+                chunk_id=chunk_id,
+            )
 
 
 class ClaudeSessionProvider:
@@ -142,6 +220,9 @@ class ClaudeSessionProvider:
             )
         )
         elapsed = time.monotonic() - t0
+        # Wave 112 Task 4: clamp lengths BEFORE persisting to cache so a
+        # poisoned response (short paraphrase) never lands on disk.
+        _validate_lengths(outputs, kind="instruction", chunk_id=chunk_id or None)
         self._budget.record(
             kind="instruction", chunk_id=chunk_id,
             cached=False, elapsed_seconds=elapsed,
@@ -205,6 +286,9 @@ class ClaudeSessionProvider:
             )
         )
         elapsed = time.monotonic() - t0
+        # Wave 112 Task 4: clamp lengths BEFORE persisting to cache so a
+        # poisoned response (short paraphrase) never lands on disk.
+        _validate_lengths(outputs, kind="preference", chunk_id=chunk_id or None)
         self._budget.record(
             kind="preference", chunk_id=chunk_id,
             cached=False, elapsed_seconds=elapsed,

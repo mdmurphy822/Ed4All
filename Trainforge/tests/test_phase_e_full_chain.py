@@ -54,18 +54,35 @@ def test_full_chain_synthesis_to_eval_gating(tmp_path: Path) -> None:
     # records telemetry under the corpus.
     async def agent_tool(*, task_params, **_kw):
         kind = task_params["kind"]
+        # Wave 112 Task 4: outputs must respect _validate_lengths floors
+        # (PROMPT_MIN=40, COMPLETION_MIN=50). These fixtures are kept just
+        # above the floor so a regression in the validator surfaces here
+        # rather than silently passing through with poisoned shorts.
         if kind == "instruction":
             return make_instruction_response(
-                prompt="What does sh:datatype constrain?",
+                prompt=(
+                    "What does sh:datatype constrain about literal "
+                    "values in SHACL shape definitions?"
+                ),
                 completion=(
-                    "sh:datatype constrains literal types in SHACL shapes. "
-                    f"[{task_params.get('chunk_id', 'chunk_001')}]"
+                    "sh:datatype constrains literal types in SHACL "
+                    "shapes, requiring values to match the named "
+                    f"datatype IRI. [{task_params.get('chunk_id', 'chunk_001')}]"
                 ),
             )
         return make_preference_response(
-            prompt="Which is correct?",
-            chosen="sh:datatype binds a literal type.",
-            rejected="sh:datatype binds a class.",
+            prompt=(
+                "Which statement about sh:datatype in SHACL is "
+                "correct with respect to literal binding?"
+            ),
+            chosen=(
+                "sh:datatype binds a literal type to the constrained "
+                "value, requiring an XSD datatype IRI."
+            ),
+            rejected=(
+                "sh:datatype binds a class to the constrained value, "
+                "requiring instance graph membership in that class."
+            ),
         )
 
     dispatcher = FakeLocalDispatcher(agent_tool=agent_tool)
