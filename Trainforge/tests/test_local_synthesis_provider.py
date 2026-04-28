@@ -316,27 +316,39 @@ def test_explicit_api_key_kwarg_used_in_authorization_header(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_too_short_completion_raises_synthesis_provider_error(monkeypatch):
-    """Below-min paraphrase must raise (no sentinel filler)."""
+def test_too_short_completion_retries_then_raises(monkeypatch):
+    """Wave 114: below-min completion now triggers a length-retry
+    inside ``_call_with_parse``. After ``MAX_PARSE_RETRIES`` exhausted
+    short responses the provider raises ``paraphrase_invalid_after_retry``
+    (replacing the prior single-shot ``completion_below_minimum``
+    raise). No sentinel filler is ever injected."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     paraphrased = json.dumps({
         "prompt": "Recall the foundational concept introduced for topic X in chapter one.",
-        # Far below COMPLETION_MIN (50 chars).
+        # Far below COMPLETION_MIN (50 chars). Repeated 3x to exhaust
+        # the length-retry budget.
         "completion": "too short",
     })
     client = _client_yielding(
         httpx.Response(200, json=_success_body(paraphrased)),
+        httpx.Response(200, json=_success_body(paraphrased)),
+        httpx.Response(200, json=_success_body(paraphrased)),
     )
     p = LocalSynthesisProvider(client=client)
-    with pytest.raises(SynthesisProviderError) as excinfo:
-        p.paraphrase_instruction(_instruction_draft(), _chunk())
-    assert excinfo.value.code == "completion_below_minimum"
+    with patch("Trainforge.generators._together_provider.time.sleep"):
+        with pytest.raises(SynthesisProviderError) as excinfo:
+            p.paraphrase_instruction(_instruction_draft(), _chunk())
+    assert excinfo.value.code == "paraphrase_invalid_after_retry"
+    assert "completion length 9 below minimum 50" in str(excinfo.value)
 
 
-def test_too_short_prompt_raises_synthesis_provider_error(monkeypatch):
+def test_too_short_prompt_retries_then_raises(monkeypatch):
+    """Wave 114: below-min prompt now triggers a length-retry. Local
+    floor is 25 chars (vs. Anthropic's 40); a 9-char prompt still
+    trips it. Three exhausted retries -> paraphrase_invalid_after_retry."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     paraphrased = json.dumps({
-        "prompt": "too short",  # below PROMPT_MIN (40 chars).
+        "prompt": "too short",  # below DEFAULT_LOCAL_KIND_BOUNDS prompt floor (25).
         "completion": (
             "Topic X anchors every later chapter; recall its formal "
             "definition before attempting application questions."
@@ -344,11 +356,15 @@ def test_too_short_prompt_raises_synthesis_provider_error(monkeypatch):
     })
     client = _client_yielding(
         httpx.Response(200, json=_success_body(paraphrased)),
+        httpx.Response(200, json=_success_body(paraphrased)),
+        httpx.Response(200, json=_success_body(paraphrased)),
     )
     p = LocalSynthesisProvider(client=client)
-    with pytest.raises(SynthesisProviderError) as excinfo:
-        p.paraphrase_instruction(_instruction_draft(), _chunk())
-    assert excinfo.value.code == "prompt_below_minimum"
+    with patch("Trainforge.generators._together_provider.time.sleep"):
+        with pytest.raises(SynthesisProviderError) as excinfo:
+            p.paraphrase_instruction(_instruction_draft(), _chunk())
+    assert excinfo.value.code == "paraphrase_invalid_after_retry"
+    assert "prompt length 9 below minimum 25" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
@@ -528,9 +544,10 @@ def test_local_provider_recovers_from_prose_drift(monkeypatch):
 
 def test_local_provider_raises_after_lenient_retry_exhaustion(monkeypatch):
     """After 3 unrecoverable responses, raise SynthesisProviderError
-    with ``code='json_parse_failed_after_lenient_retry'`` and a
-    truncated tail of the last response in the message — postmortem
-    visibility."""
+    with ``code='paraphrase_invalid_after_retry'`` (Wave 114 unified
+    the parse-failure and length-failure exhaustion paths under one
+    error code) and a truncated tail of the last response in the
+    message — postmortem visibility."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     bad_response = (
         "I cannot help with that request, but here is some other "
@@ -546,7 +563,7 @@ def test_local_provider_raises_after_lenient_retry_exhaustion(monkeypatch):
     with patch("Trainforge.generators._together_provider.time.sleep"):
         with pytest.raises(SynthesisProviderError) as excinfo:
             p.paraphrase_instruction(_instruction_draft(), _chunk())
-    assert excinfo.value.code == "json_parse_failed_after_lenient_retry"
+    assert excinfo.value.code == "paraphrase_invalid_after_retry"
     # Truncated tail of the last response surfaces in the message.
     assert "DISTINCTIVE_TAIL_MARKER" in str(excinfo.value)
 

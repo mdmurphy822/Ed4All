@@ -313,11 +313,21 @@ class LocalSynthesisProvider:
         directives. The embedded client's
         :meth:`OpenAICompatibleClient._extract_json_lenient` recovers
         the JSON across the three common drift patterns before parse
-        failure escalates. After ``MAX_PARSE_RETRIES`` lenient-extract
-        misses, raises ``SynthesisProviderError`` with code
-        ``json_parse_failed_after_lenient_retry`` and a truncated
-        500-char tail of the last response in the message — postmortem
-        visibility on what the model actually emitted.
+        failure escalates.
+
+        Wave 114 hardening: a parsed response whose required-key
+        values fall below the per-kind length floor now triggers a
+        remediation retry (length-retry), parallel to JSON-parse
+        retry. The model receives a corrective user message stating
+        the observed-vs-required length and rewrites its own prior
+        output. Preserves Wave 112's no-sentinel-injection invariant
+        — the retry asks the model to expand, never injects filler.
+
+        After ``MAX_PARSE_RETRIES`` exhaustion (across either failure
+        class), raises ``SynthesisProviderError`` with code
+        ``paraphrase_invalid_after_retry`` and a truncated 500-char
+        tail of the last response — postmortem visibility on what the
+        model actually emitted.
         """
         messages = self._build_messages(system_prompt, chunk_text, user_prompt)
         attempts = 0
@@ -350,14 +360,71 @@ class LocalSynthesisProvider:
                     last_err,
                 )
                 continue
+            short = self._first_short_field(parsed, required_keys)
+            if short is not None:
+                field, length, floor = short
+                last_err = f"{field} length {length} below minimum {floor}"
+                logger.warning(
+                    "%s synthesis: length-retry %d/%d: %s",
+                    self._provider_name, attempts, MAX_PARSE_RETRIES,
+                    last_err,
+                )
+                messages = self._append_length_remediation(
+                    messages, field, length, floor,
+                )
+                continue
             return parsed, last_usage, total_http_retries
         raise SynthesisProviderError(
-            f"{type(self).__name__}: failed to extract a valid JSON "
-            f"object after {MAX_PARSE_RETRIES} lenient-extraction "
-            f"attempts. Last error: {last_err}; tail of last response: "
-            f"{last_text[-500:]!r}",
-            code="json_parse_failed_after_lenient_retry",
+            f"{type(self).__name__}: failed to obtain a valid paraphrase "
+            f"after {MAX_PARSE_RETRIES} attempts. Last error: {last_err}; "
+            f"tail of last response: {last_text[-500:]!r}",
+            code="paraphrase_invalid_after_retry",
         )
+
+    def _first_short_field(
+        self, parsed: Dict[str, Any], required_keys: tuple
+    ) -> Optional[Tuple[str, int, int]]:
+        """Return ``(field_name, length, floor)`` for the first required
+        key whose stripped value is shorter than its kind floor. None
+        when all required fields meet the floor.
+
+        Mirrors the kind-mapping ``_clamp`` enforces, so the retry loop
+        pre-checks lengths before commit. Keys without a registered
+        floor in ``self._kind_bounds`` are skipped (the call site is
+        responsible for using kind names that are bound; mismatches
+        surface as a dropped check rather than a hidden failure).
+        """
+        for key in required_keys:
+            value = str(parsed.get(key, "") or "").strip()
+            try:
+                lo, _ = self._kind_bounds[key]
+            except KeyError:
+                continue
+            if len(value) < lo:
+                return (key, len(value), lo)
+        return None
+
+    @staticmethod
+    def _append_length_remediation(
+        messages: List[Dict[str, str]],
+        field: str,
+        length: int,
+        floor: int,
+    ) -> List[Dict[str, str]]:
+        """Return a new message list with a corrective user turn appended.
+
+        The remediation message is short and concrete: states the
+        observed-vs-required length and asks for a specific edit.
+        Avoids any sentinel filler — the model rewrites its own prior
+        output, preserving Wave 112's no-injection invariant.
+        """
+        remediation = (
+            f"The prior response had {field}={length} chars but the "
+            f"minimum is {floor}. Rewrite that field to be at least "
+            f"{floor} chars while preserving the same meaning. "
+            f"Output the same JSON object shape, JSON only."
+        )
+        return list(messages) + [{"role": "user", "content": remediation}]
 
     def _chat_completion_raw(
         self, messages: List[Dict[str, str]]
