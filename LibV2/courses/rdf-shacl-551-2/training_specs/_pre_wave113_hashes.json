@@ -1,0 +1,6 @@
+{
+  "instruction_pairs.jsonl.pre-wave113.bak": "4f92e3abb38e48e91baaceaeab496c2c125807b75ffbb7746693e4d82ce38c33",
+  "preference_pairs.jsonl.pre-wave113.bak": "3cfdaaffad691b114c218213033190ea8b647533a910211f6374bf53206604b1",
+  "snapshotted_at": "2026-04-28T14:51:37.237987+00:00",
+  "reason": "Pre-Wave-112 pipeline output; superseded by Wave 113 rebuild"
+}
