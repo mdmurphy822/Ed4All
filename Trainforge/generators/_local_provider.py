@@ -68,8 +68,6 @@ from Trainforge.generators._together_provider import (
     INITIAL_BACKOFF_SECONDS,
     MAX_HTTP_RETRIES,
     MAX_PARSE_RETRIES,
-    _PREFERENCE_SYSTEM_PROMPT,
-    _INSTRUCTION_SYSTEM_PROMPT,
     _RETRYABLE_STATUS,
 )
 
@@ -94,6 +92,30 @@ DEFAULT_TIMEOUT = 60.0
 # 3-word stub outputs without rejecting valid compressed paraphrases.
 # Completion floor stays at 50 — a 30-char training-target completion
 # has legitimate quality concerns the prompt floor does not.
+# Wave 114: terse system prompts for the local path. 7B-Q4 instruction
+# models attend less reliably to long behavioral preambles; the
+# trailing JSON directive in the user message is the most-respected
+# part of the prompt. Keeping these <50 words frees attention for the
+# task itself. Anthropic / Together providers retain their original
+# verbose prompts (Sonnet-class models use the extra context fine).
+_LOCAL_INSTRUCTION_SYSTEM_PROMPT = (
+    "You paraphrase training pairs from a deterministic template. "
+    "Rewrite the prompt and completion using different wording but "
+    "the same meaning. Do not add facts not in the chunk text. "
+    "Preserve the Bloom cognitive level. Output JSON only: "
+    '{"prompt": "...", "completion": "..."}.'
+)
+
+_LOCAL_PREFERENCE_SYSTEM_PROMPT = (
+    "You paraphrase preference triples for DPO training. Rewrite "
+    "prompt, chosen, and rejected using different wording but the "
+    "same meaning. The chosen completion stays factually correct; "
+    "the rejected stays plausibly wrong. Do not add facts not in "
+    "the chunk text. Output JSON only: "
+    '{"prompt": "...", "chosen": "...", "rejected": "..."}.'
+)
+
+
 DEFAULT_LOCAL_KIND_BOUNDS: Dict[str, tuple] = {
     "prompt": (25, PROMPT_MAX),
     "completion": (COMPLETION_MIN, COMPLETION_MAX),
@@ -220,7 +242,7 @@ class LocalSynthesisProvider:
         user_prompt = self._render_instruction_user(draft, chunk_id)
 
         parsed, usage, retry_count = self._call_with_parse(
-            system_prompt=_INSTRUCTION_SYSTEM_PROMPT,
+            system_prompt=_LOCAL_INSTRUCTION_SYSTEM_PROMPT,
             chunk_text=chunk_text,
             user_prompt=user_prompt,
             required_keys=("prompt", "completion"),
@@ -255,7 +277,7 @@ class LocalSynthesisProvider:
         user_prompt = self._render_preference_user(draft, chunk_id)
 
         parsed, usage, retry_count = self._call_with_parse(
-            system_prompt=_PREFERENCE_SYSTEM_PROMPT,
+            system_prompt=_LOCAL_PREFERENCE_SYSTEM_PROMPT,
             chunk_text=chunk_text,
             user_prompt=user_prompt,
             required_keys=("prompt", "chosen", "rejected"),
