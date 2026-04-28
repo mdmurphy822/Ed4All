@@ -562,10 +562,17 @@ def test_run_synthesis_claude_session_respects_max_dispatches(tmp_path):
         FakeLocalDispatcher, make_instruction_response, make_preference_response,
     )
 
+    # Wave 112 Task 4: outputs must respect _validate_lengths floors.
+    _ok_p = "Paraphrased prompt explaining RDFS in detail for the learner."
+    _ok_c = (
+        "Paraphrased completion grounded in the source chunk text "
+        "covering RDFS and SHACL contracts in sufficient detail."
+    )
+
     async def agent_tool(*, task_params, **_kw):
         if task_params["kind"] == "instruction":
-            return make_instruction_response(prompt="P", completion="C")
-        return make_preference_response(prompt="P", chosen="C", rejected="R")
+            return make_instruction_response(prompt=_ok_p, completion=_ok_c)
+        return make_preference_response(prompt=_ok_p, chosen=_ok_c, rejected=_ok_c)
 
     dispatcher = FakeLocalDispatcher(agent_tool=agent_tool)
     working = _make_working_copy(tmp_path)
@@ -588,10 +595,17 @@ def test_run_synthesis_writes_pilot_progress_on_budget_exceeded(tmp_path):
         FakeLocalDispatcher, make_instruction_response, make_preference_response,
     )
 
+    # Wave 112 Task 4: outputs must respect _validate_lengths floors.
+    _ok_p = "Paraphrased prompt explaining RDFS in detail for the learner."
+    _ok_c = (
+        "Paraphrased completion grounded in the source chunk text "
+        "covering RDFS and SHACL contracts in sufficient detail."
+    )
+
     async def agent_tool(*, task_params, **_kw):
         if task_params["kind"] == "instruction":
-            return make_instruction_response(prompt="P", completion="C")
-        return make_preference_response(prompt="P", chosen="C", rejected="R")
+            return make_instruction_response(prompt=_ok_p, completion=_ok_c)
+        return make_preference_response(prompt=_ok_p, chosen=_ok_c, rejected=_ok_c)
 
     dispatcher = FakeLocalDispatcher(agent_tool=agent_tool)
     working = _make_working_copy(tmp_path)
