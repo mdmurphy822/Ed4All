@@ -330,3 +330,25 @@ def test_telemetry_jsonl_written_once_per_call(tmp_path: Path) -> None:
     assert len(rows) == 2
     kinds = sorted(r["kind"] for r in rows)
     assert kinds == ["instruction", "preference"]
+
+
+def test_circuit_opens_after_repeated_dispatcher_failures(tmp_path: Path) -> None:
+    """Three MAILBOX_TIMEOUT in a row trips the breaker; the 4th call
+    raises SynthesisCircuitOpen WITHOUT contacting the dispatcher."""
+    from Trainforge.generators._session_budget import SynthesisCircuitOpen
+
+    async def agent_tool(**_kwargs: object) -> dict:
+        return make_failure_response(error="timed out", error_code="MAILBOX_TIMEOUT")
+
+    provider = ClaudeSessionProvider(
+        dispatcher=FakeLocalDispatcher(agent_tool=agent_tool),
+        failures_to_open=3,
+        failure_window_seconds=60.0,
+    )
+    chunk = {"id": "c1", "text": "x"}
+    draft = {"prompt": "P", "completion": "C"}
+    for _ in range(3):
+        with pytest.raises(RuntimeError, match="MAILBOX_TIMEOUT"):
+            provider.paraphrase_instruction(draft, chunk)
+    with pytest.raises(SynthesisCircuitOpen):
+        provider.paraphrase_instruction(draft, chunk)

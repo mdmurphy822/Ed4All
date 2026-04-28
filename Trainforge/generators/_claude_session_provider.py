@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional
 from Trainforge.generators._session_budget import (
     SynthesisBudgetExceeded,
     _BudgetTracker,
+    _CircuitBreaker,
 )
 
 
@@ -60,6 +61,8 @@ class ClaudeSessionProvider:
         cache_path: Optional[Path] = None,
         max_dispatches: Optional[int] = None,
         telemetry_path: Optional[Path] = None,
+        failures_to_open: int = 3,
+        failure_window_seconds: float = 60.0,
     ) -> None:
         if dispatcher is None:
             raise RuntimeError(_NO_DISPATCHER_MSG)
@@ -75,6 +78,11 @@ class ClaudeSessionProvider:
         self._budget = _BudgetTracker(
             telemetry_path=telemetry_path,
             max_dispatches=max_dispatches,
+        )
+        # Wave 111 / Phase E: circuit breaker for repeated dispatcher failures.
+        self._breaker = _CircuitBreaker(
+            failures_to_open=failures_to_open,
+            window_seconds=failure_window_seconds,
         )
 
     @property
@@ -220,6 +228,9 @@ class ClaudeSessionProvider:
         chunk_text: str,
         expected_keys: List[str],
     ) -> Dict[str, Any]:
+        # Wave 111 / Phase E: circuit breaker fail-fast on repeated timeouts.
+        # Raises SynthesisCircuitOpen before contacting the dispatcher.
+        self._breaker.before_dispatch()
         task_params = {
             "kind": kind,
             "draft": draft,
@@ -234,6 +245,9 @@ class ClaudeSessionProvider:
             run_id=self._run_id,
         )
         if not result.get("success"):
+            self._breaker.record_failure(
+                error_code=str(result.get("error_code") or "UNKNOWN"),
+            )
             raise RuntimeError(
                 f"training-synthesizer dispatch failed: "
                 f"code={result.get('error_code')!r} error={result.get('error')!r}"
@@ -241,10 +255,12 @@ class ClaudeSessionProvider:
         outputs = result.get("outputs") or {}
         for key in expected_keys:
             if key not in outputs:
+                self._breaker.record_failure(error_code="MALFORMED_OUTPUT")
                 raise RuntimeError(
                     f"training-synthesizer returned malformed output "
                     f"for kind={kind}: missing key {key!r}; got {sorted(outputs)!r}"
                 )
+        self._breaker.record_success()
         return outputs
 
     def _emit_decision(
