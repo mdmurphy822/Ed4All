@@ -19,6 +19,21 @@ from Trainforge.tests._synthesis_fakes import (
 )
 
 
+# Wave 112 Task 4: helpers that produce strings comfortably above the
+# PROMPT_MIN=40 / COMPLETION_MIN=50 floors enforced by
+# _claude_session_provider._validate_lengths. The marker token lets each
+# test still uniquely identify a paraphrase output.
+def _ok_prompt(marker: str = "p") -> str:
+    return f"Paraphrased prompt {marker} explaining RDFS in detail for the learner."
+
+
+def _ok_completion(marker: str = "c") -> str:
+    return (
+        f"Paraphrased completion {marker} grounded in the source chunk text "
+        f"covering RDFS semantics and SHACL validation contracts."
+    )
+
+
 def test_constructor_requires_dispatcher() -> None:
     """No dispatcher means no Claude Code session — fail loud, do not silently
     fall back to mock or anthropic."""
@@ -27,10 +42,21 @@ def test_constructor_requires_dispatcher() -> None:
 
 
 def test_paraphrase_instruction_returns_rewritten_pair_with_metadata_preserved() -> None:
+    # Wave 112 Task 4 floors: PROMPT_MIN=40, COMPLETION_MIN=50.
+    paraphrased_prompt = (
+        "Paraphrased: explain how RDFS defines the domain "
+        "and range of properties in vocabularies."
+    )
+    paraphrased_completion = (
+        "RDFS describes vocabulary semantics with rdfs:domain and "
+        "rdfs:range, while SHACL validates instance graphs against "
+        "node and property shapes. [chunk_00054]"
+    )
+
     async def agent_tool(**_kwargs: object) -> dict:
         return make_instruction_response(
-            prompt="Paraphrased: explain RDFS domain",
-            completion="RDFS describes; SHACL validates. [chunk_00054]",
+            prompt=paraphrased_prompt,
+            completion=paraphrased_completion,
         )
 
     dispatcher = FakeLocalDispatcher(agent_tool=agent_tool)
@@ -52,8 +78,8 @@ def test_paraphrase_instruction_returns_rewritten_pair_with_metadata_preserved()
 
     out = provider.paraphrase_instruction(draft, chunk)
 
-    assert out["prompt"] == "Paraphrased: explain RDFS domain"
-    assert out["completion"] == "RDFS describes; SHACL validates. [chunk_00054]"
+    assert out["prompt"] == paraphrased_prompt
+    assert out["completion"] == paraphrased_completion
     assert out["provider"] == "claude_session"
     # Metadata preserved verbatim:
     assert out["chunk_id"] == "rdf_shacl_551_chunk_00054"
@@ -74,11 +100,25 @@ def test_paraphrase_instruction_returns_rewritten_pair_with_metadata_preserved()
 
 
 def test_paraphrase_preference_rewrites_chosen_and_rejected() -> None:
+    # Wave 112 Task 4 floors: PROMPT_MIN=40, COMPLETION_MIN=50.
+    paraphrased_prompt = (
+        "Which statement about RDFS describes its purpose accurately "
+        "with respect to SHACL validation?"
+    )
+    paraphrased_chosen = (
+        "RDFS describes vocabulary semantics; it does not validate "
+        "instance data against shapes the way SHACL does. [chunk_00054]"
+    )
+    paraphrased_rejected = (
+        "RDFS validates data graphs against shapes by emitting conformance "
+        "reports the same way that SHACL conformance does."
+    )
+
     async def agent_tool(**_kwargs: object) -> dict:
         return make_preference_response(
-            prompt="Which statement about RDFS is correct?",
-            chosen="RDFS describes vocabulary semantics. [chunk_00054]",
-            rejected="RDFS validates data graphs against shapes.",
+            prompt=paraphrased_prompt,
+            chosen=paraphrased_chosen,
+            rejected=paraphrased_rejected,
         )
 
     dispatcher = FakeLocalDispatcher(agent_tool=agent_tool)
@@ -98,9 +138,9 @@ def test_paraphrase_preference_rewrites_chosen_and_rejected() -> None:
 
     out = provider.paraphrase_preference(draft, chunk)
 
-    assert out["prompt"] == "Which statement about RDFS is correct?"
-    assert out["chosen"] == "RDFS describes vocabulary semantics. [chunk_00054]"
-    assert out["rejected"] == "RDFS validates data graphs against shapes."
+    assert out["prompt"] == paraphrased_prompt
+    assert out["chosen"] == paraphrased_chosen
+    assert out["rejected"] == paraphrased_rejected
     assert out["provider"] == "claude_session"
     # Metadata preserved:
     assert out["misconception_id"] == "mc_abcd1234efgh5678"
@@ -154,7 +194,9 @@ class _RecordingCapture:
 
 def test_paraphrase_instruction_emits_synthesis_provider_call_capture() -> None:
     async def agent_tool(**_kwargs: object) -> dict:
-        return make_instruction_response(prompt="p2", completion="c2")
+        return make_instruction_response(
+            prompt=_ok_prompt("p2"), completion=_ok_completion("c2"),
+        )
 
     capture = _RecordingCapture()
     provider = ClaudeSessionProvider(
@@ -189,7 +231,10 @@ def test_cache_hit_skips_dispatcher_and_returns_cached_output(tmp_path: Path) ->
     async def agent_tool(**_kwargs: object) -> dict:
         nonlocal call_count
         call_count += 1
-        return make_instruction_response(prompt=f"p{call_count}", completion=f"c{call_count}")
+        return make_instruction_response(
+            prompt=_ok_prompt(f"p{call_count}"),
+            completion=_ok_completion(f"c{call_count}"),
+        )
 
     cache_path = tmp_path / "synthesis_cache.jsonl"
     dispatcher = FakeLocalDispatcher(agent_tool=agent_tool)
@@ -217,7 +262,7 @@ def test_cache_hit_skips_dispatcher_and_returns_cached_output(tmp_path: Path) ->
     assert lines[0]["kind"] == "instruction"
     assert lines[0]["chunk_id"] == "rdf_shacl_551_chunk_00054"
     assert lines[0]["provider_version"] == "v1"
-    assert lines[0]["outputs"]["prompt"] == "p1"
+    assert lines[0]["outputs"]["prompt"] == _ok_prompt("p1")
 
 
 def test_cache_invalidates_on_provider_version_bump(tmp_path: Path) -> None:
@@ -226,7 +271,10 @@ def test_cache_invalidates_on_provider_version_bump(tmp_path: Path) -> None:
     async def agent_tool(**_kwargs: object) -> dict:
         nonlocal call_count
         call_count += 1
-        return make_instruction_response(prompt=f"p{call_count}", completion=f"c{call_count}")
+        return make_instruction_response(
+            prompt=_ok_prompt(f"p{call_count}"),
+            completion=_ok_completion(f"c{call_count}"),
+        )
 
     cache_path = tmp_path / "cache.jsonl"
     draft = {"prompt": "P", "completion": "C", "template_id": "x", "chunk_id": "c1"}
@@ -257,7 +305,10 @@ def test_max_dispatches_cap_raises_synthesis_budget_exceeded(tmp_path: Path) -> 
     async def agent_tool(**_kwargs: object) -> dict:
         nonlocal call_count
         call_count += 1
-        return make_instruction_response(prompt=f"p{call_count}", completion=f"c{call_count}")
+        return make_instruction_response(
+            prompt=_ok_prompt(f"p{call_count}"),
+            completion=_ok_completion(f"c{call_count}"),
+        )
 
     cache = tmp_path / "cache.jsonl"
     provider = ClaudeSessionProvider(
@@ -281,7 +332,9 @@ def test_cache_hits_do_not_tick_dispatch_counter(tmp_path: Path) -> None:
     """Re-running against a populated cache costs zero dispatches even
     when max_dispatches is 1."""
     async def agent_tool(**_kwargs: object) -> dict:
-        return make_instruction_response(prompt="p1", completion="c1")
+        return make_instruction_response(
+            prompt=_ok_prompt("p1"), completion=_ok_completion("c1"),
+        )
 
     cache = tmp_path / "cache.jsonl"
     p1 = ClaudeSessionProvider(
@@ -299,7 +352,7 @@ def test_cache_hits_do_not_tick_dispatch_counter(tmp_path: Path) -> None:
         max_dispatches=1,
     )
     out = p2.paraphrase_instruction(draft, chunk)
-    assert out["prompt"] == "p1"
+    assert out["prompt"] == _ok_prompt("p1")
     p2.paraphrase_instruction(
         {"prompt": "P2", "completion": "C2", "template_id": "t", "chunk_id": "chunk_2"},
         {"id": "chunk_2", "text": "x"},
@@ -309,8 +362,14 @@ def test_cache_hits_do_not_tick_dispatch_counter(tmp_path: Path) -> None:
 def test_telemetry_jsonl_written_once_per_call(tmp_path: Path) -> None:
     async def agent_tool(*, task_params, **_kwargs: object) -> dict:
         if task_params["kind"] == "instruction":
-            return make_instruction_response(prompt="p", completion="c")
-        return make_preference_response(prompt="p", chosen="c", rejected="r")
+            return make_instruction_response(
+                prompt=_ok_prompt(), completion=_ok_completion(),
+            )
+        return make_preference_response(
+            prompt=_ok_prompt(),
+            chosen=_ok_completion("chosen"),
+            rejected=_ok_completion("rejected"),
+        )
 
     tel = tmp_path / "telemetry.jsonl"
     provider = ClaudeSessionProvider(
@@ -412,6 +471,70 @@ def test_dispatch_rejects_none_value() -> None:
         provider.paraphrase_instruction(draft, chunk)
     assert ei.value.code == "empty_field"
     assert "prompt" in str(ei.value)
+
+
+def test_paraphrase_instruction_rejects_short_prompt() -> None:
+    """Wave 112 Task 4: a paraphrased prompt below PROMPT_MIN must fail
+    loud rather than silently shipping a sub-floor pair into the cache."""
+    from Trainforge.generators._anthropic_provider import (
+        SynthesisProviderError, PROMPT_MIN,
+    )
+
+    short_prompt = "x" * 10  # well below PROMPT_MIN (40)
+    long_completion = "yyy yyyy yyyy yyyy yyyy yyyy yyyy yyyy yyyy yyyy yyyy yyyy"
+    assert len(short_prompt) < PROMPT_MIN
+
+    async def agent_tool(**_kwargs: object) -> dict:
+        return {
+            "success": True,
+            "outputs": {"prompt": short_prompt, "completion": long_completion},
+            "artifacts": [],
+        }
+
+    provider = ClaudeSessionProvider(
+        dispatcher=FakeLocalDispatcher(agent_tool=agent_tool),
+        run_id="run-short-prompt",
+    )
+    draft = {"prompt": "p", "completion": "c"}
+    chunk = {"id": "c1", "text": "t"}
+
+    with pytest.raises(SynthesisProviderError) as ei:
+        provider.paraphrase_instruction(draft, chunk)
+    assert ei.value.code == "prompt_below_minimum"
+
+
+def test_paraphrase_preference_rejects_short_chosen() -> None:
+    """Analogous floor-check on the preference path's `chosen` arm."""
+    from Trainforge.generators._anthropic_provider import (
+        SynthesisProviderError, COMPLETION_MIN,
+    )
+
+    long_prompt = "z" * 60  # above PROMPT_MIN (40)
+    short_chosen = "yy"  # below COMPLETION_MIN (50)
+    long_rejected = "rrr rrrr rrrr rrrr rrrr rrrr rrrr rrrr rrrr rrrr rrrr rrrr"
+    assert len(short_chosen) < COMPLETION_MIN
+
+    async def agent_tool(**_kwargs: object) -> dict:
+        return {
+            "success": True,
+            "outputs": {
+                "prompt": long_prompt,
+                "chosen": short_chosen,
+                "rejected": long_rejected,
+            },
+            "artifacts": [],
+        }
+
+    provider = ClaudeSessionProvider(
+        dispatcher=FakeLocalDispatcher(agent_tool=agent_tool),
+        run_id="run-short-chosen",
+    )
+    draft = {"prompt": "p", "chosen": "c", "rejected": "r"}
+    chunk = {"id": "c1", "text": "t"}
+
+    with pytest.raises(SynthesisProviderError) as ei:
+        provider.paraphrase_preference(draft, chunk)
+    assert ei.value.code == "chosen_below_minimum"
 
 
 def test_circuit_opens_after_repeated_dispatcher_failures(tmp_path: Path) -> None:
