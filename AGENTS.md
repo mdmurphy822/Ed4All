@@ -335,7 +335,25 @@ Code on this project. Be honest about the lines.
 
 ---
 
-## 6. Operator handoff
+## 6. Licensing context
+
+Read `docs/LICENSING.md` before kicking off any training-data synthesis run. Codex's posture in this project is shaped by an asymmetry between **dev tooling** and **synthesis providers**:
+
+- **Codex's role is orchestration.** It runs scripts (`pilot_synthesis.py`, `synthesize_training.py`), reads files, dispatches shell commands, summarizes pilot reports. It does NOT generate training data.
+- **The local Qwen / Together-hosted OSS model generates training data**, not Codex. That separation matters because the trained SLM is a derivative work of the synthesis provider's outputs — not Codex's.
+- **OpenAI's Services Terms** (https://openai.com/policies/services-terms/) and **Business Terms** (https://openai.com/policies/business-terms/) restrict using Codex outputs to train competing models. Same restriction shape as Anthropic's Consumer/Commercial Terms on Claude Code. For Ed4All's use case this is a non-issue — Codex output is code and shell invocations, not training data.
+- **The pipeline routes training-data synthesis through `--provider local` or `--provider together` by design**, not Anthropic. This keeps the training corpus license-clean from end to end. Wave 113's `LocalSynthesisProvider` exists for exactly this reason.
+
+**One-line per default model:**
+- `--provider local` default: `qwen2.5:7b-instruct-q4_K_M` (Apache 2.0). Outputs are unrestricted; training a derivative SLM on these paraphrases is fully permitted, no attribution required for outputs.
+- `--provider together` default: `meta-llama/Llama-3.3-70B-Instruct-Turbo` (Llama 3.3 Community License + Together AI ToS). Outputs permitted for training-data use under both layers; >700M-MAU commercial use of the model itself requires attribution + special license.
+- `--provider anthropic` and `--provider claude_session`: outputs restricted from training-data use. Stay wired for backward compat; **not** the recommended default.
+
+If a question of "can we use this model's output for training" comes up, defer to the operator. Do not improvise. Full table + URLs in `docs/LICENSING.md`.
+
+---
+
+## 7. Operator handoff
 
 If the operator's intent is unclear at any point, **ask**. Auto mode is
 not a license to guess on training-data work — bad pairs poison the
