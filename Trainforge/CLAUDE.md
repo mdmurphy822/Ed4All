@@ -297,7 +297,8 @@ Training is a **post-import LibV2 stage**, not a step in `Trainforge/process_cou
 | 92   | `0101ec4` | Eval — `Trainforge/eval/` submodule (5 layers × 3 tiers), harness wired into runner, `holdout_graph_hash` added to model card provenance. |
 | 93   | `dc06ba1` | LibV2 integration — `models/` subdir, `import_model`, `_pointers.json` promotion ledger, four new `libv2 models {list,promote,eval}` + `libv2 import-model` CLI subcommands. |
 | 106  | `4a748d2` | Reproducibility wave — `Trainforge/eval/chunk_ids.py` for short-vs-full chunk-ID matching, eval-harness `_EvalProgressTracker` + `eval_progress.jsonl`, per-course `LibV2/courses/<slug>/eval/eval_config.yaml` propagation through `AdapterCallable` (top_p / seed / revision), instruction-variant + source-grounded citation framing in `synthesize_training.py`, expanded `TrainingConfig` (lora_dropout, target_modules, use_4bit, gradient_accumulation_steps, warmup_ratio, weight_decay, min_dpo_pairs, dpo_preference_filter, dpo_fail_hard), Qwen2.5-1.5B `default_revision` pin. |
-| 107  | _this commit_ | Phase A — Claude-Max synthesis bridge: `Trainforge/generators/_claude_session_provider.py` (mirrors `AnthropicSynthesisProvider` interface, dispatches via `LocalDispatcher.dispatch_task`), `Trainforge/agents/training-synthesizer.md` agent spec, `config/agents.yaml::training-synthesizer.type: subagent` flip, `--provider claude_session` CLI flag in `synthesize_training.py`, content-addressed JSONL cache at `.synthesis_cache.jsonl`, `synthesis_provider_call` decision capture wired, factory kwarg rename `anthropic_provider → paraphrase_provider`, and a critical-severity `LibV2ModelValidator` gate (`MOCK_PROVIDER_CORPUS`) that fails closed on `provider="mock"` instruction-pair rows. |
+| 107  | `eeb7cfc` | Phase A — Claude-Max synthesis bridge: `Trainforge/generators/_claude_session_provider.py` (mirrors `AnthropicSynthesisProvider` interface, dispatches via `LocalDispatcher.dispatch_task`), `Trainforge/agents/training-synthesizer.md` agent spec, `config/agents.yaml::training-synthesizer.type: subagent` flip, `--provider claude_session` CLI flag in `synthesize_training.py`, content-addressed JSONL cache at `.synthesis_cache.jsonl`, `synthesis_provider_call` decision capture wired, factory kwarg rename `anthropic_provider → paraphrase_provider`, and a critical-severity `LibV2ModelValidator` gate (`MOCK_PROVIDER_CORPUS`) that fails closed on `provider="mock"` instruction-pair rows. |
+| 108  | _this commit_ | Phase B — eval truth-telling: dropped `chunk_at_difficulty` faithfulness probes (trivially-true), surfaced `yes_rate` from `FaithfulnessEvaluator`, added `negative_probes[]` to `HoldoutBuilder` + `NegativeGroundingEvaluator` (catches yes-biased template-recognizer adapters), multi-chunk ground truth in `SourceMatchEvaluator`, CURIE-aware `evaluate_predicate_usage` strict-mode check in `syntactic.py`, and a critical-severity `lib/validators/eval_gating.py::EvalGatingValidator` wired into `trainforge_train::post_training_validation` so adapter promotion fails closed on regression / yes-bias / no-bias / source-match drop. |
 
 ### Training command
 
@@ -403,6 +404,30 @@ Profiles select the active matrix: `Trainforge/eval/configs/rdf_shacl.yaml` (all
 - **`eval_progress.jsonl`** — written next to `eval_report.json`. `Trainforge/eval/slm_eval_harness.py::_EvalProgressTracker` emits `stage_start`, `model_call`, `stage_end`, `run_end` events around each of the 8 evaluator/invariant chains. Lets a long-running adapter eval be monitored from another terminal without touching the harness.
 - **Per-course `eval_config.yaml`** — `LibV2/courses/<slug>/eval/eval_config.yaml` (`Trainforge/eval/eval_config.py::load_eval_config`) drives `AdapterCallable` generation parameters (`max_new_tokens`, `temperature`, `top_p`, `seed`, `revision`). The runner passes them explicitly so eval generation is deterministic across trainer invocations on different nodes.
 - **`Trainforge/eval/chunk_ids.py`** — canonical `is_chunk_id` / `normalize_chunk_id` / `chunk_ids_match` helpers. The eval harness, `source_match.py`, and `ablation_runner.py` use them so short (`chunk_00270`) and full (`rdf_shacl_551_chunk_00270`) corpus IDs compare equal. Closes the previous mismatch where `source_match` scored 0 on full-corpus IDs that pointed at the right chunk.
+
+**Eval truth-telling (Wave 108 / Phase B).** Five gameable-eval holes from the Wave 92 ship were closed:
+
+- `chunk_at_difficulty` was dropped from `Trainforge/eval/faithfulness.py::_RELATION_TEMPLATES` because every chunk has a difficulty so the probe was trivially-true and only padded faithfulness scores. Held-out edges of that type now fall through to the generic template.
+- `FaithfulnessEvaluator.evaluate()` surfaces a top-level `yes_rate` so a "yes always" template-recognizer adapter is detectable even when its accuracy on positive-only probes is high.
+- `Trainforge/eval/holdout_builder.py` emits a `negative_probes[]` array (count balanced per-relation against the held-out positive count) holding `(source, relation, target)` tuples that DON'T exist in the graph. The new `Trainforge/eval/negative_grounding.py::NegativeGroundingEvaluator` scores no-rate against them; the harness folds `negative_grounding_accuracy` into `eval_report.json`.
+- `Trainforge/eval/source_match.py` accepts a multi-chunk ground-truth set (`ground_truth_chunk_ids: List[str]` populated by `HoldoutBuilder._build_probes` from all chunks teaching/exemplifying/assessing the same target). A model that cites ANY of them is credited; legacy single-source `withheld_edges` still work via fallback to `edge.source`.
+- `Trainforge/eval/syntactic.py::evaluate_predicate_usage` is a CURIE-aware strict-mode check that the generated Turtle uses each REQUIRED predicate URI (no synonym credit for `sh:class` when `sh:datatype` was required).
+
+These five fixes close the regression class where a template-recognizer adapter (Wave 107 corpus = mock provider) scored high on Wave 92's eval. The signals are then gated by `lib/validators/eval_gating.py::EvalGatingValidator` on the `trainforge_train::post_training_validation` phase — see the Active Gates table in root `CLAUDE.md`.
+
+**Eval-gating thresholds (default, override via gate `inputs.thresholds`):**
+
+| Signal | Threshold | Severity | Rationale |
+|--------|-----------|----------|-----------|
+| `faithfulness` | ≥ 0.50 | critical | Floor for held-out fact recall. |
+| `source_match` | ≥ 0.30 | critical | RAG grounding floor (skipped when absent). |
+| `baseline_delta` | ≥ 0.0 | critical | Adapter must not regress vs base. |
+| `negative_grounding_accuracy` | ≥ 0.50 | critical | Yes-bias floor (skipped when absent). |
+| `yes_rate` | ≤ 0.85 | critical | Over-affirmation ceiling. |
+| `metrics.hallucination_rate` | ≤ 0.50 | warning | Advisory — surfaces but never blocks. |
+| `calibration_ece` | ≤ 0.30 | warning | Advisory — uncertainty quality. |
+
+Each gate fire writes a `eval_gating_decision` decision-capture event (rationale interpolates the actual metric values), so a post-hoc audit can replay why a run was blocked.
 
 ### Required validators (pre-training synthesis gates)
 
