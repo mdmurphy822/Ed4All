@@ -645,6 +645,7 @@ Source of truth: `config/workflows.yaml::validation_gates`. Phase column below s
 | `textbook_to_course` | `trainforge_assessment` | `assessment_objective_alignment` | AssessmentObjectiveAlignmentValidator |
 | `textbook_to_course` | `training_synthesis` | `min_edge_count` | MinEdgeCountValidator (Wave 91) |
 | `textbook_to_course` | `training_synthesis` | `synthesis_diversity` | SynthesisDiversityValidator (Wave 91) |
+| `textbook_to_course` | `training_synthesis` | `property_coverage` | PropertyCoverageValidator (Wave 109 — no-ops on courses without a property manifest) |
 | `textbook_to_course` | `libv2_archival` | `libv2_manifest` | LibV2ManifestValidator |
 | `textbook_to_course` | `libv2_archival` | `kg_quality_report` | KGQualityValidator (Wave 91 promotion: critical, thresholds 0.95/0.95/0.95/0.5) |
 | `rag_training` | `assessment_generation` | `assessment_quality` | AssessmentQualityValidator |
