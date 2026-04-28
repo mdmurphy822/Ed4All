@@ -537,6 +537,14 @@ test MUST assert that the capture fires on the call path. Precedents:
 - Trainforge synthesis provider: `Trainforge/generators/_anthropic_provider.py`
   → one `synthesis_provider_call` capture per call (see
   `Trainforge/tests/test_anthropic_synthesis_provider.py`).
+- Trainforge curriculum-alignment provider: `Trainforge/generators/_curriculum_provider.py`
+  (consumed by `Trainforge/align_chunks.py::classify_teaching_roles`)
+  → one `curriculum_alignment_call` capture per teaching-role classification
+  (see `Trainforge/tests/test_curriculum_alignment_provider.py`).
+- Trainforge OpenAI-compatible HTTP client: `Trainforge/generators/_openai_compatible_client.py`
+  → one `llm_chat_call` capture per call when wired with a capture; surface
+  used by future task providers that compose the client directly (see
+  `Trainforge/tests/test_openai_compatible_client.py`).
 
 ### Assessment Quality (Trainforge)
 
@@ -710,6 +718,7 @@ Environment-variable toggles gate opt-in strict / stable-ID / provenance / exper
 | `LOCAL_SYNTHESIS_BASE_URL` | Wave 113: base URL of a local OpenAI-compatible model server used by `Trainforge/generators/_local_provider.py` when `--provider local` is selected. Defaults to the Ollama default `http://localhost:11434/v1`; common alternatives are vLLM `http://localhost:8000/v1`, llama.cpp server `http://localhost:8080/v1`, and LM Studio `http://localhost:1234/v1`. Captured per call in the `synthesis_provider_call` decision event so the audit trail can tell which local server produced each pair. |
 | `LOCAL_SYNTHESIS_MODEL` | Wave 113: model identifier the local server expects (e.g. `qwen2.5:14b-instruct-q4_K_M` for Ollama, `Qwen/Qwen2.5-32B-Instruct` for vLLM). Defaults to the smaller `qwen2.5:14b-instruct-q4_K_M` so an out-of-box Ollama install on an 8 GB GPU works without further tuning. |
 | `LOCAL_SYNTHESIS_API_KEY` | Wave 113: optional auth key for the local server. Most local servers ignore the auth header, so the provider does NOT raise when this is unset (unlike `TOGETHER_API_KEY` / `ANTHROPIC_API_KEY`); the constructor sends a placeholder `"local"` string in the Authorization header so reverse-proxy servers that DO check auth see a stable value. Set this only when the local server proxies to a remote provider that requires auth. |
+| `CURRICULUM_ALIGNMENT_PROVIDER` | Selects the LLM backend for `Trainforge/align_chunks.py` teaching-role classification (`Trainforge/generators/_curriculum_provider.py::CurriculumAlignmentProvider`). Values: `anthropic` (default — ToS-restricted for training-data), `together` (ToS-clean cloud OSS via the shared `OpenAICompatibleClient`), `local` (8GB-VRAM-friendly with 14B 4-bit via the shared `OpenAICompatibleClient`). Reuses the same `TOGETHER_*` / `LOCAL_*` env vars as the synthesis pipeline so one local server serves both task surfaces. Captured per call in the `curriculum_alignment_call` decision event. |
 
 ---
 
