@@ -536,3 +536,18 @@ def test_run_synthesis_routes_claude_session_provider_through_dispatcher(tmp_pat
     assert all(r["provider"] == "claude_session" for r in rows), [
         r["provider"] for r in rows
     ]
+
+
+def test_run_synthesis_claude_session_without_dispatcher_fails_loud(tmp_path):
+    """Phase A precondition: --provider claude_session requires a dispatcher.
+    Standalone CLI runs have no Claude Code session; abort with clear message."""
+    working = _make_working_copy(tmp_path)
+
+    with pytest.raises(RuntimeError, match="claude_session.*dispatcher"):
+        run_synthesis(
+            corpus_dir=working,
+            course_code="MINI_TRAINING_101",
+            provider="claude_session",
+            seed=11,
+            dispatcher=None,  # the failure case
+        )
