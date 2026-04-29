@@ -302,28 +302,51 @@ _NEGATION_SWAPS = [
 def _enforce_preserve_tokens_in_preference(
     pair: Dict[str, Any], preserve_tokens: List[str]
 ) -> Dict[str, Any]:
-    """Force-inject any ``preserve_tokens`` not present in the
-    ``chosen`` field. Mirrors the instruction-factory helper but
-    targets ``chosen`` only — the rule-synthesized rejection legitimately
-    may omit the technical CURIE, and forcing it into ``rejected`` would
-    weaken the DPO signal. Idempotent, length-clamped.
+    """Force-inject any ``preserve_tokens`` absent from prompt and
+    ``chosen`` fields.
+
+    Wave 120 follow-up (2026-04-29): per gpt's training-objective
+    feedback, prompts also need the CURIE so the model learns to
+    RECOGNIZE user inputs containing it (not only to USE it in
+    answers). Targets prompt + chosen; ``rejected`` is intentionally
+    untouched — the rule-synthesized rejection legitimately may omit
+    the technical CURIE, and forcing it into ``rejected`` would
+    weaken the DPO signal that teaches the misconception. The
+    chosen-vs-rejected delta now reads as 'correct uses the CURIE in
+    the right context; rejected uses different (incorrect) framing'.
+
+    Per-side idempotency. Length-clamped.
     """
     if not preserve_tokens:
         return pair
+    prompt = str(pair.get("prompt") or "")
     chosen = str(pair.get("chosen") or "")
-    missing = [t for t in preserve_tokens if t and t not in chosen]
-    if not missing:
-        return pair
-    addition = f" Canonical terms: {', '.join(missing)}."
-    new_chosen = chosen.rstrip() + addition
-    if len(new_chosen) > COMPLETION_MAX:
-        budget = COMPLETION_MAX - len(addition)
-        if budget < COMPLETION_MIN:
-            new_chosen = chosen[:max(COMPLETION_MIN - len(addition), 0)].rstrip() + addition
-        else:
-            new_chosen = chosen[:budget].rstrip() + addition
-    pair["chosen"] = new_chosen
-    pair.setdefault("preserve_tokens_injected", []).extend(missing)
+
+    missing_prompt = [t for t in preserve_tokens if t and t not in prompt]
+    if missing_prompt:
+        prompt_add = f" (Reference: {', '.join(missing_prompt)}.)"
+        new_prompt = prompt.rstrip() + prompt_add
+        if len(new_prompt) > PROMPT_MAX:
+            budget = PROMPT_MAX - len(prompt_add)
+            new_prompt = prompt[:max(budget, 0)].rstrip() + prompt_add
+        pair["prompt"] = new_prompt
+        pair.setdefault("preserve_tokens_injected_prompt", []).extend(missing_prompt)
+
+    missing_chosen = [t for t in preserve_tokens if t and t not in chosen]
+    if missing_chosen:
+        addition = f" Canonical terms: {', '.join(missing_chosen)}."
+        new_chosen = chosen.rstrip() + addition
+        if len(new_chosen) > COMPLETION_MAX:
+            budget = COMPLETION_MAX - len(addition)
+            if budget < COMPLETION_MIN:
+                new_chosen = (
+                    chosen[:max(COMPLETION_MIN - len(addition), 0)].rstrip()
+                    + addition
+                )
+            else:
+                new_chosen = chosen[:budget].rstrip() + addition
+        pair["chosen"] = new_chosen
+        pair.setdefault("preserve_tokens_injected", []).extend(missing_chosen)
     return pair
 
 
