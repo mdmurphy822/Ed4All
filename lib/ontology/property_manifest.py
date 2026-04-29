@@ -60,6 +60,23 @@ class PropertyManifest:
     def by_id(self) -> Dict[str, PropertyEntry]:
         return {p.id: p for p in self.properties}
 
+    def detect_surface_forms(self, text: str) -> List[str]:
+        """Wave 120: return the deduplicated list of declared surface
+        forms that appear in ``text``. Used by the synthesis pipeline to
+        instruct the paraphrase provider to preserve technical CURIEs
+        (``sh:NodeShape``, ``rdfs:subClassOf``, etc.) verbatim — without
+        this, 14B-class local models silently rewrite them as prose,
+        which is what bit Wave 119's 295-chunk run (5/6 properties below
+        floor despite 295 instruction pairs emitted)."""
+        if not text:
+            return []
+        seen: Dict[str, None] = {}
+        for prop in self.properties:
+            for sf in prop.surface_forms:
+                if sf and sf in text and sf not in seen:
+                    seen[sf] = None
+        return list(seen.keys())
+
 
 def _family_slug(course_slug: str) -> str:
     """Pick the corpus family from a course slug.

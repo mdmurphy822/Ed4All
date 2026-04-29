@@ -473,3 +473,102 @@ def test_run_synthesis_emits_zero_validation_issues(tmp_path: Path) -> None:
         f"{len(failing)} of {len(capture.decisions)} decision events carry "
         f"validation_issues. First 3: {failing[:3]!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Wave 120: property-preservation fallback
+# ---------------------------------------------------------------------------
+
+
+def test_property_bearing_chunk_falls_back_to_deterministic_when_paraphrase_strips_surface_form(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When a paraphrase provider drops a required surface form, the
+    instruction factory catches ``surface_form_preservation_failed`` and
+    returns the deterministic draft, marking it with
+    ``paraphrase_fallback_reason``. ``run_synthesis`` then logs a
+    ``surface_form_preservation_fallback`` capture event and emits the
+    pair instead of dropping it."""
+    course_dir = _make_working_copy(tmp_path)
+
+    # Inject a property manifest that matches text in every fixture chunk.
+    manifest = PropertyManifest(
+        family="mini",
+        properties=[
+            PropertyEntry(
+                id="topic_load",
+                uri="http://example.test/load",
+                curie="ex:load",
+                label="Cognitive load surface form",
+                surface_forms=["load"],
+                min_pairs=1,
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "lib.ontology.property_manifest.load_property_manifest",
+        lambda *a, **kw: manifest,
+    )
+
+    # Provider that always raises surface_form_preservation_failed so
+    # every property-bearing chunk hits the fallback path.
+    from Trainforge.generators._local_provider import SynthesisProviderError
+
+    class _AlwaysFailsProvider:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def paraphrase_instruction(self, draft, chunk, *, preserve_tokens=None):
+            if preserve_tokens:
+                raise SynthesisProviderError(
+                    "stub: paraphrase always drops the surface form",
+                    code="surface_form_preservation_failed",
+                )
+            return draft
+
+        def paraphrase_preference(self, draft, chunk, *, preserve_tokens=None):
+            if preserve_tokens:
+                raise SynthesisProviderError(
+                    "stub: paraphrase always drops the surface form",
+                    code="surface_form_preservation_failed",
+                )
+            return draft
+
+    # Run synthesis with the local provider's path, but inject the stub
+    # provider via the synthesize_training pathway. Since run_synthesis
+    # constructs the provider internally, we monkeypatch
+    # LocalSynthesisProvider for this test.
+    from Trainforge.generators import _local_provider as lp_mod
+    monkeypatch.setattr(lp_mod, "LocalSynthesisProvider", _AlwaysFailsProvider)
+
+    from lib.decision_capture import DecisionCapture
+    capture = DecisionCapture(
+        course_code="rdf-shacl-551-2",
+        phase="synthesize-training",
+        tool="trainforge",
+    )
+
+    stats = run_synthesis(
+        corpus_dir=course_dir,
+        course_code="rdf-shacl-551-2",
+        provider="local",
+        seed=11,
+        capture=capture,
+        pilot_report_every=0,
+        curriculum_from_graph=False,
+    )
+
+    assert stats.instruction_pairs_emitted > 0, (
+        "Pairs should still be emitted via deterministic fallback, not "
+        "dropped on preservation failure."
+    )
+
+    fallback_events = [
+        d for d in capture.decisions
+        if d.get("decision_type") == "surface_form_preservation_fallback"
+    ]
+    assert fallback_events, (
+        "Expected at least one surface_form_preservation_fallback "
+        "capture event; got "
+        f"{[d.get('decision_type') for d in capture.decisions]}"
+    )
