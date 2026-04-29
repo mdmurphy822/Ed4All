@@ -866,8 +866,14 @@ def run_synthesis(
                 "reproducible for downstream fine-tuning."
             ),
             alternatives_considered=[
-                "emit-only-SFT (rejected: loses misconception signal that DPO encodes)",
-                "emit-only-DPO (rejected: SFT pairs still needed for instruction tuning)",
+                {
+                    "option": "emit-only-SFT",
+                    "reason_rejected": "loses misconception signal that DPO encodes",
+                },
+                {
+                    "option": "emit-only-DPO",
+                    "reason_rejected": "SFT pairs still needed for instruction tuning",
+                },
             ],
         )
 

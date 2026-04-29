@@ -22,8 +22,8 @@
     },
     "course_id": {
       "type": ["string", "null"],
-      "pattern": "^[A-Z]{2,8}_[0-9]{3}$",
-      "description": "Normalized course code (e.g., MTH_101)"
+      "pattern": "^[A-Z][A-Z0-9_-]{1,}$",
+      "description": "Normalized course code. Admits both legacy underscore form (e.g., MTH_101) and post-Wave-93 hyphenated multi-segment slugs (e.g., RDF-SHACL-551-2)."
     },
     "module_id": {
       "type": ["string", "null"],
@@ -50,7 +50,7 @@
     },
     "phase": {
       "type": ["string", "null"],
-      "enum": ["input-research", "exam-research", "course-outliner", "content-generator", "brightspace-packager", "dart-conversion", "dart-validation", "trainforge-assessment", "trainforge-training", "validation", "content-analysis", "question-generation", "assessment-assembly", "courseforge-input-research", "courseforge-exam-research", "courseforge-course-outliner", "courseforge-content-generator", "courseforge-brightspace-packager", "trainforge-content-analysis", "trainforge-question-generation", "trainforge-assessment-assembly", "trainforge-validation", "libv2-retrieval", "libv2-indexing", "libv2-fusion", null],
+      "enum": ["input-research", "exam-research", "course-outliner", "content-generator", "brightspace-packager", "dart-conversion", "dart-validation", "trainforge-assessment", "trainforge-training", "synthesize-training", "validation", "content-analysis", "question-generation", "assessment-assembly", "courseforge-input-research", "courseforge-exam-research", "courseforge-course-outliner", "courseforge-content-generator", "courseforge-brightspace-packager", "trainforge-content-analysis", "trainforge-question-generation", "trainforge-assessment-assembly", "trainforge-validation", "libv2-retrieval", "libv2-indexing", "libv2-fusion", null],
       "description": "Processing phase within the tool pipeline"
     },
     "tool": {
@@ -119,6 +119,7 @@
         "source_usage",
         "strategy_decision",
         "structure_detection",
+        "surface_form_preservation_fallback",
         "synthesis_provider_call",
         "textbook_integration",
         "training_run_planning",
