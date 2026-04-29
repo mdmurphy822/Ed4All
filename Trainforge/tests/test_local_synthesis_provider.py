@@ -895,6 +895,35 @@ def test_paraphrase_instruction_raises_preservation_failed_after_retry(
     assert excinfo.value.code == "surface_form_preservation_failed"
 
 
+def test_max_parse_retries_constructor_kwarg_caps_retry_budget(monkeypatch):
+    """Wave 120 smoke-mode fix: ``max_parse_retries=1`` caps the parse-
+    retry loop at a single attempt so a property-heavy stratified
+    sample doesn't compound retry cost. With cap=1 a single bad
+    response immediately raises (no retry), and the error message
+    reports the runtime budget — not the module default."""
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    bad_paraphrase = json.dumps({
+        "prompt": "Explain how the node shape applies to topic X.",
+        "completion": (
+            "The node-shape concept constrains node-typed entities; a "
+            "learner applies it by validating instances against the "
+            "declared constraint."
+        ),
+    })
+    client = _client_yielding(*[
+        httpx.Response(200, json=_success_body(bad_paraphrase)) for _ in range(5)
+    ])
+    p = LocalSynthesisProvider(client=client, max_parse_retries=1)
+    with pytest.raises(SynthesisProviderError) as excinfo:
+        p.paraphrase_instruction(
+            _instruction_draft(), _chunk(),
+            preserve_tokens=["sh:NodeShape"],
+        )
+    assert excinfo.value.code == "surface_form_preservation_failed"
+    # Error message reports the runtime budget (1), not the module default (3).
+    assert "after 1 attempts" in str(excinfo.value)
+
+
 def test_paraphrase_preference_only_checks_chosen_field(monkeypatch):
     """Preference pairs check ``chosen`` only — the rule-synthesized
     rejection legitimately may not contain the literal CURIE. A
