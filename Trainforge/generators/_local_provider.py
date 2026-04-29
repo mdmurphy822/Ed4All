@@ -155,6 +155,7 @@ class LocalSynthesisProvider:
         temperature: float = 0.4,
         max_tokens: int = 800,
         kind_bounds: Optional[Dict[str, tuple]] = None,
+        max_parse_retries: Optional[int] = None,
     ) -> None:
         # API-key resolution. Local servers usually ignore auth; we
         # accept absence and substitute a stable placeholder so reverse
@@ -180,6 +181,15 @@ class LocalSynthesisProvider:
         self._max_tokens = int(max_tokens)
         self._kind_bounds: Dict[str, tuple] = (
             dict(kind_bounds) if kind_bounds else dict(DEFAULT_LOCAL_KIND_BOUNDS)
+        )
+        # Wave 120: smoke-mode callers pass a low cap (typically 1) so
+        # the parse-retry budget bounds smoke wall time. Default None ->
+        # use the module constant for production runs that prioritise
+        # paraphrase quality over speed.
+        self._max_parse_retries = (
+            int(max_parse_retries)
+            if max_parse_retries is not None
+            else MAX_PARSE_RETRIES
         )
 
         # Composition: build the LLM-agnostic client. Same client class
@@ -385,7 +395,8 @@ class LocalSynthesisProvider:
         last_text: str = ""
         total_http_retries = 0
         last_usage: Dict[str, int] = {}
-        while attempts < MAX_PARSE_RETRIES:
+        retry_budget = self._max_parse_retries
+        while attempts < retry_budget:
             attempts += 1
             text, usage, http_retries = self._chat_completion_raw(messages)
             total_http_retries += http_retries
@@ -397,7 +408,7 @@ class LocalSynthesisProvider:
                 logger.warning(
                     "%s synthesis: lenient parse retry %d/%d: "
                     "no JSON object recoverable from response tail %r",
-                    self._provider_name, attempts, MAX_PARSE_RETRIES,
+                    self._provider_name, attempts, retry_budget,
                     text[-120:],
                 )
                 continue
@@ -406,7 +417,7 @@ class LocalSynthesisProvider:
                 last_err = f"response missing required keys: {missing}"
                 logger.warning(
                     "%s synthesis: lenient parse retry %d/%d: %s",
-                    self._provider_name, attempts, MAX_PARSE_RETRIES,
+                    self._provider_name, attempts, retry_budget,
                     last_err,
                 )
                 continue
@@ -416,7 +427,7 @@ class LocalSynthesisProvider:
                 last_err = f"{field} length {length} below minimum {floor}"
                 logger.warning(
                     "%s synthesis: length-retry %d/%d: %s",
-                    self._provider_name, attempts, MAX_PARSE_RETRIES,
+                    self._provider_name, attempts, retry_budget,
                     last_err,
                 )
                 messages = self._append_length_remediation(
@@ -439,7 +450,7 @@ class LocalSynthesisProvider:
                 )
                 logger.warning(
                     "%s synthesis: preserve-retry %d/%d: %s",
-                    self._provider_name, attempts, MAX_PARSE_RETRIES,
+                    self._provider_name, attempts, retry_budget,
                     last_err,
                 )
                 messages = self._append_preserve_remediation(
@@ -453,13 +464,13 @@ class LocalSynthesisProvider:
         if preserve_tokens and last_err and "surface forms missing" in last_err:
             raise SynthesisProviderError(
                 f"{type(self).__name__}: paraphrase dropped required surface "
-                f"forms after {MAX_PARSE_RETRIES} attempts. {last_err}; "
+                f"forms after {retry_budget} attempts. {last_err}; "
                 f"tail of last response: {last_text[-500:]!r}",
                 code="surface_form_preservation_failed",
             )
         raise SynthesisProviderError(
             f"{type(self).__name__}: failed to obtain a valid paraphrase "
-            f"after {MAX_PARSE_RETRIES} attempts. Last error: {last_err}; "
+            f"after {retry_budget} attempts. Last error: {last_err}; "
             f"tail of last response: {last_text[-500:]!r}",
             code="paraphrase_invalid_after_retry",
         )
