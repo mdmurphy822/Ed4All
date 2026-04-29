@@ -749,12 +749,13 @@ def test_force_inject_canonical_terms_when_deterministic_path_drops_curie() -> N
     )
     assert result.pair is not None
     # Both sides now carry the CURIE so the model learns input + output.
+    # Wave 121: rigid 'Canonical terms' / 'Reference:' literals dropped
+    # because the phrasing rotates across chunks; checking surface forms
+    # + audit fields is the functional invariant.
     assert "sh:NodeShape" in result.pair["prompt"]
     assert "sh:datatype" in result.pair["prompt"]
     assert "sh:NodeShape" in result.pair["completion"]
     assert "sh:datatype" in result.pair["completion"]
-    assert "Canonical terms" in result.pair["completion"]
-    assert "Reference:" in result.pair["prompt"]
     # Audit trail records which tokens were injected on each side.
     injected_completion = set(result.pair.get("preserve_tokens_injected", []))
     injected_prompt = set(result.pair.get("preserve_tokens_injected_prompt", []))
@@ -771,42 +772,103 @@ def test_force_inject_skips_per_side_when_already_contains_token() -> None:
 
     # Case 1: CURIE in both sides -> no injection on either.
     pair_both = {
+        "chunk_id": "c1",
         "prompt": "Define sh:NodeShape clearly.",
         "completion": "sh:NodeShape constrains node-typed instances.",
     }
     out_both = _enforce_preserve_tokens_in_instruction(
         pair_both, ["sh:NodeShape"],
     )
-    assert "Canonical terms" not in out_both["completion"]
-    assert "Reference:" not in out_both["prompt"]
     assert "preserve_tokens_injected" not in out_both
     assert "preserve_tokens_injected_prompt" not in out_both
+    # Pair text unchanged -> CURIE only appears once on each side.
+    assert out_both["prompt"].count("sh:NodeShape") == 1
+    assert out_both["completion"].count("sh:NodeShape") == 1
 
     # Case 2: CURIE only in completion -> prompt-side gets injection.
     pair_completion_only = {
+        "chunk_id": "c2",
         "prompt": "Define this constraint.",
         "completion": "sh:NodeShape constrains node-typed instances.",
     }
     out_p = _enforce_preserve_tokens_in_instruction(
         pair_completion_only, ["sh:NodeShape"],
     )
-    assert "Reference:" in out_p["prompt"]
-    assert "Canonical terms" not in out_p["completion"]
+    assert "sh:NodeShape" in out_p["prompt"]
     assert "preserve_tokens_injected_prompt" in out_p
     assert "preserve_tokens_injected" not in out_p
 
     # Case 3: CURIE only in prompt -> completion-side gets injection.
     pair_prompt_only = {
+        "chunk_id": "c3",
         "prompt": "Define sh:NodeShape clearly.",
         "completion": "It constrains node-typed instances.",
     }
     out_c = _enforce_preserve_tokens_in_instruction(
         pair_prompt_only, ["sh:NodeShape"],
     )
-    assert "Reference:" not in out_c["prompt"]
-    assert "Canonical terms" in out_c["completion"]
+    assert "sh:NodeShape" in out_c["completion"]
     assert "preserve_tokens_injected" in out_c
     assert "preserve_tokens_injected_prompt" not in out_c
+
+
+def test_force_inject_phrasing_rotates_across_chunks() -> None:
+    """Wave 121: phrasing rotation prevents the boilerplate-suffix
+    saturation flagged in the 2026-04-29 smoke audit (70% of prompts
+    ended with a single '(Reference: ...)' string). The selector
+    keys on chunk_id hash so rotation is deterministic but
+    distribution-spread across the corpus."""
+    from Trainforge.generators.instruction_factory import (
+        _enforce_preserve_tokens_in_instruction,
+        _PROMPT_REFERENCE_PHRASINGS,
+        _COMPLETION_REFERENCE_PHRASINGS,
+    )
+
+    base_prompt = "Define this constraint."
+    base_completion = "It constrains node-typed instances."
+    chunk_ids = [f"chunk_{i:04d}" for i in range(60)]
+    prompt_addition_forms: set = set()
+    completion_addition_forms: set = set()
+    for cid in chunk_ids:
+        pair = {
+            "chunk_id": cid,
+            "prompt": base_prompt,
+            "completion": base_completion,
+        }
+        out = _enforce_preserve_tokens_in_instruction(pair, ["sh:NodeShape"])
+        # Recover the appended template by stripping the base + the
+        # injected token. The token-replacement shape lets us cluster
+        # identical phrasings regardless of which CURIE was injected.
+        prompt_suffix = out["prompt"][len(base_prompt):]
+        completion_suffix = out["completion"][len(base_completion):]
+        prompt_addition_forms.add(prompt_suffix.replace("sh:NodeShape", "X"))
+        completion_addition_forms.add(completion_suffix.replace("sh:NodeShape", "X"))
+    # Across 60 chunks, every one of the 4 phrasings on each side should
+    # appear at least once (uniform-ish hash distribution).
+    assert len(prompt_addition_forms) == len(_PROMPT_REFERENCE_PHRASINGS), (
+        f"Expected all {len(_PROMPT_REFERENCE_PHRASINGS)} prompt phrasings; "
+        f"got {len(prompt_addition_forms)}: {prompt_addition_forms}"
+    )
+    assert len(completion_addition_forms) == len(_COMPLETION_REFERENCE_PHRASINGS)
+
+
+def test_force_inject_phrasing_idempotent_for_same_chunk() -> None:
+    """Same chunk_id -> same phrasing across runs (audit reproducibility)."""
+    from Trainforge.generators.instruction_factory import (
+        _enforce_preserve_tokens_in_instruction,
+    )
+    pair_a = {
+        "chunk_id": "stable_chunk_001",
+        "prompt": "p1", "completion": "c1",
+    }
+    pair_b = {
+        "chunk_id": "stable_chunk_001",
+        "prompt": "p1", "completion": "c1",
+    }
+    out_a = _enforce_preserve_tokens_in_instruction(pair_a, ["sh:foo"])
+    out_b = _enforce_preserve_tokens_in_instruction(pair_b, ["sh:foo"])
+    assert out_a["prompt"] == out_b["prompt"]
+    assert out_a["completion"] == out_b["completion"]
 
 
 def test_force_inject_clamps_both_sides_to_max_length() -> None:
