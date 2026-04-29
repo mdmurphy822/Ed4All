@@ -655,6 +655,7 @@ Source of truth: `config/workflows.yaml::validation_gates`. Phase column below s
 | `textbook_to_course` | `training_synthesis` | `min_edge_count` | MinEdgeCountValidator (Wave 91) |
 | `textbook_to_course` | `training_synthesis` | `synthesis_diversity` | SynthesisDiversityValidator (Wave 91) |
 | `textbook_to_course` | `training_synthesis` | `property_coverage` | PropertyCoverageValidator (Wave 109 — no-ops on courses without a property manifest) |
+| `textbook_to_course` | `training_synthesis` | `synthesis_leakage` | SynthesisLeakageValidator (Wave 121 — fails closed at >5% verbatim chunk leakage) |
 | `textbook_to_course` | `libv2_archival` | `libv2_manifest` | LibV2ManifestValidator |
 | `textbook_to_course` | `libv2_archival` | `kg_quality_report` | KGQualityValidator (Wave 91 promotion: critical, thresholds 0.95/0.95/0.95/0.5) |
 | `rag_training` | `assessment_generation` | `assessment_quality` | AssessmentQualityValidator |
@@ -758,6 +759,7 @@ Validators under `lib/validators/` (see Active Gates above for wiring):
 - `lib/validators/kg_quality.py` — KG-quality report (completeness / consistency / accuracy / coverage); thin wrapper over `Trainforge/rag/kg_quality_report.py::KGQualityReporter`. Wave 91 promotion: thresholds 0.95 / 0.95 / 0.95 / 0.5 (was advisory 0.0 at roll-out).
 - `lib/validators/min_edge_count.py` — Wave 91. Pre-synthesis gate: critical-fails on pedagogy graph with <100 edges, <4 distinct edge types, or concept graph with <50 nodes. Closes the silent zero-edge regression class for the synthesis surface.
 - `lib/validators/synthesis_diversity.py` — Wave 91. Post-synthesis gate: critical-fails when top-3 templates >60% of pairs, single template >35%, or distinct templates <8. Warns when total pairs <100.
+- `lib/validators/synthesis_leakage.py` — Wave 121. Post-synthesis gate: critical-fails when >5% of instruction pairs contain ≥50-char verbatim spans copied from `chunk.text`. Closes the regression class flagged by the 2026-04-29 smoke audit (11/20 pairs leaked through `_build_completion`'s summary path). Threshold tunable via gate `inputs.thresholds.leak_rate_threshold` and `leak_span_chars`.
 
 **Canonical LO helper**: `lib/ontology/learning_objectives.py` owns the single source of truth for LO identity (`mint_lo_id`, `validate_lo_id`, `hierarchy_from_id`, `split_terminal_chapter`). Pattern `^[A-Z]{2,}-\\d{2,}$` mirrors `schemas/knowledge/courseforge_jsonld_v1.schema.json`. `schemas/knowledge/course.schema.json` is the canonical shape for Trainforge-emitted `course.json` consumed by LibV2.
 

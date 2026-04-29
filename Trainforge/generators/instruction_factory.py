@@ -222,16 +222,26 @@ def _select_template(bloom: str, content_type: str) -> Tuple[str, str]:
     return "understand._default", TEMPLATE_CATALOG[("understand", "_default")]
 
 
-def _build_completion(chunk: Dict[str, Any], topic: str, bloom: str, content_type: str, rng: random.Random) -> str:
+def _build_completion(
+    chunk: Dict[str, Any], topic: str, bloom: str, content_type: str, rng: random.Random,
+    *, disallow_summary: bool = False,
+) -> str:
     """Build a deterministic completion that is not a verbatim chunk quote.
 
     Draws its content from structured chunk metadata (key_terms, misconceptions,
     concept_tags) so the completion is grounded but paraphrased.
+
+    Wave 121: ``disallow_summary=True`` skips the ``chunk.summary`` path
+    entirely. The audit found 11/20 smoke pairs leaked ≥50-char verbatim
+    spans because ``chunk.summary`` itself is often a near-verbatim
+    extract from chunk text. Caller retries with this flag set when the
+    first build leaks; the key_terms / concept_tags / bloom_tail path
+    that remains is already paraphrased and gate-clean.
     """
     parts: List[str] = []
 
     summary = _clean_summary(str(chunk.get("summary") or ""))
-    if summary:
+    if summary and not disallow_summary:
         parts.append(summary)
     else:
         key_terms = chunk.get("key_terms") or []
@@ -280,38 +290,69 @@ def _build_completion(chunk: Dict[str, Any], topic: str, bloom: str, content_typ
     return completion
 
 
+# Wave 121: rotate the force-inject phrasing across pairs so the model
+# doesn't learn a single rigid suffix. The selector keys on the chunk_id
+# hash so the same chunk gets the same phrasing across runs (idempotent
+# under --seed); different chunks get different phrasings, which spreads
+# the boilerplate across the training distribution.
+_PROMPT_REFERENCE_PHRASINGS: List[str] = [
+    " (Reference: {tokens}.)",
+    " (Relevant terms: {tokens}.)",
+    " (See: {tokens}.)",
+    " (In context: {tokens}.)",
+]
+_COMPLETION_REFERENCE_PHRASINGS: List[str] = [
+    " Canonical terms: {tokens}.",
+    " The relevant terms are {tokens}.",
+    " Key vocabulary: {tokens}.",
+    " This concerns {tokens}.",
+]
+
+
+def _select_phrasing(phrasings: List[str], chunk_id: str) -> str:
+    """Deterministic phrasing selection by chunk_id hash."""
+    if not phrasings:
+        return ""
+    idx = int(hashlib.sha256(chunk_id.encode("utf-8")).hexdigest(), 16) % len(phrasings)
+    return phrasings[idx]
+
+
 def _enforce_preserve_tokens_in_instruction(
     pair: Dict[str, Any], preserve_tokens: List[str]
 ) -> Dict[str, Any]:
     """Force-inject any ``preserve_tokens`` absent from prompt OR
     completion side of the pair.
 
-    Wave 120 found that both the deterministic-template path (mock
-    provider) and the paraphrase-fallback path produce pairs that don't
-    contain the literal CURIEs because templates pull from slugified
-    ``concept_tags`` (colons become hyphens).
+    Wave 121 (2026-04-29): two changes from the prior implementation
+    based on the smoke audit:
 
-    Wave 120 follow-up (2026-04-29): inject on BOTH sides per gpt's
-    feedback. Output-side coverage (completion) teaches the model to
-    USE the CURIE in answers; input-side coverage (prompt) teaches it
-    to RECOGNIZE user prompts that contain the CURIE. A real RDF/SHACL
-    learner asks both kinds of question, so the SLM needs both.
+    1. **Rotate phrasing** per chunk — the prior single-form
+       ``" Canonical terms: ..."`` / ``" (Reference: ...)"`` saturated
+       55-70%% of the smoke output. The model would learn that as a
+       rigid template. Now the suffix is selected from 4 phrasings
+       per side, keyed by chunk_id hash so it's deterministic but
+       distribution-spread.
 
-    Per-side idempotency: tokens already on a given side don't trigger
-    injection on that side. Length-clamps both sides so the addition
-    never breaks the per-field ceiling. The prompt addition is short
-    (a "Reference:" suffix) — well under the 50-char verbatim-leakage
-    span limit, so the prompt-side gate stays clean.
+    2. **Skip when partial preservation succeeded** — if at least one
+       preserve_token appears on a given side via the natural path
+       (paraphrase, key_terms, etc.), trust the natural surface and
+       only inject the genuinely-missing tokens. This was the prior
+       behavior; keeping it explicit so the contract is documented.
+
+    Per-side idempotency, per-side length-clamping, prompt addition
+    well under the 50-char verbatim-leakage span limit.
     """
     if not preserve_tokens:
         return pair
     prompt = str(pair.get("prompt") or "")
     completion = str(pair.get("completion") or "")
+    chunk_id = str(pair.get("chunk_id") or "")
 
     # Side 1: prompt — does the model see the CURIE in input position?
     missing_prompt = [t for t in preserve_tokens if t and t not in prompt]
     if missing_prompt:
-        prompt_add = f" (Reference: {', '.join(missing_prompt)}.)"
+        template = _select_phrasing(_PROMPT_REFERENCE_PHRASINGS, chunk_id)
+        prompt_add = template.format(tokens=", ".join(missing_prompt))
         new_prompt = prompt.rstrip() + prompt_add
         if len(new_prompt) > PROMPT_MAX:
             budget = PROMPT_MAX - len(prompt_add)
@@ -322,7 +363,8 @@ def _enforce_preserve_tokens_in_instruction(
     # Side 2: completion — does the model emit the CURIE in answer position?
     missing_completion = [t for t in preserve_tokens if t and t not in completion]
     if missing_completion:
-        addition = f" Canonical terms: {', '.join(missing_completion)}."
+        template = _select_phrasing(_COMPLETION_REFERENCE_PHRASINGS, chunk_id)
+        addition = template.format(tokens=", ".join(missing_completion))
         new_completion = completion.rstrip() + addition
         if len(new_completion) > COMPLETION_MAX:
             budget = COMPLETION_MAX - len(addition)
@@ -433,12 +475,27 @@ def synthesize_instruction_pair(
 
     completion = _build_completion(chunk, topic, bloom, content_type, rng)
 
+    # Wave 121: completion-side verbatim-leakage gate. The 2026-04-29
+    # smoke audit found 11/20 instruction completions contained ≥50-char
+    # verbatim spans from chunk.text — the prompt-side gate above didn't
+    # cover this surface, and chunk.summary (the dominant input to
+    # _build_completion) often is a near-verbatim chunk extract. Retry
+    # once with disallow_summary=True; if the key_terms / concept_tags
+    # path is also leaky (e.g. a key_term.definition copied from chunk
+    # text) we mark the gate failed and the pair gets dropped below.
+    completion_leaked = _contains_verbatim_span(completion, chunk_text)
+    if completion_leaked:
+        completion = _build_completion(
+            chunk, topic, bloom, content_type, rng, disallow_summary=True,
+        )
+        completion_leaked = _contains_verbatim_span(completion, chunk_text)
+
     quality = {
         "prompt_len": len(prompt),
         "completion_len": len(completion),
         "prompt_len_ok": PROMPT_MIN <= len(prompt) <= PROMPT_MAX,
         "completion_len_ok": COMPLETION_MIN <= len(completion) <= COMPLETION_MAX,
-        "no_verbatim_leakage": not leaked,
+        "no_verbatim_leakage": not leaked and not completion_leaked,
     }
     quality["passed"] = (
         quality["prompt_len_ok"]
