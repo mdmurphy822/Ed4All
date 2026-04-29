@@ -57,12 +57,30 @@ def format_pilot_report(
     chunks_processed: int,
     chunks_total: int,
     in_flight: bool,
+    capped_at_max_pairs: bool = False,
+    max_pairs_cap: int | None = None,
 ) -> str:
     """Render the markdown report. ``in_flight=True`` adds a banner
     indicating the report is mid-run; ``in_flight=False`` reads as the
-    final post-run snapshot."""
+    final post-run snapshot.
+
+    Wave 119: when ``capped_at_max_pairs=True``, prepend a loud warning
+    banner so an operator opening the report can't miss that property
+    floors are evaluated against a clipped run (the failure mode that
+    bit Wave 118's first 14B rerun).
+    """
     lines: List[str] = []
     lines.append(f"# Pilot synthesis report — {course_slug}\n")
+    if capped_at_max_pairs:
+        cap_hint = f" (cap={max_pairs_cap})" if max_pairs_cap is not None else ""
+        lines.append(
+            f"> **WARNING — run capped at `--max-pairs`{cap_hint}.** Property "
+            f"coverage below is evaluated against a clipped run; properties "
+            f"whose surface forms appear later in the corpus may show 0 pairs "
+            f"purely because their chunks were never visited. Re-run without "
+            f"`--max-pairs` (or with a cap above eligible-chunks) before "
+            f"interpreting the floor results.\n"
+        )
     if in_flight:
         lines.append(
             f"> **In-flight snapshot** — chunks {chunks_processed}/{chunks_total} "

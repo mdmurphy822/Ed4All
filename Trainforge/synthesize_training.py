@@ -695,20 +695,23 @@ def run_synthesis(
     inst_progress_fh = instruction_progress.open("w", encoding="utf-8")
     pref_progress_fh = preference_progress.open("w", encoding="utf-8")
 
-    # Wave 117: load property manifest once for periodic pilot-report
-    # writes during the chunk loop. No-op when the course has no
-    # manifest — gracefully skip the feature rather than fail the run.
+    # Wave 117 / 119: load property manifest once. The manifest gates
+    # ALL pilot-report writes (in-flight and final). pilot_report_every
+    # only governs the in-flight cadence — the final write fires
+    # whenever a manifest exists, regardless of pilot_report_every, so
+    # an operator who set --pilot-report-every 0 still gets the
+    # post-run summary on disk.
     pilot_manifest = None
     pilot_report_path = training_specs_dir / "pilot_report.md"
     pilot_slug = slug or course_code or corpus_dir.name
-    if pilot_report_every and pilot_report_every > 0 and pilot_slug:
+    if pilot_slug:
         try:
             from lib.ontology.property_manifest import load_property_manifest
             pilot_manifest = load_property_manifest(pilot_slug)
         except FileNotFoundError:
             logger.info(
                 "Wave 117: no property manifest for course %r; skipping "
-                "incremental pilot_report.md writes.",
+                "pilot_report.md.",
                 pilot_slug,
             )
             pilot_manifest = None
@@ -912,6 +915,23 @@ def run_synthesis(
         # expectation that capping is per-file, not the combined total).
         per_artifact_cap = max_pairs
 
+        # Wave 119: warn pre-flight when --max-pairs will clip the run
+        # before all eligible chunks are visited. This is the failure
+        # mode that bit Wave 118's first 14B rerun: a 30-pair cap on a
+        # 295-chunk corpus stopped at chunk 30, never visiting any of
+        # the property-bearing chunks at index 46+. Surfacing it here
+        # gives the operator a chance to abort and re-launch without
+        # the cap before paying for the full run.
+        if max_pairs is not None and max_pairs < len(iter_chunks):
+            logger.warning(
+                "Wave 119: --max-pairs=%d will clip this run before all "
+                "%d eligible chunks are visited. Property-coverage gates "
+                "may underreport because surface forms anchored in late "
+                "chunks will not be sampled. Remove --max-pairs (or set "
+                "it above eligible-chunks) for a full-corpus run.",
+                max_pairs, len(iter_chunks),
+            )
+
         # Wave 111 / Phase E: graceful SynthesisBudgetExceeded handling.
         # When the claude_session provider hits its dispatch cap mid-loop,
         # we stop emitting + persist whatever we have so far so the
@@ -1096,6 +1116,8 @@ def run_synthesis(
                     chunks_processed=chunks_processed_counter,
                     chunks_total=len(iter_chunks),
                     in_flight=True,
+                    capped_at_max_pairs=stats.capped_at_max_pairs,
+                    max_pairs_cap=stats.max_pairs_cap,
                 )
                 try:
                     write_pilot_report_atomic(pilot_report_path, _report)
@@ -1231,6 +1253,8 @@ def run_synthesis(
                 chunks_processed=chunks_processed_counter,
                 chunks_total=len(iter_chunks),
                 in_flight=False,
+                capped_at_max_pairs=stats.capped_at_max_pairs,
+                max_pairs_cap=stats.max_pairs_cap,
             )
             try:
                 write_pilot_report_atomic(pilot_report_path, _final_report)
