@@ -304,6 +304,7 @@ def synthesize_instruction_pair(
     provider: str = "mock",
     *,
     paraphrase_provider: Optional[Any] = None,
+    preserve_tokens: Optional[List[str]] = None,
 ) -> InstructionSynthesisResult:
     """Synthesize one instruction pair from an enriched chunk.
 
@@ -446,7 +447,27 @@ def synthesize_instruction_pair(
                     "to be supplied; no lazy fallback because the provider "
                     "needs a LocalDispatcher injected by the caller."
                 )
-        pair = provider_instance.paraphrase_instruction(pair, chunk)
+        # Wave 120: pass preserve_tokens through to providers that
+        # support it. Save the deterministic draft so the caller can
+        # fall back if the paraphrase pass drops a required surface
+        # form. Providers that don't accept the kwarg (anthropic /
+        # together / claude_session pre-Wave-120) fall through to the
+        # legacy 2-arg call.
+        deterministic_draft = dict(pair)
+        try:
+            try:
+                pair = provider_instance.paraphrase_instruction(
+                    pair, chunk, preserve_tokens=preserve_tokens or [],
+                )
+            except TypeError:
+                pair = provider_instance.paraphrase_instruction(pair, chunk)
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            if code == "surface_form_preservation_failed":
+                pair = deterministic_draft
+                pair["paraphrase_fallback_reason"] = "surface_form_preservation_failed"
+            else:
+                raise
 
     rationale = (
         f"Selected template '{template_id}' for bloom='{bloom}' content_type='{content_type}' "
@@ -462,8 +483,14 @@ def synthesize_instruction_pair(
         rationale=rationale,
         topic=topic,
         alternatives=[
-            f"apply._default (rejected: pair targets '{bloom}' level, not 'apply')",
-            f"{bloom}._default (rejected: content-type-specific template '{template_id}' is more specific)",
+            {
+                "option": "apply._default",
+                "reason_rejected": f"pair targets '{bloom}' level, not 'apply'",
+            },
+            {
+                "option": f"{bloom}._default",
+                "reason_rejected": f"content-type-specific template '{template_id}' is more specific",
+            },
         ],
     )
 
