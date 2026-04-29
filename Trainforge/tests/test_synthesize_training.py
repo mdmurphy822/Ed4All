@@ -572,3 +572,141 @@ def test_property_bearing_chunk_falls_back_to_deterministic_when_paraphrase_stri
         "capture event; got "
         f"{[d.get('decision_type') for d in capture.decisions]}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Wave 120: smoke modes
+# ---------------------------------------------------------------------------
+
+
+def test_smoke_deterministic_writes_sidecar_report_and_does_not_overwrite_pilot_report(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--smoke-deterministic`` writes ``smoke_pilot_report.md`` (not
+    ``pilot_report.md``) so a smoke run never clobbers a prior full
+    run's authoritative report. Floors scaled to 1."""
+    course_dir = _make_working_copy(tmp_path)
+
+    monkeypatch.setattr(
+        "lib.ontology.property_manifest.load_property_manifest",
+        lambda *a, **kw: _synthetic_manifest(),
+    )
+
+    # Pre-populate a canonical pilot_report.md so we can detect any
+    # accidental overwrite by the smoke run.
+    canonical = course_dir / "training_specs" / "pilot_report.md"
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_text("# Authoritative full-run report — DO NOT OVERWRITE\n")
+
+    stats = run_synthesis(
+        corpus_dir=course_dir,
+        course_code="rdf-shacl-551-2",
+        provider="local",  # gets coerced to mock under deterministic smoke
+        seed=11,
+        pilot_report_every=0,
+        curriculum_from_graph=False,
+        smoke_mode="deterministic",
+    )
+
+    smoke_path = course_dir / "training_specs" / "smoke_pilot_report.md"
+    assert smoke_path.exists(), "Smoke run must write smoke_pilot_report.md"
+    smoke_text = smoke_path.read_text()
+    assert "Floor | Status" in smoke_text or "Floor" in smoke_text
+    # Floors scaled: 1 for deterministic smoke. Synthetic manifest's
+    # floors were 5 originally; assert at least one PASS row at floor 1.
+    assert "| 1 |" in smoke_text, (
+        f"Expected scaled floor of 1 in smoke report; got:\n{smoke_text}"
+    )
+    # Canonical report untouched.
+    assert canonical.read_text().startswith(
+        "# Authoritative full-run report"
+    ), "Smoke run overwrote pilot_report.md — sidecar isolation broken"
+    # Smoke ran on at most 20 chunks.
+    assert stats.chunks_total <= 20
+
+
+def test_smoke_paraphrase_uses_provider_path_with_floor_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--smoke-paraphrase`` keeps the configured provider (does not
+    coerce to mock), so the paraphrase + preservation path is exercised
+    on the smoke sample. Floors scaled to 2."""
+    course_dir = _make_working_copy(tmp_path)
+
+    monkeypatch.setattr(
+        "lib.ontology.property_manifest.load_property_manifest",
+        lambda *a, **kw: _synthetic_manifest(),
+    )
+
+    # Stub local provider so this test stays offline.
+    class _PassThroughProvider:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def paraphrase_instruction(self, draft, chunk, *, preserve_tokens=None):
+            return draft
+
+        def paraphrase_preference(self, draft, chunk, *, preserve_tokens=None):
+            return draft
+
+    from Trainforge.generators import _local_provider as lp_mod
+    monkeypatch.setattr(lp_mod, "LocalSynthesisProvider", _PassThroughProvider)
+
+    stats = run_synthesis(
+        corpus_dir=course_dir,
+        course_code="rdf-shacl-551-2",
+        provider="local",
+        seed=11,
+        pilot_report_every=0,
+        curriculum_from_graph=False,
+        smoke_mode="paraphrase",
+    )
+
+    smoke_path = course_dir / "training_specs" / "smoke_pilot_report.md"
+    assert smoke_path.exists()
+    smoke_text = smoke_path.read_text()
+    assert "| 2 |" in smoke_text, (
+        f"Expected scaled floor of 2 in paraphrase smoke; got:\n{smoke_text}"
+    )
+    assert stats.chunks_total <= 20
+
+
+def test_smoke_stratified_sampler_prefers_property_bearing_chunks() -> None:
+    """The smoke sampler picks every property-bearing chunk first (up to
+    3 per surface form), then pads with random chunks."""
+    import random as _r
+    from Trainforge.synthesize_training import _smoke_stratified_sample
+
+    chunks = [
+        {"id": f"c{i}", "text": f"chunk {i} contains the keyword sh:NodeShape"}
+        for i in range(5)
+    ] + [
+        {"id": f"c{i}", "text": f"chunk {i} contains the keyword sh:datatype"}
+        for i in range(5, 10)
+    ] + [
+        {"id": f"c{i}", "text": f"chunk {i} has no surface form"}
+        for i in range(10, 30)
+    ]
+    manifest = PropertyManifest(
+        family="t",
+        properties=[
+            PropertyEntry(
+                id="ns", uri="u", curie="sh:NodeShape", label="ns",
+                surface_forms=["sh:NodeShape"], min_pairs=2,
+            ),
+            PropertyEntry(
+                id="dt", uri="u", curie="sh:datatype", label="dt",
+                surface_forms=["sh:datatype"], min_pairs=2,
+            ),
+        ],
+    )
+    # target=6 hits exactly the 3+3 property cap with no random pad,
+    # so the assertion isolates the property-loop behavior.
+    selected = _smoke_stratified_sample(
+        chunks, manifest, target_count=6, rng=_r.Random(0),
+    )
+    assert len(selected) == 6
+    ns_hits = [c for c in selected if "sh:NodeShape" in c["text"]]
+    dt_hits = [c for c in selected if "sh:datatype" in c["text"]]
+    assert len(ns_hits) == 3, "Every property should land 3 representatives"
+    assert len(dt_hits) == 3

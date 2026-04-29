@@ -282,6 +282,58 @@ def _stratified_sample(
     return out
 
 
+def _smoke_stratified_sample(
+    chunks: List[Dict[str, Any]],
+    manifest: Optional[Any],
+    target_count: int,
+    rng: random.Random,
+) -> List[Dict[str, Any]]:
+    """Wave 120: smoke-mode chunk sampler.
+
+    Selects ~``target_count`` chunks for fast-feedback runs. Strategy:
+
+    1. For each property in ``manifest`` (if any), pick up to 3 chunks
+       whose text contains a declared surface form. This guarantees the
+       smoke run exercises every property the full run would gate.
+    2. Pad with random chunks (deterministic via ``rng``) until
+       ``target_count`` is reached.
+
+    No manifest -> just pick the first ``target_count`` eligible chunks
+    in deterministic order. Empty corpus -> empty list.
+    """
+    if not chunks or target_count <= 0:
+        return list(chunks)
+    selected: List[Dict[str, Any]] = []
+    selected_ids: set = set()
+
+    def _add(c: Dict[str, Any]) -> None:
+        cid = id(c)
+        if cid in selected_ids:
+            return
+        selected.append(c)
+        selected_ids.add(cid)
+
+    if manifest is not None:
+        per_property_cap = 3
+        for prop in manifest.properties:
+            hits = [
+                c for c in chunks
+                if any(sf in str(c.get("text") or "") for sf in prop.surface_forms)
+            ]
+            for c in hits[:per_property_cap]:
+                _add(c)
+                if len(selected) >= target_count:
+                    return selected
+
+    remaining = [c for c in chunks if id(c) not in selected_ids]
+    rng.shuffle(remaining)
+    for c in remaining:
+        if len(selected) >= target_count:
+            break
+        _add(c)
+    return selected
+
+
 def _curriculum_sort_key(chunk: Dict[str, Any]) -> Tuple[int, str]:
     diff = str(chunk.get("difficulty") or "").lower()
     rank = _DIFFICULTY_ORDER.get(diff, len(_DIFFICULTY_ORDER))
@@ -611,6 +663,7 @@ def run_synthesis(
     max_dispatches: Optional[int] = None,
     telemetry_path: Optional[Path] = None,
     pilot_report_every: int = 20,
+    smoke_mode: str = "none",
 ) -> SynthesisStats:
     """Run the full synthesis stage for one course output directory.
 
@@ -671,8 +724,17 @@ def run_synthesis(
         training_specs_dir = corpus_dir / "training_specs"
     training_specs_dir.mkdir(parents=True, exist_ok=True)
 
-    instruction_out = training_specs_dir / "instruction_pairs.jsonl"
-    preference_out = training_specs_dir / "preference_pairs.jsonl"
+    # Wave 120: smoke modes route JSONL outputs to ``smoke_*`` siblings
+    # so a smoke run never clobbers the canonical instruction_pairs.jsonl
+    # / preference_pairs.jsonl from a prior full run. dataset_config.json
+    # is left at the canonical path because the smoke run's stats are
+    # still useful telemetry.
+    if smoke_mode in ("deterministic", "paraphrase"):
+        instruction_out = training_specs_dir / "smoke_instruction_pairs.jsonl"
+        preference_out = training_specs_dir / "smoke_preference_pairs.jsonl"
+    else:
+        instruction_out = training_specs_dir / "instruction_pairs.jsonl"
+        preference_out = training_specs_dir / "preference_pairs.jsonl"
     dataset_config_path = training_specs_dir / "dataset_config.json"
 
     # Wave 116: incremental sidecar write. Each emitted instruction /
@@ -702,7 +764,12 @@ def run_synthesis(
     # an operator who set --pilot-report-every 0 still gets the
     # post-run summary on disk.
     pilot_manifest = None
-    pilot_report_path = training_specs_dir / "pilot_report.md"
+    # Wave 120: smoke modes write to a sidecar so the canonical
+    # pilot_report.md is never overwritten by a partial run.
+    if smoke_mode in ("deterministic", "paraphrase"):
+        pilot_report_path = training_specs_dir / "smoke_pilot_report.md"
+    else:
+        pilot_report_path = training_specs_dir / "pilot_report.md"
     pilot_slug = slug or course_code or corpus_dir.name
     if pilot_slug:
         try:
@@ -715,6 +782,30 @@ def run_synthesis(
                 pilot_slug,
             )
             pilot_manifest = None
+    # Wave 120: smoke modes scale every property's ``min_pairs`` floor
+    # so a 20-chunk smoke run can pass when the full corpus would.
+    # Deterministic = floor 1 (one pair proves preservation through
+    # the deterministic path); paraphrase = floor 2 (some chance the
+    # provider drops a token on one pair, fallback covers the other).
+    if pilot_manifest is not None and smoke_mode in ("deterministic", "paraphrase"):
+        from lib.ontology.property_manifest import (
+            PropertyEntry as _PE,
+            PropertyManifest as _PM,
+        )
+        smoke_floor = 1 if smoke_mode == "deterministic" else 2
+        pilot_manifest = _PM(
+            family=pilot_manifest.family,
+            properties=[
+                _PE(
+                    id=p.id, uri=p.uri, curie=p.curie, label=p.label,
+                    surface_forms=list(p.surface_forms),
+                    min_pairs=smoke_floor,
+                    min_accuracy=p.min_accuracy,
+                )
+                for p in pilot_manifest.properties
+            ],
+            description=pilot_manifest.description,
+        )
 
     # Validate stratification dimensions early so a typo fails loud rather
     # than silently degrading to no-op.
@@ -732,6 +823,17 @@ def run_synthesis(
             stratify_dims.append(d_clean)
 
     chunks = _read_chunks(chunks_path)
+    # Wave 120: smoke modes. "deterministic" forces provider=mock and
+    # subsamples to ~20 stratified chunks; "paraphrase" keeps the
+    # configured provider but applies the same subsampling. Both write
+    # smoke_pilot_report.md as a sidecar so the canonical
+    # pilot_report.md is never overwritten by a partial run.
+    if smoke_mode == "deterministic":
+        provider = "mock"
+    if smoke_mode in ("deterministic", "paraphrase"):
+        chunks = _smoke_stratified_sample(
+            chunks, pilot_manifest, target_count=20, rng=random.Random(seed),
+        )
     stats = SynthesisStats(chunks_total=len(chunks))
     stats.stratify_dimensions = list(stratify_dims)
     stats.max_pairs_cap = max_pairs
@@ -928,7 +1030,11 @@ def run_synthesis(
         # the property-bearing chunks at index 46+. Surfacing it here
         # gives the operator a chance to abort and re-launch without
         # the cap before paying for the full run.
-        if max_pairs is not None and max_pairs < len(iter_chunks):
+        if (
+            max_pairs is not None
+            and max_pairs < len(iter_chunks)
+            and smoke_mode == "none"
+        ):
             logger.warning(
                 "Wave 119: --max-pairs=%d will clip this run before all "
                 "%d eligible chunks are visited. Property-coverage gates "
@@ -1542,6 +1648,7 @@ def run_synthesis_from_libv2(
     pedagogy_graph_path: Optional[Path] = None,
     instruction_variants_per_chunk: int = 1,
     pilot_report_every: int = 20,
+    smoke_mode: str = "none",
 ) -> SynthesisStats:
     """Run synthesis directly against a LibV2 course archive.
 
@@ -1599,6 +1706,7 @@ def run_synthesis_from_libv2(
         slug=slug,
         instruction_variants_per_chunk=instruction_variants_per_chunk,
         pilot_report_every=pilot_report_every,
+        smoke_mode=smoke_mode,
     )
 
 
@@ -1802,6 +1910,36 @@ def build_parser() -> argparse.ArgumentParser:
             "editorial misconception DPO pairs."
         ),
     )
+    # Wave 120: smoke modes. Stratified ~20-chunk sample so every
+    # property surface form gets at least 3 chunks of representation;
+    # writes ``smoke_pilot_report.md`` (sidecar — never overwrites
+    # the canonical ``pilot_report.md``); floors scaled down so a
+    # smoke run can pass when the full run would.
+    smoke = p.add_mutually_exclusive_group()
+    smoke.add_argument(
+        "--smoke-deterministic",
+        action="store_true",
+        help=(
+            "Wave 120: forces provider='mock', stratified-samples ~20 "
+            "chunks (every property-bearing chunk first, capped at 3 per "
+            "surface form, padded to 20). No LLM call — completes in "
+            "<60 s. Writes training_specs/smoke_pilot_report.md with "
+            "scaled floors (1 pair per property). Use to validate "
+            "schema, decision capture, gate wiring before paying for "
+            "a full provider run."
+        ),
+    )
+    smoke.add_argument(
+        "--smoke-paraphrase",
+        action="store_true",
+        help=(
+            "Wave 120: like --smoke-deterministic but keeps the "
+            "configured --provider so the paraphrase path (and "
+            "preserve_tokens preservation) is exercised on ~20 "
+            "stratified chunks. Floors scaled to 2 pairs per property. "
+            "Local-server provider on a 14B model: ~10 min wall time."
+        ),
+    )
     return p
 
 
@@ -1832,6 +1970,13 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
         )
     # Wave 117: incremental pilot_report.md writes during the chunk loop.
     pilot_report_every = int(getattr(args, "pilot_report_every", 20) or 0)
+    # Wave 120: smoke modes (mutex group, only one can be set).
+    if getattr(args, "smoke_deterministic", False):
+        smoke_mode = "deterministic"
+    elif getattr(args, "smoke_paraphrase", False):
+        smoke_mode = "paraphrase"
+    else:
+        smoke_mode = "none"
 
     if getattr(args, "slug", None):
         stats = run_synthesis_from_libv2(
@@ -1839,6 +1984,7 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             course_code=args.course_code,
             provider=args.provider,
             seed=args.seed,
+            smoke_mode=smoke_mode,
             stratify=stratify_dims,
             include_dpo_from_misconceptions=include_dpo,
             difficulty_curriculum=diff_curriculum,
@@ -1874,6 +2020,7 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             instruction_variants_per_chunk=args.instruction_variants_per_chunk,
             max_dispatches=max_dispatches,
             pilot_report_every=pilot_report_every,
+            smoke_mode=smoke_mode,
         )
 
     print("\n[Synthesis] Complete.")
