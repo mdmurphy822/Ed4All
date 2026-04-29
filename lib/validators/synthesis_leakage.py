@@ -1,24 +1,31 @@
-"""Wave 121 — SynthesisLeakageValidator.
+"""Wave 121 + 122 — SynthesisLeakageValidator.
 
-Pre-training gate that detects verbatim chunk-text leakage in the
-synthesised training pairs. The 2026-04-29 smoke audit on
-rdf-shacl-551-2 found 11/20 (55%) instruction completions contained
-≥50-char verbatim spans copied from ``chunk.text`` — training on
-that data would teach the model to memorize the source corpus
-instead of paraphrasing / applying concepts. The instruction-factory
-prompt-side leakage check did not cover the completion side; this
-validator is the runtime backstop that catches the regression class
-even after factory-level fixes land.
+Pre-training gate that detects two distinct contamination vectors in
+the synthesised training pairs:
 
-Default threshold: 5% of pairs may carry a leak before the gate
-fails (covers occasional tolerable overlap on short technical
-phrases that legitimately appear verbatim in both corpus and
-completion). Override via gate inputs.thresholds.
+1. **Verbatim chunk-text leakage** (Wave 121). Pairs that contain
+   ≥50-char spans copied from ``chunk.text``. The 2026-04-29 audit
+   found 11/20 (55%) instruction completions leaked through
+   ``_build_completion``'s summary path; training on that data would
+   produce a corpus-memorisation adapter.
+
+2. **Assessment-outline scaffolding** (Wave 122). Pairs that carry
+   structured patterns like ``Question 1 (CO-07, Bloom: Understand).
+   Question 2 (CO-07, Bloom: Apply)...``. The 2026-04-29 follow-up
+   audit (codex finding M1) caught chunk_00066 leaking this through
+   chunk metadata (not chunk.text, so it bypassed the Wave 121
+   verbatim check). Training on these would teach the model to emit
+   quiz-outline debris in normal explanations.
+
+Default thresholds: 5% of pairs may carry verbatim leak; 0% may
+carry assessment-scaffolding (zero-tolerance — this is structural
+contamination). Override via gate inputs.thresholds.
 """
 from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -31,6 +38,27 @@ logger = logging.getLogger(__name__)
 # n-gram overlap on short phrases like "is the".
 DEFAULT_LEAK_SPAN_CHARS = 50
 DEFAULT_LEAK_RATE_THRESHOLD = 0.05
+# Wave 122: assessment-scaffolding has zero tolerance — even a single
+# pair carrying the pattern is structural contamination. Tunable via
+# gate config, but default 0.0 is the right default.
+DEFAULT_ASSESSMENT_SCAFFOLD_THRESHOLD = 0.0
+
+_ASSESSMENT_SCAFFOLD_PATTERNS = [
+    re.compile(r'\bQuestion\s+\d+\s*\(\s*[A-Z]+-\d+\s*,?\s*Bloom\s*:', re.IGNORECASE),
+    re.compile(r'\b(?:Q|Item)\s*\d+\s*\(\s*[A-Z]+-\d+\b'),
+    re.compile(r'\b(?:Bloom|Cognitive)\s*:\s*(?:Remember|Understand|Apply|Analyze|Evaluate|Create)\)', re.IGNORECASE),
+]
+
+
+def _contains_assessment_scaffolding(text: str) -> Optional[str]:
+    """Return the first matched scaffolding fragment, or None."""
+    if not text:
+        return None
+    for pat in _ASSESSMENT_SCAFFOLD_PATTERNS:
+        m = pat.search(text)
+        if m:
+            return m.group(0)
+    return None
 
 
 def _contains_verbatim_span(
@@ -117,6 +145,12 @@ class SynthesisLeakageValidator:
         span_threshold = int(
             thresholds.get("leak_span_chars", DEFAULT_LEAK_SPAN_CHARS)
         )
+        assessment_threshold = float(
+            thresholds.get(
+                "assessment_scaffold_rate_threshold",
+                DEFAULT_ASSESSMENT_SCAFFOLD_THRESHOLD,
+            )
+        )
 
         chunks_by_id: Dict[str, str] = {}
         with chunks_path.open("r", encoding="utf-8") as fh:
@@ -134,6 +168,7 @@ class SynthesisLeakageValidator:
 
         total = 0
         leaked: List[Dict[str, Any]] = []
+        scaffolded: List[Dict[str, Any]] = []
         with inst_path.open("r", encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
@@ -145,6 +180,20 @@ class SynthesisLeakageValidator:
                     continue
                 total += 1
                 cid = str(row.get("chunk_id") or "")
+                # Wave 122: assessment-scaffolding check runs even when
+                # chunk_text isn't available (the contamination doesn't
+                # require comparison against chunk source).
+                for field in ("prompt", "completion"):
+                    fragment = _contains_assessment_scaffolding(
+                        str(row.get(field) or "")
+                    )
+                    if fragment:
+                        scaffolded.append({
+                            "chunk_id": cid,
+                            "field": field,
+                            "fragment": fragment[:80],
+                        })
+                        break
                 chunk_text = chunks_by_id.get(cid, "")
                 if not chunk_text:
                     continue
@@ -192,6 +241,31 @@ class SynthesisLeakageValidator:
                         f"{excerpts}. Fix: ensure the synthesis factories "
                         f"check completion-side leakage and reject / "
                         f"rewrite leaky completions."
+                    ),
+                    location=str(inst_path),
+                ))
+            # Wave 122: assessment-scaffolding contamination check.
+            scaffold_rate = len(scaffolded) / total
+            if scaffold_rate > assessment_threshold:
+                excerpts = "; ".join(
+                    f"{s['chunk_id']}/{s['field']}: {s['fragment']!r}"
+                    for s in scaffolded[:3]
+                )
+                issues.append(GateIssue(
+                    severity="critical",
+                    code="ASSESSMENT_SCAFFOLDING_ABOVE_THRESHOLD",
+                    message=(
+                        f"{len(scaffolded)}/{total} ({100*scaffold_rate:.1f}%) "
+                        f"instruction pairs contain assessment-outline "
+                        f"scaffolding patterns (e.g. 'Question N (XX-NN, "
+                        f"Bloom: ...)'); threshold "
+                        f"{100*assessment_threshold:.1f}%. This is "
+                        f"structural contamination — training on these "
+                        f"would teach the model to emit quiz-outline "
+                        f"debris in normal explanations. First 3: "
+                        f"{excerpts}. Fix: factory-level rejection of "
+                        f"pairs whose chunk metadata carries assessment "
+                        f"scaffolding."
                     ),
                     location=str(inst_path),
                 ))
