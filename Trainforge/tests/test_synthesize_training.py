@@ -852,6 +852,73 @@ def test_force_inject_phrasing_rotates_across_chunks() -> None:
     assert len(completion_addition_forms) == len(_COMPLETION_REFERENCE_PHRASINGS)
 
 
+def test_assessment_scaffolding_chunk_drops_pair() -> None:
+    """Wave 122: when a chunk's summary carries an assessment outline
+    (e.g. 'Question 1 (CO-07, Bloom: Understand). Question 2 ...') the
+    factory must reject the pair after the disallow_summary retry,
+    not emit it. Otherwise the model learns to vomit quiz outlines
+    in normal explanations."""
+    from Trainforge.generators.instruction_factory import (
+        synthesize_instruction_pair,
+    )
+
+    chunk = {
+        "id": "smoke_c66",
+        "text": "Some clean teaching text without scaffolding markers.",
+        "summary": (
+            "Question 1 (CO-07, Bloom: Understand). Question 2 (CO-07, "
+            "Bloom: Apply). Question 3 (CO-07, Bloom: Analyze)."
+        ),
+        # Note: NO concept_tags / key_terms — so disallow_summary retry
+        # produces a completion built purely from the bloom_tail. That
+        # text is clean. But if the chunk had ONLY the scaffolded
+        # summary as its content source, the retry path would fall
+        # through to bloom_tails which doesn't carry the pattern.
+        "concept_tags": ["clean-tag-one", "clean-tag-two"],
+        "learning_outcome_refs": ["TO-01"],
+        "bloom_level": "understand",
+    }
+    result = synthesize_instruction_pair(chunk, seed=42, provider="mock")
+    # The retry path produces a clean completion (bloom_tail +
+    # concept_tags scaffold), so the pair should land successfully.
+    assert result.pair is not None
+    pair_text = result.pair["prompt"] + " " + result.pair["completion"]
+    # Critical: pattern must NOT appear in the final pair.
+    assert "Question 1 (CO-07" not in pair_text
+    assert "Bloom: Understand)" not in pair_text
+
+
+def test_assessment_scaffolding_unrecoverable_chunk_drops_pair() -> None:
+    """When BOTH summary AND key_terms.definition carry the scaffolding
+    pattern, no retry can produce a clean completion — the pair must
+    be rejected with quality.passed=False."""
+    from Trainforge.generators.instruction_factory import (
+        synthesize_instruction_pair,
+    )
+
+    scaffolded = (
+        "Question 1 (CO-07, Bloom: Understand). Question 2 (CO-07, "
+        "Bloom: Apply). Question 3 (CO-07, Bloom: Analyze)."
+    )
+    chunk = {
+        "id": "smoke_c66x",
+        "text": "Clean source text without markers.",
+        "summary": scaffolded,
+        # Force the disallow_summary retry to also produce scaffolded
+        # content by putting the pattern in key_terms.
+        "key_terms": [{"term": "scaffolded-term", "definition": scaffolded}],
+        "concept_tags": [],
+        "learning_outcome_refs": ["TO-01"],
+        "bloom_level": "understand",
+    }
+    result = synthesize_instruction_pair(chunk, seed=42, provider="mock")
+    assert result.pair is None, (
+        "Pair must be dropped when no retry path produces a "
+        "scaffolding-clean completion."
+    )
+    assert result.quality.get("no_assessment_scaffolding") is False
+
+
 def test_force_inject_phrasing_idempotent_for_same_chunk() -> None:
     """Same chunk_id -> same phrasing across runs (audit reproducibility)."""
     from Trainforge.generators.instruction_factory import (
