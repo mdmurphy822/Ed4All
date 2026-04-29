@@ -151,3 +151,84 @@ def test_missing_inputs_fails_critical(tmp_path: Path) -> None:
     assert result.passed is False
     codes = [i.code for i in result.issues if i.severity == "critical"]
     assert "MISSING_INPUTS" in codes
+
+
+# ---------------------------------------------------------------------------
+# Wave 122: assessment-scaffolding contamination
+# ---------------------------------------------------------------------------
+
+
+def test_fails_critical_on_assessment_scaffolding_zero_tolerance(tmp_path: Path) -> None:
+    """A single pair carrying 'Question N (XX-NN, Bloom: ...)' is enough
+    to fail the gate at the default 0% threshold. This is structural
+    contamination that would teach the model to emit quiz-outline
+    debris."""
+    course = tmp_path / "course"
+    _write_corpus(course, [{"id": "c1", "text": "Some clean instructional text about SHACL."}])
+    rows = [
+        {
+            "chunk_id": "c1",
+            "prompt": f"Define this term {i}.",
+            "completion": (
+                f"It constrains the data graph in variant {i}. A learner "
+                f"applies it by checking instance properties."
+            ),
+        }
+        for i in range(19)
+    ]
+    rows.append({
+        "chunk_id": "c1",
+        "prompt": "What's covered in week 4?",
+        "completion": (
+            "Question 1 (CO-07, Bloom: Understand). Question 2 (CO-07, "
+            "Bloom: Apply). Question 3 (CO-07, Bloom: Analyze)."
+        ),
+    })
+    _write_pairs(course, rows)
+    result = SynthesisLeakageValidator().validate({"course_dir": str(course)})
+    assert result.passed is False
+    codes = [i.code for i in result.issues if i.severity == "critical"]
+    assert "ASSESSMENT_SCAFFOLDING_ABOVE_THRESHOLD" in codes
+
+
+def test_assessment_scaffolding_threshold_override(tmp_path: Path) -> None:
+    """Operator may relax the threshold (e.g. for an experimental run)."""
+    course = tmp_path / "course"
+    _write_corpus(course, [{"id": "c1", "text": "Some text."}])
+    rows = [{
+        "chunk_id": "c1",
+        "prompt": f"Define {i}.",
+        "completion": (
+            f"It constrains the data graph in variant {i}. A learner "
+            f"applies it by checking instance properties carefully."
+        ),
+    } for i in range(19)]
+    rows.append({
+        "chunk_id": "c1",
+        "prompt": "What's covered in week 4?",
+        "completion": "Question 1 (CO-07, Bloom: Understand).",
+    })
+    _write_pairs(course, rows)
+    relaxed = SynthesisLeakageValidator().validate({
+        "course_dir": str(course),
+        "thresholds": {"assessment_scaffold_rate_threshold": 0.10},
+    })
+    # 1/20 = 5% scaffolded; below 10% threshold -> passes.
+    assert relaxed.passed is True
+
+
+def test_assessment_scaffolding_check_runs_without_chunks_match(tmp_path: Path) -> None:
+    """The scaffolding regex check operates on pair text alone; it
+    fires even when chunk_id doesn't resolve in chunks.jsonl. The
+    verbatim-span check requires chunk text and is skipped in that
+    case, but the scaffold check is independent."""
+    course = tmp_path / "course"
+    _write_corpus(course, [{"id": "other_chunk", "text": "irrelevant"}])
+    _write_pairs(course, [{
+        "chunk_id": "missing_chunk",
+        "prompt": "Q?",
+        "completion": "Question 1 (CO-07, Bloom: Apply). Question 2 (CO-07, Bloom: Analyze).",
+    }])
+    result = SynthesisLeakageValidator().validate({"course_dir": str(course)})
+    codes = [i.code for i in result.issues if i.severity == "critical"]
+    assert "ASSESSMENT_SCAFFOLDING_ABOVE_THRESHOLD" in codes

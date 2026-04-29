@@ -99,6 +99,24 @@ def _looks_like_fragment(text: str) -> bool:
     return str(text or "").strip().endswith(":")
 
 
+# Wave 122: assessment-scaffolding patterns (mirror instruction_factory).
+_ASSESSMENT_SCAFFOLD_PATTERNS = [
+    re.compile(r'\bQuestion\s+\d+\s*\(\s*[A-Z]+-\d+\s*,?\s*Bloom\s*:', re.IGNORECASE),
+    re.compile(r'\b(?:Q|Item)\s*\d+\s*\(\s*[A-Z]+-\d+\b'),
+    re.compile(r'\b(?:Bloom|Cognitive)\s*:\s*(?:Remember|Understand|Apply|Analyze|Evaluate|Create)\)', re.IGNORECASE),
+]
+
+
+def _contains_assessment_scaffolding(text: str) -> bool:
+    """True when text contains an assessment-outline marker."""
+    if not text:
+        return False
+    for pat in _ASSESSMENT_SCAFFOLD_PATTERNS:
+        if pat.search(text):
+            return True
+    return False
+
+
 def _contains_verbatim_span(prompt: str, chunk_text: str, max_span: int = MAX_VERBATIM_SPAN) -> bool:
     if not prompt or not chunk_text:
         return False
@@ -248,10 +266,21 @@ def _build_chosen(
 
     tags = [str(t) for t in (chunk.get("concept_tags") or []) if t]
     if tags and not parts:
-        parts.append(
-            f"{topic} should be explained through the concrete RDF/SHACL role "
-            f"of {', '.join(tags[:3])}, not just by listing related labels."
-        )
+        joined = ", ".join(tags[:3])
+        # Wave 122: parallel scaffolding rotation. Same 4-phrasing set
+        # as instruction_factory; same chunk_id-hash deterministic
+        # selection. See instruction_factory comment for context.
+        scaffolds = [
+            f"{topic} is best understood by tying {joined} to the underlying schema, not by listing labels.",
+            f"A learner working on {topic} should ground each idea in {joined} rather than memorising surface terms.",
+            f"To master {topic}, connect each piece to {joined} as concrete schema mechanics, not vocabulary.",
+            f"{topic} is built from the interplay of {joined}; treat them as operative roles, not labels.",
+        ]
+        chunk_id_for_hash = str(chunk.get("id") or chunk.get("chunk_id") or topic)
+        idx = int(
+            hashlib.sha256(chunk_id_for_hash.encode("utf-8")).hexdigest(), 16
+        ) % len(scaffolds)
+        parts.append(scaffolds[idx])
 
     # Course-level grounding sentence so the answer reads as an explanation
     # rather than a bare fact.
@@ -490,6 +519,11 @@ def synthesize_preference_pair(
     # extract; if leak detected, retry skipping the summary branch.
     if _contains_verbatim_span(chosen, chunk_text):
         chosen = _build_chosen(chunk, topic, selected_mc, disallow_summary=True)
+    # Wave 122: assessment-scaffolding contamination retry. The
+    # 2026-04-29 audit caught chunk_00066's "Question 1 (CO-07, Bloom:
+    # ...)..." sequence flowing through both chosen + rejected.
+    if _contains_assessment_scaffolding(chosen):
+        chosen = _build_chosen(chunk, topic, selected_mc, disallow_summary=True)
 
     if selected_mc:
         rejected_candidate = _build_rejected_from_misconception(selected_mc, topic)
@@ -518,9 +552,18 @@ def synthesize_preference_pair(
     # Wave 121: leak gate now covers both prompt and chosen against
     # chunk_text (rejected is synthetic / misconception so leak isn't
     # meaningful there).
+    # Wave 122: also reject when chosen OR rejected carries assessment-
+    # scaffolding patterns. Rejected can carry it because
+    # _rule_synthesize_rejected derives from chosen via token swaps;
+    # the question pattern is unaffected by negation, so the scaffolding
+    # propagates.
     leak_ok = (
         not _contains_verbatim_span(prompt, chunk_text)
         and not _contains_verbatim_span(chosen, chunk_text)
+    )
+    assessment_ok = (
+        not _contains_assessment_scaffolding(chosen)
+        and not _contains_assessment_scaffolding(rejected)
     )
     prompt_ok = PROMPT_MIN <= len(prompt) <= PROMPT_MAX
     chosen_ok = COMPLETION_MIN <= len(chosen) <= COMPLETION_MAX
@@ -535,12 +578,14 @@ def synthesize_preference_pair(
         "jaccard_delta_ok": jaccard_ok,
         "chosen_ne_rejected": distinct_ok,
         "no_verbatim_leakage": leak_ok,
+        "no_assessment_scaffolding": assessment_ok,
         "prompt_len_ok": prompt_ok,
         "chosen_len_ok": chosen_ok,
         "rejected_len_ok": rejected_ok,
     }
     quality["passed"] = all([
-        jaccard_ok, distinct_ok, leak_ok, prompt_ok, chosen_ok, rejected_ok,
+        jaccard_ok, distinct_ok, leak_ok, assessment_ok,
+        prompt_ok, chosen_ok, rejected_ok,
     ])
 
     rationale = (
@@ -557,6 +602,7 @@ def synthesize_preference_pair(
             rationale=(
                 f"Preference pair gated out: jaccard_delta_ok={jaccard_ok}, "
                 f"chosen_ne_rejected={distinct_ok}, no_verbatim_leakage={leak_ok}, "
+                f"no_assessment_scaffolding={assessment_ok}, "
                 f"prompt_len_ok={prompt_ok}, chosen_len_ok={chosen_ok}, rejected_len_ok={rejected_ok}."
             ),
             source=source,
