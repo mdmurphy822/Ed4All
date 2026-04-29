@@ -255,6 +255,125 @@ def test_run_synthesis_writes_pilot_report_periodically(
     assert stats.instruction_pairs_emitted > 0
 
 
+def test_run_synthesis_writes_final_pilot_report_when_pilot_every_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wave 119 contract: setting ``--pilot-report-every 0`` disables
+    the in-flight cadence but MUST NOT disable the final post-run
+    write. An operator who turned off mid-run noise should still see
+    the post-run summary on disk."""
+    course_dir = _make_working_copy(tmp_path)
+
+    manifest = _synthetic_manifest()
+    monkeypatch.setattr(
+        "lib.ontology.property_manifest.load_property_manifest",
+        lambda *_a, **_kw: manifest,
+    )
+
+    from Trainforge.scripts import pilot_report_helpers
+
+    write_calls: list[Path] = []
+    original_writer = pilot_report_helpers.write_pilot_report_atomic
+
+    def _tracking_writer(path: Path, content: str) -> None:
+        write_calls.append(Path(path))
+        original_writer(path, content)
+
+    monkeypatch.setattr(
+        pilot_report_helpers, "write_pilot_report_atomic", _tracking_writer,
+    )
+
+    run_synthesis(
+        corpus_dir=course_dir,
+        course_code="MINI_TRAINING_101",
+        provider="mock",
+        seed=11,
+        pilot_report_every=0,
+        curriculum_from_graph=False,
+    )
+
+    report_path = course_dir / "training_specs" / "pilot_report.md"
+    assert report_path.exists(), (
+        "Wave 119: final pilot_report.md must be written even when "
+        "--pilot-report-every is 0"
+    )
+    assert len(write_calls) == 1, (
+        f"Expected exactly one (final) atomic write, got "
+        f"{len(write_calls)}: {[p.name for p in write_calls]}"
+    )
+    content = report_path.read_text(encoding="utf-8")
+    assert "In-flight snapshot" not in content
+    assert "Property coverage" in content
+
+
+def test_run_synthesis_pilot_report_includes_cap_banner_when_capped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wave 119 contract: when ``--max-pairs`` clips the run,
+    pilot_report.md MUST carry a loud banner so an operator opening
+    the file can't miss that property floors are evaluated against a
+    truncated run (the failure mode that bit Wave 118)."""
+    course_dir = _make_working_copy(tmp_path)
+
+    manifest = _synthetic_manifest()
+    monkeypatch.setattr(
+        "lib.ontology.property_manifest.load_property_manifest",
+        lambda *_a, **_kw: manifest,
+    )
+
+    stats = run_synthesis(
+        corpus_dir=course_dir,
+        course_code="MINI_TRAINING_101",
+        provider="mock",
+        seed=11,
+        max_pairs=2,
+        pilot_report_every=0,
+        curriculum_from_graph=False,
+    )
+
+    assert stats.capped_at_max_pairs is True
+    assert stats.max_pairs_cap == 2
+
+    report_path = course_dir / "training_specs" / "pilot_report.md"
+    content = report_path.read_text(encoding="utf-8")
+    assert "WARNING" in content, (
+        "Wave 119: capped run must surface a WARNING banner in "
+        "pilot_report.md"
+    )
+    assert "cap=2" in content
+    assert "--max-pairs" in content
+
+
+def test_run_synthesis_logs_warning_when_max_pairs_clips_eligible_chunks(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Wave 119 contract: a pre-flight WARNING fires when ``max_pairs``
+    is below the eligible-chunks count, so the operator sees the
+    issue at run start (not at end-of-run when 4 hours of compute have
+    already burned)."""
+    course_dir = _make_working_copy(tmp_path)
+
+    with caplog.at_level(logging.WARNING, logger="Trainforge.synthesize_training"):
+        run_synthesis(
+            corpus_dir=course_dir,
+            course_code="MINI_TRAINING_101",
+            provider="mock",
+            seed=11,
+            max_pairs=3,
+            pilot_report_every=0,
+            curriculum_from_graph=False,
+        )
+
+    assert any(
+        "will clip this run" in rec.message
+        and "Property-coverage gates may underreport" in rec.message
+        for rec in caplog.records
+    ), (
+        "Expected a Wave 119 pre-flight cap warning; got "
+        f"{[rec.message for rec in caplog.records]}"
+    )
+
+
 def test_run_synthesis_no_pilot_report_when_no_manifest(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
