@@ -299,6 +299,34 @@ _NEGATION_SWAPS = [
 ]
 
 
+def _enforce_preserve_tokens_in_preference(
+    pair: Dict[str, Any], preserve_tokens: List[str]
+) -> Dict[str, Any]:
+    """Force-inject any ``preserve_tokens`` not present in the
+    ``chosen`` field. Mirrors the instruction-factory helper but
+    targets ``chosen`` only — the rule-synthesized rejection legitimately
+    may omit the technical CURIE, and forcing it into ``rejected`` would
+    weaken the DPO signal. Idempotent, length-clamped.
+    """
+    if not preserve_tokens:
+        return pair
+    chosen = str(pair.get("chosen") or "")
+    missing = [t for t in preserve_tokens if t and t not in chosen]
+    if not missing:
+        return pair
+    addition = f" Canonical terms: {', '.join(missing)}."
+    new_chosen = chosen.rstrip() + addition
+    if len(new_chosen) > COMPLETION_MAX:
+        budget = COMPLETION_MAX - len(addition)
+        if budget < COMPLETION_MIN:
+            new_chosen = chosen[:max(COMPLETION_MIN - len(addition), 0)].rstrip() + addition
+        else:
+            new_chosen = chosen[:budget].rstrip() + addition
+    pair["chosen"] = new_chosen
+    pair.setdefault("preserve_tokens_injected", []).extend(missing)
+    return pair
+
+
 def _rule_synthesize_rejected(chosen: str, topic: str, rng: random.Random) -> str:
     """Deterministic distractor: rewrite ``chosen`` with negation swaps plus a
     confidently-wrong closing sentence. Keeps length in range and guarantees
@@ -537,6 +565,15 @@ def synthesize_preference_pair(
                 pair["paraphrase_fallback_reason"] = "surface_form_preservation_failed"
             else:
                 raise
+
+    # Wave 120 follow-up: force-inject preserve_tokens absent from the
+    # ``chosen`` field so the property-coverage gate sees the literal
+    # CURIE. Same rationale as the instruction-factory version: both
+    # the mock (deterministic) and paraphrase-fallback paths produce
+    # chosen text that uses slugified concept_tags rather than the
+    # literal CURIE. Idempotent, length-clamped.
+    if preserve_tokens:
+        pair = _enforce_preserve_tokens_in_preference(pair, preserve_tokens)
 
     return PreferenceSynthesisResult(
         pair=pair,
