@@ -421,3 +421,55 @@ def test_run_synthesis_no_pilot_report_when_no_manifest(
         "no property manifest" in rec.message.lower()
         for rec in caplog.records
     ), "Expected info-level log about missing property manifest"
+
+
+# ---------------------------------------------------------------------------
+# Wave 120: schema realignment regression — zero validation_issues
+# ---------------------------------------------------------------------------
+
+
+def test_run_synthesis_emits_zero_validation_issues(tmp_path: Path) -> None:
+    """Wave 120 schema realignment: every decision event emitted by a
+    synthesis run must have an empty (or absent) ``metadata.validation_issues``
+    list. Three drift points were closing on prior runs:
+
+      * ``phase="synthesize-training"`` was missing from the schema enum.
+      * ``course_id="RDF-SHACL-551-2"`` failed the underscore-only pattern.
+      * ``alternatives_considered`` items were strings, schema expects objects.
+
+    All three are now schema-clean. This test asserts the contract.
+    """
+    import os
+    os.environ["VALIDATE_DECISIONS"] = "true"
+    from lib.decision_capture import DecisionCapture
+
+    course_dir = _make_working_copy(tmp_path)
+    capture = DecisionCapture(
+        course_code="rdf-shacl-551-2",
+        phase="synthesize-training",
+        tool="trainforge",
+    )
+
+    stats = run_synthesis(
+        corpus_dir=course_dir,
+        course_code="rdf-shacl-551-2",
+        provider="mock",
+        seed=11,
+        capture=capture,
+        pilot_report_every=0,
+        curriculum_from_graph=False,
+    )
+
+    assert stats.instruction_pairs_emitted > 0
+    assert capture.decisions, "synthesis emitted no decision events"
+    failing: list[tuple[str, list]] = []
+    for rec in capture.decisions:
+        meta = rec.get("metadata") or {}
+        issues = meta.get("validation_issues") or []
+        if issues:
+            failing.append((rec.get("decision_type", "?"), issues))
+
+    assert not failing, (
+        f"{len(failing)} of {len(capture.decisions)} decision events carry "
+        f"validation_issues. First 3: {failing[:3]!r}"
+    )

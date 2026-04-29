@@ -462,8 +462,14 @@ def synthesize_instruction_pair(
         rationale=rationale,
         topic=topic,
         alternatives=[
-            f"apply._default (rejected: pair targets '{bloom}' level, not 'apply')",
-            f"{bloom}._default (rejected: content-type-specific template '{template_id}' is more specific)",
+            {
+                "option": "apply._default",
+                "reason_rejected": f"pair targets '{bloom}' level, not 'apply'",
+            },
+            {
+                "option": f"{bloom}._default",
+                "reason_rejected": f"content-type-specific template '{template_id}' is more specific",
+            },
         ],
     )
 

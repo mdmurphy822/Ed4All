@@ -526,8 +526,14 @@ def synthesize_preference_pair(
         source=source,
         misconception_id=mc_id,
         alternatives=[
-            "paraphrase-only rejection (rejected: insufficient token turnover for DPO signal)",
-            "prompt-swap rejection (rejected: DPO requires shared prompt across chosen/rejected)",
+            {
+                "option": "paraphrase-only rejection",
+                "reason_rejected": "insufficient token turnover for DPO signal",
+            },
+            {
+                "option": "prompt-swap rejection",
+                "reason_rejected": "DPO requires shared prompt across chosen/rejected",
+            },
         ],
     )
 
