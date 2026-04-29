@@ -150,6 +150,35 @@ def _trim_completion(text: str, max_len: int = COMPLETION_MAX) -> str:
     return hard.rstrip() + "..."
 
 
+# Wave 122: assessment-outline scaffolding patterns. chunk_00066 in the
+# 2026-04-29 smoke run leaked a "Question 1 (CO-07, Bloom: Understand).
+# Question 2 (CO-07, Bloom: Apply)..." sequence into both instruction
+# and preference pairs. This is structural contamination — the model
+# would learn to emit quiz-outline debris in normal explanations. The
+# pattern is regex-detectable; reject any pair where the completion /
+# chosen field carries it.
+_ASSESSMENT_SCAFFOLD_PATTERNS = [
+    re.compile(r'\bQuestion\s+\d+\s*\(\s*[A-Z]+-\d+\s*,?\s*Bloom\s*:', re.IGNORECASE),
+    re.compile(r'\b(?:Q|Item)\s*\d+\s*\(\s*[A-Z]+-\d+\b'),
+    re.compile(r'\b(?:Bloom|Cognitive)\s*:\s*(?:Remember|Understand|Apply|Analyze|Evaluate|Create)\)', re.IGNORECASE),
+]
+
+
+def _contains_assessment_scaffolding(text: str) -> bool:
+    """True when ``text`` contains an assessment-outline marker —
+    structured patterns like "Question 1 (CO-07, Bloom: Understand)"
+    that come from quiz-outline source content. These flow through
+    deterministic templates undetected by chunk-text leakage gates
+    because they live in chunk metadata fields rather than chunk.text.
+    """
+    if not text:
+        return False
+    for pat in _ASSESSMENT_SCAFFOLD_PATTERNS:
+        if pat.search(text):
+            return True
+    return False
+
+
 def _contains_verbatim_span(prompt: str, chunk_text: str, max_span: int = MAX_VERBATIM_SPAN) -> bool:
     """Return True if ``prompt`` contains any span of >= ``max_span`` consecutive
     chars that also appears in ``chunk_text``.
@@ -257,10 +286,25 @@ def _build_completion(
     tags = [str(t).replace("-", " ") for t in (chunk.get("concept_tags") or []) if t]
     if tags and not parts:
         joined = ", ".join(tags[:3])
-        parts.append(
-            f"{topic} should be explained through the concrete RDF/SHACL role "
-            f"of {joined}, not just by listing related labels."
-        )
+        # Wave 122: rotate the concept_tags-branch scaffolding across 4
+        # phrasings keyed by chunk_id hash. The 2026-04-29 audit found
+        # 7/8 fallback instruction completions shared the single rigid
+        # "should be explained through the concrete RDF/SHACL role"
+        # template — Wave 121's leak-retry path forces this branch more
+        # often, so saturation went from rare to dominant. Rotating
+        # phrasings spreads the boilerplate so no single string can
+        # dominate the training distribution.
+        scaffolds = [
+            f"{topic} is best understood by tying {joined} to the underlying schema, not by listing labels.",
+            f"A learner working on {topic} should ground each idea in {joined} rather than memorising surface terms.",
+            f"To master {topic}, connect each piece to {joined} as concrete schema mechanics, not vocabulary.",
+            f"{topic} is built from the interplay of {joined}; treat them as operative roles, not labels.",
+        ]
+        chunk_id_for_hash = str(chunk.get("id") or chunk.get("chunk_id") or topic)
+        idx = int(
+            hashlib.sha256(chunk_id_for_hash.encode("utf-8")).hexdigest(), 16
+        ) % len(scaffolds)
+        parts.append(scaffolds[idx])
 
     # Add a bloom-flavored closing sentence so completion length and tone vary.
     bloom_tails = {
@@ -490,17 +534,30 @@ def synthesize_instruction_pair(
         )
         completion_leaked = _contains_verbatim_span(completion, chunk_text)
 
+    # Wave 122: assessment-scaffolding contamination check. Same retry
+    # pattern as the leak gate — if the first build leaked an outline
+    # like "Question 1 (CO-07, Bloom: Understand)...", retry without
+    # the summary path which is the typical carrier.
+    completion_has_assessment = _contains_assessment_scaffolding(completion)
+    if completion_has_assessment:
+        completion = _build_completion(
+            chunk, topic, bloom, content_type, rng, disallow_summary=True,
+        )
+        completion_has_assessment = _contains_assessment_scaffolding(completion)
+
     quality = {
         "prompt_len": len(prompt),
         "completion_len": len(completion),
         "prompt_len_ok": PROMPT_MIN <= len(prompt) <= PROMPT_MAX,
         "completion_len_ok": COMPLETION_MIN <= len(completion) <= COMPLETION_MAX,
         "no_verbatim_leakage": not leaked and not completion_leaked,
+        "no_assessment_scaffolding": not completion_has_assessment,
     }
     quality["passed"] = (
         quality["prompt_len_ok"]
         and quality["completion_len_ok"]
         and quality["no_verbatim_leakage"]
+        and quality["no_assessment_scaffolding"]
     )
 
     if not quality["passed"]:
@@ -511,7 +568,8 @@ def synthesize_instruction_pair(
             rationale=(
                 f"Instruction pair gated out: prompt_len_ok={quality['prompt_len_ok']}, "
                 f"completion_len_ok={quality['completion_len_ok']}, "
-                f"no_verbatim_leakage={quality['no_verbatim_leakage']}."
+                f"no_verbatim_leakage={quality['no_verbatim_leakage']}, "
+                f"no_assessment_scaffolding={quality['no_assessment_scaffolding']}."
             ),
             topic=topic,
         )
