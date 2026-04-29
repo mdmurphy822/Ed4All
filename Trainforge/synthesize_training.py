@@ -930,7 +930,14 @@ def run_synthesis(
         from Trainforge.generators._local_provider import (
             LocalSynthesisProvider,
         )
-        paraphrase_provider = LocalSynthesisProvider(capture=capture)
+        # Wave 120: smoke-paraphrase caps parse retries at 1 so the
+        # property-heavy stratified sample doesn't compound retry cost
+        # × 20 chunks into an unbounded wall time. Production
+        # (smoke_mode='none') keeps the default budget.
+        local_kwargs: Dict[str, Any] = {"capture": capture}
+        if smoke_mode == "paraphrase":
+            local_kwargs["max_parse_retries"] = 1
+        paraphrase_provider = LocalSynthesisProvider(**local_kwargs)
 
     instruction_records: List[Dict[str, Any]] = []
     preference_records: List[Dict[str, Any]] = []
@@ -1937,7 +1944,10 @@ def build_parser() -> argparse.ArgumentParser:
             "configured --provider so the paraphrase path (and "
             "preserve_tokens preservation) is exercised on ~20 "
             "stratified chunks. Floors scaled to 2 pairs per property. "
-            "Local-server provider on a 14B model: ~10 min wall time."
+            "Smoke mode caps the local provider's parse-retry budget at "
+            "1 (production default: 3) so the property-heavy stratified "
+            "sample doesn't compound retry cost into unbounded wall "
+            "time. Local-server 14B ceiling: ~20 min."
         ),
     )
     return p
