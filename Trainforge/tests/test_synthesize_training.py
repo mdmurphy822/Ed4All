@@ -710,3 +710,88 @@ def test_smoke_stratified_sampler_prefers_property_bearing_chunks() -> None:
     dt_hits = [c for c in selected if "sh:datatype" in c["text"]]
     assert len(ns_hits) == 3, "Every property should land 3 representatives"
     assert len(dt_hits) == 3
+
+
+# ---------------------------------------------------------------------------
+# Wave 120 follow-up: force-inject preserve_tokens absent from final pair
+# ---------------------------------------------------------------------------
+
+
+def test_force_inject_canonical_terms_when_deterministic_path_drops_curie() -> None:
+    """When the final pair (after fallback or pure-deterministic path)
+    doesn't contain a required surface form, the factory appends a
+    'Canonical terms:' sentence to the completion. Closes the failure
+    mode where the deterministic templates use slugified concept_tags
+    and never surface the literal CURIE."""
+    from Trainforge.generators.instruction_factory import (
+        synthesize_instruction_pair,
+    )
+
+    chunk = {
+        "id": "smoke_c01",
+        "text": (
+            "A SHACL shape declared with sh:NodeShape constrains node-typed "
+            "entities. The sh:datatype constraint pins a property's literal "
+            "type. Both are validated together when running shapes against "
+            "data."
+        ),
+        "learning_outcome_refs": ["TO-01"],
+        "bloom_level": "understand",
+        "concept_tags": ["shacl-validation", "node-shape"],
+        "key_terms": [],
+    }
+    result = synthesize_instruction_pair(
+        chunk,
+        seed=11,
+        provider="mock",
+        preserve_tokens=["sh:NodeShape", "sh:datatype"],
+    )
+    assert result.pair is not None
+    pair_text = result.pair["prompt"] + " " + result.pair["completion"]
+    assert "sh:NodeShape" in pair_text, (
+        f"sh:NodeShape must appear after force-inject; got "
+        f"completion={result.pair['completion']!r}"
+    )
+    assert "sh:datatype" in pair_text
+    # Canonical-terms sentence is in the completion so prompt verbatim-
+    # leakage gate stays clean.
+    assert "Canonical terms" in result.pair["completion"]
+    # Audit trail records which tokens were injected.
+    assert "preserve_tokens_injected" in result.pair
+    injected = set(result.pair["preserve_tokens_injected"])
+    assert {"sh:NodeShape", "sh:datatype"}.issubset(injected)
+
+
+def test_force_inject_skips_when_pair_already_contains_token() -> None:
+    """The force-inject helper is idempotent: if the deterministic
+    draft happens to contain the literal CURIE (e.g. via a key_term
+    entry that copies the chunk text), no injection fires."""
+    from Trainforge.generators.instruction_factory import (
+        _enforce_preserve_tokens_in_instruction,
+    )
+    pair = {
+        "prompt": "Define sh:NodeShape clearly.",
+        "completion": "sh:NodeShape constrains node-typed instances.",
+    }
+    out = _enforce_preserve_tokens_in_instruction(pair, ["sh:NodeShape"])
+    assert "Canonical terms" not in out["completion"]
+    assert "preserve_tokens_injected" not in out
+
+
+def test_force_inject_clamps_completion_to_max_length() -> None:
+    """When appending the canonical-terms sentence would push the
+    completion over COMPLETION_MAX, the original completion is
+    truncated to make room — the gate-load-bearing canonical terms
+    sentence always fits."""
+    from Trainforge.generators.instruction_factory import (
+        COMPLETION_MAX,
+        _enforce_preserve_tokens_in_instruction,
+    )
+    long_completion = "Filler " * 120  # well over 600 chars
+    pair = {"prompt": "p", "completion": long_completion}
+    out = _enforce_preserve_tokens_in_instruction(
+        pair, ["sh:datatype", "sh:NodeShape"],
+    )
+    assert len(out["completion"]) <= COMPLETION_MAX
+    assert "sh:datatype" in out["completion"]
+    assert "sh:NodeShape" in out["completion"]
