@@ -954,6 +954,15 @@ def run_synthesis(
         for idx, chunk in iter_chunks:
             if _budget_exhausted_exc is not None:
                 break
+            # Wave 120: detect property surface forms in this chunk so
+            # the paraphrase provider preserves them verbatim. None ->
+            # no manifest loaded; empty list -> chunk doesn't reference
+            # any declared property.
+            chunk_preserve_tokens = (
+                pilot_manifest.detect_surface_forms(str(chunk.get("text") or ""))
+                if pilot_manifest is not None
+                else []
+            )
             # --- Instruction pair ---
             for variant_index in range(instruction_variants):
                 inst_capped = (
@@ -970,6 +979,7 @@ def run_synthesis(
                         seed=pair_seed,
                         provider=provider,
                         paraphrase_provider=paraphrase_provider,
+                        preserve_tokens=chunk_preserve_tokens or None,
                     )
                 except _SBE as exc:
                     _budget_exhausted_exc = exc
@@ -1001,6 +1011,30 @@ def run_synthesis(
                             context=f"instruction_pair.chunk_id={chunk_id}",
                         )
                     _apply_instruction_variant(inst_result.pair, variant_index)
+                    # Wave 120: audit-log when paraphrase preservation
+                    # failed and the deterministic draft was used. Lets
+                    # post-hoc analysis identify chunks where the LLM
+                    # consistently dropped technical CURIEs.
+                    if inst_result.pair.get("paraphrase_fallback_reason"):
+                        capture.log_decision(
+                            decision_type="surface_form_preservation_fallback",
+                            decision=(
+                                f"Fell back to deterministic draft for "
+                                f"instruction pair on chunk "
+                                f"{inst_result.pair['chunk_id']}; paraphrase "
+                                f"dropped surface form(s) "
+                                f"{chunk_preserve_tokens}."
+                            ),
+                            rationale=(
+                                f"Provider '{provider}' could not preserve required "
+                                f"property surface forms after retry exhaustion; "
+                                f"using the deterministic template draft preserves "
+                                f"property coverage at the cost of paraphrase "
+                                f"variety on chunks containing "
+                                f"{chunk_preserve_tokens}."
+                            ),
+                            context=f"chunk_id={inst_result.pair['chunk_id']}",
+                        )
                     capture.log_decision(
                         decision_type="instruction_pair_synthesis",
                         decision=(
@@ -1050,6 +1084,7 @@ def run_synthesis(
                         seed=pair_seed,
                         provider=provider,
                         paraphrase_provider=paraphrase_provider,
+                        preserve_tokens=chunk_preserve_tokens or None,
                     )
                 except _SBE as exc:
                     _budget_exhausted_exc = exc
@@ -1061,6 +1096,24 @@ def run_synthesis(
                         stats.rejected_reasons.get(f"preference:{reason}", 0) + 1
                     )
                 else:
+                    if pref_result.pair.get("paraphrase_fallback_reason"):
+                        capture.log_decision(
+                            decision_type="surface_form_preservation_fallback",
+                            decision=(
+                                f"Fell back to deterministic draft for "
+                                f"preference pair on chunk "
+                                f"{pref_result.pair['chunk_id']}; paraphrase "
+                                f"dropped surface form(s) "
+                                f"{chunk_preserve_tokens} from chosen field."
+                            ),
+                            rationale=(
+                                f"Provider '{provider}' could not preserve required "
+                                f"property surface forms in the chosen completion "
+                                f"after retry exhaustion; deterministic draft "
+                                f"preserves property coverage."
+                            ),
+                            context=f"chunk_id={pref_result.pair['chunk_id']}",
+                        )
                     capture.log_decision(
                         decision_type="preference_pair_generation",
                         decision=(

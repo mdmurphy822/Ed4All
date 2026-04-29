@@ -230,20 +230,33 @@ class LocalSynthesisProvider:
     # ------------------------------------------------------------------
 
     def paraphrase_instruction(
-        self, draft: Dict[str, Any], chunk: Dict[str, Any]
+        self, draft: Dict[str, Any], chunk: Dict[str, Any],
+        *, preserve_tokens: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Paraphrase a draft instruction pair against its chunk."""
+        """Paraphrase a draft instruction pair against its chunk.
+
+        Wave 120: ``preserve_tokens`` lists technical CURIEs / surface
+        forms that MUST appear verbatim in the model's output (e.g.
+        ``["sh:NodeShape", "rdfs:subClassOf"]``). The directive is
+        injected into the user prompt and verified after parse — a
+        response that drops any required token triggers a remediation
+        retry. Exhaustion raises ``surface_form_preservation_failed``
+        so the caller can fall back to the deterministic draft.
+        """
         if not isinstance(draft, dict):
             raise TypeError("draft must be a dict")
         chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
         chunk_text = str(chunk.get("text") or "")
-        user_prompt = self._render_instruction_user(draft, chunk_id)
+        preserve = list(preserve_tokens or [])
+        user_prompt = self._render_instruction_user(draft, chunk_id, preserve)
 
         parsed, usage, retry_count = self._call_with_parse(
             system_prompt=_LOCAL_INSTRUCTION_SYSTEM_PROMPT,
             chunk_text=chunk_text,
             user_prompt=user_prompt,
             required_keys=("prompt", "completion"),
+            preserve_tokens=preserve,
+            preserve_in_keys=("prompt", "completion"),
         )
 
         out = dict(draft)
@@ -267,20 +280,31 @@ class LocalSynthesisProvider:
         return out
 
     def paraphrase_preference(
-        self, draft: Dict[str, Any], chunk: Dict[str, Any]
+        self, draft: Dict[str, Any], chunk: Dict[str, Any],
+        *, preserve_tokens: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
-        """Paraphrase a draft preference triple against its chunk."""
+        """Paraphrase a draft preference triple against its chunk.
+
+        Wave 120: ``preserve_tokens`` listed CURIEs are checked against
+        the ``chosen`` field (the factually-correct completion) so a
+        paraphrase that strips ``sh:NodeShape`` from the chosen answer
+        is rejected. ``rejected`` is not checked — the rule-synthesized
+        rejection may legitimately omit the technical token.
+        """
         if not isinstance(draft, dict):
             raise TypeError("draft must be a dict")
         chunk_id = str(chunk.get("id") or chunk.get("chunk_id") or "")
         chunk_text = str(chunk.get("text") or "")
-        user_prompt = self._render_preference_user(draft, chunk_id)
+        preserve = list(preserve_tokens or [])
+        user_prompt = self._render_preference_user(draft, chunk_id, preserve)
 
         parsed, usage, retry_count = self._call_with_parse(
             system_prompt=_LOCAL_PREFERENCE_SYSTEM_PROMPT,
             chunk_text=chunk_text,
             user_prompt=user_prompt,
             required_keys=("prompt", "chosen", "rejected"),
+            preserve_tokens=preserve,
+            preserve_in_keys=("chosen",),
         )
 
         out = dict(draft)
@@ -328,6 +352,8 @@ class LocalSynthesisProvider:
         chunk_text: str,
         user_prompt: str,
         required_keys: tuple,
+        preserve_tokens: Optional[List[str]] = None,
+        preserve_in_keys: tuple = (),
     ) -> Tuple[Dict[str, Any], Dict[str, int], int]:
         """Call the local server and parse JSON via the lenient extractor.
 
@@ -397,13 +423,83 @@ class LocalSynthesisProvider:
                     messages, field, length, floor,
                 )
                 continue
+            # Wave 120: surface-form preservation gate. After length
+            # passes, verify each preserve_token appears verbatim in the
+            # nominated fields (instruction: prompt + completion;
+            # preference: chosen only). 14B-class local models silently
+            # rewrite ``sh:NodeShape`` -> "node shape", which is what
+            # bit Wave 119's full-corpus run.
+            missing_tokens = self._missing_preserve_tokens(
+                parsed, preserve_tokens or [], preserve_in_keys,
+            )
+            if missing_tokens:
+                last_err = (
+                    f"surface forms missing from {list(preserve_in_keys)}: "
+                    f"{missing_tokens}"
+                )
+                logger.warning(
+                    "%s synthesis: preserve-retry %d/%d: %s",
+                    self._provider_name, attempts, MAX_PARSE_RETRIES,
+                    last_err,
+                )
+                messages = self._append_preserve_remediation(
+                    messages, missing_tokens, preserve_in_keys,
+                )
+                continue
             return parsed, last_usage, total_http_retries
+        # Wave 120: distinguish preservation failure so the caller can
+        # fall back to the deterministic draft instead of dropping the
+        # pair entirely.
+        if preserve_tokens and last_err and "surface forms missing" in last_err:
+            raise SynthesisProviderError(
+                f"{type(self).__name__}: paraphrase dropped required surface "
+                f"forms after {MAX_PARSE_RETRIES} attempts. {last_err}; "
+                f"tail of last response: {last_text[-500:]!r}",
+                code="surface_form_preservation_failed",
+            )
         raise SynthesisProviderError(
             f"{type(self).__name__}: failed to obtain a valid paraphrase "
             f"after {MAX_PARSE_RETRIES} attempts. Last error: {last_err}; "
             f"tail of last response: {last_text[-500:]!r}",
             code="paraphrase_invalid_after_retry",
         )
+
+    @staticmethod
+    def _missing_preserve_tokens(
+        parsed: Dict[str, Any], tokens: List[str], in_keys: tuple
+    ) -> List[str]:
+        """Return tokens that don't appear verbatim in any of ``in_keys``.
+
+        A token is considered preserved if it appears in at least one of
+        the listed fields (e.g. instruction pairs check both prompt and
+        completion; preference pairs check only chosen)."""
+        if not tokens or not in_keys:
+            return []
+        haystacks = [str(parsed.get(k, "") or "") for k in in_keys]
+        missing = []
+        for tok in tokens:
+            if not any(tok in h for h in haystacks):
+                missing.append(tok)
+        return missing
+
+    @staticmethod
+    def _append_preserve_remediation(
+        messages: List[Dict[str, str]],
+        missing: List[str],
+        in_keys: tuple,
+    ) -> List[Dict[str, str]]:
+        """Corrective user turn naming the dropped tokens. The model
+        rewrites its prior output preserving these literal CURIEs."""
+        token_list = ", ".join(repr(t) for t in missing)
+        field_list = " and ".join(in_keys) if in_keys else "the response"
+        remediation = (
+            f"The prior response did not include the required tokens "
+            f"{token_list} in {field_list}. Rewrite the response so each "
+            f"of those tokens appears VERBATIM (exactly as written, with "
+            f"the colon and case intact) in {field_list}. Output the "
+            f"same JSON object shape, JSON only."
+        )
+        return list(messages) + [{"role": "user", "content": remediation}]
 
     def _first_short_field(
         self, parsed: Dict[str, Any], required_keys: tuple
@@ -490,10 +586,29 @@ class LocalSynthesisProvider:
         "JSON object only."
     )
 
+    @staticmethod
+    def _preserve_directive(tokens: List[str], where: str) -> str:
+        """Render a 'PRESERVE THESE TOKENS VERBATIM' directive. Empty when
+        no tokens. ``where`` describes the target fields (e.g. 'the
+        prompt and completion')."""
+        if not tokens:
+            return ""
+        token_list = ", ".join(repr(t) for t in tokens)
+        return (
+            f"\n\nPRESERVE THESE TOKENS VERBATIM in {where} (exact "
+            f"spelling, colon, and case): {token_list}. These are "
+            f"technical CURIEs the learner must see literally — do not "
+            f"rewrite them as natural language."
+        )
+
     @classmethod
     def _render_instruction_user(
-        cls, draft: Dict[str, Any], chunk_id: str
+        cls, draft: Dict[str, Any], chunk_id: str,
+        preserve_tokens: Optional[List[str]] = None,
     ) -> str:
+        preserve = cls._preserve_directive(
+            preserve_tokens or [], "the prompt or completion",
+        )
         return (
             f"Chunk ID: {chunk_id}\n"
             f"Bloom level: {draft.get('bloom_level','unknown')}\n"
@@ -506,13 +621,18 @@ class LocalSynthesisProvider:
             f"\n"
             f"Rewrite the prompt and completion. Return JSON with keys "
             f"'prompt' and 'completion'."
+            f"{preserve}"
             f"{cls._INSTRUCTION_JSON_DIRECTIVE}"
         )
 
     @classmethod
     def _render_preference_user(
-        cls, draft: Dict[str, Any], chunk_id: str
+        cls, draft: Dict[str, Any], chunk_id: str,
+        preserve_tokens: Optional[List[str]] = None,
     ) -> str:
+        preserve = cls._preserve_directive(
+            preserve_tokens or [], "the chosen completion",
+        )
         return (
             f"Chunk ID: {chunk_id}\n"
             f"Source: {draft.get('rejected_source','unknown')}\n"
@@ -525,6 +645,7 @@ class LocalSynthesisProvider:
             f"\n"
             f"Rewrite all three. Return JSON with keys 'prompt', "
             f"'chosen', and 'rejected'."
+            f"{preserve}"
             f"{cls._PREFERENCE_JSON_DIRECTIVE}"
         )
 
