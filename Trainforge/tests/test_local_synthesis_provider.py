@@ -788,3 +788,136 @@ def test_rationale_interpolates_chunk_bloom_and_concept_tags(monkeypatch):
     assert "sh-class" in rationale
     assert "rdfs-subclassof" in rationale
     assert "owl-sameas" not in rationale
+
+
+# ---------------------------------------------------------------------------
+# Wave 120: surface-form preservation
+# ---------------------------------------------------------------------------
+
+
+def test_paraphrase_instruction_includes_preserve_directive_in_user_prompt(
+    monkeypatch,
+):
+    """When ``preserve_tokens`` is non-empty, the user prompt sent to the
+    model carries an explicit 'PRESERVE THESE TOKENS VERBATIM' directive
+    naming each token. 14B-class local models silently rewrite
+    ``sh:NodeShape`` to 'node shape' without this directive."""
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    paraphrased = json.dumps({
+        "prompt": "Explain how sh:NodeShape applies to topic X.",
+        "completion": (
+            "sh:NodeShape constrains node-typed nodes; learners apply it "
+            "by validating instances against the declared shape and "
+            "checking sh:datatype on each property."
+        ),
+    })
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=_success_body(paraphrased))
+
+    p = LocalSynthesisProvider(client=_make_client(handler))
+    out = p.paraphrase_instruction(
+        _instruction_draft(), _chunk(),
+        preserve_tokens=["sh:NodeShape", "sh:datatype"],
+    )
+    body = json.loads(seen[0].content.decode("utf-8"))
+    user_msg = body["messages"][-1]["content"]
+    assert "PRESERVE THESE TOKENS VERBATIM" in user_msg
+    assert "'sh:NodeShape'" in user_msg
+    assert "'sh:datatype'" in user_msg
+    # And the model's output is preserved through the clamp.
+    assert "sh:NodeShape" in out["prompt"] or "sh:NodeShape" in out["completion"]
+
+
+def test_paraphrase_instruction_retries_on_preserve_miss(monkeypatch):
+    """When the first response drops a preserve_token, the provider
+    appends a remediation message and retries. A subsequent good response
+    is accepted; ``preserve-retry`` warning is logged."""
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    bad_paraphrase = json.dumps({
+        "prompt": "Explain how the node shape concept applies to topic X.",
+        "completion": (
+            "The node-shape idea constrains node-typed entities; a learner "
+            "applies it by validating instances against the declared "
+            "constraint and checking the datatype on each property."
+        ),
+    })
+    good_paraphrase = json.dumps({
+        "prompt": "Explain how sh:NodeShape applies to topic X.",
+        "completion": (
+            "sh:NodeShape constrains node-typed nodes; learners apply it "
+            "by validating instances against the declared shape constraint "
+            "and the sh:datatype rule on each property."
+        ),
+    })
+    client = _client_yielding(
+        httpx.Response(200, json=_success_body(bad_paraphrase)),
+        httpx.Response(200, json=_success_body(good_paraphrase)),
+    )
+    p = LocalSynthesisProvider(client=client)
+    out = p.paraphrase_instruction(
+        _instruction_draft(), _chunk(),
+        preserve_tokens=["sh:NodeShape", "sh:datatype"],
+    )
+    assert "sh:NodeShape" in out["prompt"] + out["completion"]
+    assert "sh:datatype" in out["prompt"] + out["completion"]
+
+
+def test_paraphrase_instruction_raises_preservation_failed_after_retry(
+    monkeypatch,
+):
+    """When all retries return a paraphrase that drops a required token,
+    the provider raises ``SynthesisProviderError`` with code
+    ``surface_form_preservation_failed`` so the caller can fall back to
+    the deterministic draft."""
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    bad_paraphrase = json.dumps({
+        "prompt": "Explain how the node shape applies to topic X.",
+        "completion": (
+            "The node-shape concept constrains node-typed entities; a "
+            "learner applies it by validating instances against the "
+            "declared constraint and the per-property type rule."
+        ),
+    })
+    # Yield bad responses for all 3 retries. ``MAX_PARSE_RETRIES`` is 3
+    # so we provide 4 to guard against off-by-one.
+    client = _client_yielding(*[
+        httpx.Response(200, json=_success_body(bad_paraphrase)) for _ in range(5)
+    ])
+    p = LocalSynthesisProvider(client=client)
+    with pytest.raises(SynthesisProviderError) as excinfo:
+        p.paraphrase_instruction(
+            _instruction_draft(), _chunk(),
+            preserve_tokens=["sh:NodeShape"],
+        )
+    assert excinfo.value.code == "surface_form_preservation_failed"
+
+
+def test_paraphrase_preference_only_checks_chosen_field(monkeypatch):
+    """Preference pairs check ``chosen`` only — the rule-synthesized
+    rejection legitimately may not contain the literal CURIE. A
+    paraphrase that preserves the token in chosen but drops it in
+    rejected is accepted."""
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    paraphrased = json.dumps({
+        "prompt": "Explain sh:NodeShape clearly enough to avoid the misconception.",
+        "chosen": (
+            "sh:NodeShape is a foundational SHACL construct; the correct "
+            "framing emphasises its grounding rules and how it constrains "
+            "node-typed instances."
+        ),
+        "rejected": (
+            "Node shapes are mostly a theoretical curiosity; you can "
+            "safely ignore the formal definition for everyday work."
+        ),
+    })
+    client = _client_yielding(httpx.Response(200, json=_success_body(paraphrased)))
+    p = LocalSynthesisProvider(client=client)
+    out = p.paraphrase_preference(
+        _preference_draft(), _chunk(),
+        preserve_tokens=["sh:NodeShape"],
+    )
+    assert "sh:NodeShape" in out["chosen"]
+    assert "sh:NodeShape" not in out["rejected"]  # legitimate

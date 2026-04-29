@@ -336,6 +336,7 @@ def synthesize_preference_pair(
     misconception_index: int = 0,
     *,
     paraphrase_provider: Optional[Any] = None,
+    preserve_tokens: Optional[List[str]] = None,
 ) -> PreferenceSynthesisResult:
     """Synthesize one preference pair from an enriched chunk.
 
@@ -517,7 +518,25 @@ def synthesize_preference_pair(
                     "to be supplied; no lazy fallback because the provider "
                     "needs a LocalDispatcher injected by the caller."
                 )
-        pair = provider_instance.paraphrase_preference(pair, chunk)
+        # Wave 120: same preserve-and-fallback contract as the
+        # instruction factory. Preference pairs check ``chosen`` only —
+        # the rule-synthesized rejection legitimately may not contain
+        # the literal CURIE.
+        deterministic_draft = dict(pair)
+        try:
+            try:
+                pair = provider_instance.paraphrase_preference(
+                    pair, chunk, preserve_tokens=preserve_tokens or [],
+                )
+            except TypeError:
+                pair = provider_instance.paraphrase_preference(pair, chunk)
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            if code == "surface_form_preservation_failed":
+                pair = deterministic_draft
+                pair["paraphrase_fallback_reason"] = "surface_form_preservation_failed"
+            else:
+                raise
 
     return PreferenceSynthesisResult(
         pair=pair,
@@ -526,8 +545,14 @@ def synthesize_preference_pair(
         source=source,
         misconception_id=mc_id,
         alternatives=[
-            "paraphrase-only rejection (rejected: insufficient token turnover for DPO signal)",
-            "prompt-swap rejection (rejected: DPO requires shared prompt across chosen/rejected)",
+            {
+                "option": "paraphrase-only rejection",
+                "reason_rejected": "insufficient token turnover for DPO signal",
+            },
+            {
+                "option": "prompt-swap rejection",
+                "reason_rejected": "DPO requires shared prompt across chosen/rejected",
+            },
         ],
     )
 
