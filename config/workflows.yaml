@@ -903,6 +903,26 @@ workflows:
               on_error: fail_closed
             description: Wave 109 — refuse synthesis output missing declared properties
 
+          # Wave 121: refuse training data containing >5% verbatim
+          # spans from chunk.text. Catches the regression class flagged
+          # by the 2026-04-29 smoke audit (11/20 instruction completions
+          # leaked) — without this gate, a training run on leaky pairs
+          # produces a memorisation-trained adapter instead of a
+          # paraphrase / application model.
+          - gate_id: synthesis_leakage
+            validator: lib.validators.synthesis_leakage.SynthesisLeakageValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            config:
+              thresholds:
+                leak_rate_threshold: 0.05
+                leak_span_chars: 50
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Wave 121 — refuse training pairs with >5% verbatim chunk leakage
+
       - name: libv2_archival
         agents: [libv2-archivist]
         parallel: false

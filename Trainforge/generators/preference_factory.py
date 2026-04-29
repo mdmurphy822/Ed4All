@@ -209,8 +209,14 @@ def _build_chosen(
     chunk: Dict[str, Any],
     topic: str,
     misconception: Optional[Dict[str, Any]] = None,
+    *,
+    disallow_summary: bool = False,
 ) -> str:
-    """Build the preferred (chosen) completion -- grounded and correct."""
+    """Build the preferred (chosen) completion -- grounded and correct.
+
+    Wave 121: ``disallow_summary=True`` skips the ``chunk.summary``
+    branch (same leakage retry pattern as instruction_factory).
+    """
     parts: List[str] = []
 
     if misconception:
@@ -227,7 +233,7 @@ def _build_chosen(
             )
 
     summary = _clean_answer_text(str(chunk.get("summary") or ""))
-    if summary:
+    if summary and not disallow_summary:
         parts.append(summary)
 
     key_terms = chunk.get("key_terms") or []
@@ -299,32 +305,50 @@ _NEGATION_SWAPS = [
 ]
 
 
+# Wave 121: rotated phrasings, parallel to instruction_factory.
+_PROMPT_REFERENCE_PHRASINGS: List[str] = [
+    " (Reference: {tokens}.)",
+    " (Relevant terms: {tokens}.)",
+    " (See: {tokens}.)",
+    " (In context: {tokens}.)",
+]
+_CHOSEN_REFERENCE_PHRASINGS: List[str] = [
+    " Canonical terms: {tokens}.",
+    " The relevant terms are {tokens}.",
+    " Key vocabulary: {tokens}.",
+    " This concerns {tokens}.",
+]
+
+
+def _select_phrasing(phrasings: List[str], chunk_id: str) -> str:
+    """Deterministic phrasing selection by chunk_id hash."""
+    if not phrasings:
+        return ""
+    idx = int(hashlib.sha256(chunk_id.encode("utf-8")).hexdigest(), 16) % len(phrasings)
+    return phrasings[idx]
+
+
 def _enforce_preserve_tokens_in_preference(
     pair: Dict[str, Any], preserve_tokens: List[str]
 ) -> Dict[str, Any]:
     """Force-inject any ``preserve_tokens`` absent from prompt and
-    ``chosen`` fields.
+    ``chosen`` fields. ``rejected`` is intentionally untouched so the
+    DPO misconception signal is preserved.
 
-    Wave 120 follow-up (2026-04-29): per gpt's training-objective
-    feedback, prompts also need the CURIE so the model learns to
-    RECOGNIZE user inputs containing it (not only to USE it in
-    answers). Targets prompt + chosen; ``rejected`` is intentionally
-    untouched — the rule-synthesized rejection legitimately may omit
-    the technical CURIE, and forcing it into ``rejected`` would
-    weaken the DPO signal that teaches the misconception. The
-    chosen-vs-rejected delta now reads as 'correct uses the CURIE in
-    the right context; rejected uses different (incorrect) framing'.
-
-    Per-side idempotency. Length-clamped.
+    Wave 121: rotates phrasing across 4 forms per side keyed by
+    chunk_id hash so the boilerplate doesn't saturate. Per-side
+    idempotency, per-side length-clamping.
     """
     if not preserve_tokens:
         return pair
     prompt = str(pair.get("prompt") or "")
     chosen = str(pair.get("chosen") or "")
+    chunk_id = str(pair.get("chunk_id") or "")
 
     missing_prompt = [t for t in preserve_tokens if t and t not in prompt]
     if missing_prompt:
-        prompt_add = f" (Reference: {', '.join(missing_prompt)}.)"
+        template = _select_phrasing(_PROMPT_REFERENCE_PHRASINGS, chunk_id)
+        prompt_add = template.format(tokens=", ".join(missing_prompt))
         new_prompt = prompt.rstrip() + prompt_add
         if len(new_prompt) > PROMPT_MAX:
             budget = PROMPT_MAX - len(prompt_add)
@@ -334,7 +358,8 @@ def _enforce_preserve_tokens_in_preference(
 
     missing_chosen = [t for t in preserve_tokens if t and t not in chosen]
     if missing_chosen:
-        addition = f" Canonical terms: {', '.join(missing_chosen)}."
+        template = _select_phrasing(_CHOSEN_REFERENCE_PHRASINGS, chunk_id)
+        addition = template.format(tokens=", ".join(missing_chosen))
         new_chosen = chosen.rstrip() + addition
         if len(new_chosen) > COMPLETION_MAX:
             budget = COMPLETION_MAX - len(addition)
@@ -460,6 +485,11 @@ def synthesize_preference_pair(
         selected_mc = normalised_mcs[idx]
 
     chosen = _build_chosen(chunk, topic, selected_mc)
+    # Wave 121: same completion-side leakage retry as instruction_factory.
+    # _build_chosen leans on chunk.summary which is often a near-verbatim
+    # extract; if leak detected, retry skipping the summary branch.
+    if _contains_verbatim_span(chosen, chunk_text):
+        chosen = _build_chosen(chunk, topic, selected_mc, disallow_summary=True)
 
     if selected_mc:
         rejected_candidate = _build_rejected_from_misconception(selected_mc, topic)
@@ -485,7 +515,13 @@ def synthesize_preference_pair(
     # We require 1 - jaccard >= 0.3  ==>  jaccard <= 0.7.
     jaccard_ok = (1.0 - jaccard) >= JACCARD_DELTA_MIN
     distinct_ok = chosen != rejected
-    leak_ok = not _contains_verbatim_span(prompt, chunk_text)
+    # Wave 121: leak gate now covers both prompt and chosen against
+    # chunk_text (rejected is synthetic / misconception so leak isn't
+    # meaningful there).
+    leak_ok = (
+        not _contains_verbatim_span(prompt, chunk_text)
+        and not _contains_verbatim_span(chosen, chunk_text)
+    )
     prompt_ok = PROMPT_MIN <= len(prompt) <= PROMPT_MAX
     chosen_ok = COMPLETION_MIN <= len(chosen) <= COMPLETION_MAX
     rejected_ok = COMPLETION_MIN <= len(rejected) <= COMPLETION_MAX
