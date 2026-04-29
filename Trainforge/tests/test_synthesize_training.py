@@ -719,10 +719,11 @@ def test_smoke_stratified_sampler_prefers_property_bearing_chunks() -> None:
 
 def test_force_inject_canonical_terms_when_deterministic_path_drops_curie() -> None:
     """When the final pair (after fallback or pure-deterministic path)
-    doesn't contain a required surface form, the factory appends a
-    'Canonical terms:' sentence to the completion. Closes the failure
-    mode where the deterministic templates use slugified concept_tags
-    and never surface the literal CURIE."""
+    doesn't contain a required surface form, the factory injects a
+    'Canonical terms:' sentence in the completion AND a '(Reference:
+    ...)' suffix in the prompt. Closes the training-objective gap
+    where the model would only learn to USE CURIEs in answers, not
+    RECOGNIZE them in user prompts."""
     from Trainforge.generators.instruction_factory import (
         synthesize_instruction_pair,
     )
@@ -747,51 +748,84 @@ def test_force_inject_canonical_terms_when_deterministic_path_drops_curie() -> N
         preserve_tokens=["sh:NodeShape", "sh:datatype"],
     )
     assert result.pair is not None
-    pair_text = result.pair["prompt"] + " " + result.pair["completion"]
-    assert "sh:NodeShape" in pair_text, (
-        f"sh:NodeShape must appear after force-inject; got "
-        f"completion={result.pair['completion']!r}"
-    )
-    assert "sh:datatype" in pair_text
-    # Canonical-terms sentence is in the completion so prompt verbatim-
-    # leakage gate stays clean.
+    # Both sides now carry the CURIE so the model learns input + output.
+    assert "sh:NodeShape" in result.pair["prompt"]
+    assert "sh:datatype" in result.pair["prompt"]
+    assert "sh:NodeShape" in result.pair["completion"]
+    assert "sh:datatype" in result.pair["completion"]
     assert "Canonical terms" in result.pair["completion"]
-    # Audit trail records which tokens were injected.
-    assert "preserve_tokens_injected" in result.pair
-    injected = set(result.pair["preserve_tokens_injected"])
-    assert {"sh:NodeShape", "sh:datatype"}.issubset(injected)
+    assert "Reference:" in result.pair["prompt"]
+    # Audit trail records which tokens were injected on each side.
+    injected_completion = set(result.pair.get("preserve_tokens_injected", []))
+    injected_prompt = set(result.pair.get("preserve_tokens_injected_prompt", []))
+    assert {"sh:NodeShape", "sh:datatype"}.issubset(injected_completion)
+    assert {"sh:NodeShape", "sh:datatype"}.issubset(injected_prompt)
 
 
-def test_force_inject_skips_when_pair_already_contains_token() -> None:
-    """The force-inject helper is idempotent: if the deterministic
-    draft happens to contain the literal CURIE (e.g. via a key_term
-    entry that copies the chunk text), no injection fires."""
+def test_force_inject_skips_per_side_when_already_contains_token() -> None:
+    """Per-side idempotency: if the deterministic draft has the CURIE
+    on one side only, only the missing side gets injected."""
     from Trainforge.generators.instruction_factory import (
         _enforce_preserve_tokens_in_instruction,
     )
-    pair = {
+
+    # Case 1: CURIE in both sides -> no injection on either.
+    pair_both = {
         "prompt": "Define sh:NodeShape clearly.",
         "completion": "sh:NodeShape constrains node-typed instances.",
     }
-    out = _enforce_preserve_tokens_in_instruction(pair, ["sh:NodeShape"])
-    assert "Canonical terms" not in out["completion"]
-    assert "preserve_tokens_injected" not in out
+    out_both = _enforce_preserve_tokens_in_instruction(
+        pair_both, ["sh:NodeShape"],
+    )
+    assert "Canonical terms" not in out_both["completion"]
+    assert "Reference:" not in out_both["prompt"]
+    assert "preserve_tokens_injected" not in out_both
+    assert "preserve_tokens_injected_prompt" not in out_both
+
+    # Case 2: CURIE only in completion -> prompt-side gets injection.
+    pair_completion_only = {
+        "prompt": "Define this constraint.",
+        "completion": "sh:NodeShape constrains node-typed instances.",
+    }
+    out_p = _enforce_preserve_tokens_in_instruction(
+        pair_completion_only, ["sh:NodeShape"],
+    )
+    assert "Reference:" in out_p["prompt"]
+    assert "Canonical terms" not in out_p["completion"]
+    assert "preserve_tokens_injected_prompt" in out_p
+    assert "preserve_tokens_injected" not in out_p
+
+    # Case 3: CURIE only in prompt -> completion-side gets injection.
+    pair_prompt_only = {
+        "prompt": "Define sh:NodeShape clearly.",
+        "completion": "It constrains node-typed instances.",
+    }
+    out_c = _enforce_preserve_tokens_in_instruction(
+        pair_prompt_only, ["sh:NodeShape"],
+    )
+    assert "Reference:" not in out_c["prompt"]
+    assert "Canonical terms" in out_c["completion"]
+    assert "preserve_tokens_injected" in out_c
+    assert "preserve_tokens_injected_prompt" not in out_c
 
 
-def test_force_inject_clamps_completion_to_max_length() -> None:
-    """When appending the canonical-terms sentence would push the
-    completion over COMPLETION_MAX, the original completion is
-    truncated to make room — the gate-load-bearing canonical terms
-    sentence always fits."""
+def test_force_inject_clamps_both_sides_to_max_length() -> None:
+    """Both prompt and completion are clamped independently when their
+    addition would breach the per-field max. The CURIE always lands."""
     from Trainforge.generators.instruction_factory import (
         COMPLETION_MAX,
+        PROMPT_MAX,
         _enforce_preserve_tokens_in_instruction,
     )
-    long_completion = "Filler " * 120  # well over 600 chars
-    pair = {"prompt": "p", "completion": long_completion}
+    long_prompt = "Q? " * 200  # ~600 chars, well over PROMPT_MAX=400
+    long_completion = "Filler " * 120  # ~840 chars, over COMPLETION_MAX=600
+    pair = {"prompt": long_prompt, "completion": long_completion}
     out = _enforce_preserve_tokens_in_instruction(
         pair, ["sh:datatype", "sh:NodeShape"],
     )
+    assert len(out["prompt"]) <= PROMPT_MAX
     assert len(out["completion"]) <= COMPLETION_MAX
-    assert "sh:datatype" in out["completion"]
-    assert "sh:NodeShape" in out["completion"]
+    # Tokens land on both sides regardless of clamping.
+    for side in ("prompt", "completion"):
+        assert "sh:datatype" in out[side], f"sh:datatype missing from {side}"
+        assert "sh:NodeShape" in out[side], f"sh:NodeShape missing from {side}"
