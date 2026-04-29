@@ -283,41 +283,58 @@ def _build_completion(chunk: Dict[str, Any], topic: str, bloom: str, content_typ
 def _enforce_preserve_tokens_in_instruction(
     pair: Dict[str, Any], preserve_tokens: List[str]
 ) -> Dict[str, Any]:
-    """Force-inject any ``preserve_tokens`` not present in pair text.
+    """Force-inject any ``preserve_tokens`` absent from prompt OR
+    completion side of the pair.
 
     Wave 120 found that both the deterministic-template path (mock
     provider) and the paraphrase-fallback path produce pairs that don't
     contain the literal CURIEs because templates pull from slugified
-    ``concept_tags`` (colons become hyphens). When a token is absent,
-    append a short canonical-terms sentence to ``completion`` so the
-    pair contains the exact form the property-coverage gate is
-    looking for.
+    ``concept_tags`` (colons become hyphens).
 
-    Idempotent: tokens already in prompt OR completion are skipped.
-    Length-clamps the completion so the addition never breaks the
-    600-char ceiling.
+    Wave 120 follow-up (2026-04-29): inject on BOTH sides per gpt's
+    feedback. Output-side coverage (completion) teaches the model to
+    USE the CURIE in answers; input-side coverage (prompt) teaches it
+    to RECOGNIZE user prompts that contain the CURIE. A real RDF/SHACL
+    learner asks both kinds of question, so the SLM needs both.
+
+    Per-side idempotency: tokens already on a given side don't trigger
+    injection on that side. Length-clamps both sides so the addition
+    never breaks the per-field ceiling. The prompt addition is short
+    (a "Reference:" suffix) — well under the 50-char verbatim-leakage
+    span limit, so the prompt-side gate stays clean.
     """
     if not preserve_tokens:
         return pair
-    haystack = f"{pair.get('prompt', '')} {pair.get('completion', '')}"
-    missing = [t for t in preserve_tokens if t and t not in haystack]
-    if not missing:
-        return pair
-    addition = f" Canonical terms: {', '.join(missing)}."
+    prompt = str(pair.get("prompt") or "")
     completion = str(pair.get("completion") or "")
-    new_completion = completion.rstrip() + addition
-    if len(new_completion) > COMPLETION_MAX:
-        # Truncate the original completion to make room rather than
-        # dropping the canonical-terms sentence — the gate is
-        # load-bearing, the trailing prose is not.
-        budget = COMPLETION_MAX - len(addition)
-        if budget < COMPLETION_MIN:
-            # Pathological; keep the addition + a minimum-length stub.
-            new_completion = completion[:max(COMPLETION_MIN - len(addition), 0)].rstrip() + addition
-        else:
-            new_completion = completion[:budget].rstrip() + addition
-    pair["completion"] = new_completion
-    pair.setdefault("preserve_tokens_injected", []).extend(missing)
+
+    # Side 1: prompt — does the model see the CURIE in input position?
+    missing_prompt = [t for t in preserve_tokens if t and t not in prompt]
+    if missing_prompt:
+        prompt_add = f" (Reference: {', '.join(missing_prompt)}.)"
+        new_prompt = prompt.rstrip() + prompt_add
+        if len(new_prompt) > PROMPT_MAX:
+            budget = PROMPT_MAX - len(prompt_add)
+            new_prompt = prompt[:max(budget, 0)].rstrip() + prompt_add
+        pair["prompt"] = new_prompt
+        pair.setdefault("preserve_tokens_injected_prompt", []).extend(missing_prompt)
+
+    # Side 2: completion — does the model emit the CURIE in answer position?
+    missing_completion = [t for t in preserve_tokens if t and t not in completion]
+    if missing_completion:
+        addition = f" Canonical terms: {', '.join(missing_completion)}."
+        new_completion = completion.rstrip() + addition
+        if len(new_completion) > COMPLETION_MAX:
+            budget = COMPLETION_MAX - len(addition)
+            if budget < COMPLETION_MIN:
+                new_completion = (
+                    completion[:max(COMPLETION_MIN - len(addition), 0)].rstrip()
+                    + addition
+                )
+            else:
+                new_completion = completion[:budget].rstrip() + addition
+        pair["completion"] = new_completion
+        pair.setdefault("preserve_tokens_injected", []).extend(missing_completion)
     return pair
 
 
