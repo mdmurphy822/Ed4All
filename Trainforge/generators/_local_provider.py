@@ -626,6 +626,28 @@ class LocalSynthesisProvider:
         preserve = cls._preserve_directive(
             preserve_tokens or [], "the prompt or completion",
         )
+        # Wave 126: definition-style chunks (content_type=definition or
+        # Bloom='remember') tend to elicit short "Define X." prompts (~20-30
+        # chars) that fail the schema's 40-char floor. Inject an explicit
+        # explanation-asking directive so the first attempt produces a
+        # long-form question instead of leaning on the retry path.
+        content_type = str(draft.get("content_type", "")).lower()
+        bloom_level = str(draft.get("bloom_level", "")).lower()
+        is_definition_kind = (
+            "definition" in content_type
+            or "glossary" in content_type
+            or "key_term" in content_type
+            or bloom_level == "remember"
+        )
+        definition_directive = (
+            "\n\nThis is a definition / recall chunk. The prompt MUST be an "
+            "EXPLANATION-asking question of at least 40 characters — for "
+            "example, 'Explain what an IRI is in RDF and describe its role "
+            "in identifying resources globally.' Do NOT emit a bare 'Define "
+            "X.' or 'What is X?' prompt — those are too short."
+            if is_definition_kind
+            else ""
+        )
         return (
             f"Chunk ID: {chunk_id}\n"
             f"Bloom level: {draft.get('bloom_level','unknown')}\n"
@@ -639,6 +661,7 @@ class LocalSynthesisProvider:
             f"Rewrite the prompt and completion. Return JSON with keys "
             f"'prompt' and 'completion'."
             f"{preserve}"
+            f"{definition_directive}"
             f"{cls._INSTRUCTION_JSON_DIRECTIVE}"
         )
 

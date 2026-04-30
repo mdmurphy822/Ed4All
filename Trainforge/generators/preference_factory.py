@@ -665,9 +665,12 @@ def synthesize_preference_pair(
                 pair = provider_instance.paraphrase_preference(pair, chunk)
         except Exception as exc:
             code = getattr(exc, "code", None)
-            if code == "surface_form_preservation_failed":
+            if code in (
+                "surface_form_preservation_failed",
+                "paraphrase_invalid_after_retry",
+            ):
                 pair = deterministic_draft
-                pair["paraphrase_fallback_reason"] = "surface_form_preservation_failed"
+                pair["paraphrase_fallback_reason"] = code
             else:
                 raise
 
