@@ -109,6 +109,9 @@ class SynthesisStats:
     capped_at_max_dispatches: bool = False
     dispatched_count: int = 0
     cache_hits_count: int = 0
+    # Audit 2026-04-30: KG-metadata + violation-detection generators.
+    kg_metadata_pairs_emitted: int = 0
+    violation_pairs_emitted: int = 0
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -664,6 +667,10 @@ def run_synthesis(
     telemetry_path: Optional[Path] = None,
     pilot_report_every: int = 20,
     smoke_mode: str = "none",
+    with_kg_metadata: bool = False,
+    kg_metadata_max_pairs: int = 2000,
+    with_violation_detection: bool = False,
+    violation_shapes_glob: Optional[str] = None,
 ) -> SynthesisStats:
     """Run the full synthesis stage for one course output directory.
 
@@ -1606,6 +1613,95 @@ def run_synthesis(
                     rec["prompt"] = recap + "\n\n" + original
                     stats.pairs_with_prereq_recap += 1
 
+        # Audit 2026-04-30: append KG-metadata pairs (yes/no membership
+        # probes mirroring faithfulness._RELATION_TEMPLATES). Closes the
+        # zero-KG-metadata-recall regression in the cc07cc76 corpus —
+        # the eval harness asks these questions, the corpus must teach
+        # them.
+        if with_kg_metadata:
+            from Trainforge.generators.kg_metadata_generator import (
+                generate_kg_metadata_pairs,
+            )
+            ped_path = _resolve_pedagogy_graph_path(
+                corpus_dir, pedagogy_graph_path,
+            )
+            if ped_path is None:
+                logger.warning(
+                    "with_kg_metadata=True but no pedagogy_graph.json on "
+                    "disk; skipping KG-metadata generator.",
+                )
+            else:
+                ped_payload = json.loads(
+                    ped_path.read_text(encoding="utf-8"),
+                )
+                kg_pairs, kg_stats = generate_kg_metadata_pairs(
+                    ped_payload,
+                    capture=capture,
+                    max_pairs=int(kg_metadata_max_pairs),
+                    seed=seed,
+                )
+                instruction_records.extend(kg_pairs)
+                stats.kg_metadata_pairs_emitted = kg_stats.pairs_emitted
+                stats.instruction_pairs_emitted += kg_stats.pairs_emitted
+                logger.info(
+                    "Audit 2026-04-30: appended %d KG-metadata pairs "
+                    "(positives=%d, negatives=%d, capped=%s) sourced from %s",
+                    kg_stats.pairs_emitted,
+                    kg_stats.positives_emitted,
+                    kg_stats.negatives_emitted,
+                    kg_stats.capped_at_max_pairs,
+                    ped_path,
+                )
+
+        # Audit 2026-04-30: append violation-detection pairs (pyshacl-
+        # oracle-verified (graph, shape, valid?, reason) tuples). Closes
+        # the zero-negative-grounding regression — the corpus must teach
+        # the model to refuse a graph that violates a shape.
+        if with_violation_detection:
+            from Trainforge.generators.violation_generator import (
+                built_in_shape_catalog,
+                generate_violation_pairs,
+            )
+            # Build chunks_by_surface_form so violation pairs anchor to
+            # a chunk that actually teaches the constraint type, when
+            # one exists in the property manifest.
+            chunks_by_form: Dict[str, List[str]] = {}
+            if pilot_manifest is not None:
+                for chunk in chunks:
+                    cid = chunk.get("chunk_id")
+                    if not cid:
+                        continue
+                    text = str(chunk.get("text") or "")
+                    for sf in pilot_manifest.detect_surface_forms(text):
+                        chunks_by_form.setdefault(sf, []).append(str(cid))
+            try:
+                vio_pairs, vio_stats = generate_violation_pairs(
+                    capture=capture,
+                    fixtures=built_in_shape_catalog(),
+                    chunks_by_surface_form=chunks_by_form or None,
+                    seed=seed,
+                )
+            except RuntimeError as exc:
+                # pyshacl is optional. A missing dep should warn, not
+                # break the whole synthesis run.
+                logger.warning(
+                    "Audit 2026-04-30: violation generator skipped (%s)",
+                    exc,
+                )
+                vio_pairs, vio_stats = [], None
+            if vio_stats is not None:
+                instruction_records.extend(vio_pairs)
+                stats.violation_pairs_emitted = vio_stats.pairs_emitted
+                stats.instruction_pairs_emitted += vio_stats.pairs_emitted
+                logger.info(
+                    "Audit 2026-04-30: appended %d violation-detection "
+                    "pairs (valid=%d, invalid=%d, oracle_disagreements=%d)",
+                    vio_stats.pairs_emitted,
+                    vio_stats.valid_pairs,
+                    vio_stats.invalid_pairs,
+                    vio_stats.oracle_disagreements,
+                )
+
         _write_jsonl(instruction_out, instruction_records)
         _write_jsonl(preference_out, preference_records)
         _update_dataset_config(dataset_config_path, stats)
@@ -1691,6 +1787,10 @@ def run_synthesis_from_libv2(
     instruction_variants_per_chunk: int = 1,
     pilot_report_every: int = 20,
     smoke_mode: str = "none",
+    with_kg_metadata: bool = False,
+    kg_metadata_max_pairs: int = 2000,
+    with_violation_detection: bool = False,
+    violation_shapes_glob: Optional[str] = None,
 ) -> SynthesisStats:
     """Run synthesis directly against a LibV2 course archive.
 
@@ -1749,6 +1849,10 @@ def run_synthesis_from_libv2(
         instruction_variants_per_chunk=instruction_variants_per_chunk,
         pilot_report_every=pilot_report_every,
         smoke_mode=smoke_mode,
+        with_kg_metadata=with_kg_metadata,
+        kg_metadata_max_pairs=kg_metadata_max_pairs,
+        with_violation_detection=with_violation_detection,
+        violation_shapes_glob=violation_shapes_glob,
     )
 
 
@@ -1985,6 +2089,73 @@ def build_parser() -> argparse.ArgumentParser:
             "time. Local-server 14B ceiling: ~20 min."
         ),
     )
+    # Audit 2026-04-30: KG-metadata + violation-detection generators.
+    # Both are off by default so existing callers / corpora keep their
+    # current behaviour; flip on with --with-kg-metadata /
+    # --with-violation-detection to teach the adapter the literal
+    # KG-membership facts and SHACL-violation reasoning the eval
+    # harness probes for.
+    p.add_argument(
+        "--with-kg-metadata",
+        dest="with_kg_metadata",
+        action="store_true",
+        default=False,
+        help=(
+            "Audit 2026-04-30 fix: append KG-metadata yes/no probes to "
+            "instruction_pairs.jsonl. Reads pedagogy_graph.json and "
+            "emits one positive + 1-2 negative pairs per relation type, "
+            "mirroring Trainforge.eval.faithfulness._RELATION_TEMPLATES. "
+            "Closes the zero-KG-metadata-recall gap behind the cc07cc76 "
+            "adapter's faithfulness=0.37 / negative_grounding=0 result."
+        ),
+    )
+    p.add_argument(
+        "--no-kg-metadata",
+        dest="with_kg_metadata",
+        action="store_false",
+        help="Explicitly disable the KG-metadata generator (default).",
+    )
+    p.add_argument(
+        "--kg-metadata-max-pairs",
+        type=int,
+        default=2000,
+        help=(
+            "Cap on KG-metadata pair emissions (default: 2000). "
+            "Distributed evenly across relation types so a graph-rich "
+            "relation doesn't crowd out low-volume ones."
+        ),
+    )
+    p.add_argument(
+        "--with-violation-detection",
+        dest="with_violation_detection",
+        action="store_true",
+        default=False,
+        help=(
+            "Audit 2026-04-30 fix: append SHACL-violation-detection "
+            "pairs to instruction_pairs.jsonl. Runs pyshacl over a "
+            "built-in shape catalog (or course-supplied TTL files) and "
+            "emits (graph, valid?, reason) SFT pairs whose labels are "
+            "verified by the same engine the eval harness uses. Requires "
+            "pyshacl + rdflib (already in pyproject [training] extra)."
+        ),
+    )
+    p.add_argument(
+        "--no-violation-detection",
+        dest="with_violation_detection",
+        action="store_false",
+        help="Explicitly disable the violation-detection generator (default).",
+    )
+    p.add_argument(
+        "--violation-detection-shapes-glob",
+        dest="violation_shapes_glob",
+        default=None,
+        help=(
+            "Optional glob pattern that points at TTL shape files to use "
+            "as fixtures for the violation-detection generator (defaults "
+            "to the built-in 6-shape catalog when unset). Resolved "
+            "relative to the corpus_dir; absolute paths are honoured."
+        ),
+    )
     return p
 
 
@@ -2023,6 +2194,14 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
     else:
         smoke_mode = "none"
 
+    # Audit 2026-04-30: KG-metadata + violation-detection generators.
+    with_kg_metadata = bool(getattr(args, "with_kg_metadata", False))
+    kg_metadata_max_pairs = int(getattr(args, "kg_metadata_max_pairs", 2000))
+    with_violation_detection = bool(
+        getattr(args, "with_violation_detection", False)
+    )
+    violation_shapes_glob = getattr(args, "violation_shapes_glob", None)
+
     if getattr(args, "slug", None):
         stats = run_synthesis_from_libv2(
             slug=args.slug,
@@ -2041,6 +2220,10 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             pedagogy_graph_path=pedagogy_path,
             instruction_variants_per_chunk=args.instruction_variants_per_chunk,
             pilot_report_every=pilot_report_every,
+            with_kg_metadata=with_kg_metadata,
+            kg_metadata_max_pairs=kg_metadata_max_pairs,
+            with_violation_detection=with_violation_detection,
+            violation_shapes_glob=violation_shapes_glob,
         )
     else:
         if not args.course_code:
@@ -2066,6 +2249,10 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             max_dispatches=max_dispatches,
             pilot_report_every=pilot_report_every,
             smoke_mode=smoke_mode,
+            with_kg_metadata=with_kg_metadata,
+            kg_metadata_max_pairs=kg_metadata_max_pairs,
+            with_violation_detection=with_violation_detection,
+            violation_shapes_glob=violation_shapes_glob,
         )
 
     print("\n[Synthesis] Complete.")
