@@ -219,7 +219,7 @@ def main() -> int:
         _run_generator(
             "violation",
             generate_violation_pairs,
-            {"seed": 17},
+            {"seed": 17, "max_pairs": cap},
             schema,
         )
     )
