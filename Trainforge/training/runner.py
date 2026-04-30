@@ -283,6 +283,31 @@ class TrainingRunner:
             # _emit_model_card helper does an atomic tmpfile + rename,
             # so a partial overwrite never leaves a half-card on disk.
             if eval_scores is not None:
+                # A7 — wire AblationRunner so headline_delta lands on disk
+                # alongside eval_report. Best-effort: ablation failure
+                # never voids the eval pass.
+                try:
+                    ablation_delta = self._run_ablation(
+                        run_dir=run_dir,
+                        adapter_path=adapter_path,
+                    )
+                    if ablation_delta is not None:
+                        eval_scores["headline_delta"] = ablation_delta
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "Ablation run failed; eval_scores written without "
+                        "headline_delta. Adapter at %s still trained "
+                        "and persisted.",
+                        adapter_path,
+                    )
+
+                # A6 — re-read provenance after eval. The harness wrote
+                # eval/holdout_split.json during run_all(); the first
+                # _compute_provenance() at line 196 saw a stale or
+                # missing file, so the model_card pinned an inaccurate
+                # holdout_graph_hash. Re-hashing here closes the race.
+                provenance = self._compute_provenance()
+
                 card_path = self._emit_model_card(
                     run_dir=run_dir,
                     model_id=model_id,
@@ -290,6 +315,12 @@ class TrainingRunner:
                     adapter_path=adapter_path,
                     eval_scores=eval_scores,
                 )
+
+                # A2 — invoke EvalGatingValidator inline. Both
+                # `python -m Trainforge.train_course` and `ed4all run
+                # trainforge_train` now enforce the gate; previously
+                # only the workflow-orchestrator path fired it.
+                self._enforce_eval_gate(run_dir=run_dir, capture=capture)
         finally:
             capture.save()
 
@@ -763,8 +794,10 @@ class TrainingRunner:
             course_path=course_path,
             model_callable=adapter_callable,
         )
+        eval_dir = run_dir / "eval"
+        eval_dir.mkdir(parents=True, exist_ok=True)
         report_path = harness.run_all(
-            output_path=run_dir / "eval_report.json",
+            output_path=eval_dir / "eval_report.json",
         )
         eval_report = json.loads(report_path.read_text(encoding="utf-8"))
 
@@ -830,6 +863,142 @@ class TrainingRunner:
             # and lands in the run dir's lm_eval_results/ instead.
             eval_scores["lm_eval_summary"] = lm_eval_summary
         return eval_scores
+
+    def _run_ablation(
+        self,
+        run_dir: Path,
+        adapter_path: Optional[Path],
+    ) -> Optional[Dict[str, Any]]:
+        """Wire A7: run AblationRunner so ablation_report.json + the
+        headline_delta block (hallucination_reduction_pct, source-grounded
+        lift, accuracy lift) land alongside eval_report.json.
+
+        Returns the headline_delta dict (or None if ablation skipped /
+        failed). Best-effort: an exception in here is caught by the
+        caller and the run still ships its eval_scores card.
+        """
+        if adapter_path is None:
+            return None
+        if os.environ.get("ED4ALL_SKIP_ABLATION", "").lower() in ("1", "true"):
+            logger.info(
+                "TrainingRunner: ED4ALL_SKIP_ABLATION set; ablation "
+                "skipped (no headline_delta on this run)."
+            )
+            return None
+
+        from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
+        from Trainforge.eval.adapter_callable import AdapterCallable
+        from Trainforge.eval.eval_config import load_eval_config
+        from Trainforge.eval.rag_callable import BaseOnlyCallable, RAGCallable
+
+        adapter_dir = (
+            Path(adapter_path).parent
+            if Path(adapter_path).is_file()
+            else Path(adapter_path)
+        )
+        course_path = self.course_dir
+        loaded_eval_config = load_eval_config(course_path)
+        eval_cfg = loaded_eval_config.config
+
+        callable_kwargs: Dict[str, Any] = {
+            "base_model_short_name": self.spec.name,
+            "max_new_tokens": int(eval_cfg.get("max_new_tokens", 256)),
+            "temperature": float(eval_cfg.get("temperature", 0.0)),
+            "top_p": float(eval_cfg.get("top_p", 1.0)),
+            "seed": int(eval_cfg.get("seed", self.config.seed)),
+            "revision": self.spec.default_revision,
+        }
+
+        adapter_callable = AdapterCallable(
+            adapter_dir=adapter_dir,
+            base_model_repo=self.spec.huggingface_repo,
+            **callable_kwargs,
+        )
+        base_callable = BaseOnlyCallable(
+            base_model_repo=self.spec.huggingface_repo,
+            max_new_tokens=callable_kwargs["max_new_tokens"],
+            temperature=callable_kwargs["temperature"],
+            base_model_short_name=self.spec.name,
+            eval_config=loaded_eval_config,
+        )
+        adapter_rag = RAGCallable(
+            base_callable=adapter_callable,
+            course_slug=self.course_slug,
+            eval_config=loaded_eval_config,
+        )
+        base_rag = RAGCallable(
+            base_callable=base_callable,
+            course_slug=self.course_slug,
+            eval_config=loaded_eval_config,
+        )
+
+        setups = [
+            AblationSetup(setup="base", callable=base_callable),
+            AblationSetup(setup="base+rag", callable=base_rag, rag_callable=base_rag),
+            AblationSetup(setup="adapter", callable=adapter_callable),
+            AblationSetup(
+                setup="adapter+rag",
+                callable=adapter_rag,
+                rag_callable=adapter_rag,
+            ),
+        ]
+        runner = AblationRunner(
+            course_path=course_path,
+            setups=setups,
+            eval_config=loaded_eval_config,
+        )
+        ablation_path = runner.run(
+            output_path=run_dir / "eval" / "ablation_report.json",
+        )
+        report = json.loads(ablation_path.read_text(encoding="utf-8"))
+        return report.get("headline_delta")
+
+    def _enforce_eval_gate(
+        self,
+        run_dir: Path,
+        capture: DecisionCapture,
+    ) -> None:
+        """A2: run EvalGatingValidator inline so direct-CLI training
+        runs are gated. Logs the result; raises on critical failure
+        unless ``ED4ALL_GATE_ADVISORY=true`` is set.
+
+        The gate already fail-louds on missing eval_report.json
+        (EVAL_REPORT_NOT_FOUND), faithfulness regression, yes-bias,
+        no-bias drop, and per-property accuracy floor. This wiring
+        ensures the gate ACTUALLY FIRES regardless of how the runner
+        was invoked.
+        """
+        from lib.validators.eval_gating import EvalGatingValidator
+
+        validator = EvalGatingValidator()
+        result = validator.validate({
+            "gate_id": "eval_gating",
+            "model_dir": str(run_dir),
+            "capture": capture,
+        })
+        critical_count = sum(1 for i in result.issues if i.severity == "critical")
+        warn_count = sum(1 for i in result.issues if i.severity == "warning")
+        logger.info(
+            "EvalGatingValidator: passed=%s critical=%d warning=%d",
+            result.passed, critical_count, warn_count,
+        )
+        for issue in result.issues:
+            logger.log(
+                logging.ERROR if issue.severity == "critical" else logging.WARNING,
+                "EvalGatingValidator: [%s] %s — %s",
+                issue.severity, issue.code, issue.message,
+            )
+        if not result.passed:
+            advisory = os.environ.get("ED4ALL_GATE_ADVISORY", "").lower() in ("1", "true")
+            if not advisory:
+                codes = ", ".join(
+                    i.code for i in result.issues if i.severity == "critical"
+                )
+                raise RuntimeError(
+                    f"EvalGatingValidator blocked promotion: {codes}. "
+                    "Set ED4ALL_GATE_ADVISORY=true to log-only and ship "
+                    "the run dir anyway."
+                )
 
     def _save_decision_run_log(
         self,

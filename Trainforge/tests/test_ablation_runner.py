@@ -230,3 +230,45 @@ def test_retrieval_method_table_skipped_when_factory_missing(tmp_path):
     out = runner.run()
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert payload["retrieval_method_table"] == []
+
+
+def test_headline_delta_in_ablation_and_eval_report(tmp_path):
+    """Both ablation_report.json and the consolidated eval_report.json
+    carry the headline_delta block so the HF README writer + any
+    downstream consumer (audit, dashboard) see the procurement claim
+    without a second JSON load."""
+    from Trainforge.eval.ablation_runner import AblationRunner, AblationSetup
+
+    # base hallucination 0.50 -> adapter+rag hallucination 0.12 = 76% reduction
+    metrics = {
+        "base":         _metric_payload(0.40, 0.50, 0.10),
+        "base+rag":     _metric_payload(0.55, 0.65, 0.40),
+        "adapter":      _metric_payload(0.65, 0.70, 0.20),
+        "adapter+rag":  _metric_payload(0.85, 0.88, 0.60),
+    }
+    factory = _build_fake_harness_factory(metrics)
+    setups = [
+        AblationSetup(setup="base",        callable=_tagged_callable("base")),
+        AblationSetup(setup="base+rag",    callable=_tagged_callable("base+rag")),
+        AblationSetup(setup="adapter",     callable=_tagged_callable("adapter")),
+        AblationSetup(setup="adapter+rag", callable=_tagged_callable("adapter+rag")),
+    ]
+    runner = AblationRunner(
+        course_path=tmp_path,
+        setups=setups,
+        harness_factory=factory,
+    )
+    abl_path = runner.run()
+    eval_path = abl_path.parent / "eval_report.json"
+
+    abl_payload = json.loads(abl_path.read_text(encoding="utf-8"))
+    eval_payload = json.loads(eval_path.read_text(encoding="utf-8"))
+
+    for payload in (abl_payload, eval_payload):
+        delta = payload.get("headline_delta")
+        assert delta is not None, "headline_delta missing from report"
+        # 1.0 - 0.88 = 0.12 hallucination on adapter+rag, 1.0 - 0.50 = 0.50 base
+        # reduction = (0.50 - 0.12) / 0.50 = 0.76
+        assert delta["hallucination_reduction_pct"] == pytest.approx(0.76, abs=1e-3)
+        assert "headline_sentence" in delta
+        assert "ED4ALL-Bench v1.0" in delta["headline_sentence"]
