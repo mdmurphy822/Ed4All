@@ -1194,10 +1194,12 @@ def test_with_schema_translation_flag_appends_pairs(
         pilot_report_every=0,
         curriculum_from_graph=False,
         with_schema_translation=True,
-        schema_translation_max_pairs=20,
+        schema_translation_max_pairs=4,
     )
 
-    # 2 surface forms * 2 variants (definition + usage) = 4 pairs.
+    # Wave 125b expanded the catalog to 6 families/form. With cap=4
+    # and 2 surface forms in the test fixture's manifest, round-robin
+    # family balance lands at exactly 4 pairs (2 per form).
     assert stats.schema_translation_pairs_emitted == 4
 
     inst_path = course_dir / "training_specs" / "instruction_pairs.jsonl"
@@ -1212,3 +1214,86 @@ def test_with_schema_translation_flag_appends_pairs(
         if rec.get("content_type") == "schema_translation":
             seen_curies.add(rec["concept_tags"][0])
     assert seen_curies == {"sh:datatype", "rdfs:subClassOf"}
+
+
+# ---------------------------------------------------------------------------
+# Wave 125a: --violation-detection-max-pairs cap
+# ---------------------------------------------------------------------------
+
+
+def test_violation_detection_max_pairs_caps_emit(tmp_path: Path) -> None:
+    """``--violation-detection-max-pairs N`` caps the count of
+    violation-detection pairs appended to instruction_pairs.jsonl while
+    keeping every surface form represented (family-balanced
+    round-robin)."""
+    pytest.importorskip("pyshacl")
+    pytest.importorskip("rdflib")
+    course_dir = _make_working_copy(tmp_path)
+
+    cap = 60
+    stats = run_synthesis(
+        corpus_dir=course_dir,
+        course_code="MINI_TRAINING_101",
+        provider="mock",
+        seed=11,
+        pilot_report_every=0,
+        curriculum_from_graph=False,
+        with_violation_detection=True,
+        violation_detection_max_pairs=cap,
+    )
+
+    # The unlimited catalog is >= 800; with cap=60 the emit must
+    # respect the cap.
+    assert stats.violation_pairs_emitted <= cap
+    assert stats.violation_pairs_emitted > 0
+
+    # Verify on disk: count violation_detection pairs in the artifact
+    # and confirm every surface form survived the round-robin trim.
+    inst_path = course_dir / "training_specs" / "instruction_pairs.jsonl"
+    assert inst_path.exists()
+    import json as _json
+    from collections import Counter
+    surface_forms: Counter = Counter()
+    violation_count = 0
+    for line in inst_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        rec = _json.loads(line)
+        if rec.get("content_type") == "violation_detection":
+            violation_count += 1
+            tags = rec.get("concept_tags") or []
+            if tags:
+                surface_forms[tags[0]] += 1
+    assert violation_count == stats.violation_pairs_emitted
+    # All 6 RDF/SHACL surface forms must remain represented.
+    expected = {
+        "sh:datatype", "sh:class", "sh:NodeShape",
+        "sh:PropertyShape", "rdfs:subClassOf", "owl:sameAs",
+    }
+    assert expected.issubset(set(surface_forms.keys())), (
+        f"capped violation emit dropped a surface form: "
+        f"{expected - set(surface_forms.keys())}"
+    )
+
+
+def test_violation_detection_no_cap_appends_full_catalog(
+    tmp_path: Path,
+) -> None:
+    """No ``--violation-detection-max-pairs`` flag means the entire
+    pyshacl-validated catalog (>= 800 pairs) lands in the artifact."""
+    pytest.importorskip("pyshacl")
+    pytest.importorskip("rdflib")
+    course_dir = _make_working_copy(tmp_path)
+
+    stats = run_synthesis(
+        corpus_dir=course_dir,
+        course_code="MINI_TRAINING_101",
+        provider="mock",
+        seed=11,
+        pilot_report_every=0,
+        curriculum_from_graph=False,
+        with_violation_detection=True,
+        # violation_detection_max_pairs left at default (None)
+    )
+    assert stats.violation_pairs_emitted >= 800

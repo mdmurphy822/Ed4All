@@ -1,14 +1,23 @@
-"""Tests for the SHACL violation-detection generator (Audit 2026-04-30).
+"""Tests for the SHACL violation-detection generator (Audit 2026-04-30,
+Wave 125a expansion).
 
 Covers the contract spelled out in the audit fix:
 
-* Built-in shape catalog: 6 shapes × 2 graphs each -> 12 pairs minimum.
+* Built-in shape catalog: programmatically expanded to >= 800
+  pyshacl-validated pairs (Wave 125a) covering all 6 surface forms.
+  Six pinned canonical fixture names preserved for back-compat:
+  ``datatype_int_age``, ``class_constraint_owns``, ``nodeshape_min_count``,
+  ``propertyshape_max_count``, ``subclass_of_class_constraint``,
+  ``sameas_iri_kind``.
 * Pyshacl oracle agrees with every generator-claimed validity (zero
   disagreements). Wrong-labeled pairs are dropped, never emitted.
-* Each emitted pair validates against `instruction_pair.schema.json`.
+* Each emitted pair validates against `instruction_pair.schema.json`
+  (prompt 40-400 chars, completion 50-600 chars).
 * `chunk_id` anchoring: when the property manifest has a surface form,
   the pair anchors to a chunk teaching that form.
 * Decision capture fires once per fixture.
+* `max_pairs` cap (Wave 125a) trims emit with family-balanced
+  round-robin so every surface form keeps representation.
 * Pyshacl missing -> `pytest.skip` rather than hard fail.
 """
 from __future__ import annotations
@@ -60,9 +69,22 @@ def _validate_pair(pair: Dict[str, Any]) -> None:
     jsonschema.validate(pair, schema)
 
 
-def test_built_in_catalog_has_six_shapes() -> None:
+def test_built_in_catalog_preserves_pinned_fixture_names() -> None:
+    """Wave 125a: catalog programmatically expanded but the 6 pinned
+    canonical fixture names must remain so existing wiring + downstream
+    tests keep working."""
     catalog = built_in_shape_catalog()
-    assert len(catalog) == 6
+    names = {f.name for f in catalog}
+    pinned = {
+        "datatype_int_age",
+        "class_constraint_owns",
+        "nodeshape_min_count",
+        "propertyshape_max_count",
+        "subclass_of_class_constraint",
+        "sameas_iri_kind",
+    }
+    missing = pinned - names
+    assert not missing, f"missing pinned fixture names: {missing}"
     # Each fixture has at least one valid + one invalid graph.
     for f in catalog:
         assert isinstance(f, ShapeFixture)
@@ -71,13 +93,151 @@ def test_built_in_catalog_has_six_shapes() -> None:
         assert any(not valid for _, valid in f.graphs)
 
 
-def test_emits_at_least_twelve_pairs() -> None:
-    """6 fixtures × 2 graphs = 12 pairs minimum on a clean run."""
+def test_catalog_has_at_least_800_pairs() -> None:
+    """Wave 125a target: pyshacl-validated catalog >= 800 pairs."""
     capture = _FakeCapture()
     pairs, stats = generate_violation_pairs(capture=capture)
-    assert len(pairs) >= 12
+    assert len(pairs) >= 800, (
+        f"expected >= 800 pairs, got {len(pairs)} (catalog underfilled)"
+    )
     assert stats.pairs_emitted == len(pairs)
-    assert stats.fixtures_used == 6
+    # Sanity: at least the 6 canonical fixtures contributed.
+    assert stats.fixtures_used >= 6
+
+
+def test_catalog_no_oracle_disagreements() -> None:
+    """Wave 125a contract: zero pyshacl/fixture disagreements at the
+    full catalog scale."""
+    capture = _FakeCapture()
+    _, stats = generate_violation_pairs(capture=capture)
+    assert stats.oracle_disagreements == 0, (
+        f"pyshacl disagreed with {stats.oracle_disagreements} fixture "
+        f"graph(s); fix the catalog before emitting."
+    )
+
+
+def test_catalog_covers_all_six_surface_forms_with_volume() -> None:
+    """Each of the 6 RDF/SHACL surface forms must hold >= 50 pairs."""
+    from collections import Counter
+
+    capture = _FakeCapture()
+    pairs, _ = generate_violation_pairs(capture=capture)
+    counts = Counter(p["shape_curie"] for p in pairs)
+    expected_forms = {
+        "sh:datatype",
+        "sh:class",
+        "sh:NodeShape",
+        "sh:PropertyShape",
+        "rdfs:subClassOf",
+        "owl:sameAs",
+    }
+    for form in expected_forms:
+        assert counts.get(form, 0) >= 50, (
+            f"{form!r} has only {counts.get(form, 0)} pairs; need >= 50"
+        )
+
+
+def test_no_duplicate_pair_prompts() -> None:
+    """Every prompt must be unique — duplicate prompts collapse the
+    de-duplication step downstream and starve the corpus of diversity."""
+    capture = _FakeCapture()
+    pairs, _ = generate_violation_pairs(capture=capture)
+    prompts = [p["prompt"] for p in pairs]
+    assert len(prompts) == len(set(prompts)), (
+        f"duplicate prompts: {len(prompts)} total, {len(set(prompts))} unique"
+    )
+
+
+def test_pair_lengths_within_schema_bounds() -> None:
+    """instruction_pair.schema.json: prompt 40-400, completion 50-600.
+    Critical — schema validation fails otherwise."""
+    capture = _FakeCapture()
+    pairs, _ = generate_violation_pairs(capture=capture)
+    for pair in pairs:
+        plen = len(pair["prompt"])
+        clen = len(pair["completion"])
+        assert 40 <= plen <= 400, (
+            f"prompt length {plen} outside [40,400] for "
+            f"{pair.get('shape_curie')}/{pair.get('expected_validity')}"
+        )
+        assert 50 <= clen <= 600, (
+            f"completion length {clen} outside [50,600] for "
+            f"{pair.get('shape_curie')}/{pair.get('expected_validity')}"
+        )
+
+
+def test_compound_fixtures_present() -> None:
+    """Compound fixtures (2+ distinct SHACL constraint predicates in
+    one shape body) are the highest-value teaching surface; the catalog
+    must carry at least 50 of them."""
+    catalog = built_in_shape_catalog()
+    shacl_predicates = (
+        "sh:datatype", "sh:class", "sh:minCount", "sh:maxCount",
+        "sh:nodeKind", "sh:minLength", "sh:maxLength", "sh:pattern",
+        "sh:hasValue", "sh:in", "sh:minInclusive", "sh:maxInclusive",
+    )
+    compound_count = 0
+    for f in catalog:
+        ttl = f.shape_ttl
+        distinct = {p for p in shacl_predicates if p in ttl}
+        if len(distinct) >= 2:
+            compound_count += 1
+    assert compound_count >= 50, (
+        f"only {compound_count} compound fixtures (need >= 50); "
+        f"compound shapes are the richest teaching surface."
+    )
+
+
+def test_max_pairs_caps_emit_with_balanced_families() -> None:
+    """Wave 125a: max_pairs=200 truncates to <= 200 with all 6 surface
+    forms still represented."""
+    from collections import Counter
+
+    capture = _FakeCapture()
+    capped, stats = generate_violation_pairs(
+        capture=capture, max_pairs=200,
+    )
+    assert len(capped) <= 200, (
+        f"max_pairs=200 returned {len(capped)} pairs"
+    )
+    # Need a meaningful cap effect.
+    assert len(capped) >= 100
+    counts = Counter(p["shape_curie"] for p in capped)
+    expected_forms = {
+        "sh:datatype",
+        "sh:class",
+        "sh:NodeShape",
+        "sh:PropertyShape",
+        "rdfs:subClassOf",
+        "owl:sameAs",
+    }
+    for form in expected_forms:
+        assert counts.get(form, 0) > 0, (
+            f"capped output dropped surface form {form!r} entirely; "
+            f"family-balanced round-robin must preserve every form."
+        )
+    # Stats must mirror the trimmed list, not the pre-cap catalog.
+    assert stats.pairs_emitted == len(capped)
+    assert stats.valid_pairs + stats.invalid_pairs == len(capped)
+    assert stats.oracle_disagreements == 0
+
+
+def test_max_pairs_zero_emits_nothing() -> None:
+    """Edge case: ``max_pairs=0`` is a meaningful operator request to
+    skip all violation pairs without disabling the generator wiring."""
+    capture = _FakeCapture()
+    pairs, stats = generate_violation_pairs(capture=capture, max_pairs=0)
+    assert pairs == []
+    assert stats.pairs_emitted == 0
+
+
+def test_max_pairs_above_catalog_returns_full_catalog() -> None:
+    """Cap above the catalog size is a no-op."""
+    capture = _FakeCapture()
+    full, _ = generate_violation_pairs(capture=capture)
+    capture2 = _FakeCapture()
+    capped, _ = generate_violation_pairs(capture=capture2, max_pairs=10_000)
+    assert len(capped) == len(full)
 
 
 def test_pyshacl_oracle_agrees_with_every_fixture() -> None:
@@ -132,10 +292,13 @@ def test_chunk_id_falls_back_to_synthetic_when_no_manifest_match() -> None:
 
 def test_decision_capture_fires_once_per_fixture() -> None:
     capture = _FakeCapture()
-    generate_violation_pairs(capture=capture)
+    _, stats = generate_violation_pairs(capture=capture)
     types = [d["decision_type"] for d in capture.decisions]
-    # 6 fixtures, 6 events.
-    assert types.count("violation_generation") == 6
+    # One violation_generation event per fixture used (Wave 125a:
+    # catalog programmatically expanded — count must match
+    # stats.fixtures_used, not a fixed 6).
+    assert types.count("violation_generation") == stats.fixtures_used
+    assert stats.fixtures_used >= 6
     for event in capture.decisions:
         rationale = event["rationale"]
         assert len(rationale) >= 20
