@@ -678,6 +678,7 @@ def run_synthesis(
     kg_metadata_max_pairs: int = 2000,
     with_violation_detection: bool = False,
     violation_shapes_glob: Optional[str] = None,
+    violation_detection_max_pairs: Optional[int] = None,
     with_abstention: bool = False,
     abstention_max_pairs: int = 1000,
     with_schema_translation: bool = False,
@@ -1691,6 +1692,7 @@ def run_synthesis(
                     fixtures=built_in_shape_catalog(),
                     chunks_by_surface_form=chunks_by_form or None,
                     seed=seed,
+                    max_pairs=violation_detection_max_pairs,
                 )
             except RuntimeError as exc:
                 # pyshacl is optional. A missing dep should warn, not
@@ -1882,6 +1884,7 @@ def run_synthesis_from_libv2(
     kg_metadata_max_pairs: int = 2000,
     with_violation_detection: bool = False,
     violation_shapes_glob: Optional[str] = None,
+    violation_detection_max_pairs: Optional[int] = None,
     with_abstention: bool = False,
     abstention_max_pairs: int = 1000,
     with_schema_translation: bool = False,
@@ -1948,6 +1951,7 @@ def run_synthesis_from_libv2(
         kg_metadata_max_pairs=kg_metadata_max_pairs,
         with_violation_detection=with_violation_detection,
         violation_shapes_glob=violation_shapes_glob,
+        violation_detection_max_pairs=violation_detection_max_pairs,
         with_abstention=with_abstention,
         abstention_max_pairs=abstention_max_pairs,
         with_schema_translation=with_schema_translation,
@@ -2255,6 +2259,21 @@ def build_parser() -> argparse.ArgumentParser:
             "relative to the corpus_dir; absolute paths are honoured."
         ),
     )
+    p.add_argument(
+        "--violation-detection-max-pairs",
+        dest="violation_detection_max_pairs",
+        type=int,
+        default=None,
+        help=(
+            "Wave 125a: cap on emitted SHACL violation-detection pairs. "
+            "When unset (default), the entire pyshacl-validated catalog "
+            "(>= 800 pairs) is appended. Set this to balance the "
+            "violation-detection share of the total corpus when running "
+            "production rebuilds (e.g. 350 for the cc07cc76 retrain). "
+            "Truncation is family-balanced round-robin across surface "
+            "forms so every form keeps representation up to the cap."
+        ),
+    )
     # Wave 124 (audit 2026-04-30 follow-up): abstention +
     # schema-translation generators. Both are off by default, parallel
     # to --with-kg-metadata / --with-violation-detection. Closes the
@@ -2366,6 +2385,15 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
         getattr(args, "with_violation_detection", False)
     )
     violation_shapes_glob = getattr(args, "violation_shapes_glob", None)
+    # Wave 125a: optional cap on violation-detection emit count.
+    violation_detection_max_pairs_arg = getattr(
+        args, "violation_detection_max_pairs", None,
+    )
+    violation_detection_max_pairs = (
+        int(violation_detection_max_pairs_arg)
+        if violation_detection_max_pairs_arg is not None
+        else None
+    )
     # Wave 124: abstention + schema-translation generators.
     with_abstention = bool(getattr(args, "with_abstention", False))
     abstention_max_pairs = int(getattr(args, "abstention_max_pairs", 1000))
@@ -2398,6 +2426,7 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             kg_metadata_max_pairs=kg_metadata_max_pairs,
             with_violation_detection=with_violation_detection,
             violation_shapes_glob=violation_shapes_glob,
+            violation_detection_max_pairs=violation_detection_max_pairs,
             with_abstention=with_abstention,
             abstention_max_pairs=abstention_max_pairs,
             with_schema_translation=with_schema_translation,
@@ -2431,6 +2460,7 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             kg_metadata_max_pairs=kg_metadata_max_pairs,
             with_violation_detection=with_violation_detection,
             violation_shapes_glob=violation_shapes_glob,
+            violation_detection_max_pairs=violation_detection_max_pairs,
             with_abstention=with_abstention,
             abstention_max_pairs=abstention_max_pairs,
             with_schema_translation=with_schema_translation,
