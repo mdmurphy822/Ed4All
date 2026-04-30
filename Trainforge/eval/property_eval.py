@@ -66,6 +66,11 @@ class PerPropertyEvaluator:
                 "course_slug": self.course_slug,
             }
 
+        # Audit 2026-04-30 fix: prefer the new `property_probes` array
+        # emitted by HoldoutBuilder._build_property_probes. The legacy
+        # `withheld_edges` filter remains for backward compat with
+        # holdout splits built before the fix landed.
+        property_probes = payload.get("property_probes") or []
         edges = payload.get("withheld_edges", []) or []
 
         per_property_accuracy: Dict[str, Optional[float]] = {}
@@ -73,15 +78,22 @@ class PerPropertyEvaluator:
 
         for prop in manifest.properties:
             matching = []
-            for edge in edges:
-                # Match against probe_text if present, otherwise build
-                # one from the edge using the existing helper.
-                probe_text = edge.get("probe_text") or _format_probe(edge)
-                source = str(edge.get("source") or "")
-                target = str(edge.get("target") or "")
-                haystack = f"{probe_text} {source} {target}"
-                if prop.matches(haystack):
-                    matching.append((edge, probe_text))
+
+            # Source 1: explicit property_probes (fast path; the probe
+            # is already stamped with `property_id`).
+            for probe in property_probes:
+                if probe.get("property_id") == prop.id:
+                    matching.append((probe, probe.get("probe_text") or probe.get("prompt", "")))
+
+            # Source 2: legacy edges-based filter (back-compat path).
+            if not matching:
+                for edge in edges:
+                    probe_text = edge.get("probe_text") or _format_probe(edge)
+                    source = str(edge.get("source") or "")
+                    target = str(edge.get("target") or "")
+                    haystack = f"{probe_text} {source} {target}"
+                    if prop.matches(haystack):
+                        matching.append((edge, probe_text))
 
             if self.max_q is not None:
                 matching = matching[: self.max_q]

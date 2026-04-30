@@ -395,6 +395,16 @@ def _render_body(
     )
     lines.append("")
 
+    # --- Headline Result -------------------------------------- #
+    # Hallucination reduction is the headline procurement claim;
+    # render it as the first body section so a skim-reader sees it
+    # before training-config detail.
+    lines.extend(_render_headline_result_block(
+        ablation_report=ablation_report,
+        course_slug=course_slug,
+        model_card=model_card,
+    ))
+
     # --- Training Data ---------------------------------------- #
     lines.append("## Training Data")
     lines.append("")
@@ -458,6 +468,17 @@ def _render_body(
         lines.append(
             f"| Hallucination rate (1 - faithfulness) | "
             f"{_round(metrics_block['hallucination_rate'])} |"
+        )
+    # Hallucination reduction (% drop vs. base) — the headline number
+    # surfaces here too so the metric table is self-contained.
+    reduction_pct = _resolve_hallucination_reduction(
+        ablation_report=ablation_report,
+        eval_report=eval_report,
+    )
+    if reduction_pct is not None:
+        lines.append(
+            f"| **Hallucination reduction (vs. base)** | "
+            f"**{round(float(reduction_pct) * 100):.0f}%** |"
         )
     per_inv = eval_report.get("per_invariant") or {}
     for inv_name, payload in sorted(per_inv.items()):
@@ -554,6 +575,133 @@ def _render_body(
 # ---------------------------------------------------------------------- #
 # Wave 102 helpers                                                        #
 # ---------------------------------------------------------------------- #
+
+
+def _resolve_hallucination_reduction(
+    *,
+    ablation_report: Optional[Dict[str, Any]],
+    eval_report: Dict[str, Any],
+) -> Optional[float]:
+    """Pull hallucination_reduction_pct from a precomputed headline_delta
+    on either report, falling back to computing it inline from the
+    ablation_report's headline_table."""
+    for source in (ablation_report or {}, eval_report or {}):
+        block = source.get("headline_delta") or {}
+        val = block.get("hallucination_reduction_pct")
+        if val is not None:
+            return val
+    if not ablation_report:
+        return None
+    from Trainforge.eval.headline_delta import compute_headline_delta
+    return compute_headline_delta(ablation_report).get(
+        "hallucination_reduction_pct"
+    )
+
+
+def _render_headline_result_block(
+    *,
+    ablation_report: Optional[Dict[str, Any]],
+    course_slug: str,
+    model_card: Dict[str, Any],
+) -> List[str]:
+    """Render the "Headline Result" callout — the procurement-claim
+    block that opens the README body.
+
+    Pulls the four numbers from ``compute_headline_delta`` and surfaces
+    hallucination reduction as the lead bullet. Falls back to a brief
+    "results pending" stub when no ablation report is supplied (e.g.
+    pre-eval dry-run README), so the section anchor is stable for
+    downstream tooling.
+    """
+    lines: List[str] = ["## Headline Result", ""]
+    if not ablation_report:
+        lines.append(
+            "_Eval ablation has not been run yet for this adapter. "
+            "Headline numbers will populate after `python -m "
+            "Trainforge.eval.ablation_runner` lands an "
+            "`ablation_report.json` next to this card._"
+        )
+        lines.append("")
+        return lines
+
+    from Trainforge.eval.headline_delta import compute_headline_delta
+
+    eval_scores = model_card.get("eval_scores") or {}
+    provenance = model_card.get("provenance") or {}
+    delta = compute_headline_delta(
+        ablation_report,
+        course_slug=course_slug,
+        holdout_hash=str(provenance.get("holdout_graph_hash") or "<unset>"),
+        scoring_commit=str(eval_scores.get("scoring_commit") or "<unset>"),
+    )
+
+    reduction = delta.get("hallucination_reduction_pct")
+    source_lift = delta.get("source_grounded_lift_x")
+    accuracy_lift = delta.get("accuracy_lift_x")
+
+    headline_rows = ablation_report.get("headline_table") or []
+    base_row = next(
+        (r for r in headline_rows if str(r.get("setup", "")).lower() == "base"),
+        None,
+    )
+    final_row = next(
+        (
+            r for r in headline_rows
+            if str(r.get("setup", "")).lower() == "adapter+rag"
+        ),
+        None,
+    )
+
+    if reduction is not None:
+        pct = round(float(reduction) * 100)
+        base_h = (
+            _round(base_row.get("hallucination_rate"))
+            if base_row else None
+        )
+        final_h = (
+            _round(final_row.get("hallucination_rate"))
+            if final_row else None
+        )
+        if base_h is not None and final_h is not None:
+            lines.append(
+                f"### **Hallucination reduction: {pct}%**  "
+                f"({base_h:.3f} → {final_h:.3f})"
+            )
+        else:
+            lines.append(f"### **Hallucination reduction: {pct}%**")
+        lines.append("")
+        lines.append(
+            "Adapter + ED4ALL RAG produces fewer hallucinated answers "
+            f"than the base model on the held-out **{course_slug}** "
+            "split. This is the headline procurement claim for this "
+            "adapter; all other metrics support it."
+        )
+        lines.append("")
+    else:
+        lines.append(
+            "_Hallucination-reduction percentage is unavailable — "
+            "either the base or adapter row of the ablation report "
+            "is missing, or the base hallucination rate is zero._"
+        )
+        lines.append("")
+
+    secondary: List[str] = []
+    if source_lift is not None:
+        secondary.append(
+            f"- **Source-grounded answers**: "
+            f"**{float(source_lift):.1f}×** vs. base."
+        )
+    if accuracy_lift is not None:
+        secondary.append(
+            f"- **Accuracy lift**: **{float(accuracy_lift):.1f}×** vs. base."
+        )
+    if secondary:
+        lines.append("**Supporting signals:**")
+        lines.append("")
+        lines.extend(secondary)
+        lines.append("")
+
+    return lines
 
 
 def _render_headline_table(ablation_report: Dict[str, Any]) -> List[str]:

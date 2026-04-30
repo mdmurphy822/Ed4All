@@ -508,6 +508,70 @@ def test_readme_opens_with_headline_sentence(tmp_path):
     assert headline_idx < fm_idx
 
 
+def test_readme_opens_with_headline_result_callout(tmp_path):
+    """The Headline Result section opens the README body, leading
+    with hallucination reduction as the procurement claim."""
+    from Trainforge.eval.hf_model_index import write_hf_readme
+
+    readme_path = write_hf_readme(
+        run_dir=tmp_path,
+        eval_report=_build_eval_report(),
+        course_slug="rdf-shacl-551-2",
+        base_model="qwen2.5-1.5b",
+        model_id="m-01",
+        model_card=_build_model_card(),
+        ablation_report=_build_ablation_report(),
+    )
+    text = readme_path.read_text(encoding="utf-8")
+    assert "## Headline Result" in text
+    # base 0.50 -> adapter+rag 0.12 = 76% reduction
+    assert "Hallucination reduction: 76%" in text
+    assert "0.500 → 0.120" in text
+    # Headline Result lands before Training Data
+    headline_idx = text.index("## Headline Result")
+    training_idx = text.index("## Training Data")
+    assert headline_idx < training_idx
+
+
+def test_readme_metric_table_includes_reduction_row(tmp_path):
+    """The Evaluation metric table carries a Hallucination reduction
+    row alongside the rate row, so the table is self-contained."""
+    from Trainforge.eval.hf_model_index import write_hf_readme
+
+    readme_path = write_hf_readme(
+        run_dir=tmp_path,
+        eval_report=_build_eval_report(),
+        course_slug="rdf-shacl-551-2",
+        base_model="qwen2.5-1.5b",
+        model_id="m-01",
+        model_card=_build_model_card(),
+        ablation_report=_build_ablation_report(),
+    )
+    text = readme_path.read_text(encoding="utf-8")
+    assert "**Hallucination reduction (vs. base)**" in text
+    assert "**76%**" in text
+
+
+def test_headline_result_block_falls_back_when_ablation_missing(tmp_path):
+    """Without an ablation_report, the section is still emitted (anchor
+    stable) but carries a 'pending' stub instead of percentages."""
+    from Trainforge.eval.hf_model_index import write_hf_readme
+
+    readme_path = write_hf_readme(
+        run_dir=tmp_path,
+        eval_report=_build_eval_report(),
+        course_slug="rdf-shacl-551-2",
+        base_model="qwen2.5-1.5b",
+        model_id="m-01",
+        model_card=_build_model_card(),
+    )
+    text = readme_path.read_text(encoding="utf-8")
+    assert "## Headline Result" in text
+    assert "Eval ablation has not been run yet" in text
+    # No reduction percentage when no ablation
+    assert "Hallucination reduction:" not in text
+
+
 def test_readme_renders_diagnostic_findings_when_provided(tmp_path):
     from Trainforge.eval.hf_model_index import write_hf_readme
 

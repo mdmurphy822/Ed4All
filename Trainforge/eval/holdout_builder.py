@@ -46,7 +46,10 @@ import logging
 import random
 from collections import defaultdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from Trainforge.eval.chunk_labels import ChunkLabelResolver
 
 logger = logging.getLogger(__name__)
 
@@ -148,7 +151,15 @@ class HoldoutBuilder:
         # edge isn't chunk-anchored (concept->concept edges).
         # Wave 108 / Phase B: thread the full edge list so each probe
         # gets the multi-citation ground_truth_chunk_ids set.
-        probes = self._build_probes(withheld, all_edges=edges)
+        # Audit 2026-04-30: thread a chunk-label resolver so probe text
+        # carries human-readable labels instead of chunk-ID literals.
+        from Trainforge.eval.chunk_labels import ChunkLabelResolver
+        label_resolver = ChunkLabelResolver.from_course(self.course_path)
+        probes = self._build_probes(
+            withheld,
+            all_edges=edges,
+            label_resolver=label_resolver,
+        )
 
         # Same index used to populate withheld_edges entries below.
         gt_chunk_index: Dict[tuple, List[str]] = {}
@@ -186,6 +197,16 @@ class HoldoutBuilder:
         # all-positive corpora answer "yes" to everything).
         negative_probes = self._sample_negative_probes(edges, per_relation_summary)
 
+        # Audit 2026-04-30: emit property-aware probes when a property
+        # manifest exists for this course. The pre-fix holdout produced
+        # zero probes carrying any of the 6 declared RDF/SHACL surface
+        # forms (`sh:datatype`, `sh:NodeShape`, etc.), so the
+        # `min_per_property_accuracy` critical gate silently SKIPped on
+        # every run. Per-property probes are positive ("Does the chunk
+        # use <surface_form>?"), constructed from chunks that actually
+        # contain each form so ground truth is "yes" by construction.
+        property_probes = self._build_property_probes(label_resolver)
+
         payload: Dict[str, Any] = {
             "course_slug": self.course_path.name,
             "seed": self.seed,
@@ -197,6 +218,7 @@ class HoldoutBuilder:
             "withheld_edges": [_withheld_payload(e) for e in withheld],
             "probes": probes,
             "negative_probes": negative_probes,
+            "property_probes": property_probes,
         }
 
         # Hash the canonicalised payload (without the hash field) so
@@ -296,6 +318,7 @@ class HoldoutBuilder:
     def _build_probes(
         withheld: List[Dict[str, Any]],
         all_edges: Optional[List[Dict[str, Any]]] = None,
+        label_resolver: Optional["ChunkLabelResolver"] = None,
     ) -> List[Dict[str, Any]]:
         """Wave 105: derive prompt-shaped probes from withheld edges.
 
@@ -347,9 +370,22 @@ class HoldoutBuilder:
             gt_chunk_ids = list(gt_chunk_index.get((tgt, rel), []))
             if gt_chunk and gt_chunk not in gt_chunk_ids:
                 gt_chunk_ids.insert(0, gt_chunk)
+            # Audit 2026-04-30 fix: substitute chunk-IDs with human
+            # labels so the model isn't asked to reason about raw
+            # `shacl_551_chunk_NNNNN` literals.
+            src_label = (
+                label_resolver.scrub(src)
+                if label_resolver is not None and isinstance(src, str)
+                else src
+            )
+            tgt_label = (
+                label_resolver.scrub(tgt)
+                if label_resolver is not None and isinstance(tgt, str)
+                else tgt
+            )
             prompt = (
                 f"Does the relation '{rel}' hold between "
-                f"{src!r} and {tgt!r}?"
+                f"{src_label!r} and {tgt_label!r}?"
             )
             out.append({
                 "probe_id": f"holdout-{i:04d}",
@@ -359,6 +395,86 @@ class HoldoutBuilder:
                 "edge_type": rel,
             })
         return out
+
+    def _build_property_probes(
+        self,
+        label_resolver: "ChunkLabelResolver",
+        max_per_property: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """Audit 2026-04-30 fix: emit per-property holdout probes so
+        :class:`PerPropertyEvaluator` actually has probes to score.
+
+        For each declared property in the course's property manifest,
+        find chunks whose ``text`` contains the property's surface form
+        and emit a positive probe asking whether the chunk uses the
+        form. The ground-truth answer is "yes" by construction (we only
+        sample chunks where the form is present).
+
+        Returns an empty list when:
+          * no property manifest exists for this course (legacy course
+            or pre-Wave-109 corpus), OR
+          * no chunks contain any declared surface form (impossible in
+            principle if synthesis ran cleanly, but possible if the
+            corpus is mid-build).
+        """
+        try:
+            from lib.ontology.property_manifest import load_property_manifest
+            manifest = load_property_manifest(self.course_path.name)
+        except (FileNotFoundError, ImportError):
+            return []
+
+        chunks_path = self.course_path / "corpus" / "chunks.jsonl"
+        if not chunks_path.exists():
+            return []
+
+        chunk_records: List[Dict[str, Any]] = []
+        try:
+            with open(chunks_path, "r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        chunk_records.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        continue
+        except OSError:
+            return []
+
+        rng = random.Random(self.seed)
+        probes: List[Dict[str, Any]] = []
+        for prop in manifest.properties:
+            matching_chunks: List[Dict[str, Any]] = []
+            for record in chunk_records:
+                text = record.get("text") or ""
+                if prop.matches(text):
+                    matching_chunks.append(record)
+            if not matching_chunks:
+                continue
+            rng.shuffle(matching_chunks)
+            for record in matching_chunks[:max_per_property]:
+                chunk_id = record.get("id") or ""
+                label = label_resolver.label_for(chunk_id)
+                # Build a positive probe asking whether the chunk uses
+                # the surface form. The form appears in the prompt so
+                # PerPropertyEvaluator's filter catches it; the ground
+                # truth is affirmative since the chunk DOES contain the
+                # form. The classifier scores affirm responses correct.
+                prompt = (
+                    f"In the section on {label}, is `{prop.curie}` "
+                    f"used? Answer yes or no."
+                )
+                probes.append({
+                    "probe_id": f"property-{prop.id}-{len(probes):04d}",
+                    "property_id": prop.id,
+                    "property_curie": prop.curie,
+                    "surface_form": prop.curie,
+                    "ground_truth_chunk_id": chunk_id,
+                    "expected_response": "affirm",
+                    "prompt": prompt,
+                    "probe_text": prompt,
+                })
+        return probes
 
     def _sample_negative_probes(
         self,

@@ -174,6 +174,170 @@ def test_probes_field_emitted_with_canonical_shape(tmp_path):
     assert len(ids) == len(set(ids))
 
 
+def test_holdout_emits_property_probes_when_manifest_present(tmp_path):
+    """Audit 2026-04-30 fix: when a course has a property manifest and
+    chunks containing the declared surface forms, holdout_split.json
+    must emit a ``property_probes`` array with one or more probes per
+    declared property. This unblocks PerPropertyEvaluator from the
+    silent-skip path that produced all-null per_property_accuracy on
+    the cc07cc76 run.
+
+    Asserts coverage for ALL six rdf-shacl manifest properties, every
+    probe carries the canonical shape, probe IDs are unique, and every
+    probe's surface form appears in the prompt text (so the matching
+    surface in PerPropertyEvaluator stays consistent even on the legacy
+    fallback path)."""
+    course = _build_synthetic_course(tmp_path, n_prereq=30, n_teaches=20)
+    # Use the rdf-shacl family slug so load_property_manifest finds
+    # the existing fixture under schemas/training/.
+    rdf_course = tmp_path / "rdf-shacl-test-1"
+    course.rename(rdf_course)
+    # Synthetic chunks covering ALL SIX declared RDF/SHACL surface forms.
+    (rdf_course / "corpus").mkdir(parents=True, exist_ok=True)
+    chunks = [
+        {
+            "id": "chunk_00001",
+            "summary": "Constraining datatypes",
+            "text": "We use sh:datatype to require xsd:string values.",
+        },
+        {
+            "id": "chunk_00002",
+            "summary": "Constraining classes",
+            "text": "Use sh:class to constrain the class of a property's object.",
+        },
+        {
+            "id": "chunk_00003",
+            "summary": "Defining node shapes",
+            "text": "An sh:NodeShape declares structural constraints.",
+        },
+        {
+            "id": "chunk_00004",
+            "summary": "Property shape constraints",
+            "text": "An sh:PropertyShape attaches constraints to a property.",
+        },
+        {
+            "id": "chunk_00005",
+            "summary": "Class hierarchies",
+            "text": "Use rdfs:subClassOf to declare class hierarchies.",
+        },
+        {
+            "id": "chunk_00006",
+            "summary": "Asserting identity",
+            "text": "owl:sameAs asserts that two URIs name the same thing.",
+        },
+    ]
+    with (rdf_course / "corpus" / "chunks.jsonl").open("w", encoding="utf-8") as fh:
+        for c in chunks:
+            fh.write(json.dumps(c) + "\n")
+
+    HoldoutBuilder(rdf_course, holdout_pct=0.1, seed=42).build()
+    split = load_holdout_split(rdf_course / "eval" / "holdout_split.json")
+    assert "property_probes" in split
+    property_probes = split["property_probes"]
+    # All six manifest properties produce at least one probe.
+    expected_property_ids = {
+        "sh_datatype", "sh_class", "sh_nodeshape",
+        "sh_propertyshape", "rdfs_subclassof", "owl_sameas",
+    }
+    covered_properties = {p["property_id"] for p in property_probes}
+    missing = expected_property_ids - covered_properties
+    assert not missing, (
+        f"property_probes missing coverage for: {sorted(missing)}; "
+        f"got: {sorted(covered_properties)}"
+    )
+    # Every probe carries the canonical shape.
+    for p in property_probes:
+        assert "probe_id" in p
+        assert "property_id" in p
+        assert "prompt" in p
+        assert "probe_text" in p
+        assert "ground_truth_chunk_id" in p
+        assert "surface_form" in p
+        assert "expected_response" in p
+    # Probe IDs are unique.
+    probe_ids = [p["probe_id"] for p in property_probes]
+    assert len(probe_ids) == len(set(probe_ids))
+    # Each probe's surface form appears in its prompt text — this is
+    # what the PerPropertyEvaluator's filter relies on for the fallback
+    # path through `withheld_edges`.
+    for p in property_probes:
+        assert p["surface_form"] in p["prompt"], (
+            f"probe {p['probe_id']} doesn't contain its surface form "
+            f"{p['surface_form']!r} in prompt: {p['prompt']!r}"
+        )
+
+
+def test_holdout_property_probes_empty_without_manifest(tmp_path):
+    """No manifest for the synthetic-101 family → empty property_probes
+    array (graceful fallback, never crashes)."""
+    course = _build_synthetic_course(tmp_path)
+    HoldoutBuilder(course, holdout_pct=0.1, seed=42).build()
+    split = load_holdout_split(course / "eval" / "holdout_split.json")
+    assert split.get("property_probes") == []
+
+
+@pytest.mark.parametrize("chunk_id_template", [
+    "chunk_{i:05d}",                  # canonical form
+    "rdf_shacl_551_chunk_{i:05d}",    # corpus-prefixed form (production)
+    "test_corpus_chunk_{i}",           # arbitrary-prefix form
+])
+def test_probes_do_not_leak_chunk_id_literals(tmp_path, chunk_id_template):
+    """Audit 2026-04-30 fix: chunk-anchored probes must substitute the
+    chunk's label (or a generic placeholder) for the raw chunk-ID.
+    Without this, the model echoes the ID into prose answers (1441
+    chunk-id token matches in the cc07cc76 eval).
+
+    Parametrized over BOTH chunk-ID forms in production use:
+      * canonical ``chunk_NNNNN`` (test fixtures, legacy corpora)
+      * corpus-prefixed ``<corpus>_chunk_NNNNN`` (the rdf-shacl-551-2
+        production corpus, where the bug was actually observed)
+      * arbitrary-prefix form (defensive — covers any prefix shape).
+    """
+    import re as _re
+
+    # Build a course whose chunks use the parametrized ID form.
+    course = tmp_path / "course-101"
+    (course / "graph").mkdir(parents=True)
+    edges = []
+    for i in range(20):
+        edges.append({
+            "source": chunk_id_template.format(i=i),
+            "target": f"concept_{i}",
+            "relation_type": "teaches",
+        })
+    for i in range(20):
+        edges.append({
+            "source": chunk_id_template.format(i=i),
+            "target": "bloom:remember",
+            "relation_type": "at_bloom_level",
+        })
+    (course / "graph" / "pedagogy_graph.json").write_text(
+        json.dumps({"nodes": [], "edges": edges}), encoding="utf-8",
+    )
+    # Add a chunks.jsonl so the resolver has labels to return.
+    (course / "corpus").mkdir(parents=True, exist_ok=True)
+    with (course / "corpus" / "chunks.jsonl").open("w", encoding="utf-8") as fh:
+        for i in range(20):
+            fh.write(json.dumps({
+                "id": chunk_id_template.format(i=i),
+                "summary": f"Topic number {i}",
+                "text": f"Content about topic {i}.",
+            }) + "\n")
+    HoldoutBuilder(course, holdout_pct=0.5, seed=42).build()
+    split = load_holdout_split(course / "eval" / "holdout_split.json")
+    # Match BOTH the canonical and corpus-prefixed forms.
+    pattern = _re.compile(r"\b\w*chunk_\d+\b")
+    leaked = []
+    for probe in split.get("probes", []):
+        if pattern.search(probe["prompt"]):
+            leaked.append(probe["prompt"])
+    assert not leaked, (
+        f"{len(leaked)} probe(s) leaked chunk-ID literal "
+        f"(template={chunk_id_template!r}). Sample leaks: "
+        f"{leaked[:3]}"
+    )
+
+
 def test_probes_ground_truth_chunk_id_set_for_chunk_anchored_edges(tmp_path):
     """Wave 105: probes derived from chunk-anchored edges (source
     starts with 'chunk_') must carry ``ground_truth_chunk_id``;
