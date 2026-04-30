@@ -61,6 +61,7 @@
     "decision_type": {
       "type": "string",
       "enum": [
+        "abstention_generation",
         "accessibility_measures",
         "alignment_check",
         "alt_text_generation",
@@ -115,6 +116,7 @@
         "result_fusion",
         "retrieval_ranking",
         "revision_decision",
+        "schema_translation_generation",
         "source_interpretation",
         "source_selection",
         "source_usage",

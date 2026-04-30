@@ -112,6 +112,13 @@ class SynthesisStats:
     # Audit 2026-04-30: KG-metadata + violation-detection generators.
     kg_metadata_pairs_emitted: int = 0
     violation_pairs_emitted: int = 0
+    # Wave 124 (audit 2026-04-30 follow-up): abstention +
+    # schema-translation generators. cc07cc76 hallucination_rate=0.63
+    # was driven by zero abstention pairs + zero schema-to-English
+    # bridge pairs; counters here surface the cohort sizes for the
+    # post-run pilot report and the audit script.
+    abstention_pairs_emitted: int = 0
+    schema_translation_pairs_emitted: int = 0
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -671,6 +678,10 @@ def run_synthesis(
     kg_metadata_max_pairs: int = 2000,
     with_violation_detection: bool = False,
     violation_shapes_glob: Optional[str] = None,
+    with_abstention: bool = False,
+    abstention_max_pairs: int = 1000,
+    with_schema_translation: bool = False,
+    schema_translation_max_pairs: int = 50,
 ) -> SynthesisStats:
     """Run the full synthesis stage for one course output directory.
 
@@ -1702,6 +1713,86 @@ def run_synthesis(
                     vio_stats.oracle_disagreements,
                 )
 
+        # Wave 124 (audit 2026-04-30 follow-up): append abstention
+        # probes ('the source does not establish X'). Closes the
+        # cc07cc76 hallucination_rate=0.63 — the eval harness probes
+        # for absent edges and the corpus must teach the model to
+        # abstain rather than hallucinate yes-answers.
+        if with_abstention:
+            from Trainforge.generators.abstention_generator import (
+                generate_abstention_pairs,
+            )
+            ped_path = _resolve_pedagogy_graph_path(
+                corpus_dir, pedagogy_graph_path,
+            )
+            if ped_path is None:
+                logger.warning(
+                    "with_abstention=True but no pedagogy_graph.json "
+                    "on disk; skipping abstention generator.",
+                )
+            else:
+                ped_payload = json.loads(
+                    ped_path.read_text(encoding="utf-8"),
+                )
+                ab_pairs, ab_stats = generate_abstention_pairs(
+                    ped_payload,
+                    capture=capture,
+                    max_pairs=int(abstention_max_pairs),
+                    seed=seed,
+                )
+                instruction_records.extend(ab_pairs)
+                stats.abstention_pairs_emitted = ab_stats.pairs_emitted
+                stats.instruction_pairs_emitted += ab_stats.pairs_emitted
+                logger.info(
+                    "Wave 124: appended %d abstention pairs (chunks_with_silent=%d, "
+                    "skipped_no_concepts=%d, capped=%s) from %s",
+                    ab_stats.pairs_emitted,
+                    ab_stats.chunks_with_silent,
+                    ab_stats.chunks_skipped_no_concepts,
+                    ab_stats.capped_at_max_pairs,
+                    ped_path,
+                )
+
+        # Wave 124 (audit 2026-04-30 follow-up): append schema-to-
+        # English bridge pairs. Walks the property manifest's surface
+        # forms (sh:datatype, rdfs:subClassOf, ...) and emits one
+        # definition + one usage pair per CURIE. Closes the schema-
+        # to-English gap behind faithfulness=0.37.
+        if with_schema_translation:
+            from Trainforge.generators.schema_translation_generator import (
+                generate_schema_translation_pairs,
+            )
+            manifest_for_st = pilot_manifest
+            if manifest_for_st is None:
+                # pilot_manifest is loaded for the property-coverage
+                # surface earlier. If no manifest is on disk for this
+                # course, schema-translation has nothing to bridge.
+                logger.warning(
+                    "with_schema_translation=True but no property "
+                    "manifest is on disk for this course; skipping "
+                    "schema-translation generator.",
+                )
+            else:
+                st_pairs, st_stats = generate_schema_translation_pairs(
+                    manifest_for_st,
+                    capture=capture,
+                    max_pairs=int(schema_translation_max_pairs),
+                    seed=seed,
+                )
+                instruction_records.extend(st_pairs)
+                stats.schema_translation_pairs_emitted = st_stats.pairs_emitted
+                stats.instruction_pairs_emitted += st_stats.pairs_emitted
+                logger.info(
+                    "Wave 124: appended %d schema-translation pairs "
+                    "(surface_forms_used=%d, skipped_no_definition=%d, "
+                    "capped=%s) from manifest_family=%s",
+                    st_stats.pairs_emitted,
+                    st_stats.surface_forms_used,
+                    st_stats.surface_forms_skipped_no_definition,
+                    st_stats.capped_at_max_pairs,
+                    manifest_for_st.family,
+                )
+
         _write_jsonl(instruction_out, instruction_records)
         _write_jsonl(preference_out, preference_records)
         _update_dataset_config(dataset_config_path, stats)
@@ -1791,6 +1882,10 @@ def run_synthesis_from_libv2(
     kg_metadata_max_pairs: int = 2000,
     with_violation_detection: bool = False,
     violation_shapes_glob: Optional[str] = None,
+    with_abstention: bool = False,
+    abstention_max_pairs: int = 1000,
+    with_schema_translation: bool = False,
+    schema_translation_max_pairs: int = 50,
 ) -> SynthesisStats:
     """Run synthesis directly against a LibV2 course archive.
 
@@ -1853,6 +1948,10 @@ def run_synthesis_from_libv2(
         kg_metadata_max_pairs=kg_metadata_max_pairs,
         with_violation_detection=with_violation_detection,
         violation_shapes_glob=violation_shapes_glob,
+        with_abstention=with_abstention,
+        abstention_max_pairs=abstention_max_pairs,
+        with_schema_translation=with_schema_translation,
+        schema_translation_max_pairs=schema_translation_max_pairs,
     )
 
 
@@ -2156,6 +2255,72 @@ def build_parser() -> argparse.ArgumentParser:
             "relative to the corpus_dir; absolute paths are honoured."
         ),
     )
+    # Wave 124 (audit 2026-04-30 follow-up): abstention +
+    # schema-translation generators. Both are off by default, parallel
+    # to --with-kg-metadata / --with-violation-detection. Closes the
+    # cc07cc76 hallucination_rate=0.63 + zero schema-to-English bridge
+    # gaps the eval harness probes for.
+    p.add_argument(
+        "--with-abstention",
+        dest="with_abstention",
+        action="store_true",
+        default=False,
+        help=(
+            "Wave 124 fix: append abstention probes ('the source does "
+            "not establish X') to instruction_pairs.jsonl. Reads "
+            "pedagogy_graph.json, samples concepts the chunk does NOT "
+            "address, and emits grounded 'no, no evidence' completions. "
+            "Closes the cc07cc76 hallucination_rate=0.63 regression."
+        ),
+    )
+    p.add_argument(
+        "--no-abstention",
+        dest="with_abstention",
+        action="store_false",
+        help="Explicitly disable the abstention generator (default).",
+    )
+    p.add_argument(
+        "--abstention-max-pairs",
+        type=int,
+        default=1000,
+        help=(
+            "Cap on abstention pair emissions (default: 1000). "
+            "Distributed across chunks so a chunk-rich graph "
+            "doesn't crowd the cohort onto one chunk's silent set."
+        ),
+    )
+    p.add_argument(
+        "--with-schema-translation",
+        dest="with_schema_translation",
+        action="store_true",
+        default=False,
+        help=(
+            "Wave 124 fix: append schema-to-English bridge pairs to "
+            "instruction_pairs.jsonl. Walks the property manifest's "
+            "surface forms (e.g. sh:datatype, rdfs:subClassOf) and "
+            "emits one definition pair + one usage pair per CURIE from "
+            "a hand-curated table. Closes the schema-to-English bridge "
+            "gap behind the cc07cc76 adapter's faithfulness=0.37."
+        ),
+    )
+    p.add_argument(
+        "--no-schema-translation",
+        dest="with_schema_translation",
+        action="store_false",
+        help=(
+            "Explicitly disable the schema-translation generator (default)."
+        ),
+    )
+    p.add_argument(
+        "--schema-translation-max-pairs",
+        type=int,
+        default=50,
+        help=(
+            "Cap on schema-translation pair emissions (default: 50). "
+            "12 base pairs (6 surface forms * 2 variants) leaves room "
+            "for future variant expansion under the same cap."
+        ),
+    )
     return p
 
 
@@ -2201,6 +2366,15 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
         getattr(args, "with_violation_detection", False)
     )
     violation_shapes_glob = getattr(args, "violation_shapes_glob", None)
+    # Wave 124: abstention + schema-translation generators.
+    with_abstention = bool(getattr(args, "with_abstention", False))
+    abstention_max_pairs = int(getattr(args, "abstention_max_pairs", 1000))
+    with_schema_translation = bool(
+        getattr(args, "with_schema_translation", False)
+    )
+    schema_translation_max_pairs = int(
+        getattr(args, "schema_translation_max_pairs", 50)
+    )
 
     if getattr(args, "slug", None):
         stats = run_synthesis_from_libv2(
@@ -2224,6 +2398,10 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             kg_metadata_max_pairs=kg_metadata_max_pairs,
             with_violation_detection=with_violation_detection,
             violation_shapes_glob=violation_shapes_glob,
+            with_abstention=with_abstention,
+            abstention_max_pairs=abstention_max_pairs,
+            with_schema_translation=with_schema_translation,
+            schema_translation_max_pairs=schema_translation_max_pairs,
         )
     else:
         if not args.course_code:
@@ -2253,6 +2431,10 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             kg_metadata_max_pairs=kg_metadata_max_pairs,
             with_violation_detection=with_violation_detection,
             violation_shapes_glob=violation_shapes_glob,
+            with_abstention=with_abstention,
+            abstention_max_pairs=abstention_max_pairs,
+            with_schema_translation=with_schema_translation,
+            schema_translation_max_pairs=schema_translation_max_pairs,
         )
 
     print("\n[Synthesis] Complete.")

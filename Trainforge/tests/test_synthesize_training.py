@@ -1063,3 +1063,152 @@ def test_run_synthesis_dedupes_duplicate_preference_prompts(
     assert stats.rejected_reasons.get("preference:duplicate_prompt", 0) >= 1, (
         f"rejected_reasons missing duplicate_prompt: {stats.rejected_reasons!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Wave 124: abstention + schema-translation generator wiring
+# ---------------------------------------------------------------------------
+
+
+def _write_minimal_pedagogy_graph(course_dir: Path) -> Path:
+    """Drop a small pedagogy_graph.json next to the course corpus.
+
+    The fixture's chunks address concept_load (chunk_mc_01) and
+    concept_udl (chunk_mc_02). concept_bloom + concept_silent are
+    "silent" relative to chunk_mc_01 / chunk_mc_02, giving the
+    abstention generator at least one silent concept per chunk.
+    """
+    graph_dir = course_dir / "graph"
+    graph_dir.mkdir(parents=True, exist_ok=True)
+    graph_path = graph_dir / "pedagogy_graph.json"
+    payload = {
+        "nodes": [
+            {"id": "chunk_mc_01", "class": "Chunk"},
+            {"id": "chunk_mc_02", "class": "Chunk"},
+            {"id": "concept_load", "class": "Concept", "label": "Cognitive Load"},
+            {"id": "concept_udl", "class": "Concept", "label": "UDL"},
+            {"id": "concept_bloom", "class": "Concept", "label": "Bloom's"},
+            {"id": "concept_silent", "class": "Concept", "label": "Silent topic"},
+        ],
+        "edges": [
+            {
+                "source": "chunk_mc_01",
+                "target": "concept_load",
+                "relation_type": "assesses",
+            },
+            {
+                "source": "chunk_mc_02",
+                "target": "concept_udl",
+                "relation_type": "exemplifies",
+            },
+        ],
+    }
+    graph_path.write_text(
+        __import__("json").dumps(payload, indent=2), encoding="utf-8",
+    )
+    return graph_path
+
+
+def test_with_abstention_flag_appends_pairs(tmp_path: Path) -> None:
+    """``--with-abstention`` adds abstention_probe pairs to the
+    instruction_pairs.jsonl artifact and the stats counter goes up."""
+    course_dir = _make_working_copy(tmp_path)
+    _write_minimal_pedagogy_graph(course_dir)
+
+    stats = run_synthesis(
+        corpus_dir=course_dir,
+        course_code="MINI_TRAINING_101",
+        provider="mock",
+        seed=11,
+        pilot_report_every=0,
+        curriculum_from_graph=False,
+        with_abstention=True,
+        abstention_max_pairs=10,
+    )
+
+    assert stats.abstention_pairs_emitted > 0, (
+        "abstention_pairs_emitted should reflect generator output"
+    )
+
+    inst_path = course_dir / "training_specs" / "instruction_pairs.jsonl"
+    assert inst_path.exists()
+    import json as _json
+    found_abstention = False
+    for line in inst_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        rec = _json.loads(line)
+        if rec.get("content_type") == "abstention_probe":
+            found_abstention = True
+            assert rec.get("template_id") == "abstention.no_edge"
+            assert rec.get("expected_response") == "No."
+            break
+    assert found_abstention, (
+        "instruction_pairs.jsonl should contain at least one "
+        "abstention_probe pair"
+    )
+
+
+def test_with_schema_translation_flag_appends_pairs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--with-schema-translation`` adds schema_translation pairs to
+    the instruction_pairs.jsonl artifact and the stats counter goes up."""
+    course_dir = _make_working_copy(tmp_path)
+
+    # Inject a manifest whose CURIEs match the hand-curated table so
+    # the generator emits pairs (the synthetic 'ex:load' from
+    # _synthetic_manifest would be skipped with a warning).
+    manifest = PropertyManifest(
+        family="rdf_shacl",
+        properties=[
+            PropertyEntry(
+                id="sh_datatype",
+                uri="http://www.w3.org/ns/shacl#datatype",
+                curie="sh:datatype",
+                label="SHACL datatype constraint",
+                surface_forms=["sh:datatype"],
+                min_pairs=2,
+            ),
+            PropertyEntry(
+                id="rdfs_subclassof",
+                uri="http://www.w3.org/2000/01/rdf-schema#subClassOf",
+                curie="rdfs:subClassOf",
+                label="RDFS subclass-of",
+                surface_forms=["rdfs:subClassOf"],
+                min_pairs=2,
+            ),
+        ],
+    )
+    monkeypatch.setattr(
+        "lib.ontology.property_manifest.load_property_manifest",
+        lambda *a, **kw: manifest,
+    )
+
+    stats = run_synthesis(
+        corpus_dir=course_dir,
+        course_code="rdf-shacl-551-2",
+        provider="mock",
+        seed=11,
+        pilot_report_every=0,
+        curriculum_from_graph=False,
+        with_schema_translation=True,
+        schema_translation_max_pairs=20,
+    )
+
+    # 2 surface forms * 2 variants (definition + usage) = 4 pairs.
+    assert stats.schema_translation_pairs_emitted == 4
+
+    inst_path = course_dir / "training_specs" / "instruction_pairs.jsonl"
+    assert inst_path.exists()
+    import json as _json
+    seen_curies: set = set()
+    for line in inst_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        rec = _json.loads(line)
+        if rec.get("content_type") == "schema_translation":
+            seen_curies.add(rec["concept_tags"][0])
+    assert seen_curies == {"sh:datatype", "rdfs:subClassOf"}
