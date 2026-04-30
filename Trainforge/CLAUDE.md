@@ -341,10 +341,16 @@ ed4all run trainforge_train --course-code rdf-shacl-551-2 --base-model qwen2.5-1
 `--dry-run` produces a runner plan JSON dump without invoking the trainer (no GPU, no network). All non-dry-run modes require:
 
 ```bash
-pip install ed4all[training]    # pulls torch>=2.1, transformers>=4.40, trl>=0.8, peft>=0.10, accelerate>=0.30, bitsandbytes>=0.43, datasets>=2.18, safetensors>=0.4
+pip install ed4all[training]    # pulls torch>=2.1, transformers>=4.49,<4.50, trl>=0.12,<0.13, peft>=0.10, accelerate>=1.0,<2.0, bitsandbytes>=0.45,<0.47, datasets>=2.18, safetensors>=0.4, lm-eval>=0.4 (gated by LM_EVAL_ENABLED)
 ```
 
 The `[training]` extra is **not** part of the default install — CPU-only dev installs (DART/Courseforge/Trainforge synthesis) stay slim.
+
+#### Dependency contract
+
+The `[training]` extra is a tightly-coupled set: `transformers`, `accelerate`, and `bitsandbytes` co-evolve and only work in specific compatible bands. Working band: `transformers>=4.49 + accelerate>=1.0 + bitsandbytes>=0.45,<0.47`. Older `transformers` paired with `accelerate>=1.0` trips an `AttributeError: 'frozenset' object has no attribute 'discard'` during model load (fix landed in transformers 4.49+); `bitsandbytes<0.45` imports the deprecated `triton.ops` namespace removed in triton 3.0+ and ships a fragile CUDA self-test that raises `CUDA is required but not available for bitsandbytes`.
+
+Pin source of truth is `pyproject.toml::[project.optional-dependencies].training` — the comment block above that array documents the per-pin rationale. If you hit either error during an `AdapterCallable` model load, run `pip install -e .[training]` from the project root to refresh the resolved set. `Trainforge/eval/adapter_callable.py` and `Trainforge/eval/rag_callable.py` translate the frozenset error into an actionable `RuntimeError` pointing at this fix.
 
 ### Supported base models
 
@@ -405,6 +411,8 @@ The `[training]` extra is **not** part of the default install — CPU-only dev i
 
 Caveat: with the default `1`, only variant `0` is ever emitted, so `requires_source_citation` is always `False` and no citations are appended. Only `--instruction-variants-per-chunk=3` produces the citation-trained variant. The variant logic is mock-agnostic — surface forms still anchor on whatever `template_id` the mock factory selected.
 
+**Audit-anchored generators (2026-04-30).** `--with-kg-metadata` (cap `--kg-metadata-max-pairs N`, default 2000) and `--with-violation-detection` (`--violation-detection-shapes-glob PATH` for course-supplied TTL fixtures, defaults to the built-in 6-shape catalog) append the `Trainforge/generators/kg_metadata_generator.py` and `Trainforge/generators/violation_generator.py` outputs to `instruction_pairs.jsonl`. Both are off by default; flip on to teach the adapter the literal KG-membership facts (mirroring `faithfulness._RELATION_TEMPLATES`) and pyshacl-oracle-verified `(graph, shape, valid?, reason)` tuples that the eval harness probes for. Closes the cc07cc76 audit's zero-KG-metadata-recall + zero-negative-grounding regressions.
+
 ### Eval — 5 generic layers × 3 corpus-aware tiers
 
 Eval lives in `Trainforge/eval/` and runs after training inside the runner. Two orthogonal axes:
@@ -430,6 +438,8 @@ Profiles select the active matrix: `Trainforge/eval/configs/rdf_shacl.yaml` (all
 - **`eval_progress.jsonl`** — written next to `eval_report.json`. `Trainforge/eval/slm_eval_harness.py::_EvalProgressTracker` emits `stage_start`, `model_call`, `stage_end`, `run_end` events around each of the 8 evaluator/invariant chains. Lets a long-running adapter eval be monitored from another terminal without touching the harness.
 - **Per-course `eval_config.yaml`** — `LibV2/courses/<slug>/eval/eval_config.yaml` (`Trainforge/eval/eval_config.py::load_eval_config`) drives `AdapterCallable` generation parameters (`max_new_tokens`, `temperature`, `top_p`, `seed`, `revision`). The runner passes them explicitly so eval generation is deterministic across trainer invocations on different nodes.
 - **`Trainforge/eval/chunk_ids.py`** — canonical `is_chunk_id` / `normalize_chunk_id` / `chunk_ids_match` helpers. The eval harness, `source_match.py`, and `ablation_runner.py` use them so short (`chunk_00270`) and full (`rdf_shacl_551_chunk_00270`) corpus IDs compare equal. Closes the previous mismatch where `source_match` scored 0 on full-corpus IDs that pointed at the right chunk.
+
+**Eval smoke mode (2026-04-30).** `python -m Trainforge.eval.slm_eval_harness --smoke ...` runs the harness end-to-end against the real adapter at N=3 prompts/evaluator (faithfulness, negative_grounding, source_match, per_property), forces `with_ablation=False` regardless of the operator-passed flag, and writes to `<adapter>/eval/smoke_eval_report.json` (sidecar — never overwrites the canonical `eval_report.json`). The emitted report carries `smoke_mode: true` at the top level; `EvalGatingValidator` refuses to gate any report carrying that field (`EVAL_REPORT_IS_SMOKE` critical), and `hf_model_index.py` consumers should refuse to render it. Mutually exclusive with `--stub` (the combination is meaningless: `--stub` uses a fake callable, `--smoke` uses the real adapter at small N). Wall-time target on a 3070 with the cc07cc76 adapter: 2-5 minutes — versus 45-60 minutes for the full run. Use to verify the eval pipeline / CLI args before paying for a full run.
 
 **Eval truth-telling (Wave 108 / Phase B).** Five gameable-eval holes from the Wave 92 ship were closed:
 
