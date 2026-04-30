@@ -58,13 +58,45 @@ dev = [
 # manually downgraded to trl==0.12.2 + transformers==4.46.3 +
 # tokenizers==0.20.3 to make training work; this pin makes that
 # combination the default resolved set for ``ed4all[training]``.
+#
+# Audit 2026-04-30 (Phase B): three pins co-evolved to resolve a
+# four-way constraint conflict. The combinations that DON'T work:
+#
+#   accelerate>=1.0 + transformers<4.49  → AttributeError: 'frozenset'
+#                                          has no attribute 'discard'
+#                                          (accelerate calls .discard()
+#                                          on a frozenset attr that
+#                                          older transformers shipped
+#                                          as immutable; fix landed in
+#                                          transformers 4.49+).
+#
+#   bitsandbytes<0.45                    → fragile CUDA self-test
+#                                          (``CUDA is required but not
+#                                          available``) + imports the
+#                                          deprecated ``triton.ops``
+#                                          namespace removed in
+#                                          triton 3.0+.
+#
+#   bitsandbytes>=0.46 + accelerate<1.0  → bnb 0.46 hard-depends on
+#                                          accelerate>=1.0 so the
+#                                          resolver silently bumps
+#                                          accelerate to 1.x, which
+#                                          re-trips the frozenset bug
+#                                          unless transformers is also
+#                                          on 4.49+.
+#
+# Working band: transformers>=4.49 + accelerate>=1.0 + bnb>=0.45. trl
+# 0.12.x supports transformers 4.49, peft is unconstrained in this
+# band. The BitsAndBytesConfig shape this codebase uses (``nf4`` +
+# ``bnb_4bit_compute_dtype=torch.float16`` + double-quant) is fully
+# supported in 0.45+.
 training = [
     "torch>=2.1.0",
-    "transformers>=4.46.0,<4.50.0",
+    "transformers>=4.49.0,<4.50.0",
     "trl>=0.12,<0.13",
     "peft>=0.10.0,<1.0.0",
-    "accelerate>=0.30.0",
-    "bitsandbytes>=0.43.0",
+    "accelerate>=1.0.0,<2.0.0",
+    "bitsandbytes>=0.45.0,<0.47.0",
     "datasets>=2.18.0",
     "safetensors>=0.4.0",
     # Wave 101: optional generic-benchmark sanity floor via the
