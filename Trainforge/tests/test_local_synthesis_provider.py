@@ -343,12 +343,13 @@ def test_too_short_completion_retries_then_raises(monkeypatch):
 
 
 def test_too_short_prompt_retries_then_raises(monkeypatch):
-    """Wave 114: below-min prompt now triggers a length-retry. Local
-    floor is 25 chars (vs. Anthropic's 40); a 9-char prompt still
-    trips it. Three exhausted retries -> paraphrase_invalid_after_retry."""
+    """Wave 114 + Wave 122 follow-up: below-min prompt triggers a
+    length-retry. Local floor is now realigned to the schema's 40-char
+    PROMPT_MIN; a 9-char prompt trips it. Three exhausted retries ->
+    paraphrase_invalid_after_retry."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     paraphrased = json.dumps({
-        "prompt": "too short",  # below DEFAULT_LOCAL_KIND_BOUNDS prompt floor (25).
+        "prompt": "too short",  # below DEFAULT_LOCAL_KIND_BOUNDS prompt floor (40).
         "completion": (
             "Topic X anchors every later chapter; recall its formal "
             "definition before attempting application questions."
@@ -364,7 +365,7 @@ def test_too_short_prompt_retries_then_raises(monkeypatch):
         with pytest.raises(SynthesisProviderError) as excinfo:
             p.paraphrase_instruction(_instruction_draft(), _chunk())
     assert excinfo.value.code == "paraphrase_invalid_after_retry"
-    assert "prompt length 9 below minimum 25" in str(excinfo.value)
+    assert "prompt length 9 below minimum 40" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------
@@ -637,20 +638,26 @@ def test_decision_capture_fires_on_preference_call(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_local_provider_default_prompt_floor_is_25(monkeypatch):
-    """Wave 114: ``DEFAULT_LOCAL_KIND_BOUNDS`` exposes a 25-char prompt
-    floor (vs the Anthropic 40) so legitimately compressed paraphrases
-    out of a 7B-Q4 model don't trip the length floor. Constructor wires
-    the default into ``self._kind_bounds`` when no override is passed."""
+def test_local_provider_default_prompt_floor_matches_schema(monkeypatch):
+    """Wave 122 follow-up: ``DEFAULT_LOCAL_KIND_BOUNDS["prompt"]`` is
+    realigned to the schema floor (``PROMPT_MIN`` = 40) after the
+    14B-Q4 uncapped run on rdf-shacl-551-2 emitted 5/263 schema-invalid
+    short prompts the previous 25-char floor admitted. 7B-Q4 callers
+    that need a lower floor can still pass ``kind_bounds={"prompt":
+    (25, PROMPT_MAX), ...}`` to the constructor."""
     from Trainforge.generators._local_provider import (  # noqa: E402
         DEFAULT_LOCAL_KIND_BOUNDS,
     )
+    from Trainforge.generators._anthropic_provider import (  # noqa: E402
+        PROMPT_MIN,
+    )
 
-    assert DEFAULT_LOCAL_KIND_BOUNDS["prompt"] == (25, 400)
+    assert DEFAULT_LOCAL_KIND_BOUNDS["prompt"] == (PROMPT_MIN, 400)
+    assert PROMPT_MIN == 40  # canonical schema floor
 
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     provider = LocalSynthesisProvider()
-    assert provider._kind_bounds["prompt"] == (25, 400)
+    assert provider._kind_bounds["prompt"] == (40, 400)
     assert provider._kind_bounds["completion"] == (50, 600)
 
 
@@ -685,7 +692,7 @@ def test_local_provider_retries_on_short_field_then_succeeds(monkeypatch):
     accepted the second response and discarded the first."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     short_response = json.dumps({
-        "prompt": "short",  # 5 chars — far below the 25-char floor.
+        "prompt": "short",  # 5 chars — far below the 40-char floor.
         "completion": (
             "Topic X anchors every later chapter; recall its formal "
             "definition before attempting application questions."
@@ -712,7 +719,7 @@ def test_local_provider_retries_on_short_field_then_succeeds(monkeypatch):
 
     # Second response was accepted, first was discarded.
     assert result["prompt"] == long_prompt
-    assert len(result["prompt"]) >= 25
+    assert len(result["prompt"]) >= 40
     assert "shacl" in result["prompt"]
     assert result["provider"] == "local"
 
