@@ -166,12 +166,33 @@ class AdapterCallable:
             "AdapterCallable: loading base model %s in 4-bit on %s",
             base_model_repo, device,
         )
-        base_model = AutoModelForCausalLM.from_pretrained(
-            base_model_repo,
-            revision=revision,
-            quantization_config=bnb_config,
-            device_map=device,
-        )
+        try:
+            base_model = AutoModelForCausalLM.from_pretrained(
+                base_model_repo,
+                revision=revision,
+                quantization_config=bnb_config,
+                device_map=device,
+            )
+        except AttributeError as exc:
+            # Audit 2026-04-30 / Phase B remediation hint: catch the
+            # known accelerate>=1.0 × transformers<4.49 incompatibility
+            # (frozenset.discard) and translate it into an actionable
+            # error so the operator sees the fix command instead of a
+            # cryptic stack trace.
+            if "frozenset" in str(exc) and "discard" in str(exc):
+                raise RuntimeError(
+                    "AdapterCallable: model load hit the known "
+                    "accelerate>=1.0 × transformers<4.49 incompatibility "
+                    "(frozenset.discard). Fix: upgrade transformers to "
+                    "4.49+, which fixes the frozenset bug at the source. "
+                    "`pip install 'transformers>=4.49,<4.50' 'accelerate>=1.0,<2.0' "
+                    "'bitsandbytes>=0.45,<0.47'`. "
+                    "The pyproject.toml `[training]` extra now pins "
+                    "these bounds; rerun `pip install -e .[training]` "
+                    "from the project root to pick up the fix. "
+                    f"Original error: {exc}"
+                ) from exc
+            raise
         # Tokenizer: prefer the one saved alongside the adapter (TRL
         # writes the tokenizer in ``save_model()`` so the special-token
         # vocabulary matches). Fall back to the base repo when the

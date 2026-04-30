@@ -10,6 +10,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -139,3 +141,90 @@ def test_evaluate_emits_yes_rate(tmp_path) -> None:
     assert result["accuracy"] == 1.0
     assert "yes_rate" in result
     assert result["yes_rate"] == 1.0
+
+
+def test_format_probe_scrubs_chunk_id_via_label_resolver() -> None:
+    """Audit 2026-04-30 fix: when an edge's source is a chunk-ID
+    literal, the probe must carry the chunk's human-readable label,
+    not the raw `shacl_551_chunk_NNNNN` string. This is what zeroed
+    adapter+RAG faithfulness on the cc07cc76 run.
+    """
+    from Trainforge.eval.chunk_labels import ChunkLabelResolver
+    from Trainforge.eval.faithfulness import _format_probe
+
+    resolver = ChunkLabelResolver(labels={
+        "rdf_shacl_551_chunk_00270": "Validating SHACL property shapes",
+    })
+    edge = {
+        "source": "rdf_shacl_551_chunk_00270",
+        "target": "CO-18",
+        "relation_type": "assesses",
+    }
+    probe = _format_probe(edge, resolver)
+    assert "rdf_shacl_551_chunk_00270" not in probe
+    assert "Validating SHACL property shapes" in probe
+
+
+def test_relation_template_path_scrubs_chunk_id_with_resolver_label() -> None:
+    """Audit 2026-04-30 Fix 3 explicit regression: a `teaches` edge
+    whose source is a chunk-ID literal must render with the resolver's
+    label, not the raw `<corpus>_chunk_NNNNN` string. The
+    `_RELATION_TEMPLATES` dict has a `teaches` entry, so this exercises
+    the relation-template branch (not the generic fallback)."""
+    from Trainforge.eval.chunk_labels import ChunkLabelResolver
+    from Trainforge.eval.faithfulness import _RELATION_TEMPLATES, _format_probe
+
+    assert "teaches" in _RELATION_TEMPLATES, (
+        "regression test guards the relation-template path; if "
+        "`teaches` is removed from _RELATION_TEMPLATES, update this "
+        "test to use a still-supported chunk-source relation."
+    )
+
+    resolver = ChunkLabelResolver(labels={
+        "rdf_shacl_551_chunk_00270": "the chunk teaching SHACL property paths",
+    })
+    edge = {
+        "source": "rdf_shacl_551_chunk_00270",
+        "target": "concept:property_path",
+        "relation_type": "teaches",
+    }
+    probe = _format_probe(edge, resolver)
+    assert "the chunk teaching SHACL property paths" in probe
+    assert "rdf_shacl_551_chunk_00270" not in probe
+    # Sanity: the relation-template wording is preserved.
+    assert "teach" in probe
+
+
+@pytest.mark.parametrize("source,target,relation_type", [
+    ("CO-18", "TO-01", "supports_outcome"),  # canonical course/terminal IDs
+    ("concept_alpha", "concept_beta", "prerequisite_of"),  # raw concept IDs
+    ("chunk_001", "bloom:remember", "at_bloom_level"),  # bloom-level target
+    ("mc_a1b2c3d4e5f6789a", "concept_x", "interferes_with"),  # misconception ID
+    ("CO-18", "concept_alpha", "made_up_relation"),  # generic-fallback template
+])
+def test_format_probe_passes_through_non_chunk_sources(
+    source, target, relation_type,
+) -> None:
+    """Non-chunk node classes — concept IDs (CO-NN, TO-NN, concept_X),
+    bloom-level targets (bloom:remember), and misconception IDs
+    (mc_<16hex>) — must flow through ``_format_probe`` unmodified. Only
+    raw chunk-ID literals (``chunk_NNN``, ``<corpus>_chunk_NNN``) get
+    scrubbed by the resolver. Also covers the generic-template fallback
+    path so an unknown relation_type doesn't silently mangle non-chunk
+    node IDs either.
+    """
+    from Trainforge.eval.chunk_labels import ChunkLabelResolver
+    from Trainforge.eval.faithfulness import _format_probe
+
+    resolver = ChunkLabelResolver(labels={})
+    edge = {
+        "source": source,
+        "target": target,
+        "relation_type": relation_type,
+    }
+    probe = _format_probe(edge, resolver)
+    # The non-chunk source/target appear verbatim in the rendered probe.
+    if not resolver.is_chunk_id(source):
+        assert source in probe, f"source {source!r} was unexpectedly scrubbed: {probe!r}"
+    if not resolver.is_chunk_id(target):
+        assert target in probe, f"target {target!r} was unexpectedly scrubbed: {probe!r}"

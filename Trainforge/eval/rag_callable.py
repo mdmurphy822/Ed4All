@@ -283,11 +283,30 @@ class BaseOnlyCallable:
             "BaseOnlyCallable: loading base %s in 4-bit on %s",
             base_model_repo, device,
         )
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model_repo,
-            quantization_config=bnb_config,
-            device_map=device,
-        )
+        try:
+            model = AutoModelForCausalLM.from_pretrained(
+                base_model_repo,
+                quantization_config=bnb_config,
+                device_map=device,
+            )
+        except AttributeError as exc:
+            # Audit 2026-04-30 / Phase B remediation hint — same
+            # accelerate>=1.0 × transformers<4.49 incompatibility as
+            # AdapterCallable. See that helper for details.
+            if "frozenset" in str(exc) and "discard" in str(exc):
+                raise RuntimeError(
+                    "BaseOnlyCallable: model load hit the known "
+                    "accelerate>=1.0 × transformers<4.49 incompatibility "
+                    "(frozenset.discard). Fix: upgrade transformers to "
+                    "4.49+, which fixes the frozenset bug at the source. "
+                    "`pip install 'transformers>=4.49,<4.50' 'accelerate>=1.0,<2.0' "
+                    "'bitsandbytes>=0.45,<0.47'`. "
+                    "The pyproject.toml `[training]` extra now pins "
+                    "these bounds; rerun `pip install -e .[training]` "
+                    "from the project root to pick up the fix. "
+                    f"Original error: {exc}"
+                ) from exc
+            raise
         tokenizer = AutoTokenizer.from_pretrained(base_model_repo)
         # Switch into inference mode via the canonical attribute name
         # resolved at runtime to keep the literal token out of source.

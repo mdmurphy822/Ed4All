@@ -30,7 +30,10 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from Trainforge.eval.chunk_labels import ChunkLabelResolver
 
 logger = logging.getLogger(__name__)
 
@@ -65,17 +68,36 @@ _RELATION_TEMPLATES: Dict[str, str] = {
 }
 
 
-def _format_probe(edge: Dict[str, Any]) -> str:
+def _format_probe(
+    edge: Dict[str, Any],
+    label_resolver: Optional["ChunkLabelResolver"] = None,
+) -> str:
+    """Render a probe prompt for one held-out edge.
+
+    Audit 2026-04-30: when ``edge["source"]`` is a chunk-ID literal
+    (e.g. ``rdf_shacl_551_chunk_00270``), substituting it raw produces
+    semantically incoherent probes ("Does the assessment
+    'rdf_shacl_551_chunk_00270' assess the concept 'CO-18'?") that the
+    model can't answer — it echoes the ID back, the classifier scores
+    ambiguous, and faithfulness collapses to 0. The label_resolver
+    swaps the ID for the chunk's human-readable summary so the probe
+    reads "Does the assessment about <summary> assess the concept
+    'CO-18'?".
+
+    When ``label_resolver`` is None, falls back to the legacy raw
+    substitution for callers that haven't migrated yet (tests, etc.).
+    """
     rel = edge.get("relation_type", "related_to")
     template = _RELATION_TEMPLATES.get(
         rel,
         "Is the following statement true: '{source}' -[{rel}]-> '{target}'?",
     )
-    return template.format(
-        source=edge.get("source", "?"),
-        target=edge.get("target", "?"),
-        rel=rel,
-    )
+    source = edge.get("source", "?")
+    target = edge.get("target", "?")
+    if label_resolver is not None:
+        source = label_resolver.scrub(source)
+        target = label_resolver.scrub(target)
+    return template.format(source=source, target=target, rel=rel)
 
 
 def _classify_response(response: str) -> str:
@@ -102,6 +124,7 @@ class FaithfulnessEvaluator:
         holdout_split: Path,
         model_callable: Callable[[str], str],
         max_questions: Optional[int] = None,
+        label_resolver: Optional["ChunkLabelResolver"] = None,
     ) -> None:
         """
         Args:
@@ -111,11 +134,16 @@ class FaithfulnessEvaluator:
                 prompt and returns the model's textual response.
             max_questions: Optional cap to keep eval cost bounded;
                 first-N withheld edges are sampled.
+            label_resolver: Maps chunk-ID literals to human-readable
+                labels in probe text. When None, raw chunk-IDs flow
+                into the prompts (legacy behavior; only kept for
+                tests).
         """
         from Trainforge.eval.holdout_builder import load_holdout_split
         self.split = load_holdout_split(holdout_split)
         self.model_callable = model_callable
         self.max_questions = max_questions
+        self.label_resolver = label_resolver
 
     def evaluate(self) -> Dict[str, Any]:
         """Run the eval. Returns per-question + summary results."""
@@ -132,7 +160,7 @@ class FaithfulnessEvaluator:
         errors: List[str] = []
 
         for edge in edges:
-            probe = _format_probe(edge)
+            probe = _format_probe(edge, self.label_resolver)
             try:
                 response = self.model_callable(probe)
             except Exception as exc:  # noqa: BLE001
