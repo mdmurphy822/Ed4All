@@ -574,6 +574,120 @@ def test_property_bearing_chunk_falls_back_to_deterministic_when_paraphrase_stri
     )
 
 
+def test_paraphrase_invalid_after_retry_falls_back_to_deterministic_draft(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wave 126: when the local provider exhausts retries on the 40-char
+    prompt floor (e.g. definition-style chunks producing 'Define X.'
+    prompts), the instruction + preference factories must fall back to
+    the deterministic draft instead of crashing the run. Closes the
+    cc07cc76 rebuild's chunk-3 IRI-definition failure mode where one
+    chunk's paraphrase exhaustion killed all 295 chunks of synthesis.
+    """
+    course_dir = _make_working_copy(tmp_path)
+
+    monkeypatch.setattr(
+        "lib.ontology.property_manifest.load_property_manifest",
+        lambda *a, **kw: _synthetic_manifest(),
+    )
+
+    from Trainforge.generators._local_provider import SynthesisProviderError
+
+    class _AlwaysExhaustsProvider:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def paraphrase_instruction(self, draft, chunk, *, preserve_tokens=None):
+            raise SynthesisProviderError(
+                "stub: simulate prompt length 29 below minimum 40 after 3 attempts",
+                code="paraphrase_invalid_after_retry",
+            )
+
+        def paraphrase_preference(self, draft, chunk, *, preserve_tokens=None):
+            raise SynthesisProviderError(
+                "stub: simulate completion length 32 below minimum 50 after 3 attempts",
+                code="paraphrase_invalid_after_retry",
+            )
+
+    from Trainforge.generators import _local_provider as lp_mod
+    monkeypatch.setattr(lp_mod, "LocalSynthesisProvider", _AlwaysExhaustsProvider)
+
+    from lib.decision_capture import DecisionCapture
+    capture = DecisionCapture(
+        course_code="rdf-shacl-551-2",
+        phase="synthesize-training",
+        tool="trainforge",
+    )
+
+    # Run should complete without raising, emitting deterministic fallback pairs.
+    stats = run_synthesis(
+        corpus_dir=course_dir,
+        course_code="rdf-shacl-551-2",
+        provider="local",
+        seed=11,
+        capture=capture,
+        pilot_report_every=0,
+        curriculum_from_graph=False,
+    )
+
+    assert stats.instruction_pairs_emitted > 0, (
+        "Pairs should still be emitted via deterministic fallback, not "
+        "dropped on paraphrase exhaustion."
+    )
+
+    inst_path = course_dir / "training_specs" / "instruction_pairs.jsonl"
+    assert inst_path.exists()
+    import json as _json
+    fallback_count = 0
+    for line in inst_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        rec = _json.loads(line)
+        if rec.get("paraphrase_fallback_reason") == "paraphrase_invalid_after_retry":
+            fallback_count += 1
+    assert fallback_count > 0, (
+        "Expected at least one pair carrying paraphrase_fallback_reason="
+        "'paraphrase_invalid_after_retry'; instead got "
+        f"{fallback_count} such pairs out of {stats.instruction_pairs_emitted} emitted."
+    )
+
+
+def test_local_provider_definition_chunk_directive_is_injected() -> None:
+    """Wave 126: ``_render_instruction_user`` injects an explicit
+    'explanation-asking question, ≥40 chars' directive when the draft's
+    content_type or bloom_level indicates a definition-style chunk.
+    Shapes the model's first attempt so the retry path isn't burdened
+    with coaxing the model out of bare 'Define X.' prompts."""
+    from Trainforge.generators._local_provider import LocalSynthesisProvider
+
+    definition_draft = {
+        "prompt": "Define IRI.",
+        "completion": "An IRI is an Internationalized Resource Identifier.",
+        "bloom_level": "remember",
+        "content_type": "definition",
+        "template_id": "remember._default",
+    }
+    rendered = LocalSynthesisProvider._render_instruction_user(
+        definition_draft, "rdf_shacl_551_chunk_00003",
+    )
+    assert "definition / recall chunk" in rendered
+    assert "EXPLANATION-asking question of at least 40 characters" in rendered
+    assert "bare 'Define X.'" in rendered
+
+    narrative_draft = {
+        "prompt": "Compare RDF and OWL inference scopes in detail.",
+        "completion": "RDF supports basic triple-pattern inference...",
+        "bloom_level": "analyze",
+        "content_type": "explanation",
+        "template_id": "analyze._default",
+    }
+    rendered_narrative = LocalSynthesisProvider._render_instruction_user(
+        narrative_draft, "rdf_shacl_551_chunk_00100",
+    )
+    assert "definition / recall chunk" not in rendered_narrative
+
+
 # ---------------------------------------------------------------------------
 # Wave 120: smoke modes
 # ---------------------------------------------------------------------------
