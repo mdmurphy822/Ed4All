@@ -1064,6 +1064,15 @@ def run_synthesis(
         # snapshots a consistent view of all pairs from each chunk.
         chunks_processed_counter = 0
 
+        # Wave 122 follow-up: factory-side dedupe. The audit's zero-
+        # tolerance ``duplicates`` gate flags any cross-chunk paraphrase
+        # collision; tracking emitted prompts and rejecting the second
+        # occurrence keeps the gate clean without re-running the
+        # paraphrase. Distinct sets per artefact so an instruction
+        # prompt can legitimately match a preference prompt.
+        emitted_inst_prompts: set = set()
+        emitted_pref_prompts: set = set()
+
         for idx, chunk in iter_chunks:
             if _budget_exhausted_exc is not None:
                 break
@@ -1148,6 +1157,19 @@ def run_synthesis(
                             ),
                             context=f"chunk_id={inst_result.pair['chunk_id']}",
                         )
+                    # Wave 122 follow-up: cross-chunk prompt-collision
+                    # dedupe. Skip the emit if the final-shape prompt
+                    # already landed for an earlier chunk; the rejected
+                    # bucket gets a ``duplicate_prompt`` reason so the
+                    # operator can grep telemetry without inspecting
+                    # JSONL byte-for-byte.
+                    final_prompt = inst_result.pair.get("prompt", "")
+                    if final_prompt in emitted_inst_prompts:
+                        stats.instruction_pairs_rejected += 1
+                        stats.rejected_reasons["instruction:duplicate_prompt"] = (
+                            stats.rejected_reasons.get("instruction:duplicate_prompt", 0) + 1
+                        )
+                        continue
                     capture.log_decision(
                         decision_type="instruction_pair_synthesis",
                         decision=(
@@ -1168,6 +1190,7 @@ def run_synthesis(
                     if _attach_source_grounding(inst_result.pair, chunk):
                         stats.source_grounded_pairs += 1
                     instruction_records.append(inst_result.pair)
+                    emitted_inst_prompts.add(final_prompt)
                     stats.instruction_pairs_emitted += 1
                     # Wave 116: mirror to .in_progress sidecar with
                     # flush() so ``tail -f`` and post-kill inspection
@@ -1227,32 +1250,44 @@ def run_synthesis(
                             ),
                             context=f"chunk_id={pref_result.pair['chunk_id']}",
                         )
-                    capture.log_decision(
-                        decision_type="preference_pair_generation",
-                        decision=(
-                            f"Emit preference pair for chunk {pref_result.pair['chunk_id']} "
-                            f"(source={pref_result.source}, "
-                            f"misconception_id={pref_result.misconception_id})."
-                        ),
-                        rationale=pref_result.rationale,
-                        alternatives_considered=pref_result.alternatives or None,
-                        context=f"quality={pref_result.quality}",
-                    )
-                    pref_result.pair["decision_capture_id"] = _last_event_id(capture)
-                    if _attach_source_grounding(pref_result.pair, chunk):
-                        stats.source_grounded_pairs += 1
-                    preference_records.append(pref_result.pair)
-                    stats.preference_pairs_emitted += 1
-                    # Wave 116: mirror to .in_progress sidecar.
-                    pref_progress_fh.write(
-                        json.dumps(
-                            pref_result.pair,
-                            ensure_ascii=False,
-                            sort_keys=True,
+                    # Wave 122 follow-up: cross-chunk dedupe (preference).
+                    # Nested ``if`` rather than ``continue`` so the
+                    # outer chunk loop still falls through to the
+                    # pilot_report progress block below.
+                    final_pref_prompt = pref_result.pair.get("prompt", "")
+                    if final_pref_prompt in emitted_pref_prompts:
+                        stats.preference_pairs_rejected += 1
+                        stats.rejected_reasons["preference:duplicate_prompt"] = (
+                            stats.rejected_reasons.get("preference:duplicate_prompt", 0) + 1
                         )
-                        + "\n"
-                    )
-                    pref_progress_fh.flush()
+                    else:
+                        capture.log_decision(
+                            decision_type="preference_pair_generation",
+                            decision=(
+                                f"Emit preference pair for chunk {pref_result.pair['chunk_id']} "
+                                f"(source={pref_result.source}, "
+                                f"misconception_id={pref_result.misconception_id})."
+                            ),
+                            rationale=pref_result.rationale,
+                            alternatives_considered=pref_result.alternatives or None,
+                            context=f"quality={pref_result.quality}",
+                        )
+                        pref_result.pair["decision_capture_id"] = _last_event_id(capture)
+                        if _attach_source_grounding(pref_result.pair, chunk):
+                            stats.source_grounded_pairs += 1
+                        preference_records.append(pref_result.pair)
+                        emitted_pref_prompts.add(final_pref_prompt)
+                        stats.preference_pairs_emitted += 1
+                        # Wave 116: mirror to .in_progress sidecar.
+                        pref_progress_fh.write(
+                            json.dumps(
+                                pref_result.pair,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            )
+                            + "\n"
+                        )
+                        pref_progress_fh.flush()
 
             # Wave 117: every N processed chunks, regenerate the
             # in-flight pilot_report.md so the operator running a

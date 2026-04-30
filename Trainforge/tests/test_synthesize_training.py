@@ -958,3 +958,108 @@ def test_force_inject_clamps_both_sides_to_max_length() -> None:
     for side in ("prompt", "completion"):
         assert "sh:datatype" in out[side], f"sh:datatype missing from {side}"
         assert "sh:NodeShape" in out[side], f"sh:NodeShape missing from {side}"
+
+
+# ---------------------------------------------------------------------------
+# Wave 122 follow-up: cross-chunk prompt-collision dedupe
+# ---------------------------------------------------------------------------
+
+
+def test_run_synthesis_dedupes_duplicate_instruction_prompts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Closes the audit's zero-tolerance ``duplicates`` gate: when the
+    paraphrase provider returns the same prompt for multiple chunks
+    (semantic-collision case observed on rdf-shacl-551-2's 14B
+    uncapped run), the second occurrence is rejected before append
+    and counted under ``rejected_reasons[instruction:duplicate_prompt]``.
+    """
+    course_dir = _make_working_copy(tmp_path)
+
+    # Provider stub that always overrides the prompt to a fixed string.
+    # Every chunk paraphrase produces an identical prompt — the dedupe
+    # set must drop all but the first.
+    class _CollidingProvider:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def paraphrase_instruction(self, draft, chunk, *, preserve_tokens=None):
+            # Preserve the draft's metadata (chunk_id, lo_refs, etc.) and
+            # only override the prompt to force a collision.
+            return {
+                **draft,
+                "prompt": "Universal collision prompt — every chunk yields this.",
+            }
+
+        def paraphrase_preference(self, draft, chunk, *, preserve_tokens=None):
+            return draft
+
+    from Trainforge.generators import _local_provider as lp_mod
+    monkeypatch.setattr(lp_mod, "LocalSynthesisProvider", _CollidingProvider)
+
+    stats = run_synthesis(
+        corpus_dir=course_dir,
+        course_code="rdf-shacl-551-2",
+        provider="local",
+        seed=11,
+        pilot_report_every=0,
+        curriculum_from_graph=False,
+    )
+
+    # Exactly one instruction prompt admitted; every subsequent
+    # collision routed to the rejected bucket with the dedupe reason.
+    assert stats.instruction_pairs_emitted == 1, (
+        f"Expected dedupe to keep emitted=1, got {stats.instruction_pairs_emitted}"
+    )
+    assert stats.rejected_reasons.get("instruction:duplicate_prompt", 0) >= 1, (
+        f"rejected_reasons missing duplicate_prompt: {stats.rejected_reasons!r}"
+    )
+
+    # Final on-disk JSONL has exactly one row.
+    inst_path = course_dir / "training_specs" / "instruction_pairs.jsonl"
+    rows = [
+        line for line in inst_path.read_text().splitlines() if line.strip()
+    ]
+    assert len(rows) == 1
+
+
+def test_run_synthesis_dedupes_duplicate_preference_prompts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Mirror of the instruction-side dedupe for preference pairs.
+    A preference paraphrase that collides across chunks is rejected
+    before append and tallied under
+    ``rejected_reasons[preference:duplicate_prompt]``."""
+    course_dir = _make_working_copy(tmp_path)
+
+    class _CollidingPrefProvider:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def paraphrase_instruction(self, draft, chunk, *, preserve_tokens=None):
+            return draft  # vary by chunk so instruction-side stays clean
+
+        def paraphrase_preference(self, draft, chunk, *, preserve_tokens=None):
+            return {
+                **draft,
+                "prompt": "Universal collision preference prompt — every chunk yields this.",
+            }
+
+    from Trainforge.generators import _local_provider as lp_mod
+    monkeypatch.setattr(lp_mod, "LocalSynthesisProvider", _CollidingPrefProvider)
+
+    stats = run_synthesis(
+        corpus_dir=course_dir,
+        course_code="rdf-shacl-551-2",
+        provider="local",
+        seed=11,
+        pilot_report_every=0,
+        curriculum_from_graph=False,
+    )
+
+    assert stats.preference_pairs_emitted == 1, (
+        f"Expected dedupe to keep emitted=1, got {stats.preference_pairs_emitted}"
+    )
+    assert stats.rejected_reasons.get("preference:duplicate_prompt", 0) >= 1, (
+        f"rejected_reasons missing duplicate_prompt: {stats.rejected_reasons!r}"
+    )

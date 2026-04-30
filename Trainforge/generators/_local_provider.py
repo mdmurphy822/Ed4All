@@ -82,12 +82,18 @@ ENV_API_KEY = "LOCAL_SYNTHESIS_API_KEY"
 DEFAULT_TIMEOUT = 60.0
 
 
-# Wave 114: local-class kind bounds. The 40-char prompt floor inherited
-# from ``_anthropic_provider.py::_KIND_BOUNDS`` is too strict for 7B-Q4
-# paraphrases that legitimately compress (e.g. "Explain in your own
-# words what owl:sameAs means and why it matters." -> "What does
-# owl:sameAs mean and why?"). 25 chars still rejects degenerate
-# 3-word stub outputs without rejecting valid compressed paraphrases.
+# Wave 114: local-class kind bounds — initially lowered the 40-char
+# prompt floor inherited from ``_anthropic_provider.py::_KIND_BOUNDS``
+# to 25 to accommodate 7B-Q4 paraphrase compression.
+#
+# Wave 122 follow-up (post-uncapped audit): the canonical
+# ``schemas/knowledge/instruction_pair.schema.json`` enforces
+# ``prompt.minLength: 40``. The 25-floor admitted 5/263 paraphrases on
+# rdf-shacl-551-2's 14B run that the schema then rejected at audit time
+# (e.g. "Define what an IRI is in RDF." at 29 chars). Realigning the
+# default floor to 40 closes the schema/provider misalignment; 7B-Q4
+# users who legitimately need a lower floor can still pass
+# ``kind_bounds={"prompt": (25, PROMPT_MAX), ...}`` to the constructor.
 # Completion floor stays at 50 — a 30-char training-target completion
 # has legitimate quality concerns the prompt floor does not.
 # Wave 114: terse system prompts for the local path. 7B-Q4 instruction
@@ -115,7 +121,7 @@ _LOCAL_PREFERENCE_SYSTEM_PROMPT = (
 
 
 DEFAULT_LOCAL_KIND_BOUNDS: Dict[str, tuple] = {
-    "prompt": (25, PROMPT_MAX),
+    "prompt": (PROMPT_MIN, PROMPT_MAX),
     "completion": (COMPLETION_MIN, COMPLETION_MAX),
     "chosen": (COMPLETION_MIN, COMPLETION_MAX),
     "rejected": (COMPLETION_MIN, COMPLETION_MAX),
