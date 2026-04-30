@@ -925,8 +925,24 @@ def test_runner_eval_bridge_wired_in_dry_run(libv2_root: Path, monkeypatch):
 
     monkeypatch.setattr(runner, "_dispatch_training", _fake_dispatch)
 
-    # Mock the eval bridge to return canonical scores.
+    # Mock the eval bridge to return canonical scores AND drop a
+    # gate-shaped eval_report.json on disk so the inline
+    # EvalGatingValidator (audit 2026-04-30 fix) finds something and
+    # passes. Real eval harness always writes this file; the test
+    # mocks both surfaces.
     def _fake_eval(run_dir: Path, adapter_path):
+        eval_dir = run_dir / "eval"
+        eval_dir.mkdir(parents=True, exist_ok=True)
+        (eval_dir / "eval_report.json").write_text(
+            json.dumps({
+                "faithfulness": 0.75,
+                "coverage": 0.62,
+                "baseline_delta": 0.13,
+                "yes_rate": 0.30,
+                "metrics": {"hallucination_rate": 0.25},
+            }),
+            encoding="utf-8",
+        )
         return {
             "faithfulness": 0.75,
             "coverage": 0.62,
@@ -934,6 +950,8 @@ def test_runner_eval_bridge_wired_in_dry_run(libv2_root: Path, monkeypatch):
         }
 
     monkeypatch.setattr(runner, "_run_eval_harness", _fake_eval)
+    # Skip the ablation runner — torch unavailable on CPU-only CI.
+    monkeypatch.setattr(runner, "_run_ablation", lambda **kw: None)
 
     result = runner.run()
 

@@ -107,6 +107,32 @@ class EvalGatingValidator:
                 )],
             )
 
+        # 2026-04-30 smoke mode: refuse to gate on a smoke report.
+        # Smoke runs cap each evaluator at N=3 so the metrics are
+        # statistically meaningless for promotion gating. The harness
+        # writes smoke runs to smoke_eval_report.json, but a defensive
+        # check on the in-report `smoke_mode` field protects against
+        # operators copying / renaming a smoke report into eval_report.json.
+        if bool(report.get("smoke_mode")):
+            return GateResult(
+                gate_id=gate_id,
+                validator_name=self.name,
+                validator_version=self.version,
+                passed=False,
+                issues=[GateIssue(
+                    severity="critical",
+                    code="EVAL_REPORT_IS_SMOKE",
+                    message=(
+                        "eval_report.json carries smoke_mode=true; refusing "
+                        "to gate. Smoke runs cap evaluators at N=3 prompts "
+                        "and are intended for plumbing verification only. "
+                        "Re-run the harness without --smoke to produce a "
+                        "promotion-gated eval_report.json."
+                    ),
+                    location=str(report_path),
+                )],
+            )
+
         issues: List[GateIssue] = []
         # --- Critical thresholds -----------------------------------------
         faithfulness = _as_float(report.get("faithfulness"))

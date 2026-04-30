@@ -162,6 +162,54 @@ class _ProgressModelCallable:
         return getattr(self._wrapped, name)
 
 
+def _compute_prefix_bigram_diversity(
+    per_question: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """A8: surface template-collapse signal from generation prefixes.
+
+    For each per-question record, take the first two whitespace-split
+    tokens of ``response`` as the prefix bigram. Report:
+
+      * ``distinct_prefix_bigrams``: count of unique bigrams
+      * ``top_3_share``: fraction of all responses covered by the top-3
+      * ``most_common``: top-3 bigrams with their counts
+      * ``total_responses``: denominator
+
+    Returns ``None`` when there are fewer than 5 per-question records
+    (signal is meaningless on tiny eval runs). Advisory metric — never
+    fed into eval_gating critical thresholds.
+    """
+    if not per_question or len(per_question) < 5:
+        return None
+    from collections import Counter
+
+    bigrams: List[str] = []
+    for record in per_question:
+        response = record.get("response") or ""
+        if not isinstance(response, str):
+            continue
+        tokens = response.strip().split()
+        if len(tokens) < 2:
+            continue
+        bigrams.append(f"{tokens[0]} {tokens[1]}".lower())
+
+    if not bigrams:
+        return None
+
+    counter = Counter(bigrams)
+    top_3 = counter.most_common(3)
+    top_3_count = sum(c for _, c in top_3)
+    total = len(bigrams)
+    return {
+        "distinct_prefix_bigrams": len(counter),
+        "top_3_share": round(top_3_count / total, 4) if total > 0 else 0.0,
+        "total_responses": total,
+        "most_common": [
+            {"bigram": bg, "count": c} for bg, c in top_3
+        ],
+    }
+
+
 def _load_profile(name: str) -> Dict[str, Any]:
     p = _CONFIG_DIR / f"{name}.yaml"
     if not p.exists():
@@ -269,6 +317,7 @@ class SLMEvalHarness:
         base_callable: Optional[Callable[[str], str]] = None,
         profile: Optional[str] = None,
         max_holdout_questions: Optional[int] = None,
+        smoke_mode: bool = False,
     ) -> None:
         self.course_path = Path(course_path)
         if not self.course_path.exists():
@@ -281,6 +330,13 @@ class SLMEvalHarness:
         self.profile_name = profile_name
         self.profile = _load_profile(profile_name)
         self.max_holdout_questions = max_holdout_questions
+        # 2026-04-30 smoke mode: when True, the report is written to
+        # smoke_eval_report.json (NOT eval_report.json) and stamped
+        # with `smoke_mode: true` so downstream readers
+        # (EvalGatingValidator, hf_model_index.py) refuse to gate or
+        # render it. The harness still loads the real adapter and runs
+        # at small N — the point is end-to-end plumbing verification.
+        self.smoke_mode = bool(smoke_mode)
 
     def run_all(self, output_path: Optional[Path] = None) -> Path:
         """Run every enabled evaluator and emit ``eval_report.json``.
@@ -301,11 +357,43 @@ class SLMEvalHarness:
         from Trainforge.eval.disambiguation import DisambiguationEvaluator
         from Trainforge.eval.source_match import SourceMatchEvaluator
         from Trainforge.eval.chunk_ids import is_chunk_id
+        from Trainforge.eval.chunk_labels import ChunkLabelResolver
+
+        # Audit 2026-04-30 fix: load corpus chunks once per eval run
+        # so probe templates can substitute human-readable labels for
+        # chunk-ID literals. Without this, probes like
+        # "Does the assessment 'rdf_shacl_551_chunk_00270' assess CO-18?"
+        # leak the chunk-ID into the model's context, the model echoes
+        # it back, and the classifier scores ambiguous → faithfulness=0.
+        label_resolver = ChunkLabelResolver.from_course(self.course_path)
 
         evaluators = self.profile.get("evaluators", {})
         caps = self.profile.get("caps", {})
+        # 2026-04-30 smoke mode: clamp every per-evaluator cap so the
+        # ones that don't go through `self.max_holdout_questions`
+        # (invariant_prompts, key_terms, disambiguation_pairs) still
+        # honor the small-N contract. Without this, a smoke run hits
+        # 167+ model calls (~36 min) instead of the 2-5 min target.
+        # max_holdout_questions is also clamped here as a belt-and-
+        # suspenders alongside the existing main() override.
+        if self.smoke_mode:
+            _SMOKE_N = 3
+            caps = {
+                **caps,
+                "max_holdout_questions": min(_SMOKE_N, caps.get("max_holdout_questions", 100)),
+                "max_invariant_prompts": min(_SMOKE_N, caps.get("max_invariant_prompts", 30)),
+                "max_key_terms": min(_SMOKE_N, caps.get("max_key_terms", 50)),
+                "max_disambiguation_pairs": min(_SMOKE_N, caps.get("max_disambiguation_pairs", 50)),
+            }
         if output_path is None:
-            output_path = self.course_path / "eval" / "eval_report.json"
+            # 2026-04-30 smoke mode: write to the smoke_ sidecar so the
+            # canonical eval_report.json is never overwritten. The
+            # `smoke_mode: true` field below is the load-bearing
+            # signal; the filename is a defensive secondary.
+            report_name = (
+                "smoke_eval_report.json" if self.smoke_mode else "eval_report.json"
+            )
+            output_path = self.course_path / "eval" / report_name
         output_path = Path(output_path)
         progress = _EvalProgressTracker(
             output_path.parent / "eval_progress.jsonl",
@@ -403,6 +491,7 @@ class SLMEvalHarness:
                     holdout_split=holdout_path,
                     model_callable=model_callable,
                     max_questions=cap,
+                    label_resolver=label_resolver,
                 ).evaluate(),
             )
             per_tier["faithfulness"] = {
@@ -474,6 +563,7 @@ class SLMEvalHarness:
                         holdout_split=holdout_path,
                         course_slug=self.course_path.name,
                         model_callable=model_callable,
+                        max_questions_per_property=self.max_holdout_questions,
                     ).evaluate(),
                 )
                 per_tier["per_property"] = pp_result
@@ -541,7 +631,10 @@ class SLMEvalHarness:
             r = _run_stage(
                 "invariant:misconception_rejection",
                 None,
-                lambda: MisconceptionRejectionInvariant(self.course_path).evaluate(
+                lambda: MisconceptionRejectionInvariant(
+                    self.course_path,
+                    max_prompts=caps.get("max_invariant_prompts", 30),
+                ).evaluate(
                     model_callable,
                 ),
             )
@@ -703,6 +796,21 @@ class SLMEvalHarness:
         # "ok" (default) or a "skipped: ..." reason.
         out_dict["tier_2_status"] = tier_2_status or "ok"
 
+        # 2026-04-30 smoke mode: stamp the smoke_mode field
+        # unconditionally so downstream readers (EvalGatingValidator,
+        # hf_model_index.py) can short-circuit on smoke reports
+        # without filename-sniffing. False on a real eval run.
+        out_dict["smoke_mode"] = bool(self.smoke_mode)
+
+        # Audit 2026-04-30 / A8: prefix-bigram diversity. Surfaces
+        # template collapse (the cc07cc76 run had top-3 bigrams covering
+        # 25.2% of generations and 52.1% of outputs reusing a single
+        # hedging pattern) so a reviewer sees the signal without
+        # re-running the eval. Never blocks; advisory metric only.
+        diversity = _compute_prefix_bigram_diversity(per_question_all)
+        if diversity is not None:
+            out_dict["diversity"] = diversity
+
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(
             json.dumps(out_dict, indent=2, sort_keys=True),
@@ -745,33 +853,216 @@ class SLMEvalHarness:
 
 
 def main() -> None:  # pragma: no cover — CLI passthrough
+    """Re-eval a trained adapter without re-running the trainer.
+
+    The previous CLI hardcoded a ``"yes (stub)"`` callable, which made
+    the standalone harness invocation produce a meaningless eval
+    report (faithfulness=1.0 against all-true probes, source_match=0,
+    yes_rate=1.0, single repeated prefix bigram). Audit 2026-04-30
+    Phase B caught this when re-evaluating the cc07cc76 adapter — the
+    operator's runner-equivalent fix is now baked into the CLI so a
+    re-eval is a one-liner.
+
+    Usage:
+
+        python3 -m Trainforge.eval.slm_eval_harness \\
+            --course-path LibV2/courses/<slug>/ \\
+            --adapter-path LibV2/courses/<slug>/models/<model_id>/ \\
+            --base-model qwen2.5-1.5b
+
+    Add ``--with-ablation`` to also run the 4-setup ablation table
+    (base / base+rag / adapter / adapter+rag) so ``ablation_report.json``
+    + the ``headline_delta`` block land alongside ``eval_report.json``.
+
+    Pass ``--stub`` to keep the legacy stub-callable behaviour for
+    plumbing tests (no GPU, no torch import).
+    """
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Wave 92 — run the SLM eval harness on a trained adapter."
+        description="Run the SLM eval harness against a trained adapter."
     )
     parser.add_argument("--course-path", required=True, help="LibV2 course path.")
-    parser.add_argument("--profile", default=None, help="Eval profile name.")
     parser.add_argument(
-        "--output", default=None, help="Override output path (default: eval/eval_report.json)."
+        "--adapter-path",
+        default=None,
+        help=(
+            "Path to the trained adapter directory (typically "
+            "<course>/models/<model_id>/). Required unless --stub is set."
+        ),
+    )
+    parser.add_argument(
+        "--base-model",
+        default=None,
+        help=(
+            "Base-model short name (e.g. qwen2.5-1.5b). Required unless "
+            "--stub is set."
+        ),
+    )
+    parser.add_argument(
+        "--profile", default=None, help="Eval profile name."
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help=(
+            "Override output path (default: <adapter-path>/eval/eval_report.json "
+            "when --adapter-path is set, else <course-path>/eval/eval_report.json)."
+        ),
     )
     parser.add_argument(
         "--max-prompts", type=int, default=None, help="Cap holdout questions."
     )
+    parser.add_argument(
+        "--with-ablation",
+        action="store_true",
+        help=(
+            "Also run AblationRunner so ablation_report.json + the "
+            "headline_delta block are emitted. Adds ~3x eval wall time "
+            "(loads base model + runs 4 setups)."
+        ),
+    )
+    parser.add_argument(
+        "--stub",
+        action="store_true",
+        help=(
+            "Use a stub 'yes' callable instead of loading a real adapter. "
+            "For plumbing tests only — produces a meaningless report."
+        ),
+    )
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help=(
+            "2026-04-30 smoke mode: load the real adapter, cap each "
+            "evaluator at N=3 prompts, force --with-ablation off, and "
+            "write to <adapter>/eval/smoke_eval_report.json. The report "
+            "carries `smoke_mode: true` so EvalGatingValidator and "
+            "hf_model_index refuse to gate or render it. Wall-time "
+            "target: 2-5 minutes on a 3070. Use to verify the eval "
+            "pipeline before paying for a 45-60 minute full run. "
+            "Mutually exclusive with --stub."
+        ),
+    )
     args = parser.parse_args()
 
-    def _stub(prompt: str) -> str:
-        return "yes (stub)"
+    if args.smoke and args.stub:
+        parser.error(
+            "--smoke and --stub are mutually exclusive; --stub uses a "
+            "fake callable, --smoke uses the real adapter at small N."
+        )
+
+    # 2026-04-30 smoke mode: cap to 3 prompts/evaluator regardless of
+    # any explicit --max-prompts the operator passed; force ablation
+    # off (its 2nd model load + 4-setup loop blows the wall-time
+    # target); and route output to the smoke_ sidecar unless an
+    # explicit --output was provided.
+    if args.smoke:
+        args.with_ablation = False
+        args.max_prompts = 3
+        print(
+            "[SMOKE MODE] Real adapter, N=3 prompts/layer, no ablation. "
+            "Target wall time: 2-5 min."
+        )
+
+    course_path = Path(args.course_path)
+
+    # Output path resolution: prefer the adapter-side eval/ dir so the
+    # report lands where EvalGatingValidator looks for it. Smoke mode
+    # picks the smoke_ sidecar so the canonical eval_report.json is
+    # never overwritten by a 3-prompt run.
+    report_filename = "smoke_eval_report.json" if args.smoke else "eval_report.json"
+    if args.output is not None:
+        output_path: Optional[Path] = Path(args.output)
+    elif args.adapter_path is not None:
+        output_path = Path(args.adapter_path) / "eval" / report_filename
+    else:
+        output_path = None  # harness defaults to course/eval/<report_filename>
+
+    if args.stub:
+        def _model(prompt: str) -> str:
+            return "yes (stub)"
+        ablation_setups: Optional[List[Any]] = None
+    else:
+        if not args.adapter_path or not args.base_model:
+            parser.error(
+                "--adapter-path and --base-model are required unless --stub "
+                "is set. Pass both to evaluate the real trained adapter."
+            )
+        from Trainforge.eval.adapter_callable import AdapterCallable
+        from Trainforge.eval.eval_config import load_eval_config
+        from Trainforge.eval.rag_callable import BaseOnlyCallable, RAGCallable
+        from Trainforge.training.base_models import BaseModelRegistry
+
+        spec = BaseModelRegistry.resolve(args.base_model)
+        loaded_cfg = load_eval_config(course_path)
+        cfg = loaded_cfg.config
+        callable_kwargs: Dict[str, Any] = {
+            "base_model_short_name": args.base_model,
+            "max_new_tokens": int(cfg.get("max_new_tokens", 256)),
+            "temperature": float(cfg.get("temperature", 0.0)),
+            "top_p": float(cfg.get("top_p", 1.0)),
+            "seed": int(cfg.get("seed", 42)),
+            "revision": spec.default_revision,
+        }
+        adapter_dir = Path(args.adapter_path)
+        _model = AdapterCallable(
+            adapter_dir=adapter_dir,
+            base_model_repo=spec.huggingface_repo,
+            **callable_kwargs,
+        )
+        if args.with_ablation:
+            from Trainforge.eval.ablation_runner import (
+                AblationRunner,
+                AblationSetup,
+            )
+            base_callable = BaseOnlyCallable(
+                base_model_repo=spec.huggingface_repo,
+                max_new_tokens=callable_kwargs["max_new_tokens"],
+                temperature=callable_kwargs["temperature"],
+                base_model_short_name=args.base_model,
+                eval_config=loaded_cfg,
+            )
+            slug = course_path.name
+            adapter_rag = RAGCallable(
+                base_callable=_model, course_slug=slug, eval_config=loaded_cfg,
+            )
+            base_rag = RAGCallable(
+                base_callable=base_callable, course_slug=slug, eval_config=loaded_cfg,
+            )
+            ablation_setups = [
+                AblationSetup(setup="base", callable=base_callable),
+                AblationSetup(setup="base+rag", callable=base_rag, rag_callable=base_rag),
+                AblationSetup(setup="adapter", callable=_model),
+                AblationSetup(
+                    setup="adapter+rag", callable=adapter_rag, rag_callable=adapter_rag,
+                ),
+            ]
+        else:
+            ablation_setups = None
+
     harness = SLMEvalHarness(
-        course_path=Path(args.course_path),
-        model_callable=_stub,
+        course_path=course_path,
+        model_callable=_model,
         profile=args.profile,
         max_holdout_questions=args.max_prompts,
+        smoke_mode=args.smoke,
     )
-    out = harness.run_all(
-        output_path=Path(args.output) if args.output else None,
-    )
+    out = harness.run_all(output_path=output_path)
     print(f"Wrote {out}")
+
+    if not args.stub and args.with_ablation and ablation_setups is not None:
+        from Trainforge.eval.ablation_runner import AblationRunner
+        ablation_path = (
+            Path(out).parent / "ablation_report.json"
+        )
+        runner = AblationRunner(
+            course_path=course_path,
+            setups=ablation_setups,
+            eval_config=loaded_cfg,
+        )
+        runner.run(output_path=ablation_path)
+        print(f"Wrote {ablation_path}")
 
 
 if __name__ == "__main__":  # pragma: no cover

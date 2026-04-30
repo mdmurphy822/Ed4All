@@ -272,6 +272,9 @@ class AblationRunner:
             )
             report["eval_config_is_default"] = self.eval_config.is_default
 
+        from Trainforge.eval.headline_delta import compute_headline_delta
+        report["headline_delta"] = compute_headline_delta(report)
+
         if output_path is None:
             output_path = self.course_path / "eval" / "ablation_report.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -279,6 +282,8 @@ class AblationRunner:
             json.dumps(report, indent=2, sort_keys=True),
             encoding="utf-8",
         )
+
+        self._headline_delta_block = report["headline_delta"]
 
         # Wave 104: consolidated eval_report.json. The harness writes
         # one per scratch setup; the runner picks the canonical setup
@@ -327,6 +332,14 @@ class AblationRunner:
             }
             for k, v in self._eval_reports_by_setup.items()
         }
+        # Headline delta — the hallucination_reduction_pct + source-grounded
+        # lift that lead the HF model card. Mirrored into eval_report.json
+        # so any consumer (HF leaderboard, audit script, dashboard) sees
+        # the same numbers without having to also load ablation_report.json.
+        delta_block = getattr(self, "_headline_delta_block", None)
+        if delta_block is not None:
+            payload["headline_delta"] = delta_block
+
         out_path = eval_dir / "eval_report.json"
         out_path.write_text(
             json.dumps(payload, indent=2, sort_keys=True),

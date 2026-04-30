@@ -18,7 +18,10 @@ import logging
 import random
 import re
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from Trainforge.eval.chunk_labels import ChunkLabelResolver
 
 logger = logging.getLogger(__name__)
 
@@ -196,8 +199,11 @@ class BloomLevelInvariant:
         course_path: Path,
         max_per_level: int = 5,
         seed: int = 42,
+        label_resolver: Optional["ChunkLabelResolver"] = None,
     ) -> None:
         # Build Bloom -> chunk_id mapping from the at_bloom_level edges.
+        from Trainforge.eval.chunk_labels import ChunkLabelResolver
+
         graph = _load_pedagogy_graph(course_path)
         bloom_buckets: Dict[str, List[str]] = {}
         for e in graph.get("edges", []):
@@ -207,40 +213,55 @@ class BloomLevelInvariant:
             level = target.split(":", 1)[1] if target.startswith("bloom:") else target
             bloom_buckets.setdefault(level, []).append(e.get("source", ""))
 
+        # Audit 2026-04-30 fix: substitute the chunk's human-readable
+        # label into the prompt instead of the raw chunk-ID literal,
+        # which the model previously echoed back verbatim into prose
+        # (1441 chunk-id token matches in the cc07cc76 eval report).
+        self.label_resolver = (
+            label_resolver
+            if label_resolver is not None
+            else ChunkLabelResolver.from_course(course_path)
+        )
+
         rng = random.Random(seed)
         self.prompts: List[Dict[str, Any]] = []
         for level, chunks in bloom_buckets.items():
             rng.shuffle(chunks)
             for chunk_id in chunks[:max_per_level]:
+                label = self.label_resolver.label_for(chunk_id)
                 self.prompts.append({
                     "bloom_level": level,
                     "chunk_id": chunk_id,
-                    "prompt": self._prompt_for_level(level, chunk_id),
+                    "prompt": self._prompt_for_level(level, label),
                 })
 
     @staticmethod
-    def _prompt_for_level(level: str, chunk_id: str) -> str:
+    def _prompt_for_level(level: str, chunk_label: str) -> str:
+        """Render a Bloom-level probe.
+
+        ``chunk_label`` is the chunk's human-readable summary (or a
+        truncated first sentence of its text), never the raw chunk-ID
+        — see audit 2026-04-30 / Worker-1 finding for the bug class.
+        """
         if level == "remember":
-            return f"Define the central concept introduced in chunk '{chunk_id}'."
+            return f"Define the central concept introduced in: {chunk_label}"
         if level == "understand":
-            return f"Explain why the concept in chunk '{chunk_id}' is the way it is."
+            return f"Explain why the concept here is the way it is: {chunk_label}"
         if level == "apply":
-            return f"Walk through how to use the concept in chunk '{chunk_id}' step by step."
+            return f"Walk through how to use this concept step by step: {chunk_label}"
         if level == "analyze":
             return (
-                f"Compare the concept in chunk '{chunk_id}' to a related but "
-                f"distinct concept; what differs?"
+                f"Compare this concept to a related but distinct concept; "
+                f"what differs? {chunk_label}"
             )
         if level == "evaluate":
             return (
-                f"What are the tradeoffs of the approach in chunk "
-                f"'{chunk_id}'? When would you prefer it?"
+                f"What are the tradeoffs of this approach? When would you "
+                f"prefer it? {chunk_label}"
             )
         if level == "create":
-            return (
-                f"Propose a new application of the concept in chunk '{chunk_id}'."
-            )
-        return f"Discuss the concept in chunk '{chunk_id}'."
+            return f"Propose a new application of this concept: {chunk_label}"
+        return f"Discuss this concept: {chunk_label}"
 
     def evaluate(self, model_callable: Callable[[str], str]) -> Dict[str, Any]:
         per_prompt: List[Dict[str, Any]] = []
@@ -288,9 +309,15 @@ class MisconceptionRejectionInvariant:
 
     name = "misconception_rejection"
 
-    def __init__(self, course_path: Path) -> None:
+    def __init__(
+        self,
+        course_path: Path,
+        max_prompts: Optional[int] = None,
+    ) -> None:
         graph = _load_pedagogy_graph(course_path)
         self.misconceptions = _load_misconception_nodes(graph)
+        if max_prompts is not None:
+            self.misconceptions = self.misconceptions[: int(max_prompts)]
         # Build mc_id -> set of target concepts from interferes_with
         self._targets: Dict[str, Set[str]] = {}
         for e in graph.get("edges", []):
