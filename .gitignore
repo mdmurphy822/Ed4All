@@ -158,3 +158,49 @@ testruns/
 # Wave 116: sidecar files written incrementally during synthesis runs.
 # Cleaned up at end of clean runs; preserved on budget-exceeded exits.
 *.jsonl.in_progress
+
+# =============================================================================
+# Defense-in-depth: model weights & training data MUST NOT land on GitHub
+# =============================================================================
+# Course-local artifacts under LibV2/courses/* are already excluded above.
+# These globs catch the same artifact classes anywhere else in the tree
+# (test scratch dirs, temp staging, accidental top-level writes), so a new
+# code path that emits to a non-LibV2 location can't silently expose
+# datasets, adapters, or eval reports.
+*.safetensors
+*.gguf
+*.ckpt
+*.pt
+*.pth
+*.bin
+adapter_model.*
+adapter_config.json
+
+# Training data (any path)
+**/instruction_pairs.jsonl
+**/preference_pairs.jsonl
+**/instruction_pairs.jsonl.bak
+**/preference_pairs.jsonl.bak
+**/instruction_pairs.jsonl.*.bak
+**/preference_pairs.jsonl.*.bak
+
+# Eval / model-card outputs (any path)
+**/eval_report.json
+**/ablation_report.json
+**/model_card.json
+**/eval_traces.jsonl
+**/eval_progress.jsonl
+**/pilot_report.md
+**/pilot_progress.json
+**/.synthesis_cache.jsonl
+**/.synthesis_telemetry.jsonl
+
+# Hugging Face upload staging directories
+hf_uploads/
+huggingface/
+
+# Allow-list — fixtures for tests must stay tracked
+!Trainforge/tests/fixtures/**/instruction_pairs.jsonl
+!Trainforge/tests/fixtures/**/preference_pairs.jsonl
+!Trainforge/tests/fixtures/**/eval_report.json
+!Trainforge/tests/fixtures/**/model_card.json
