@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ed4all/schemas/taxonomies/lo_hierarchy.json",
+  "title": "Learning-objective hierarchy prefix taxonomy",
+  "description": "Prefix-to-hierarchy-level mapping for LO IDs of form <PREFIX>-<NN>. TO/CO are CONSUMED today; the rest are forward-declared so course families adopting them don't need a code edit.",
+  "prefixes": {
+    "TO": "terminal",
+    "CO": "chapter",
+    "MO": "module",
+    "PO": "program",
+    "UO": "unit",
+    "LO": "lesson",
+    "SO": "session"
+  }
+}

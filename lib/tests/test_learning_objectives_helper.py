@@ -109,10 +109,20 @@ def test_hierarchy_from_id_round_trip():
         assert hierarchy_from_id(co_id) == "chapter"
 
 
-def test_hierarchy_from_id_rejects_unknown_prefix():
-    # Valid pattern but not a known hierarchy prefix.
+def test_hierarchy_from_id_rejects_unregistered_prefix():
+    # Wave 133b: registered-but-currently-unconsumed prefixes
+    # (MO/PO/UO/LO/SO) succeed and return their hierarchy. Only
+    # genuinely-unregistered prefixes (BIO, XX, ZZ) raise.
+    assert hierarchy_from_id("MO-01") == "module"
+    assert hierarchy_from_id("PO-12") == "program"
+    assert hierarchy_from_id("UO-03") == "unit"
+    assert hierarchy_from_id("LO-04") == "lesson"
+    assert hierarchy_from_id("SO-05") == "session"
+    # Unregistered prefixes still raise.
     with pytest.raises(ValueError, match="prefix"):
         hierarchy_from_id("BIO-01")
+    with pytest.raises(ValueError, match="prefix"):
+        hierarchy_from_id("ZZ-99")
     with pytest.raises(ValueError, match="prefix"):
         hierarchy_from_id("XX-99")
 
