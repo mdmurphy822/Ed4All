@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all/schemas/training/schema_translation_catalog.schema.json",
+  "title": "Schema Translation Catalog",
+  "description": "Wave 133d / Plan-2 P1#7: Per-family schema-to-English translation catalog. Lives at schemas/training/schema_translation_catalog.<family>.yaml. Loaded by Trainforge.generators.schema_translation_generator._load_form_data, dispatched on PropertyManifest.family. The rdf_shacl family currently has no YAML on disk — the in-Python _RDF_SHACL_FALLBACK_FORM_DATA dict is the byte-identical fallback. New course families ship their YAML against this schema.",
+  "type": "object",
+  "required": ["forms"],
+  "properties": {
+    "family": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Course-family identifier matching the corresponding property_manifest.<family>.yaml's family field. Optional but recommended for cross-reference."
+    },
+    "description": {
+      "type": "string",
+      "description": "Optional one-paragraph rationale: which surface forms this catalog covers and why."
+    },
+    "forms": {
+      "type": "object",
+      "minProperties": 1,
+      "description": "Map keyed by primary CURIE (e.g. 'sh:datatype'). Each entry seeds the six template families authored by the generator (definition / usage / comparison / reasoning / pitfall / combination). CURIEs absent from this map are skipped with a warning at synthesis time.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["short_name"],
+        "properties": {
+          "short_name": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Human-readable short name for the construct (e.g. 'datatype' for sh:datatype). Used in decision-capture rationale interpolation."
+          },
+          "definitions": {
+            "type": "array",
+            "description": "Hand-curated definition strings rendering the CURIE in different cognitive angles (formal-spec / pedagogical / context-anchored / etc.). Each becomes one schema_translation.definition pair via a rotating prompt frame.",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "usage_examples": {
+            "type": "array",
+            "description": "List of (prompt, completion) pairs showing concrete TTL usage. Authored fully — no prompt frame applied. Each becomes one schema_translation.usage pair.",
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {"type": "string", "minLength": 1}
+            }
+          },
+          "comparison_targets": {
+            "type": "array",
+            "description": "List of (other_curie, contrast_explanation) pairs. The generator wraps with a comparison prompt frame; the completion must contain BOTH the primary CURIE and the secondary CURIE literally for preserve_tokens recognition.",
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {"type": "string", "minLength": 1}
+            }
+          },
+          "reasoning_scenarios": {
+            "type": "array",
+            "description": "List of (scenario_prompt, completion_with_curie) pairs probing applied reasoning. Authored fully.",
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {"type": "string", "minLength": 1}
+            }
+          },
+          "pitfalls": {
+            "type": "array",
+            "description": "List of (scenario_prompt, completion_with_curie) pairs documenting error modes + corrections. Authored fully.",
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {"type": "string", "minLength": 1}
+            }
+          },
+          "combinations": {
+            "type": "array",
+            "description": "List of (other_curie, composition_explanation) pairs. The generator wraps with a combination prompt frame; the completion must contain BOTH the primary CURIE and the secondary CURIE literally.",
+            "items": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": {"type": "string", "minLength": 1}
+            }
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
