@@ -1915,15 +1915,22 @@ class CourseProcessor:
         # Wave 76: also filter through the concept classifier so JSON-LD
         # keyTerms can't reintroduce pedagogical scaffolding / fragments
         # that ``_extract_concept_tags`` already rejected.
+        # Wave 130d: also strip trailing LO-ref suffix (-co-NN / -to-NN)
+        # so downstream consumers see clean concept slugs and don't
+        # bleed `co 15` / `to 03` artifact tokens into paraphrase prompts.
         from lib.ontology.concept_classifier import (
             canonicalize_alias as _canon_alias,
             classify_concept as _classify,
             is_droppable_class as _is_droppable,
         )
+        from lib.ontology.slugs import strip_lo_ref_suffix as _strip_lo_ref
         for kt in key_terms or []:
             term = kt.get("term") if isinstance(kt, dict) else kt
             tag = normalize_tag(term or "")
             if not tag or len(tag) < 3:
+                continue
+            tag = _strip_lo_ref(tag)
+            if not tag:
                 continue
             tag = _canon_alias(tag)
             if tag in concept_tags:
@@ -2561,6 +2568,7 @@ class CourseProcessor:
     def _extract_concept_tags(self, text: str, item: Dict[str, Any]) -> List[str]:
         # Wave 76: filter at extraction time. Pipeline shape:
         #   normalize_tag (HTML-decoded, slugified)
+        #   → strip_lo_ref_suffix (drop -co-NN / -to-NN suffix; Wave 130d)
         #   → canonicalize_alias (rdfxml → rdf-xml, ttl → turtle, …)
         #   → classify_concept (rule-based class assignment)
         #   → is_droppable_class (reject pedagogy / assessment-options
@@ -2570,17 +2578,27 @@ class CourseProcessor:
         # Wave 75's classifier was post-hoc — it labeled but didn't
         # filter, so pollution still entered chunks ``concept_tags``
         # and the resulting concept_graph. Wave 76 closes the loop.
+        # Wave 130d: ``OBJECTIVE_CODE_RE`` already filters pure LO codes
+        # like ``co-15`` from the candidate stream upstream;
+        # ``strip_lo_ref_suffix`` here handles the *compound* form
+        # ``property-paths-co-15`` that escapes that filter because the
+        # leading concept stem is non-empty. Strip is centralized in
+        # ``_try_add`` so every entry path benefits.
         from lib.ontology.concept_classifier import (
             canonicalize_alias,
             classify_concept,
             is_droppable_class,
             singular_form,
         )
+        from lib.ontology.slugs import strip_lo_ref_suffix
 
         tags: List[str] = []
 
         def _try_add(tag: str) -> bool:
             """Filter + dedup + add. Returns True iff appended."""
+            if not tag:
+                return False
+            tag = strip_lo_ref_suffix(tag)
             if not tag:
                 return False
             tag = canonicalize_alias(tag)

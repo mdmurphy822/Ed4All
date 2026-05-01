@@ -404,6 +404,149 @@ def test_all_three_callers_agree_on_plain_input(
     )
 
 
+# ---------------------------------------------------------------------------
+# Wave 130d: strip_lo_ref_suffix + deslugify_concept
+#
+# Concept-tag slugs built from ``CO-NN`` / ``TO-NN`` learning-objective refs
+# (e.g. ``property-paths-co-15``) used to bleed ``co 15`` / ``to 03`` artifact
+# tokens into prompt text via ``slug.replace("-", " ")``. The new helpers
+# strip the LO-ref suffix before the deslug transform.
+# ---------------------------------------------------------------------------
+
+
+def test_strip_lo_ref_suffix_removes_co_NN():
+    from lib.ontology.slugs import strip_lo_ref_suffix
+    assert strip_lo_ref_suffix("property-paths-co-15") == "property-paths"
+
+
+def test_strip_lo_ref_suffix_removes_to_NN():
+    from lib.ontology.slugs import strip_lo_ref_suffix
+    assert strip_lo_ref_suffix("subqueries-to-03") == "subqueries"
+
+
+def test_strip_lo_ref_suffix_handles_3_digit_lo_code():
+    """Three-digit LO codes like ``co-100`` are within the {1,3} range."""
+    from lib.ontology.slugs import strip_lo_ref_suffix
+    assert strip_lo_ref_suffix("alpha-co-100") == "alpha"
+
+
+def test_strip_lo_ref_suffix_preserves_legitimate_to():
+    """``map-to-existing-vocabularies`` contains ``to-`` but not as a
+    numeric LO ref — the trailing token isn't a digit so the regex
+    doesn't match. False-positive guard."""
+    from lib.ontology.slugs import strip_lo_ref_suffix
+    assert (
+        strip_lo_ref_suffix("map-to-existing-vocabularies")
+        == "map-to-existing-vocabularies"
+    )
+
+
+def test_strip_lo_ref_suffix_preserves_pattern_to_remember():
+    from lib.ontology.slugs import strip_lo_ref_suffix
+    assert strip_lo_ref_suffix("pattern-to-remember") == "pattern-to-remember"
+
+
+def test_strip_lo_ref_suffix_preserves_attach_to_the_focus():
+    from lib.ontology.slugs import strip_lo_ref_suffix
+    assert strip_lo_ref_suffix("attach-to-the-focus") == "attach-to-the-focus"
+
+
+def test_strip_lo_ref_suffix_preserves_default_to_core_justify():
+    from lib.ontology.slugs import strip_lo_ref_suffix
+    assert (
+        strip_lo_ref_suffix("default-to-core-justify")
+        == "default-to-core-justify"
+    )
+
+
+def test_strip_lo_ref_suffix_case_insensitive():
+    """Concept slugs are normally lowercase, but the regex is
+    case-insensitive so a hand-authored ``Property-Paths-CO-15`` also
+    strips cleanly."""
+    from lib.ontology.slugs import strip_lo_ref_suffix
+    assert strip_lo_ref_suffix("Property-Paths-CO-15") == "Property-Paths"
+
+
+def test_strip_lo_ref_suffix_handles_empty_string():
+    from lib.ontology.slugs import strip_lo_ref_suffix
+    assert strip_lo_ref_suffix("") == ""
+
+
+def test_strip_lo_ref_suffix_handles_none():
+    """Falsy input doesn't raise — matches ``canonical_slug``'s contract."""
+    from lib.ontology.slugs import strip_lo_ref_suffix
+    assert strip_lo_ref_suffix(None or "") == ""
+
+
+def test_strip_lo_ref_suffix_pure_lo_code_unchanged():
+    """A bare ``co-15`` (no concept stem) lacks the leading hyphen the
+    regex anchors against, so it passes through unchanged. Pure LO
+    codes are filtered upstream by ``OBJECTIVE_CODE_RE`` in the
+    extraction call site — the strip helper is only responsible for
+    the *compound* ``stem-co-NN`` form."""
+    from lib.ontology.slugs import strip_lo_ref_suffix
+    assert strip_lo_ref_suffix("co-15") == "co-15"
+    assert strip_lo_ref_suffix("to-03") == "to-03"
+
+
+def test_strip_lo_ref_suffix_no_suffix_unchanged():
+    """Slugs without a trailing LO-ref are passed through unchanged."""
+    from lib.ontology.slugs import strip_lo_ref_suffix
+    assert strip_lo_ref_suffix("property-paths") == "property-paths"
+    assert strip_lo_ref_suffix("sub-class-of") == "sub-class-of"
+    assert strip_lo_ref_suffix("rdf-graph") == "rdf-graph"
+
+
+def test_deslugify_concept_strips_lo_then_spaces():
+    from lib.ontology.slugs import deslugify_concept
+    assert deslugify_concept("property-paths-co-15") == "property paths"
+
+
+def test_deslugify_concept_strips_to_then_spaces():
+    from lib.ontology.slugs import deslugify_concept
+    assert deslugify_concept("subqueries-to-03") == "subqueries"
+
+
+def test_deslugify_concept_preserves_subClassOf_shape():
+    """``canonical_slug`` lowercases first so ``subClassOf`` arrives as
+    a single hyphen-less token; deslugify_concept leaves it alone."""
+    from lib.ontology.slugs import deslugify_concept
+    assert deslugify_concept("subclassof") == "subclassof"
+
+
+def test_deslugify_concept_handles_empty_string():
+    from lib.ontology.slugs import deslugify_concept
+    assert deslugify_concept("") == ""
+
+
+def test_deslugify_concept_handles_underscores():
+    """Underscore-to-space transform from the legacy
+    ``.replace("-", " ").replace("_", " ")`` chain is preserved."""
+    from lib.ontology.slugs import deslugify_concept
+    assert deslugify_concept("rdf_type") == "rdf type"
+
+
+def test_deslugify_concept_no_lo_ref_just_spaces():
+    """A concept slug without an LO-ref suffix deslugs identically to
+    the legacy chain."""
+    from lib.ontology.slugs import deslugify_concept
+    assert deslugify_concept("property-paths") == "property paths"
+    assert deslugify_concept("rdf-graph") == "rdf graph"
+
+
+def test_deslugify_concept_false_positive_guards():
+    """``map-to-existing-vocabularies``, ``pattern-to-remember``,
+    ``attach-to-the-focus`` deslug as if there was no LO-ref suffix —
+    proving the regex doesn't strip legitimate ``-to-`` substrings."""
+    from lib.ontology.slugs import deslugify_concept
+    assert (
+        deslugify_concept("map-to-existing-vocabularies")
+        == "map to existing vocabularies"
+    )
+    assert deslugify_concept("pattern-to-remember") == "pattern to remember"
+    assert deslugify_concept("attach-to-the-focus") == "attach to the focus"
+
+
 def test_canonical_slug_is_single_source_of_truth():
     """Verify the three call sites actually import from lib.ontology.slugs.
 

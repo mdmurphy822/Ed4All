@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import re
 
-__all__ = ["canonical_slug"]
+__all__ = ["canonical_slug", "strip_lo_ref_suffix", "deslugify_concept"]
 
 
 # Pre-compiled character classes.
@@ -45,6 +45,16 @@ _SLUG_STRIP_DISALLOWED = re.compile(r"[^a-z0-9\s-]")
 
 # Whitespace runs → single hyphen.
 _SLUG_WS_COLLAPSE = re.compile(r"\s+")
+
+# Wave 130d: trailing learning-objective-ref suffix on concept-tag slugs.
+# Concept tags built from ``CO-NN`` / ``TO-NN`` LO refs land in chunks
+# as ``property-paths-co-15`` / ``subqueries-to-03``; the pair-render
+# pipeline used to ``.replace("-", " ")`` those slugs and bleed
+# ``property paths co 15`` artifact tokens into prompt text. The
+# pattern requires a trailing numeric LO code (1-3 digits), so
+# legitimate slugs like ``map-to-existing-vocabularies``,
+# ``pattern-to-remember``, ``attach-to-the-focus`` are untouched.
+_LO_REF_SUFFIX_RE = re.compile(r"-(co|to)-\d{1,3}$", re.IGNORECASE)
 
 
 def canonical_slug(text: str) -> str:
@@ -81,3 +91,67 @@ def canonical_slug(text: str) -> str:
     stripped = _SLUG_STRIP_DISALLOWED.sub("", lowered)
     hyphenated = _SLUG_WS_COLLAPSE.sub("-", stripped)
     return hyphenated.strip("-")
+
+
+def strip_lo_ref_suffix(slug: str) -> str:
+    """Strip a trailing learning-objective-ref suffix from a concept slug.
+
+    Concept tags built from ``CO-NN`` / ``TO-NN`` learning-objective refs
+    land in chunks as ``property-paths-co-15`` / ``subqueries-to-03``; this
+    helper removes the LO-ref suffix so downstream consumers (concept graph,
+    prereq recap, audit script, deslugify) see the clean concept slug.
+
+        >>> strip_lo_ref_suffix("property-paths-co-15")
+        'property-paths'
+        >>> strip_lo_ref_suffix("subqueries-to-03")
+        'subqueries'
+        >>> strip_lo_ref_suffix("map-to-existing-vocabularies")
+        'map-to-existing-vocabularies'
+        >>> strip_lo_ref_suffix("pattern-to-remember")
+        'pattern-to-remember'
+        >>> strip_lo_ref_suffix("Property-Paths-CO-15")
+        'Property-Paths'
+        >>> strip_lo_ref_suffix("")
+        ''
+
+    The pattern is anchored to end-of-string and requires a numeric
+    suffix (1-3 digits), so legitimate ``-(co|to)-`` substrings without
+    a trailing LO code are untouched.
+
+    Args:
+        slug: Concept slug; may carry a trailing ``-(co|to)-NN`` suffix.
+            Falsy input (``""``, ``None``) returns ``""`` without raising.
+
+    Returns:
+        The slug with any trailing LO-ref suffix removed.
+    """
+    return _LO_REF_SUFFIX_RE.sub("", slug or "")
+
+
+def deslugify_concept(slug: str) -> str:
+    """Render a concept slug as human-readable text for prompt templates.
+
+    Strips an LO-ref suffix (Wave 130d) before the hyphen-to-space
+    transform so concept tags built from ``CO-NN`` / ``TO-NN``
+    learning-objective refs don't bleed into prompts as ``co 15`` /
+    ``to 03`` artifact tokens.
+
+        >>> deslugify_concept("property-paths-co-15")
+        'property paths'
+        >>> deslugify_concept("subqueries-to-03")
+        'subqueries'
+        >>> deslugify_concept("rdf_type")
+        'rdf type'
+        >>> deslugify_concept("")
+        ''
+
+    Args:
+        slug: Concept slug; may carry a trailing ``-(co|to)-NN`` suffix
+            and/or hyphens / underscores. Falsy input returns ``""``.
+
+    Returns:
+        A human-readable phrase suitable for filling into prompt
+        templates (e.g. ``"Explain {topic}"``).
+    """
+    cleaned = strip_lo_ref_suffix(slug)
+    return cleaned.replace("-", " ").replace("_", " ")
