@@ -550,10 +550,12 @@ def build_prereq_recap(
 
 def _label_from_id(concept_id: str) -> str:
     """Cheap label fallback when no label_lookup is supplied."""
+    from lib.ontology.slugs import deslugify_concept
+
     raw = concept_id
     if raw.startswith("concept:"):
         raw = raw[len("concept:") :]
-    return raw.replace("-", " ").replace("_", " ")
+    return deslugify_concept(raw)
 
 
 def build_concept_label_lookup(graph: Dict[str, Any]) -> Dict[str, str]:

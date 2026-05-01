@@ -50,6 +50,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.decision_capture import DecisionCapture  # noqa: E402
+from lib.ontology.slugs import deslugify_concept  # noqa: E402
 from lib.validators.content_type import (  # noqa: E402
     assert_chunk_type,
     validate_chunk_type,
@@ -415,7 +416,7 @@ def _build_misconception_dpo_pair(
     primary_concept = ""
     tags = chunk.get("concept_tags") or []
     if tags:
-        primary_concept = str(tags[0]).replace("-", " ").replace("_", " ")
+        primary_concept = deslugify_concept(str(tags[0]))
     elif refs:
         primary_concept = f"learning outcome {refs[0]}"
     else:
