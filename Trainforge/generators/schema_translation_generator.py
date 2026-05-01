@@ -73,7 +73,7 @@ import logging
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -129,6 +129,21 @@ class SchemaTranslationStats:
     per_family: Dict[str, int] = field(default_factory=dict)
 
 
+_VALID_ANCHORED_STATUS: Tuple[str, ...] = ("complete", "degraded_placeholder")
+# Wave 135a placeholder strings (must be searchable via the literal
+# "[degraded:" prefix so operators / Codex / Qwen can grep all 34 stub
+# entries trivially).
+_DEGRADED_DEFINITION_STUB = (
+    "[degraded: anchored definition not yet authored — see Wave 135a contract]"
+)
+_DEGRADED_USAGE_PROMPT_STUB = (
+    "[degraded: anchored usage prompt not yet authored]"
+)
+_DEGRADED_USAGE_COMPLETION_STUB = (
+    "[degraded: anchored usage answer not yet authored]"
+)
+
+
 @dataclass
 class SurfaceFormData:
     """Hand-curated data for one CURIE.
@@ -139,6 +154,17 @@ class SurfaceFormData:
     primary CURIE literally (or the comparison/combination secondary
     CURIE in the off-axis fields) so ``preserve_tokens`` recognises
     the surface form.
+
+    Wave 135a: ``anchored_status`` discriminator. ``"complete"`` entries
+    carry real anchored content (their definitions / usage_examples
+    are fit to be embedded in training pairs); ``"degraded_placeholder"``
+    entries satisfy the structural contract via stub strings but MUST
+    fall back to token-stuffing during force-injection (Wave 135b)
+    with a WARN log + decision-capture event so operators see the
+    degraded coverage. The 34 placeholder entries shipped in Wave 135a
+    flip to ``"complete"`` over time as operator / Codex / Qwen backfills
+    the anchored content per the project's "Claude does not generate
+    training-data corpus content" operating principle.
     """
 
     curie: str
@@ -153,6 +179,9 @@ class SurfaceFormData:
     pitfalls: List[Tuple[str, str]] = field(default_factory=list)
     # (other_curie, composition_explanation including both CURIEs)
     combinations: List[Tuple[str, str]] = field(default_factory=list)
+    # Wave 135a: discriminator. Default "complete" preserves the
+    # six pre-Wave-135a entries' shape without reauthoring.
+    anchored_status: Literal["complete", "degraded_placeholder"] = "complete"
 
 
 # -----------------------------------------------------------------------------
@@ -342,6 +371,7 @@ _RDF_SHACL_FALLBACK_FORM_DATA: Dict[str, SurfaceFormData] = {
                 "sh:datatype lives inside a sh:PropertyShape, which is referenced from a sh:NodeShape via sh:property. So a NodeShape ex:Person → sh:property → [ sh:path ex:age ; sh:datatype xsd:integer ] is the canonical chain wiring sh:datatype onto a class.",
             ),
         ],
+        anchored_status="complete",
     ),
     "sh:class": SurfaceFormData(
         curie="sh:class",
@@ -505,6 +535,7 @@ _RDF_SHACL_FALLBACK_FORM_DATA: Dict[str, SurfaceFormData] = {
                 "sh:class is a constraint inside a sh:PropertyShape, which is referenced via sh:property from a sh:NodeShape. The full chain: NodeShape → sh:property → PropertyShape with sh:class → constrained values.",
             ),
         ],
+        anchored_status="complete",
     ),
     "sh:NodeShape": SurfaceFormData(
         curie="sh:NodeShape",
@@ -668,6 +699,7 @@ _RDF_SHACL_FALLBACK_FORM_DATA: Dict[str, SurfaceFormData] = {
                 "sh:NodeShape + sh:targetSubjectsOf ex:rel: relation-defined scope. Every subject of an ex:rel triple becomes a focus node — useful when membership is defined by participation in a relation rather than rdf:type.",
             ),
         ],
+        anchored_status="complete",
     ),
     "sh:PropertyShape": SurfaceFormData(
         curie="sh:PropertyShape",
@@ -831,6 +863,7 @@ _RDF_SHACL_FALLBACK_FORM_DATA: Dict[str, SurfaceFormData] = {
                 "sh:PropertyShape requires sh:path — the two are inseparable. The path expression can be a single IRI, a sequence, an inverse, an alternative, or a zero-or-more — whatever SHACL property paths permit.",
             ),
         ],
+        anchored_status="complete",
     ),
     "rdfs:subClassOf": SurfaceFormData(
         curie="rdfs:subClassOf",
@@ -994,6 +1027,7 @@ _RDF_SHACL_FALLBACK_FORM_DATA: Dict[str, SurfaceFormData] = {
                 "rdfs:subClassOf + rdfs:subPropertyOf: class-and-property hierarchies. The two predicates compose — together they form the complete RDFS schema-extension surface for vocabularies that subclass both classes and properties.",
             ),
         ],
+        anchored_status="complete",
     ),
     "owl:sameAs": SurfaceFormData(
         curie="owl:sameAs",
@@ -1157,8 +1191,423 @@ _RDF_SHACL_FALLBACK_FORM_DATA: Dict[str, SurfaceFormData] = {
                 "owl:sameAs + owl:NamedIndividual: explicit identity for declared individuals. OWL DL strict mode prefers `a owl:NamedIndividual` on every individual; owl:sameAs operates between such declarations to merge them in the reasoner.",
             ),
         ],
+        anchored_status="complete",
+    ),
+    # ---------------------------------------------------------------------
+    # Wave 135a: 34 degraded-placeholder entries covering the remainder of
+    # the rdf-shacl property manifest. Each carries one stub definition +
+    # one stub usage_example so it satisfies the structural contract
+    # (>=1 def + >=1 usage_example) but is explicitly tagged
+    # anchored_status="degraded_placeholder" so:
+    #   1. validate_form_data_contract can count degraded vs complete.
+    #   2. generate_schema_translation_pairs() skips it (no "[degraded:"
+    #      strings ever land in instruction_pairs.jsonl).
+    #   3. Wave 135b's force-injection path can dispatch on the status
+    #      field and emit a WARN log + decision-capture event.
+    #
+    # Operator / Codex / Qwen backfills the anchored content over time
+    # per the project's "Claude does not generate training-data corpus
+    # content" operating principle. Each backfilled entry flips
+    # anchored_status="degraded_placeholder" -> "complete" and silently
+    # improves the adapter's anchored-injection coverage.
+    #
+    # Operators searching for degraded entries can grep for the literal
+    # token "[degraded:" — it appears in every stub definition + stub
+    # usage_example string.
+    # ---------------------------------------------------------------------
+    "sh:minCount": SurfaceFormData(
+        curie="sh:minCount",
+        short_name="sh:minCount",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "sh:maxCount": SurfaceFormData(
+        curie="sh:maxCount",
+        short_name="sh:maxCount",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "sh:path": SurfaceFormData(
+        curie="sh:path",
+        short_name="sh:path",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "sh:nodeKind": SurfaceFormData(
+        curie="sh:nodeKind",
+        short_name="sh:nodeKind",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "sh:property": SurfaceFormData(
+        curie="sh:property",
+        short_name="sh:property",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "sh:targetClass": SurfaceFormData(
+        curie="sh:targetClass",
+        short_name="sh:targetClass",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "sh:closed": SurfaceFormData(
+        curie="sh:closed",
+        short_name="sh:closed",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "sh:in": SurfaceFormData(
+        curie="sh:in",
+        short_name="sh:in",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "sh:pattern": SurfaceFormData(
+        curie="sh:pattern",
+        short_name="sh:pattern",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "sh:focusNode": SurfaceFormData(
+        curie="sh:focusNode",
+        short_name="sh:focusNode",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "sh:ValidationResult": SurfaceFormData(
+        curie="sh:ValidationResult",
+        short_name="sh:ValidationResult",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "sh:ValidationReport": SurfaceFormData(
+        curie="sh:ValidationReport",
+        short_name="sh:ValidationReport",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "sh:result": SurfaceFormData(
+        curie="sh:result",
+        short_name="sh:result",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "sh:Violation": SurfaceFormData(
+        curie="sh:Violation",
+        short_name="sh:Violation",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "rdf:type": SurfaceFormData(
+        curie="rdf:type",
+        short_name="rdf:type",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "rdf:Property": SurfaceFormData(
+        curie="rdf:Property",
+        short_name="rdf:Property",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "rdfs:domain": SurfaceFormData(
+        curie="rdfs:domain",
+        short_name="rdfs:domain",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "rdfs:range": SurfaceFormData(
+        curie="rdfs:range",
+        short_name="rdfs:range",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "rdfs:Class": SurfaceFormData(
+        curie="rdfs:Class",
+        short_name="rdfs:Class",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "rdfs:Resource": SurfaceFormData(
+        curie="rdfs:Resource",
+        short_name="rdfs:Resource",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "rdfs:comment": SurfaceFormData(
+        curie="rdfs:comment",
+        short_name="rdfs:comment",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "rdfs:label": SurfaceFormData(
+        curie="rdfs:label",
+        short_name="rdfs:label",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "rdfs:Literal": SurfaceFormData(
+        curie="rdfs:Literal",
+        short_name="rdfs:Literal",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "owl:disjointWith": SurfaceFormData(
+        curie="owl:disjointWith",
+        short_name="owl:disjointWith",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "owl:equivalentClass": SurfaceFormData(
+        curie="owl:equivalentClass",
+        short_name="owl:equivalentClass",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "owl:Class": SurfaceFormData(
+        curie="owl:Class",
+        short_name="owl:Class",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "xsd:string": SurfaceFormData(
+        curie="xsd:string",
+        short_name="xsd:string",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "xsd:integer": SurfaceFormData(
+        curie="xsd:integer",
+        short_name="xsd:integer",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "xsd:date": SurfaceFormData(
+        curie="xsd:date",
+        short_name="xsd:date",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "xsd:dateTime": SurfaceFormData(
+        curie="xsd:dateTime",
+        short_name="xsd:dateTime",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "foaf:Person": SurfaceFormData(
+        curie="foaf:Person",
+        short_name="foaf:Person",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "foaf:knows": SurfaceFormData(
+        curie="foaf:knows",
+        short_name="foaf:knows",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "foaf:Agent": SurfaceFormData(
+        curie="foaf:Agent",
+        short_name="foaf:Agent",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
+    ),
+    "dcterms:creator": SurfaceFormData(
+        curie="dcterms:creator",
+        short_name="dcterms:creator",
+        definitions=[_DEGRADED_DEFINITION_STUB],
+        usage_examples=[
+            (_DEGRADED_USAGE_PROMPT_STUB, _DEGRADED_USAGE_COMPLETION_STUB),
+        ],
+        anchored_status="degraded_placeholder",
     ),
 }
+
+
+# -----------------------------------------------------------------------------
+# Wave 135a: FORM_DATA coverage contract validator.
+# -----------------------------------------------------------------------------
+
+
+def validate_form_data_contract(
+    form_data: Dict[str, SurfaceFormData],
+    manifest_curies: Iterable[str],
+) -> Dict[str, Any]:
+    """Wave 135a — enforce the FORM_DATA coverage contract.
+
+    This is the merge gate for Wave 135b. The user-stipulated safety
+    contract is:
+
+        For every CURIE in the rdf-shacl property manifest:
+          1. >=1 definition entry (real content OR explicit
+             ``[degraded:`` placeholder).
+          2. >=1 usage_example entry (real content OR explicit
+             ``[degraded:`` placeholder).
+          3. No CURIE falls back to token-stuffing UNLESS its
+             ``anchored_status`` is explicitly marked
+             ``"degraded_placeholder"``.
+
+    Args:
+        form_data: The catalog dict (typically
+            ``_RDF_SHACL_FALLBACK_FORM_DATA``) keyed by CURIE.
+        manifest_curies: Iterable of CURIEs declared by the property
+            manifest. Each one must have an entry in ``form_data`` with
+            >=1 definition AND >=1 usage_example.
+
+    Returns:
+        Dict with keys:
+          * ``passed``: bool — True iff every manifest CURIE is in
+            form_data with >=1 def + >=1 usage_example AND every entry's
+            ``anchored_status`` is one of the two valid values.
+          * ``missing_curies``: list[str] — manifest CURIEs not in
+            form_data at all (sorted).
+          * ``incomplete_curies``: list[str] — entries failing >=1 def
+            + >=1 usage_example (sorted).
+          * ``degraded_count``: int — # of entries in form_data with
+            ``anchored_status="degraded_placeholder"``.
+          * ``complete_count``: int — # of entries in form_data with
+            ``anchored_status="complete"``.
+          * ``invalid_status_curies``: list[str] — entries whose
+            ``anchored_status`` is not in the canonical set (sorted).
+    """
+    manifest_set = list(manifest_curies)
+    missing: List[str] = []
+    incomplete: List[str] = []
+    invalid_status: List[str] = []
+
+    for curie in manifest_set:
+        entry = form_data.get(curie)
+        if entry is None:
+            missing.append(curie)
+            continue
+        if len(entry.definitions) < 1 or len(entry.usage_examples) < 1:
+            incomplete.append(curie)
+
+    degraded_count = 0
+    complete_count = 0
+    for curie, entry in form_data.items():
+        status = entry.anchored_status
+        if status == "complete":
+            complete_count += 1
+        elif status == "degraded_placeholder":
+            degraded_count += 1
+        else:
+            invalid_status.append(curie)
+
+    passed = (
+        not missing
+        and not incomplete
+        and not invalid_status
+    )
+
+    return {
+        "passed": passed,
+        "missing_curies": sorted(missing),
+        "incomplete_curies": sorted(incomplete),
+        "degraded_count": degraded_count,
+        "complete_count": complete_count,
+        "invalid_status_curies": sorted(invalid_status),
+    }
 
 
 def _last_event_id(capture: Any) -> str:
@@ -1552,6 +2001,24 @@ def generate_schema_translation_pairs(
     # using the rdf_shacl catalog for non-RDF families).
     form_data = _load_form_data(manifest.family)
 
+    # Wave 135a: filter out degraded-placeholder entries BEFORE catalog
+    # walk so no pair body ever contains the literal "[degraded:" stub
+    # text. Degraded entries are structural-contract scaffolding only;
+    # the schema_translation generator emits pairs for ``"complete"``
+    # entries exclusively. Wave 135b's force-injection path hooks the
+    # same status field to know which CURIEs need token-stuffing fallback.
+    degraded_skipped: List[str] = [
+        curie
+        for curie, entry in form_data.items()
+        if entry.anchored_status == "degraded_placeholder"
+    ]
+    if degraded_skipped:
+        form_data = {
+            curie: entry
+            for curie, entry in form_data.items()
+            if entry.anchored_status != "degraded_placeholder"
+        }
+
     # Surface forms missing from the table.
     seen_curies = set()
     for prop in manifest.properties:
@@ -1646,6 +2113,20 @@ def generate_schema_translation_pairs(
 
     stats.surface_forms_used = len(seen_curies)
 
+    # Wave 135a: end-of-run summary warning when one or more
+    # degraded-placeholder entries were skipped. Operator action
+    # (manifest backfill) flips them to ``"complete"`` over time.
+    if degraded_skipped:
+        logger.warning(
+            "schema_translation_generator: skipped %d "
+            "degraded-placeholder entries (anchored_status="
+            "'degraded_placeholder'); these contribute zero pairs "
+            "until operator backfill flips them to "
+            "anchored_status='complete'. CURIEs: %s",
+            len(degraded_skipped),
+            sorted(degraded_skipped),
+        )
+
     return pairs, stats
 
 
@@ -1654,6 +2135,8 @@ __all__ = [
     "SchemaTranslationStats",
     "SurfaceFormData",
     "generate_schema_translation_pairs",
+    # Wave 135a contract surface.
+    "validate_form_data_contract",
     # Wave 133d loader-pattern surface — exported so tests can verify
     # the rdf_shacl fallback and so future per-family YAML callers
     # can re-use the loader without touching internals.

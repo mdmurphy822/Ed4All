@@ -89,6 +89,7 @@
         "example_selection",
         "existing_content_usage",
         "file_creation",
+        "form_data_degraded_placeholder_skipped",
         "format_decision",
         "heading_assignment",
         "hyperparameter_selection",
