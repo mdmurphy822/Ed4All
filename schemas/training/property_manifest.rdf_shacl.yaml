@@ -1,4 +1,10 @@
 family: rdf_shacl
+# Wave 132d: explicit persona for the rdf-shacl-* course family. Threaded
+# into Trainforge.synthesize_training._INSTRUCTION_PROMPT_FRAMES variant 1
+# so the persona prefix matches the course's actual learner. Pre-Wave-132d
+# the prefix was hardcoded "For an RDF/SHACL learner, " inside the frame
+# template — wrong for any non-SHACL course.
+learner_persona: "an RDF/SHACL learner"
 description: |
   RDF/SHACL surface forms every rdf-shacl-* course's SLM adapter must
   teach. Coverage and per-property accuracy gates fail closed below the

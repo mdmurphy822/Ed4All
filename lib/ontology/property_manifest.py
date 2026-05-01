@@ -50,11 +50,23 @@ class PropertyEntry:
         return any(sf in text for sf in self.surface_forms)
 
 
+#: Default learner persona injected into the instruction-prompt persona
+#: frame when the manifest doesn't declare one. Matches the
+#: pre-Wave-132d hardcoded surface that read "For an RDF/SHACL learner,"
+#: by way of substituting a generic phrase for any course family.
+DEFAULT_LEARNER_PERSONA: str = "a learner"
+
+
 @dataclass
 class PropertyManifest:
     family: str
     properties: List[PropertyEntry]
     description: Optional[str] = None
+    # Wave 132d: short noun-phrase for the persona-prefix variant in
+    # Trainforge.synthesize_training._INSTRUCTION_PROMPT_FRAMES. Default
+    # is ``DEFAULT_LEARNER_PERSONA`` when absent so courses without a
+    # manifest still get a sensible (generic) persona.
+    learner_persona: str = DEFAULT_LEARNER_PERSONA
 
     @property
     def by_id(self) -> Dict[str, PropertyEntry]:
@@ -147,11 +159,20 @@ def load_property_manifest(
         )
         for p in payload["properties"]
     ]
+    learner_persona = payload.get("learner_persona")
+    if not isinstance(learner_persona, str) or not learner_persona.strip():
+        learner_persona = DEFAULT_LEARNER_PERSONA
     return PropertyManifest(
         family=str(payload["family"]),
         properties=properties,
         description=payload.get("description"),
+        learner_persona=learner_persona.strip(),
     )
 
 
-__all__ = ["PropertyEntry", "PropertyManifest", "load_property_manifest"]
+__all__ = [
+    "DEFAULT_LEARNER_PERSONA",
+    "PropertyEntry",
+    "PropertyManifest",
+    "load_property_manifest",
+]
