@@ -1092,6 +1092,211 @@ def run_synthesis(
         emitted_inst_prompts: set = set()
         emitted_pref_prompts: set = set()
 
+        # Wave 127: hoist deterministic generators ABOVE the chunk loop.
+        # The four generators (kg_metadata, violation_detection,
+        # abstention, schema_translation) walk fixture catalogs / the
+        # pedagogy graph / the property manifest — none of them iterate
+        # over chunks. Running them upfront means their pairs land in
+        # the .jsonl.in_progress sidecar within the first ~minute, so an
+        # operator can ``tail -f`` and verify all ``--with-*`` flags
+        # wired through without waiting for the multi-hour paraphrase
+        # loop to finish. A killed run mid-paraphrase preserves the
+        # deterministic output in the sidecar instead of losing it.
+
+        # Audit 2026-04-30: append KG-metadata pairs (yes/no membership
+        # probes mirroring faithfulness._RELATION_TEMPLATES). Closes the
+        # zero-KG-metadata-recall regression in the cc07cc76 corpus —
+        # the eval harness asks these questions, the corpus must teach
+        # them.
+        if with_kg_metadata:
+            from Trainforge.generators.kg_metadata_generator import (
+                generate_kg_metadata_pairs,
+            )
+            ped_path = _resolve_pedagogy_graph_path(
+                corpus_dir, pedagogy_graph_path,
+            )
+            if ped_path is None:
+                logger.warning(
+                    "with_kg_metadata=True but no pedagogy_graph.json on "
+                    "disk; skipping KG-metadata generator.",
+                )
+            else:
+                ped_payload = json.loads(
+                    ped_path.read_text(encoding="utf-8"),
+                )
+                kg_pairs, kg_stats = generate_kg_metadata_pairs(
+                    ped_payload,
+                    capture=capture,
+                    max_pairs=int(kg_metadata_max_pairs),
+                    seed=seed,
+                )
+                instruction_records.extend(kg_pairs)
+                stats.kg_metadata_pairs_emitted = kg_stats.pairs_emitted
+                stats.instruction_pairs_emitted += kg_stats.pairs_emitted
+                # Wave 127: mirror to .in_progress sidecar.
+                for _p in kg_pairs:
+                    inst_progress_fh.write(
+                        json.dumps(_p, ensure_ascii=False, sort_keys=True) + "\n"
+                    )
+                inst_progress_fh.flush()
+                logger.info(
+                    "Audit 2026-04-30: appended %d KG-metadata pairs "
+                    "(positives=%d, negatives=%d, capped=%s) sourced from %s",
+                    kg_stats.pairs_emitted,
+                    kg_stats.positives_emitted,
+                    kg_stats.negatives_emitted,
+                    kg_stats.capped_at_max_pairs,
+                    ped_path,
+                )
+
+        # Audit 2026-04-30: append violation-detection pairs (pyshacl-
+        # oracle-verified (graph, shape, valid?, reason) tuples). Closes
+        # the zero-negative-grounding regression — the corpus must teach
+        # the model to refuse a graph that violates a shape.
+        if with_violation_detection:
+            from Trainforge.generators.violation_generator import (
+                built_in_shape_catalog,
+                generate_violation_pairs,
+            )
+            # Build chunks_by_surface_form so violation pairs anchor to
+            # a chunk that actually teaches the constraint type, when
+            # one exists in the property manifest.
+            chunks_by_form: Dict[str, List[str]] = {}
+            if pilot_manifest is not None:
+                for chunk in chunks:
+                    cid = chunk.get("chunk_id")
+                    if not cid:
+                        continue
+                    text = str(chunk.get("text") or "")
+                    for sf in pilot_manifest.detect_surface_forms(text):
+                        chunks_by_form.setdefault(sf, []).append(str(cid))
+            try:
+                vio_pairs, vio_stats = generate_violation_pairs(
+                    capture=capture,
+                    fixtures=built_in_shape_catalog(),
+                    chunks_by_surface_form=chunks_by_form or None,
+                    seed=seed,
+                    max_pairs=violation_detection_max_pairs,
+                )
+            except RuntimeError as exc:
+                # pyshacl is optional. A missing dep should warn, not
+                # break the whole synthesis run.
+                logger.warning(
+                    "Audit 2026-04-30: violation generator skipped (%s)",
+                    exc,
+                )
+                vio_pairs, vio_stats = [], None
+            if vio_stats is not None:
+                instruction_records.extend(vio_pairs)
+                stats.violation_pairs_emitted = vio_stats.pairs_emitted
+                stats.instruction_pairs_emitted += vio_stats.pairs_emitted
+                # Wave 127: mirror to .in_progress sidecar.
+                for _p in vio_pairs:
+                    inst_progress_fh.write(
+                        json.dumps(_p, ensure_ascii=False, sort_keys=True) + "\n"
+                    )
+                inst_progress_fh.flush()
+                logger.info(
+                    "Audit 2026-04-30: appended %d violation-detection "
+                    "pairs (valid=%d, invalid=%d, oracle_disagreements=%d)",
+                    vio_stats.pairs_emitted,
+                    vio_stats.valid_pairs,
+                    vio_stats.invalid_pairs,
+                    vio_stats.oracle_disagreements,
+                )
+
+        # Wave 124 (audit 2026-04-30 follow-up): append abstention
+        # probes ('the source does not establish X'). Closes the
+        # cc07cc76 hallucination_rate=0.63 — the eval harness probes
+        # for absent edges and the corpus must teach the model to
+        # abstain rather than hallucinate yes-answers.
+        if with_abstention:
+            from Trainforge.generators.abstention_generator import (
+                generate_abstention_pairs,
+            )
+            ped_path = _resolve_pedagogy_graph_path(
+                corpus_dir, pedagogy_graph_path,
+            )
+            if ped_path is None:
+                logger.warning(
+                    "with_abstention=True but no pedagogy_graph.json "
+                    "on disk; skipping abstention generator.",
+                )
+            else:
+                ped_payload = json.loads(
+                    ped_path.read_text(encoding="utf-8"),
+                )
+                ab_pairs, ab_stats = generate_abstention_pairs(
+                    ped_payload,
+                    capture=capture,
+                    max_pairs=int(abstention_max_pairs),
+                    seed=seed,
+                )
+                instruction_records.extend(ab_pairs)
+                stats.abstention_pairs_emitted = ab_stats.pairs_emitted
+                stats.instruction_pairs_emitted += ab_stats.pairs_emitted
+                # Wave 127: mirror to .in_progress sidecar.
+                for _p in ab_pairs:
+                    inst_progress_fh.write(
+                        json.dumps(_p, ensure_ascii=False, sort_keys=True) + "\n"
+                    )
+                inst_progress_fh.flush()
+                logger.info(
+                    "Wave 124: appended %d abstention pairs (chunks_with_silent=%d, "
+                    "skipped_no_concepts=%d, capped=%s) from %s",
+                    ab_stats.pairs_emitted,
+                    ab_stats.chunks_with_silent,
+                    ab_stats.chunks_skipped_no_concepts,
+                    ab_stats.capped_at_max_pairs,
+                    ped_path,
+                )
+
+        # Wave 124 (audit 2026-04-30 follow-up): append schema-to-
+        # English bridge pairs. Walks the property manifest's surface
+        # forms (sh:datatype, rdfs:subClassOf, ...) and emits one
+        # definition + one usage pair per CURIE. Closes the schema-
+        # to-English gap behind faithfulness=0.37.
+        if with_schema_translation:
+            from Trainforge.generators.schema_translation_generator import (
+                generate_schema_translation_pairs,
+            )
+            manifest_for_st = pilot_manifest
+            if manifest_for_st is None:
+                # pilot_manifest is loaded for the property-coverage
+                # surface earlier. If no manifest is on disk for this
+                # course, schema-translation has nothing to bridge.
+                logger.warning(
+                    "with_schema_translation=True but no property "
+                    "manifest is on disk for this course; skipping "
+                    "schema-translation generator.",
+                )
+            else:
+                st_pairs, st_stats = generate_schema_translation_pairs(
+                    manifest_for_st,
+                    capture=capture,
+                    max_pairs=int(schema_translation_max_pairs),
+                    seed=seed,
+                )
+                instruction_records.extend(st_pairs)
+                stats.schema_translation_pairs_emitted = st_stats.pairs_emitted
+                stats.instruction_pairs_emitted += st_stats.pairs_emitted
+                # Wave 127: mirror to .in_progress sidecar.
+                for _p in st_pairs:
+                    inst_progress_fh.write(
+                        json.dumps(_p, ensure_ascii=False, sort_keys=True) + "\n"
+                    )
+                inst_progress_fh.flush()
+                logger.info(
+                    "Wave 124: appended %d schema-translation pairs "
+                    "(surface_forms_used=%d, skipped_no_definition=%d, "
+                    "capped=%s) from manifest_family=%s",
+                    st_stats.pairs_emitted,
+                    st_stats.surface_forms_used,
+                    st_stats.surface_forms_skipped_no_definition,
+                    st_stats.capped_at_max_pairs,
+                    manifest_for_st.family,
+                )
+
         for idx, chunk in iter_chunks:
             if _budget_exhausted_exc is not None:
                 break
@@ -1593,8 +1798,23 @@ def run_synthesis(
         # Apply --prereq-windowed AFTER ordering so the recap reflects the
         # final emit shape. We mutate the prompt field in place (both
         # instruction and preference pair records use ``prompt``).
+        # Wave 127: skip pairs from the four deterministic generators —
+        # they were hoisted above the chunk loop, but their fixture-based
+        # prompts (especially violation-detection's bounded-length TTL
+        # graphs) shouldn't get prereq context prepended; doing so can
+        # push a violation prompt past its 400-char schema limit.
+        _DETERMINISTIC_TEMPLATE_PREFIXES = (
+            "kg_metadata.",
+            "violation_detection.",
+            "abstention.",
+            "schema_translation.",
+        )
         if curriculum_ctx is not None and prereq_windowed:
             for rec in instruction_records:
+                if str(rec.get("template_id", "")).startswith(
+                    _DETERMINISTIC_TEMPLATE_PREFIXES
+                ):
+                    continue
                 recap = build_prereq_recap(
                     rec,
                     chunks_by_id,
@@ -1610,6 +1830,10 @@ def run_synthesis(
                     rec["prompt"] = recap + "\n\n" + original
                     stats.pairs_with_prereq_recap += 1
             for rec in preference_records:
+                if str(rec.get("template_id", "")).startswith(
+                    _DETERMINISTIC_TEMPLATE_PREFIXES
+                ):
+                    continue
                 recap = build_prereq_recap(
                     rec,
                     chunks_by_id,
@@ -1625,175 +1849,14 @@ def run_synthesis(
                     rec["prompt"] = recap + "\n\n" + original
                     stats.pairs_with_prereq_recap += 1
 
-        # Audit 2026-04-30: append KG-metadata pairs (yes/no membership
-        # probes mirroring faithfulness._RELATION_TEMPLATES). Closes the
-        # zero-KG-metadata-recall regression in the cc07cc76 corpus —
-        # the eval harness asks these questions, the corpus must teach
-        # them.
-        if with_kg_metadata:
-            from Trainforge.generators.kg_metadata_generator import (
-                generate_kg_metadata_pairs,
-            )
-            ped_path = _resolve_pedagogy_graph_path(
-                corpus_dir, pedagogy_graph_path,
-            )
-            if ped_path is None:
-                logger.warning(
-                    "with_kg_metadata=True but no pedagogy_graph.json on "
-                    "disk; skipping KG-metadata generator.",
-                )
-            else:
-                ped_payload = json.loads(
-                    ped_path.read_text(encoding="utf-8"),
-                )
-                kg_pairs, kg_stats = generate_kg_metadata_pairs(
-                    ped_payload,
-                    capture=capture,
-                    max_pairs=int(kg_metadata_max_pairs),
-                    seed=seed,
-                )
-                instruction_records.extend(kg_pairs)
-                stats.kg_metadata_pairs_emitted = kg_stats.pairs_emitted
-                stats.instruction_pairs_emitted += kg_stats.pairs_emitted
-                logger.info(
-                    "Audit 2026-04-30: appended %d KG-metadata pairs "
-                    "(positives=%d, negatives=%d, capped=%s) sourced from %s",
-                    kg_stats.pairs_emitted,
-                    kg_stats.positives_emitted,
-                    kg_stats.negatives_emitted,
-                    kg_stats.capped_at_max_pairs,
-                    ped_path,
-                )
-
-        # Audit 2026-04-30: append violation-detection pairs (pyshacl-
-        # oracle-verified (graph, shape, valid?, reason) tuples). Closes
-        # the zero-negative-grounding regression — the corpus must teach
-        # the model to refuse a graph that violates a shape.
-        if with_violation_detection:
-            from Trainforge.generators.violation_generator import (
-                built_in_shape_catalog,
-                generate_violation_pairs,
-            )
-            # Build chunks_by_surface_form so violation pairs anchor to
-            # a chunk that actually teaches the constraint type, when
-            # one exists in the property manifest.
-            chunks_by_form: Dict[str, List[str]] = {}
-            if pilot_manifest is not None:
-                for chunk in chunks:
-                    cid = chunk.get("chunk_id")
-                    if not cid:
-                        continue
-                    text = str(chunk.get("text") or "")
-                    for sf in pilot_manifest.detect_surface_forms(text):
-                        chunks_by_form.setdefault(sf, []).append(str(cid))
-            try:
-                vio_pairs, vio_stats = generate_violation_pairs(
-                    capture=capture,
-                    fixtures=built_in_shape_catalog(),
-                    chunks_by_surface_form=chunks_by_form or None,
-                    seed=seed,
-                    max_pairs=violation_detection_max_pairs,
-                )
-            except RuntimeError as exc:
-                # pyshacl is optional. A missing dep should warn, not
-                # break the whole synthesis run.
-                logger.warning(
-                    "Audit 2026-04-30: violation generator skipped (%s)",
-                    exc,
-                )
-                vio_pairs, vio_stats = [], None
-            if vio_stats is not None:
-                instruction_records.extend(vio_pairs)
-                stats.violation_pairs_emitted = vio_stats.pairs_emitted
-                stats.instruction_pairs_emitted += vio_stats.pairs_emitted
-                logger.info(
-                    "Audit 2026-04-30: appended %d violation-detection "
-                    "pairs (valid=%d, invalid=%d, oracle_disagreements=%d)",
-                    vio_stats.pairs_emitted,
-                    vio_stats.valid_pairs,
-                    vio_stats.invalid_pairs,
-                    vio_stats.oracle_disagreements,
-                )
-
-        # Wave 124 (audit 2026-04-30 follow-up): append abstention
-        # probes ('the source does not establish X'). Closes the
-        # cc07cc76 hallucination_rate=0.63 — the eval harness probes
-        # for absent edges and the corpus must teach the model to
-        # abstain rather than hallucinate yes-answers.
-        if with_abstention:
-            from Trainforge.generators.abstention_generator import (
-                generate_abstention_pairs,
-            )
-            ped_path = _resolve_pedagogy_graph_path(
-                corpus_dir, pedagogy_graph_path,
-            )
-            if ped_path is None:
-                logger.warning(
-                    "with_abstention=True but no pedagogy_graph.json "
-                    "on disk; skipping abstention generator.",
-                )
-            else:
-                ped_payload = json.loads(
-                    ped_path.read_text(encoding="utf-8"),
-                )
-                ab_pairs, ab_stats = generate_abstention_pairs(
-                    ped_payload,
-                    capture=capture,
-                    max_pairs=int(abstention_max_pairs),
-                    seed=seed,
-                )
-                instruction_records.extend(ab_pairs)
-                stats.abstention_pairs_emitted = ab_stats.pairs_emitted
-                stats.instruction_pairs_emitted += ab_stats.pairs_emitted
-                logger.info(
-                    "Wave 124: appended %d abstention pairs (chunks_with_silent=%d, "
-                    "skipped_no_concepts=%d, capped=%s) from %s",
-                    ab_stats.pairs_emitted,
-                    ab_stats.chunks_with_silent,
-                    ab_stats.chunks_skipped_no_concepts,
-                    ab_stats.capped_at_max_pairs,
-                    ped_path,
-                )
-
-        # Wave 124 (audit 2026-04-30 follow-up): append schema-to-
-        # English bridge pairs. Walks the property manifest's surface
-        # forms (sh:datatype, rdfs:subClassOf, ...) and emits one
-        # definition + one usage pair per CURIE. Closes the schema-
-        # to-English gap behind faithfulness=0.37.
-        if with_schema_translation:
-            from Trainforge.generators.schema_translation_generator import (
-                generate_schema_translation_pairs,
-            )
-            manifest_for_st = pilot_manifest
-            if manifest_for_st is None:
-                # pilot_manifest is loaded for the property-coverage
-                # surface earlier. If no manifest is on disk for this
-                # course, schema-translation has nothing to bridge.
-                logger.warning(
-                    "with_schema_translation=True but no property "
-                    "manifest is on disk for this course; skipping "
-                    "schema-translation generator.",
-                )
-            else:
-                st_pairs, st_stats = generate_schema_translation_pairs(
-                    manifest_for_st,
-                    capture=capture,
-                    max_pairs=int(schema_translation_max_pairs),
-                    seed=seed,
-                )
-                instruction_records.extend(st_pairs)
-                stats.schema_translation_pairs_emitted = st_stats.pairs_emitted
-                stats.instruction_pairs_emitted += st_stats.pairs_emitted
-                logger.info(
-                    "Wave 124: appended %d schema-translation pairs "
-                    "(surface_forms_used=%d, skipped_no_definition=%d, "
-                    "capped=%s) from manifest_family=%s",
-                    st_stats.pairs_emitted,
-                    st_stats.surface_forms_used,
-                    st_stats.surface_forms_skipped_no_definition,
-                    st_stats.capped_at_max_pairs,
-                    manifest_for_st.family,
-                )
+        # Wave 127: deterministic generators (kg_metadata,
+        # violation_detection, abstention, schema_translation) used to
+        # run here, post-chunk-loop. They were hoisted to fire BEFORE
+        # the chunk loop so an operator `tail -f`-ing the
+        # .jsonl.in_progress sidecar can verify all `--with-*` flags
+        # wired through within the first ~minute, instead of waiting
+        # for the multi-hour paraphrase loop to finish. See the hoisted
+        # blocks just above the `for idx, chunk in iter_chunks:` line.
 
         _write_jsonl(instruction_out, instruction_records)
         _write_jsonl(preference_out, preference_records)

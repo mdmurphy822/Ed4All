@@ -1,5 +1,5 @@
-"""Wave 116 + 117: regression tests for ``run_synthesis`` operational
-features.
+"""Wave 116 + 117 + 127: regression tests for ``run_synthesis``
+operational features.
 
 Wave 116 — incremental ``.jsonl.in_progress`` sidecar writes:
   * ``test_sidecar_written_incrementally_and_cleaned_up_on_success``
@@ -9,9 +9,15 @@ Wave 117 — incremental ``pilot_report.md`` writes:
   * ``test_run_synthesis_writes_pilot_report_periodically``
   * ``test_run_synthesis_no_pilot_report_when_no_manifest``
 
-All four tests use ``provider="mock"`` (or a fake LocalDispatcher) so
-they're fully offline + deterministic — no LLM calls, no Ollama, no
-network.
+Wave 127 — deterministic generators hoisted ABOVE the chunk loop and
+mirrored to the sidecar so an operator can ``tail -f`` the
+``.jsonl.in_progress`` file and confirm ``--with-*`` flags wired through
+within the first ~minute (instead of after the multi-hour paraphrase
+loop):
+  * ``test_violation_detection_pairs_appear_in_sidecar_before_paraphrase``
+
+All tests use ``provider="mock"`` (or a fake LocalDispatcher) so they're
+fully offline + deterministic — no LLM calls, no Ollama, no network.
 """
 
 from __future__ import annotations
@@ -1411,3 +1417,123 @@ def test_violation_detection_no_cap_appends_full_catalog(
         # violation_detection_max_pairs left at default (None)
     )
     assert stats.violation_pairs_emitted >= 800
+
+
+# ---------------------------------------------------------------------------
+# Wave 127: deterministic generators hoisted ABOVE chunk loop and
+# mirrored to the sidecar
+# ---------------------------------------------------------------------------
+
+
+def test_violation_detection_pairs_appear_in_sidecar_before_paraphrase(
+    tmp_path: Path,
+) -> None:
+    """Wave 127 contract: when ``--with-violation-detection`` is on,
+    the pyshacl-validated pairs must land in the
+    ``instruction_pairs.jsonl.in_progress`` sidecar BEFORE any
+    chunk-paraphrase pairs do, so an operator running ``tail -f`` can
+    confirm the flag wired through within the first ~minute of the run
+    instead of waiting for the multi-hour paraphrase loop.
+
+    Verified via the budget-exceeded path: ``max_dispatches=1`` makes
+    the chunk loop hit ``SynthesisBudgetExceeded`` after the very first
+    paraphrase dispatch, which preserves the sidecar on disk for
+    inspection. Deterministic pairs run BEFORE the chunk loop, so they
+    must be present in the preserved sidecar regardless of how few
+    paraphrase rows landed.
+    """
+    pytest.importorskip("pyshacl")
+    pytest.importorskip("rdflib")
+
+    from Trainforge.tests._synthesis_fakes import (
+        FakeLocalDispatcher,
+        make_instruction_response,
+        make_preference_response,
+    )
+
+    _ok_p = "Paraphrased prompt explaining RDFS in detail for the learner."
+    _ok_c = (
+        "Paraphrased completion grounded in the source chunk text "
+        "covering RDFS and SHACL contracts in sufficient detail."
+    )
+
+    async def agent_tool(*, task_params, **_kw):
+        if task_params["kind"] == "instruction":
+            return make_instruction_response(prompt=_ok_p, completion=_ok_c)
+        return make_preference_response(prompt=_ok_p, chosen=_ok_c, rejected=_ok_c)
+
+    dispatcher = FakeLocalDispatcher(agent_tool=agent_tool)
+    working = _make_working_copy(tmp_path)
+    inst_progress = (
+        working / "training_specs" / "instruction_pairs.jsonl.in_progress"
+    )
+
+    stats = run_synthesis(
+        corpus_dir=working,
+        course_code="MINI_TRAINING_101",
+        provider="claude_session",
+        seed=11,
+        dispatcher=dispatcher,
+        max_dispatches=1,
+        pilot_report_every=0,
+        curriculum_from_graph=False,
+        with_violation_detection=True,
+        violation_detection_max_pairs=10,
+    )
+
+    assert stats.capped_at_max_dispatches is True, (
+        "Wave 127 test setup invariant: max_dispatches=1 must trigger "
+        "SynthesisBudgetExceeded so the sidecar is preserved for "
+        "inspection."
+    )
+    assert stats.violation_pairs_emitted > 0, (
+        "Wave 127 contract: violation generator must run BEFORE the "
+        "chunk loop, so its pairs land regardless of how the chunk "
+        "loop terminates."
+    )
+    assert inst_progress.exists(), (
+        "Wave 127 contract: sidecar must be preserved on a "
+        "SynthesisBudgetExceeded exit."
+    )
+
+    sidecar_lines = [
+        l for l in inst_progress.read_text(encoding="utf-8").splitlines()
+        if l.strip()
+    ]
+    template_ids = []
+    for raw in sidecar_lines:
+        import json as _json
+        try:
+            rec = _json.loads(raw)
+        except _json.JSONDecodeError:
+            continue
+        template_ids.append(rec.get("template_id", ""))
+
+    violation_idx = [
+        i for i, t in enumerate(template_ids)
+        if t.startswith("violation_detection.")
+    ]
+    assert violation_idx, (
+        f"Wave 127 contract: violation_detection.* pairs must appear "
+        f"in the sidecar; saw template_ids={template_ids[:5]!r}..."
+    )
+    # Hoist invariant: deterministic pairs must come first. Find any
+    # paraphrase template_id index and confirm every violation index
+    # precedes it. (If the chunk loop emitted zero paraphrase pairs
+    # before the budget-exceeded exit, the comparison vacuously holds.)
+    paraphrase_idx = [
+        i for i, t in enumerate(template_ids)
+        if not t.startswith((
+            "violation_detection.",
+            "schema_translation.",
+            "abstention.",
+            "kg_metadata.",
+        ))
+    ]
+    if paraphrase_idx:
+        assert max(violation_idx) < min(paraphrase_idx), (
+            f"Wave 127 contract: deterministic violation_detection "
+            f"pairs must precede paraphrase pairs in the sidecar. "
+            f"Last violation at row {max(violation_idx)}, first "
+            f"paraphrase at row {min(paraphrase_idx)}."
+        )
