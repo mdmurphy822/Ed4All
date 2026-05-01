@@ -1174,7 +1174,29 @@ def run_synthesis(
         # oracle-verified (graph, shape, valid?, reason) tuples). Closes
         # the zero-negative-grounding regression — the corpus must teach
         # the model to refuse a graph that violates a shape.
-        if with_violation_detection:
+        #
+        # Wave 133c: gate SHACL-specific violation pairs by the manifest's
+        # validation_kind field. The hand-curated catalog hardcodes sh:/
+        # rdfs:/owl: shapes + pyshacl as the oracle, so a non-RDF/SHACL
+        # course (e.g. JSON Schema) toggling --with-violation-detection
+        # would silently get RDF/SHACL pairs polluting its training data.
+        # When the manifest is missing OR validation_kind != "shacl",
+        # short-circuit and warn so an operator sees the intentional skip.
+        _vk = (
+            pilot_manifest.validation_kind if pilot_manifest is not None else None
+        )
+        _family_for_log = (
+            pilot_manifest.family if pilot_manifest is not None else None
+        )
+        if with_violation_detection and (
+            pilot_manifest is None or _vk != "shacl"
+        ):
+            logger.warning(
+                "violation_generator skipped: family=%s validation_kind=%s",
+                _family_for_log,
+                _vk,
+            )
+        if with_violation_detection and pilot_manifest is not None and _vk == "shacl":
             from Trainforge.generators.violation_generator import (
                 built_in_shape_catalog,
                 generate_violation_pairs,

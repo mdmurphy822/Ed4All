@@ -9,6 +9,13 @@
 # Loader resolution: lib.ontology.property_manifest::_family_slug.
 # Validator (PropertyCoverageValidator) no-ops on courses without a
 # manifest, so dropping this file in adds the gate non-destructively.
+#
+# Wave 133c: do NOT set ``validation_kind`` here. The current schema
+# enum is ["shacl"] and only RDF/SHACL families opt in. Future families
+# (e.g. JSON Schema) will declare their own kind once the enum + the
+# corresponding generator catalog land. Omitting the field gates the
+# SHACL-specific violation_generator off so it doesn't pollute non-RDF
+# training data.
 
 family: <example-family>
 description: |

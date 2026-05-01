@@ -1,4 +1,8 @@
 family: rdf_shacl
+# Wave 133c: declare the SHACL validation surface so the violation_generator
+# (pyshacl-oracle-verified) opts in. Future non-SHACL course families omit
+# this field to gate the SHACL-specific violation pairs off.
+validation_kind: shacl
 # Wave 132d: explicit persona for the rdf-shacl-* course family. Threaded
 # into Trainforge.synthesize_training._INSTRUCTION_PROMPT_FRAMES variant 1
 # so the persona prefix matches the course's actual learner. Pre-Wave-132d

@@ -67,6 +67,18 @@ class PropertyManifest:
     # is ``DEFAULT_LEARNER_PERSONA`` when absent so courses without a
     # manifest still get a sensible (generic) persona.
     learner_persona: str = DEFAULT_LEARNER_PERSONA
+    # Wave 133c: optional discriminator for the validation layer this
+    # family supports. When set to ``"shacl"``, the SHACL-specific
+    # violation_generator catalog (pyshacl-oracle-verified shapes /
+    # graphs) applies. Future families (e.g. JSON Schema) declare their
+    # own kind. ``None`` means the family hasn't opted into any
+    # validation surface — violation_generator MUST short-circuit so
+    # SHACL pairs don't pollute non-SHACL training data. The dataclass
+    # default is ``"shacl"`` for back-compat with direct constructions
+    # (test fixtures); ``load_property_manifest`` reads the field
+    # literally from the YAML payload — absent in YAML => ``None`` on
+    # the dataclass, gating the violation_generator off.
+    validation_kind: Optional[str] = "shacl"
 
     @property
     def by_id(self) -> Dict[str, PropertyEntry]:
@@ -162,11 +174,17 @@ def load_property_manifest(
     learner_persona = payload.get("learner_persona")
     if not isinstance(learner_persona, str) or not learner_persona.strip():
         learner_persona = DEFAULT_LEARNER_PERSONA
+    # Wave 133c: read validation_kind literally from the YAML payload —
+    # absent in YAML => None on the dataclass, gating the SHACL-specific
+    # violation_generator off for non-SHACL families. Schema enum
+    # currently only admits "shacl" so any present value here is "shacl".
+    validation_kind = payload.get("validation_kind")
     return PropertyManifest(
         family=str(payload["family"]),
         properties=properties,
         description=payload.get("description"),
         learner_persona=learner_persona.strip(),
+        validation_kind=validation_kind,
     )
 
 

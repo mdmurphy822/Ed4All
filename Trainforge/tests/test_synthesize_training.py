@@ -89,6 +89,39 @@ def _synthetic_manifest() -> PropertyManifest:
     )
 
 
+def _shacl_manifest_for_violation_tests() -> PropertyManifest:
+    """Wave 133c: minimal SHACL-family manifest that opts the mini
+    course into the violation_generator gate. Used by the existing
+    Wave 125a / Wave 127 violation tests after Wave 133c added the
+    ``validation_kind == "shacl"`` gate. Surface forms are cosmetic —
+    the violation catalog is hand-curated, not chunk-driven."""
+    return PropertyManifest(
+        family="mini_shacl",
+        properties=[
+            PropertyEntry(
+                id="sh_datatype",
+                uri="http://www.w3.org/ns/shacl#datatype",
+                curie="sh:datatype",
+                label="SHACL datatype surface form",
+                surface_forms=["sh:datatype"],
+                min_pairs=1,
+            ),
+        ],
+        validation_kind="shacl",
+    )
+
+
+def _patch_shacl_manifest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Monkeypatch ``load_property_manifest`` to return a SHACL-gated
+    manifest so the violation_generator gate (Wave 133c) admits pairs
+    for this fixture."""
+    manifest = _shacl_manifest_for_violation_tests()
+    monkeypatch.setattr(
+        "lib.ontology.property_manifest.load_property_manifest",
+        lambda *_a, **_kw: manifest,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Wave 116: sidecar incremental write
 # ---------------------------------------------------------------------------
@@ -1341,13 +1374,16 @@ def test_with_schema_translation_flag_appends_pairs(
 # ---------------------------------------------------------------------------
 
 
-def test_violation_detection_max_pairs_caps_emit(tmp_path: Path) -> None:
+def test_violation_detection_max_pairs_caps_emit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """``--violation-detection-max-pairs N`` caps the count of
     violation-detection pairs appended to instruction_pairs.jsonl while
     keeping every surface form represented (family-balanced
     round-robin)."""
     pytest.importorskip("pyshacl")
     pytest.importorskip("rdflib")
+    _patch_shacl_manifest(monkeypatch)
     course_dir = _make_working_copy(tmp_path)
 
     cap = 60
@@ -1398,12 +1434,13 @@ def test_violation_detection_max_pairs_caps_emit(tmp_path: Path) -> None:
 
 
 def test_violation_detection_no_cap_appends_full_catalog(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """No ``--violation-detection-max-pairs`` flag means the entire
     pyshacl-validated catalog (>= 800 pairs) lands in the artifact."""
     pytest.importorskip("pyshacl")
     pytest.importorskip("rdflib")
+    _patch_shacl_manifest(monkeypatch)
     course_dir = _make_working_copy(tmp_path)
 
     stats = run_synthesis(
@@ -1426,7 +1463,7 @@ def test_violation_detection_no_cap_appends_full_catalog(
 
 
 def test_violation_detection_pairs_appear_in_sidecar_before_paraphrase(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Wave 127 contract: when ``--with-violation-detection`` is on,
     the pyshacl-validated pairs must land in the
@@ -1444,6 +1481,7 @@ def test_violation_detection_pairs_appear_in_sidecar_before_paraphrase(
     """
     pytest.importorskip("pyshacl")
     pytest.importorskip("rdflib")
+    _patch_shacl_manifest(monkeypatch)
 
     from Trainforge.tests._synthesis_fakes import (
         FakeLocalDispatcher,
@@ -1537,3 +1575,87 @@ def test_violation_detection_pairs_appear_in_sidecar_before_paraphrase(
             f"Last violation at row {max(violation_idx)}, first "
             f"paraphrase at row {min(paraphrase_idx)}."
         )
+
+
+# ---------------------------------------------------------------------------
+# Wave 133c: violation_generator family-gating via validation_kind
+# ---------------------------------------------------------------------------
+
+
+def test_violation_generator_skipped_for_non_shacl_family(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wave 133c contract: ``--with-violation-detection`` must short-
+    circuit when the property manifest declares a non-SHACL family
+    (``validation_kind != "shacl"`` or absent), even if the flag is on.
+
+    The pyshacl-oracle-verified violation catalog is RDF/SHACL-specific
+    (hardcoded ``sh:`` / ``rdfs:`` / ``owl:`` shapes). A future course
+    family (e.g. JSON Schema) toggling the flag must NOT silently get
+    SHACL pairs polluting its training data; the gate must skip and
+    log a warning so an operator sees the intentional no-op.
+    """
+    pytest.importorskip("pyshacl")
+    pytest.importorskip("rdflib")
+    course_dir = _make_working_copy(tmp_path)
+
+    # Inject a non-SHACL property manifest by monkeypatching the loader.
+    # PropertyEntry surface_forms picked to NOT collide with the mini
+    # course's chunk text, so property_coverage gating is incidental.
+    non_shacl_manifest = PropertyManifest(
+        family="generic_test_family",
+        properties=[
+            PropertyEntry(
+                id="generic_token",
+                uri="http://example.test/generic",
+                curie="ex:generic",
+                label="Generic non-SHACL surface form",
+                surface_forms=["generic_token_no_match"],
+                min_pairs=1,
+            ),
+        ],
+        # validation_kind unset (None) — gate must skip violation pairs.
+        validation_kind=None,
+    )
+    monkeypatch.setattr(
+        "lib.ontology.property_manifest.load_property_manifest",
+        lambda *_a, **_kw: non_shacl_manifest,
+    )
+    # synthesize_training imports it via from-import inside run_synthesis,
+    # so the module-level binding is what gets resolved each call.
+
+    caplog.set_level(logging.WARNING, logger="Trainforge.synthesize_training")
+    stats = run_synthesis(
+        corpus_dir=course_dir,
+        course_code="MINI_TRAINING_101",
+        provider="mock",
+        seed=11,
+        pilot_report_every=0,
+        curriculum_from_graph=False,
+        with_violation_detection=True,
+        violation_detection_max_pairs=10,
+    )
+
+    # Zero violation pairs even with --with-violation-detection on.
+    assert stats.violation_pairs_emitted == 0, (
+        f"Wave 133c: violation generator must skip for non-SHACL "
+        f"family; got {stats.violation_pairs_emitted} pairs."
+    )
+
+    # Warning must fire so the operator sees the intentional no-op.
+    skip_warnings = [
+        r for r in caplog.records
+        if "violation_generator skipped" in r.getMessage()
+    ]
+    assert skip_warnings, (
+        "Wave 133c: expected a 'violation_generator skipped' warning "
+        f"log when validation_kind != 'shacl'; got "
+        f"{[r.getMessage() for r in caplog.records]!r}"
+    )
+    msg = skip_warnings[0].getMessage()
+    assert "generic_test_family" in msg, (
+        f"warning message must surface the manifest family for diagnostics; "
+        f"got {msg!r}"
+    )
