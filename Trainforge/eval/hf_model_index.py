@@ -26,6 +26,7 @@ The ``write_hf_readme`` helper composes a complete README.md with:
 """
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -202,6 +203,7 @@ def write_hf_readme(
     extra_tags: Optional[List[str]] = None,
     ablation_report: Optional[Dict[str, Any]] = None,
     diagnostic_findings: Optional[List[Dict[str, Any]]] = None,
+    course_path: Optional[Path] = None,
 ) -> Path:
     """Render ``<run_dir>/README.md`` with HF-format YAML frontmatter.
 
@@ -222,6 +224,14 @@ def write_hf_readme(
             is used.
         extra_tags: Optional extra HF tags appended to the default
             ``["education", "qlora", "peft"]``.
+        course_path: Wave 133f. Path to the LibV2 course directory
+            (``LibV2/courses/<slug>/``). When provided and
+            ``manifest.json::classification.tags`` is non-empty, those
+            tags are appended to the default tag list. Falls back to
+            the legacy substring-sniff over ``course_slug`` when
+            absent or when the manifest declares no tags. Lets
+            non-RDF/SHACL courses (chemistry-201, owl-axioms-501, ...)
+            ship correct HF discovery tags without code changes.
 
     Returns:
         Path to the written README.md.
@@ -246,11 +256,39 @@ def write_hf_readme(
         # routes leaderboard searches to this adapter.
         "ed4all-bench", "grounded-slm-benchmark",
     ]
-    # Heuristic: if the slug mentions semantic-web vocabularies tag for
-    # discoverability on the HF Hub.
-    slug_lower = course_slug.lower()
-    if "rdf" in slug_lower or "shacl" in slug_lower or "sparql" in slug_lower:
-        tags.extend(["rdf", "shacl"])
+    # Wave 133f: prefer manifest-declared tags
+    # (classification.tags) over the legacy substring sniff. Lets
+    # non-RDF/SHACL courses ship correct HF discovery tags without
+    # touching this file. Falls back to the substring sniff only when
+    # the manifest is absent / unreadable / declares no tags so
+    # un-backfilled courses keep the legacy behavior.
+    manifest_tags: List[str] = []
+    if course_path is not None:
+        manifest_path = Path(course_path) / "manifest.json"
+        if manifest_path.exists():
+            try:
+                manifest_data = json.loads(
+                    manifest_path.read_text(encoding="utf-8")
+                )
+                manifest_tags = (
+                    manifest_data.get("classification", {}).get("tags", [])
+                    or []
+                )
+            except (json.JSONDecodeError, OSError):
+                logger.warning(
+                    "Wave 133f: failed to parse manifest at %s; "
+                    "falling back to substring sniff",
+                    manifest_path,
+                )
+    if manifest_tags:
+        for t in manifest_tags:
+            if t not in tags:
+                tags.append(t)
+    else:
+        # Fallback for un-backfilled courses: substring sniff (legacy).
+        slug_lower = course_slug.lower()
+        if "rdf" in slug_lower or "shacl" in slug_lower or "sparql" in slug_lower:
+            tags.extend(["rdf", "shacl"])
     if extra_tags:
         for t in extra_tags:
             if t not in tags:

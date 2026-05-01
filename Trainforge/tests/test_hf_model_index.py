@@ -654,3 +654,112 @@ def test_readme_includes_hallucination_rate_row(tmp_path):
     text = readme_path.read_text(encoding="utf-8")
     assert "Hallucination rate" in text
     assert "Source-Match" in text
+
+
+# ---------------------------------------------------------------------- #
+# Wave 133f - HF tag injection from manifest.classification.tags          #
+# ---------------------------------------------------------------------- #
+
+
+def _write_manifest(course_path, tags):
+    """Helper: write a minimal manifest.json with the given tags array
+    under classification.tags. ``tags=None`` omits the key entirely
+    (legacy / un-backfilled course)."""
+    import json as _json
+
+    classification = {"division": "STEM", "primary_domain": "computer-science"}
+    if tags is not None:
+        classification["tags"] = tags
+    manifest = {
+        "libv2_version": "1.0.0",
+        "slug": course_path.name,
+        "import_timestamp": "2026-05-01T00:00:00Z",
+        "sourceforge_manifest": {
+            "sourceforge_version": "0.1.0",
+            "export_timestamp": "2026-05-01T00:00:00Z",
+            "course_id": course_path.name,
+            "course_title": "Test course",
+        },
+        "classification": classification,
+        "content_profile": {"total_chunks": 1, "total_tokens": 1},
+    }
+    course_path.mkdir(parents=True, exist_ok=True)
+    (course_path / "manifest.json").write_text(_json.dumps(manifest))
+
+
+def test_hf_tags_from_manifest(tmp_path):
+    """Manifest with classification.tags=['rdf','shacl','semantic-web']
+    -> frontmatter contains those tags (manifest wins over substring
+    sniff)."""
+    from Trainforge.eval.hf_model_index import write_hf_readme
+
+    course_path = tmp_path / "course"
+    _write_manifest(course_path, tags=["rdf", "shacl", "semantic-web"])
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    readme_path = write_hf_readme(
+        run_dir=run_dir,
+        eval_report=_build_eval_report(),
+        course_slug="course",
+        base_model="qwen2.5-1.5b",
+        model_id="m-01",
+        model_card=_build_model_card(),
+        course_path=course_path,
+    )
+    text = readme_path.read_text(encoding="utf-8")
+    parts = text.split("---\n", 2)
+    front = yaml.safe_load(parts[1])
+    assert "rdf" in front["tags"]
+    assert "shacl" in front["tags"]
+    assert "semantic-web" in front["tags"]
+
+
+def test_hf_tags_fallback_to_substring_sniff_when_manifest_missing(tmp_path):
+    """No course_path / no manifest.json -> legacy substring behavior
+    preserved. RDF/SHACL slug still picks up 'rdf' + 'shacl'."""
+    from Trainforge.eval.hf_model_index import write_hf_readme
+
+    readme_path = write_hf_readme(
+        run_dir=tmp_path,
+        eval_report=_build_eval_report(),
+        course_slug="rdf-shacl-551-2",
+        base_model="qwen2.5-1.5b",
+        model_id="m-01",
+        model_card=_build_model_card(),
+        # course_path not passed
+    )
+    text = readme_path.read_text(encoding="utf-8")
+    parts = text.split("---\n", 2)
+    front = yaml.safe_load(parts[1])
+    assert "rdf" in front["tags"]
+    assert "shacl" in front["tags"]
+
+
+def test_hf_tags_fallback_when_manifest_tags_empty(tmp_path):
+    """Manifest exists but classification.tags=[] -> substring sniff
+    still kicks in. Empty list is treated as 'not declared'."""
+    from Trainforge.eval.hf_model_index import write_hf_readme
+
+    # Use an RDF-bearing slug so the substring branch has something
+    # to emit when the empty manifest tags trigger the fallback.
+    course_path = tmp_path / "rdf-shacl-test"
+    _write_manifest(course_path, tags=[])
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    readme_path = write_hf_readme(
+        run_dir=run_dir,
+        eval_report=_build_eval_report(),
+        course_slug="rdf-shacl-test",
+        base_model="qwen2.5-1.5b",
+        model_id="m-01",
+        model_card=_build_model_card(),
+        course_path=course_path,
+    )
+    text = readme_path.read_text(encoding="utf-8")
+    parts = text.split("---\n", 2)
+    front = yaml.safe_load(parts[1])
+    # Substring sniff fired (empty manifest tags = un-backfilled).
+    assert "rdf" in front["tags"]
+    assert "shacl" in front["tags"]
