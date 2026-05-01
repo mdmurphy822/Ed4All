@@ -56,7 +56,9 @@ COMPLETION_MIN, COMPLETION_MAX = 50, 600
 # Unknown combinations fall back to the ``_default`` row for the bloom level
 # and finally to ``("understand", "_default")``.
 
-_BLOOM_LEVELS = ("remember", "understand", "apply", "analyze", "evaluate", "create")
+# Wave 132b: aliased to the canonical lib.ontology.bloom.BLOOM_LEVELS so
+# future canonical changes propagate without touching this factory.
+from lib.ontology.bloom import BLOOM_LEVELS as _BLOOM_LEVELS
 
 TEMPLATE_CATALOG: Dict[Tuple[str, str], str] = {
     # remember
