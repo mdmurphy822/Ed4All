@@ -1066,6 +1066,14 @@ def register_pipeline_tools(mcp):
         course_code: str,
         provider: str = "mock",
         seed: Optional[int] = None,
+        with_kg_metadata: bool = False,
+        kg_metadata_max_pairs: int = 2000,
+        with_violation_detection: bool = False,
+        violation_detection_max_pairs: Optional[int] = None,
+        with_abstention: bool = False,
+        abstention_max_pairs: int = 1000,
+        with_schema_translation: bool = False,
+        schema_translation_max_pairs: int = 50,
     ) -> str:
         """Generate SFT + DPO training pairs from a Trainforge corpus.
 
@@ -1106,6 +1114,28 @@ def register_pipeline_tools(mcp):
                   per-call cost, zero ToS exposure (fully offline /
                   air-gapped friendly); tradeoff is local hardware.
             seed: Optional base seed for determinism.
+            with_kg_metadata: Enable the deterministic kg_metadata
+                generator (Wave 124a). Reads pedagogy_graph.json. No-op
+                when the graph is absent.
+            kg_metadata_max_pairs: Cap on kg_metadata pairs (default
+                2000).
+            with_violation_detection: Enable the deterministic SHACL
+                violation generator (Wave 125a; pyshacl-oracle-verified).
+            violation_detection_max_pairs: Cap on violation pairs
+                (default unset = unlimited; family-balanced round-robin
+                trim when set).
+            with_abstention: Enable the deterministic abstention
+                generator (Wave 124). Emits "the source does not
+                establish X" probes from concepts the chunk does NOT
+                address. Reads pedagogy_graph.json.
+            abstention_max_pairs: Cap on abstention pairs (default
+                1000).
+            with_schema_translation: Enable the deterministic
+                schema-translation generator (Wave 125b). Emits 6
+                families × 6 surface forms (definition / usage /
+                comparison / reasoning / pitfall / combination).
+            schema_translation_max_pairs: Cap on schema-translation
+                pairs (default 50).
 
         Returns:
             JSON with ``success``, the two output paths, and a stats
@@ -1146,6 +1176,14 @@ def register_pipeline_tools(mcp):
                 course_code=course_code,
                 provider=provider,
                 seed=int(seed),
+                with_kg_metadata=with_kg_metadata,
+                kg_metadata_max_pairs=kg_metadata_max_pairs,
+                with_violation_detection=with_violation_detection,
+                violation_detection_max_pairs=violation_detection_max_pairs,
+                with_abstention=with_abstention,
+                abstention_max_pairs=abstention_max_pairs,
+                with_schema_translation=with_schema_translation,
+                schema_translation_max_pairs=schema_translation_max_pairs,
             )
         except Exception as exc:
             return json.dumps({
@@ -3698,6 +3736,26 @@ def _build_tool_registry() -> dict:
         # are byte-identical. Callers can override for test determinism.
         seed = kwargs.get("seed")
 
+        # Wave 129: forward Wave 124-127 deterministic-generator kwargs
+        # so workflow-phase dispatch + external MCP clients can trigger
+        # kg_metadata / violation_detection / abstention / schema_translation
+        # without the CLI. Defaults mirror run_synthesis() at
+        # Trainforge/synthesize_training.py:677-685.
+        with_kg_metadata = bool(kwargs.get("with_kg_metadata", False))
+        kg_metadata_max_pairs = int(kwargs.get("kg_metadata_max_pairs", 2000))
+        with_violation_detection = bool(
+            kwargs.get("with_violation_detection", False)
+        )
+        violation_detection_max_pairs = kwargs.get("violation_detection_max_pairs")
+        with_abstention = bool(kwargs.get("with_abstention", False))
+        abstention_max_pairs = int(kwargs.get("abstention_max_pairs", 1000))
+        with_schema_translation = bool(
+            kwargs.get("with_schema_translation", False)
+        )
+        schema_translation_max_pairs = int(
+            kwargs.get("schema_translation_max_pairs", 50)
+        )
+
         try:
             from Trainforge.synthesize_training import (
                 DEFAULT_SEED,
@@ -3717,6 +3775,14 @@ def _build_tool_registry() -> dict:
                 course_code=str(course_code),
                 provider=str(provider),
                 seed=int(seed),
+                with_kg_metadata=with_kg_metadata,
+                kg_metadata_max_pairs=kg_metadata_max_pairs,
+                with_violation_detection=with_violation_detection,
+                violation_detection_max_pairs=violation_detection_max_pairs,
+                with_abstention=with_abstention,
+                abstention_max_pairs=abstention_max_pairs,
+                with_schema_translation=with_schema_translation,
+                schema_translation_max_pairs=schema_translation_max_pairs,
             )
         except Exception as exc:
             return json.dumps({
