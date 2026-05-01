@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all/schemas/training/family_map.schema.json",
+  "title": "CURIE Family Map",
+  "description": "Wave 137b: Declares CURIE clusters that exhibit cross-CURIE coupling. If any CURIE in a family is `complete`, every CURIE in the family must be `complete` before retrain to prevent asymmetric anchoring (FamilyCompletenessValidator enforces this on the post-overlay form_data).",
+  "type": "object",
+  "required": ["family", "families", "singletons"],
+  "additionalProperties": false,
+  "properties": {
+    "family": {
+      "type": "string",
+      "pattern": "^[a-z0-9_]+$",
+      "minLength": 1,
+      "description": "Course-family identifier matching `lib.ontology.property_manifest._family_slug` resolution (e.g. `rdf_shacl`)."
+    },
+    "description": {
+      "type": "string",
+      "description": "Optional free-form description of the family map's intent."
+    },
+    "families": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 2,
+        "items": {
+          "type": "string",
+          "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*:[A-Za-z][A-Za-z0-9_-]*$"
+        },
+        "uniqueItems": true
+      },
+      "description": "Object mapping family-name -> array of CURIE strings (each family must declare at least 2 CURIEs)."
+    },
+    "singletons": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-zA-Z][a-zA-Z0-9_-]*:[A-Za-z][A-Za-z0-9_-]*$"
+      },
+      "uniqueItems": true,
+      "description": "CURIEs that participate in no family — they are evaluated independently by the FamilyCompletenessValidator."
+    }
+  }
+}

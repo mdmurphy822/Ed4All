@@ -1,0 +1,57 @@
+family: rdf_shacl
+description: |
+  CURIE clusters that exhibit cross-CURIE coupling. If any CURIE in a family
+  is `complete`, every CURIE in the family must be `complete` before retrain
+  to prevent asymmetric anchoring (Wave 137b).
+families:
+  cardinality:
+    - sh:minCount
+    - sh:maxCount
+  domain_range:
+    - rdfs:domain
+    - rdfs:range
+  shape_kinds:
+    - sh:NodeShape
+    - sh:PropertyShape
+  validation_results:
+    - sh:ValidationReport
+    - sh:ValidationResult
+    - sh:result
+    - sh:Violation
+    - sh:focusNode
+  type_system:
+    - rdf:type
+    - rdfs:Class
+    - sh:class
+    - owl:Class
+  identity_equivalence:
+    - owl:sameAs
+    - owl:equivalentClass
+    - owl:disjointWith
+  documentation_annotations:
+    - rdfs:label
+    - rdfs:comment
+  literal_types:
+    - rdfs:Literal
+    - rdfs:Resource
+  xsd_datatypes:
+    - xsd:string
+    - xsd:integer
+    - xsd:date
+    - xsd:dateTime
+  foaf_examples:
+    - foaf:Person
+    - foaf:Agent
+    - foaf:knows
+singletons:
+  - sh:datatype
+  - sh:nodeKind
+  - sh:path
+  - sh:property
+  - sh:targetClass
+  - sh:closed
+  - sh:in
+  - sh:pattern
+  - rdf:Property
+  - dcterms:creator
+  - rdfs:subClassOf
