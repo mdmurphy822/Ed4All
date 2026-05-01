@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -272,6 +273,23 @@ class EvalGatingValidator:
             except Exception as exc:  # noqa: BLE001 - capture is advisory
                 logger.warning("eval_gating_decision capture failed: %s", exc)
 
+        # Wave 137d-2: emit a form_data coverage checkpoint row to
+        # ``LibV2/courses/<slug>/eval/form_data_coverage_checkpoint.jsonl``.
+        # Advisory metric — the checkpoint is wrapped in try/except so
+        # any I/O / loader failure NEVER breaks the gate result. This
+        # gives operators a per-promotion-attempt audit trail of
+        # backfill coverage progress alongside the eval gating decision.
+        try:
+            self._emit_coverage_checkpoint(
+                model_dir=model_dir,
+                passed=passed,
+                issues=issues,
+            )
+        except Exception as exc:  # noqa: BLE001 - checkpoint is advisory
+            logger.warning(
+                "form_data_coverage checkpoint emission failed: %s", exc
+            )
+
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,
@@ -280,6 +298,91 @@ class EvalGatingValidator:
             score=score,
             issues=issues,
         )
+
+    # Wave 137d-2: helper that locates the LibV2 course root from the
+    # model_dir, resolves the family via property_manifest, computes
+    # coverage metrics, and atomic-appends a JSONL row.
+    def _emit_coverage_checkpoint(
+        self,
+        *,
+        model_dir: Path,
+        passed: bool,
+        issues: List[GateIssue],
+    ) -> None:
+        """Write one ``form_data_coverage_checkpoint.jsonl`` row.
+
+        Path resolution: ``model_dir`` follows the canonical
+        ``LibV2/courses/<slug>/models/<model_id>/`` layout. The
+        course root is ``model_dir.parent.parent``; the checkpoint
+        file lives at ``<course_root>/eval/form_data_coverage_checkpoint.jsonl``.
+
+        Schema (each row is one JSON object):
+          * ``timestamp`` — ISO-8601 UTC.
+          * ``model_id`` — model_dir basename.
+          * ``course_slug`` — course root basename.
+          * ``family`` — resolved via property manifest.
+          * ``manifest_coverage_pct`` / ``complete_count`` /
+            ``degraded_count`` / ``family_coverage_map`` — from
+            :func:`lib.validators.form_data_coverage.compute_coverage_metrics`.
+          * ``promotion_decision`` — ``"passed"`` or ``"blocked"``.
+          * ``promotion_block_reasons`` — list of issue codes (critical
+            severity only) when blocked; empty list when passed.
+        """
+        from lib.validators.form_data_coverage import compute_coverage_metrics
+        from lib.ontology.property_manifest import load_property_manifest
+
+        model_id = model_dir.name
+        course_root = model_dir.parent.parent
+        course_slug = course_root.name
+
+        # Resolve family via the property manifest (which itself
+        # derives family from the course slug). When no manifest
+        # exists we still emit a row with ``family=None`` so the
+        # operator sees the gate ran.
+        family: Optional[str]
+        try:
+            manifest = load_property_manifest(course_slug)
+            family = manifest.family
+        except (FileNotFoundError, AttributeError):
+            family = None
+
+        if family is not None:
+            metrics = compute_coverage_metrics(family)
+        else:
+            metrics = {
+                "manifest_coverage_pct": None,
+                "complete_count": None,
+                "degraded_count": None,
+                "family_coverage_map": {},
+            }
+
+        block_reasons = (
+            [i.code for i in issues if i.severity == "critical"]
+            if not passed
+            else []
+        )
+
+        row = {
+            "timestamp": datetime.now(timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            ),
+            "model_id": model_id,
+            "course_slug": course_slug,
+            "family": family,
+            "manifest_coverage_pct": metrics["manifest_coverage_pct"],
+            "complete_count": metrics["complete_count"],
+            "degraded_count": metrics["degraded_count"],
+            "family_coverage_map": metrics["family_coverage_map"],
+            "promotion_decision": "passed" if passed else "blocked",
+            "promotion_block_reasons": block_reasons,
+        }
+
+        eval_dir = course_root / "eval"
+        eval_dir.mkdir(parents=True, exist_ok=True)
+        checkpoint_path = eval_dir / "form_data_coverage_checkpoint.jsonl"
+        # Append-only: every validate() call adds one row.
+        with checkpoint_path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 
 def _as_float(v: Any) -> Optional[float]:
