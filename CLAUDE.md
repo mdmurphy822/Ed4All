@@ -143,7 +143,7 @@ Final packaging and export:
 ### Required Fields
 
 Every decision event MUST include:
-- `decision_type`: Category of decision (e.g., `content_selection`, `question_generation`)
+- `decision_type`: Category of decision (e.g., `content_selection`, `question_generation`, `form_data_backfill_session`). Canonical enum: `schemas/events/decision_event.schema.json`.
 - `decision`: The actual choice made
 - `rationale`: Why this decision was made (**minimum 20 characters**)
 

@@ -80,6 +80,49 @@ Claude). Each backfilled entry flips status `"degraded_placeholder"`
 → `"complete"` and silently improves the adapter's anchored-
 injection coverage.
 
+**Wave 136 follow-up.** The FORM_DATA dict was externalized to per-family YAML at `schemas/training/schema_translation_catalog.<family>.yaml` (Wave 136a). The Python fallback dict is preserved as the last-resort base; YAML overlays are CURIE-level swaps (per-CURIE merge), so backfilling one CURIE never erases another. Wave 136b extended `validate_form_data_contract` with 9 content-quality rules + 1 warning rule for overlay regressions. Wave 136c added `python -m Trainforge.scripts.draft_form_data_entry` — a Qwen-driven drafting CLI with a structurally-minimal ToS-clean prompt template (no example sentences, no content seeding). Wave 136d added `python -m Trainforge.scripts.backfill_form_data` — an interactive backfill loop with mandatory operator pause (`y`/`n`/`e`/`q`), driving 136c per-CURIE; Qwen-authored content lands ONLY after `y` confirmation.
+
+---
+
+## Operator backfill workflow (Wave 136)
+
+The 34 `degraded_placeholder` FORM_DATA entries (Wave 135a) are
+backfilled to `complete` over time via Qwen-authored anchored content
++ operator review. The architecture observes the standing operating
+principle "Claude does not generate training-data corpus content" —
+Claude wrote the structural code (validators, loader, CLI scaffolding,
+prompt template); Qwen authors the actual definitions and usage examples;
+operator reviews each entry before it lands.
+
+### Workflow
+
+1. Identify the next CURIE to backfill. Operator priority defaults
+   to corpus frequency (high-frequency CURIEs lift more pairs):
+   ```
+   python -m Trainforge.scripts.backfill_form_data \
+       --course-code rdf-shacl-551-2 --family rdf_shacl \
+       --limit 5 --by frequency
+   ```
+2. The loop calls `Trainforge.scripts.draft_form_data_entry` per
+   CURIE (Wave 136c). Drafting prompt is structurally minimal — no
+   example sentences, no content seeding (ToS hygiene).
+3. Operator reviews the rendered YAML block and chooses:
+   - `y` — append to the catalog YAML (atomic write + post-validate).
+   - `n` — skip this CURIE; continue.
+   - `e` — open in `$EDITOR`, edit, then append.
+   - `q` — exit cleanly.
+4. After append, the Wave 136b validator runs against the merged
+   form_data; failure rolls back the append.
+5. Each backfill flips `anchored_status` from `degraded_placeholder`
+   to `complete`. Future synthesis runs automatically use the
+   anchored sentences via the Wave 135b force-injection dispatch.
+
+### Eval baseline policy
+
+Retrain only after **≥10-20 CURIEs flipped** since the last eval
+baseline. Per-CURIE retrains lose attribution and inflate eval drift
+across runs.
+
 ---
 
 ## Decision Capture Protocol
@@ -366,6 +409,10 @@ Training is a **post-import LibV2 stage**, not a step in `Trainforge/process_cou
 | 135b | `45117a5` | Anchored force-injection + `min_preserve_rate=0.0` default — `LocalSynthesisProvider` no longer treats a missing CURIE as a paraphrase failure under the default config (the per-call preservation floor lowered Wave-134's 0.80 to 0.0). Force-injection consumes Wave 125b's `_RDF_SHACL_FALLBACK_FORM_DATA` "complete" entries to embed an anchored definition sentence in every paraphrase pair body, guaranteeing CURIE presence by construction regardless of LLM behavior. "Degraded_placeholder" entries fall back to legacy token-stuffing suffix WITH an explicit `surface_form_preservation_fallback` decision-capture event (renamed `paraphrase_used_deterministic_draft` in Wave 135d) so operators see the degraded coverage. Operators wanting Wave 120's strict 100% gate pass `min_preserve_rate=1.0`. |
 | 135c | `475faaa` | `curie_anchoring` gate (binary per-pair) + demote `curie_preservation` — new `lib/validators/curie_anchoring.py::CurieAnchoringValidator` wired as the new `curie_anchoring` gate on `textbook_to_course::training_synthesis` (severity critical, default `min_pair_anchoring_rate=0.95`). Replaces Wave 130b's `curie_preservation` mean-retention metric — under the Wave 135 contract, force-injection guarantees CURIE presence regardless of LLM behavior, so the mean-retention metric is no longer meaningful as a critical signal. The `curie_preservation` gate was demoted to severity=warning this wave for transition visibility (one wave grace). Skips deterministic generators (oracle-grounded by manifest input). |
 | 135d | _this commit_ | Cleanup — finalize the Wave 135 architectural reframe. Removed the deprecated `curie_preservation` gate from `config/workflows.yaml`. Reduced `lib/validators/curie_preservation.py` to a deprecation shim that re-exports `CurieAnchoringValidator` with a `DeprecationWarning` (removal target: Wave 137). Renamed `decision_type="surface_form_preservation_fallback"` → `"paraphrase_used_deterministic_draft"` in `schemas/events/decision_event.schema.json` + every code/test/doc reference. Documentation rewrite: new "CURIE anchoring contract (Wave 135)" section near the top of `Trainforge/CLAUDE.md`; root `CLAUDE.md` Active Gates table updated; `plans/wave-130-curie-preservation/plan.md` and `plans/curie-fidelity-audit-2026-05/audit_report.md` carry "superseded by Wave 135" annotations. Existing 10-test regression suite for the legacy validator was deleted (semantics differ fundamentally from binary anchoring); equivalent coverage lives in `lib/tests/test_curie_anchoring.py`. |
+| 136a | `b05a649` | Externalize FORM_DATA + per-CURIE overlay merge loader — `schemas/training/schema_translation_catalog.rdf_shacl.yaml` mechanically transcribed from Wave 135a's `_RDF_SHACL_FALLBACK_FORM_DATA`; new `_load_yaml_catalog`, `_deep_merge_by_curie`, `_load_form_data` (lru_cached), and `_invalidate_form_data_cache` helpers in `Trainforge/generators/schema_translation_generator.py`. YAML wins per-CURIE: an overlay entry replaces the Python entry for the same CURIE, YAML CURIEs not in Python are added, Python CURIEs not in YAML are preserved. A partial YAML cannot erase the in-Python fallback's complete entries — the safety property the Wave 136d backfill loop depends on. |
+| 136b | `fd1205e` | Harden FORM_DATA contract validator with content-quality rules — `validate_form_data_contract` extended with 9 content-quality rejection rules (PLACEHOLDER_LEAK, OLD_SUFFIX_TEMPLATE, DEFINITION_TOO_SHORT / TOO_LONG, USAGE_PROMPT_TOO_SHORT / TOO_LONG, USAGE_ANSWER_TOO_SHORT / TOO_LONG, WRONG_CURIE_ONLY_MENTION) firing only against `anchored_status="complete"` entries, plus 1 warning-severity rule (BASELINE_REGRESSION) detecting overlay regressions vs the in-Python base. Degraded entries skip every content rule because their stub strings are intentionally placeholder-shaped. |
+| 136c | `5a2d34d` | Drafting CLI for Qwen-driven FORM_DATA backfill — `python -m Trainforge.scripts.draft_form_data_entry` accepts `--curie`, `--family`, `--course-code`, `--provider {local,together}`, dispatches to `LocalSynthesisProvider._oa_client.chat_completion` / `TogetherSynthesisProvider._oa_client.chat_completion` with a structurally-minimal prompt template (schema rules + manifest metadata only — NO example sentences, NO seed phrases — ToS-load-bearing), parses the JSON response, runs `validate_form_data_contract` on the drafted entry, and emits the YAML block + operator next-steps comments. ToS regression sentinel: `r'"[^"]{40,}"'` matches ZERO times in the rendered template. Operator review + manual append required — no auto-write. |
+| 136d | _this commit_ | Interactive backfill loop CLI — `python -m Trainforge.scripts.backfill_form_data` enumerates `degraded_placeholder` entries in the post-overlay form_data dict, sorts by corpus frequency (default) or alphabetically, and per CURIE dispatches the Wave 136c drafting CLI as a subprocess and pauses for operator confirmation (`y` accept-append / `n` skip / `e` edit-then-append / `q` quit). On accept the new entry is deep-merged into the per-family YAML overlay via atomic tmp+rename; the Wave 136a cache is invalidated; Wave 136b's validator runs against the post-merge form_data and a CURIE-specific content_violation triggers a rollback. End-of-run summary emits ONE `decision_type="form_data_backfill_session"` decision-capture event with metadata-shaped rationale (counts only — no authored YAML in the rationale string). 5 regression tests in `Trainforge/tests/test_backfill_form_data.py` cover frequency-descending sort, y-append + existing-entry preservation, n-skip leaves file unchanged, q-early-exit, validator-rollback. New enum value `form_data_backfill_session` registered in `schemas/events/decision_event.schema.json`. |
 
 ## Synthesis pipeline integrity invariants (Wave 112)
 
