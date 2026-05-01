@@ -48,23 +48,19 @@ _NEGATIVE = re.compile(
 )
 
 
+# Wave 132a: imported from the canonical map so the wording stays
+# bytewise-aligned with `kg_metadata_generator._RELATION_TEMPLATES`
+# (training-time emit). Drift between train + eval would desync the
+# adapter's training signal from the eval probe.
+#
+# Wave 108 / Phase B: chunk_at_difficulty was dropped from the canonical
+# map — every chunk has a difficulty level so the probe was trivially-
+# true and only padded faithfulness scores. Held-out edges of that type
+# fall through to the generic template now.
+from lib.ontology.relation_templates import RELATION_TEMPLATES as _CANONICAL
+
 _RELATION_TEMPLATES: Dict[str, str] = {
-    "prerequisite_of": "Is the concept '{source}' a prerequisite for the concept '{target}'?",
-    "teaches": "Does the chunk '{source}' teach the concept '{target}'?",
-    "interferes_with": "Does the misconception '{source}' interfere with the concept '{target}'?",
-    "concept_supports_outcome": "Does the concept '{source}' support the learning outcome '{target}'?",
-    "derived_from_objective": "Is the concept '{source}' derived from the objective '{target}'?",
-    "exemplifies": "Does the chunk '{source}' exemplify the concept '{target}'?",
-    "assesses": "Does the assessment '{source}' assess the concept '{target}'?",
-    "supports_outcome": "Does the component objective '{source}' support the terminal outcome '{target}'?",
-    "follows": "Does '{source}' follow '{target}' in the curriculum order?",
-    "belongs_to_module": "Does the chunk '{source}' belong to the module '{target}'?",
-    "at_bloom_level": "Is the chunk '{source}' at Bloom level '{target}'?",
-    # Wave 108 / Phase B: chunk_at_difficulty was dropped — every chunk
-    # has a difficulty level so the probe was trivially-true and only
-    # padded faithfulness scores. Held-out edges of that type fall
-    # through to the generic template now.
-    "assessment_validates_outcome": "Does the assessment '{source}' validate the outcome '{target}'?",
+    rel: positive for rel, (positive, _negative) in _CANONICAL.items()
 }
 
 
