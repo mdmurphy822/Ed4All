@@ -51,6 +51,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from lib.decision_capture import DecisionCapture  # noqa: E402
 from lib.ontology.slugs import deslugify_concept  # noqa: E402
+from lib.ontology.template_prefixes import (  # noqa: E402
+    DETERMINISTIC_TEMPLATE_PREFIXES as _DETERMINISTIC_TEMPLATE_PREFIXES,
+)
 from lib.validators.content_type import (  # noqa: E402
     assert_chunk_type,
     validate_chunk_type,
@@ -1803,13 +1806,9 @@ def run_synthesis(
         # they were hoisted above the chunk loop, but their fixture-based
         # prompts (especially violation-detection's bounded-length TTL
         # graphs) shouldn't get prereq context prepended; doing so can
-        # push a violation prompt past its 400-char schema limit.
-        _DETERMINISTIC_TEMPLATE_PREFIXES = (
-            "kg_metadata.",
-            "violation_detection.",
-            "abstention.",
-            "schema_translation.",
-        )
+        # push a violation prompt past its 400-char schema limit. Wave 131:
+        # the prefix tuple is now imported from lib.ontology.template_prefixes
+        # (single source of truth shared with curie_preservation validator).
         if curriculum_ctx is not None and prereq_windowed:
             for rec in instruction_records:
                 if str(rec.get("template_id", "")).startswith(

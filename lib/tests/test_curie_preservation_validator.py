@@ -24,8 +24,9 @@ from typing import Iterable, List
 import pytest
 
 from lib.validators.curie_preservation import (
-    CURIE_REGEX,
+    CURIE_REGEX,  # noqa: F401  (kept as public symbol for back-compat)
     CuriePreservationValidator,
+    _extract_curies,
 )
 
 
@@ -68,25 +69,104 @@ def _chunk_text_with_curies(curies: List[str]) -> str:
 
 
 # --------------------------------------------------------------- #
-# Sanity: the regex matches the canonical W3C prefixes only
+# Sanity: dynamic open-prefix regex matches CURIEs and rejects URLs
 # --------------------------------------------------------------- #
 
 
 def test_curie_regex_matches_canonical_prefixes() -> None:
+    """Wave 131: open-prefix detection. The regex matches any
+    ``prefix:LocalName`` where the local-name leads with a letter; URL
+    schemes are filtered via EXCLUDED_PREFIXES inside _extract_curies.
+
+    Asserts:
+    1. The original 8 canonical prefixes still match
+       (sh / rdfs / owl / rdf / xsd / skos / dcterms / foaf).
+    2. New prefixes the corpus actually uses also match
+       (prov / dcat / geo / ex / schema).
+    3. URL schemes are rejected (http / mailto / urn).
+    4. Digit-leading local names are rejected (10:30, 8:00, localhost:8080).
+    """
     text = (
+        # Canonical 8
         "We use sh:NodeShape, rdfs:label, owl:sameAs, rdf:type, "
-        "xsd:string, skos:Concept, dcterms:title, foaf:Person here. "
-        "But http://example.org and ftp:host should not match."
+        "xsd:string, skos:Concept, dcterms:title, foaf:Person. "
+        # Wave 131 new prefixes (silently dropped pre-Wave-131)
+        "Audit found prov:Activity, dcat:Dataset, geo:lat, ex:Person, "
+        "schema:name in chunks. "
+        # URL schemes — must be filtered
+        "But http://example.org, mailto:x@y, and urn:isbn:1234 should not match. "
+        # Digit-leading local names — must be regex-rejected
+        "Times like 10:30 and 8:00 AM and localhost:8080 also do not count."
     )
-    matches = set(CURIE_REGEX.findall(text))
-    assert matches == {
+    matches = _extract_curies(text)
+    # Canonical 8 still present
+    assert {
         "sh:NodeShape", "rdfs:label", "owl:sameAs", "rdf:type",
         "xsd:string", "skos:Concept", "dcterms:title", "foaf:Person",
-    }
-    # Double-negative: arbitrary other prefixes do not leak through.
-    assert "http:example" not in CURIE_REGEX.findall(
-        "http:example placeholder"
+    }.issubset(matches)
+    # Wave 131 new surface forms admitted
+    assert {
+        "prov:Activity", "dcat:Dataset", "geo:lat", "ex:Person",
+        "schema:name",
+    }.issubset(matches)
+    # URL schemes filtered out by EXCLUDED_PREFIXES
+    assert not any(c.startswith("http:") for c in matches)
+    assert not any(c.startswith("mailto:") for c in matches)
+    assert not any(c.startswith("urn:") for c in matches)
+    # Digit-leading local names rejected by regex shape (no prefix match)
+    assert not any(c.startswith("localhost:") for c in matches)
+    # 10:30 / 8:00 — neither prefix nor local-name leads with a letter,
+    # so the regex never produces a tuple for them.
+    assert "10:30" not in matches
+    assert "8:00" not in matches
+
+
+def test_pair_dynamic_prefix_detection_regresses_unprotected(
+    tmp_path: Path,
+) -> None:
+    """Wave 131 regression pin: a chunk + pair using only `prov:Activity`
+    (a non-canonical-8 prefix) must trigger the validator's gate when
+    the pair drops it. Pre-Wave-131 the validator silently passed
+    because the allowlist regex never extracted `prov:Activity`."""
+    course = tmp_path / "course"
+    # Single chunk carrying ONLY `prov:Activity` — no canonical-8 CURIE.
+    chunks = [{
+        "id": "c1",
+        "text": (
+            "Provenance metadata anchors data lineage. The constraint "
+            "prov:Activity is the central record-keeping shape, with "
+            "prov:Activity used as the typed predicate target."
+        ),
+    }]
+    # 5 paraphrase pairs that ALL drop `prov:Activity` → retention=0.
+    pairs = [
+        {
+            "chunk_id": "c1",
+            "template_id": "paraphrase.def_0",
+            "prompt": f"Briefly explain provenance recording (variant {j}).",
+            "completion": (
+                "Provenance recording captures lineage as activities "
+                "and entities, with predicates relating them in the "
+                "graph."
+            ),
+        }
+        for j in range(5)
+    ]
+    _write_corpus(course, chunks)
+    _write_pairs(course, pairs)
+
+    result = CuriePreservationValidator().validate(
+        {"course_dir": str(course)}
     )
+
+    # Pre-Wave-131 this would have returned NO_AUDITABLE_PAIRS (the
+    # source CURIE was invisible) and silently passed. Wave 131 sees
+    # `prov:Activity` and fails closed because the pairs never preserve it.
+    assert result.passed is False
+    critical_codes = [
+        i.code for i in result.issues if i.severity == "critical"
+    ]
+    assert "CURIE_RETENTION_BELOW_THRESHOLD" in critical_codes
 
 
 # --------------------------------------------------------------- #
