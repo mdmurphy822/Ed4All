@@ -1,10 +1,22 @@
 family: rdf_shacl
 description: |
-  The 6 RDF/SHACL surface forms every rdf-shacl-* course's SLM adapter
-  must teach. Coverage and per-property accuracy gates fail closed
-  below the floors below. Wave 109 / Phase C.
+  RDF/SHACL surface forms every rdf-shacl-* course's SLM adapter must
+  teach. Coverage and per-property accuracy gates fail closed below the
+  floors below.
+
+  Wave 109 / Phase C: established the manifest with 6 anchor CURIEs.
+  Wave 130a: expanded to 40 CURIEs (audit-recommended + corpus-attested)
+  per plans/curie-fidelity-audit-2026-05/audit_report.md. The audit
+  measured mean retention 10% / 55% zero-retention because Wave 120's
+  preserve-retry mechanism was correct but enforced preservation only
+  over the 6 declared anchors; non-manifest schema vocabulary
+  (sh:minCount, sh:path, rdf:type, xsd:date, foaf:Person, owl:disjointWith,
+  rdfs:domain/range, etc.) was never required and 14B-Q4 paraphrase
+  routinely strips it. Floors are scaled to corpus frequency tier:
+  high-freq (>50 chunks) -> 5, mid (10-50) -> 3, low (2-10) -> 2.
 
 properties:
+  # ----- SHACL anchors (Wave 109) -----
   - id: sh_datatype
     uri: http://www.w3.org/ns/shacl#datatype
     curie: sh:datatype
@@ -69,4 +81,349 @@ properties:
       - "owl:sameAs"
       - "<http://www.w3.org/2002/07/owl#sameAs>"
     min_pairs: 8
+    min_accuracy: 0.40
+
+  # ----- SHACL constraint vocabulary (Wave 130a) -----
+  - id: sh_mincount
+    uri: http://www.w3.org/ns/shacl#minCount
+    curie: sh:minCount
+    label: SHACL minimum cardinality constraint
+    surface_forms:
+      - "sh:minCount"
+      - "<http://www.w3.org/ns/shacl#minCount>"
+    min_pairs: 5
+    min_accuracy: 0.40
+
+  - id: sh_maxcount
+    uri: http://www.w3.org/ns/shacl#maxCount
+    curie: sh:maxCount
+    label: SHACL maximum cardinality constraint
+    surface_forms:
+      - "sh:maxCount"
+      - "<http://www.w3.org/ns/shacl#maxCount>"
+    min_pairs: 5
+    min_accuracy: 0.40
+
+  - id: sh_path
+    uri: http://www.w3.org/ns/shacl#path
+    curie: sh:path
+    label: SHACL property path
+    surface_forms:
+      - "sh:path"
+      - "<http://www.w3.org/ns/shacl#path>"
+    min_pairs: 5
+    min_accuracy: 0.40
+
+  - id: sh_nodekind
+    uri: http://www.w3.org/ns/shacl#nodeKind
+    curie: sh:nodeKind
+    label: SHACL node-kind constraint
+    surface_forms:
+      - "sh:nodeKind"
+      - "<http://www.w3.org/ns/shacl#nodeKind>"
+    min_pairs: 3
+    min_accuracy: 0.40
+
+  - id: sh_property
+    uri: http://www.w3.org/ns/shacl#property
+    curie: sh:property
+    label: SHACL property-shape attachment
+    surface_forms:
+      - "sh:property"
+      - "<http://www.w3.org/ns/shacl#property>"
+    min_pairs: 5
+    min_accuracy: 0.40
+
+  - id: sh_targetclass
+    uri: http://www.w3.org/ns/shacl#targetClass
+    curie: sh:targetClass
+    label: SHACL target-class declaration
+    surface_forms:
+      - "sh:targetClass"
+      - "<http://www.w3.org/ns/shacl#targetClass>"
+    min_pairs: 5
+    min_accuracy: 0.40
+
+  - id: sh_closed
+    uri: http://www.w3.org/ns/shacl#closed
+    curie: sh:closed
+    label: SHACL closed-world constraint
+    surface_forms:
+      - "sh:closed"
+      - "<http://www.w3.org/ns/shacl#closed>"
+    min_pairs: 3
+    min_accuracy: 0.40
+
+  - id: sh_in
+    uri: http://www.w3.org/ns/shacl#in
+    curie: sh:in
+    label: SHACL value-set constraint
+    surface_forms:
+      - "sh:in"
+      - "<http://www.w3.org/ns/shacl#in>"
+    min_pairs: 3
+    min_accuracy: 0.40
+
+  - id: sh_pattern
+    uri: http://www.w3.org/ns/shacl#pattern
+    curie: sh:pattern
+    label: SHACL regex pattern constraint
+    surface_forms:
+      - "sh:pattern"
+      - "<http://www.w3.org/ns/shacl#pattern>"
+    min_pairs: 3
+    min_accuracy: 0.40
+
+  - id: sh_focusnode
+    uri: http://www.w3.org/ns/shacl#focusNode
+    curie: sh:focusNode
+    label: SHACL validation focus node
+    surface_forms:
+      - "sh:focusNode"
+      - "<http://www.w3.org/ns/shacl#focusNode>"
+    min_pairs: 3
+    min_accuracy: 0.40
+
+  - id: sh_validationresult
+    uri: http://www.w3.org/ns/shacl#ValidationResult
+    curie: sh:ValidationResult
+    label: SHACL validation result class
+    surface_forms:
+      - "sh:ValidationResult"
+      - "<http://www.w3.org/ns/shacl#ValidationResult>"
+    min_pairs: 3
+    min_accuracy: 0.40
+
+  - id: sh_validationreport
+    uri: http://www.w3.org/ns/shacl#ValidationReport
+    curie: sh:ValidationReport
+    label: SHACL validation report class
+    surface_forms:
+      - "sh:ValidationReport"
+      - "<http://www.w3.org/ns/shacl#ValidationReport>"
+    min_pairs: 3
+    min_accuracy: 0.40
+
+  - id: sh_result
+    uri: http://www.w3.org/ns/shacl#result
+    curie: sh:result
+    label: SHACL validation-report result link
+    surface_forms:
+      - "sh:result"
+      - "<http://www.w3.org/ns/shacl#result>"
+    min_pairs: 3
+    min_accuracy: 0.40
+
+  - id: sh_violation
+    uri: http://www.w3.org/ns/shacl#Violation
+    curie: sh:Violation
+    label: SHACL violation severity
+    surface_forms:
+      - "sh:Violation"
+      - "<http://www.w3.org/ns/shacl#Violation>"
+    min_pairs: 3
+    min_accuracy: 0.40
+
+  # ----- RDF / RDFS core vocabulary (Wave 130a) -----
+  - id: rdf_type
+    uri: http://www.w3.org/1999/02/22-rdf-syntax-ns#type
+    curie: rdf:type
+    label: RDF type predicate
+    surface_forms:
+      - "rdf:type"
+      - "<http://www.w3.org/1999/02/22-rdf-syntax-ns#type>"
+    min_pairs: 5
+    min_accuracy: 0.40
+
+  - id: rdf_property
+    uri: http://www.w3.org/1999/02/22-rdf-syntax-ns#Property
+    curie: rdf:Property
+    label: RDF Property class
+    surface_forms:
+      - "rdf:Property"
+      - "<http://www.w3.org/1999/02/22-rdf-syntax-ns#Property>"
+    min_pairs: 3
+    min_accuracy: 0.40
+
+  - id: rdfs_domain
+    uri: http://www.w3.org/2000/01/rdf-schema#domain
+    curie: rdfs:domain
+    label: RDFS domain assertion
+    surface_forms:
+      - "rdfs:domain"
+      - "<http://www.w3.org/2000/01/rdf-schema#domain>"
+    min_pairs: 5
+    min_accuracy: 0.40
+
+  - id: rdfs_range
+    uri: http://www.w3.org/2000/01/rdf-schema#range
+    curie: rdfs:range
+    label: RDFS range assertion
+    surface_forms:
+      - "rdfs:range"
+      - "<http://www.w3.org/2000/01/rdf-schema#range>"
+    min_pairs: 5
+    min_accuracy: 0.40
+
+  - id: rdfs_class
+    uri: http://www.w3.org/2000/01/rdf-schema#Class
+    curie: rdfs:Class
+    label: RDFS Class metaclass
+    surface_forms:
+      - "rdfs:Class"
+      - "<http://www.w3.org/2000/01/rdf-schema#Class>"
+    min_pairs: 5
+    min_accuracy: 0.40
+
+  - id: rdfs_resource
+    uri: http://www.w3.org/2000/01/rdf-schema#Resource
+    curie: rdfs:Resource
+    label: RDFS Resource root class
+    surface_forms:
+      - "rdfs:Resource"
+      - "<http://www.w3.org/2000/01/rdf-schema#Resource>"
+    min_pairs: 3
+    min_accuracy: 0.40
+
+  - id: rdfs_comment
+    uri: http://www.w3.org/2000/01/rdf-schema#comment
+    curie: rdfs:comment
+    label: RDFS comment annotation
+    surface_forms:
+      - "rdfs:comment"
+      - "<http://www.w3.org/2000/01/rdf-schema#comment>"
+    min_pairs: 5
+    min_accuracy: 0.40
+
+  - id: rdfs_label
+    uri: http://www.w3.org/2000/01/rdf-schema#label
+    curie: rdfs:label
+    label: RDFS label annotation
+    surface_forms:
+      - "rdfs:label"
+      - "<http://www.w3.org/2000/01/rdf-schema#label>"
+    min_pairs: 5
+    min_accuracy: 0.40
+
+  - id: rdfs_literal
+    uri: http://www.w3.org/2000/01/rdf-schema#Literal
+    curie: rdfs:Literal
+    label: RDFS Literal class
+    surface_forms:
+      - "rdfs:Literal"
+      - "<http://www.w3.org/2000/01/rdf-schema#Literal>"
+    min_pairs: 3
+    min_accuracy: 0.40
+
+  # ----- OWL vocabulary (Wave 130a) -----
+  - id: owl_disjointwith
+    uri: http://www.w3.org/2002/07/owl#disjointWith
+    curie: owl:disjointWith
+    label: OWL disjointWith axiom
+    surface_forms:
+      - "owl:disjointWith"
+      - "<http://www.w3.org/2002/07/owl#disjointWith>"
+    min_pairs: 3
+    min_accuracy: 0.40
+
+  - id: owl_equivalentclass
+    uri: http://www.w3.org/2002/07/owl#equivalentClass
+    curie: owl:equivalentClass
+    label: OWL equivalentClass axiom
+    surface_forms:
+      - "owl:equivalentClass"
+      - "<http://www.w3.org/2002/07/owl#equivalentClass>"
+    min_pairs: 3
+    min_accuracy: 0.40
+
+  - id: owl_class
+    uri: http://www.w3.org/2002/07/owl#Class
+    curie: owl:Class
+    label: OWL Class metaclass
+    surface_forms:
+      - "owl:Class"
+      - "<http://www.w3.org/2002/07/owl#Class>"
+    min_pairs: 3
+    min_accuracy: 0.40
+
+  # ----- XSD datatype vocabulary (Wave 130a) -----
+  - id: xsd_string
+    uri: http://www.w3.org/2001/XMLSchema#string
+    curie: xsd:string
+    label: XSD string datatype
+    surface_forms:
+      - "xsd:string"
+      - "<http://www.w3.org/2001/XMLSchema#string>"
+    min_pairs: 5
+    min_accuracy: 0.40
+
+  - id: xsd_integer
+    uri: http://www.w3.org/2001/XMLSchema#integer
+    curie: xsd:integer
+    label: XSD integer datatype
+    surface_forms:
+      - "xsd:integer"
+      - "<http://www.w3.org/2001/XMLSchema#integer>"
+    min_pairs: 3
+    min_accuracy: 0.40
+
+  - id: xsd_date
+    uri: http://www.w3.org/2001/XMLSchema#date
+    curie: xsd:date
+    label: XSD date datatype
+    surface_forms:
+      - "xsd:date"
+      - "<http://www.w3.org/2001/XMLSchema#date>"
+    min_pairs: 3
+    min_accuracy: 0.40
+
+  - id: xsd_datetime
+    uri: http://www.w3.org/2001/XMLSchema#dateTime
+    curie: xsd:dateTime
+    label: XSD dateTime datatype
+    surface_forms:
+      - "xsd:dateTime"
+      - "<http://www.w3.org/2001/XMLSchema#dateTime>"
+    min_pairs: 3
+    min_accuracy: 0.40
+
+  # ----- FOAF / Dublin Core example vocabulary (Wave 130a) -----
+  - id: foaf_person
+    uri: http://xmlns.com/foaf/0.1/Person
+    curie: foaf:Person
+    label: FOAF Person class (canonical example)
+    surface_forms:
+      - "foaf:Person"
+      - "<http://xmlns.com/foaf/0.1/Person>"
+    min_pairs: 2
+    min_accuracy: 0.40
+
+  - id: foaf_knows
+    uri: http://xmlns.com/foaf/0.1/knows
+    curie: foaf:knows
+    label: FOAF knows relation (canonical example)
+    surface_forms:
+      - "foaf:knows"
+      - "<http://xmlns.com/foaf/0.1/knows>"
+    min_pairs: 2
+    min_accuracy: 0.40
+
+  - id: foaf_agent
+    uri: http://xmlns.com/foaf/0.1/Agent
+    curie: foaf:Agent
+    label: FOAF Agent class
+    surface_forms:
+      - "foaf:Agent"
+      - "<http://xmlns.com/foaf/0.1/Agent>"
+    min_pairs: 2
+    min_accuracy: 0.40
+
+  - id: dcterms_creator
+    uri: http://purl.org/dc/terms/creator
+    curie: dcterms:creator
+    label: Dublin Core creator predicate
+    surface_forms:
+      - "dcterms:creator"
+      - "<http://purl.org/dc/terms/creator>"
+    min_pairs: 2
     min_accuracy: 0.40
