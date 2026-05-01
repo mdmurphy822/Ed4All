@@ -923,6 +923,29 @@ workflows:
               on_error: fail_closed
             description: Wave 121 — refuse training pairs with >5% verbatim chunk leakage
 
+          # Wave 130b: architectural backstop for the Wave 120
+          # preserve-retry mechanism. Operates on the chunk's *full*
+          # CURIE set (regex-extracted), unlike Wave 120 which is scoped
+          # to the manifest-declared surface forms only. Catches drift
+          # between the corpus vocabulary and the manifest declaration:
+          # if a new W3C prefix lands in chunks before the manifest
+          # catches up, this gate surfaces the resulting retention drop
+          # before the training pairs are accepted. Default threshold
+          # mean_retention=0.40 fails closed if more than ~60% of source
+          # CURIEs are stripped on average across paraphrase pairs.
+          # Skips deterministic generators (kg_metadata.* /
+          # violation_detection.* / abstention.* / schema_translation.*)
+          # since those are oracle-grounded by manifest input.
+          - gate_id: curie_preservation
+            validator: lib.validators.curie_preservation.CuriePreservationValidator
+            severity: critical
+            threshold:
+              min_mean_retention: 0.40
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Wave 130b — refuse training pairs whose mean CURIE retention falls below 0.40
+
       - name: libv2_archival
         agents: [libv2-archivist]
         parallel: false
