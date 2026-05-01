@@ -923,28 +923,45 @@ workflows:
               on_error: fail_closed
             description: Wave 121 — refuse training pairs with >5% verbatim chunk leakage
 
-          # Wave 130b: architectural backstop for the Wave 120
-          # preserve-retry mechanism. Operates on the chunk's *full*
-          # CURIE set (regex-extracted), unlike Wave 120 which is scoped
-          # to the manifest-declared surface forms only. Catches drift
-          # between the corpus vocabulary and the manifest declaration:
-          # if a new W3C prefix lands in chunks before the manifest
-          # catches up, this gate surfaces the resulting retention drop
-          # before the training pairs are accepted. Default threshold
-          # mean_retention=0.40 fails closed if more than ~60% of source
-          # CURIEs are stripped on average across paraphrase pairs.
-          # Skips deterministic generators (kg_metadata.* /
-          # violation_detection.* / abstention.* / schema_translation.*)
-          # since those are oracle-grounded by manifest input.
+          # Wave 130b (DEPRECATED, demoted Wave 135c): mean CURIE
+          # retention metric. Under the Wave 135 contract, force-injection
+          # guarantees CURIE presence regardless of LLM behavior, so the
+          # mean-retention metric is no longer meaningful as a critical
+          # signal — a 100%-token-stuffed corpus would pass the old
+          # gate. Demoted to severity=warning this wave for transition
+          # visibility and removed entirely in Wave 135d. Superseded by
+          # the curie_anchoring gate below.
           - gate_id: curie_preservation
             validator: lib.validators.curie_preservation.CuriePreservationValidator
-            severity: critical
+            severity: warning
             threshold:
               min_mean_retention: 0.40
             behavior:
+              on_fail: warn
+              on_error: warn
+            description: Wave 130b (DEPRECATED, demoted Wave 135c) — mean CURIE retention metric. Superseded by curie_anchoring gate; retained one wave for transition visibility.
+
+          # Wave 135c: binary per-pair CURIE anchoring sentinel. Replaces
+          # the curie_preservation mean-retention metric as the
+          # critical-severity gate. Force-injection (Wave 135b)
+          # guarantees CURIE presence in paraphrase pairs by
+          # construction; this gate fires only when injection BROKE,
+          # i.e., the per-pair anchoring rate drops to whatever the
+          # natural paraphrase rate is (~0.10 per the 2026-05-01 audit).
+          # Default threshold pair_anchoring_rate=0.95 catches injector
+          # regressions loudly without false-positive on natural per-pair
+          # variance. Skips deterministic generators (kg_metadata.* /
+          # violation_detection.* / abstention.* / schema_translation.*)
+          # since those are oracle-grounded by manifest input.
+          - gate_id: curie_anchoring
+            validator: lib.validators.curie_anchoring.CurieAnchoringValidator
+            severity: critical
+            threshold:
+              min_pair_anchoring_rate: 0.95
+            behavior:
               on_fail: block
               on_error: fail_closed
-            description: Wave 130b — refuse training pairs whose mean CURIE retention falls below 0.40
+            description: Wave 135c — binary per-pair CURIE anchoring sentinel. Force-injection guarantees CURIE presence; this gate fails closed on injector regression.
 
       - name: libv2_archival
         agents: [libv2-archivist]
