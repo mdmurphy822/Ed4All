@@ -40,6 +40,7 @@ import argparse
 import json
 import logging
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -52,12 +53,46 @@ from lib.ontology.property_manifest import (  # noqa: E402
     load_property_manifest,
 )
 from Trainforge.generators.schema_translation_generator import (  # noqa: E402
+    Provenance,
     SurfaceFormData,
     _load_form_data,
     validate_form_data_contract,
 )
 
 logger = logging.getLogger(__name__)
+
+
+# Wave 137c: prompt-template version captured in every drafted entry's
+# provenance block. Bump in lockstep with material edits to
+# ``_DRAFTING_PROMPT_TEMPLATE``.
+_PROMPT_VERSION = "wave-136c-v1.0"
+
+
+def _resolve_provider_id(name: str, model: Optional[str]) -> str:
+    """Wave 137c: canonical provider identifier for the audit trail.
+
+    Stable identifiers across runs let the ToS audit table aggregate
+    by source. The two canonical defaults — Qwen 14B Q4 (Ollama) and
+    Llama 3.3 70B (Together) — get fixed strings; everything else
+    falls back to a lowercased, slugified ``{name}_{model}`` form so
+    a less-common server / model still produces a deterministic ID.
+    """
+
+    def _slugify(value: Optional[str]) -> str:
+        if not value:
+            return "unspecified"
+        return value.lower().replace(":", "_").replace("/", "_")
+
+    model_lower = (model or "").lower()
+    if name == "local":
+        if "qwen" in model_lower and "14b" in model_lower and "q4" in model_lower:
+            return "qwen_local_14b_q4"
+        return f"local_{_slugify(model)}"
+    if name == "together":
+        if "llama" in model_lower and "70b" in model_lower:
+            return "together_llama33_70b"
+        return f"together_{_slugify(model)}"
+    return f"{name}_{_slugify(model)}"
 
 
 # Drafting prompt template — ToS-load-bearing.
@@ -175,6 +210,8 @@ def _draft_one_curie(provider: Any, prompt: str) -> Dict[str, Any]:
 def _coerce_to_surface_form_data(
     raw: Dict[str, Any],
     curie: str,
+    provider_name: str,
+    model: Optional[str],
 ) -> SurfaceFormData:
     """Coerce a provider-emitted JSON dict into a ``SurfaceFormData``.
 
@@ -183,6 +220,12 @@ def _coerce_to_surface_form_data(
     confirms the structural contract (Wave 136a) and Wave 136b's
     content-quality rules (when present in the validator on the
     branch this CLI runs against).
+
+    Wave 137c: every drafted entry carries an auto-stamped
+    :class:`Provenance` block with ``reviewed_by="PENDING_REVIEW"``.
+    Operators MUST replace ``PENDING_REVIEW`` with their handle (e.g.
+    ``@mdmurphy822``) before committing; Plan A's validator rejects
+    entries whose ``reviewed_by`` is ``PENDING_REVIEW`` or empty.
     """
 
     def _coerce_pair_list(field: str) -> List[Tuple[str, str]]:
@@ -195,6 +238,14 @@ def _coerce_to_surface_form_data(
     short_name = str(
         raw.get("short_name") or curie.split(":")[-1] or curie
     ).strip() or curie
+    provenance = Provenance(
+        provider=_resolve_provider_id(provider_name, model),
+        generated_by="draft_form_data_entry v1.0",
+        reviewed_by="PENDING_REVIEW",
+        prompt_version=_PROMPT_VERSION,
+        timestamp=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        notes=None,
+    )
     return SurfaceFormData(
         curie=curie,
         short_name=short_name,
@@ -205,6 +256,7 @@ def _coerce_to_surface_form_data(
         pitfalls=_coerce_pair_list("pitfalls"),
         combinations=_coerce_pair_list("combinations"),
         anchored_status="complete",
+        provenance=provenance,
     )
 
 
@@ -231,6 +283,16 @@ def _surface_form_data_to_yaml_dict(entry: SurfaceFormData) -> Dict[str, Any]:
         out["pitfalls"] = [list(p) for p in entry.pitfalls]
     if entry.combinations:
         out["combinations"] = [list(p) for p in entry.combinations]
+    if entry.provenance is not None:
+        out["provenance"] = {
+            "provider": entry.provenance.provider,
+            "generated_by": entry.provenance.generated_by,
+            "reviewed_by": entry.provenance.reviewed_by,
+            "prompt_version": entry.provenance.prompt_version,
+            "timestamp": entry.provenance.timestamp,
+        }
+        if entry.provenance.notes is not None:
+            out["provenance"]["notes"] = entry.provenance.notes
     return out
 
 
@@ -266,6 +328,10 @@ def _build_provider(provider_name: str, model: Optional[str]) -> Any:
 
 _NEXT_STEPS_TEMPLATE = """\
 # NEXT STEPS
+# 0. **REVIEW the drafted content + UPDATE provenance.reviewed_by from
+#    PENDING_REVIEW to your operator handle (e.g. @mdmurphy822)** before
+#    committing. Plan A's validator rejects entries with reviewed_by
+#    set to PENDING_REVIEW or empty.
 # 1. Append the `forms.{curie}:` block above to:
 #    schemas/training/schema_translation_catalog.{family}.yaml
 # 2. Run:
@@ -429,7 +495,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     # Step 7: coerce into SurfaceFormData (anchored_status="complete").
-    drafted = _coerce_to_surface_form_data(raw, args.curie)
+    # Wave 137c: provenance is auto-stamped with reviewed_by="PENDING_REVIEW";
+    # the operator-next-steps banner reminds the operator to replace it
+    # with their handle before committing.
+    drafted = _coerce_to_surface_form_data(
+        raw, args.curie, args.provider, args.model
+    )
 
     # Step 8: validate. Build a one-CURIE form_data dict and run the
     # canonical contract validator. Wave 136b widens this to content-

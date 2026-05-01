@@ -314,3 +314,81 @@ def test_drafting_prompt_template_does_not_contain_example_content():
         f"chars (ToS regression sentinel). Found {len(matches)} matches:"
         f" {matches[:3]}"
     )
+
+
+# ----------------------------------------------------------------------
+# Wave 137c — drafting CLI auto-populates provenance with PENDING_REVIEW.
+# ----------------------------------------------------------------------
+
+
+def test_drafted_entry_carries_pending_review_provenance():
+    """Wave 137c: a successful CLI drafting pass must stamp the
+    rendered YAML with a provenance block whose ``reviewed_by`` is
+    the literal string ``PENDING_REVIEW`` — operators MUST replace
+    before commit."""
+    target_curie = "sh:datatype"
+    valid_payload = _build_valid_form_data_payload(target_curie)
+    import json as _json
+
+    fake_provider = _FakeProvider(_json.dumps(valid_payload))
+
+    out = io.StringIO()
+    with patch.object(
+        cli, "_build_provider", return_value=fake_provider
+    ), redirect_stdout(out):
+        rc = cli.main(
+            [
+                "--curie",
+                target_curie,
+                "--course-code",
+                "rdf-shacl-551-2",
+                "--provider",
+                "local",
+                "--model",
+                "qwen2.5:14b-instruct-q4_K_M",
+                "--force-overwrite",
+            ]
+        )
+
+    assert rc == 0, f"expected exit 0; got {rc}"
+    rendered = out.getvalue()
+    assert "provenance:" in rendered, (
+        "rendered YAML must carry a 'provenance:' block"
+    )
+    assert "reviewed_by: PENDING_REVIEW" in rendered, (
+        f"rendered YAML must stamp reviewed_by=PENDING_REVIEW; got "
+        f"{rendered!r}"
+    )
+    assert "provider: qwen_local_14b_q4" in rendered, (
+        f"rendered YAML must carry the canonical qwen_local_14b_q4 "
+        f"provider id; got {rendered!r}"
+    )
+    assert "generated_by: draft_form_data_entry v1.0" in rendered
+    assert "prompt_version: wave-136c-v1.0" in rendered
+    assert "timestamp:" in rendered
+    # NEXT STEPS banner now surfaces the operator-review step.
+    assert "PENDING_REVIEW" in rendered
+    assert "REVIEW the drafted content" in rendered
+
+
+def test_resolve_provider_id_qwen_local_14b_q4():
+    """Wave 137c: canonical Qwen-local 14B Q4 provider identifier."""
+    assert (
+        cli._resolve_provider_id("local", "qwen2.5:14b-instruct-q4_K_M")
+        == "qwen_local_14b_q4"
+    )
+    # Case-insensitive substring match.
+    assert (
+        cli._resolve_provider_id("local", "Qwen2.5-14B-Q4")
+        == "qwen_local_14b_q4"
+    )
+
+
+def test_resolve_provider_id_together_llama_70b():
+    """Wave 137c: canonical Together Llama 3.3 70B provider identifier."""
+    assert (
+        cli._resolve_provider_id(
+            "together", "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+        )
+        == "together_llama33_70b"
+    )
