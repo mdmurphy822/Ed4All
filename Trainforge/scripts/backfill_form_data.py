@@ -67,6 +67,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.decision_capture import DecisionCapture  # noqa: E402
+from lib.ontology.family_map import (  # noqa: E402
+    FamilyMap,
+    load_family_map,
+)
 from lib.ontology.property_manifest import (  # noqa: E402
     load_property_manifest,
 )
@@ -143,25 +147,107 @@ def _count_curie_frequencies(
     return counts
 
 
-def _sort_targets(
+def _sort_targets_clustered(
     degraded_curies: List[str],
     counts: Dict[str, int],
+    family_map: Optional[FamilyMap],
     by: str,
+    *,
+    family_filter: Optional[str] = None,
 ) -> List[Tuple[str, int]]:
-    """Return ``[(curie, freq), ...]`` ordered by --by mode.
+    """Return ``[(curie, freq), ...]`` ordered by --by mode + family clustering.
 
-    ``frequency`` (default): descending count, ties broken by CURIE
-    alphabetical (stable). ``alphabetical``: ascending CURIE.
+    Wave 137b: replaces Wave 136d's flat frequency sort with family-
+    aware ordering so the operator visits all degraded CURIEs in one
+    family before crossing to the next, guaranteeing the
+    family_completeness gate flips green in batches rather than
+    mid-family.
+
+    Algorithm:
+      * ``by="alphabetical"`` bypasses clustering entirely (preserves
+        Wave 136d test-deterministic behavior).
+      * ``family_map is None`` falls back to a flat frequency-desc sort
+        with alpha tie-break (preserves Wave 136d behavior on courses
+        without a family map).
+      * Otherwise: partition degraded CURIEs into one bucket per family
+        + a singletons bucket. Filter to ``family_filter`` if set.
+        Sort family buckets by aggregate freq desc; within-bucket by
+        individual freq desc (alpha tie-break). Append singletons last,
+        sorted by individual freq desc (alpha tie-break).
+
+    ``family_filter`` accepts a family name (one of the keys in
+    ``family_map.families``) or the literal ``"singletons"`` for the
+    singletons-only run.
     """
     if by == "alphabetical":
         return sorted(
             ((c, counts.get(c, 0)) for c in degraded_curies),
             key=lambda pair: pair[0],
         )
-    # Default: frequency desc, alpha tie-break.
-    return sorted(
-        ((c, counts.get(c, 0)) for c in degraded_curies),
-        key=lambda pair: (-pair[1], pair[0]),
+    if family_map is None:
+        # Flat fallback: Wave 136d behavior.
+        return sorted(
+            ((c, counts.get(c, 0)) for c in degraded_curies),
+            key=lambda pair: (-pair[1], pair[0]),
+        )
+
+    cluster_buckets: Dict[str, List[Tuple[str, int]]] = {}
+    singletons_bucket: List[Tuple[str, int]] = []
+    for c in degraded_curies:
+        freq = counts.get(c, 0)
+        fam = family_map.family_of.get(c)
+        if fam is None or fam == "<singleton>":
+            singletons_bucket.append((c, freq))
+        else:
+            cluster_buckets.setdefault(fam, []).append((c, freq))
+
+    # Apply family_filter.
+    if family_filter is not None:
+        if family_filter == "singletons":
+            cluster_buckets = {}
+        else:
+            cluster_buckets = {
+                k: v
+                for k, v in cluster_buckets.items()
+                if k == family_filter
+            }
+            singletons_bucket = []
+
+    # Sort each cluster bucket internally: freq desc, alpha tie-break.
+    for fam in cluster_buckets:
+        cluster_buckets[fam].sort(key=lambda pair: (-pair[1], pair[0]))
+
+    # Sort cluster buckets by aggregate frequency desc; tie-break by
+    # family name to keep ordering deterministic.
+    def _aggregate(items: List[Tuple[str, int]]) -> int:
+        return sum(freq for _, freq in items)
+
+    ordered_clusters: List[Tuple[str, int]] = []
+    for fam in sorted(
+        cluster_buckets,
+        key=lambda f: (-_aggregate(cluster_buckets[f]), f),
+    ):
+        ordered_clusters.extend(cluster_buckets[fam])
+
+    # Singletons last, sorted by individual freq desc, alpha tie-break.
+    singletons_bucket.sort(key=lambda pair: (-pair[1], pair[0]))
+
+    return ordered_clusters + singletons_bucket
+
+
+# Wave 137b: keep the Wave 136d name available for callers that
+# imported `_sort_targets` directly. Implementation now routes through
+# the clustered sort with `family_map=None` so behavior is unchanged
+# for the legacy signature.
+def _sort_targets(
+    degraded_curies: List[str],
+    counts: Dict[str, int],
+    by: str,
+) -> List[Tuple[str, int]]:
+    """Wave 136d compatibility shim. New callers should use
+    :func:`_sort_targets_clustered` and pass a ``family_map``."""
+    return _sort_targets_clustered(
+        degraded_curies, counts, family_map=None, by=by,
     )
 
 
@@ -546,6 +632,20 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "<family>.yaml."
         ),
     )
+    # Wave 137b: restrict a session to one family cluster (e.g. just
+    # cardinality) so the operator can flip a single family from
+    # partial -> complete in one sitting and the family_completeness
+    # gate goes green on that family.
+    parser.add_argument(
+        "--family-cluster",
+        default=None,
+        help=(
+            "Restrict the session to one family cluster from the "
+            "family map (or 'singletons'). Default: visit every "
+            "cluster in family-clustered order. Validated against the "
+            "family map at parse time."
+        ),
+    )
     return parser
 
 
@@ -592,10 +692,49 @@ def main(
         )
         return 0
 
-    # Step 3: corpus-frequency or alphabetical sort.
+    # Step 3: corpus-frequency or alphabetical sort with family clustering.
     chunks_path = _resolve_chunks_jsonl(args.course_code)
     counts = _count_curie_frequencies(chunks_path, degraded)
-    ordered = _sort_targets(degraded, counts, args.by)
+
+    # Wave 137b: load the family map (None on families without one --
+    # the clustered sort falls back to flat freq-desc behavior).
+    try:
+        family_map = load_family_map(args.family)
+    except Exception as exc:  # noqa: BLE001 - bubble as exit-3
+        print(
+            f"ERROR: family_map for family={args.family!r} failed to "
+            f"load: {exc}",
+            file=sys.stderr,
+        )
+        return 3
+
+    # Validate --family-cluster against the loaded map (parse-time check
+    # already accepted any string; do the semantic check here).
+    if args.family_cluster is not None:
+        if family_map is None:
+            print(
+                f"ERROR: --family-cluster {args.family_cluster!r} requires "
+                f"a family_map, but none exists for family={args.family!r}.",
+                file=sys.stderr,
+            )
+            return 2
+        valid_clusters = set(family_map.families) | {"singletons"}
+        if args.family_cluster not in valid_clusters:
+            print(
+                f"ERROR: --family-cluster {args.family_cluster!r} is not "
+                f"a valid cluster name. Choose one of: "
+                f"{sorted(valid_clusters)}.",
+                file=sys.stderr,
+            )
+            return 2
+
+    ordered = _sort_targets_clustered(
+        degraded,
+        counts,
+        family_map=family_map,
+        by=args.by,
+        family_filter=args.family_cluster,
+    )
 
     # Step 4: cap to --limit.
     targets = ordered[: args.limit]
