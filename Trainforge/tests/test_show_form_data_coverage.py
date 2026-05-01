@@ -135,3 +135,39 @@ def test_show_exits_2_when_checkpoint_absent(tmp_path: Path) -> None:
     err_text = err.getvalue()
     assert "checkpoint" in err_text.lower()
     assert str(missing) in err_text
+
+
+def test_show_falls_back_to_live_snapshot_when_default_checkpoint_absent() -> None:
+    """Wave 137 follow-up: when the DEFAULT checkpoint path is missing
+    (no eval has run since 137d-2), the CLI computes a live snapshot via
+    compute_coverage_metrics instead of exiting 2. Operators can inspect
+    baseline coverage BEFORE the first retrain.
+
+    --checkpoint-path explicitly named still exits 2 (no silent fallback
+    when the operator has named a specific file)."""
+    out, err = io.StringIO(), io.StringIO()
+    with redirect_stdout(out), redirect_stderr(err):
+        rc = cli.main(["--course-code", "rdf-shacl-551-2"])
+    assert rc == 0, f"expected live fallback, got rc={rc}, stderr={err.getvalue()!r}"
+    out_text = out.getvalue()
+    assert "live snapshot" in out_text.lower()
+    assert "rdf-shacl-551-2" in out_text
+    # Family map should render — the rdf-shacl-551-2 family_map exists in repo.
+    assert "family_coverage" in out_text or "family" in out_text.lower()
+
+
+def test_show_live_fallback_emits_same_shape_in_json_format() -> None:
+    """JSON output of the live fallback carries the live=True marker
+    + same coverage fields a checkpoint row would have."""
+    out = io.StringIO()
+    with redirect_stdout(out):
+        rc = cli.main(["--course-code", "rdf-shacl-551-2", "--format", "json"])
+    assert rc == 0
+    payload = json.loads(out.getvalue())
+    assert payload["live"] is True
+    assert payload["course_slug"] == "rdf-shacl-551-2"
+    assert payload["family"] == "rdf_shacl"
+    assert "manifest_coverage_pct" in payload
+    assert "complete_count" in payload
+    assert "degraded_count" in payload
+    assert "family_coverage_map" in payload

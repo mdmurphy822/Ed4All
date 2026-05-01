@@ -97,6 +97,40 @@ def _render_table(row: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _compute_live_row(course_code: str) -> Optional[dict]:
+    """Wave 137 follow-up: compute a live coverage snapshot when the
+    checkpoint history is absent. Returns a dict in the same shape as
+    a checkpoint row (timestamp + coverage fields + live=True marker)
+    so the renderer + --format json work identically."""
+    from datetime import datetime, timezone
+
+    try:
+        from lib.ontology.property_manifest import load_property_manifest
+        from lib.validators.form_data_coverage import compute_coverage_metrics
+    except ImportError:
+        return None
+
+    try:
+        manifest = load_property_manifest(course_code)
+    except FileNotFoundError:
+        return None
+
+    try:
+        metrics = compute_coverage_metrics(manifest.family, manifest=manifest)
+    except Exception:
+        return None
+
+    return {
+        "schema_version": 1,
+        "timestamp": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "model_id": None,
+        "course_slug": course_code,
+        "family": manifest.family,
+        "live": True,
+        **metrics,
+    }
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="show_form_data_coverage",
@@ -138,14 +172,38 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
 
+    explicit_path = args.checkpoint_path is not None
     if args.checkpoint_path:
         path = Path(args.checkpoint_path)
     else:
         path = _resolve_default_checkpoint_path(args.course_code)
 
-    if not path.exists():
-        print(f"checkpoint not found: {path}", file=sys.stderr)
-        return 2
+    if not path.exists() or not path.read_text(encoding="utf-8").strip():
+        if explicit_path:
+            # Operator named a specific path; refuse silent fallback.
+            print(
+                "checkpoint not found or empty: " + str(path),
+                file=sys.stderr,
+            )
+            return 2
+        # Wave 137 follow-up: fall back to a live snapshot when the default
+        # checkpoint is missing (no eval has run since Wave 137d-2 landed).
+        # Lets operators inspect baseline coverage BEFORE the first retrain.
+        live_row = _compute_live_row(args.course_code)
+        if live_row is None:
+            print(
+                "checkpoint not found and could not compute live coverage "
+                f"(no manifest resolvable for course '{args.course_code}'): "
+                + str(path),
+                file=sys.stderr,
+            )
+            return 2
+        if args.format == "json":
+            print(json.dumps(live_row, indent=2))
+        else:
+            print("(live snapshot — no checkpoint history yet)")
+            print(_render_table(live_row))
+        return 0
 
     raw = path.read_text(encoding="utf-8")
     rows = [json.loads(l) for l in raw.splitlines() if l.strip()]
