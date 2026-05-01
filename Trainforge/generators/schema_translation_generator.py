@@ -1,5 +1,5 @@
 """Schema-to-English translation SFT pair generator (Wave 124,
-audit 2026-04-30 fix; Wave 125b expansion).
+audit 2026-04-30 fix; Wave 125b expansion; Wave 133d loader pattern).
 
 The cc07cc76 SLM adapter scored hallucination_rate=0.63 / faithfulness=0.37
 in part because the corpus had no pairs that taught the model to map
@@ -172,7 +172,7 @@ class SurfaceFormData:
 # Total: 6 forms x 6 families x 7 entries = 252 base. Trim 2 in
 # generate_schema_translation_pairs() to land at exactly 250.
 
-_FORM_DATA: Dict[str, SurfaceFormData] = {
+_RDF_SHACL_FALLBACK_FORM_DATA: Dict[str, SurfaceFormData] = {
     "sh:datatype": SurfaceFormData(
         curie="sh:datatype",
         short_name="datatype",
@@ -1347,8 +1347,92 @@ _FAMILY_FACTORIES: Dict[
 }
 
 
+def _load_form_data(family: str) -> Dict[str, SurfaceFormData]:
+    """Wave 133d loader: resolve the schema-translation catalog for
+    ``family``.
+
+    Resolution order:
+
+    1. ``schemas/training/schema_translation_catalog.<family>.yaml``
+       — per-family YAML catalog. Schema:
+       ``schemas/training/schema_translation_catalog.schema.json``.
+       Loaded via ``yaml.safe_load`` and projected into the
+       ``SurfaceFormData`` shape this generator expects.
+    2. Fallback to the in-Python ``_RDF_SHACL_FALLBACK_FORM_DATA`` dict
+       only when ``family == "rdf_shacl"``. Keeps the existing
+       rdf_shacl pairs byte-identical so an in-flight rebuild
+       (rdf-shacl-551-2) does NOT shift its eval scores when the
+       loader pattern lands.
+    3. For any other family with no on-disk YAML, return an empty dict
+       and emit a warning. The surrounding generator surfaces this as
+       "no pairs emitted for family=X" without crashing the run.
+
+    Big-bang YAML extraction of the rdf_shacl catalog is deferred to a
+    later wave once a second curriculum family ships its own catalog —
+    at that point the rdf_shacl YAML can be authored against the
+    schema and the in-Python fallback can be retired.
+    """
+    catalog_path = (
+        PROJECT_ROOT
+        / "schemas"
+        / "training"
+        / f"schema_translation_catalog.{family}.yaml"
+    )
+    try:
+        import yaml  # local import; YAML isn't a hot-path dep elsewhere here.
+        payload = yaml.safe_load(catalog_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        if family == "rdf_shacl":
+            return _RDF_SHACL_FALLBACK_FORM_DATA
+        logger.warning(
+            "no schema-translation catalog for family=%s; emitting 0 pairs",
+            family,
+        )
+        return {}
+
+    if not isinstance(payload, dict) or "forms" not in payload:
+        logger.warning(
+            "schema_translation catalog for family=%s is malformed "
+            "(missing top-level 'forms' key); emitting 0 pairs.",
+            family,
+        )
+        return {}
+
+    out: Dict[str, SurfaceFormData] = {}
+    for curie, raw in (payload.get("forms") or {}).items():
+        if not isinstance(raw, dict):
+            continue
+        out[curie] = SurfaceFormData(
+            curie=curie,
+            short_name=str(raw.get("short_name") or curie.split(":")[-1]),
+            definitions=list(raw.get("definitions") or []),
+            usage_examples=[
+                tuple(pair) for pair in (raw.get("usage_examples") or [])
+                if isinstance(pair, (list, tuple)) and len(pair) == 2
+            ],
+            comparison_targets=[
+                tuple(pair) for pair in (raw.get("comparison_targets") or [])
+                if isinstance(pair, (list, tuple)) and len(pair) == 2
+            ],
+            reasoning_scenarios=[
+                tuple(pair) for pair in (raw.get("reasoning_scenarios") or [])
+                if isinstance(pair, (list, tuple)) and len(pair) == 2
+            ],
+            pitfalls=[
+                tuple(pair) for pair in (raw.get("pitfalls") or [])
+                if isinstance(pair, (list, tuple)) and len(pair) == 2
+            ],
+            combinations=[
+                tuple(pair) for pair in (raw.get("combinations") or [])
+                if isinstance(pair, (list, tuple)) and len(pair) == 2
+            ],
+        )
+    return out
+
+
 def _build_catalog_in_order(
     manifest: PropertyManifest,
+    form_data: Dict[str, SurfaceFormData],
 ) -> List[Tuple[str, SurfaceFormData, str, str, str, Optional[List[str]]]]:
     """Build the full ordered catalog: list of
     (curie, form_data, family, prompt, completion, extra_tags).
@@ -1357,12 +1441,17 @@ def _build_catalog_in_order(
     family[0] for every form, then family[1] for every form, ... so a
     capped run sees a balanced sample across all 6 families before
     exhausting any single one.
+
+    Wave 133d: ``form_data`` is now passed in by ``_load_form_data``
+    (dispatched on ``manifest.family``) instead of read from a
+    module-level constant, so non-rdf_shacl families can ship their
+    own per-family YAML catalogs without editing this module.
     """
     # First, build per-form per-family lists in deterministic order.
     per_form_per_family: Dict[str, Dict[str, List[Tuple[str, str, str, Optional[List[str]]]]]] = {}
     for prop in manifest.properties:
         curie = prop.curie
-        form = _FORM_DATA.get(curie)
+        form = form_data.get(curie)
         if form is None:
             continue
         per_form_per_family[curie] = {}
@@ -1393,7 +1482,7 @@ def _build_catalog_in_order(
                 if slot >= len(entries):
                     continue
                 prompt, completion, _fam, extra_tags = entries[slot]
-                form = _FORM_DATA[curie]
+                form = form_data[curie]
                 ordered.append(
                     (curie, form, family, prompt, completion, extra_tags)
                 )
@@ -1455,10 +1544,18 @@ def generate_schema_translation_pairs(
     for family in _FAMILIES:
         stats.per_family[family] = 0
 
+    # Wave 133d: dispatch the catalog load on manifest.family. Falls
+    # back to the in-Python rdf_shacl table when family == "rdf_shacl"
+    # AND no per-family YAML is on disk; returns empty + warns for any
+    # other family with no on-disk YAML so the run continues but emits
+    # zero schema-translation pairs (instead of crashing or silently
+    # using the rdf_shacl catalog for non-RDF families).
+    form_data = _load_form_data(manifest.family)
+
     # Surface forms missing from the table.
     seen_curies = set()
     for prop in manifest.properties:
-        if prop.curie not in _FORM_DATA:
+        if prop.curie not in form_data:
             stats.surface_forms_skipped_no_definition += 1
             logger.warning(
                 "schema_translation_generator: manifest declares %r "
@@ -1468,7 +1565,7 @@ def generate_schema_translation_pairs(
         else:
             seen_curies.add(prop.curie)
 
-    catalog = _build_catalog_in_order(manifest)
+    catalog = _build_catalog_in_order(manifest, form_data)
 
     # Trim catalog to exactly 250 if it overshoots (we author 252 = 6*6*7).
     # The trim drops the LAST 2 entries — guaranteed to be from the
@@ -1557,4 +1654,9 @@ __all__ = [
     "SchemaTranslationStats",
     "SurfaceFormData",
     "generate_schema_translation_pairs",
+    # Wave 133d loader-pattern surface — exported so tests can verify
+    # the rdf_shacl fallback and so future per-family YAML callers
+    # can re-use the loader without touching internals.
+    "_RDF_SHACL_FALLBACK_FORM_DATA",
+    "_load_form_data",
 ]

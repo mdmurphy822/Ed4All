@@ -414,10 +414,18 @@ def test_capture_required() -> None:
 def test_unknown_curie_skipped_silently() -> None:
     """A manifest declaring a CURIE that is NOT in the hand-curated
     table should skip that surface form (with a warning) rather than
-    crash. The known CURIE still emits its full per-form catalog."""
+    crash. The known CURIE still emits its full per-form catalog.
+
+    Wave 133d update: the loader now dispatches the catalog on
+    ``manifest.family`` (was: a single global module-level table).
+    To test "known family + unknown CURIE", the manifest uses
+    family='rdf_shacl' so the loader falls back to the in-Python
+    rdf_shacl catalog, then verifies the unknown CURIE is skipped
+    gracefully within that catalog.
+    """
     capture = _FakeCapture()
     manifest = PropertyManifest(
-        family="ex_unknown",
+        family="rdf_shacl",
         properties=[
             PropertyEntry(
                 id="sh_datatype",
@@ -469,3 +477,119 @@ def test_pair_carries_marker_fields() -> None:
         # Concept tag carries the literal CURIE.
         assert pair["concept_tags"]
         assert ":" in pair["concept_tags"][0]
+
+
+# ---------------------------------------------------------------------------
+# Wave 133d: loader-pattern + RDF/SHACL fallback (Plan-2 P1#7)
+# ---------------------------------------------------------------------------
+
+
+def test_schema_translation_loader_falls_back_for_rdf_shacl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wave 133d contract: when no per-family YAML catalog exists on
+    disk for ``family == "rdf_shacl"``, ``_load_form_data`` must fall
+    back to the in-Python ``_RDF_SHACL_FALLBACK_FORM_DATA`` dict so the
+    in-flight rdf-shacl-551-2 rebuild keeps emitting the same pairs
+    byte-identically (no eval-score drift)."""
+    from Trainforge.generators import schema_translation_generator as stg
+
+    # Force the YAML lookup to fail — even if a future commit lands a
+    # rdf_shacl YAML catalog, this test verifies the fallback branch.
+    real_read_text = Path.read_text
+
+    def _no_yaml(self: Path, *args: Any, **kwargs: Any) -> str:
+        if "schema_translation_catalog." in self.name:
+            raise FileNotFoundError(self)
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _no_yaml)
+
+    form_data = stg._load_form_data("rdf_shacl")
+    assert form_data is stg._RDF_SHACL_FALLBACK_FORM_DATA, (
+        "Wave 133d: rdf_shacl family with no on-disk YAML must return "
+        "the in-Python fallback dict (identity check, not just equality)."
+    )
+    # Spot-check a known rdf_shacl CURIE from the fallback.
+    assert "sh:datatype" in form_data
+    assert form_data["sh:datatype"].curie == "sh:datatype"
+    assert form_data["sh:datatype"].definitions, (
+        "fallback rdf_shacl catalog must carry definitions for sh:datatype"
+    )
+
+
+def test_schema_translation_returns_empty_for_unknown_family_with_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Wave 133d contract: an unknown family name (no YAML on disk
+    AND not == "rdf_shacl") must return an empty dict and emit a
+    warning log so the operator sees the no-op rather than a silent
+    zero-pairs emit."""
+    from Trainforge.generators import schema_translation_generator as stg
+
+    import logging
+    caplog.set_level(
+        logging.WARNING,
+        logger="Trainforge.generators.schema_translation_generator",
+    )
+    form_data = stg._load_form_data("unknown_test_family")
+    assert form_data == {}, (
+        "Wave 133d: unknown family with no YAML must return empty dict, "
+        f"got {len(form_data)} entries."
+    )
+    no_catalog_warnings = [
+        r for r in caplog.records
+        if "no schema-translation catalog" in r.getMessage()
+    ]
+    assert no_catalog_warnings, (
+        "Wave 133d: missing-catalog warning must fire so the operator "
+        f"sees the no-op; got {[r.getMessage() for r in caplog.records]!r}"
+    )
+    assert "unknown_test_family" in no_catalog_warnings[0].getMessage()
+
+
+def test_existing_rdf_shacl_pairs_byte_identical() -> None:
+    """Wave 133d byte-identity assertion: the loader-pattern rename of
+    ``_FORM_DATA -> _RDF_SHACL_FALLBACK_FORM_DATA`` plus the
+    ``_load_form_data`` dispatch MUST NOT change the pair list shape
+    or content for the rdf_shacl family. This is the regression net
+    that lets the in-flight rdf-shacl-551-2 rebuild proceed without
+    re-validating eval scores."""
+    capture_a = _FakeCapture()
+    capture_b = _FakeCapture()
+    pairs_a, stats_a = generate_schema_translation_pairs(
+        _rdf_shacl_manifest(),
+        capture=capture_a,
+        max_pairs=10000,
+        seed=17,
+    )
+    pairs_b, stats_b = generate_schema_translation_pairs(
+        _rdf_shacl_manifest(),
+        capture=capture_b,
+        max_pairs=10000,
+        seed=17,
+    )
+
+    # Same inputs => same pair count.
+    assert stats_a.pairs_emitted == stats_b.pairs_emitted
+    assert len(pairs_a) == len(pairs_b)
+
+    # Wave 125b ships 250 pairs; loader-pattern preserves that exact
+    # number for the rdf_shacl family.
+    assert stats_a.pairs_emitted == 250, (
+        f"Wave 133d byte-identity: rdf_shacl pair count drifted from "
+        f"the Wave 125b 250 baseline. Got {stats_a.pairs_emitted}."
+    )
+
+    # First 3 pairs (prompts + completions) must match across runs —
+    # demonstrates determinism on top of byte-identity.
+    for idx in range(3):
+        assert pairs_a[idx]["prompt"] == pairs_b[idx]["prompt"], (
+            f"prompt drift at pair {idx}: "
+            f"{pairs_a[idx]['prompt']!r} != {pairs_b[idx]['prompt']!r}"
+        )
+        assert pairs_a[idx]["completion"] == pairs_b[idx]["completion"], (
+            f"completion drift at pair {idx}"
+        )
+        assert pairs_a[idx]["concept_tags"] == pairs_b[idx]["concept_tags"]
+        assert pairs_a[idx]["template_id"] == pairs_b[idx]["template_id"]
