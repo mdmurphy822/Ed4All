@@ -1863,3 +1863,295 @@ def test_yaml_loader_returns_none_provenance_when_keys_missing(
     )
 
     stg._invalidate_form_data_cache()
+
+
+# -----------------------------------------------------------------------------
+# Wave 137a-1 — Rule 1 (diversity gate) + Rule 3 (anchor-verb capacity).
+# -----------------------------------------------------------------------------
+
+
+_GROUND_TRUTH_CURIES = (
+    "sh:datatype",
+    "sh:class",
+    "sh:NodeShape",
+    "sh:PropertyShape",
+    "rdfs:subClassOf",
+    "owl:sameAs",
+)
+
+
+def _ground_truth_form_data() -> Dict[str, Any]:
+    """Return the dict of the 6 pre-Wave-135a complete entries from the
+    in-Python fallback. The Wave 137c-3 gold-set fixture is the YAML
+    canonical reference; the fallback dict carries identical content
+    by Wave 135a's mechanical-transcription guarantee."""
+    from Trainforge.generators.schema_translation_generator import (
+        _RDF_SHACL_FALLBACK_FORM_DATA,
+    )
+    return {c: _RDF_SHACL_FALLBACK_FORM_DATA[c] for c in _GROUND_TRUTH_CURIES}
+
+
+def test_diversity_gate_passes_on_six_ground_truth() -> None:
+    """Wave 137a Rule 1: the 6 pre-Wave-135a complete entries must all
+    pass the pairwise-diversity Jaccard floor. Calibrated against this
+    fixture — any future drift here is a calibration discovery."""
+    from Trainforge.generators.schema_translation_generator import (
+        validate_form_data_contract,
+    )
+
+    form_data = _ground_truth_form_data()
+    result = validate_form_data_contract(
+        form_data, list(_GROUND_TRUTH_CURIES)
+    )
+    diversity_violations = [
+        v for v in result["content_violations"]
+        if v["code"] == "LOW_DIVERSITY_DEFINITIONS"
+    ]
+    assert diversity_violations == [], (
+        "Wave 137a calibration: every gold-set entry must clear the "
+        f"_DIVERSITY_JACCARD_MAX floor; got {diversity_violations!r}"
+    )
+
+
+def test_diversity_gate_fires_on_synthetic_thesaurus_clones() -> None:
+    """Wave 137a Rule 1: 3 near-duplicate definitions trip the floor."""
+    import dataclasses
+    from Trainforge.generators.schema_translation_generator import (
+        _DIVERSITY_JACCARD_MAX,
+        validate_form_data_contract,
+    )
+
+    form_data = _ground_truth_form_data()
+    base = form_data["sh:datatype"]
+    # Three definitions with massive vocabulary overlap (>0.45 Jaccard).
+    cloned = dataclasses.replace(
+        base,
+        definitions=[
+            "sh:datatype is a SHACL property-shape constraint component "
+            "that restricts each value node of the constrained property "
+            "to RDF literals whose datatype IRI matches a given XSD or "
+            "user-defined datatype IRI.",
+            "sh:datatype is a SHACL property-shape constraint component "
+            "that restricts each value node of the constrained property "
+            "to RDF literals whose datatype IRI matches a given XSD "
+            "datatype IRI in lexical-to-value-space mapping.",
+            "sh:datatype is a SHACL property-shape constraint component "
+            "that restricts each value node of the constrained property "
+            "to RDF literals carrying the named datatype IRI in the "
+            "lexical-to-value-space mapping defined by XSD.",
+        ],
+    )
+    form_data["sh:datatype"] = cloned
+
+    result = validate_form_data_contract(
+        form_data, list(_GROUND_TRUTH_CURIES)
+    )
+    codes = [v["code"] for v in result["content_violations"]]
+    assert "LOW_DIVERSITY_DEFINITIONS" in codes
+    matching = [
+        v for v in result["content_violations"]
+        if v["code"] == "LOW_DIVERSITY_DEFINITIONS"
+        and v["curie"] == "sh:datatype"
+    ]
+    assert matching, "Rule 1 must name the offending CURIE"
+    # Threshold should appear in the detail string.
+    assert str(_DIVERSITY_JACCARD_MAX) in matching[0]["detail"]
+
+
+def test_diversity_gate_calibration_boundary_at_threshold() -> None:
+    """Wave 137a Rule 1: an entry tuned to ~0.46 fires; one tuned to
+    ~0.44 passes. Locks the boundary so a future _tokenize change can't
+    drift the threshold."""
+    from Trainforge.generators.schema_translation_generator import (
+        SurfaceFormData,
+        validate_form_data_contract,
+    )
+
+    # ~0.5 Jaccard: definitions share 5 of 10 unique content tokens.
+    above = SurfaceFormData(
+        curie="test:Foo",
+        short_name="Foo",
+        definitions=[
+            "test:Foo restricts validates SHACL constraint property "
+            "value alpha beta gamma delta epsilon predicate.",
+            "test:Foo restricts validates SHACL constraint property "
+            "value zeta eta theta iota kappa predicate.",
+        ],
+        usage_examples=[(
+            "Show how test:Foo is used in a synthetic example fixture.",
+            "On a property shape with sh:path ex:bar, write `test:Foo "
+            "ex:value .` — test:Foo applies to validation here.",
+        )],
+        anchored_status="complete",
+    )
+    result_above = validate_form_data_contract({"test:Foo": above}, ["test:Foo"])
+    assert "LOW_DIVERSITY_DEFINITIONS" in [
+        v["code"] for v in result_above["content_violations"]
+    ], "above-threshold pair must fire Rule 1"
+
+    # Low overlap — only 1-2 shared content tokens out of ~12 each.
+    below = SurfaceFormData(
+        curie="test:Foo",
+        short_name="Foo",
+        definitions=[
+            "test:Foo describes alpha beta gamma delta epsilon zeta "
+            "eta theta iota predicate marker.",
+            "test:Foo specifies omicron rho sigma tau upsilon phi "
+            "chi psi omega validates predicate.",
+        ],
+        usage_examples=[(
+            "Show how test:Foo is used in a synthetic example fixture.",
+            "On a property shape with sh:path ex:bar, write `test:Foo "
+            "ex:value .` — test:Foo applies to validation here.",
+        )],
+        anchored_status="complete",
+    )
+    result_below = validate_form_data_contract({"test:Foo": below}, ["test:Foo"])
+    assert "LOW_DIVERSITY_DEFINITIONS" not in [
+        v["code"] for v in result_below["content_violations"]
+    ], "below-threshold pair must NOT fire Rule 1"
+
+
+def test_diversity_gate_skips_single_definition_entry() -> None:
+    """Wave 137a Rule 1: only fires on len(definitions) >= 2."""
+    from Trainforge.generators.schema_translation_generator import (
+        validate_form_data_contract,
+    )
+
+    entry = _synthetic_complete_entry()
+    # Only one definition — pairwise diversity is undefined.
+    assert len(entry.definitions) == 1
+    form_data = {"test:Foo": entry}
+    result = validate_form_data_contract(form_data, ["test:Foo"])
+    codes = [v["code"] for v in result["content_violations"]]
+    assert "LOW_DIVERSITY_DEFINITIONS" not in codes
+
+
+def test_anchor_verb_capacity_passes_on_six_ground_truth() -> None:
+    """Wave 137a Rule 3: every gold-set entry has >=1 anchor verb in
+    its definitions AND >=1 action verb in its usage answers."""
+    from Trainforge.generators.schema_translation_generator import (
+        validate_form_data_contract,
+    )
+
+    form_data = _ground_truth_form_data()
+    result = validate_form_data_contract(
+        form_data, list(_GROUND_TRUTH_CURIES)
+    )
+    rule_3_codes = {
+        "MISSING_ANCHOR_VERB_DEFINITION",
+        "MISSING_ANCHOR_VERB_USAGE",
+    }
+    rule_3_violations = [
+        v for v in result["content_violations"] if v["code"] in rule_3_codes
+    ]
+    assert rule_3_violations == [], (
+        "Wave 137a calibration: every gold-set entry must carry >=1 "
+        f"verb from each anchor allowlist; got {rule_3_violations!r}"
+    )
+
+
+def test_missing_def_anchor_verb_fires() -> None:
+    """Wave 137a Rule 3: definitions made of pure noun phrases (no
+    verb from the anchor allowlist) trip MISSING_ANCHOR_VERB_DEFINITION."""
+    from Trainforge.generators.schema_translation_generator import (
+        SurfaceFormData,
+        validate_form_data_contract,
+    )
+
+    entry = SurfaceFormData(
+        curie="test:Foo",
+        short_name="Foo",
+        # Pure noun-phrase definitions; no allowlisted verbs.
+        definitions=[
+            "test:Foo - a SHACL constraint - synthetic predicate noun "
+            "phrase only - no allowlisted verbal anchor herein.",
+            "test:Foo - canonical noun-phrase entry - all-substantive "
+            "tokens - no verb from the Wave 137a allowlist present.",
+        ],
+        usage_examples=[(
+            "Show how test:Foo applies to a synthetic SHACL fixture.",
+            "On a property shape, write `test:Foo ex:value .` — the "
+            "test:Foo predicate applies to validation in the fixture.",
+        )],
+        anchored_status="complete",
+    )
+    form_data = {"test:Foo": entry}
+    result = validate_form_data_contract(form_data, ["test:Foo"])
+    codes = [v["code"] for v in result["content_violations"]]
+    assert "MISSING_ANCHOR_VERB_DEFINITION" in codes
+
+
+def test_missing_usage_action_verb_fires() -> None:
+    """Wave 137a Rule 3: usage answers made of nouns + CURIE only
+    (no allowlisted action verb) trip MISSING_ANCHOR_VERB_USAGE."""
+    from Trainforge.generators.schema_translation_generator import (
+        SurfaceFormData,
+        validate_form_data_contract,
+    )
+
+    entry = SurfaceFormData(
+        curie="test:Foo",
+        short_name="Foo",
+        definitions=[
+            "test:Foo is a synthetic predicate; the definition carries "
+            "the allowlisted anchor verb 'is' so Rule 3 def-side passes."
+        ],
+        usage_examples=[(
+            "Show how test:Foo is used in a synthetic example fixture.",
+            # Pure noun phrases + CURIE, no verbs from the action set.
+            "test:Foo - a SHACL property - test:Foo - constraint name "
+            "- nothing actionable - just labels and the CURIE token.",
+        )],
+        anchored_status="complete",
+    )
+    form_data = {"test:Foo": entry}
+    result = validate_form_data_contract(form_data, ["test:Foo"])
+    codes = [v["code"] for v in result["content_violations"]]
+    assert "MISSING_ANCHOR_VERB_USAGE" in codes
+    # And the def-side rule does NOT fire.
+    assert "MISSING_ANCHOR_VERB_DEFINITION" not in codes
+
+
+def test_anchor_verb_does_not_fire_on_comparison_or_pitfall_only_gaps() -> None:
+    """Wave 137a Rule 3 calibration finding: scoped to definitions +
+    usage_examples ONLY. Verb-rich defs/usage but verb-bare comparisons
+    and pitfalls must pass — the gold truth uses ;-separated parallel
+    constructions and rhetorical Q-side framing in those categories."""
+    from Trainforge.generators.schema_translation_generator import (
+        SurfaceFormData,
+        validate_form_data_contract,
+    )
+
+    entry = SurfaceFormData(
+        curie="test:Foo",
+        short_name="Foo",
+        definitions=[
+            "test:Foo is a synthetic predicate that defines and "
+            "constrains a fixture surface form; the def-side carries "
+            "many allowlisted verbs."
+        ],
+        usage_examples=[(
+            "Show how test:Foo is used in a synthetic example fixture.",
+            "On a property shape, test:Foo applies to literal values; "
+            "the fixture demonstrates how test:Foo enforces typing.",
+        )],
+        # Comparison entries: no verb from the def or usage allowlists.
+        comparison_targets=[(
+            "test:Bar",
+            "test:Foo - literal-typed; test:Bar - IRI-typed; the "
+            "two are parallel structures, no allowlisted verb here.",
+        )],
+        # Pitfall entries: rhetorical Q-side framing only.
+        pitfalls=[(
+            "What's the common pitfall with test:Foo and test:Bar?",
+            "test:Foo — wrong on IRI values; test:Bar — wrong on "
+            "literals; ;-separated parallel construction, no verb.",
+        )],
+        anchored_status="complete",
+    )
+    form_data = {"test:Foo": entry}
+    result = validate_form_data_contract(form_data, ["test:Foo"])
+    codes = [v["code"] for v in result["content_violations"]]
+    assert "MISSING_ANCHOR_VERB_DEFINITION" not in codes
+    assert "MISSING_ANCHOR_VERB_USAGE" not in codes
