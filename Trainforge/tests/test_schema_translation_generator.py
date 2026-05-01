@@ -1327,3 +1327,380 @@ def test_overlay_loader_caches() -> None:
     )
 
     stg._invalidate_form_data_cache()
+
+
+# ---------------------------------------------------------------------------
+# Wave 136b: content-quality rejection rules.
+#
+# Each test mutates ONE field of an otherwise-valid synthetic
+# ``anchored_status="complete"`` entry to trip exactly ONE rule, then
+# asserts the validator emits the matching code with ``passed=False``.
+# Synthetic CURIEs (``test:Foo`` / ``ex:SyntheticPredicate`` / ...) keep
+# the test fixtures clearly fixture-marked (no risk of corpus drift).
+# ---------------------------------------------------------------------------
+
+
+def _synthetic_complete_entry(
+    curie: str = "test:Foo",
+    *,
+    definition: str = (
+        "test:Foo is a synthetic predicate used by Wave 136b validator "
+        "tests as a stand-in for a real complete entry."
+    ),
+    usage_prompt: str = (
+        "Show how test:Foo is used in a synthetic SHACL example "
+        "fixture."
+    ),
+    usage_answer: str = (
+        "On a property shape with sh:path ex:bar, write `test:Foo "
+        "ex:value .` — test:Foo is the synthetic predicate under test."
+    ),
+):
+    """Build a single ``SurfaceFormData`` entry that satisfies every
+    Wave 136b content-quality rule out of the box, so test cases can
+    mutate ONE field at a time and trip exactly the rule under test."""
+    from Trainforge.generators.schema_translation_generator import (
+        SurfaceFormData,
+    )
+
+    return SurfaceFormData(
+        curie=curie,
+        short_name=curie.split(":", 1)[-1],
+        definitions=[definition],
+        usage_examples=[(usage_prompt, usage_answer)],
+        anchored_status="complete",
+    )
+
+
+def _violation_codes(result: Dict[str, Any]) -> List[str]:
+    """Return a list of content_violation codes, one per emitted entry."""
+    return [v["code"] for v in result.get("content_violations", [])]
+
+
+def test_validator_rejects_definition_without_verbatim_curie() -> None:
+    """Rule: CURIE_NOT_VERBATIM_DEFINITION."""
+    from Trainforge.generators.schema_translation_generator import (
+        validate_form_data_contract,
+    )
+
+    entry = _synthetic_complete_entry()
+    # Mutate definition to drop the literal CURIE.
+    entry.definitions = [
+        "This synthetic predicate is used by Wave 136b validator tests "
+        "as a stand-in for a real complete entry without naming."
+    ]
+    form_data = {"test:Foo": entry}
+    result = validate_form_data_contract(form_data, ["test:Foo"])
+    assert result["passed"] is False
+    assert "CURIE_NOT_VERBATIM_DEFINITION" in _violation_codes(result)
+
+
+def test_validator_rejects_usage_answer_without_verbatim_curie() -> None:
+    """Rule: CURIE_NOT_VERBATIM_USAGE_ANSWER."""
+    from Trainforge.generators.schema_translation_generator import (
+        validate_form_data_contract,
+    )
+
+    entry = _synthetic_complete_entry()
+    # Mutate usage_answer to drop the literal CURIE.
+    entry.usage_examples = [
+        (
+            "Show how the synthetic predicate is used in a SHACL "
+            "fixture.",
+            (
+                "On a property shape with sh:path ex:bar, write the "
+                "synthetic predicate followed by an IRI value as "
+                "demonstrated in the fixture corpus example."
+            ),
+        )
+    ]
+    form_data = {"test:Foo": entry}
+    result = validate_form_data_contract(form_data, ["test:Foo"])
+    assert result["passed"] is False
+    assert "CURIE_NOT_VERBATIM_USAGE_ANSWER" in _violation_codes(result)
+
+
+def test_validator_rejects_old_suffix_template_leak() -> None:
+    """Rule: OLD_SUFFIX_TEMPLATE_LEAK — definition starting with one of
+    the Wave 121 token-stuffing template prefixes is rejected."""
+    from Trainforge.generators.schema_translation_generator import (
+        validate_form_data_contract,
+    )
+
+    entry = _synthetic_complete_entry()
+    # Definition starts with "Canonical terms:" — a forbidden prefix.
+    entry.definitions = [
+        "Canonical terms: test:Foo is a synthetic predicate used by "
+        "Wave 136b validator tests as a stand-in for a complete entry."
+    ]
+    form_data = {"test:Foo": entry}
+    result = validate_form_data_contract(form_data, ["test:Foo"])
+    assert result["passed"] is False
+    assert "OLD_SUFFIX_TEMPLATE_LEAK" in _violation_codes(result)
+
+
+def test_validator_rejects_placeholder_leakage() -> None:
+    """Rule: PLACEHOLDER_LEAKAGE — definition containing the
+    Wave 135a stub marker ``"[degraded:"`` is rejected on a complete
+    entry."""
+    from Trainforge.generators.schema_translation_generator import (
+        validate_form_data_contract,
+    )
+
+    entry = _synthetic_complete_entry()
+    entry.definitions = [
+        "test:Foo is a synthetic predicate [degraded: anchored "
+        "definition not yet authored — stub leaked into a complete "
+        "entry by Wave 136b validator-test fixture mutation]."
+    ]
+    form_data = {"test:Foo": entry}
+    result = validate_form_data_contract(form_data, ["test:Foo"])
+    assert result["passed"] is False
+    assert "PLACEHOLDER_LEAKAGE" in _violation_codes(result)
+
+
+def test_validator_rejects_definition_below_length_floor() -> None:
+    """Rule: LENGTH_OUT_OF_BOUNDS_DEF — 49-char definition rejected."""
+    from Trainforge.generators.schema_translation_generator import (
+        validate_form_data_contract,
+    )
+
+    entry = _synthetic_complete_entry()
+    # 49 chars exactly — below the 50-char floor.
+    short_def = "test:Foo is too short by exactly one single char "[:49]
+    assert len(short_def) == 49
+    assert "test:Foo" in short_def
+    entry.definitions = [short_def]
+    form_data = {"test:Foo": entry}
+    result = validate_form_data_contract(form_data, ["test:Foo"])
+    assert result["passed"] is False
+    assert "LENGTH_OUT_OF_BOUNDS_DEF" in _violation_codes(result)
+
+
+def test_validator_rejects_definition_above_length_ceiling() -> None:
+    """Rule: LENGTH_OUT_OF_BOUNDS_DEF — 401-char definition rejected."""
+    from Trainforge.generators.schema_translation_generator import (
+        validate_form_data_contract,
+    )
+
+    entry = _synthetic_complete_entry()
+    # 401 chars exactly — above the 400-char ceiling.
+    long_def = "test:Foo " + ("padding " * 60)
+    long_def = long_def[:401]
+    assert len(long_def) == 401
+    assert "test:Foo" in long_def
+    entry.definitions = [long_def]
+    form_data = {"test:Foo": entry}
+    result = validate_form_data_contract(form_data, ["test:Foo"])
+    assert result["passed"] is False
+    assert "LENGTH_OUT_OF_BOUNDS_DEF" in _violation_codes(result)
+
+
+def test_validator_rejects_usage_prompt_below_length_floor() -> None:
+    """Rule: LENGTH_OUT_OF_BOUNDS_USAGE_PROMPT — usage prompt below the
+    schema's PROMPT_MIN floor (40 chars) is rejected."""
+    from Trainforge.generators._anthropic_provider import PROMPT_MIN
+    from Trainforge.generators.schema_translation_generator import (
+        validate_form_data_contract,
+    )
+
+    entry = _synthetic_complete_entry()
+    short_prompt = "test:Foo prompt"  # well below 40 chars
+    assert len(short_prompt) < PROMPT_MIN
+    entry.usage_examples = [
+        (
+            short_prompt,
+            (
+                "On a property shape with sh:path ex:bar, write "
+                "`test:Foo ex:value .` — test:Foo is the synthetic "
+                "predicate under test in this fixture."
+            ),
+        )
+    ]
+    form_data = {"test:Foo": entry}
+    result = validate_form_data_contract(form_data, ["test:Foo"])
+    assert result["passed"] is False
+    assert "LENGTH_OUT_OF_BOUNDS_USAGE_PROMPT" in _violation_codes(
+        result
+    )
+
+
+def test_validator_rejects_usage_answer_above_length_ceiling() -> None:
+    """Rule: LENGTH_OUT_OF_BOUNDS_USAGE_ANSWER — answer above the
+    schema's COMPLETION_MAX ceiling (600 chars) is rejected."""
+    from Trainforge.generators._anthropic_provider import COMPLETION_MAX
+    from Trainforge.generators.schema_translation_generator import (
+        validate_form_data_contract,
+    )
+
+    entry = _synthetic_complete_entry()
+    long_answer = "test:Foo " + ("padding-token " * 60)
+    long_answer = long_answer[: COMPLETION_MAX + 1]
+    assert len(long_answer) == COMPLETION_MAX + 1
+    assert "test:Foo" in long_answer
+    entry.usage_examples = [
+        (
+            "Show how test:Foo is used in a synthetic SHACL example "
+            "fixture for Wave 136b length-bound testing.",
+            long_answer,
+        )
+    ]
+    form_data = {"test:Foo": entry}
+    result = validate_form_data_contract(form_data, ["test:Foo"])
+    assert result["passed"] is False
+    assert "LENGTH_OUT_OF_BOUNDS_USAGE_ANSWER" in _violation_codes(
+        result
+    )
+
+
+def test_validator_rejects_wrong_curie_only_mention() -> None:
+    """Rule: WRONG_CURIE_ONLY_MENTION — definition for sh:minCount
+    mentioning only sibling sh:maxCount (not its own CURIE) is
+    rejected. Uses synthetic-but-realistic SHACL CURIEs so the
+    sibling-CURIE detection path exercises the manifest-set path."""
+    from Trainforge.generators.schema_translation_generator import (
+        validate_form_data_contract,
+    )
+
+    # Definition mentions sh:maxCount but NOT sh:minCount.
+    entry = _synthetic_complete_entry(
+        curie="sh:minCount",
+        definition=(
+            "This SHACL constraint counts how many values a property "
+            "has and rejects shapes whose value count exceeds the "
+            "sh:maxCount ceiling for the focus node."
+        ),
+    )
+    # Make sure the manifest set includes sh:maxCount so it's a known
+    # sibling that should fire the rule.
+    form_data = {"sh:minCount": entry}
+    result = validate_form_data_contract(
+        form_data, ["sh:minCount", "sh:maxCount"]
+    )
+    assert result["passed"] is False
+    codes = _violation_codes(result)
+    assert "WRONG_CURIE_ONLY_MENTION" in codes
+
+
+def test_validator_rejects_generic_definitions_no_usage() -> None:
+    """Rule: GENERIC_DEFINITIONS_NO_USAGE — complete entry with at
+    least one definition but ZERO usage_examples tuples is rejected."""
+    from Trainforge.generators.schema_translation_generator import (
+        SurfaceFormData,
+        validate_form_data_contract,
+    )
+
+    entry = SurfaceFormData(
+        curie="test:Foo",
+        short_name="Foo",
+        definitions=[
+            "test:Foo is a synthetic predicate used by Wave 136b "
+            "validator tests with definitions but no usage."
+        ],
+        usage_examples=[],  # Empty — trips the rule.
+        anchored_status="complete",
+    )
+    form_data = {"test:Foo": entry}
+    result = validate_form_data_contract(form_data, ["test:Foo"])
+    assert result["passed"] is False
+    assert "GENERIC_DEFINITIONS_NO_USAGE" in _violation_codes(result)
+
+
+def test_validator_emits_overlay_regression_warning() -> None:
+    """Rule: OVERLAY_LOAD_REGRESSION (warning) — synthetic base marks
+    a CURIE complete; overlay marks the same CURIE
+    degraded_placeholder. The validator emits the warning, but
+    ``passed`` reflects only critical content rules — the warning
+    itself is non-blocking."""
+    from Trainforge.generators.schema_translation_generator import (
+        SurfaceFormData,
+        validate_form_data_contract,
+    )
+
+    base_entry = _synthetic_complete_entry()
+    # Overlay-merged form_data: same CURIE, but anchored_status flipped
+    # to degraded_placeholder. The structural contract is satisfied
+    # (>=1 def + >=1 usage_example) so passed-on-structural would be
+    # True; the warning surfaces the silent regression.
+    overlay_entry = SurfaceFormData(
+        curie="test:Foo",
+        short_name="Foo",
+        definitions=[
+            "[degraded: anchored definition not yet authored]",
+        ],
+        usage_examples=[
+            (
+                "[degraded: anchored usage prompt not yet authored]",
+                "[degraded: anchored usage answer not yet authored]",
+            ),
+        ],
+        anchored_status="degraded_placeholder",
+    )
+    base = {"test:Foo": base_entry}
+    overlay = {"test:Foo": overlay_entry}
+
+    result = validate_form_data_contract(
+        overlay, ["test:Foo"], base_form_data=base
+    )
+
+    # Warning surfaces the regression.
+    warning_codes = [w["code"] for w in result.get("warnings", [])]
+    assert "OVERLAY_LOAD_REGRESSION" in warning_codes
+    # And the offending CURIE is named.
+    matching = [
+        w for w in result["warnings"] if w["code"] == "OVERLAY_LOAD_REGRESSION"
+    ]
+    assert any(w["curie"] == "test:Foo" for w in matching)
+    # The warning is non-blocking — passed reflects only the (degraded)
+    # entry skipping content rules. With no critical violations, passed
+    # is True (the structural contract holds: >=1 def + >=1 usage).
+    assert result["passed"] is True
+    assert result["content_violations"] == []
+
+
+def test_validator_skips_content_rules_for_degraded_placeholder_entries() -> None:
+    """Critical regression-pin: a degraded_placeholder entry with
+    intentionally-bad content (placeholder text + length out of
+    bounds) MUST pass the content rules, because content checks only
+    fire against ``anchored_status="complete"`` entries.
+
+    Without this skip, the 34 Wave 135a stub entries would
+    trip every length / placeholder / CURIE rule and the structural
+    contract would fail closed on the shipped FORM_DATA."""
+    from Trainforge.generators.schema_translation_generator import (
+        SurfaceFormData,
+        validate_form_data_contract,
+    )
+
+    # Entry has placeholder text, sub-floor length, and no CURIE in
+    # the definition — every Wave 136b content rule would fire if the
+    # entry were marked complete.
+    entry = SurfaceFormData(
+        curie="test:Bar",
+        short_name="Bar",
+        definitions=[
+            "[degraded: anchored definition not yet authored]",
+        ],
+        usage_examples=[
+            (
+                "[degraded: anchored usage prompt not yet authored]",
+                "[degraded: anchored usage answer not yet authored]",
+            ),
+        ],
+        anchored_status="degraded_placeholder",
+    )
+    form_data = {"test:Bar": entry}
+    result = validate_form_data_contract(form_data, ["test:Bar"])
+
+    # No content violations — every rule short-circuits on degraded
+    # entries.
+    assert result["content_violations"] == [], (
+        "regression-pin: content rules MUST skip degraded_placeholder "
+        "entries; otherwise the 34 Wave 135a stub entries would fail "
+        "the FORM_DATA contract on every run."
+    )
+    # And passed=True (structural contract holds: >=1 def + >=1 usage).
+    assert result["passed"] is True
+    # Structural counts reflect the degraded status.
+    assert result["degraded_count"] == 1
+    assert result["complete_count"] == 0
