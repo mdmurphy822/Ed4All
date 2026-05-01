@@ -50,6 +50,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.decision_capture import DecisionCapture  # noqa: E402
+from lib.ontology.curie_extraction import extract_curies  # noqa: E402
 from lib.ontology.slugs import deslugify_concept  # noqa: E402
 from lib.ontology.template_prefixes import (  # noqa: E402
     DETERMINISTIC_TEMPLATE_PREFIXES as _DETERMINISTIC_TEMPLATE_PREFIXES,
@@ -1347,10 +1348,35 @@ def run_synthesis(
             # the paraphrase provider preserves them verbatim. None ->
             # no manifest loaded; empty list -> chunk doesn't reference
             # any declared property.
+            chunk_text = str(chunk.get("text") or "")
             chunk_preserve_tokens = (
-                pilot_manifest.detect_surface_forms(str(chunk.get("text") or ""))
+                pilot_manifest.detect_surface_forms(chunk_text)
                 if pilot_manifest is not None
                 else []
+            )
+            # Wave 135b: extend force-injection to the FULL chunk CURIE
+            # set, not just manifest-declared surface forms. Per the
+            # 2026-04 audit the corpus uses ~339 distinct CURIE prefixes
+            # (mean 3.58 per chunk); only the 40 manifest-declared
+            # CURIEs land in chunk_preserve_tokens via
+            # detect_surface_forms. The rest (prov:, dcat:, geo:, etc.)
+            # were silently stripped by the LLM until Wave 135b.
+            #
+            # Non-manifest CURIEs hit the degraded fallback path in the
+            # factories (FORM_DATA only knows the 40 manifest CURIEs),
+            # which makes the operator-visible WARN + decision-capture
+            # surface accurate: they fall through to token-stuffing
+            # explicitly rather than disappearing silently.
+            #
+            # Cap at 6 extras to bound the prompt-suffix budget on
+            # CURIE-rich chunks; sort stably so the same chunk picks
+            # the same 6 across runs.
+            chunk_full_curies = extract_curies(chunk_text)
+            extra_anchor_tokens = sorted(
+                chunk_full_curies - set(chunk_preserve_tokens)
+            )[:6]
+            effective_preserve_tokens = (
+                chunk_preserve_tokens + extra_anchor_tokens
             )
             # --- Instruction pair ---
             for variant_index in range(instruction_variants):
@@ -1368,7 +1394,8 @@ def run_synthesis(
                         seed=pair_seed,
                         provider=provider,
                         paraphrase_provider=paraphrase_provider,
-                        preserve_tokens=chunk_preserve_tokens or None,
+                        preserve_tokens=effective_preserve_tokens or None,
+                        capture=capture,
                     )
                 except _SBE as exc:
                     _budget_exhausted_exc = exc
@@ -1495,7 +1522,8 @@ def run_synthesis(
                         seed=pair_seed,
                         provider=provider,
                         paraphrase_provider=paraphrase_provider,
-                        preserve_tokens=chunk_preserve_tokens or None,
+                        preserve_tokens=effective_preserve_tokens or None,
+                        capture=capture,
                     )
                 except _SBE as exc:
                     _budget_exhausted_exc = exc

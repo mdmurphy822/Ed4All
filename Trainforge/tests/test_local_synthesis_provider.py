@@ -840,9 +840,12 @@ def test_paraphrase_instruction_includes_preserve_directive_in_user_prompt(
 
 
 def test_paraphrase_instruction_retries_on_preserve_miss(monkeypatch):
-    """When the first response drops a preserve_token, the provider
-    appends a remediation message and retries. A subsequent good response
-    is accepted; ``preserve-retry`` warning is logged."""
+    """Wave 135b: the per-call preserve gate is now opt-in (default
+    floor 0.0 means anchored force-injection at the factory layer
+    handles canonical anchoring). Operators can still pin the strict
+    Wave-120 retry gate by passing ``min_preserve_rate=1.0`` — this
+    test covers that opt-in path: bad first response triggers retry,
+    good second response is accepted."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     bad_paraphrase = json.dumps({
         "prompt": "Explain how the node shape concept applies to topic X.",
@@ -864,7 +867,7 @@ def test_paraphrase_instruction_retries_on_preserve_miss(monkeypatch):
         httpx.Response(200, json=_success_body(bad_paraphrase)),
         httpx.Response(200, json=_success_body(good_paraphrase)),
     )
-    p = LocalSynthesisProvider(client=client)
+    p = LocalSynthesisProvider(client=client, min_preserve_rate=1.0)
     out = p.paraphrase_instruction(
         _instruction_draft(), _chunk(),
         preserve_tokens=["sh:NodeShape", "sh:datatype"],
@@ -876,10 +879,10 @@ def test_paraphrase_instruction_retries_on_preserve_miss(monkeypatch):
 def test_paraphrase_instruction_raises_preservation_failed_after_retry(
     monkeypatch,
 ):
-    """When all retries return a paraphrase that drops a required token,
-    the provider raises ``SynthesisProviderError`` with code
-    ``surface_form_preservation_failed`` so the caller can fall back to
-    the deterministic draft."""
+    """Wave 135b: opt-in strict mode (``min_preserve_rate=1.0``)
+    preserves the Wave-120 retry-then-raise behavior. When all retries
+    drop the required token, the provider raises with code
+    ``surface_form_preservation_failed``."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     bad_paraphrase = json.dumps({
         "prompt": "Explain how the node shape applies to topic X.",
@@ -895,7 +898,7 @@ def test_paraphrase_instruction_raises_preservation_failed_after_retry(
     client = _client_yielding(*[
         httpx.Response(200, json=_success_body(bad_paraphrase)) for _ in range(MAX_PARSE_RETRIES + 2)
     ])
-    p = LocalSynthesisProvider(client=client)
+    p = LocalSynthesisProvider(client=client, min_preserve_rate=1.0)
     with pytest.raises(SynthesisProviderError) as excinfo:
         p.paraphrase_instruction(
             _instruction_draft(), _chunk(),
@@ -905,10 +908,14 @@ def test_paraphrase_instruction_raises_preservation_failed_after_retry(
 
 
 def test_paraphrase_accepts_soft_floor_when_80pct_preserved(monkeypatch):
-    """Wave 134 — soft preservation contract. With the default
-    ``min_preserve_rate=0.80`` and 5 preserve_tokens, dropping 1 yields
-    4/5 = 80% — exactly at the floor — and the paraphrase is accepted
-    on the first attempt without retry."""
+    """Wave 134 + Wave 135b — soft preservation contract still works
+    when an operator pins ``min_preserve_rate=0.80`` explicitly. Wave
+    135b lowered the module default to 0.0 (force-injection at the
+    factory layer is the canonical-anchor authority); operators
+    wanting Wave 134's 80% retry semantics opt in via the constructor
+    kwarg. With 5 tokens and 1 dropped, retention is 4/5 = 0.80 — at
+    the floor — and the paraphrase is accepted on the first attempt
+    without retry."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     # Paraphrase drops `sh:pattern` but keeps the other 4 tokens. 4/5 = 0.80.
     paraphrase = json.dumps({
@@ -925,7 +932,7 @@ def test_paraphrase_accepts_soft_floor_when_80pct_preserved(monkeypatch):
     })
     # Single response — no retry needed if the soft floor accepts.
     client = _client_yielding(httpx.Response(200, json=_success_body(paraphrase)))
-    p = LocalSynthesisProvider(client=client)
+    p = LocalSynthesisProvider(client=client, min_preserve_rate=0.80)
     out = p.paraphrase_instruction(
         _instruction_draft(), _chunk(),
         preserve_tokens=[
@@ -939,10 +946,10 @@ def test_paraphrase_accepts_soft_floor_when_80pct_preserved(monkeypatch):
 
 
 def test_paraphrase_soft_floor_retries_below_threshold(monkeypatch):
-    """Wave 134 — soft preservation contract. With 5 preserve_tokens
-    and default ``min_preserve_rate=0.80``, dropping 2 yields 3/5 = 0.60
-    which falls BELOW the 0.80 floor; the gate fires retry. A subsequent
-    response that meets the floor is accepted."""
+    """Wave 134 + Wave 135b — soft preservation contract opt-in:
+    operator pins ``min_preserve_rate=0.80``. With 5 preserve_tokens,
+    dropping 2 yields 3/5 = 0.60 BELOW the 0.80 floor; the gate fires
+    retry. A subsequent response that meets the floor is accepted."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     # First: drops 2 tokens (3/5 = 0.60 < 0.80) -> retry.
     bad = json.dumps({
@@ -972,7 +979,7 @@ def test_paraphrase_soft_floor_retries_below_threshold(monkeypatch):
         httpx.Response(200, json=_success_body(bad)),
         httpx.Response(200, json=_success_body(good)),
     )
-    p = LocalSynthesisProvider(client=client)
+    p = LocalSynthesisProvider(client=client, min_preserve_rate=0.80)
     out = p.paraphrase_instruction(
         _instruction_draft(), _chunk(),
         preserve_tokens=[
@@ -1027,6 +1034,46 @@ def test_min_preserve_rate_validates_range(monkeypatch):
         LocalSynthesisProvider(min_preserve_rate=-0.1)
 
 
+def test_default_min_preserve_rate_is_zero(monkeypatch):
+    """Wave 135b — module default is 0.0. Force-injection at the
+    factory layer is the canonical-anchor authority; the LLM provider's
+    job is natural-language paraphrase variety only. A paraphrase that
+    drops tokens is accepted on first try without retry under the
+    default config."""
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    from Trainforge.generators._local_provider import (
+        DEFAULT_MIN_PRESERVE_RATE,
+    )
+    assert DEFAULT_MIN_PRESERVE_RATE == 0.0
+
+    p = LocalSynthesisProvider()
+    # Internal attribute pins the default for the constructor path.
+    assert p._min_preserve_rate == 0.0
+
+    # Behavioral check: a paraphrase that drops every preserve_token
+    # is now accepted on first try (no retry, no fallback).
+    paraphrase = json.dumps({
+        "prompt": "Explain how the node shape concept applies to topic X.",
+        "completion": (
+            "The node-shape idea constrains node-typed entities; a "
+            "learner applies it by validating instances against the "
+            "declared constraint and a per-property type rule."
+        ),
+    })
+    client = _client_yielding(httpx.Response(200, json=_success_body(paraphrase)))
+    p2 = LocalSynthesisProvider(client=client)
+    out = p2.paraphrase_instruction(
+        _instruction_draft(), _chunk(),
+        preserve_tokens=["sh:NodeShape", "sh:datatype", "rdfs:subClassOf"],
+    )
+    # No CURIE in the output — but no retry, no exception either.
+    assert "sh:NodeShape" not in out["prompt"]
+    assert "sh:NodeShape" not in out["completion"]
+    # The pair is still emitted; force-injection at the factory layer
+    # is responsible for canonical anchoring downstream.
+    assert out["provider"] == "local"
+
+
 def test_max_parse_retries_constructor_kwarg_caps_retry_budget(monkeypatch):
     """Wave 120 smoke-mode fix: ``max_parse_retries=1`` caps the parse-
     retry loop at a single attempt so a property-heavy stratified
@@ -1045,7 +1092,11 @@ def test_max_parse_retries_constructor_kwarg_caps_retry_budget(monkeypatch):
     client = _client_yielding(*[
         httpx.Response(200, json=_success_body(bad_paraphrase)) for _ in range(5)
     ])
-    p = LocalSynthesisProvider(client=client, max_parse_retries=1)
+    # Wave 135b: opt into the strict per-call gate so the retry budget
+    # is exercised; default 0.0 floor would accept the bad paraphrase.
+    p = LocalSynthesisProvider(
+        client=client, max_parse_retries=1, min_preserve_rate=1.0,
+    )
     with pytest.raises(SynthesisProviderError) as excinfo:
         p.paraphrase_instruction(
             _instruction_draft(), _chunk(),

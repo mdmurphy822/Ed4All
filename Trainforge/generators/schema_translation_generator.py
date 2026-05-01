@@ -1525,6 +1525,86 @@ _RDF_SHACL_FALLBACK_FORM_DATA: Dict[str, SurfaceFormData] = {
 
 
 # -----------------------------------------------------------------------------
+# Wave 135b: anchored-injection helpers consumed by the SFT / DPO
+# factories. ``resolve_anchor_text_for_curie`` is the shared dispatcher:
+# given a CURIE + chunk_id_hash, it either returns a real anchored
+# definition sentence (``status="anchored"``) drawn from the FORM_DATA
+# entry's ``definitions`` list, OR it returns ``None`` text + a
+# ``status="degraded"`` marker the factory uses to fall back to legacy
+# token-stuffing while emitting a decision-capture warning event.
+# -----------------------------------------------------------------------------
+
+
+def resolve_anchor_text_for_curie(
+    curie: str,
+    form_data: Dict[str, SurfaceFormData],
+    chunk_id_hash: int,
+) -> Tuple[Optional[str], Optional[str], str]:
+    """Wave 135b — pick anchored prompt + completion text for ``curie``.
+
+    Args:
+        curie: The CURIE (e.g. ``"sh:datatype"``) the factory wants to
+            anchor in the pair body.
+        form_data: The FORM_DATA dict to dispatch on. Pass
+            ``_RDF_SHACL_FALLBACK_FORM_DATA`` (or whichever family
+            catalog ``_load_form_data`` returned).
+        chunk_id_hash: Stable integer derived from chunk_id; used to
+            rotate across multiple definitions for the same CURIE so
+            different chunks don't all anchor on the same string.
+
+    Returns:
+        Tuple ``(prompt_anchor, completion_anchor, status)``. ``status``
+        is one of:
+
+        * ``"anchored"`` — both anchor strings are non-None and contain
+          the CURIE literally. Caller embeds them in the pair body.
+        * ``"degraded"`` — entry is absent, marked
+          ``"degraded_placeholder"``, or has no usable definitions.
+          Caller MUST fall back to legacy token-stuffing AND emit a
+          ``form_data_degraded_placeholder_skipped`` decision-capture
+          event so the operator sees the degraded coverage.
+
+    Why two anchor strings, not one:
+        * The prompt-side anchor is appended to the prompt as a brief
+          recall hook (``"Recall how <short definition with curie>."``)
+          — primes the model to surface the CURIE in its answer.
+        * The completion-side anchor is the FULL definition sentence
+          drawn from ``entry.definitions``. That's the actual canonical
+          surface form the trained adapter learns to emit when asked
+          about the CURIE.
+
+    Determinism:
+        Same (curie, form_data, chunk_id_hash) tuple always returns the
+        same string. Different chunks rotate through the entry's
+        definitions list via modular indexing on the hash.
+    """
+    entry = form_data.get(curie)
+    if entry is None:
+        return (None, None, "degraded")
+    if entry.anchored_status != "complete":
+        return (None, None, "degraded")
+    definitions = list(entry.definitions or [])
+    if not definitions:
+        return (None, None, "degraded")
+    # Rotate: which definition does this chunk_id-hash get?
+    completion_anchor = definitions[chunk_id_hash % len(definitions)]
+    # For the prompt side, prefer the SHORTEST definition that still
+    # contains the literal CURIE — keeps the prompt budget under
+    # PROMPT_MAX after the suffix is appended.
+    prompt_candidates = [
+        d for d in definitions if curie in d
+    ]
+    if not prompt_candidates:
+        # Defensive: every authored 'complete' entry should literally
+        # contain the CURIE per the Wave 135a contract, but if a
+        # future YAML drops it we fall back to degraded rather than
+        # emitting a definition without the canonical anchor.
+        return (None, None, "degraded")
+    prompt_anchor = min(prompt_candidates, key=len)
+    return (prompt_anchor, completion_anchor, "anchored")
+
+
+# -----------------------------------------------------------------------------
 # Wave 135a: FORM_DATA coverage contract validator.
 # -----------------------------------------------------------------------------
 
@@ -2137,6 +2217,8 @@ __all__ = [
     "generate_schema_translation_pairs",
     # Wave 135a contract surface.
     "validate_form_data_contract",
+    # Wave 135b anchored-injection helper for the SFT / DPO factories.
+    "resolve_anchor_text_for_curie",
     # Wave 133d loader-pattern surface — exported so tests can verify
     # the rdf_shacl fallback and so future per-family YAML callers
     # can re-use the loader without touching internals.

@@ -82,20 +82,26 @@ ENV_API_KEY = "LOCAL_SYNTHESIS_API_KEY"
 DEFAULT_TIMEOUT = 60.0
 
 
-# Wave 134: soft preservation contract. Wave 130a expanded the
-# RDF/SHACL property manifest from 6 to 40 CURIEs, which raised the
-# per-chunk ``preserve_tokens`` count to mean 3.58 / median 3 / max 17
-# on rdf-shacl-551-2. The Wave 120 ``_missing_preserve_tokens`` gate
-# required ALL preserve_tokens to appear verbatim in the paraphrase;
-# 14B-Q4 (and especially 7B-Q4) can't satisfy a strict 100% contract
-# on chunks with 8+ tokens, so a 2026-05-01 smoke run on the hardened
-# pipeline saw ~50% first-attempt fallback rate even with retry=10.
-# Soft-floor at 0.80 (i.e. tolerate up to 20% verbatim loss per pair)
-# matches the Wave 130b ``curie_preservation`` corpus-level gate
-# (``min_mean_retention=0.40``) without making the per-call contract
-# un-satisfiable. Operators can override via ``min_preserve_rate=``
-# on the constructor; setting to 1.0 restores Wave 120's strict gate.
-DEFAULT_MIN_PRESERVE_RATE = 0.80
+# Wave 135b: soft-floor at 0.0 because the force-injection path in
+# ``instruction_factory`` / ``preference_factory`` is the canonical-
+# anchor authority — the LLM provides natural-language variation; the
+# deterministic injector provides canonical CURIE anchoring via the
+# Wave 135a FORM_DATA contract (``_RDF_SHACL_FALLBACK_FORM_DATA`` covers
+# all 40 manifest CURIEs with an ``anchored_status`` discriminator).
+# Operators wanting Wave 120's strict per-call gate pass
+# ``min_preserve_rate=1.0`` to the constructor.
+#
+# History:
+# - Wave 120: strict 100% per-call gate (default 1.0 implicit).
+# - Wave 130a: manifest grew 6 -> 40 CURIEs; per-chunk preserve_tokens
+#   mean 3.58 / median 3 / max 17 made strict 100% un-satisfiable on
+#   14B-Q4 / 7B-Q4 models — ~50% first-attempt fallback rate.
+# - Wave 134: soft-floor at 0.80 — tolerated 20% loss but still failed
+#   chunks with 5+ tokens >50% of the time.
+# - Wave 135b: soft-floor at 0.0. Force-injection at the factory layer
+#   handles canonical anchoring downstream; the LLM provider's job is
+#   natural-language paraphrase variety only.
+DEFAULT_MIN_PRESERVE_RATE = 0.0
 
 
 # Wave 114: local-class kind bounds — initially lowered the 40-char
@@ -214,9 +220,11 @@ class LocalSynthesisProvider:
             if max_parse_retries is not None
             else MAX_PARSE_RETRIES
         )
-        # Wave 134: soft preservation contract — fraction of
-        # ``preserve_tokens`` that must appear verbatim per call. Default
-        # 0.80 (tolerate 20% loss). 1.0 restores Wave 120's strict gate.
+        # Wave 135b: soft preservation contract — fraction of
+        # ``preserve_tokens`` that must appear verbatim per call.
+        # Default 0.0 because force-injection at the factory layer
+        # handles canonical anchoring; the LLM only owns paraphrase
+        # variety. 1.0 restores Wave 120's strict per-call gate.
         self._min_preserve_rate = (
             float(min_preserve_rate)
             if min_preserve_rate is not None
@@ -491,6 +499,9 @@ class LocalSynthesisProvider:
                 preserved_rate = (
                     preserve_token_count - len(missing_tokens)
                 ) / preserve_token_count
+                # When _min_preserve_rate=0.0 (default), this branch is
+                # unreachable — force-injection handles canonical anchoring
+                # downstream.
                 if preserved_rate < self._min_preserve_rate:
                     last_err = (
                         f"surface forms missing from {list(preserve_in_keys)}: "
