@@ -87,7 +87,7 @@ ENV_BASE_URL: Optional[str] = None
 # Surfaced through to the embedded ``OpenAICompatibleClient``.
 MAX_HTTP_RETRIES = 3
 # Hard cap on retry attempts when the model returns malformed JSON.
-MAX_PARSE_RETRIES = 3
+MAX_PARSE_RETRIES = 10
 # Default per-call HTTP timeout (seconds).
 DEFAULT_TIMEOUT = 60.0
 # Initial backoff in seconds; doubled per retry.

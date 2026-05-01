@@ -243,9 +243,11 @@ def test_cache_control_block_is_set_on_system_prompt():
 
 
 def test_malformed_json_retries_then_succeeds():
-    """Two malformed responses, then a valid one — expect a parsed result."""
+    """``MAX_PARSE_RETRIES - 1`` malformed responses, then a valid one —
+    expect a parsed result. Test stays coupled to the production
+    constant so the retry-budget bump (Wave 130c: 3 -> 10) auto-flows
+    here without code churn."""
     bad = "this is not JSON at all"
-    bad2 = "{still not valid"
     good = json.dumps({
         "prompt": "Recall the foundational concept introduced for topic X.",
         "completion": (
@@ -253,11 +255,12 @@ def test_malformed_json_retries_then_succeeds():
             "before attempting application questions in this course."
         ),
     })
-    client = _client_returning(bad, bad2, good)
+    responses = [bad] * (MAX_PARSE_RETRIES - 1) + [good]
+    client = _client_returning(*responses)
     p = AnthropicSynthesisProvider(api_key="sk-test", client=client)
     out = p.paraphrase_instruction(_instruction_draft(), _chunk())
     assert "foundational concept" in out["prompt"]
-    assert client.messages.create.call_count == 3
+    assert client.messages.create.call_count == MAX_PARSE_RETRIES
 
 
 def test_malformed_json_exhausts_retries_then_raises():
