@@ -319,14 +319,20 @@ def test_cli_renders_yaml_block_on_success():
             ]
         )
 
-    # Wave 137a Rule 4 catches the PENDING_REVIEW sentinel.
-    assert rc == 3, (
-        f"expected exit 3 (validator catches PENDING_REVIEW); got {rc}\n"
+    # Wave 137 follow-up: PENDING_REVIEW alone is expected at draft
+    # time (sentinel forcing operator review). The drafting CLI
+    # surfaces it as a NOTE on stderr but exits 0 — the YAML must be
+    # visible to the operator regardless.
+    assert rc == 0, (
+        f"expected exit 0 (PENDING_REVIEW is expected at draft time); got {rc}\n"
         f"stderr: {err.getvalue()}"
     )
     err_text = err.getvalue()
-    assert "INCOMPLETE_PROVENANCE" in err_text
     assert "PENDING_REVIEW" in err_text
+    # YAML block visible on stdout (operator can review + decide).
+    out_text = out.getvalue()
+    assert "forms:" in out_text
+    assert target_curie in out_text
     # Rule 1 + Rule 3 must NOT fire (the fixture payload is engineered
     # to carry diverse, anchor-verb-bearing content).
     assert "LOW_DIVERSITY_DEFINITIONS" not in err_text
@@ -373,12 +379,12 @@ def test_drafted_entry_carries_pending_review_provenance():
     the literal string ``PENDING_REVIEW`` — operators MUST replace
     before commit.
 
-    Wave 137a-3 update: Rule 4 (INCOMPLETE_PROVENANCE) catches the
-    PENDING_REVIEW sentinel as a critical violation, so the CLI exits
-    3 with the sentinel surfaced in stderr. This test pins the
-    contract that the validator's stderr output names the sentinel +
-    the canonical provider id (so an operator running the CLI can see
-    which review step is owed).
+    Wave 137 follow-up: Rule 4 (INCOMPLETE_PROVENANCE) catches the
+    PENDING_REVIEW sentinel, but the drafting CLI surfaces it as
+    expected-at-draft-time (NOTE on stderr, exit 0) so the operator
+    can see the YAML on stdout. The full validator runs strict at
+    APPEND time. This test pins the contract that the YAML is
+    visible AND the sentinel is named.
     """
     target_curie = "sh:datatype"
     valid_payload = _build_valid_form_data_payload(target_curie)
@@ -405,16 +411,18 @@ def test_drafted_entry_carries_pending_review_provenance():
             ]
         )
 
-    # Wave 137a-3: Rule 4 catches PENDING_REVIEW; rc=3.
-    assert rc == 3, (
-        f"expected exit 3 (Rule 4 catches PENDING_REVIEW); got {rc}\n"
+    # Wave 137 follow-up: PENDING_REVIEW is expected at draft time;
+    # rc=0 with NOTE on stderr; YAML visible on stdout.
+    assert rc == 0, (
+        f"expected exit 0 (PENDING_REVIEW expected at draft time); got {rc}\n"
         f"stderr: {err.getvalue()}"
     )
+    out_text = out.getvalue()
+    assert "forms:" in out_text and target_curie in out_text
     err_text = err.getvalue()
-    assert "INCOMPLETE_PROVENANCE" in err_text, (
-        "Rule 4 must fire on PENDING_REVIEW; stderr did not name the "
-        f"INCOMPLETE_PROVENANCE rule. Full stderr:\n{err_text}"
-    )
+    # Wave 137 follow-up: PENDING_REVIEW is surfaced as a NOTE on stderr
+    # (operator-actionable hint) rather than INCOMPLETE_PROVENANCE error.
+    # The full validator at append time still catches strictly.
     assert "PENDING_REVIEW" in err_text, (
         "stderr must name PENDING_REVIEW so the operator sees which "
         f"sentinel to replace. Full stderr:\n{err_text}"

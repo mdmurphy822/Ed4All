@@ -543,31 +543,39 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Step 8: validate. Build a one-CURIE form_data dict and run the
     # canonical contract validator. Wave 136b widens this to content-
-    # quality rules; this call works against either generation of the
-    # validator because the structural floor is unchanged.
+    # quality rules.
+    #
+    # Wave 137 follow-up: the drafting CLI itself emits entries with
+    # provenance.reviewed_by="PENDING_REVIEW" (Wave 137c-2 sentinel
+    # forcing operator review before commit). Wave 137a-3 Rule 4
+    # rejects PENDING_REVIEW as INCOMPLETE_PROVENANCE — which would
+    # ALWAYS fire on the drafting CLI's own output, blocking the
+    # operator from ever seeing the YAML. Filter that one violation
+    # out before deciding whether to surface as a real quality error.
+    # The backfill loop's APPEND-time validator catches it strictly
+    # (after the operator updates reviewed_by).
     synthetic = {args.curie: drafted}
     report = validate_form_data_contract(synthetic, [args.curie])
-    if not report.get("passed"):
-        print(
-            f"ERROR: validate_form_data_contract rejected the drafted "
-            f"entry for CURIE {args.curie!r}:",
-            file=sys.stderr,
-        )
-        # Surface the per-violation table verbatim. Wave 136b's
-        # validator extends this with a content_violations list; we
-        # render whichever shape is present.
-        for key in (
-            "missing_curies",
-            "incomplete_curies",
-            "invalid_status_curies",
-            "content_violations",
+    real_violations = []
+    expected_violations = []
+    for v in report.get("content_violations", []) or []:
+        detail = str(v.get("detail", ""))
+        if (
+            v.get("code") == "INCOMPLETE_PROVENANCE"
+            and "PENDING_REVIEW" in detail
         ):
-            value = report.get(key)
-            if value:
-                print(f"  {key}: {value}", file=sys.stderr)
-        return 3
+            expected_violations.append(v)
+        else:
+            real_violations.append(v)
+    structural_failures = [
+        report.get(k) for k in (
+            "missing_curies", "incomplete_curies", "invalid_status_curies",
+        ) if report.get(k)
+    ]
 
-    # Step 9 + 10: render YAML + operator next-steps and emit.
+    # Step 9 + 10: render YAML + operator next-steps and emit FIRST,
+    # so the operator sees what Qwen produced regardless of validator
+    # outcome (essential for the e/n decision in the backfill loop).
     rendered = _render_yaml_block(args.family, args.curie, drafted)
     if args.output == "-":
         sys.stdout.write(rendered)
@@ -576,6 +584,35 @@ def main(argv: Optional[List[str]] = None) -> int:
         out_path = Path(args.output)
         out_path.write_text(rendered, encoding="utf-8")
         print(f"Wrote drafted YAML block to {out_path}")
+
+    # Step 11: surface validator outcome AFTER the YAML is visible.
+    # PENDING_REVIEW is expected at draft time; real_violations are
+    # draft-quality issues the operator must address (manual edit or
+    # skip).
+    if expected_violations:
+        print(
+            f"NOTE: provenance.reviewed_by='PENDING_REVIEW' (Wave 137c-2 "
+            f"sentinel). Replace with operator handle before commit; the "
+            f"backfill loop's append-time validator catches strict.",
+            file=sys.stderr,
+        )
+    if real_violations or structural_failures:
+        print(
+            f"WARNING: validate_form_data_contract surfaced "
+            f"{len(real_violations)} content violation(s) on the drafted "
+            f"entry for CURIE {args.curie!r}:",
+            file=sys.stderr,
+        )
+        for v in real_violations:
+            print(f"  {v.get('code')}: {v.get('detail')}", file=sys.stderr)
+        for key in ("missing_curies", "incomplete_curies", "invalid_status_curies"):
+            value = report.get(key)
+            if value:
+                print(f"  {key}: {value}", file=sys.stderr)
+        # Non-zero exit so the backfill loop knows to surface stderr +
+        # let the operator decide y/n/e (vs auto-append). The YAML
+        # is already visible on stdout above.
+        return 3
     return 0
 
 

@@ -394,6 +394,70 @@ def _rollback_overlay(target_path: Path, pre_full: Dict[str, Any]) -> None:
     _atomic_write_yaml(pre_full, target_path)
 
 
+def _warmup_provider(
+    provider: str,
+    model: Optional[str],
+    keep_alive: str,
+    print_fn=print,
+) -> None:
+    """Wave 137 follow-up: pre-warm the local model so the first CURIE
+    in the batch doesn't pay cold-start.
+
+    Issues a single small request to Ollama's ``/api/generate`` (which
+    honors the ``keep_alive`` parameter, unlike the OpenAI-compatible
+    ``/v1/chat/completions`` path the drafting CLI uses for actual
+    work). The pre-warm loads the model into VRAM with the configured
+    keep-alive timer; subsequent drafting calls hit a warm model.
+
+    Best-effort: any HTTP / timeout error logs a warning and the loop
+    proceeds (the first CURIE just pays cold-start as before).
+
+    Skipped for non-local providers (``together`` is hosted; warmup
+    isn't an operator concern there).
+    """
+    if provider != "local":
+        return
+    try:
+        import httpx
+    except ImportError:
+        return
+    base_url = os.environ.get(
+        "LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1"
+    )
+    # Strip the OpenAI-compat /v1 suffix to reach Ollama's native API.
+    ollama_root = base_url.rstrip("/").removesuffix("/v1")
+    model_name = model or os.environ.get(
+        "LOCAL_SYNTHESIS_MODEL", "qwen2.5:14b-instruct-q4_K_M"
+    )
+    print_fn(
+        f"Pre-warming model {model_name!r} via {ollama_root}/api/generate "
+        f"(keep_alive={keep_alive!r})..."
+    )
+    try:
+        resp = httpx.post(
+            f"{ollama_root}/api/generate",
+            json={
+                "model": model_name,
+                "prompt": "ok",
+                "stream": False,
+                "keep_alive": keep_alive,
+            },
+            timeout=120.0,
+        )
+        if resp.status_code == 200:
+            print_fn("  warmup ok — model resident, keep_alive timer set.")
+        else:
+            print_fn(
+                f"  warmup non-200 ({resp.status_code}); proceeding "
+                f"(first CURIE may pay cold-start)."
+            )
+    except Exception as exc:
+        print_fn(
+            f"  warmup probe failed: {type(exc).__name__}: {exc}; "
+            f"proceeding (first CURIE may pay cold-start)."
+        )
+
+
 def _run_drafting_cli(
     curie: str,
     family: str,
@@ -534,7 +598,16 @@ def _process_one_curie(
     )
 
     rc, stdout, stderr = runner(curie, family, course_code, provider, model, timeout)
-    if rc != 0:
+
+    # Wave 137 follow-up: rc=3 means the drafting CLI's pre-print
+    # validation surfaced content violations. The YAML is STILL on
+    # stdout — the operator should see it + the violations and decide
+    # whether to skip (Qwen produced an unfixable draft) or edit
+    # (manually fix the flagged sentences).
+    #
+    # rc != 0 and != 3 means a transport / setup failure — no YAML to
+    # show; mark as failed_validation and move on.
+    if rc != 0 and rc != 3:
         print_fn(
             f"  drafting CLI failed (exit {rc}); stderr=\n{stderr}",
         )
@@ -542,6 +615,15 @@ def _process_one_curie(
 
     # Print the rendered YAML + next-steps comment block verbatim.
     print_fn(stdout)
+    if rc == 3:
+        # Surface the content violations so the operator sees them
+        # alongside the YAML + can decide y/n/e informed by the
+        # specific issues Qwen produced.
+        print_fn(
+            f"\n--- DRAFTING-CLI VALIDATION WARNINGS (operator decides) ---\n"
+            f"{stderr}\n"
+            f"--- end warnings ---"
+        )
 
     # First action prompt.
     action = _read_action(input_fn=input_fn)
@@ -682,6 +764,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "drafting CLI. Default 300 (5 min)."
         ),
     )
+    # Wave 137 follow-up: pre-warm Ollama with a configurable
+    # keep_alive timer so the first CURIE doesn't pay cold-start +
+    # mid-session operator review pauses don't unload the model.
+    # Default 30m: long enough that operator reviews don't unload,
+    # short enough that VRAM frees shortly after session ends.
+    parser.add_argument(
+        "--keep-alive",
+        default="30m",
+        help=(
+            "Ollama keep-alive duration for the pre-warm probe (e.g. "
+            "'30m', '1h', '5m', '0' to skip warmup). Default 30m."
+        ),
+    )
     return parser
 
 
@@ -776,6 +871,11 @@ def main(
     targets = ordered[: args.limit]
 
     yaml_path = _resolve_yaml_path(args.family, args.yaml_path)
+
+    # Wave 137 follow-up: pre-warm the model so first CURIE doesn't
+    # pay cold-start. Skipped if --keep-alive=0.
+    if args.keep_alive and args.keep_alive != "0":
+        _warmup_provider(args.provider, args.model, args.keep_alive, print_fn=print_fn)
 
     # Step 5: drive each CURIE through the operator pause loop.
     counters = {
