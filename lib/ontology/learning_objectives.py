@@ -25,8 +25,11 @@ this module is the Python mirror.
 
 from __future__ import annotations
 
+import json
 import re
-from typing import List, Literal, Tuple
+from functools import lru_cache
+from pathlib import Path
+from typing import Dict, List, Literal, Tuple
 
 # ---------------------------------------------------------------------------
 # Canonical regex + constants
@@ -36,13 +39,57 @@ from typing import List, Literal, Tuple
 #: Must stay byte-identical with the schema pattern.
 LO_ID_PATTERN = re.compile(r"^[A-Z]{2,}-\d{2,}$")
 
-#: Mapped prefixes → hierarchy-level labels.
-_PREFIX_TO_HIERARCHY: dict = {
-    "TO": "terminal",
-    "CO": "chapter",
-}
+#: Path to the externalized prefix-to-hierarchy taxonomy (Wave 133b).
+_LO_HIERARCHY_TAXONOMY_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "schemas"
+    / "taxonomies"
+    / "lo_hierarchy.json"
+)
 
-Hierarchy = Literal["terminal", "chapter"]
+
+@lru_cache(maxsize=1)
+def _load_prefix_map() -> Dict[str, str]:
+    """Load the canonical prefix-to-hierarchy mapping (Wave 133b).
+
+    Sources from ``schemas/taxonomies/lo_hierarchy.json``. Cached so the
+    JSON read is one-shot per process. Wave 133b moved this off the
+    hardcoded ``{"TO": "terminal", "CO": "chapter"}`` literal so future
+    course families using ``MO/PO/UO/LO/SO`` do NOT need a code edit —
+    the JSON is the single source of truth.
+
+    Raises:
+        FileNotFoundError: if the taxonomy file is missing.
+        ValueError: if the JSON is malformed (missing or non-dict
+            ``prefixes`` root).
+    """
+    if not _LO_HIERARCHY_TAXONOMY_PATH.exists():
+        raise FileNotFoundError(
+            f"LO hierarchy taxonomy not found at "
+            f"{_LO_HIERARCHY_TAXONOMY_PATH}. Wave 133b expects this "
+            f"file to exist; check your worktree."
+        )
+    with open(_LO_HIERARCHY_TAXONOMY_PATH, encoding="utf-8") as f:
+        data = json.load(f)
+    prefixes = data.get("prefixes")
+    if not isinstance(prefixes, dict) or not prefixes:
+        raise ValueError(
+            f"Malformed LO hierarchy taxonomy at "
+            f"{_LO_HIERARCHY_TAXONOMY_PATH}: missing or non-dict "
+            f"'prefixes' root."
+        )
+    return dict(prefixes)
+
+
+Hierarchy = Literal[
+    "terminal",
+    "chapter",
+    "module",
+    "program",
+    "unit",
+    "lesson",
+    "session",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -93,8 +140,9 @@ def hierarchy_from_id(lo_id: str) -> Hierarchy:
     """Return the hierarchy level embedded in a canonical LO ID.
 
     Args:
-        lo_id: Must match ``LO_ID_PATTERN``. Only ``TO-*`` / ``CO-*``
-               prefixes are supported; anything else raises.
+        lo_id: Must match ``LO_ID_PATTERN``. Recognized prefixes are sourced
+               from ``schemas/taxonomies/lo_hierarchy.json`` (Wave 133b);
+               anything else raises.
 
     Raises:
         ValueError: If ``lo_id`` is not canonical or carries an unknown prefix.
@@ -105,11 +153,12 @@ def hierarchy_from_id(lo_id: str) -> Hierarchy:
             f"{lo_id!r}"
         )
     prefix = lo_id.split("-", 1)[0]
-    hierarchy = _PREFIX_TO_HIERARCHY.get(prefix)
+    prefix_map = _load_prefix_map()
+    hierarchy = prefix_map.get(prefix)
     if hierarchy is None:
         raise ValueError(
             f"LO prefix {prefix!r} is not a recognized hierarchy "
-            f"(expected TO or CO)"
+            f"(expected one of {sorted(prefix_map.keys())})"
         )
     return hierarchy
 
