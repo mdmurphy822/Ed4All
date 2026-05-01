@@ -2155,3 +2155,167 @@ def test_anchor_verb_does_not_fire_on_comparison_or_pitfall_only_gaps() -> None:
     codes = [v["code"] for v in result["content_violations"]]
     assert "MISSING_ANCHOR_VERB_DEFINITION" not in codes
     assert "MISSING_ANCHOR_VERB_USAGE" not in codes
+
+
+# -----------------------------------------------------------------------------
+# Wave 137a-2 — Rule 2 (style consistency score, warning-severity).
+# -----------------------------------------------------------------------------
+
+
+def _warning_codes(result: Dict[str, Any]) -> List[str]:
+    """Collect warning codes from the validator result."""
+    return [w["code"] for w in result.get("warnings", [])]
+
+
+def test_style_consistency_passes_on_six_ground_truth() -> None:
+    """Wave 137a Rule 2: every gold-set complete entry scores at or
+    above _STYLE_CONSISTENCY_MIN. Threshold is calibrated to the worst
+    observed gold-set score (sh:class @ 0.80 due to its `you've` token
+    + 5/7 present-tense ratio); the other 5 entries land at 1.00.
+
+    Rule 2 is warning-severity, so even a sub-threshold gold-set entry
+    would not block; this test asserts the calibrated threshold leaves
+    all 6 entries clean of the warning."""
+    from Trainforge.generators.schema_translation_generator import (
+        validate_form_data_contract,
+    )
+
+    form_data = _ground_truth_form_data()
+    result = validate_form_data_contract(
+        form_data, list(_GROUND_TRUTH_CURIES)
+    )
+    style_warnings = [
+        w for w in result.get("warnings", [])
+        if w["code"] == "STYLE_CONSISTENCY_BELOW_THRESHOLD"
+    ]
+    assert style_warnings == [], (
+        "Wave 137a calibration: every gold-set entry must clear the "
+        f"_STYLE_CONSISTENCY_MIN threshold; got {style_warnings!r}"
+    )
+
+
+def test_style_consistency_fires_on_conversational_definitions() -> None:
+    """Wave 137a Rule 2: a definition starting with `You can use ...`
+    + a hedging-heavy second def drops the entry below the threshold.
+    Warning fires; passed remains True (warning-severity, non-blocking).
+    """
+    from Trainforge.generators.schema_translation_generator import (
+        SurfaceFormData,
+        validate_form_data_contract,
+    )
+
+    entry = SurfaceFormData(
+        curie="test:Foo",
+        short_name="Foo",
+        definitions=[
+            # Loses 0.10 (no_conversational): "You can use" matches
+            # CONVERSATIONAL_RE; "is" hits present-tense. 50-400 ok.
+            "You can use test:Foo whenever a synthetic predicate is "
+            "needed in a fixture. test:Foo is purely test-scaffolding.",
+            # Loses 0.10 (excessive_hedging): 3 hedge tokens (may/often/likely).
+            # Same first 4 words as above ("You can use test:Foo") loses
+            # another 0.10 on repeated_openings.
+            "You can use test:Foo whenever it may often likely appear; "
+            "test:Foo is a synthetic predicate used as scaffolding only.",
+        ],
+        usage_examples=[(
+            "Show how test:Foo is used in a synthetic example fixture.",
+            "On a property shape with sh:path ex:bar, write `test:Foo "
+            "ex:value .` — test:Foo applies to validation here.",
+        )],
+        anchored_status="complete",
+    )
+    form_data = {"test:Foo": entry}
+    result = validate_form_data_contract(form_data, ["test:Foo"])
+    codes = _warning_codes(result)
+    assert "STYLE_CONSISTENCY_BELOW_THRESHOLD" in codes
+    matching = [
+        w for w in result["warnings"]
+        if w["code"] == "STYLE_CONSISTENCY_BELOW_THRESHOLD"
+    ]
+    assert any(w["curie"] == "test:Foo" for w in matching)
+    # Failing signal name appears in the detail.
+    assert "no_conversational" in matching[0]["detail"]
+    # Warning is non-blocking — passed stays True (no critical viol).
+    assert result["content_violations"] == []
+    assert result["passed"] is True
+
+
+def test_style_consistency_calibration_boundary() -> None:
+    """Wave 137a Rule 2 calibration boundary: an entry losing 0.20
+    weight (conversational + hedging) lands at 0.80 and DOES fire (the
+    threshold is a strict ``< _STYLE_CONSISTENCY_MIN`` floor). An entry
+    losing only 0.10 lands at 0.90 and does NOT fire.
+
+    Pins the boundary so a future signal-weight tweak can't drift the
+    threshold silently."""
+    from Trainforge.generators.schema_translation_generator import (
+        SurfaceFormData,
+        _compute_style_score,
+        _STYLE_CONSISTENCY_MIN,
+        validate_form_data_contract,
+    )
+
+    # Entry losing -0.10 (conversational) only — score ~0.90, passes.
+    above_threshold = SurfaceFormData(
+        curie="test:Foo",
+        short_name="Foo",
+        definitions=[
+            "test:Foo is a synthetic predicate; this definition carries "
+            "no hedge tokens and no conversational phrasing markers.",
+            # Different first 4 words; still no hedge; no conversational.
+            "Synthetic predicate test:Foo defines an entity; the second "
+            "def is plain present-tense declarative spec terminology.",
+            # Different first 4 words; conversational marker drops weight.
+            "When you can think of test:Foo, picture a fixture-only "
+            "predicate; test:Foo applies in synthetic SHACL examples.",
+        ],
+        usage_examples=[(
+            "Show how test:Foo is used in a synthetic example fixture.",
+            "On a property shape with sh:path ex:bar, write `test:Foo "
+            "ex:value .` — test:Foo applies to validation here.",
+        )],
+        anchored_status="complete",
+    )
+    score_above, _ = _compute_style_score(above_threshold)
+    # ~0.90, above the 0.80 floor.
+    assert score_above >= _STYLE_CONSISTENCY_MIN, (
+        f"calibration: above-threshold entry scored {score_above:.2f} "
+        f"< {_STYLE_CONSISTENCY_MIN}"
+    )
+    result_above = validate_form_data_contract(
+        {"test:Foo": above_threshold}, ["test:Foo"]
+    )
+    assert "STYLE_CONSISTENCY_BELOW_THRESHOLD" not in _warning_codes(result_above)
+
+    # Entry losing -0.30 (conversational + hedging + repeated_openings)
+    # — score ~0.70, well below the 0.80 floor; fires.
+    below_threshold = SurfaceFormData(
+        curie="test:Foo",
+        short_name="Foo",
+        definitions=[
+            # Loses no_conversational (-0.10): "let's" matches.
+            # Loses excessive_hedging (-0.10): 3 hedges (may/often/likely).
+            "Let's say test:Foo is a predicate that may often appear; "
+            "test:Foo likely defines a fixture-only construct herein.",
+            # Same first 4 words as above ("Let's say test:Foo is")
+            # loses repeated_openings (-0.10).
+            "Let's say test:Foo is a synthetic predicate; this carries "
+            "the duplicate opening that trips repeated_openings here.",
+        ],
+        usage_examples=[(
+            "Show how test:Foo is used in a synthetic example fixture.",
+            "On a property shape with sh:path ex:bar, write `test:Foo "
+            "ex:value .` — test:Foo applies to validation here.",
+        )],
+        anchored_status="complete",
+    )
+    score_below, _ = _compute_style_score(below_threshold)
+    assert score_below < _STYLE_CONSISTENCY_MIN, (
+        f"calibration: below-threshold entry scored {score_below:.2f} "
+        f">= {_STYLE_CONSISTENCY_MIN}"
+    )
+    result_below = validate_form_data_contract(
+        {"test:Foo": below_threshold}, ["test:Foo"]
+    )
+    assert "STYLE_CONSISTENCY_BELOW_THRESHOLD" in _warning_codes(result_below)
