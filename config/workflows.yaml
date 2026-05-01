@@ -923,36 +923,20 @@ workflows:
               on_error: fail_closed
             description: Wave 121 — refuse training pairs with >5% verbatim chunk leakage
 
-          # Wave 130b (DEPRECATED, demoted Wave 135c): mean CURIE
-          # retention metric. Under the Wave 135 contract, force-injection
-          # guarantees CURIE presence regardless of LLM behavior, so the
-          # mean-retention metric is no longer meaningful as a critical
-          # signal — a 100%-token-stuffed corpus would pass the old
-          # gate. Demoted to severity=warning this wave for transition
-          # visibility and removed entirely in Wave 135d. Superseded by
-          # the curie_anchoring gate below.
-          - gate_id: curie_preservation
-            validator: lib.validators.curie_preservation.CuriePreservationValidator
-            severity: warning
-            threshold:
-              min_mean_retention: 0.40
-            behavior:
-              on_fail: warn
-              on_error: warn
-            description: Wave 130b (DEPRECATED, demoted Wave 135c) — mean CURIE retention metric. Superseded by curie_anchoring gate; retained one wave for transition visibility.
-
           # Wave 135c: binary per-pair CURIE anchoring sentinel. Replaces
-          # the curie_preservation mean-retention metric as the
-          # critical-severity gate. Force-injection (Wave 135b)
-          # guarantees CURIE presence in paraphrase pairs by
-          # construction; this gate fires only when injection BROKE,
-          # i.e., the per-pair anchoring rate drops to whatever the
-          # natural paraphrase rate is (~0.10 per the 2026-05-01 audit).
-          # Default threshold pair_anchoring_rate=0.95 catches injector
-          # regressions loudly without false-positive on natural per-pair
-          # variance. Skips deterministic generators (kg_metadata.* /
-          # violation_detection.* / abstention.* / schema_translation.*)
-          # since those are oracle-grounded by manifest input.
+          # the Wave 130b curie_preservation mean-retention metric as the
+          # critical-severity gate (the predecessor gate was removed in
+          # Wave 135d after one wave of warning-severity transition).
+          # Force-injection (Wave 135b) guarantees CURIE presence in
+          # paraphrase pairs by construction; this gate fires only when
+          # injection BROKE, i.e., the per-pair anchoring rate drops to
+          # whatever the natural paraphrase rate is (~0.10 per the
+          # 2026-05-01 audit). Default threshold pair_anchoring_rate=0.95
+          # catches injector regressions loudly without false-positive on
+          # natural per-pair variance. Skips deterministic generators
+          # (kg_metadata.* / violation_detection.* / abstention.* /
+          # schema_translation.*) since those are oracle-grounded by
+          # manifest input.
           - gate_id: curie_anchoring
             validator: lib.validators.curie_anchoring.CurieAnchoringValidator
             severity: critical
