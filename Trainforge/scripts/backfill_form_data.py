@@ -400,6 +400,7 @@ def _run_drafting_cli(
     course_code: str,
     provider: str,
     model: Optional[str],
+    timeout: Optional[float] = None,
 ) -> Tuple[int, str, str]:
     """Dispatch the Wave 136c drafting CLI as a subprocess.
 
@@ -407,6 +408,11 @@ def _run_drafting_cli(
     the drafting CLI's ``main`` directly because operators sometimes
     swap providers or models between rounds — a clean subprocess
     boundary makes the per-CURIE call independently auditable.
+
+    ``timeout`` (Wave 137 follow-up): forwarded to the drafting CLI's
+    ``--timeout`` flag (per-HTTP-request budget, default there is
+    300s). High-coupling CURIEs like rdf:type can exceed the
+    provider's stock 60s on Qwen 14B-Q4.
     """
     cmd = [
         sys.executable,
@@ -426,6 +432,8 @@ def _run_drafting_cli(
     ]
     if model:
         cmd.extend(["--model", model])
+    if timeout is not None:
+        cmd.extend(["--timeout", str(timeout)])
     proc = subprocess.run(
         cmd,
         capture_output=True,
@@ -505,6 +513,7 @@ def _process_one_curie(
     print_fn,
     runner=None,
     editor_fn=None,
+    timeout: Optional[float] = None,
 ) -> str:
     # Resolve at call time via module-attribute lookup so
     # ``patch.object(cli, "_run_drafting_cli", ...)`` in tests is
@@ -524,7 +533,7 @@ def _process_one_curie(
         f"\n[{idx}/{total}] CURIE={curie} corpus_freq={freq} label={label}"
     )
 
-    rc, stdout, stderr = runner(curie, family, course_code, provider, model)
+    rc, stdout, stderr = runner(curie, family, course_code, provider, model, timeout)
     if rc != 0:
         print_fn(
             f"  drafting CLI failed (exit {rc}); stderr=\n{stderr}",
@@ -660,6 +669,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "family map at parse time."
         ),
     )
+    # Wave 137 follow-up: per-HTTP-request timeout for the drafting
+    # subprocess. Default 300s — Qwen 14B-Q4 routinely needs 90-180s
+    # for the 35+-item drafting prompt and exceeds the provider's
+    # standard 60s budget on high-coupling CURIEs (rdf:type etc.).
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=300.0,
+        help=(
+            "Per-HTTP-request timeout in seconds, forwarded to the "
+            "drafting CLI. Default 300 (5 min)."
+        ),
+    )
     return parser
 
 
@@ -780,6 +802,7 @@ def main(
             manifest_curies=manifest_curies,
             input_fn=input_fn,
             print_fn=print_fn,
+            timeout=args.timeout,
         )
         counters[outcome] = counters.get(outcome, 0) + 1
         if outcome == "quit_after":

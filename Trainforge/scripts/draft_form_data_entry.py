@@ -297,13 +297,22 @@ def _surface_form_data_to_yaml_dict(entry: SurfaceFormData) -> Dict[str, Any]:
     return out
 
 
-def _build_provider(provider_name: str, model: Optional[str]) -> Any:
+def _build_provider(
+    provider_name: str,
+    model: Optional[str],
+    timeout: Optional[float] = None,
+) -> Any:
     """Instantiate the configured provider.
 
     Supports ``local`` (default) and ``together``. Each provider's
     constructor falls back to its env-var defaults when the model
     kwarg is unset, so the CLI can be invoked with no ``--model``
     flag for the standard rdf-shacl Qwen 14B / Llama 3.3 70B layouts.
+
+    ``timeout`` (Wave 137 follow-up): per-HTTP-request timeout in
+    seconds. The drafting prompt asks for 35+ structured items so
+    Qwen 14B-Q4 routinely exceeds the provider's 60s default; pass
+    a higher value (e.g. 300) for high-coupling CURIEs.
     """
     if provider_name == "local":
         from Trainforge.generators._local_provider import (  # noqa: WPS433
@@ -312,6 +321,8 @@ def _build_provider(provider_name: str, model: Optional[str]) -> Any:
         kwargs: Dict[str, Any] = {}
         if model:
             kwargs["model"] = model
+        if timeout is not None:
+            kwargs["timeout"] = timeout
         return LocalSynthesisProvider(**kwargs)
     if provider_name == "together":
         from Trainforge.generators._together_provider import (  # noqa: WPS433
@@ -320,6 +331,8 @@ def _build_provider(provider_name: str, model: Optional[str]) -> Any:
         kwargs2: Dict[str, Any] = {}
         if model:
             kwargs2["model"] = model
+        if timeout is not None:
+            kwargs2["timeout"] = timeout
         return TogetherSynthesisProvider(**kwargs2)
     raise ValueError(
         f"Unsupported provider: {provider_name!r}. "
@@ -440,6 +453,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=0,
         help="Reserved for future use. Current default 0 — explicit no auto-retry.",
     )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=300.0,
+        help=(
+            "Per-HTTP-request timeout in seconds. Default 300 (5 min) — "
+            "the drafting prompt asks for 35+ structured items so 14B-Q4 "
+            "routinely exceeds the provider's standard 60s budget."
+        ),
+    )
     return parser
 
 
@@ -491,7 +514,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     # Step 5: instantiate the provider.
     try:
-        provider = _build_provider(args.provider, args.model)
+        provider = _build_provider(args.provider, args.model, timeout=args.timeout)
     except Exception as exc:
         print(
             f"ERROR: failed to instantiate provider "
