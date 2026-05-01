@@ -1435,26 +1435,32 @@ def run_synthesis(
                             else None
                         ),
                     )
-                    # Wave 120: audit-log when paraphrase preservation
-                    # failed and the deterministic draft was used. Lets
-                    # post-hoc analysis identify chunks where the LLM
-                    # consistently dropped technical CURIEs.
+                    # Wave 120 (renamed Wave 135d): audit-log when the
+                    # paraphrase emit chose the deterministic draft path
+                    # rather than the LLM paraphrase. Lets post-hoc
+                    # analysis identify chunks where the LLM
+                    # consistently fell short of the (now opt-in)
+                    # preservation floor. Wave 135 contract: the
+                    # deterministic-draft path is the expected outcome
+                    # on ``degraded_placeholder`` FORM_DATA entries; the
+                    # event name no longer asserts a "preservation
+                    # failure" — it just reports which path emitted.
                     if inst_result.pair.get("paraphrase_fallback_reason"):
                         capture.log_decision(
-                            decision_type="surface_form_preservation_fallback",
+                            decision_type="paraphrase_used_deterministic_draft",
                             decision=(
-                                f"Fell back to deterministic draft for "
+                                f"Emitted deterministic draft for "
                                 f"instruction pair on chunk "
                                 f"{inst_result.pair['chunk_id']}; paraphrase "
-                                f"dropped surface form(s) "
+                                f"path declined to anchor surface form(s) "
                                 f"{chunk_preserve_tokens}."
                             ),
                             rationale=(
-                                f"Provider '{provider}' could not preserve required "
-                                f"property surface forms after retry exhaustion; "
-                                f"using the deterministic template draft preserves "
-                                f"property coverage at the cost of paraphrase "
-                                f"variety on chunks containing "
+                                f"Provider '{provider}' did not anchor required "
+                                f"property surface forms within the per-call "
+                                f"floor; the deterministic template draft "
+                                f"preserves property coverage at the cost of "
+                                f"paraphrase variety on chunks containing "
                                 f"{chunk_preserve_tokens}."
                             ),
                             context=f"chunk_id={inst_result.pair['chunk_id']}",
@@ -1537,18 +1543,18 @@ def run_synthesis(
                 else:
                     if pref_result.pair.get("paraphrase_fallback_reason"):
                         capture.log_decision(
-                            decision_type="surface_form_preservation_fallback",
+                            decision_type="paraphrase_used_deterministic_draft",
                             decision=(
-                                f"Fell back to deterministic draft for "
+                                f"Emitted deterministic draft for "
                                 f"preference pair on chunk "
                                 f"{pref_result.pair['chunk_id']}; paraphrase "
-                                f"dropped surface form(s) "
-                                f"{chunk_preserve_tokens} from chosen field."
+                                f"path declined to anchor surface form(s) "
+                                f"{chunk_preserve_tokens} in chosen field."
                             ),
                             rationale=(
-                                f"Provider '{provider}' could not preserve required "
+                                f"Provider '{provider}' did not anchor required "
                                 f"property surface forms in the chosen completion "
-                                f"after retry exhaustion; deterministic draft "
+                                f"within the per-call floor; deterministic draft "
                                 f"preserves property coverage."
                             ),
                             context=f"chunk_id={pref_result.pair['chunk_id']}",

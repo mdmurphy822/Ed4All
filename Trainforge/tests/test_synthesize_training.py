@@ -526,7 +526,8 @@ def test_property_bearing_chunk_falls_back_to_deterministic_when_paraphrase_stri
     instruction factory catches ``surface_form_preservation_failed`` and
     returns the deterministic draft, marking it with
     ``paraphrase_fallback_reason``. ``run_synthesis`` then logs a
-    ``surface_form_preservation_fallback`` capture event and emits the
+    ``paraphrase_used_deterministic_draft`` capture event (renamed Wave
+    135d from ``surface_form_preservation_fallback``) and emits the
     pair instead of dropping it."""
     course_dir = _make_working_copy(tmp_path)
 
@@ -604,10 +605,10 @@ def test_property_bearing_chunk_falls_back_to_deterministic_when_paraphrase_stri
 
     fallback_events = [
         d for d in capture.decisions
-        if d.get("decision_type") == "surface_form_preservation_fallback"
+        if d.get("decision_type") == "paraphrase_used_deterministic_draft"
     ]
     assert fallback_events, (
-        "Expected at least one surface_form_preservation_fallback "
+        "Expected at least one paraphrase_used_deterministic_draft "
         "capture event; got "
         f"{[d.get('decision_type') for d in capture.decisions]}"
     )

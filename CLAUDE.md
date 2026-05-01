@@ -656,7 +656,7 @@ Source of truth: `config/workflows.yaml::validation_gates`. Phase column below s
 | `textbook_to_course` | `training_synthesis` | `synthesis_diversity` | SynthesisDiversityValidator (Wave 91) |
 | `textbook_to_course` | `training_synthesis` | `property_coverage` | PropertyCoverageValidator (Wave 109 — no-ops on courses without a property manifest) |
 | `textbook_to_course` | `training_synthesis` | `synthesis_leakage` | SynthesisLeakageValidator (Wave 121 — fails closed at >5% verbatim chunk leakage) |
-| `textbook_to_course` | `training_synthesis` | `curie_preservation` | CuriePreservationValidator (Wave 130b — full-corpus CURIE retention backstop, default min_mean_retention=0.40) |
+| `textbook_to_course` | `training_synthesis` | `curie_anchoring` | CurieAnchoringValidator (Wave 135c — binary per-pair anchoring sentinel, default min_pair_anchoring_rate=0.95; replaces Wave 130b curie_preservation) |
 | `textbook_to_course` | `libv2_archival` | `libv2_manifest` | LibV2ManifestValidator |
 | `textbook_to_course` | `libv2_archival` | `kg_quality_report` | KGQualityValidator (Wave 91 promotion: critical, thresholds 0.95/0.95/0.95/0.5) |
 | `rag_training` | `assessment_generation` | `assessment_quality` | AssessmentQualityValidator |

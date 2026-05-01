@@ -155,6 +155,28 @@ def test_phase_enum_covers_wave89_trainforge_training():
 
 
 @pytest.mark.unit
+def test_paraphrase_used_deterministic_draft_in_enum():
+    """Wave 135d renames ``surface_form_preservation_fallback`` to
+    ``paraphrase_used_deterministic_draft``. The new name describes
+    what the synthesis pipeline actually does (the paraphrase emit
+    chose the deterministic draft path) without asserting the
+    pre-Wave-135 contract that preservation was required.
+    """
+    allowed = _load_enum()
+    assert "paraphrase_used_deterministic_draft" in allowed, (
+        "decision_event.schema.json must include "
+        "'paraphrase_used_deterministic_draft' (Wave 135d rename of "
+        "'surface_form_preservation_fallback'). Add to "
+        "properties.decision_type.enum (alphabetised)."
+    )
+    assert "surface_form_preservation_fallback" not in allowed, (
+        "Wave 135d removed 'surface_form_preservation_fallback' from "
+        "the canonical enum. The capture rename is complete; the old "
+        "string must not reappear."
+    )
+
+
+@pytest.mark.unit
 def test_enum_is_alphabetised_and_unique():
     """Enum values must be alphabetised and unique (maintenance guard)."""
     with open(SCHEMA_PATH, encoding="utf-8") as f:
