@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://ed4all/schemas/training/schema_translation_catalog.schema.json",
   "title": "Schema Translation Catalog",
-  "description": "Wave 133d / Plan-2 P1#7: Per-family schema-to-English translation catalog. Lives at schemas/training/schema_translation_catalog.<family>.yaml. Loaded by Trainforge.generators.schema_translation_generator._load_form_data, dispatched on PropertyManifest.family. The rdf_shacl family currently has no YAML on disk — the in-Python _RDF_SHACL_FALLBACK_FORM_DATA dict is the byte-identical fallback. New course families ship their YAML against this schema.",
+  "description": "Wave 133d / Plan-2 P1#7 (Wave 136a per-CURIE overlay merge): Per-family schema-to-English translation catalog. Lives at schemas/training/schema_translation_catalog.<family>.yaml. Loaded by Trainforge.generators.schema_translation_generator._load_form_data, dispatched on PropertyManifest.family. Wave 136a replaces Wave 133d's whole-family-swap behavior with a per-CURIE overlay merge: the in-Python _RDF_SHACL_FALLBACK_FORM_DATA dict is the base, and the YAML overlay merges on top per-CURIE so a partial YAML cannot erase complete in-Python entries. New course families ship their YAML against this schema.",
   "type": "object",
   "required": ["forms"],
   "properties": {
@@ -21,12 +21,17 @@
       "description": "Map keyed by primary CURIE (e.g. 'sh:datatype'). Each entry seeds the six template families authored by the generator (definition / usage / comparison / reasoning / pitfall / combination). CURIEs absent from this map are skipped with a warning at synthesis time.",
       "additionalProperties": {
         "type": "object",
-        "required": ["short_name"],
+        "required": ["short_name", "definitions", "usage_examples", "anchored_status"],
         "properties": {
           "short_name": {
             "type": "string",
             "minLength": 1,
             "description": "Human-readable short name for the construct (e.g. 'datatype' for sh:datatype). Used in decision-capture rationale interpolation."
+          },
+          "anchored_status": {
+            "type": "string",
+            "enum": ["complete", "degraded_placeholder"],
+            "description": "Wave 135a discriminator. 'complete' entries carry real anchored content fit for embedding in training pairs. 'degraded_placeholder' entries satisfy the structural contract via stub strings but fall back to token-stuffing during force-injection (Wave 135b). Wave 136a's overlay merge uses this field to surface complete->degraded regressions in YAML overlays via logger.warning."
           },
           "definitions": {
             "type": "array",

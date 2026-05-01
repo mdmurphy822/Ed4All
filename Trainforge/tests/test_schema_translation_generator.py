@@ -487,11 +487,15 @@ def test_pair_carries_marker_fields() -> None:
 def test_schema_translation_loader_falls_back_for_rdf_shacl(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Wave 133d contract: when no per-family YAML catalog exists on
-    disk for ``family == "rdf_shacl"``, ``_load_form_data`` must fall
-    back to the in-Python ``_RDF_SHACL_FALLBACK_FORM_DATA`` dict so the
-    in-flight rdf-shacl-551-2 rebuild keeps emitting the same pairs
-    byte-identically (no eval-score drift)."""
+    """Wave 136a contract (replaces Wave 133d identity check): when no
+    per-family YAML catalog exists on disk for ``family == "rdf_shacl"``,
+    ``_load_form_data`` must return the in-Python
+    ``_RDF_SHACL_FALLBACK_FORM_DATA`` dict content unchanged so the
+    rdf-shacl-551-2 rebuild keeps emitting the same pairs byte-
+    identically (no eval-score drift). Wave 136a replaced the Wave
+    133d whole-family-swap with a per-CURIE overlay merge — under the
+    new contract the returned dict is a fresh merged copy whose
+    content equals the base, NOT the same object."""
     from Trainforge.generators import schema_translation_generator as stg
 
     # Force the YAML lookup to fail — even if a future commit lands a
@@ -504,11 +508,20 @@ def test_schema_translation_loader_falls_back_for_rdf_shacl(
         return real_read_text(self, *args, **kwargs)
 
     monkeypatch.setattr(Path, "read_text", _no_yaml)
+    # Wave 136a: lru_cache means a previously-loaded entry would mask
+    # the no-YAML branch under test. Invalidate before reading.
+    stg._invalidate_form_data_cache()
 
     form_data = stg._load_form_data("rdf_shacl")
-    assert form_data is stg._RDF_SHACL_FALLBACK_FORM_DATA, (
-        "Wave 133d: rdf_shacl family with no on-disk YAML must return "
-        "the in-Python fallback dict (identity check, not just equality)."
+    # Wave 136a: content equality with the in-Python base — the
+    # overlay is empty (no YAML) so the merge returns a base copy.
+    assert form_data == stg._RDF_SHACL_FALLBACK_FORM_DATA, (
+        "Wave 136a: rdf_shacl family with no on-disk YAML must return "
+        "the in-Python fallback dict content (per-CURIE overlay merge "
+        "with empty overlay)."
+    )
+    assert set(form_data.keys()) == set(
+        stg._RDF_SHACL_FALLBACK_FORM_DATA.keys()
     )
     # Spot-check a known rdf_shacl CURIE from the fallback.
     assert "sh:datatype" in form_data
@@ -516,15 +529,22 @@ def test_schema_translation_loader_falls_back_for_rdf_shacl(
     assert form_data["sh:datatype"].definitions, (
         "fallback rdf_shacl catalog must carry definitions for sh:datatype"
     )
+    # Cleanup: clear cache so subsequent tests see the real catalog.
+    stg._invalidate_form_data_cache()
 
 
 def test_schema_translation_returns_empty_for_unknown_family_with_warning(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Wave 133d contract: an unknown family name (no YAML on disk
-    AND not == "rdf_shacl") must return an empty dict and emit a
-    warning log so the operator sees the no-op rather than a silent
-    zero-pairs emit."""
+    """Wave 136a contract (replaces Wave 133d): an unknown family name
+    (no YAML on disk AND no in-Python fallback) must return an empty
+    dict. Wave 133d emitted a "no schema-translation catalog" warning
+    here; Wave 136a's overlay merge no longer warns at this layer
+    because the surrounding generator (``generate_schema_translation_pairs``)
+    already surfaces the empty-catalog case via its own per-form
+    warnings, and double-warning was noisy. The downstream-generator
+    behavior — empty dict -> zero pairs emitted with form-level
+    warnings -> no crash — is unchanged."""
     from Trainforge.generators import schema_translation_generator as stg
 
     import logging
@@ -532,20 +552,13 @@ def test_schema_translation_returns_empty_for_unknown_family_with_warning(
         logging.WARNING,
         logger="Trainforge.generators.schema_translation_generator",
     )
+    stg._invalidate_form_data_cache()
     form_data = stg._load_form_data("unknown_test_family")
     assert form_data == {}, (
-        "Wave 133d: unknown family with no YAML must return empty dict, "
-        f"got {len(form_data)} entries."
+        "Wave 136a: unknown family with no YAML and no in-Python "
+        f"fallback must return empty dict, got {len(form_data)} entries."
     )
-    no_catalog_warnings = [
-        r for r in caplog.records
-        if "no schema-translation catalog" in r.getMessage()
-    ]
-    assert no_catalog_warnings, (
-        "Wave 133d: missing-catalog warning must fire so the operator "
-        f"sees the no-op; got {[r.getMessage() for r in caplog.records]!r}"
-    )
-    assert "unknown_test_family" in no_catalog_warnings[0].getMessage()
+    stg._invalidate_form_data_cache()
 
 
 def test_existing_rdf_shacl_pairs_byte_identical() -> None:
@@ -889,3 +902,428 @@ def test_schema_translation_skips_degraded_placeholder_entries(
             f"degraded stub leaked into completion: "
             f"{pair['completion']!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Wave 136a: per-CURIE overlay merge contract.
+#
+# Tests that the new ``_load_form_data`` dispatches through
+# ``_python_fallback_for_family`` + ``_load_yaml_catalog`` +
+# ``_deep_merge_by_curie`` correctly:
+#   - Partial YAML cannot erase the in-Python fallback's complete entries.
+#   - Per-CURIE swap: YAML wins for CURIEs it defines.
+#   - Per-CURIE add: YAML CURIEs not in Python are added.
+#   - complete -> degraded regression in YAML emits a warning (not block).
+#   - complete with empty definitions raises ValueError at load.
+#   - Malformed YAML returns the Python base (no erasure).
+#   - No YAML -> byte-identical to Wave 133d's pair output.
+#   - lru_cache identity + invalidation helper.
+# ---------------------------------------------------------------------------
+
+
+# Synthetic test-fixture markers — clearly NOT corpus content. The
+# Wave 136a test surface MUST not contain real-looking definitions
+# that could accidentally seed training data on a downstream pipeline
+# run picking up these synthetic CURIEs / strings.
+_TEST_FIXTURE_DEF = (
+    "[TEST FIXTURE: synthetic definition for Wave 136a regression test]"
+)
+_TEST_FIXTURE_USAGE_PROMPT = (
+    "[TEST FIXTURE: synthetic usage prompt for Wave 136a regression test]"
+)
+_TEST_FIXTURE_USAGE_COMPLETION = (
+    "[TEST FIXTURE: synthetic usage answer for Wave 136a regression test]"
+)
+
+
+def _patch_yaml_overlay(
+    monkeypatch: pytest.MonkeyPatch,
+    overlay: Dict[str, Any],
+) -> None:
+    """Patch ``_load_yaml_catalog`` so the overlay test path uses an
+    in-memory synthetic dict instead of the on-disk YAML. Returns a
+    SurfaceFormData-shaped dict (NOT raw YAML) keyed by CURIE."""
+    from Trainforge.generators import schema_translation_generator as stg
+
+    monkeypatch.setattr(stg, "_load_yaml_catalog", lambda family: overlay)
+    stg._invalidate_form_data_cache()
+
+
+def test_overlay_loader_partial_yaml_does_not_erase_complete_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wave 136a regression-pin: a partial YAML overlay (one CURIE
+    defined, rest absent) must NOT erase the in-Python fallback's
+    other complete entries.
+
+    This is the load-bearing safety property — Wave 136d's operator-
+    paused backfill flow lands one CURIE at a time, and a YAML with
+    only sh:minCount filled in must leave the existing 6 complete
+    entries (sh:datatype, sh:class, sh:NodeShape, sh:PropertyShape,
+    rdfs:subClassOf, owl:sameAs) intact and complete.
+    """
+    from Trainforge.generators import schema_translation_generator as stg
+    from Trainforge.generators.schema_translation_generator import (
+        SurfaceFormData,
+    )
+
+    overlay = {
+        "sh:minCount": SurfaceFormData(
+            curie="sh:minCount",
+            short_name="sh:minCount",
+            anchored_status="complete",
+            definitions=[_TEST_FIXTURE_DEF],
+            usage_examples=[
+                (_TEST_FIXTURE_USAGE_PROMPT, _TEST_FIXTURE_USAGE_COMPLETION),
+            ],
+        ),
+    }
+    _patch_yaml_overlay(monkeypatch, overlay)
+
+    merged = stg._load_form_data("rdf_shacl")
+
+    expected_complete = (
+        "sh:datatype",
+        "sh:class",
+        "sh:NodeShape",
+        "sh:PropertyShape",
+        "rdfs:subClassOf",
+        "owl:sameAs",
+    )
+    for curie in expected_complete:
+        entry = merged.get(curie)
+        assert entry is not None, (
+            f"Wave 136a regression: complete entry {curie} missing "
+            f"from merged dict — partial YAML must NOT erase Python base"
+        )
+        assert entry.anchored_status == "complete", (
+            f"Wave 136a regression: complete entry {curie} silently "
+            f"flipped to {entry.anchored_status!r}"
+        )
+        assert entry.definitions, (
+            f"Wave 136a regression: complete entry {curie} lost its "
+            f"definitions"
+        )
+
+    stg._invalidate_form_data_cache()
+
+
+def test_overlay_loader_yaml_swaps_curie(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wave 136a per-CURIE swap: a YAML overlay entry replaces the
+    Python entry for the same CURIE."""
+    from Trainforge.generators import schema_translation_generator as stg
+    from Trainforge.generators.schema_translation_generator import (
+        SurfaceFormData,
+    )
+
+    overlay = {
+        "sh:minCount": SurfaceFormData(
+            curie="sh:minCount",
+            short_name="sh:minCount",
+            anchored_status="complete",
+            definitions=[_TEST_FIXTURE_DEF],
+            usage_examples=[
+                (_TEST_FIXTURE_USAGE_PROMPT, _TEST_FIXTURE_USAGE_COMPLETION),
+            ],
+        ),
+    }
+    _patch_yaml_overlay(monkeypatch, overlay)
+
+    merged = stg._load_form_data("rdf_shacl")
+
+    swapped = merged["sh:minCount"]
+    assert swapped.anchored_status == "complete", (
+        "Wave 136a: YAML overlay must swap sh:minCount from "
+        "degraded_placeholder (Python base) to complete (YAML)"
+    )
+    assert swapped.definitions == [_TEST_FIXTURE_DEF]
+    assert "[degraded:" not in swapped.definitions[0], (
+        "Wave 136a: post-swap definitions must come from YAML, not "
+        "the Python base's degraded stubs"
+    )
+
+    stg._invalidate_form_data_cache()
+
+
+def test_overlay_loader_extension_curie_added(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wave 136a per-CURIE add: a YAML overlay entry whose CURIE is
+    NOT in the Python base is added to the merged dict, and the
+    Python base entries remain unchanged."""
+    from Trainforge.generators import schema_translation_generator as stg
+    from Trainforge.generators.schema_translation_generator import (
+        SurfaceFormData,
+    )
+
+    extension_curie = "test:SyntheticPredicate"
+    overlay = {
+        extension_curie: SurfaceFormData(
+            curie=extension_curie,
+            short_name="SyntheticPredicate",
+            anchored_status="complete",
+            definitions=[_TEST_FIXTURE_DEF],
+            usage_examples=[
+                (_TEST_FIXTURE_USAGE_PROMPT, _TEST_FIXTURE_USAGE_COMPLETION),
+            ],
+        ),
+    }
+    _patch_yaml_overlay(monkeypatch, overlay)
+
+    merged = stg._load_form_data("rdf_shacl")
+
+    assert extension_curie in merged, (
+        f"Wave 136a: YAML extension CURIE {extension_curie} must appear "
+        f"in merged dict"
+    )
+    assert merged[extension_curie].anchored_status == "complete"
+
+    # And the existing 6 complete entries are still complete.
+    for curie in (
+        "sh:datatype",
+        "sh:class",
+        "sh:NodeShape",
+        "sh:PropertyShape",
+        "rdfs:subClassOf",
+        "owl:sameAs",
+    ):
+        assert merged[curie].anchored_status == "complete", (
+            f"Wave 136a: extension overlay must not disturb existing "
+            f"complete entry {curie}"
+        )
+
+    stg._invalidate_form_data_cache()
+
+
+def test_overlay_loader_warns_on_complete_to_degraded_regression(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Wave 136a: a YAML overlay that regresses a complete base entry
+    to ``degraded_placeholder`` must emit a logger.warning (mid-edit
+    signal) but NOT block the load.
+
+    This is the operator-pause path: under-revision CURIEs are
+    legitimately marked degraded mid-flow, but the warning makes the
+    regression visible in logs.
+    """
+    import logging
+
+    from Trainforge.generators import schema_translation_generator as stg
+    from Trainforge.generators.schema_translation_generator import (
+        SurfaceFormData,
+    )
+
+    overlay = {
+        "sh:datatype": SurfaceFormData(
+            curie="sh:datatype",
+            short_name="sh:datatype",
+            anchored_status="degraded_placeholder",
+            definitions=[
+                "[TEST FIXTURE: synthetic degraded definition for Wave 136a]",
+            ],
+            usage_examples=[
+                (_TEST_FIXTURE_USAGE_PROMPT, _TEST_FIXTURE_USAGE_COMPLETION),
+            ],
+        ),
+    }
+    _patch_yaml_overlay(monkeypatch, overlay)
+
+    caplog.set_level(
+        logging.WARNING,
+        logger="Trainforge.generators.schema_translation_generator",
+    )
+
+    merged = stg._load_form_data("rdf_shacl")
+
+    # The overlay was accepted (no block).
+    assert merged["sh:datatype"].anchored_status == "degraded_placeholder"
+
+    regression_warnings = [
+        r for r in caplog.records
+        if "regressed CURIE" in r.getMessage()
+        and "sh:datatype" in r.getMessage()
+    ]
+    assert regression_warnings, (
+        f"Wave 136a: expected a complete->degraded regression warning "
+        f"for sh:datatype; got {[r.getMessage() for r in caplog.records]!r}"
+    )
+
+    stg._invalidate_form_data_cache()
+
+
+def test_overlay_loader_rejects_empty_definitions_when_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wave 136a: an overlay entry with ``anchored_status="complete"``
+    but empty ``definitions`` must raise ``ValueError`` at load time.
+
+    This is the overlay-level structural reject — Wave 136b will
+    widen this to cover stub-string content quality.
+    """
+    from Trainforge.generators import schema_translation_generator as stg
+    from Trainforge.generators.schema_translation_generator import (
+        SurfaceFormData,
+    )
+
+    overlay = {
+        "test:EmptyComplete": SurfaceFormData(
+            curie="test:EmptyComplete",
+            short_name="test:EmptyComplete",
+            anchored_status="complete",
+            definitions=[],  # Empty — should raise.
+            usage_examples=[
+                (_TEST_FIXTURE_USAGE_PROMPT, _TEST_FIXTURE_USAGE_COMPLETION),
+            ],
+        ),
+    }
+    _patch_yaml_overlay(monkeypatch, overlay)
+
+    with pytest.raises(ValueError, match="empty definitions"):
+        stg._load_form_data("rdf_shacl")
+
+    stg._invalidate_form_data_cache()
+
+
+def test_overlay_loader_malformed_yaml_returns_base(
+    tmp_path: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Wave 136a: malformed YAML on disk must return the in-Python
+    base unchanged (no erasure) and emit a logger.error.
+
+    Load-bearing ToS-mitigation: a corrupted YAML must NEVER be
+    interpreted as "erase everything". The in-Python complete entries
+    are the last-resort source of truth.
+    """
+    import logging
+
+    from Trainforge.generators import schema_translation_generator as stg
+
+    # Write garbage to a tmp YAML path and redirect PROJECT_ROOT so
+    # _load_yaml_catalog reads from there.
+    fake_root = tmp_path
+    schemas_dir = fake_root / "schemas" / "training"
+    schemas_dir.mkdir(parents=True)
+    bad_yaml_path = schemas_dir / "schema_translation_catalog.rdf_shacl.yaml"
+    # YAML with unbalanced brackets / tab-vs-space — guaranteed to
+    # raise yaml.YAMLError on safe_load.
+    bad_yaml_path.write_text(
+        "family: rdf_shacl\nforms: {[: this is not valid yaml :}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(stg, "PROJECT_ROOT", fake_root)
+    stg._invalidate_form_data_cache()
+
+    caplog.set_level(
+        logging.ERROR,
+        logger="Trainforge.generators.schema_translation_generator",
+    )
+
+    merged = stg._load_form_data("rdf_shacl")
+
+    # Content-equal to the Python base: malformed YAML did NOT erase.
+    assert merged == stg._RDF_SHACL_FALLBACK_FORM_DATA, (
+        "Wave 136a load-bearing safety: malformed YAML must return the "
+        "in-Python base unchanged (no erasure)."
+    )
+
+    yaml_error_logs = [
+        r for r in caplog.records
+        if r.levelno >= logging.ERROR
+        and "rdf_shacl" in r.getMessage()
+    ]
+    assert yaml_error_logs, (
+        "Wave 136a: malformed YAML must emit a logger.error so the "
+        f"operator sees the parse failure; got "
+        f"{[r.getMessage() for r in caplog.records]!r}"
+    )
+
+    stg._invalidate_form_data_cache()
+
+
+def test_overlay_loader_byte_identical_when_no_yaml(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Wave 136a byte-identity assertion (preserves Wave 133d's pin):
+    with no YAML overlay file present, ``_load_form_data`` returns a
+    merged dict whose content equals the in-Python base exactly, AND
+    ``generate_schema_translation_pairs`` produces the same 250 pairs
+    with the same first-3 prompts as the Wave 125b baseline.
+
+    This is the regression net that confirms the YAML transcription
+    path is bit-identical to the in-Python fallback for the rdf_shacl
+    family.
+    """
+    from Trainforge.generators import schema_translation_generator as stg
+
+    # Force the YAML lookup to fail so the merge sees an empty overlay.
+    real_read_text = Path.read_text
+
+    def _no_yaml(self: Path, *args: Any, **kwargs: Any) -> str:
+        if "schema_translation_catalog." in self.name:
+            raise FileNotFoundError(self)
+        return real_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", _no_yaml)
+    stg._invalidate_form_data_cache()
+
+    merged = stg._load_form_data("rdf_shacl")
+    assert merged == stg._RDF_SHACL_FALLBACK_FORM_DATA
+
+    # Pair output byte-identity: same 250 pairs as the Wave 125b
+    # baseline. We compute against the exact same baseline shape as
+    # ``test_existing_rdf_shacl_pairs_byte_identical``.
+    capture = _FakeCapture()
+    pairs, stats = generate_schema_translation_pairs(
+        _rdf_shacl_manifest(),
+        capture=capture,
+        max_pairs=10000,
+        seed=17,
+    )
+    assert stats.pairs_emitted == 250, (
+        f"Wave 136a no-overlay byte-identity: pair count drifted from "
+        f"the Wave 125b 250 baseline. Got {stats.pairs_emitted}."
+    )
+    # Non-trivial first-3 prompts (anchors the ordering).
+    assert pairs[0]["prompt"], "first pair prompt must be non-empty"
+    assert pairs[1]["prompt"]
+    assert pairs[2]["prompt"]
+    # Each prompt is unique (sanity check on shuffle determinism).
+    assert pairs[0]["prompt"] != pairs[1]["prompt"]
+
+    stg._invalidate_form_data_cache()
+
+
+def test_overlay_loader_caches() -> None:
+    """Wave 136a: ``_load_form_data`` is wrapped in
+    ``functools.lru_cache``. Two consecutive calls return the same
+    object identity (cached). After ``_invalidate_form_data_cache()``,
+    the next call returns a fresh dict object."""
+    from Trainforge.generators import schema_translation_generator as stg
+
+    stg._invalidate_form_data_cache()
+
+    result1 = stg._load_form_data("rdf_shacl")
+    result2 = stg._load_form_data("rdf_shacl")
+    assert result1 is result2, (
+        "Wave 136a: lru_cache must return identical object on repeat "
+        "calls with the same family"
+    )
+
+    stg._invalidate_form_data_cache()
+    result3 = stg._load_form_data("rdf_shacl")
+    assert result3 is not result1, (
+        "Wave 136a: post-invalidation, the cache must miss and return "
+        "a fresh dict object (content equality preserved)"
+    )
+    assert result3 == result1, (
+        "Wave 136a: post-invalidation content must still equal the "
+        "original (no behavioral drift on cache reload)"
+    )
+
+    stg._invalidate_form_data_cache()

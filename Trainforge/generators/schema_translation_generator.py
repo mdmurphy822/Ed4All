@@ -68,6 +68,7 @@ definition pair before any usage pair.
 """
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import sys
@@ -1876,30 +1877,33 @@ _FAMILY_FACTORIES: Dict[
 }
 
 
-def _load_form_data(family: str) -> Dict[str, SurfaceFormData]:
-    """Wave 133d loader: resolve the schema-translation catalog for
-    ``family``.
+def _python_fallback_for_family(family: str) -> Dict[str, SurfaceFormData]:
+    """Wave 136a: returns the in-Python fallback dict for the family.
 
-    Resolution order:
+    Today only ``rdf_shacl`` ships with an in-Python fallback — Wave
+    125b's hand-curated 40-entry catalog. Other families return an
+    empty dict and rely entirely on their YAML overlay.
+    """
+    if family == "rdf_shacl":
+        return _RDF_SHACL_FALLBACK_FORM_DATA
+    return {}
 
-    1. ``schemas/training/schema_translation_catalog.<family>.yaml``
-       — per-family YAML catalog. Schema:
-       ``schemas/training/schema_translation_catalog.schema.json``.
-       Loaded via ``yaml.safe_load`` and projected into the
-       ``SurfaceFormData`` shape this generator expects.
-    2. Fallback to the in-Python ``_RDF_SHACL_FALLBACK_FORM_DATA`` dict
-       only when ``family == "rdf_shacl"``. Keeps the existing
-       rdf_shacl pairs byte-identical so an in-flight rebuild
-       (rdf-shacl-551-2) does NOT shift its eval scores when the
-       loader pattern lands.
-    3. For any other family with no on-disk YAML, return an empty dict
-       and emit a warning. The surrounding generator surfaces this as
-       "no pairs emitted for family=X" without crashing the run.
 
-    Big-bang YAML extraction of the rdf_shacl catalog is deferred to a
-    later wave once a second curriculum family ships its own catalog —
-    at that point the rdf_shacl YAML can be authored against the
-    schema and the in-Python fallback can be retired.
+def _load_yaml_catalog(family: str) -> Dict[str, SurfaceFormData]:
+    """Wave 136a: read the per-family YAML overlay and project into
+    ``SurfaceFormData`` instances.
+
+    Returns ``{}`` when the YAML file is absent — that's the steady
+    state for any family whose catalog ships entirely in-Python (today,
+    none) or for any family that has no per-family YAML at all (e.g.
+    legacy non-rdf_shacl families).
+
+    Critical safety: on YAML parse failure or a malformed payload (no
+    top-level ``forms`` key), emit ``logger.error`` and return ``{}``
+    — this is load-bearing ToS-mitigation. A silent return-empty here
+    would let the per-CURIE merge fall back to the in-Python base
+    unchanged, NEVER erasing complete entries. A crash would bubble up
+    and block the synthesis run.
     """
     catalog_path = (
         PROJECT_ROOT
@@ -1909,20 +1913,35 @@ def _load_form_data(family: str) -> Dict[str, SurfaceFormData]:
     )
     try:
         import yaml  # local import; YAML isn't a hot-path dep elsewhere here.
-        payload = yaml.safe_load(catalog_path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        if family == "rdf_shacl":
-            return _RDF_SHACL_FALLBACK_FORM_DATA
-        logger.warning(
-            "no schema-translation catalog for family=%s; emitting 0 pairs",
+    except ImportError:  # pragma: no cover — yaml is a hard dep elsewhere.
+        logger.error(
+            "PyYAML not importable; skipping YAML overlay for family=%s",
             family,
         )
         return {}
 
+    try:
+        raw_text = catalog_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {}
+
+    try:
+        payload = yaml.safe_load(raw_text)
+    except yaml.YAMLError as exc:
+        logger.error(
+            "schema_translation catalog YAML for family=%s failed to "
+            "parse (%s); skipping overlay merge to preserve in-Python "
+            "fallback entries.",
+            family,
+            exc,
+        )
+        return {}
+
     if not isinstance(payload, dict) or "forms" not in payload:
-        logger.warning(
-            "schema_translation catalog for family=%s is malformed "
-            "(missing top-level 'forms' key); emitting 0 pairs.",
+        logger.error(
+            "schema_translation catalog YAML for family=%s is malformed "
+            "(missing top-level 'forms' key); skipping overlay merge to "
+            "preserve in-Python fallback entries.",
             family,
         )
         return {}
@@ -1931,9 +1950,20 @@ def _load_form_data(family: str) -> Dict[str, SurfaceFormData]:
     for curie, raw in (payload.get("forms") or {}).items():
         if not isinstance(raw, dict):
             continue
+        anchored_status = raw.get("anchored_status", "complete")
+        if anchored_status not in ("complete", "degraded_placeholder"):
+            logger.error(
+                "schema_translation YAML overlay entry %s carries "
+                "anchored_status=%r outside the canonical enum; "
+                "skipping this CURIE.",
+                curie,
+                anchored_status,
+            )
+            continue
         out[curie] = SurfaceFormData(
             curie=curie,
             short_name=str(raw.get("short_name") or curie.split(":")[-1]),
+            anchored_status=anchored_status,
             definitions=list(raw.get("definitions") or []),
             usage_examples=[
                 tuple(pair) for pair in (raw.get("usage_examples") or [])
@@ -1957,6 +1987,95 @@ def _load_form_data(family: str) -> Dict[str, SurfaceFormData]:
             ],
         )
     return out
+
+
+def _deep_merge_by_curie(
+    base: Dict[str, SurfaceFormData],
+    overlay: Dict[str, SurfaceFormData],
+) -> Dict[str, SurfaceFormData]:
+    """Wave 136a: per-CURIE overlay merge.
+
+    YAML wins per-CURIE: an overlay entry replaces the Python entry
+    for the same CURIE; YAML CURIEs not in Python are added; Python
+    CURIEs not in YAML are preserved. Critically, a partial YAML
+    cannot erase the in-Python fallback's complete entries.
+
+    Safety rails:
+      * If an overlay entry regresses a complete base entry to
+        ``degraded_placeholder``, emit ``logger.warning`` (mid-edit
+        signal, not a hard block — operators sometimes need to mark a
+        CURIE under-revision).
+      * If an overlay entry claims ``anchored_status="complete"`` but
+        carries no non-stub definitions, raise ``ValueError`` at
+        load time — overlay-level safety distinct from Wave 136b's
+        content-quality validator.
+
+    Determinism: iterates the overlay in sorted-CURIE order so the
+    "added by YAML" CURIEs land in a stable position regardless of
+    YAML field ordering.
+    """
+    merged: Dict[str, SurfaceFormData] = dict(base)
+    for curie, entry in sorted(overlay.items()):
+        base_entry = base.get(curie)
+        # Mid-edit signal: complete -> degraded regression in YAML.
+        if (
+            entry.anchored_status == "degraded_placeholder"
+            and base_entry is not None
+            and base_entry.anchored_status == "complete"
+        ):
+            logger.warning(
+                "YAML overlay regressed CURIE=%s from complete to "
+                "degraded_placeholder",
+                curie,
+            )
+        # Hard reject: complete with empty definitions is a contract
+        # violation. Wave 136b's content validator will widen this to
+        # cover stub-string content as well; here we only enforce the
+        # structural floor.
+        if entry.anchored_status == "complete" and not entry.definitions:
+            raise ValueError(
+                f"YAML overlay entry {curie} claims complete but has "
+                f"empty definitions"
+            )
+        merged[curie] = entry
+    return merged
+
+
+@functools.lru_cache(maxsize=8)
+def _load_form_data(family: str) -> Dict[str, SurfaceFormData]:
+    """Wave 136a — per-CURIE overlay merge.
+
+    Loads the in-Python fallback dict for the family (today: only
+    rdf_shacl has one), then overlays the YAML catalog at
+    schemas/training/schema_translation_catalog.<family>.yaml.
+
+    YAML wins per-CURIE: an overlay entry replaces the Python entry
+    for the same CURIE; YAML CURIEs not in Python are added; Python
+    CURIEs not in YAML are preserved. Critically, a partial YAML
+    cannot erase the in-Python fallback's complete entries.
+
+    Wave 133d's whole-family-swap behavior is replaced. Operators
+    backfilling one CURIE at a time (Wave 136d's flow) no longer
+    risk erasing the existing 6 complete entries.
+
+    Cached via ``functools.lru_cache`` keyed on ``family``; Wave 136d
+    will call ``_invalidate_form_data_cache()`` after appending to
+    the YAML so the next read picks up the new content.
+    """
+    base = _python_fallback_for_family(family)
+    overlay = _load_yaml_catalog(family)
+    return _deep_merge_by_curie(base, overlay)
+
+
+def _invalidate_form_data_cache() -> None:
+    """Clear the ``_load_form_data`` lru_cache.
+
+    Wave 136d's operator-paused backfill flow appends entries to the
+    YAML overlay between paraphrase passes; calling this between
+    appends forces the next ``_load_form_data`` call to re-read the
+    YAML from disk so the freshly-authored CURIE is visible.
+    """
+    _load_form_data.cache_clear()
 
 
 def _build_catalog_in_order(
@@ -2224,4 +2343,8 @@ __all__ = [
     # can re-use the loader without touching internals.
     "_RDF_SHACL_FALLBACK_FORM_DATA",
     "_load_form_data",
+    # Wave 136a overlay-merge surface — Wave 136d's backfill loop
+    # invalidates the cache between YAML appends so each round-trip
+    # picks up freshly-authored CURIEs.
+    "_invalidate_form_data_cache",
 ]
