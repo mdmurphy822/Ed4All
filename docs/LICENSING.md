@@ -80,6 +80,10 @@ These are the providers that actually produce paraphrased training pairs. Each r
 - **Together AI** — Together's ToS explicitly permits using outputs for training-data generation; the underlying OSS model license still governs distribution of the model and any derivatives. Both layers must be cited (ToS + model license). Llama-3.3 requires attribution and a >700M-MAU special license; Qwen2.5-72B requires written permission for >100M-MAU commercial use; DeepSeek-V3 carries its own permissive license.
 - **Local OSS** — Output license is the underlying model's license, full stop. Apache 2.0 (Qwen2.5-7B/14B/32B, Mistral-Small) is the cleanest: unrestricted commercial use including using outputs to train derivative models, and no attribution required for outputs (only for redistributing the model itself). Llama-3.3 requires attribution. Qwen2.5-72B's Qwen License Agreement permits outputs for derivative training at any scale but gates >100M-MAU commercial use of the model.
 
+### Deterministic generators (no LLM exposure)
+
+The four generators in `Trainforge/generators/` that emit deterministic pairs without any LLM call — `kg_metadata_generator.py`, `violation_generator.py` (Wave 125a, pyshacl-oracle-verified), `abstention_generator.py` (Wave 124), `schema_translation_generator.py` (Wave 125b) — are fully off-grid for ToS analysis. No provider's terms apply because no provider is invoked. Their pairs are derived from the course's pedagogy graph + property manifest + SHACL fixtures, all of which are project-internal. Pairs from these generators are licence-clean regardless of which `--provider` is selected for the paraphrase loop.
+
 ---
 
 ## Decision tree
