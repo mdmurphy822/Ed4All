@@ -11,12 +11,26 @@ the synthesis pipeline can quietly strip those CURIEs from paraphrase
 pairs because the retry guard never knew to protect them.
 
 This validator runs after the synthesis phase on the chunk's *full*
-CURIE set — extracted directly from chunk text via a regex covering
-the canonical W3C / standard-ontology prefixes — and computes the
-mean retention rate across all paraphrase pairs that source from a
-chunk carrying CURIEs. Mean retention < 0.40 fails the gate closed.
-Default threshold derived from the curie-fidelity-audit-2026-05
-report § 6.
+CURIE set — extracted directly from chunk text via a dynamic
+open-prefix regex (Wave 131) filtered against a URL-scheme exclusion
+set — and computes the mean retention rate across all paraphrase
+pairs that source from a chunk carrying CURIEs. Mean retention <
+0.40 fails the gate closed. Default threshold derived from the
+curie-fidelity-audit-2026-05 report § 6.
+
+CURIE regex
+-----------
+
+Wave 131 replaced the original 8-prefix allowlist (sh / rdfs / owl /
+rdf / xsd / skos / dcterms / foaf) with an open ``prefix:LocalName``
+regex filtered against ``EXCLUDED_PREFIXES`` (URL schemes). The
+allowlist silently dropped ~339 distinct CURIE prefixes the corpus
+actually uses (``prov:``, ``dcat:``, ``geo:``, ``vcard:``, ``void:``,
+``wd:``, ``mus:``, plus 1086 occurrences of ``ex:`` worked examples).
+The local-name's leading ``[A-Za-z]`` anchor mathematically rejects
+``localhost:8080`` / ``10:30`` / ``8:00 AM`` (digit local names)
+without explicit exclusion. Forward-compatible with any new W3C
+vocabulary that lands in chunks.
 
 Skipped pair classes
 --------------------
@@ -43,39 +57,46 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
+from lib.ontology.template_prefixes import DETERMINISTIC_TEMPLATE_PREFIXES
 
 logger = logging.getLogger(__name__)
 
 
-# Canonical CURIE regex — restricted to a curated allowlist of W3C /
-# standard-ontology prefixes so we don't sweep up arbitrary
-# ``foo:bar`` substrings (URLs, code identifiers, etc.).
-CURIE_PREFIXES = (
-    "sh", "rdfs", "owl", "rdf", "xsd", "skos", "dcterms", "foaf",
-)
+# Wave 131: open-prefix CURIE detection. The previous 8-prefix
+# allowlist silently dropped 339 distinct CURIE prefixes the corpus
+# actually uses (prov:, dcat:, geo:, vcard:, void:, wd:, mus:, ex:
+# worked examples, etc.). The open regex requires the local-name's
+# first character to be a letter, which mathematically rejects
+# `localhost:8080`, `10:30`, `8:00 AM`, etc. URL schemes are filtered
+# via EXCLUDED_PREFIXES; everything else is treated as a CURIE.
+EXCLUDED_PREFIXES = frozenset({
+    "http", "https", "ftp", "file", "ws", "wss", "mailto", "tel",
+    "urn", "data", "blob", "about", "localhost", "javascript",
+})
 CURIE_REGEX = re.compile(
-    r"\b(?:" + "|".join(CURIE_PREFIXES) + r"):[A-Za-z][A-Za-z0-9_]*\b"
+    r"\b([A-Za-z][A-Za-z0-9_-]*):([A-Za-z][A-Za-z0-9_]*)\b"
 )
 
 DEFAULT_MIN_MEAN_RETENTION = 0.40
 LOW_RETENTION_TOP_N = 20
 
-# Deterministic generator template_id prefixes — these pairs source
-# their CURIEs from oracle-grounded manifest data, not from paraphrase
-# of chunk text, so they are out of scope for this validator.
-DETERMINISTIC_TEMPLATE_PREFIXES = (
-    "kg_metadata.",
-    "violation_detection.",
-    "abstention.",
-    "schema_translation.",
-)
-
 
 def _extract_curies(text: str) -> Set[str]:
-    """Return the set of CURIEs found in ``text``."""
+    """Return the set of CURIEs found in ``text``.
+
+    Wave 131: open-prefix detection — any ``prefix:LocalName`` pair
+    where ``prefix`` is NOT a URL scheme. Filtering via
+    ``EXCLUDED_PREFIXES`` instead of a curated allowlist keeps the
+    validator forward-compatible with new W3C vocabularies the corpus
+    might use.
+    """
     if not text:
         return set()
-    return set(CURIE_REGEX.findall(text))
+    return {
+        f"{p}:{n}"
+        for p, n in CURIE_REGEX.findall(text)
+        if p.lower() not in EXCLUDED_PREFIXES
+    }
 
 
 def _is_deterministic(template_id: str) -> bool:
