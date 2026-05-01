@@ -413,10 +413,11 @@ def _build_completion(
 
 
 # Wave 121: rotate the force-inject phrasing across pairs so the model
-# doesn't learn a single rigid suffix. The selector keys on the chunk_id
-# hash so the same chunk gets the same phrasing across runs (idempotent
-# under --seed); different chunks get different phrasings, which spreads
-# the boilerplate across the training distribution.
+# doesn't learn a single rigid suffix. Wave 135b: these phrasings are
+# the LEGACY token-stuffing path, used only when the chunk's CURIE has
+# no anchored FORM_DATA entry (degraded_placeholder OR non-manifest).
+# The PRIMARY anchored-injection path embeds an actual definition
+# sentence drawn from FORM_DATA — see ``_anchor_inject_in_instruction``.
 _PROMPT_REFERENCE_PHRASINGS: List[str] = [
     " (Reference: {tokens}.)",
     " (Relevant terms: {tokens}.)",
@@ -439,54 +440,213 @@ def _select_phrasing(phrasings: List[str], chunk_id: str) -> str:
     return phrasings[idx]
 
 
+def _chunk_id_hash_int(chunk_id: str) -> int:
+    """Stable int derived from chunk_id; passed to
+    ``resolve_anchor_text_for_curie`` so the rotation across an entry's
+    multiple definitions is deterministic per (chunk_id, curie)."""
+    return int(hashlib.sha256(chunk_id.encode("utf-8")).hexdigest(), 16)
+
+
+def _append_anchored_to_prompt(prompt: str, anchor_definition: str) -> str:
+    """Append a recall-style hook to the prompt that embeds the anchored
+    definition. Length-clamped against ``PROMPT_MAX``.
+
+    Wave 135b: replaces token-stuffing for ``"complete"`` FORM_DATA
+    entries — instead of ``"(Reference: sh:datatype.)"`` the prompt
+    now carries a brief recall sentence built around the actual
+    definition, so the trained adapter sees natural-language ↔ CURIE
+    anchoring rather than a tag-list pattern.
+    """
+    suffix = f" Recall how {anchor_definition}"
+    if not suffix.endswith("."):
+        suffix = suffix + "."
+    new_prompt = prompt.rstrip() + suffix
+    if len(new_prompt) > PROMPT_MAX:
+        budget = PROMPT_MAX - len(suffix)
+        new_prompt = prompt[:max(budget, 0)].rstrip() + suffix
+    return new_prompt
+
+
+def _append_anchored_to_completion(completion: str, anchor_definition: str) -> str:
+    """Append the full anchored definition sentence to the completion.
+
+    By construction the definition contains the CURIE literally, so
+    this both anchors the surface form AND teaches the trained adapter
+    a natural-language explanation of what the CURIE means."""
+    addition = f" {anchor_definition}".rstrip()
+    if not addition.endswith("."):
+        addition = addition + "."
+    new_completion = completion.rstrip() + addition
+    if len(new_completion) > COMPLETION_MAX:
+        budget = COMPLETION_MAX - len(addition)
+        if budget < COMPLETION_MIN:
+            new_completion = (
+                completion[:max(COMPLETION_MIN - len(addition), 0)].rstrip()
+                + addition
+            )
+        else:
+            new_completion = completion[:budget].rstrip() + addition
+    return new_completion
+
+
+def _emit_degraded_capture(
+    capture: Optional[Any],
+    *,
+    curie: str,
+    chunk_id: str,
+    side: str,
+) -> None:
+    """Wave 135b — emit a ``form_data_degraded_placeholder_skipped``
+    decision-capture event so operators see which CURIEs fell back to
+    the legacy token-stuffing path. Silently no-ops when no capture is
+    wired (factories may be invoked without one in tests / smoke runs).
+    """
+    if capture is None:
+        return
+    try:
+        capture.log_decision(
+            decision_type="form_data_degraded_placeholder_skipped",
+            decision=(
+                f"Force-injection for CURIE {curie} on chunk {chunk_id} "
+                f"({side}) fell back to legacy token-stuffing because "
+                f"the FORM_DATA entry is degraded_placeholder or absent."
+            ),
+            rationale=(
+                f"Wave 135a FORM_DATA contract: CURIE={curie} has "
+                f"either no entry or anchored_status="
+                f"'degraded_placeholder' in _RDF_SHACL_FALLBACK_FORM_DATA. "
+                f"Wave 135b's anchored-injection path requires "
+                f"anchored_status='complete' for the entry's definitions "
+                f"to be embedded in the pair body. Operator backfill of "
+                f"the entry's anchored content (definitions + "
+                f"usage_examples) flips the status to 'complete' and "
+                f"silently improves the trained adapter's anchored-"
+                f"injection coverage on chunks containing this CURIE."
+            ),
+            context=f"chunk_id={chunk_id}; curie={curie}; side={side}",
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "form_data_degraded_placeholder_skipped capture failed: %s", exc
+        )
+
+
 def _enforce_preserve_tokens_in_instruction(
-    pair: Dict[str, Any], preserve_tokens: List[str]
+    pair: Dict[str, Any],
+    preserve_tokens: List[str],
+    *,
+    capture: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    """Force-inject any ``preserve_tokens`` absent from prompt OR
-    completion side of the pair.
+    """Wave 135b — anchored force-injection.
 
-    Wave 121 (2026-04-29): two changes from the prior implementation
-    based on the smoke audit:
+    For each preserve_token missing from prompt / completion:
 
-    1. **Rotate phrasing** per chunk — the prior single-form
-       ``" Canonical terms: ..."`` / ``" (Reference: ...)"`` saturated
-       55-70%% of the smoke output. The model would learn that as a
-       rigid template. Now the suffix is selected from 4 phrasings
-       per side, keyed by chunk_id hash so it's deterministic but
-       distribution-spread.
+    1. Look up the CURIE in ``_RDF_SHACL_FALLBACK_FORM_DATA``.
+    2. If ``anchored_status="complete"``: embed an anchored definition
+       sentence (rotated across the entry's ``definitions`` list via
+       chunk_id-hash). The completion-side anchor IS the definition;
+       the prompt-side anchor is a brief "Recall how <def>." hook.
+    3. If ``anchored_status="degraded_placeholder"`` (Wave 135a stub) OR
+       the CURIE isn't in FORM_DATA at all (non-manifest CURIE that
+       Wave 135b's full-CURIE-set extension surfaced — see
+       ``synthesize_training.py``'s ``extra_anchor_tokens`` cap), fall
+       back to the legacy 4-template token-stuffing path AND emit a
+       ``form_data_degraded_placeholder_skipped`` decision-capture event
+       + ``logger.warning`` so the operator sees the degraded coverage.
 
-    2. **Skip when partial preservation succeeded** — if at least one
-       preserve_token appears on a given side via the natural path
-       (paraphrase, key_terms, etc.), trust the natural surface and
-       only inject the genuinely-missing tokens. This was the prior
-       behavior; keeping it explicit so the contract is documented.
+    Invariant: every missing CURIE is accounted for — either anchored-
+    injected (complete entry) or explicitly token-stuffed-with-warning
+    (degraded entry / non-manifest). NEVER silently token-stuffed.
 
-    Per-side idempotency, per-side length-clamping, prompt addition
-    well under the 50-char verbatim-leakage span limit.
+    Per-side idempotency, per-side length-clamping, prompt addition well
+    under the 50-char verbatim-leakage span limit.
     """
     if not preserve_tokens:
         return pair
+    # Lazy import: schema_translation_generator pulls in yaml + the full
+    # 250-pair catalog at module-load time. The factories are imported
+    # heavily by tests; keeping the FORM_DATA load behind the
+    # force-injection call means tests that don't exercise this path
+    # don't pay the import cost.
+    from Trainforge.generators.schema_translation_generator import (
+        _RDF_SHACL_FALLBACK_FORM_DATA,
+        resolve_anchor_text_for_curie,
+    )
+
     prompt = str(pair.get("prompt") or "")
     completion = str(pair.get("completion") or "")
     chunk_id = str(pair.get("chunk_id") or "")
+    chunk_hash = _chunk_id_hash_int(chunk_id) if chunk_id else 0
 
-    # Side 1: prompt — does the model see the CURIE in input position?
+    # Categorize tokens by side.
     missing_prompt = [t for t in preserve_tokens if t and t not in prompt]
-    if missing_prompt:
+    missing_completion = [t for t in preserve_tokens if t and t not in completion]
+
+    # ---- Prompt side -----------------------------------------------------
+    degraded_prompt: List[str] = []
+    for token in missing_prompt:
+        prompt_anchor, _, status = resolve_anchor_text_for_curie(
+            token, _RDF_SHACL_FALLBACK_FORM_DATA, chunk_hash,
+        )
+        if status == "anchored" and prompt_anchor:
+            new_prompt = _append_anchored_to_prompt(prompt, prompt_anchor)
+            # Only commit the anchored prompt change if the token is
+            # now actually present (defense-in-depth against a shaped
+            # definition that fails to keep the CURIE after clamp).
+            if token in new_prompt:
+                prompt = new_prompt
+                pair.setdefault("preserve_tokens_anchored_prompt", []).append(token)
+                continue
+        # Either degraded OR anchored-then-clamped-out: degraded path.
+        degraded_prompt.append(token)
+        logger.warning(
+            "Wave 135b: prompt-side anchored-injection fell back to "
+            "token-stuffing for CURIE %s on chunk %s (status=%s)",
+            token, chunk_id, status,
+        )
+        _emit_degraded_capture(
+            capture, curie=token, chunk_id=chunk_id, side="prompt",
+        )
+
+    if degraded_prompt:
+        # Legacy token-stuffing path (Wave 121).
         template = _select_phrasing(_PROMPT_REFERENCE_PHRASINGS, chunk_id)
-        prompt_add = template.format(tokens=", ".join(missing_prompt))
+        prompt_add = template.format(tokens=", ".join(degraded_prompt))
         new_prompt = prompt.rstrip() + prompt_add
         if len(new_prompt) > PROMPT_MAX:
             budget = PROMPT_MAX - len(prompt_add)
             new_prompt = prompt[:max(budget, 0)].rstrip() + prompt_add
-        pair["prompt"] = new_prompt
-        pair.setdefault("preserve_tokens_injected_prompt", []).extend(missing_prompt)
+        prompt = new_prompt
+        pair.setdefault("preserve_tokens_injected_prompt", []).extend(degraded_prompt)
+    pair["prompt"] = prompt
 
-    # Side 2: completion — does the model emit the CURIE in answer position?
-    missing_completion = [t for t in preserve_tokens if t and t not in completion]
-    if missing_completion:
+    # ---- Completion side -------------------------------------------------
+    degraded_completion: List[str] = []
+    for token in missing_completion:
+        _, completion_anchor, status = resolve_anchor_text_for_curie(
+            token, _RDF_SHACL_FALLBACK_FORM_DATA, chunk_hash,
+        )
+        if status == "anchored" and completion_anchor:
+            new_completion = _append_anchored_to_completion(
+                completion, completion_anchor,
+            )
+            if token in new_completion:
+                completion = new_completion
+                pair.setdefault("preserve_tokens_anchored", []).append(token)
+                continue
+        degraded_completion.append(token)
+        logger.warning(
+            "Wave 135b: completion-side anchored-injection fell back to "
+            "token-stuffing for CURIE %s on chunk %s (status=%s)",
+            token, chunk_id, status,
+        )
+        _emit_degraded_capture(
+            capture, curie=token, chunk_id=chunk_id, side="completion",
+        )
+
+    if degraded_completion:
         template = _select_phrasing(_COMPLETION_REFERENCE_PHRASINGS, chunk_id)
-        addition = template.format(tokens=", ".join(missing_completion))
+        addition = template.format(tokens=", ".join(degraded_completion))
         new_completion = completion.rstrip() + addition
         if len(new_completion) > COMPLETION_MAX:
             budget = COMPLETION_MAX - len(addition)
@@ -497,8 +657,10 @@ def _enforce_preserve_tokens_in_instruction(
                 )
             else:
                 new_completion = completion[:budget].rstrip() + addition
-        pair["completion"] = new_completion
-        pair.setdefault("preserve_tokens_injected", []).extend(missing_completion)
+        completion = new_completion
+        pair.setdefault("preserve_tokens_injected", []).extend(degraded_completion)
+    pair["completion"] = completion
+
     return pair
 
 
@@ -527,6 +689,7 @@ def synthesize_instruction_pair(
     *,
     paraphrase_provider: Optional[Any] = None,
     preserve_tokens: Optional[List[str]] = None,
+    capture: Optional[Any] = None,
 ) -> InstructionSynthesisResult:
     """Synthesize one instruction pair from an enriched chunk.
 
@@ -723,17 +886,17 @@ def synthesize_instruction_pair(
             else:
                 raise
 
-    # Wave 120 follow-up: force-inject preserve_tokens that don't appear
-    # verbatim anywhere in the final pair text. Two paths reach here
-    # without the literal CURIE: (1) ``provider="mock"`` (deterministic
-    # templates use slugified ``topic`` / ``concept_tags`` so colons
-    # become hyphens), and (2) paraphrase-fallback (the deterministic
-    # draft is the final pair, same problem). The post-injection sentence
-    # is short, deterministic, and appended to ``completion`` so the
-    # model learns the canonical CURIE in answer position rather than
-    # prompt position.
+    # Wave 120 -> Wave 135b: force-inject preserve_tokens missing from
+    # prompt OR completion. Wave 135b dispatches per-token on the
+    # FORM_DATA ``anchored_status`` discriminator: ``"complete"`` ->
+    # embed an actual definition sentence; ``"degraded_placeholder"`` /
+    # absent -> fall back to legacy token-stuffing AND emit a
+    # ``form_data_degraded_placeholder_skipped`` decision-capture event
+    # via ``capture`` (when supplied).
     if preserve_tokens:
-        pair = _enforce_preserve_tokens_in_instruction(pair, preserve_tokens)
+        pair = _enforce_preserve_tokens_in_instruction(
+            pair, preserve_tokens, capture=capture,
+        )
 
     rationale = (
         f"Selected template '{template_id}' for bloom='{bloom}' content_type='{content_type}' "

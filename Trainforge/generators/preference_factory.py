@@ -340,7 +340,11 @@ _NEGATION_SWAPS = [
 ]
 
 
-# Wave 121: rotated phrasings, parallel to instruction_factory.
+# Wave 121: rotated phrasings (LEGACY token-stuffing path). Wave 135b:
+# used only when the chunk's CURIE has no anchored FORM_DATA entry
+# (degraded_placeholder OR non-manifest). The PRIMARY anchored-injection
+# path embeds an actual definition sentence drawn from FORM_DATA — see
+# the dispatch in ``_enforce_preserve_tokens_in_preference``.
 _PROMPT_REFERENCE_PHRASINGS: List[str] = [
     " (Reference: {tokens}.)",
     " (Relevant terms: {tokens}.)",
@@ -363,38 +367,170 @@ def _select_phrasing(phrasings: List[str], chunk_id: str) -> str:
     return phrasings[idx]
 
 
-def _enforce_preserve_tokens_in_preference(
-    pair: Dict[str, Any], preserve_tokens: List[str]
-) -> Dict[str, Any]:
-    """Force-inject any ``preserve_tokens`` absent from prompt and
-    ``chosen`` fields. ``rejected`` is intentionally untouched so the
-    DPO misconception signal is preserved.
+def _chunk_id_hash_int(chunk_id: str) -> int:
+    return int(hashlib.sha256(chunk_id.encode("utf-8")).hexdigest(), 16)
 
-    Wave 121: rotates phrasing across 4 forms per side keyed by
-    chunk_id hash so the boilerplate doesn't saturate. Per-side
-    idempotency, per-side length-clamping.
+
+def _append_anchored_to_prompt(prompt: str, anchor_definition: str) -> str:
+    """Wave 135b — append a recall-style hook embedding the anchored
+    definition; length-clamped against ``PROMPT_MAX``."""
+    suffix = f" Recall how {anchor_definition}"
+    if not suffix.endswith("."):
+        suffix = suffix + "."
+    new_prompt = prompt.rstrip() + suffix
+    if len(new_prompt) > PROMPT_MAX:
+        budget = PROMPT_MAX - len(suffix)
+        new_prompt = prompt[:max(budget, 0)].rstrip() + suffix
+    return new_prompt
+
+
+def _append_anchored_to_chosen(chosen: str, anchor_definition: str) -> str:
+    """Wave 135b — append the full anchored definition to the chosen
+    completion; length-clamped against ``COMPLETION_MAX``."""
+    addition = f" {anchor_definition}".rstrip()
+    if not addition.endswith("."):
+        addition = addition + "."
+    new_chosen = chosen.rstrip() + addition
+    if len(new_chosen) > COMPLETION_MAX:
+        budget = COMPLETION_MAX - len(addition)
+        if budget < COMPLETION_MIN:
+            new_chosen = (
+                chosen[:max(COMPLETION_MIN - len(addition), 0)].rstrip()
+                + addition
+            )
+        else:
+            new_chosen = chosen[:budget].rstrip() + addition
+    return new_chosen
+
+
+def _emit_degraded_capture(
+    capture: Optional[Any],
+    *,
+    curie: str,
+    chunk_id: str,
+    side: str,
+) -> None:
+    """Wave 135b — mirror of the instruction-factory helper. Emits
+    ``form_data_degraded_placeholder_skipped`` when an anchored-injection
+    attempt falls back to the legacy token-stuffing path.
+    """
+    if capture is None:
+        return
+    try:
+        capture.log_decision(
+            decision_type="form_data_degraded_placeholder_skipped",
+            decision=(
+                f"Force-injection for CURIE {curie} on chunk {chunk_id} "
+                f"({side}) fell back to legacy token-stuffing because "
+                f"the FORM_DATA entry is degraded_placeholder or absent."
+            ),
+            rationale=(
+                f"Wave 135a FORM_DATA contract: CURIE={curie} has "
+                f"either no entry or anchored_status="
+                f"'degraded_placeholder' in _RDF_SHACL_FALLBACK_FORM_DATA. "
+                f"Wave 135b's anchored-injection path requires "
+                f"anchored_status='complete' for the entry's definitions "
+                f"to be embedded in the pair body. Operator backfill of "
+                f"the entry's anchored content (definitions + "
+                f"usage_examples) flips the status to 'complete' and "
+                f"silently improves the trained adapter's anchored-"
+                f"injection coverage on chunks containing this CURIE."
+            ),
+            context=f"chunk_id={chunk_id}; curie={curie}; side={side}",
+        )
+    except Exception as exc:  # pragma: no cover — defensive
+        logger.warning(
+            "form_data_degraded_placeholder_skipped capture failed: %s", exc
+        )
+
+
+def _enforce_preserve_tokens_in_preference(
+    pair: Dict[str, Any],
+    preserve_tokens: List[str],
+    *,
+    capture: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Wave 135b — anchored force-injection on prompt + ``chosen``.
+
+    Mirrors the instruction-factory dispatcher (see that module's
+    docstring for the full contract). Touches the ``rejected`` field
+    NEVER — DPO needs the misconception signal to reach the trainer
+    intact, and the rejected completion legitimately may not contain
+    the literal CURIE.
     """
     if not preserve_tokens:
         return pair
+    from Trainforge.generators.schema_translation_generator import (
+        _RDF_SHACL_FALLBACK_FORM_DATA,
+        resolve_anchor_text_for_curie,
+    )
+
     prompt = str(pair.get("prompt") or "")
     chosen = str(pair.get("chosen") or "")
     chunk_id = str(pair.get("chunk_id") or "")
+    chunk_hash = _chunk_id_hash_int(chunk_id) if chunk_id else 0
 
     missing_prompt = [t for t in preserve_tokens if t and t not in prompt]
-    if missing_prompt:
+    missing_chosen = [t for t in preserve_tokens if t and t not in chosen]
+
+    # ---- Prompt side -----------------------------------------------------
+    degraded_prompt: List[str] = []
+    for token in missing_prompt:
+        prompt_anchor, _, status = resolve_anchor_text_for_curie(
+            token, _RDF_SHACL_FALLBACK_FORM_DATA, chunk_hash,
+        )
+        if status == "anchored" and prompt_anchor:
+            new_prompt = _append_anchored_to_prompt(prompt, prompt_anchor)
+            if token in new_prompt:
+                prompt = new_prompt
+                pair.setdefault("preserve_tokens_anchored_prompt", []).append(token)
+                continue
+        degraded_prompt.append(token)
+        logger.warning(
+            "Wave 135b: prompt-side anchored-injection fell back to "
+            "token-stuffing for CURIE %s on chunk %s (status=%s)",
+            token, chunk_id, status,
+        )
+        _emit_degraded_capture(
+            capture, curie=token, chunk_id=chunk_id, side="prompt",
+        )
+
+    if degraded_prompt:
         template = _select_phrasing(_PROMPT_REFERENCE_PHRASINGS, chunk_id)
-        prompt_add = template.format(tokens=", ".join(missing_prompt))
+        prompt_add = template.format(tokens=", ".join(degraded_prompt))
         new_prompt = prompt.rstrip() + prompt_add
         if len(new_prompt) > PROMPT_MAX:
             budget = PROMPT_MAX - len(prompt_add)
             new_prompt = prompt[:max(budget, 0)].rstrip() + prompt_add
-        pair["prompt"] = new_prompt
-        pair.setdefault("preserve_tokens_injected_prompt", []).extend(missing_prompt)
+        prompt = new_prompt
+        pair.setdefault("preserve_tokens_injected_prompt", []).extend(degraded_prompt)
+    pair["prompt"] = prompt
 
-    missing_chosen = [t for t in preserve_tokens if t and t not in chosen]
-    if missing_chosen:
+    # ---- Chosen side -----------------------------------------------------
+    degraded_chosen: List[str] = []
+    for token in missing_chosen:
+        _, completion_anchor, status = resolve_anchor_text_for_curie(
+            token, _RDF_SHACL_FALLBACK_FORM_DATA, chunk_hash,
+        )
+        if status == "anchored" and completion_anchor:
+            new_chosen = _append_anchored_to_chosen(chosen, completion_anchor)
+            if token in new_chosen:
+                chosen = new_chosen
+                pair.setdefault("preserve_tokens_anchored", []).append(token)
+                continue
+        degraded_chosen.append(token)
+        logger.warning(
+            "Wave 135b: chosen-side anchored-injection fell back to "
+            "token-stuffing for CURIE %s on chunk %s (status=%s)",
+            token, chunk_id, status,
+        )
+        _emit_degraded_capture(
+            capture, curie=token, chunk_id=chunk_id, side="chosen",
+        )
+
+    if degraded_chosen:
         template = _select_phrasing(_CHOSEN_REFERENCE_PHRASINGS, chunk_id)
-        addition = template.format(tokens=", ".join(missing_chosen))
+        addition = template.format(tokens=", ".join(degraded_chosen))
         new_chosen = chosen.rstrip() + addition
         if len(new_chosen) > COMPLETION_MAX:
             budget = COMPLETION_MAX - len(addition)
@@ -405,8 +541,10 @@ def _enforce_preserve_tokens_in_preference(
                 )
             else:
                 new_chosen = chosen[:budget].rstrip() + addition
-        pair["chosen"] = new_chosen
-        pair.setdefault("preserve_tokens_injected", []).extend(missing_chosen)
+        chosen = new_chosen
+        pair.setdefault("preserve_tokens_injected", []).extend(degraded_chosen)
+    pair["chosen"] = chosen
+
     return pair
 
 
@@ -448,6 +586,7 @@ def synthesize_preference_pair(
     *,
     paraphrase_provider: Optional[Any] = None,
     preserve_tokens: Optional[List[str]] = None,
+    capture: Optional[Any] = None,
 ) -> PreferenceSynthesisResult:
     """Synthesize one preference pair from an enriched chunk.
 
@@ -680,14 +819,16 @@ def synthesize_preference_pair(
             else:
                 raise
 
-    # Wave 120 follow-up: force-inject preserve_tokens absent from the
-    # ``chosen`` field so the property-coverage gate sees the literal
-    # CURIE. Same rationale as the instruction-factory version: both
-    # the mock (deterministic) and paraphrase-fallback paths produce
-    # chosen text that uses slugified concept_tags rather than the
-    # literal CURIE. Idempotent, length-clamped.
+    # Wave 120 -> Wave 135b: force-inject preserve_tokens missing from
+    # prompt + chosen. Wave 135b dispatches per-token on the FORM_DATA
+    # ``anchored_status`` discriminator: ``"complete"`` -> embed an
+    # actual definition sentence; degraded / non-manifest -> fall back
+    # to legacy token-stuffing AND emit a
+    # ``form_data_degraded_placeholder_skipped`` decision-capture event.
     if preserve_tokens:
-        pair = _enforce_preserve_tokens_in_preference(pair, preserve_tokens)
+        pair = _enforce_preserve_tokens_in_preference(
+            pair, preserve_tokens, capture=capture,
+        )
 
     return PreferenceSynthesisResult(
         pair=pair,

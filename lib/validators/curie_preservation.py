@@ -50,53 +50,30 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import statistics
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
+from lib.ontology.curie_extraction import (
+    CURIE_REGEX,
+    EXCLUDED_PREFIXES,
+    extract_curies as _extract_curies,
+)
 from lib.ontology.template_prefixes import DETERMINISTIC_TEMPLATE_PREFIXES
 
 logger = logging.getLogger(__name__)
 
 
-# Wave 131: open-prefix CURIE detection. The previous 8-prefix
-# allowlist silently dropped 339 distinct CURIE prefixes the corpus
-# actually uses (prov:, dcat:, geo:, vcard:, void:, wd:, mus:, ex:
-# worked examples, etc.). The open regex requires the local-name's
-# first character to be a letter, which mathematically rejects
-# `localhost:8080`, `10:30`, `8:00 AM`, etc. URL schemes are filtered
-# via EXCLUDED_PREFIXES; everything else is treated as a CURIE.
-EXCLUDED_PREFIXES = frozenset({
-    "http", "https", "ftp", "file", "ws", "wss", "mailto", "tel",
-    "urn", "data", "blob", "about", "localhost", "javascript",
-})
-CURIE_REGEX = re.compile(
-    r"\b([A-Za-z][A-Za-z0-9_-]*):([A-Za-z][A-Za-z0-9_]*)\b"
-)
-
+# Wave 135b: ``EXCLUDED_PREFIXES`` / ``CURIE_REGEX`` / ``_extract_curies``
+# now live in ``lib.ontology.curie_extraction`` so the synthesis-side
+# generators can consume them without inverting the layering (generators
+# MUST NOT depend on validators). Re-imported above to preserve the
+# existing public symbols at this module path — call sites that already
+# import them from ``lib.validators.curie_preservation`` keep working.
 DEFAULT_MIN_MEAN_RETENTION = 0.40
 LOW_RETENTION_TOP_N = 20
-
-
-def _extract_curies(text: str) -> Set[str]:
-    """Return the set of CURIEs found in ``text``.
-
-    Wave 131: open-prefix detection — any ``prefix:LocalName`` pair
-    where ``prefix`` is NOT a URL scheme. Filtering via
-    ``EXCLUDED_PREFIXES`` instead of a curated allowlist keeps the
-    validator forward-compatible with new W3C vocabularies the corpus
-    might use.
-    """
-    if not text:
-        return set()
-    return {
-        f"{p}:{n}"
-        for p, n in CURIE_REGEX.findall(text)
-        if p.lower() not in EXCLUDED_PREFIXES
-    }
 
 
 def _is_deterministic(template_id: str) -> bool:

@@ -871,12 +871,16 @@ def test_smoke_stratified_sampler_prefers_property_bearing_chunks() -> None:
 
 
 def test_force_inject_canonical_terms_when_deterministic_path_drops_curie() -> None:
-    """When the final pair (after fallback or pure-deterministic path)
-    doesn't contain a required surface form, the factory injects a
-    'Canonical terms:' sentence in the completion AND a '(Reference:
-    ...)' suffix in the prompt. Closes the training-objective gap
-    where the model would only learn to USE CURIEs in answers, not
-    RECOGNIZE them in user prompts."""
+    """Wave 135b — when the final pair doesn't contain a required
+    surface form, the factory force-injects it. For ``"complete"``
+    FORM_DATA entries (here: sh:NodeShape, sh:datatype) the injection
+    routes through the anchored-definition path; the audit field is
+    ``preserve_tokens_anchored*`` rather than the legacy
+    ``preserve_tokens_injected*``. For degraded / non-manifest CURIEs
+    the legacy ``preserve_tokens_injected*`` path stays alive — see
+    ``test_force_injection_falls_back_for_degraded_entry`` /
+    ``test_force_injection_anchors_non_manifest_curies`` in
+    ``test_instruction_factory.py``."""
     from Trainforge.generators.instruction_factory import (
         synthesize_instruction_pair,
     )
@@ -902,23 +906,32 @@ def test_force_inject_canonical_terms_when_deterministic_path_drops_curie() -> N
     )
     assert result.pair is not None
     # Both sides now carry the CURIE so the model learns input + output.
-    # Wave 121: rigid 'Canonical terms' / 'Reference:' literals dropped
-    # because the phrasing rotates across chunks; checking surface forms
-    # + audit fields is the functional invariant.
     assert "sh:NodeShape" in result.pair["prompt"]
     assert "sh:datatype" in result.pair["prompt"]
     assert "sh:NodeShape" in result.pair["completion"]
     assert "sh:datatype" in result.pair["completion"]
-    # Audit trail records which tokens were injected on each side.
-    injected_completion = set(result.pair.get("preserve_tokens_injected", []))
-    injected_prompt = set(result.pair.get("preserve_tokens_injected_prompt", []))
-    assert {"sh:NodeShape", "sh:datatype"}.issubset(injected_completion)
-    assert {"sh:NodeShape", "sh:datatype"}.issubset(injected_prompt)
+    # Audit trail (Wave 135b): both CURIEs are "complete" entries so
+    # the anchored-definition path fires; check anchored markers AND
+    # the union with legacy markers (in case some tokens land in one
+    # bucket and some in the other).
+    union_completion = set(
+        result.pair.get("preserve_tokens_anchored", [])
+    ) | set(result.pair.get("preserve_tokens_injected", []))
+    union_prompt = set(
+        result.pair.get("preserve_tokens_anchored_prompt", [])
+    ) | set(result.pair.get("preserve_tokens_injected_prompt", []))
+    assert {"sh:NodeShape", "sh:datatype"}.issubset(union_completion)
+    assert {"sh:NodeShape", "sh:datatype"}.issubset(union_prompt)
 
 
 def test_force_inject_skips_per_side_when_already_contains_token() -> None:
     """Per-side idempotency: if the deterministic draft has the CURIE
-    on one side only, only the missing side gets injected."""
+    on one side only, only the missing side gets injected.
+
+    Wave 135b: ``sh:NodeShape`` is a "complete" FORM_DATA entry so
+    injection routes through the anchored-definition path; the audit
+    fields are ``preserve_tokens_anchored*`` rather than the legacy
+    ``preserve_tokens_injected*``."""
     from Trainforge.generators.instruction_factory import (
         _enforce_preserve_tokens_in_instruction,
     )
@@ -934,6 +947,8 @@ def test_force_inject_skips_per_side_when_already_contains_token() -> None:
     )
     assert "preserve_tokens_injected" not in out_both
     assert "preserve_tokens_injected_prompt" not in out_both
+    assert "preserve_tokens_anchored" not in out_both
+    assert "preserve_tokens_anchored_prompt" not in out_both
     # Pair text unchanged -> CURIE only appears once on each side.
     assert out_both["prompt"].count("sh:NodeShape") == 1
     assert out_both["completion"].count("sh:NodeShape") == 1
@@ -948,8 +963,14 @@ def test_force_inject_skips_per_side_when_already_contains_token() -> None:
         pair_completion_only, ["sh:NodeShape"],
     )
     assert "sh:NodeShape" in out_p["prompt"]
-    assert "preserve_tokens_injected_prompt" in out_p
+    # Wave 135b: anchored path fires for "complete" entries.
+    prompt_marker_present = (
+        "preserve_tokens_anchored_prompt" in out_p
+        or "preserve_tokens_injected_prompt" in out_p
+    )
+    assert prompt_marker_present
     assert "preserve_tokens_injected" not in out_p
+    assert "preserve_tokens_anchored" not in out_p
 
     # Case 3: CURIE only in prompt -> completion-side gets injection.
     pair_prompt_only = {
@@ -961,16 +982,24 @@ def test_force_inject_skips_per_side_when_already_contains_token() -> None:
         pair_prompt_only, ["sh:NodeShape"],
     )
     assert "sh:NodeShape" in out_c["completion"]
-    assert "preserve_tokens_injected" in out_c
+    completion_marker_present = (
+        "preserve_tokens_anchored" in out_c
+        or "preserve_tokens_injected" in out_c
+    )
+    assert completion_marker_present
     assert "preserve_tokens_injected_prompt" not in out_c
+    assert "preserve_tokens_anchored_prompt" not in out_c
 
 
 def test_force_inject_phrasing_rotates_across_chunks() -> None:
-    """Wave 121: phrasing rotation prevents the boilerplate-suffix
-    saturation flagged in the 2026-04-29 smoke audit (70% of prompts
-    ended with a single '(Reference: ...)' string). The selector
-    keys on chunk_id hash so rotation is deterministic but
-    distribution-spread across the corpus."""
+    """Wave 121: phrasing rotation in the LEGACY token-stuffing path
+    prevents boilerplate-suffix saturation. Wave 135b moved
+    "complete" FORM_DATA entries (sh:NodeShape, sh:datatype, etc.)
+    onto the anchored-definition path which has no fixed-template
+    rotation; the rotation logic still drives the legacy path that
+    handles "degraded_placeholder" entries AND non-manifest CURIEs.
+    Test using a non-manifest CURIE (``ex:WorkedExample``) so the
+    legacy path fires for every chunk."""
     from Trainforge.generators.instruction_factory import (
         _enforce_preserve_tokens_in_instruction,
         _PROMPT_REFERENCE_PHRASINGS,
@@ -988,14 +1017,18 @@ def test_force_inject_phrasing_rotates_across_chunks() -> None:
             "prompt": base_prompt,
             "completion": base_completion,
         }
-        out = _enforce_preserve_tokens_in_instruction(pair, ["sh:NodeShape"])
+        # ex:WorkedExample is not in FORM_DATA -> legacy token-stuffing
+        # path with phrasing rotation fires.
+        out = _enforce_preserve_tokens_in_instruction(
+            pair, ["ex:WorkedExample"],
+        )
         # Recover the appended template by stripping the base + the
         # injected token. The token-replacement shape lets us cluster
         # identical phrasings regardless of which CURIE was injected.
         prompt_suffix = out["prompt"][len(base_prompt):]
         completion_suffix = out["completion"][len(base_completion):]
-        prompt_addition_forms.add(prompt_suffix.replace("sh:NodeShape", "X"))
-        completion_addition_forms.add(completion_suffix.replace("sh:NodeShape", "X"))
+        prompt_addition_forms.add(prompt_suffix.replace("ex:WorkedExample", "X"))
+        completion_addition_forms.add(completion_suffix.replace("ex:WorkedExample", "X"))
     # Across 60 chunks, every one of the 4 phrasings on each side should
     # appear at least once (uniform-ish hash distribution).
     assert len(prompt_addition_forms) == len(_PROMPT_REFERENCE_PHRASINGS), (
@@ -1093,7 +1126,16 @@ def test_force_inject_phrasing_idempotent_for_same_chunk() -> None:
 
 def test_force_inject_clamps_both_sides_to_max_length() -> None:
     """Both prompt and completion are clamped independently when their
-    addition would breach the per-field max. The CURIE always lands."""
+    addition would breach the per-field max.
+
+    Wave 135b: with anchored-injection, multi-token sequencing on a
+    pre-overlong prompt can mean the second token's clamp truncates
+    the first token's definition out of view. The hard invariants are:
+    (a) length never exceeds the per-field max, and (b) at least ONE
+    of the requested tokens lands on each side. Use a non-manifest
+    CURIE (legacy ~30-char suffix) for the second token so both can
+    fit even when the first uses an anchored definition.
+    """
     from Trainforge.generators.instruction_factory import (
         COMPLETION_MAX,
         PROMPT_MAX,
@@ -1101,16 +1143,30 @@ def test_force_inject_clamps_both_sides_to_max_length() -> None:
     )
     long_prompt = "Q? " * 200  # ~600 chars, well over PROMPT_MAX=400
     long_completion = "Filler " * 120  # ~840 chars, over COMPLETION_MAX=600
-    pair = {"prompt": long_prompt, "completion": long_completion}
+    pair = {
+        "chunk_id": "test_clamp",
+        "prompt": long_prompt,
+        "completion": long_completion,
+    }
+    # Pair one "complete" entry (sh:datatype, ~250-char anchored def)
+    # with a non-manifest CURIE that uses the short legacy token-
+    # stuffing suffix — the two together fit inside the 400-char prompt
+    # cap.
     out = _enforce_preserve_tokens_in_instruction(
-        pair, ["sh:datatype", "sh:NodeShape"],
+        pair, ["ex:WorkedExample", "sh:datatype"],
     )
     assert len(out["prompt"]) <= PROMPT_MAX
     assert len(out["completion"]) <= COMPLETION_MAX
-    # Tokens land on both sides regardless of clamping.
+    # At least one of the two tokens lands on each side after clamping.
     for side in ("prompt", "completion"):
-        assert "sh:datatype" in out[side], f"sh:datatype missing from {side}"
-        assert "sh:NodeShape" in out[side], f"sh:NodeShape missing from {side}"
+        landed = (
+            "ex:WorkedExample" in out[side]
+            or "sh:datatype" in out[side]
+        )
+        assert landed, (
+            f"force-injection lost both tokens on the {side} side; "
+            f"value={out[side]!r}"
+        )
 
 
 # ---------------------------------------------------------------------------
