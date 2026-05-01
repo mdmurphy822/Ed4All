@@ -82,6 +82,22 @@ ENV_API_KEY = "LOCAL_SYNTHESIS_API_KEY"
 DEFAULT_TIMEOUT = 60.0
 
 
+# Wave 134: soft preservation contract. Wave 130a expanded the
+# RDF/SHACL property manifest from 6 to 40 CURIEs, which raised the
+# per-chunk ``preserve_tokens`` count to mean 3.58 / median 3 / max 17
+# on rdf-shacl-551-2. The Wave 120 ``_missing_preserve_tokens`` gate
+# required ALL preserve_tokens to appear verbatim in the paraphrase;
+# 14B-Q4 (and especially 7B-Q4) can't satisfy a strict 100% contract
+# on chunks with 8+ tokens, so a 2026-05-01 smoke run on the hardened
+# pipeline saw ~50% first-attempt fallback rate even with retry=10.
+# Soft-floor at 0.80 (i.e. tolerate up to 20% verbatim loss per pair)
+# matches the Wave 130b ``curie_preservation`` corpus-level gate
+# (``min_mean_retention=0.40``) without making the per-call contract
+# un-satisfiable. Operators can override via ``min_preserve_rate=``
+# on the constructor; setting to 1.0 restores Wave 120's strict gate.
+DEFAULT_MIN_PRESERVE_RATE = 0.80
+
+
 # Wave 114: local-class kind bounds — initially lowered the 40-char
 # prompt floor inherited from ``_anthropic_provider.py::_KIND_BOUNDS``
 # to 25 to accommodate 7B-Q4 paraphrase compression.
@@ -162,6 +178,7 @@ class LocalSynthesisProvider:
         max_tokens: int = 800,
         kind_bounds: Optional[Dict[str, tuple]] = None,
         max_parse_retries: Optional[int] = None,
+        min_preserve_rate: Optional[float] = None,
     ) -> None:
         # API-key resolution. Local servers usually ignore auth; we
         # accept absence and substitute a stable placeholder so reverse
@@ -197,6 +214,19 @@ class LocalSynthesisProvider:
             if max_parse_retries is not None
             else MAX_PARSE_RETRIES
         )
+        # Wave 134: soft preservation contract — fraction of
+        # ``preserve_tokens`` that must appear verbatim per call. Default
+        # 0.80 (tolerate 20% loss). 1.0 restores Wave 120's strict gate.
+        self._min_preserve_rate = (
+            float(min_preserve_rate)
+            if min_preserve_rate is not None
+            else DEFAULT_MIN_PRESERVE_RATE
+        )
+        if not 0.0 <= self._min_preserve_rate <= 1.0:
+            raise ValueError(
+                f"min_preserve_rate must be in [0.0, 1.0], "
+                f"got {self._min_preserve_rate}"
+            )
 
         # Composition: build the LLM-agnostic client. Same client class
         # the Together provider composes — only the configuration
@@ -449,20 +479,43 @@ class LocalSynthesisProvider:
             missing_tokens = self._missing_preserve_tokens(
                 parsed, preserve_tokens or [], preserve_in_keys,
             )
-            if missing_tokens:
-                last_err = (
-                    f"surface forms missing from {list(preserve_in_keys)}: "
-                    f"{missing_tokens}"
+            # Wave 134: soft preservation contract. Compute the actual
+            # preservation rate vs. the configured floor; only retry +
+            # fall back when the rate falls BELOW the floor. The
+            # remediation hint still lists the specific missing tokens so
+            # the model has the best chance of also recovering them on
+            # retry, but the gate accepts the result early if enough
+            # tokens (default ≥80%) survived the paraphrase.
+            preserve_token_count = len(preserve_tokens or [])
+            if preserve_token_count > 0 and missing_tokens:
+                preserved_rate = (
+                    preserve_token_count - len(missing_tokens)
+                ) / preserve_token_count
+                if preserved_rate < self._min_preserve_rate:
+                    last_err = (
+                        f"surface forms missing from {list(preserve_in_keys)}: "
+                        f"{missing_tokens} "
+                        f"(preserved {preserved_rate:.2f} < floor "
+                        f"{self._min_preserve_rate:.2f})"
+                    )
+                    logger.warning(
+                        "%s synthesis: preserve-retry %d/%d: %s",
+                        self._provider_name, attempts, retry_budget,
+                        last_err,
+                    )
+                    messages = self._append_preserve_remediation(
+                        messages, missing_tokens, preserve_in_keys,
+                    )
+                    continue
+                # rate >= floor: accept with a debug log so postmortem
+                # audits can correlate per-pair partial-preservation
+                # against retention metrics.
+                logger.debug(
+                    "%s synthesis: soft-accept (rate %.2f >= floor %.2f); "
+                    "tokens dropped: %s",
+                    self._provider_name, preserved_rate,
+                    self._min_preserve_rate, missing_tokens,
                 )
-                logger.warning(
-                    "%s synthesis: preserve-retry %d/%d: %s",
-                    self._provider_name, attempts, retry_budget,
-                    last_err,
-                )
-                messages = self._append_preserve_remediation(
-                    messages, missing_tokens, preserve_in_keys,
-                )
-                continue
             return parsed, last_usage, total_http_retries
         # Wave 120: distinguish preservation failure so the caller can
         # fall back to the deterministic draft instead of dropping the
