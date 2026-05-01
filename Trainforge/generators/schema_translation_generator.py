@@ -1652,6 +1652,44 @@ _PLACEHOLDER_LEAK_TOKENS: Tuple[str, ...] = (
     "not yet authored",
 )
 
+# Wave 137a — content-quality rule constants
+
+# Rule 1: per-entry pairwise definitions diversity (Jaccard).
+# Calibrated against the 6 ground-truth complete entries: max
+# pairwise observed 0.379 (sh:NodeShape); 0.45 floor sits ~0.07
+# above worst, blocks thesaurus-cloned siblings (typically 0.55-0.85).
+_DIVERSITY_JACCARD_MAX = 0.45
+
+# Rule 3: anchor-verb capacity allowlists (calibrated against 6
+# ground-truth entries' definitions and usage_examples; scoped
+# explicitly to those two categories — comparison_targets and
+# pitfalls in the ground truth use ;-separated parallel constructions
+# and rhetorical Q-side framing that don't match the verb allowlist).
+_DEF_ANCHOR_VERBS = frozenset({
+    "defines", "describes", "restricts", "requires", "validates", "targets",
+    "constrains", "specifies", "applies", "indicates", "compares", "differs",
+    "is", "are", "says", "asserts", "admits", "rejects", "carries", "expects",
+    "operates", "propagates", "works", "accepts", "means", "denotes", "wires",
+    "enforces", "enables", "holds", "states", "declares", "marks", "lives", "fires",
+})
+_USAGE_ACTION_VERBS = frozenset({
+    "applies", "uses", "enforces", "declares", "binds", "evaluates", "conforms",
+    "fails", "passes", "requires", "restricts", "admits", "rejects", "adds",
+    "combines", "validates", "catches", "demonstrates", "shows", "writes",
+    "use", "show", "demonstrate", "apply", "combine", "give", "express", "reuse",
+})
+
+
+def _word_anchor_re(allowlist: frozenset) -> re.Pattern:
+    return re.compile(
+        r"\b(" + "|".join(re.escape(v) for v in sorted(allowlist)) + r")\b",
+        re.IGNORECASE,
+    )
+
+
+_DEF_ANCHOR_RE = _word_anchor_re(_DEF_ANCHOR_VERBS)
+_USAGE_ANCHOR_RE = _word_anchor_re(_USAGE_ACTION_VERBS)
+
 # Wave 136b: extracts CURIE-shaped tokens (``prefix:LocalName``) from a
 # definition string for the WRONG_CURIE_ONLY_MENTION rule.
 _CURIE_TOKEN_RE = re.compile(r"\b[a-z]+:[A-Za-z][A-Za-z0-9_]*")
@@ -1720,6 +1758,11 @@ def validate_form_data_contract(
         PROMPT_MAX,
         PROMPT_MIN,
     )
+    # Wave 137a: Jaccard helper for Rule 1 (diversity gate). Reuses
+    # the canonical tokenizer + Jaccard implementation already in use
+    # by the eval pipeline so this validator and key-term-precision
+    # eval share one tokenization contract.
+    from Trainforge.eval.key_term_precision import _jaccard, _tokenize
 
     manifest_set = list(manifest_curies)
     manifest_curie_set = set(manifest_set)
@@ -1941,6 +1984,53 @@ def validate_form_data_contract(
                     ),
                 }
             )
+
+        # Wave 137a Rule 1: pairwise definitions diversity.
+        if len(entry.definitions) >= 2:
+            max_sim = 0.0
+            max_pair = (0, 0)
+            tokenized = [_tokenize(d) for d in entry.definitions]
+            for i in range(len(entry.definitions)):
+                for j in range(i + 1, len(entry.definitions)):
+                    sim = _jaccard(tokenized[i], tokenized[j])
+                    if sim > max_sim:
+                        max_sim = sim
+                        max_pair = (i, j)
+            if max_sim > _DIVERSITY_JACCARD_MAX:
+                content_violations.append({
+                    "curie": curie,
+                    "code": "LOW_DIVERSITY_DEFINITIONS",
+                    "detail": (
+                        f"definitions[{max_pair[0]}] vs definitions[{max_pair[1]}] "
+                        f"Jaccard {max_sim:.3f} > {_DIVERSITY_JACCARD_MAX}"
+                    ),
+                })
+
+        # Wave 137a Rule 3: anchor-verb capacity (entry-level, scoped).
+        if entry.definitions and not any(
+            _DEF_ANCHOR_RE.search(d) for d in entry.definitions
+        ):
+            sample = sorted(_DEF_ANCHOR_VERBS)[:8]
+            content_violations.append({
+                "curie": curie,
+                "code": "MISSING_ANCHOR_VERB_DEFINITION",
+                "detail": (
+                    f"no definition contains a verb from anchor allowlist "
+                    f"(need one of: {sample}, ...)"
+                ),
+            })
+        if entry.usage_examples and not any(
+            _USAGE_ANCHOR_RE.search(answer) for _, answer in entry.usage_examples
+        ):
+            sample = sorted(_USAGE_ACTION_VERBS)[:8]
+            content_violations.append({
+                "curie": curie,
+                "code": "MISSING_ANCHOR_VERB_USAGE",
+                "detail": (
+                    f"no usage_example answer contains an action verb "
+                    f"(need one of: {sample}, ...)"
+                ),
+            })
 
     # Wave 136b: warning rule — OVERLAY_LOAD_REGRESSION.
     # Surfaces the complete -> degraded_placeholder transition Wave
