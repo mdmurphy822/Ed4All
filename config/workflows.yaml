@@ -1138,6 +1138,20 @@ workflows:
               on_fail: block
               on_error: fail_closed
 
+          # Wave 137b: cross-CURIE coupling. Reads the post-overlay
+          # FORM_DATA dict + family_map.<family>.yaml; fails closed
+          # when any family is partially complete (mixed complete +
+          # degraded entries) so asymmetric anchoring can't reach the
+          # adapter.
+          - gate_id: family_completeness
+            validator: lib.validators.family_completeness.FamilyCompletenessValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+
 # Default settings applied to all workflows
 defaults:
   task_timeout_minutes: 60
