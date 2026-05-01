@@ -12,16 +12,23 @@ from lib.ontology.property_manifest import (
 )
 
 
-def test_load_rdf_shacl_manifest_returns_six_properties() -> None:
+def test_load_rdf_shacl_manifest_returns_expanded_properties() -> None:
+    """Wave 130a expanded the manifest 6 -> 40 CURIEs to close the
+    manifest-scope gap surfaced in plans/curie-fidelity-audit-2026-05.
+    Asserts the 6 Wave 109 anchors remain present and the count matches
+    the audit-recommended size."""
     manifest = load_property_manifest("rdf-shacl-551-2")
     assert isinstance(manifest, PropertyManifest)
     assert manifest.family == "rdf_shacl"
-    assert len(manifest.properties) == 6
+    assert len(manifest.properties) == 40
     ids = {p.id for p in manifest.properties}
-    assert ids == {
+    # Wave 109 anchor CURIEs must remain present.
+    assert {
         "sh_datatype", "sh_class", "sh_nodeshape",
         "sh_propertyshape", "rdfs_subclassof", "owl_sameas",
-    }
+    } <= ids
+    # A sampling of the Wave 130a additions must be present.
+    assert {"sh_mincount", "sh_path", "rdf_type", "foaf_person"} <= ids
 
 
 def test_property_entry_match_text_against_surface_forms() -> None:
