@@ -1690,6 +1690,151 @@ def _word_anchor_re(allowlist: frozenset) -> re.Pattern:
 _DEF_ANCHOR_RE = _word_anchor_re(_DEF_ANCHOR_VERBS)
 _USAGE_ANCHOR_RE = _word_anchor_re(_USAGE_ACTION_VERBS)
 
+# Wave 137a Rule 2: style consistency score thresholds + signal regexes.
+#
+# CALIBRATION FINDING: brief proposed `_STYLE_CONSISTENCY_MIN = 0.85`
+# with a "ground truth all >=0.95" claim. Empirical probe of the 6
+# pre-Wave-135a complete entries:
+#     sh:datatype       1.00
+#     sh:class          0.80   <-- below 0.85
+#     sh:NodeShape      1.00
+#     sh:PropertyShape  1.00
+#     rdfs:subClassOf   1.00
+#     owl:sameAs        1.00
+# sh:class definition #6 contains "If you've ever written..." which
+# trips the conversational-phrase signal (the brief's regex includes
+# `you've`); its present-tense ratio also lands at 5/7 = 71% (below
+# 80%). Threshold floored to 0.80 so the gold set passes; ~0.05 above
+# worst observed gold-set score. Calibration sibling-pattern matches
+# Rule 1's "worst+0.05" floor.
+_STYLE_CONSISTENCY_MIN = 0.80
+_HEDGE_TOKENS = frozenset({
+    "may", "might", "often", "typically", "usually", "sometimes", "likely",
+})
+_PRESENT_TENSE_DECLARATIVE_RE = re.compile(
+    r"\b(is|are|defines?|describes?|constrains?|requires?|admits|rejects|"
+    r"carries|operates|propagates|works|targets|specifies|asserts|denotes|"
+    r"wires|holds|states|declares|marks|lives|fires)\b",
+    re.IGNORECASE,
+)
+# Calibrated against ground-truth: must NOT match bare "you need" (pedagogical,
+# not chatty). Restrict to second-person imperatives + first-person collectives.
+_CONVERSATIONAL_RE = re.compile(
+    r"\b(you can|you should|you'll|you've|you're|"
+    r"let's|we'll|we've|we're|we'll see|"
+    r"i think|i'd say|"
+    r"feel free|hope this helps)\b",
+    re.IGNORECASE,
+)
+
+
+def _compute_style_score(entry: "SurfaceFormData") -> Tuple[float, List[str]]:
+    """Wave 137a Rule 2: weighted entry-level style score in [0, 1].
+
+    Returns ``(score, list_of_failing_signal_names)``.
+
+    Aggregates 9 signals at fixed weights (sum to 1.0):
+      * +0.15 — primary CURIE appears in every definition
+      * +0.10 — every definition's length lies in [50, 400]
+      * +0.15 — at least one definition contains an anchor verb
+      * +0.15 — at least one usage answer contains an action verb
+      * +0.10 — present-tense declarative dominant (>=80% of defs)
+      * +0.10 — no conversational phrasing in definitions
+      * +0.05 — no Wave 121 suffix-template prefix in definitions
+      * +0.10 — no excessive hedging (hedge tokens < 2 in defs)
+      * +0.10 — no repeated openings (first 4 words of each def unique)
+
+    Calibrated against 6 ground-truth complete entries — sh:class lands
+    at 0.80 because it carries "If you've ever written..." (conversational
+    you've) and a present-tense ratio of 5/7. The other 5 entries score
+    1.00. Threshold ``_STYLE_CONSISTENCY_MIN`` is calibrated to 0.80 so
+    the gold set passes.
+    """
+    from collections import Counter
+
+    failed: List[str] = []
+    score = 0.0
+
+    # +0.15 — primary CURIE in every definition
+    if entry.definitions and all(entry.curie in d for d in entry.definitions):
+        score += 0.15
+    else:
+        failed.append("curie_in_every_def")
+
+    # +0.10 — each def length in [50, 400]
+    if entry.definitions and all(
+        50 <= len(d) <= 400 for d in entry.definitions
+    ):
+        score += 0.10
+    else:
+        failed.append("def_length_bounds")
+
+    # +0.15 — entry has >=1 anchor verb in defs
+    if entry.definitions and any(
+        _DEF_ANCHOR_RE.search(d) for d in entry.definitions
+    ):
+        score += 0.15
+    else:
+        failed.append("def_anchor_verb")
+
+    # +0.15 — entry has >=1 action verb in usage answers
+    if entry.usage_examples and any(
+        _USAGE_ANCHOR_RE.search(a) for _, a in entry.usage_examples
+    ):
+        score += 0.15
+    else:
+        failed.append("usage_action_verb")
+
+    # +0.10 — present-tense declarative dominant (>=80% of defs)
+    if entry.definitions:
+        hits = sum(
+            1 for d in entry.definitions
+            if _PRESENT_TENSE_DECLARATIVE_RE.search(d)
+        )
+        if hits / len(entry.definitions) >= 0.80:
+            score += 0.10
+        else:
+            failed.append("present_tense_dominant")
+    else:
+        failed.append("no_definitions")
+
+    # +0.10 — no conversational phrasing in defs
+    if not any(_CONVERSATIONAL_RE.search(d) for d in entry.definitions):
+        score += 0.10
+    else:
+        failed.append("no_conversational")
+
+    # +0.05 — no suffix-template leak (already critical in Wave 136b;
+    # included as positive signal for the aggregate score).
+    if not any(_OLD_SUFFIX_TEMPLATE_RE.match(d) for d in entry.definitions):
+        score += 0.05
+    else:
+        failed.append("no_suffix_template")
+
+    # +0.10 — no excessive hedging in defs
+    hedge_count = sum(
+        sum(
+            1 for tok in d.lower().split()
+            if tok.strip(".,;:!?") in _HEDGE_TOKENS
+        )
+        for d in entry.definitions
+    )
+    if hedge_count < 2:
+        score += 0.10
+    else:
+        failed.append("excessive_hedging")
+
+    # +0.10 — no repeated openings (first-4-words across defs unique)
+    openings = Counter(
+        tuple(d.lower().split()[:4]) for d in entry.definitions if d
+    )
+    if openings and all(c == 1 for c in openings.values()):
+        score += 0.10
+    else:
+        failed.append("repeated_openings")
+
+    return (score, failed)
+
 # Wave 136b: extracts CURIE-shaped tokens (``prefix:LocalName``) from a
 # definition string for the WRONG_CURIE_ONLY_MENTION rule.
 _CURIE_TOKEN_RE = re.compile(r"\b[a-z]+:[A-Za-z][A-Za-z0-9_]*")
@@ -1800,6 +1945,10 @@ def validate_form_data_contract(
     # (their stub strings violate length bounds and contain "[degraded:"
     # by construction).
     content_violations: List[Dict[str, str]] = []
+    # Wave 137a Rule 2: style-consistency warnings collected per-entry
+    # in the same loop as the critical rules; merged into warnings_list
+    # at the validator's return.
+    wave_137a_style_warnings: List[Dict[str, str]] = []
 
     for curie, entry in form_data.items():
         if entry.anchored_status != "complete":
@@ -2032,6 +2181,22 @@ def validate_form_data_contract(
                 ),
             })
 
+        # Wave 137a Rule 2: style consistency (warning-severity).
+        # Aggregates 9 signals; warning fires below threshold. Distinct
+        # from Rule 1 (diversity) + Rule 3 (anchor verbs) — those rules
+        # are critical because they catch single hard failure modes;
+        # Rule 2 is the soft holistic style sentinel.
+        style_score, style_failed = _compute_style_score(entry)
+        if style_score < _STYLE_CONSISTENCY_MIN:
+            wave_137a_style_warnings.append({
+                "curie": curie,
+                "code": "STYLE_CONSISTENCY_BELOW_THRESHOLD",
+                "detail": (
+                    f"score={style_score:.2f} < {_STYLE_CONSISTENCY_MIN}; "
+                    f"failing signals: {style_failed}"
+                ),
+            })
+
     # Wave 136b: warning rule — OVERLAY_LOAD_REGRESSION.
     # Surfaces the complete -> degraded_placeholder transition Wave
     # 136a's loader logger.warning's. Visibility-only (non-blocking).
@@ -2055,6 +2220,12 @@ def validate_form_data_contract(
                         ),
                     }
                 )
+
+    # Wave 137a Rule 2: merge style-consistency warnings collected
+    # in the per-entry loop above. Distinct from OVERLAY_LOAD_REGRESSION
+    # — both are non-blocking, but Rule 2 covers entry style drift while
+    # OVERLAY surfaces structural regressions.
+    warnings_list.extend(wave_137a_style_warnings)
 
     passed = (
         not missing
