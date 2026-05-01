@@ -1690,6 +1690,15 @@ def _word_anchor_re(allowlist: frozenset) -> re.Pattern:
 _DEF_ANCHOR_RE = _word_anchor_re(_DEF_ANCHOR_VERBS)
 _USAGE_ANCHOR_RE = _word_anchor_re(_USAGE_ACTION_VERBS)
 
+# Wave 137a Rule 4: provenance presence (depends on Wave 137c-1 schema field).
+_PROVENANCE_REQUIRED_KEYS = (
+    "provider",
+    "generated_by",
+    "reviewed_by",
+    "prompt_version",
+    "timestamp",
+)
+
 # Wave 137a Rule 2: style consistency score thresholds + signal regexes.
 #
 # CALIBRATION FINDING: brief proposed `_STYLE_CONSISTENCY_MIN = 0.85`
@@ -2180,6 +2189,47 @@ def validate_form_data_contract(
                     f"(need one of: {sample}, ...)"
                 ),
             })
+
+        # Wave 137a Rule 4: provenance presence (complete entries MUST
+        # carry an operator/Codex/Qwen attribution + ToS audit trail).
+        # Closes the Wave 137 contract: every complete FORM_DATA entry
+        # carries provenance metadata. Wave 137c-2 sets reviewed_by to
+        # "PENDING_REVIEW" as a sentinel that operators must replace
+        # before commit; this rule rejects the sentinel.
+        prov = getattr(entry, "provenance", None)
+        if prov is None:
+            content_violations.append({
+                "curie": curie,
+                "code": "MISSING_PROVENANCE",
+                "detail": (
+                    "complete entry has no provenance field — Wave 137c "
+                    "contract requires one"
+                ),
+            })
+        else:
+            missing_keys: List[str] = []
+            empty_keys: List[str] = []
+            for key in _PROVENANCE_REQUIRED_KEYS:
+                val = getattr(prov, key, None)
+                if val is None:
+                    missing_keys.append(key)
+                elif not (isinstance(val, str) and val.strip()):
+                    empty_keys.append(key)
+            # Sentinel placeholder check: reviewed_by MUST NOT be
+            # PENDING_REVIEW.
+            if getattr(prov, "reviewed_by", "") == "PENDING_REVIEW":
+                empty_keys.append(
+                    "reviewed_by (PENDING_REVIEW sentinel — operator "
+                    "must replace)"
+                )
+            if missing_keys or empty_keys:
+                content_violations.append({
+                    "curie": curie,
+                    "code": "INCOMPLETE_PROVENANCE",
+                    "detail": (
+                        f"missing: {missing_keys}; empty/sentinel: {empty_keys}"
+                    ),
+                })
 
         # Wave 137a Rule 2: style consistency (warning-severity).
         # Aggregates 9 signals; warning fires below threshold. Distinct
