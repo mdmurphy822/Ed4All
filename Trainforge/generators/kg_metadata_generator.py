@@ -56,23 +56,19 @@ logger = logging.getLogger(__name__)
 
 
 # Relation -> (positive template, negative template).
-# Mirrors the wording of `Trainforge/eval/faithfulness.py::_RELATION_TEMPLATES`
-# so a model trained on these pairs sees the same surface form at
-# eval time. Keeping the wording bytewise-aligned is load-bearing.
-_RELATION_TEMPLATES: Dict[str, Tuple[str, str]] = {
-    "assesses": (
-        "Does the chunk '{source}' assess the concept '{target}'?",
-        "Does the chunk '{source}' assess the concept '{target}'?",
-    ),
-    "belongs_to_module": (
-        "Does the chunk '{source}' belong to the module '{target}'?",
-        "Does the chunk '{source}' belong to the module '{target}'?",
-    ),
-    "at_bloom_level": (
-        "Is the chunk '{source}' at Bloom level '{target}'?",
-        "Is the chunk '{source}' at Bloom level '{target}'?",
-    ),
-}
+# Wave 132a: imported from `lib.ontology.relation_templates.RELATION_TEMPLATES`
+# so the wording stays bytewise-aligned with the eval-side
+# `Trainforge/eval/faithfulness.py::_RELATION_TEMPLATES`. Drift between
+# train + eval would desync the adapter's training signal from the eval
+# probe — the canonical map is the single source of truth.
+#
+# Pre-Wave-132a this module hand-defined three relations (assesses,
+# belongs_to_module, at_bloom_level); the `assesses` wording had drifted
+# vs faithfulness ("chunk" vs "assessment"). The canonical map carries
+# the eval-aligned wording for all 12 relations, so any future relation
+# the generator encounters in pedagogy_graph.json picks up the eval
+# template automatically.
+from lib.ontology.relation_templates import RELATION_TEMPLATES as _RELATION_TEMPLATES
 
 _GENERIC_TEMPLATE = (
     "Is the following statement true: '{source}' -[{rel}]-> '{target}'?"
