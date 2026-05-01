@@ -74,6 +74,7 @@ import logging
 import re
 import sys
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Tuple
 
@@ -146,6 +147,23 @@ _DEGRADED_USAGE_COMPLETION_STUB = (
 )
 
 
+@dataclass(frozen=True)
+class Provenance:
+    """Wave 137c — operator/Codex/Qwen attribution + ToS audit trail.
+
+    Required for anchored_status="complete" entries (Plan A's validator
+    enforces). Optional for "degraded_placeholder" entries (no content
+    yet to attribute).
+    """
+
+    provider: str          # qwen_local_14b_q4 / together_llama33_70b / operator_hand_curated
+    generated_by: str      # draft_form_data_entry v1.0 / operator
+    reviewed_by: str       # @mdmurphy822 / AUTOMATED / PENDING_REVIEW
+    prompt_version: str    # wave-136c-v1.0 (only meaningful for Qwen-drafted)
+    timestamp: str         # ISO-8601
+    notes: Optional[str] = None
+
+
 @dataclass
 class SurfaceFormData:
     """Hand-curated data for one CURIE.
@@ -184,6 +202,12 @@ class SurfaceFormData:
     # Wave 135a: discriminator. Default "complete" preserves the
     # six pre-Wave-135a entries' shape without reauthoring.
     anchored_status: Literal["complete", "degraded_placeholder"] = "complete"
+    # Wave 137c: optional operator/Codex/Qwen provenance block.
+    # Populated only by the YAML loader (when overlay carries a
+    # provenance block); the in-Python fallback dict's entries leave
+    # this None, and Plan A's validator enforces presence on
+    # anchored_status="complete" entries at backfill time.
+    provenance: Optional[Provenance] = None
 
 
 # -----------------------------------------------------------------------------
@@ -2159,6 +2183,36 @@ def _python_fallback_for_family(family: str) -> Dict[str, SurfaceFormData]:
     return {}
 
 
+def _coerce_provenance(raw: Any) -> Optional[Provenance]:
+    """Wave 137c: project a YAML-loaded provenance dict into a
+    :class:`Provenance` instance, or return ``None`` when absent /
+    malformed.
+
+    Required string keys: ``provider``, ``generated_by``,
+    ``reviewed_by``, ``prompt_version``, ``timestamp`` — all must be
+    non-empty strings after ``.strip()``. Missing-key or empty-value
+    payloads emit ``logger.error`` and return ``None`` (preserves the
+    base-fallback safety property: malformed provenance never raises
+    here; Plan A's validator is the strict-enforcement surface).
+
+    Optional ``notes`` is passed through verbatim when present.
+    """
+    if not isinstance(raw, dict):
+        return None
+    required = ("provider", "generated_by", "reviewed_by", "prompt_version", "timestamp")
+    if not all(k in raw and isinstance(raw[k], str) and raw[k].strip() for k in required):
+        logger.error("provenance block missing required keys or values empty: %s", raw)
+        return None
+    return Provenance(
+        provider=raw["provider"],
+        generated_by=raw["generated_by"],
+        reviewed_by=raw["reviewed_by"],
+        prompt_version=raw["prompt_version"],
+        timestamp=raw["timestamp"],
+        notes=raw.get("notes"),
+    )
+
+
 def _load_yaml_catalog(family: str) -> Dict[str, SurfaceFormData]:
     """Wave 136a: read the per-family YAML overlay and project into
     ``SurfaceFormData`` instances.
@@ -2255,6 +2309,7 @@ def _load_yaml_catalog(family: str) -> Dict[str, SurfaceFormData]:
                 tuple(pair) for pair in (raw.get("combinations") or [])
                 if isinstance(pair, (list, tuple)) and len(pair) == 2
             ],
+            provenance=_coerce_provenance(raw.get("provenance")),
         )
     return out
 
@@ -2603,6 +2658,8 @@ __all__ = [
     "DEFAULT_MAX_PAIRS",
     "SchemaTranslationStats",
     "SurfaceFormData",
+    # Wave 137c: provenance dataclass + coercion helper.
+    "Provenance",
     "generate_schema_translation_pairs",
     # Wave 135a contract surface.
     "validate_form_data_contract",

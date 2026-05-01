@@ -90,6 +90,43 @@
               "maxItems": 2,
               "items": {"type": "string", "minLength": 1}
             }
+          },
+          "provenance": {
+            "type": "object",
+            "description": "Wave 137c: operator/Codex/Qwen attribution + ToS audit trail. Required for anchored_status='complete' entries (Plan A's validator enforces); optional for 'degraded_placeholder' entries (no content yet to attribute). Not required at the per-CURIE schema level so degraded entries can omit cleanly; Plan A's MISSING_PROVENANCE rule reads getattr(entry, 'provenance', None) and rejects complete entries without one.",
+            "required": ["provider", "generated_by", "reviewed_by", "prompt_version", "timestamp"],
+            "properties": {
+              "provider": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Canonical provider identifier (e.g. 'qwen_local_14b_q4', 'together_llama33_70b', 'operator_hand_curated')."
+              },
+              "generated_by": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Tool or operator that produced the content (e.g. 'draft_form_data_entry v1.0', 'operator')."
+              },
+              "reviewed_by": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Operator handle who reviewed the entry (e.g. '@mdmurphy822'), 'AUTOMATED', or 'PENDING_REVIEW'. Plan A rejects entries with reviewed_by='PENDING_REVIEW' or empty."
+              },
+              "prompt_version": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Prompt-template version used for Qwen-drafted content (e.g. 'wave-136c-v1.0'). Use 'n/a-pre-wave-136c' for operator-hand-curated entries."
+              },
+              "timestamp": {
+                "type": "string",
+                "minLength": 1,
+                "description": "ISO-8601 timestamp of authorship (e.g. '2026-05-01T00:00:00Z')."
+              },
+              "notes": {
+                "type": "string",
+                "description": "Optional free-text notes."
+              }
+            },
+            "additionalProperties": false
           }
         },
         "additionalProperties": false
