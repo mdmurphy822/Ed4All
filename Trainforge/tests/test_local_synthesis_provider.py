@@ -904,6 +904,129 @@ def test_paraphrase_instruction_raises_preservation_failed_after_retry(
     assert excinfo.value.code == "surface_form_preservation_failed"
 
 
+def test_paraphrase_accepts_soft_floor_when_80pct_preserved(monkeypatch):
+    """Wave 134 — soft preservation contract. With the default
+    ``min_preserve_rate=0.80`` and 5 preserve_tokens, dropping 1 yields
+    4/5 = 80% — exactly at the floor — and the paraphrase is accepted
+    on the first attempt without retry."""
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    # Paraphrase drops `sh:pattern` but keeps the other 4 tokens. 4/5 = 0.80.
+    paraphrase = json.dumps({
+        "prompt": (
+            "Explain how sh:NodeShape and sh:datatype apply when "
+            "validating a graph against the rdfs:subClassOf hierarchy."
+        ),
+        "completion": (
+            "sh:NodeShape constrains node identity; sh:datatype enforces "
+            "literal value types. The rdfs:subClassOf hierarchy and "
+            "owl:sameAs identity links carry through validation as the "
+            "shape consumes the focus node."
+        ),
+    })
+    # Single response — no retry needed if the soft floor accepts.
+    client = _client_yielding(httpx.Response(200, json=_success_body(paraphrase)))
+    p = LocalSynthesisProvider(client=client)
+    out = p.paraphrase_instruction(
+        _instruction_draft(), _chunk(),
+        preserve_tokens=[
+            "sh:NodeShape", "sh:datatype", "rdfs:subClassOf",
+            "owl:sameAs", "sh:pattern",
+        ],
+    )
+    # Successful return; the dropped sh:pattern is tolerated.
+    assert "sh:NodeShape" in out["completion"]
+    assert "sh:pattern" not in out["completion"]
+
+
+def test_paraphrase_soft_floor_retries_below_threshold(monkeypatch):
+    """Wave 134 — soft preservation contract. With 5 preserve_tokens
+    and default ``min_preserve_rate=0.80``, dropping 2 yields 3/5 = 0.60
+    which falls BELOW the 0.80 floor; the gate fires retry. A subsequent
+    response that meets the floor is accepted."""
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    # First: drops 2 tokens (3/5 = 0.60 < 0.80) -> retry.
+    bad = json.dumps({
+        "prompt": (
+            "Explain how a node shape and a data type apply when validating "
+            "a graph against a hierarchy."
+        ),
+        "completion": (
+            "Node shape constrains node identity; data type enforces "
+            "literal value types. The rdfs:subClassOf hierarchy and "
+            "owl:sameAs identity links carry through validation."
+        ),
+    })
+    # Second: drops 1 (4/5 = 0.80) -> accept.
+    good = json.dumps({
+        "prompt": (
+            "Explain how sh:NodeShape and sh:datatype apply when validating "
+            "against rdfs:subClassOf hierarchy."
+        ),
+        "completion": (
+            "sh:NodeShape constrains node identity; sh:datatype enforces "
+            "literal types. rdfs:subClassOf and owl:sameAs links carry "
+            "through validation."
+        ),
+    })
+    client = _client_yielding(
+        httpx.Response(200, json=_success_body(bad)),
+        httpx.Response(200, json=_success_body(good)),
+    )
+    p = LocalSynthesisProvider(client=client)
+    out = p.paraphrase_instruction(
+        _instruction_draft(), _chunk(),
+        preserve_tokens=[
+            "sh:NodeShape", "sh:datatype", "rdfs:subClassOf",
+            "owl:sameAs", "sh:pattern",
+        ],
+    )
+    # Retry-then-accept on the second response.
+    assert "sh:NodeShape" in out["prompt"]
+    assert "sh:datatype" in out["prompt"]
+
+
+def test_paraphrase_strict_mode_via_min_preserve_rate_one(monkeypatch):
+    """Wave 134 — passing ``min_preserve_rate=1.0`` restores Wave 120's
+    strict 100% contract. A paraphrase missing any single token fails
+    closed even with the wider manifest."""
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    # 5 tokens; paraphrase drops 1 (4/5 = 0.80). Default soft floor would
+    # accept; with min_preserve_rate=1.0 it must fail.
+    bad = json.dumps({
+        "prompt": (
+            "Explain how sh:NodeShape and sh:datatype apply when "
+            "validating against rdfs:subClassOf hierarchy."
+        ),
+        "completion": (
+            "sh:NodeShape constrains node identity; sh:datatype enforces "
+            "literal value types. rdfs:subClassOf and owl:sameAs links "
+            "carry through validation as the shape consumes the focus."
+        ),
+    })
+    client = _client_yielding(*[
+        httpx.Response(200, json=_success_body(bad)) for _ in range(MAX_PARSE_RETRIES + 2)
+    ])
+    p = LocalSynthesisProvider(client=client, min_preserve_rate=1.0)
+    with pytest.raises(SynthesisProviderError) as excinfo:
+        p.paraphrase_instruction(
+            _instruction_draft(), _chunk(),
+            preserve_tokens=[
+                "sh:NodeShape", "sh:datatype", "rdfs:subClassOf",
+                "owl:sameAs", "sh:pattern",
+            ],
+        )
+    assert excinfo.value.code == "surface_form_preservation_failed"
+
+
+def test_min_preserve_rate_validates_range(monkeypatch):
+    """Constructor rejects out-of-range floor values."""
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="min_preserve_rate"):
+        LocalSynthesisProvider(min_preserve_rate=1.5)
+    with pytest.raises(ValueError, match="min_preserve_rate"):
+        LocalSynthesisProvider(min_preserve_rate=-0.1)
+
+
 def test_max_parse_retries_constructor_kwarg_caps_retry_budget(monkeypatch):
     """Wave 120 smoke-mode fix: ``max_parse_retries=1`` caps the parse-
     retry loop at a single attempt so a property-heavy stratified
