@@ -14,6 +14,11 @@ class Classification:
     subdomains: list[str] = field(default_factory=list)
     topics: list[str] = field(default_factory=list)
     subtopics: list[str] = field(default_factory=list)
+    # Wave 133f: HuggingFace model-card tags appended to the default
+    # ['education','qlora','peft','trainforge',<slug>] list when an
+    # adapter for this course publishes. Replaces the substring sniff
+    # in Trainforge.eval.hf_model_index.write_hf_readme.
+    tags: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -23,6 +28,7 @@ class Classification:
             "subdomains": self.subdomains,
             "topics": self.topics,
             "subtopics": self.subtopics,
+            "tags": self.tags,
         }
 
     @classmethod
@@ -34,6 +40,7 @@ class Classification:
             subdomains=data.get("subdomains", []),
             topics=data.get("topics", []),
             subtopics=data.get("subtopics", []),
+            tags=data.get("tags", []),
         )
 
 

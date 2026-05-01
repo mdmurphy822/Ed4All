@@ -86,6 +86,12 @@
           "items": {"type": "string"},
           "default": [],
           "description": "Granular subtopics"
+        },
+        "tags": {
+          "type": "array",
+          "items": {"type": "string"},
+          "default": [],
+          "description": "Wave 133f: HuggingFace model-card tags appended to the default ['education','qlora','peft','trainforge',<slug>] list when an adapter for this course publishes. Replaces the substring sniff in Trainforge.eval.hf_model_index.write_hf_readme — manifest-driven so non-RDF/SHACL courses can declare their own discovery tags without code changes."
         }
       }
     },

@@ -819,6 +819,10 @@ class TrainingRunner:
                 model_id=Path(run_dir).name,
                 model_card=model_card,
                 base_model_repo=self.spec.huggingface_repo,
+                # Wave 133f: pass the LibV2 course directory so
+                # write_hf_readme reads classification.tags from
+                # manifest.json instead of substring-sniffing the slug.
+                course_path=course_path,
             )
         except Exception:  # noqa: BLE001 - README is best-effort
             logger.exception(
