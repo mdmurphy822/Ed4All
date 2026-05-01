@@ -143,7 +143,7 @@ Final packaging and export:
 ### Required Fields
 
 Every decision event MUST include:
-- `decision_type`: Category of decision (e.g., `content_selection`, `question_generation`, `form_data_backfill_session`). Canonical enum: `schemas/events/decision_event.schema.json`.
+- `decision_type`: Category of decision (e.g., `content_selection`, `question_generation`, `form_data_backfill_session`; Wave 137 adds: `family_completeness_decision`). Canonical enum: `schemas/events/decision_event.schema.json`.
 - `decision`: The actual choice made
 - `rationale`: Why this decision was made (**minimum 20 characters**)
 
@@ -667,6 +667,7 @@ Source of truth: `config/workflows.yaml::validation_gates`. Phase column below s
 | `rag_training` | `assessment_generation` | `question_quality` | QuestionQualityValidator |
 | `rag_training` | `validation` | `final_quality` | FinalQualityValidator |
 | `trainforge_train` | `post_training_validation` | `eval_gating` | EvalGatingValidator (Wave 108 — fails closed on regression / yes-bias / no-bias / source-match drop) |
+| `trainforge_train` | `post_training_validation` | `family_completeness` | FamilyCompletenessValidator (Wave 137b — fails closed when any CURIE family is partially complete; family clusters declared in `schemas/training/family_map.<family>.yaml`) |
 
 ---
 
