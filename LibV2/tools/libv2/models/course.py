@@ -260,6 +260,10 @@ class CourseManifest:
     source_package: Optional[str] = None  # Filename of source IMSCC in source/ dir (legacy)
     source_artifacts: Optional[SourceArtifacts] = None  # Enhanced source tracking
     arxiv_metadata: Optional[ArxivMetadata] = None  # Arxiv paper metadata
+    # Wave 132c: explicit Trainforge eval-harness profile selector. Read by
+    # Trainforge.eval.slm_eval_harness._resolve_default_profile in
+    # preference to the substring-sniff over classification fields.
+    eval_profile: Optional[str] = None
 
     def to_dict(self) -> dict:
         result = {
@@ -286,6 +290,8 @@ class CourseManifest:
             result["source_artifacts"] = self.source_artifacts.to_dict()
         if self.arxiv_metadata:
             result["arxiv_metadata"] = self.arxiv_metadata.to_dict()
+        if self.eval_profile is not None:
+            result["eval_profile"] = self.eval_profile
         return result
 
     @classmethod
@@ -321,6 +327,7 @@ class CourseManifest:
             source_package=data.get("source_package"),
             source_artifacts=source_artifacts,
             arxiv_metadata=arxiv_metadata,
+            eval_profile=data.get("eval_profile"),
         )
 
     @property
