@@ -221,18 +221,49 @@ def _load_profile(name: str) -> Dict[str, Any]:
 
 
 def _resolve_default_profile(course_path: Path) -> str:
-    """Pick a default profile from the course manifest classification."""
+    """Pick a default profile.
+
+    Resolution order (Wave 132c):
+
+    1. ``manifest.eval_profile`` — explicit declaration is authoritative.
+       Set this on every course manifest going forward; substring sniffing
+       silently picks ``generic`` for any course whose name doesn't
+       contain ``rdf`` / ``shacl`` / ``semantic web``, which drops the
+       rdf_shacl-specific syntactic checks.
+    2. Substring sniff over ``classification.subdomains`` / ``topics`` —
+       legacy fallback; emits a warning so the operator knows to set
+       ``eval_profile`` on the manifest. Preserved so courses imported
+       before Wave 132c keep passing without a manifest backfill.
+    3. ``"generic"`` — default when the manifest is missing or unreadable.
+    """
     manifest_path = course_path / "manifest.json"
-    if manifest_path.exists():
-        try:
-            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return "generic"
-        cls = manifest.get("classification") or {}
-        subs = [s.lower() for s in cls.get("subdomains", []) or []]
-        topics = [t.lower() for t in cls.get("topics", []) or []]
-        if "semantic web" in subs or any("rdf" in t or "shacl" in t for t in topics):
-            return "rdf_shacl"
+    if not manifest_path.exists():
+        return "generic"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "generic"
+
+    explicit = manifest.get("eval_profile")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+
+    cls = manifest.get("classification") or {}
+    subs = [s.lower() for s in cls.get("subdomains", []) or []]
+    topics = [t.lower() for t in cls.get("topics", []) or []]
+    if "semantic web" in subs or any("rdf" in t or "shacl" in t for t in topics):
+        logger.warning(
+            "eval_profile not set on manifest %s, falling back to substring "
+            "heuristic (resolved: rdf_shacl). Set manifest.eval_profile "
+            "explicitly to avoid the substring sniff.",
+            manifest_path,
+        )
+        return "rdf_shacl"
+    logger.warning(
+        "eval_profile not set on manifest %s, falling back to substring "
+        "heuristic (resolved: generic).",
+        manifest_path,
+    )
     return "generic"
 
 

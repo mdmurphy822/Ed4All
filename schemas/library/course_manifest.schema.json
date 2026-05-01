@@ -45,6 +45,11 @@
         }
       }
     },
+    "eval_profile": {
+      "type": "string",
+      "enum": ["generic", "rdf_shacl"],
+      "description": "Wave 132c: explicit Trainforge eval-harness profile. When set, Trainforge.eval.slm_eval_harness._resolve_default_profile uses this value directly instead of substring-sniffing classification fields. Add new enum values when authoring new Trainforge/eval/configs/<name>.yaml profiles."
+    },
     "classification": {
       "type": "object",
       "required": ["division", "primary_domain"],

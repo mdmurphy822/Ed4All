@@ -175,6 +175,35 @@ def test_harness_picks_generic_profile_for_non_semantic_corpus(tmp_path):
     assert report["profile"] == "generic"
 
 
+def test_harness_reads_explicit_eval_profile_from_manifest(tmp_path):
+    """Wave 132c: manifest.eval_profile is authoritative.
+
+    A course whose subdomain is 'mathematics' (legacy substring sniff =>
+    'generic') but whose manifest declares eval_profile=rdf_shacl must
+    resolve to rdf_shacl, no warning, no sniff.
+    """
+    course = _build_course(tmp_path, classification={
+        "subdomains": ["mathematics"],
+        "topics": ["linear algebra"],
+    })
+    # Augment the manifest with an explicit eval_profile.
+    manifest_path = course / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["eval_profile"] = "rdf_shacl"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    harness = SLMEvalHarness(
+        course_path=course,
+        model_callable=_mock_model,
+        max_holdout_questions=3,
+    )
+    report_path = harness.run_all()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["profile"] == "rdf_shacl", (
+        "manifest.eval_profile must override the substring sniff."
+    )
+
+
 def test_harness_explicit_profile_override(tmp_path):
     course = _build_course(tmp_path, classification={"subdomains": ["math"]})
     harness = SLMEvalHarness(
