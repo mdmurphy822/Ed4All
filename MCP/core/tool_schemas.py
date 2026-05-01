@@ -519,10 +519,34 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "chunks_path",
             "provider",
             "seed",
+            # Wave 129: deterministic-generator pass-throughs (Wave 124-127).
+            # Mirrors run_synthesis() kwargs at
+            # Trainforge/synthesize_training.py:677-685 so the workflow-phase
+            # dispatch + external MCP clients can trigger kg_metadata /
+            # violation_detection / abstention / schema_translation without
+            # routing through the CLI.
+            "with_kg_metadata",
+            "kg_metadata_max_pairs",
+            "with_violation_detection",
+            "violation_detection_max_pairs",
+            "with_abstention",
+            "abstention_max_pairs",
+            "with_schema_translation",
+            "schema_translation_max_pairs",
         ],
         "defaults": {
             "provider": "mock",
             "seed": None,
+            "with_kg_metadata": False,
+            "kg_metadata_max_pairs": 2000,
+            "with_violation_detection": False,
+            # violation_detection_max_pairs intentionally unset =
+            # unlimited (family-balanced round-robin trim only when
+            # caller passes an explicit cap).
+            "with_abstention": False,
+            "abstention_max_pairs": 1000,
+            "with_schema_translation": False,
+            "schema_translation_max_pairs": 50,
         },
         "param_mapping": {
             # Corpus dir aliases — registry variant accepts any of these

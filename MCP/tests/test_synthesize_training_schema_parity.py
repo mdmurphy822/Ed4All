@@ -167,6 +167,135 @@ def test_training_synthesis_phase_emits_instruction_pairs(tmp_path: Path):
     assert preference_pairs_path.exists()
 
 
+def test_synthesize_training_schema_includes_wave_124_127_generator_kwargs():
+    """Wave 129: schema must list the deterministic-generator pass-throughs.
+
+    Pre-Wave-129 the ``synthesize_training`` schema (third wiring location)
+    listed only ``corpus_dir / trainforge_dir / assessments_path /
+    chunks_path / provider / seed`` as optional. The CLI had carried
+    ``--with-violation-detection / --with-abstention /
+    --with-schema-translation / --with-kg-metadata`` since Waves 124-125,
+    but the MCP tool surface + the workflow-phase dispatch couldn't
+    forward those flags — ``param_mapper`` would silently drop them as
+    unknown params and the deterministic generators stayed off.
+
+    This test pins the schema to the run_synthesis() kwarg shape at
+    ``Trainforge/synthesize_training.py:677-685`` so a future contributor
+    adding a new generator kwarg gets a failing test if they forget the
+    third wiring location.
+    """
+    schema = get_tool_schema("synthesize_training")
+    assert schema is not None
+    optional = schema.get("optional", [])
+    expected_kwargs = [
+        "with_kg_metadata",
+        "kg_metadata_max_pairs",
+        "with_violation_detection",
+        "violation_detection_max_pairs",
+        "with_abstention",
+        "abstention_max_pairs",
+        "with_schema_translation",
+        "schema_translation_max_pairs",
+    ]
+    for kw in expected_kwargs:
+        assert kw in optional, (
+            f"schema missing Wave 124-127 generator kwarg {kw!r} — Wave 129 "
+            f"third-location wiring regressed."
+        )
+
+    # Defaults must mirror run_synthesis(): on-flags default False,
+    # max-pairs caps default to the run_synthesis() values, and
+    # violation_detection_max_pairs is intentionally absent from defaults
+    # (its run_synthesis() default is None = unlimited; the schema treats
+    # it as a pure pass-through).
+    defaults = schema.get("defaults", {})
+    assert defaults.get("with_kg_metadata") is False
+    assert defaults.get("kg_metadata_max_pairs") == 2000
+    assert defaults.get("with_violation_detection") is False
+    assert defaults.get("with_abstention") is False
+    assert defaults.get("abstention_max_pairs") == 1000
+    assert defaults.get("with_schema_translation") is False
+    assert defaults.get("schema_translation_max_pairs") == 50
+
+
+def test_synthesize_training_registry_forwards_wave_124_127_kwargs(tmp_path: Path):
+    """Wave 129: registry variant must forward generator kwargs to run_synthesis.
+
+    End-to-end: dispatch the registry variant with
+    ``with_violation_detection=True`` + an explicit cap, and assert
+    ``run_synthesis`` saw the cap. We monkeypatch ``run_synthesis`` so
+    the test stays fast (no real synthesis needed); the test's job is
+    to lock the kwarg-forwarding contract, not re-run the synthesizer.
+    """
+    # Stub ``run_synthesis`` to capture the kwargs it receives.
+    captured: Dict[str, Any] = {}
+
+    def fake_run_synthesis(**kw):
+        captured.update(kw)
+
+        class _Stats:
+            instruction_pairs_emitted = 0
+            preference_pairs_emitted = 0
+            chunks_eligible = 0
+            chunks_total = 0
+
+            def as_dict(self):
+                return {}
+
+        return _Stats()
+
+    # Build a minimum viable corpus so the early-return / chunks-missing
+    # branch doesn't fire before run_synthesis is reached.
+    corpus_dir = tmp_path / "trainforge"
+    (corpus_dir / "corpus").mkdir(parents=True)
+    chunk = {
+        "id": "chunk_test_0001",
+        "course_id": "TESTCOURSE_101",
+        "section_id": "sec_01",
+        "content": (
+            "Knowledge graphs organise information as nodes and edges."
+        ),
+        "learning_outcome_refs": ["TO-01"],
+        "bloom_level": "understand",
+        "content_type_label": "explanation",
+        "key_terms": [{"term": "kg", "definition": "graph"}],
+    }
+    (corpus_dir / "corpus" / "chunks.jsonl").write_text(
+        json.dumps(chunk) + "\n", encoding="utf-8"
+    )
+
+    import Trainforge.synthesize_training as st_mod
+
+    real_run_synthesis = st_mod.run_synthesis
+    st_mod.run_synthesis = fake_run_synthesis  # type: ignore[assignment]
+    try:
+        pt = importlib.import_module("MCP.tools.pipeline_tools")
+        registry = pt._build_tool_registry()
+        asyncio.run(registry["synthesize_training"](
+            corpus_dir=str(corpus_dir),
+            course_code="TESTCOURSE_101",
+            provider="mock",
+            seed=7,
+            with_violation_detection=True,
+            violation_detection_max_pairs=42,
+            with_abstention=True,
+            abstention_max_pairs=11,
+            with_schema_translation=True,
+            schema_translation_max_pairs=9,
+        ))
+    finally:
+        st_mod.run_synthesis = real_run_synthesis  # type: ignore[assignment]
+
+    # All Wave 124-127 generator kwargs reached run_synthesis with their
+    # caller-supplied values (not the schema defaults).
+    assert captured["with_violation_detection"] is True
+    assert captured["violation_detection_max_pairs"] == 42
+    assert captured["with_abstention"] is True
+    assert captured["abstention_max_pairs"] == 11
+    assert captured["with_schema_translation"] is True
+    assert captured["schema_translation_max_pairs"] == 9
+
+
 def test_synthesize_training_registered_in_three_locations():
     """Regression guard: lock the three-location wiring invariant.
 
