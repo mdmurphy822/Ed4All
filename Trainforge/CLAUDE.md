@@ -84,6 +84,140 @@ injection coverage.
 
 ---
 
+## Wave 137 — Curation invariants
+
+The Wave 135-136 architecture made FORM_DATA load-bearing on TWO
+axes simultaneously:
+- Training-time: anchored definitions land in instruction_pairs.jsonl
+  via Wave 135b's force-injection.
+- Retrieval-time: anchored definitions are the retrieval substrate
+  (corpus chunks).
+
+This produces a non-obvious invariant:
+
+  Distribution(training_pairs) ≈ Distribution(retrieved_chunks)
+
+Implication: a quality issue in FORM_DATA's content amplifies because
+the model both LEARNS FROM it (training) AND IS QUERIED WITH it
+(retrieval). Token-stuffing leakage in one entry biases the adapter's
+trained habit AND the retrieval-time evidence the adapter sees.
+
+Wave 137 hardens FORM_DATA curation to sustain this invariant:
+- Per-entry diversity gate (137a): pairwise definitions Jaccard
+  similarity ≤ 0.45; calibrated against the 6 gold-set entries.
+- Style consistency score (137a, warning): weighted entry-level
+  signals; threshold 0.80 (lowered from 0.85 plan-spec because
+  sh:class scores 0.80 in ground truth — keeping the gold set
+  passing was the calibration anchor).
+- Anchor-verb capacity (137a): entry-level, scoped to definitions
+  + usage_examples only (comparison_targets and pitfalls use
+  ;-separated parallel constructions and rhetorical Q-side framing
+  that don't match a verb allowlist; extending Rule 3 to those
+  would false-flag ground truth).
+- Family-completeness gate (137b): blocks adapter promotion when
+  any CURIE family is partially complete (e.g. sh:minCount complete
+  + sh:maxCount degraded = asymmetric reasoning).
+- Provenance metadata (137c): every complete entry carries
+  provider/generated_by/reviewed_by/prompt_version/timestamp.
+  Wave 137a Rule 4 enforces presence + non-PENDING_REVIEW
+  reviewed_by.
+- Gold-set hash lock (137c): the 6 existing complete entries are
+  the calibration reference; their YAML hash is snapshot-tested.
+- Review checklist (137d): structured operator review
+  (always-2 + sample-3) prevents rubber-stamp at scale.
+- Eval coverage checkpoint (137d): coverage % + family map +
+  per-CURIE complete/degraded counts persisted per retrain to
+  `LibV2/courses/<slug>/eval/form_data_coverage_checkpoint.jsonl`.
+
+Together these enforce: FORM_DATA isn't just a data file — it's a
+curated standard whose integrity is verified by gates, calibrated
+by the gold set, and tracked by checkpoints.
+
+### Style contract for FORM_DATA anchored content
+
+Voice and register:
+- Technical, declarative, present-tense
+- Third-person; no "you", "we", "your"
+- No hedging in definitions/usage_examples (may, often, typically) —
+  hedging is permitted only in pitfalls and comparison_targets
+
+Structural rules (validator-enforced; see Wave 137a Rules 1-4):
+- Every sentence contains the entry's CURIE verbatim (Wave 136b)
+- Sentence length 50-200 chars per sentence (entries average ~100)
+- Definitions list contains ≥1 sentence with anchor verb
+  (defines/describes/restricts/requires/validates/targets/constrains/
+   specifies/applies/indicates/compares/differs)
+- Usage_examples answer-side contains ≥1 action/constraint verb
+
+Diversity rules:
+- 6-7 sentences per category, each probing a different cognitive
+  angle (formal-spec / pedagogical / context-anchored / operational /
+  contrastive / scenario / reasoning)
+- No thesaurus paraphrases — pairwise Jaccard ≤ 0.45
+- No two sentences in entry start with the same first 4 words
+
+Forbidden patterns (Wave 136b):
+- Suffix templates: "Canonical terms:", "Reference:", "Relevant
+  terms:", "Key vocabulary:", "Required terms:"
+- Placeholder strings: "[degraded:", "not yet authored"
+- Wrong-CURIE-only mentions (definition for sh:minCount that mentions
+  only sh:maxCount)
+
+### CURIE family map (Wave 137b reference template)
+
+Wave 137b's family-completeness gate clusters the 40 rdf-shacl
+manifest CURIEs into 10 semantically-coherent families + 11
+singletons (verified via `lib.ontology.family_map.load_family_map`
+at gate time). The current rdf_shacl partition:
+
+| Family | Members | Why grouped |
+|--------|---------|-------------|
+| cardinality | sh:minCount, sh:maxCount | Symmetric paired bounds |
+| domain_range | rdfs:domain, rdfs:range | Predicate-typing pair |
+| shape_kinds | sh:NodeShape, sh:PropertyShape | Co-defined SHACL shape kinds |
+| validation_results | sh:ValidationReport, sh:ValidationResult, sh:result, sh:Violation, sh:focusNode | Co-referenced in validation reports |
+| type_system | rdf:type, rdfs:Class, sh:class, owl:Class | Typing surface |
+| identity_equivalence | owl:sameAs, owl:equivalentClass, owl:disjointWith | Identity axiom triple |
+| documentation_annotations | rdfs:label, rdfs:comment | Annotation properties |
+| literal_types | rdfs:Literal, rdfs:Resource | Literal-type cohort |
+| xsd_datatypes | xsd:string, xsd:integer, xsd:date, xsd:dateTime | XSD primitives |
+| foaf_examples | foaf:Person, foaf:Agent, foaf:knows | Canonical FOAF triple |
+
+Singletons: `sh:datatype`, `sh:nodeKind`, `sh:path`, `sh:property`,
+`sh:targetClass`, `sh:closed`, `sh:in`, `sh:pattern`, `rdf:Property`,
+`dcterms:creator`, `rdfs:subClassOf`.
+
+New course families authoring a manifest declare their own family
+clusters in `schemas/training/family_map.<family>.yaml` (Plan B
+schema at `schemas/training/family_map.schema.json`).
+
+### Operator backfill workflow (extends Wave 136d)
+
+Wave 136d's "Operator backfill workflow" section is extended with
+four Wave 137 additions:
+
+1. **Family-clustered ordering (Wave 137b).** The backfill loop
+   sorts CURIEs by family-cluster aggregate frequency first,
+   within-family individual frequency second; singletons appended
+   at end. Use `--family-cluster <name>` to restrict a session to
+   one family.
+2. **Review checklist (Wave 137d).** The drafting CLI auto-prints
+   a structured review block (always-2 + sample-3 with deterministic
+   seeded random) after the YAML output. Operator reviews ONLY the
+   5 listed sentences — validator handles structural enforcement.
+3. **Provenance.reviewed_by update step (Wave 137c).** The drafting
+   CLI ships `reviewed_by: PENDING_REVIEW` as a sentinel. Operator
+   replaces with `@<handle>` BEFORE commit. Wave 137a Rule 4 rejects
+   any complete entry with `reviewed_by="PENDING_REVIEW"` or empty.
+4. **Eval batching policy.** Do NOT retrain after every 1-2
+   backfilled CURIEs. Batch ≥10-20 CURIEs OR ≥1 full family before
+   kicking the retrain — the eval signal is too noisy at smaller
+   deltas, and per-property attribution becomes meaningful only at
+   family granularity. Inspect coverage progress with:
+   `python -m Trainforge.scripts.show_form_data_coverage --course-code <slug>`
+
+---
+
 ## Operator backfill workflow (Wave 136)
 
 The 34 `degraded_placeholder` FORM_DATA entries (Wave 135a) are
@@ -413,6 +547,19 @@ Training is a **post-import LibV2 stage**, not a step in `Trainforge/process_cou
 | 136b | `fd1205e` | Harden FORM_DATA contract validator with content-quality rules — `validate_form_data_contract` extended with 9 content-quality rejection rules (PLACEHOLDER_LEAK, OLD_SUFFIX_TEMPLATE, DEFINITION_TOO_SHORT / TOO_LONG, USAGE_PROMPT_TOO_SHORT / TOO_LONG, USAGE_ANSWER_TOO_SHORT / TOO_LONG, WRONG_CURIE_ONLY_MENTION) firing only against `anchored_status="complete"` entries, plus 1 warning-severity rule (BASELINE_REGRESSION) detecting overlay regressions vs the in-Python base. Degraded entries skip every content rule because their stub strings are intentionally placeholder-shaped. |
 | 136c | `5a2d34d` | Drafting CLI for Qwen-driven FORM_DATA backfill — `python -m Trainforge.scripts.draft_form_data_entry` accepts `--curie`, `--family`, `--course-code`, `--provider {local,together}`, dispatches to `LocalSynthesisProvider._oa_client.chat_completion` / `TogetherSynthesisProvider._oa_client.chat_completion` with a structurally-minimal prompt template (schema rules + manifest metadata only — NO example sentences, NO seed phrases — ToS-load-bearing), parses the JSON response, runs `validate_form_data_contract` on the drafted entry, and emits the YAML block + operator next-steps comments. ToS regression sentinel: `r'"[^"]{40,}"'` matches ZERO times in the rendered template. Operator review + manual append required — no auto-write. |
 | 136d | _this commit_ | Interactive backfill loop CLI — `python -m Trainforge.scripts.backfill_form_data` enumerates `degraded_placeholder` entries in the post-overlay form_data dict, sorts by corpus frequency (default) or alphabetically, and per CURIE dispatches the Wave 136c drafting CLI as a subprocess and pauses for operator confirmation (`y` accept-append / `n` skip / `e` edit-then-append / `q` quit). On accept the new entry is deep-merged into the per-family YAML overlay via atomic tmp+rename; the Wave 136a cache is invalidated; Wave 136b's validator runs against the post-merge form_data and a CURIE-specific content_violation triggers a rollback. End-of-run summary emits ONE `decision_type="form_data_backfill_session"` decision-capture event with metadata-shaped rationale (counts only — no authored YAML in the rationale string). 5 regression tests in `Trainforge/tests/test_backfill_form_data.py` cover frequency-descending sort, y-append + existing-entry preservation, n-skip leaves file unchanged, q-early-exit, validator-rollback. New enum value `form_data_backfill_session` registered in `schemas/events/decision_event.schema.json`. |
+| 137a-1 | `c98af32` | Wave 137 Rule 1 (LOW_DIVERSITY_DEFINITIONS, critical, Jaccard ≤0.45) + Rule 3 (MISSING_ANCHOR_VERB_*, scoped to defs+usage). |
+| 137a-2 | `a6e7e28` | Wave 137 Rule 2 (STYLE_CONSISTENCY_BELOW_THRESHOLD, warning, score ≥0.80 calibrated against ground truth). |
+| 137a-3 | `7e7b7aa` | Wave 137 Rule 4 (MISSING_PROVENANCE / INCOMPLETE_PROVENANCE, critical) including PENDING_REVIEW sentinel rejection. |
+| 137b-1 | `2cf2b97` | family_map schema + rdf_shacl YAML (10 families + 11 singletons) + lib/ontology/family_map.py loader + compute_family_coverage helper. |
+| 137b-2 | `cc93d78` | FamilyCompletenessValidator + critical gate wiring on trainforge_train::post_training_validation. |
+| 137b-3 | `d1a7729` | Family-clustered backfill ordering + --family-cluster flag in backfill_form_data.py. |
+| 137c-1 | `6cd0fcd` | Provenance @dataclass(frozen=True) + JSON schema + YAML loader coercion (_coerce_provenance). |
+| 137c-2 | `e6bfc40` | Drafting CLI auto-populates provenance with reviewed_by=PENDING_REVIEW sentinel. |
+| 137c-3 | `254400c` | Gold-set fixtures (6 entries) + recompute_gold_set_hash.py operator-only script + snapshot test. |
+| 137d-1 | `b16036e` | _review_checklist.py shared helper + drafting CLI / backfill loop integration (always-2 + sample-3 deterministic). |
+| 137d-2 | `e6df88d` | form_data_coverage helper + EvalGatingValidator JSONL checkpoint emission with try/except wrapping. |
+| 137d-3 | `7fa3d87` | show_form_data_coverage operator inspection CLI (table/JSON formats; --all flag). |
+| 137e   | _this commit_ | Architectural docs — Wave 137 curation invariants section + style contract + family map reference + operator backfill workflow extension + Active Gates row + wave-history rows. No code change. |
 
 ## Synthesis pipeline integrity invariants (Wave 112)
 
