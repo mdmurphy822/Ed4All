@@ -760,7 +760,16 @@ def test_thirty_four_new_curies_are_degraded_placeholder() -> None:
 
 def test_validate_form_data_contract_passes_on_full_set() -> None:
     """Positive case: the shipped FORM_DATA + the rdf-shacl manifest
-    together must satisfy the Wave 135a contract."""
+    together must satisfy the Wave 135a structural contract.
+
+    Wave 137a-3 update: the in-Python fallback dict's 6 complete
+    entries do NOT carry provenance (Wave 137c-1's design — the YAML
+    overlay carries it; the bare fallback predates the contract).
+    Rule 4 (MISSING_PROVENANCE) fires on each of those entries, so
+    ``passed=False`` is now expected on the bare fallback. The
+    structural contract (no missing / incomplete / invalid_status)
+    still holds; only Rule 4 critical violations gate ``passed``.
+    """
     from Trainforge.generators.schema_translation_generator import (
         _RDF_SHACL_FALLBACK_FORM_DATA,
         validate_form_data_contract,
@@ -770,12 +779,31 @@ def test_validate_form_data_contract_passes_on_full_set() -> None:
     result = validate_form_data_contract(
         _RDF_SHACL_FALLBACK_FORM_DATA, manifest_curies
     )
-    assert result["passed"] is True, result
+    # Wave 137a-3: passed=False because Rule 4 (MISSING_PROVENANCE)
+    # fires on the 6 bare-fallback complete entries.
+    assert result["passed"] is False
+    # Structural contract still holds:
     assert result["missing_curies"] == []
     assert result["incomplete_curies"] == []
     assert result["invalid_status_curies"] == []
     assert result["complete_count"] == 6
     assert result["degraded_count"] == 34
+    # Rule 4 violations — one per complete entry — and ONLY Rule 4
+    # (no other content rule fires on the fallback's complete entries).
+    rule_4_codes = {
+        v["code"] for v in result["content_violations"]
+    }
+    assert rule_4_codes == {"MISSING_PROVENANCE"}, (
+        f"only Rule 4 is expected on the bare fallback; got {rule_4_codes!r}"
+    )
+    rule_4_violations = [
+        v for v in result["content_violations"]
+        if v["code"] == "MISSING_PROVENANCE"
+    ]
+    assert len(rule_4_violations) == 6, (
+        f"expected 6 MISSING_PROVENANCE violations (one per complete "
+        f"entry); got {len(rule_4_violations)}"
+    )
 
 
 def test_validate_form_data_contract_fails_on_missing_curie() -> None:
@@ -1357,9 +1385,17 @@ def _synthetic_complete_entry(
     ),
 ):
     """Build a single ``SurfaceFormData`` entry that satisfies every
-    Wave 136b content-quality rule out of the box, so test cases can
-    mutate ONE field at a time and trip exactly the rule under test."""
+    Wave 136b + Wave 137a content-quality rule out of the box, so
+    test cases can mutate ONE field at a time and trip exactly the
+    rule under test.
+
+    Wave 137a-3: include a valid Provenance block so Rule 4
+    (MISSING_PROVENANCE) does NOT fire on the default synthetic
+    entry. Tests targeting Rule 4 explicitly drop or mutate the
+    ``provenance`` field after construction.
+    """
     from Trainforge.generators.schema_translation_generator import (
+        Provenance,
         SurfaceFormData,
     )
 
@@ -1369,6 +1405,13 @@ def _synthetic_complete_entry(
         definitions=[definition],
         usage_examples=[(usage_prompt, usage_answer)],
         anchored_status="complete",
+        provenance=Provenance(
+            provider="operator_hand_curated",
+            generated_by="operator",
+            reviewed_by="@mdmurphy822",
+            prompt_version="wave-137a-fixture",
+            timestamp="2026-05-01T00:00:00Z",
+        ),
     )
 
 
@@ -2200,6 +2243,7 @@ def test_style_consistency_fires_on_conversational_definitions() -> None:
     Warning fires; passed remains True (warning-severity, non-blocking).
     """
     from Trainforge.generators.schema_translation_generator import (
+        Provenance,
         SurfaceFormData,
         validate_form_data_contract,
     )
@@ -2224,6 +2268,15 @@ def test_style_consistency_fires_on_conversational_definitions() -> None:
             "ex:value .` — test:Foo applies to validation here.",
         )],
         anchored_status="complete",
+        # Wave 137a-3: include valid provenance so Rule 4 doesn't fire;
+        # this test is targeted at Rule 2 only.
+        provenance=Provenance(
+            provider="operator_hand_curated",
+            generated_by="operator",
+            reviewed_by="@mdmurphy822",
+            prompt_version="wave-137a-fixture",
+            timestamp="2026-05-01T00:00:00Z",
+        ),
     )
     form_data = {"test:Foo": entry}
     result = validate_form_data_contract(form_data, ["test:Foo"])
@@ -2319,3 +2372,171 @@ def test_style_consistency_calibration_boundary() -> None:
         {"test:Foo": below_threshold}, ["test:Foo"]
     )
     assert "STYLE_CONSISTENCY_BELOW_THRESHOLD" in _warning_codes(result_below)
+
+
+# -----------------------------------------------------------------------------
+# Wave 137a-3 — Rule 4 (provenance presence, critical).
+# -----------------------------------------------------------------------------
+
+
+def _operator_provenance():
+    """Build a valid operator-authored Provenance block for tests."""
+    from Trainforge.generators.schema_translation_generator import Provenance
+    return Provenance(
+        provider="operator_hand_curated",
+        generated_by="operator",
+        reviewed_by="@mdmurphy822",
+        prompt_version="wave-137a-fixture",
+        timestamp="2026-05-01T00:00:00Z",
+    )
+
+
+def test_provenance_required_on_complete_entries() -> None:
+    """Wave 137a Rule 4: complete entry with provenance=None triggers
+    MISSING_PROVENANCE."""
+    from Trainforge.generators.schema_translation_generator import (
+        validate_form_data_contract,
+    )
+
+    entry = _synthetic_complete_entry()
+    # Drop the provenance set by the helper.
+    entry.provenance = None
+    form_data = {"test:Foo": entry}
+    result = validate_form_data_contract(form_data, ["test:Foo"])
+    codes = _violation_codes(result)
+    assert "MISSING_PROVENANCE" in codes
+    assert result["passed"] is False
+    matching = [
+        v for v in result["content_violations"]
+        if v["code"] == "MISSING_PROVENANCE"
+    ]
+    assert any(v["curie"] == "test:Foo" for v in matching)
+
+
+def test_provenance_passes_on_complete_entries_with_full_dict() -> None:
+    """Wave 137a Rule 4: synthetic complete entry with all 5 required
+    provenance keys passes Rule 4 (no MISSING_PROVENANCE / INCOMPLETE
+    _PROVENANCE)."""
+    from Trainforge.generators.schema_translation_generator import (
+        validate_form_data_contract,
+    )
+
+    entry = _synthetic_complete_entry()
+    # Helper now ships a valid Provenance block by default.
+    assert entry.provenance is not None
+    form_data = {"test:Foo": entry}
+    result = validate_form_data_contract(form_data, ["test:Foo"])
+    codes = _violation_codes(result)
+    assert "MISSING_PROVENANCE" not in codes
+    assert "INCOMPLETE_PROVENANCE" not in codes
+
+
+def test_provenance_incomplete_keys_fires() -> None:
+    """Wave 137a Rule 4: provenance present but reviewed_by="" fires
+    INCOMPLETE_PROVENANCE; the empty key name appears in the detail."""
+    from Trainforge.generators.schema_translation_generator import (
+        Provenance,
+        validate_form_data_contract,
+    )
+
+    entry = _synthetic_complete_entry()
+    # Build a Provenance with reviewed_by deliberately empty.
+    entry.provenance = Provenance(
+        provider="operator_hand_curated",
+        generated_by="operator",
+        reviewed_by="",
+        prompt_version="wave-137a-fixture",
+        timestamp="2026-05-01T00:00:00Z",
+    )
+    form_data = {"test:Foo": entry}
+    result = validate_form_data_contract(form_data, ["test:Foo"])
+    codes = _violation_codes(result)
+    assert "INCOMPLETE_PROVENANCE" in codes
+    matching = [
+        v for v in result["content_violations"]
+        if v["code"] == "INCOMPLETE_PROVENANCE"
+    ]
+    assert "reviewed_by" in matching[0]["detail"]
+
+
+def test_provenance_pending_review_sentinel_fires() -> None:
+    """Wave 137a Rule 4: reviewed_by="PENDING_REVIEW" (the Wave 137c-2
+    drafting-CLI sentinel) fires INCOMPLETE_PROVENANCE — operators
+    must replace the sentinel before commit."""
+    from Trainforge.generators.schema_translation_generator import (
+        Provenance,
+        validate_form_data_contract,
+    )
+
+    entry = _synthetic_complete_entry()
+    entry.provenance = Provenance(
+        provider="qwen_local_14b_q4",
+        generated_by="draft_form_data_entry v1.0",
+        reviewed_by="PENDING_REVIEW",
+        prompt_version="wave-136c-v1.0",
+        timestamp="2026-05-01T00:00:00Z",
+    )
+    form_data = {"test:Foo": entry}
+    result = validate_form_data_contract(form_data, ["test:Foo"])
+    codes = _violation_codes(result)
+    assert "INCOMPLETE_PROVENANCE" in codes
+    matching = [
+        v for v in result["content_violations"]
+        if v["code"] == "INCOMPLETE_PROVENANCE"
+    ]
+    assert "PENDING_REVIEW" in matching[0]["detail"]
+
+
+def test_provenance_skipped_on_degraded_entries() -> None:
+    """Wave 137a Rule 4: degraded_placeholder entry without provenance
+    must NOT trigger Rule 4 (content rules skip degraded entries by
+    Wave 136b's design)."""
+    from Trainforge.generators.schema_translation_generator import (
+        SurfaceFormData,
+        validate_form_data_contract,
+    )
+
+    entry = SurfaceFormData(
+        curie="test:Bar",
+        short_name="Bar",
+        definitions=["[degraded: anchored definition not yet authored]"],
+        usage_examples=[(
+            "[degraded: anchored usage prompt not yet authored]",
+            "[degraded: anchored usage answer not yet authored]",
+        )],
+        anchored_status="degraded_placeholder",
+        provenance=None,
+    )
+    form_data = {"test:Bar": entry}
+    result = validate_form_data_contract(form_data, ["test:Bar"])
+    codes = _violation_codes(result)
+    assert "MISSING_PROVENANCE" not in codes
+    assert "INCOMPLETE_PROVENANCE" not in codes
+
+
+def test_six_gold_set_entries_pass_provenance() -> None:
+    """Wave 137a Rule 4: synthesize 6 entries from the in-Python
+    fallback dict with operator-authored provenance attached and
+    assert no Rule 4 violations fire.
+
+    The Wave 137c-3 gold-set YAML fixture carries operator-authored
+    provenance blocks per CURIE; this test asserts that the validator
+    accepts the same pattern when applied programmatically."""
+    import dataclasses
+    from Trainforge.generators.schema_translation_generator import (
+        _RDF_SHACL_FALLBACK_FORM_DATA,
+        validate_form_data_contract,
+    )
+
+    form_data = {}
+    for curie in _GROUND_TRUTH_CURIES:
+        base = _RDF_SHACL_FALLBACK_FORM_DATA[curie]
+        form_data[curie] = dataclasses.replace(
+            base, provenance=_operator_provenance()
+        )
+    result = validate_form_data_contract(
+        form_data, list(_GROUND_TRUTH_CURIES)
+    )
+    codes = {v["code"] for v in result["content_violations"]}
+    assert "MISSING_PROVENANCE" not in codes
+    assert "INCOMPLETE_PROVENANCE" not in codes
