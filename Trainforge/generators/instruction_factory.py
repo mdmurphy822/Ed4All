@@ -55,6 +55,35 @@ COMPLETION_MIN, COMPLETION_MAX = 50, 600
 #
 # Unknown combinations fall back to the ``_default`` row for the bloom level
 # and finally to ``("understand", "_default")``.
+#
+# Wave 133e: tailored cells now cover 10 content_type axes × 6 Bloom levels.
+# The 5 Wave 132b axes (``explanation``, ``example``, ``procedure``,
+# ``comparison``, plus a ``_default`` row) are joined by 5 high-frequency
+# axes surfaced in the rdf-shacl-551-2 chunk distribution: ``definition``,
+# ``summary``, ``overview``, ``real_world_scenario``, ``common_pitfall``.
+#
+# **Deliberate ``_default`` fallback set** (the chunk_v4 ChunkType enum
+# values that intentionally do NOT have tailored cells):
+#
+#   * ``concept``           — semantic overlap with ``definition`` /
+#                             ``explanation``; routes through whichever
+#                             bloom-default best fits the chunk.
+#   * ``page-title``        — chrome / structural; not real teaching content.
+#   * ``rationale``         — semantic overlap with ``explanation``.
+#   * ``motivation``        — semantic overlap with ``explanation`` /
+#                             ``overview`` openings.
+#   * ``analysis``          — semantic overlap with ``explanation`` at the
+#                             analyze-bloom level (already a tuned cell).
+#   * ``orientation``       — low frequency, structural framing only.
+#   * ``prerequisites``     — pedagogically owned by the prereq-recap
+#                             generator (Trainforge/synthesize_training.py),
+#                             not the per-chunk instruction surface.
+#   * ``exercise``          — owned by the assessment / DPO factories, not
+#                             the SFT instruction surface.
+#   * ``assessment_item``   — owned by the assessment generators; would
+#                             cross-contaminate templates.
+#   * ``problem_solution``  — low frequency; semantic overlap with
+#                             ``procedure`` (apply) + ``example`` cells.
 
 # Wave 132b: aliased to the canonical lib.ontology.bloom.BLOOM_LEVELS so
 # future canonical changes propagate without touching this factory.
@@ -102,6 +131,47 @@ TEMPLATE_CATALOG: Dict[Tuple[str, str], str] = {
     ("create", "procedure"):   "Design a simplified variant of the procedure for {topic} suitable for a beginner.",
     ("create", "comparison"):  "Create a new axis of comparison that would be useful when discussing {topic}.",
     ("create", "_default"):    "Design a short activity that teaches {topic} to a learner new to the material.",
+
+    # Wave 133e: tailored cells for the 5 high-frequency missing content types.
+    # definition
+    ("remember", "definition"):   "State the precise definition of {topic}.",
+    ("understand", "definition"): "In your own words, define {topic} and explain what it means.",
+    ("apply", "definition"):      "Use the definition of {topic} to identify it in a new context.",
+    ("analyze", "definition"):    "Break down the definition of {topic} into its essential components.",
+    ("evaluate", "definition"):   "Assess whether the standard definition of {topic} is precise enough for practical use.",
+    ("create", "definition"):     "Compose a concise, learner-friendly definition of {topic}.",
+
+    # summary
+    ("remember", "summary"):   "List the key points covered about {topic}.",
+    ("understand", "summary"): "In two sentences, summarize what {topic} covers.",
+    ("apply", "summary"):      "Apply the summary of {topic} to explain it to a peer.",
+    ("analyze", "summary"):    "Identify which aspects of {topic} the summary emphasizes and which it omits.",
+    ("evaluate", "summary"):   "Judge whether the summary of {topic} captures the most important elements.",
+    ("create", "summary"):     "Write a one-paragraph summary of {topic} for a beginner.",
+
+    # overview
+    ("remember", "overview"):   "Recall the main areas {topic} covers.",
+    ("understand", "overview"): "Describe the overall structure of {topic} and its main themes.",
+    ("apply", "overview"):      "Use an overview of {topic} to navigate to a specific subtopic.",
+    ("analyze", "overview"):    "Compare what an overview of {topic} emphasizes vs a deep dive.",
+    ("evaluate", "overview"):   "Evaluate whether the overview of {topic} prepares a learner for the detailed material.",
+    ("create", "overview"):     "Outline a high-level overview of {topic} for someone new to the area.",
+
+    # real_world_scenario
+    ("remember", "real_world_scenario"):   "Recall a real-world example where {topic} appears.",
+    ("understand", "real_world_scenario"): "Explain a real-world situation where {topic} matters.",
+    ("apply", "real_world_scenario"):      "Describe a real-world situation where {topic} matters and explain its impact.",
+    ("analyze", "real_world_scenario"):    "Analyze how {topic} influences the outcome of a real-world scenario.",
+    ("evaluate", "real_world_scenario"):   "Evaluate the consequences of ignoring {topic} in a real-world setting.",
+    ("create", "real_world_scenario"):     "Construct a realistic scenario in which a learner would encounter {topic}.",
+
+    # common_pitfall
+    ("remember", "common_pitfall"):   "Name a common pitfall when working with {topic}.",
+    ("understand", "common_pitfall"): "Explain why a common pitfall around {topic} happens.",
+    ("apply", "common_pitfall"):      "Walk through how to avoid the common pitfall of {topic} in practice.",
+    ("analyze", "common_pitfall"):    "Identify the common pitfall in handling {topic} and assess why learners fall into it.",
+    ("evaluate", "common_pitfall"):   "Judge how serious the common pitfall around {topic} is in practice.",
+    ("create", "common_pitfall"):     "Devise a check that would catch the common pitfall of {topic} before it causes problems.",
 }
 
 
