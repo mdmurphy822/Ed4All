@@ -30,6 +30,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from lib.ontology.slugs import deslugify_concept
+
 logger = logging.getLogger(__name__)
 
 
@@ -209,7 +211,11 @@ def _derive_topic(chunk: Dict[str, Any]) -> str:
     if tags:
         t = str(tags[0]).strip()
         if t:
-            return t.replace("-", " ").replace("_", " ")
+            # Wave 130d: deslugify_concept strips a trailing
+            # ``-(co|to)-NN`` LO-ref suffix before the hyphen-to-space
+            # transform so ``property-paths-co-15`` -> ``property paths``
+            # instead of ``property paths co 15``.
+            return deslugify_concept(t)
     key_terms = chunk.get("key_terms") or []
     if key_terms and isinstance(key_terms[0], dict):
         term = key_terms[0].get("term")

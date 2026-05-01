@@ -745,3 +745,58 @@ def test_build_misconception_dpo_pair_no_log_when_pair_built():
     assert captured == [], (
         "log_decision must NOT fire when the misconception pair is built"
     )
+# Wave 130d: instruction_factory + preference_factory _derive_topic must
+# NOT bleed CO-NN / TO-NN LO-ref tokens into prompt text.
+#
+# The CURIE-fidelity audit found 14B-Q4 paraphrase pairs echoing
+# "property paths co 15" / "subqueries to 03" because concept tags
+# built from CO-NN / TO-NN learning-objective refs were running
+# through .replace("-", " ").replace("_", " ") — leaving the LO code
+# bare in the deslugified topic. Wave 130d routes both factories'
+# _derive_topic through deslugify_concept, which strips the LO-ref
+# suffix before the deslug transform.
+# ---------------------------------------------------------------------------
+
+
+def test_derive_topic_strips_lo_ref_suffix_from_concept_tag():
+    """``_derive_topic`` is the source of the ``{topic}`` placeholder
+    that fills almost every instruction-pair prompt template. Wave 130d
+    routes it through ``deslugify_concept`` so a chunk carrying a
+    pre-Layer-1 concept tag like ``property-paths-co-15`` renders as
+    ``property paths`` instead of ``property paths co 15``.
+    """
+    from Trainforge.generators.instruction_factory import _derive_topic
+
+    chunk = {"concept_tags": ["property-paths-co-15"]}
+    assert _derive_topic(chunk) == "property paths"
+
+
+def test_derive_topic_strips_to_lo_ref_suffix():
+    from Trainforge.generators.instruction_factory import _derive_topic
+
+    chunk = {"concept_tags": ["subqueries-to-03"]}
+    assert _derive_topic(chunk) == "subqueries"
+
+
+def test_derive_topic_preserves_legitimate_to_substring():
+    """A concept tag that contains ``-to-`` but not as a numeric
+    LO ref deslugs identically to the legacy chain (no LO strip)."""
+    from Trainforge.generators.instruction_factory import _derive_topic
+
+    chunk = {"concept_tags": ["pattern-to-remember"]}
+    assert _derive_topic(chunk) == "pattern to remember"
+
+
+def test_preference_factory_derive_topic_strips_lo_ref():
+    """Preference-factory mirror of the instruction-factory test."""
+    from Trainforge.generators.preference_factory import _derive_topic
+
+    chunk = {"concept_tags": ["property-paths-co-15"]}
+    assert _derive_topic(chunk) == "property paths"
+
+
+def test_preference_factory_derive_topic_preserves_legitimate_to():
+    from Trainforge.generators.preference_factory import _derive_topic
+
+    chunk = {"concept_tags": ["pattern-to-remember"]}
+    assert _derive_topic(chunk) == "pattern to remember"

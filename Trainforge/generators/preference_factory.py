@@ -28,6 +28,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
+from lib.ontology.slugs import deslugify_concept
+
 logger = logging.getLogger(__name__)
 
 
@@ -147,7 +149,11 @@ def _jaccard(a: str, b: str) -> float:
 def _derive_topic(chunk: Dict[str, Any]) -> str:
     tags = chunk.get("concept_tags") or []
     if tags:
-        return str(tags[0]).replace("-", " ").replace("_", " ")
+        # Wave 130d: deslugify_concept strips a trailing ``-(co|to)-NN``
+        # LO-ref suffix before the hyphen-to-space transform so
+        # ``property-paths-co-15`` -> ``property paths`` rather than
+        # bleeding ``co 15`` artifact tokens into the prompt.
+        return deslugify_concept(str(tags[0]))
     key_terms = chunk.get("key_terms") or []
     if key_terms and isinstance(key_terms[0], dict):
         term = key_terms[0].get("term")
