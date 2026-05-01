@@ -58,6 +58,7 @@ from Trainforge.generators.schema_translation_generator import (  # noqa: E402
     _load_form_data,
     validate_form_data_contract,
 )
+from Trainforge.scripts._review_checklist import build_review_checklist  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -344,13 +345,23 @@ def _render_yaml_block(
     family: str,
     curie: str,
     entry: SurfaceFormData,
+    *,
+    validator_score_summary: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Render the YAML block + operator next-steps comment block.
+    """Render the YAML block + review checklist + next-steps banner.
 
     The YAML uses ``yaml.safe_dump`` with sort_keys=False (preserve our
     field order), default_flow_style=False (block style — readable),
     allow_unicode=True (CURIE colons + UTF-8 spec quotes round-trip),
     and width=120.
+
+    Wave 137d-1: emits the auto-printed review checklist between the
+    YAML block and the operator next-steps banner. The checklist
+    structures operator review (always-2 + sample-3) so reviewer
+    fatigue stays bounded at backfill scale. The backfill loop's YAML
+    slicer cuts at the first of either the checklist header or the
+    next-steps header, so the YAML still round-trips cleanly through
+    ``yaml.safe_load``.
     """
     import yaml
 
@@ -365,8 +376,13 @@ def _render_yaml_block(
         allow_unicode=True,
         width=120,
     )
+    checklist = build_review_checklist(
+        curie,
+        entry,
+        validator_score_summary=validator_score_summary,
+    )
     next_steps = _NEXT_STEPS_TEMPLATE.format(family=family, curie=curie)
-    return f"{yaml_text}\n{next_steps}"
+    return f"{yaml_text}\n{checklist}\n\n{next_steps}"
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:

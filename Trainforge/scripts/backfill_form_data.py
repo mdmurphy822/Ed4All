@@ -322,21 +322,35 @@ def _atomic_write_yaml(payload: Dict[str, Any], target: Path) -> None:
 # Wave 136c drafting CLI's stdout into the YAML payload (drop the
 # trailing operator next-steps comment block before yaml.safe_load).
 _NEXT_STEPS_HEADER_RE = re.compile(r"^\s*#\s*NEXT STEPS\s*$", re.MULTILINE)
+# Wave 137d-1: when the drafting CLI emits a review checklist between
+# the YAML block and the next-steps banner, the slicer must cut at the
+# checklist header (it appears BEFORE the next-steps header). Match the
+# 60-equals-sign banner followed by "REVIEW CHECKLIST" on the next line.
+_REVIEW_CHECKLIST_HEADER_RE = re.compile(
+    r"^=+\s*\nREVIEW CHECKLIST",
+    re.MULTILINE,
+)
 
 
 def _extract_yaml_payload_from_drafting_stdout(stdout: str) -> Dict[str, Any]:
     """Slice the YAML payload out of the drafting CLI's stdout.
 
-    The Wave 136c CLI emits ``<yaml-text>\\n\\n# NEXT STEPS\\n...`` —
-    we cut at the first ``# NEXT STEPS`` line and yaml.safe_load the
-    head. The ``# ...`` next-steps lines are still valid YAML
-    comments, but slicing first makes parse failures clearer for the
-    operator.
+    Pre-Wave-137d-1: ``<yaml-text>\\n\\n# NEXT STEPS\\n...`` — we cut
+    at the first ``# NEXT STEPS`` line.
+
+    Wave 137d-1: ``<yaml-text>\\n\\n=== REVIEW CHECKLIST ...\\n\\n# NEXT STEPS\\n...``
+    — we cut at the first of either header so the YAML round-trips
+    cleanly through ``yaml.safe_load``. Slicing first also keeps
+    parse failures easy to diagnose for the operator.
     """
     import yaml as _yaml
 
-    match = _NEXT_STEPS_HEADER_RE.search(stdout)
-    head = stdout[: match.start()] if match else stdout
+    next_steps_match = _NEXT_STEPS_HEADER_RE.search(stdout)
+    checklist_match = _REVIEW_CHECKLIST_HEADER_RE.search(stdout)
+    cut_positions = [
+        m.start() for m in (next_steps_match, checklist_match) if m is not None
+    ]
+    head = stdout[: min(cut_positions)] if cut_positions else stdout
     payload = _yaml.safe_load(head)
     if not isinstance(payload, dict) or "forms" not in payload:
         raise RuntimeError(
