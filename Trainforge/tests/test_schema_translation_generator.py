@@ -1704,3 +1704,162 @@ def test_validator_skips_content_rules_for_degraded_placeholder_entries() -> Non
     # Structural counts reflect the degraded status.
     assert result["degraded_count"] == 1
     assert result["complete_count"] == 0
+
+
+# -----------------------------------------------------------------------------
+# Wave 137c — Provenance dataclass + JSON schema + YAML loader coercion.
+# -----------------------------------------------------------------------------
+
+
+def test_provenance_dataclass_is_frozen() -> None:
+    """Wave 137c: ``Provenance`` must be a frozen dataclass so an
+    audit trail captured at backfill time cannot be mutated later by
+    downstream code paths."""
+    from Trainforge.generators.schema_translation_generator import Provenance
+
+    assert Provenance.__dataclass_params__.frozen is True
+
+
+def test_yaml_loader_round_trips_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Wave 137c: a YAML overlay carrying a full provenance block must
+    round-trip into the loaded ``SurfaceFormData.provenance`` field."""
+    from Trainforge.generators import schema_translation_generator as stg
+
+    fake_root = tmp_path
+    schemas_dir = fake_root / "schemas" / "training"
+    schemas_dir.mkdir(parents=True)
+    yaml_path = schemas_dir / "schema_translation_catalog.rdf_shacl.yaml"
+    yaml_path.write_text(
+        "family: rdf_shacl\n"
+        "forms:\n"
+        "  test:Foo:\n"
+        "    short_name: foo\n"
+        "    anchored_status: complete\n"
+        "    definitions:\n"
+        "      - 'test:Foo is a synthetic predicate authored as a Wave 137c provenance round-trip fixture for the YAML loader test.'\n"
+        "    usage_examples:\n"
+        "      - ['Show test:Foo usage.', 'A typical TTL sample uses test:Foo as a property.']\n"
+        "    provenance:\n"
+        "      provider: operator_hand_curated\n"
+        "      generated_by: operator\n"
+        "      reviewed_by: '@mdmurphy822'\n"
+        "      prompt_version: n/a-pre-wave-136c\n"
+        "      timestamp: '2026-05-01T00:00:00Z'\n"
+        "      notes: Wave 137c round-trip test fixture.\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(stg, "PROJECT_ROOT", fake_root)
+    stg._invalidate_form_data_cache()
+
+    overlay = stg._load_yaml_catalog("rdf_shacl")
+    assert "test:Foo" in overlay
+    entry = overlay["test:Foo"]
+    assert entry.provenance is not None
+    assert entry.provenance.reviewed_by == "@mdmurphy822"
+    assert entry.provenance.provider == "operator_hand_curated"
+    assert entry.provenance.notes == "Wave 137c round-trip test fixture."
+
+    stg._invalidate_form_data_cache()
+
+
+def test_yaml_loader_returns_none_provenance_when_absent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+) -> None:
+    """Wave 137c: a YAML overlay entry that omits ``provenance``
+    entirely must yield ``SurfaceFormData.provenance is None`` (no
+    coercion failure, no implicit defaulting)."""
+    from Trainforge.generators import schema_translation_generator as stg
+
+    fake_root = tmp_path
+    schemas_dir = fake_root / "schemas" / "training"
+    schemas_dir.mkdir(parents=True)
+    yaml_path = schemas_dir / "schema_translation_catalog.rdf_shacl.yaml"
+    yaml_path.write_text(
+        "family: rdf_shacl\n"
+        "forms:\n"
+        "  test:Bar:\n"
+        "    short_name: bar\n"
+        "    anchored_status: degraded_placeholder\n"
+        "    definitions:\n"
+        "      - '[degraded: anchored definition not yet authored — see Wave 135a contract]'\n"
+        "    usage_examples:\n"
+        "      - ['[degraded: anchored usage prompt not yet authored]', '[degraded: anchored usage answer not yet authored]']\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(stg, "PROJECT_ROOT", fake_root)
+    stg._invalidate_form_data_cache()
+
+    overlay = stg._load_yaml_catalog("rdf_shacl")
+    assert "test:Bar" in overlay
+    assert overlay["test:Bar"].provenance is None
+
+    stg._invalidate_form_data_cache()
+
+
+def test_yaml_loader_returns_none_provenance_when_keys_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Any,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Wave 137c: a YAML overlay entry with a malformed provenance dict
+    (missing required key) must coerce to ``None`` and emit a
+    ``logger.error`` so the operator sees the parse failure.
+
+    Critically: the malformed provenance must NOT raise — Plan A's
+    validator is the strict-enforcement surface; the loader is
+    deliberately lenient to preserve base-fallback safety."""
+    import logging
+
+    from Trainforge.generators import schema_translation_generator as stg
+
+    fake_root = tmp_path
+    schemas_dir = fake_root / "schemas" / "training"
+    schemas_dir.mkdir(parents=True)
+    yaml_path = schemas_dir / "schema_translation_catalog.rdf_shacl.yaml"
+    yaml_path.write_text(
+        "family: rdf_shacl\n"
+        "forms:\n"
+        "  test:Baz:\n"
+        "    short_name: baz\n"
+        "    anchored_status: complete\n"
+        "    definitions:\n"
+        "      - 'test:Baz is a synthetic predicate authored as a Wave 137c malformed-provenance fixture for the YAML loader test.'\n"
+        "    usage_examples:\n"
+        "      - ['Show test:Baz usage.', 'A typical TTL sample uses test:Baz as a property.']\n"
+        "    provenance:\n"
+        "      provider: operator_hand_curated\n"
+        "      generated_by: operator\n"
+        "      prompt_version: n/a-pre-wave-136c\n"
+        "      timestamp: '2026-05-01T00:00:00Z'\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(stg, "PROJECT_ROOT", fake_root)
+    stg._invalidate_form_data_cache()
+
+    caplog.set_level(
+        logging.ERROR,
+        logger="Trainforge.generators.schema_translation_generator",
+    )
+
+    overlay = stg._load_yaml_catalog("rdf_shacl")
+    assert "test:Baz" in overlay
+    assert overlay["test:Baz"].provenance is None
+
+    error_logs = [
+        r for r in caplog.records
+        if r.levelno >= logging.ERROR
+        and "provenance block missing required keys" in r.getMessage()
+    ]
+    assert error_logs, (
+        f"Wave 137c: malformed provenance must emit logger.error; got "
+        f"{[r.getMessage() for r in caplog.records]!r}"
+    )
+
+    stg._invalidate_form_data_cache()
