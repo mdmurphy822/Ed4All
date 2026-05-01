@@ -593,3 +593,299 @@ def test_existing_rdf_shacl_pairs_byte_identical() -> None:
         )
         assert pairs_a[idx]["concept_tags"] == pairs_b[idx]["concept_tags"]
         assert pairs_a[idx]["template_id"] == pairs_b[idx]["template_id"]
+
+
+# ---------------------------------------------------------------------------
+# Wave 135a: FORM_DATA contract scaffolding tests.
+#
+# Pin the user-stipulated safety contract for Wave 135b's anchored
+# force-injection path:
+#   1. Every manifest CURIE has >=1 definition entry.
+#   2. Every manifest CURIE has >=1 usage_example entry.
+#   3. No CURIE falls back to token-stuffing UNLESS its anchored_status
+#      is explicitly "degraded_placeholder".
+# ---------------------------------------------------------------------------
+
+
+def _load_rdf_shacl_manifest_curies() -> List[str]:
+    """Load the rdf-shacl manifest from disk; return its CURIE list."""
+    from lib.ontology.property_manifest import load_property_manifest
+
+    manifest = load_property_manifest("rdf-shacl-551-2")
+    return [p.curie for p in manifest.properties]
+
+
+def test_form_data_covers_all_manifest_curies() -> None:
+    """Wave 135b MERGE GATE: every manifest CURIE has a FORM_DATA entry.
+
+    This is the structural contract that Wave 135b's anchored
+    force-injection path requires. Without this every-CURIE coverage,
+    a force-inject call against an unmapped CURIE has no entry to
+    dispatch on, which is what Wave 135a closes.
+    """
+    from Trainforge.generators.schema_translation_generator import (
+        _RDF_SHACL_FALLBACK_FORM_DATA,
+    )
+
+    manifest_curies = _load_rdf_shacl_manifest_curies()
+    assert manifest_curies, "manifest must declare at least one CURIE"
+
+    missing = [c for c in manifest_curies if c not in _RDF_SHACL_FALLBACK_FORM_DATA]
+    assert not missing, (
+        f"Wave 135a contract: every manifest CURIE must have a "
+        f"FORM_DATA entry. Missing {len(missing)}: {missing}"
+    )
+
+
+def test_every_form_data_entry_has_at_least_one_definition() -> None:
+    """Structural — every entry must carry >=1 definition string."""
+    from Trainforge.generators.schema_translation_generator import (
+        _RDF_SHACL_FALLBACK_FORM_DATA,
+    )
+
+    offenders = [
+        curie
+        for curie, entry in _RDF_SHACL_FALLBACK_FORM_DATA.items()
+        if len(entry.definitions) < 1
+    ]
+    assert not offenders, (
+        f"Wave 135a contract: every FORM_DATA entry must have >=1 "
+        f"definition (real OR degraded stub). Offenders: {offenders}"
+    )
+
+
+def test_every_form_data_entry_has_at_least_one_usage_example() -> None:
+    """Structural — every entry must carry >=1 usage_example tuple."""
+    from Trainforge.generators.schema_translation_generator import (
+        _RDF_SHACL_FALLBACK_FORM_DATA,
+    )
+
+    offenders = [
+        curie
+        for curie, entry in _RDF_SHACL_FALLBACK_FORM_DATA.items()
+        if len(entry.usage_examples) < 1
+    ]
+    assert not offenders, (
+        f"Wave 135a contract: every FORM_DATA entry must have >=1 "
+        f"usage_example (real OR degraded stub). Offenders: {offenders}"
+    )
+
+
+def test_anchored_status_is_valid_enum() -> None:
+    """Every entry's ``anchored_status`` must be one of the two valid
+    discriminator values: ``"complete"`` or ``"degraded_placeholder"``."""
+    from Trainforge.generators.schema_translation_generator import (
+        _RDF_SHACL_FALLBACK_FORM_DATA,
+    )
+
+    valid = {"complete", "degraded_placeholder"}
+    offenders = {
+        curie: entry.anchored_status
+        for curie, entry in _RDF_SHACL_FALLBACK_FORM_DATA.items()
+        if entry.anchored_status not in valid
+    }
+    assert not offenders, (
+        f"Wave 135a contract: anchored_status must be one of {valid}. "
+        f"Offenders: {offenders}"
+    )
+
+
+def test_existing_six_curies_remain_complete() -> None:
+    """Regression-pin: the 6 pre-Wave-135a entries (sh:datatype,
+    sh:class, sh:NodeShape, sh:PropertyShape, rdfs:subClassOf,
+    owl:sameAs) MUST keep ``anchored_status="complete"``. An accidental
+    degradation would silently drop their pairs from the schema-
+    translation generator output and tank the Wave 125b 250-pair
+    catalog volume."""
+    from Trainforge.generators.schema_translation_generator import (
+        _RDF_SHACL_FALLBACK_FORM_DATA,
+    )
+
+    expected_complete = {
+        "sh:datatype",
+        "sh:class",
+        "sh:NodeShape",
+        "sh:PropertyShape",
+        "rdfs:subClassOf",
+        "owl:sameAs",
+    }
+    for curie in expected_complete:
+        entry = _RDF_SHACL_FALLBACK_FORM_DATA.get(curie)
+        assert entry is not None, (
+            f"Wave 135a regression: pre-Wave-135a entry {curie!r} "
+            f"missing from FORM_DATA"
+        )
+        assert entry.anchored_status == "complete", (
+            f"Wave 135a regression: {curie!r} must keep "
+            f"anchored_status='complete' (got "
+            f"{entry.anchored_status!r}). Backfill operators must NOT "
+            f"flip a complete entry to degraded — only the reverse."
+        )
+
+
+def test_thirty_four_new_curies_are_degraded_placeholder() -> None:
+    """Wave 135a ships 34 new entries (40 manifest CURIEs - 6 existing).
+    Every one of them must be tagged ``anchored_status=
+    "degraded_placeholder"`` so Wave 135b's force-injection path knows
+    where to stub-fill / WARN.
+    """
+    from Trainforge.generators.schema_translation_generator import (
+        _RDF_SHACL_FALLBACK_FORM_DATA,
+    )
+
+    degraded = [
+        curie
+        for curie, entry in _RDF_SHACL_FALLBACK_FORM_DATA.items()
+        if entry.anchored_status == "degraded_placeholder"
+    ]
+    assert len(degraded) == 34, (
+        f"Wave 135a contract: expected exactly 34 "
+        f"anchored_status='degraded_placeholder' entries (40 manifest "
+        f"CURIEs - 6 existing complete entries). Got {len(degraded)}."
+    )
+
+
+def test_validate_form_data_contract_passes_on_full_set() -> None:
+    """Positive case: the shipped FORM_DATA + the rdf-shacl manifest
+    together must satisfy the Wave 135a contract."""
+    from Trainforge.generators.schema_translation_generator import (
+        _RDF_SHACL_FALLBACK_FORM_DATA,
+        validate_form_data_contract,
+    )
+
+    manifest_curies = _load_rdf_shacl_manifest_curies()
+    result = validate_form_data_contract(
+        _RDF_SHACL_FALLBACK_FORM_DATA, manifest_curies
+    )
+    assert result["passed"] is True, result
+    assert result["missing_curies"] == []
+    assert result["incomplete_curies"] == []
+    assert result["invalid_status_curies"] == []
+    assert result["complete_count"] == 6
+    assert result["degraded_count"] == 34
+
+
+def test_validate_form_data_contract_fails_on_missing_curie() -> None:
+    """Negative case: drop one manifest CURIE from the form_data
+    input; the validator must report ``passed=False`` with the
+    dropped CURIE listed in ``missing_curies``."""
+    from Trainforge.generators.schema_translation_generator import (
+        _RDF_SHACL_FALLBACK_FORM_DATA,
+        validate_form_data_contract,
+    )
+
+    manifest_curies = _load_rdf_shacl_manifest_curies()
+    # Pick a known degraded-placeholder CURIE to drop so the test
+    # doesn't depend on which entry happens to be at any particular
+    # position in the manifest.
+    drop_target = "sh:minCount"
+    assert drop_target in _RDF_SHACL_FALLBACK_FORM_DATA, (
+        f"test fixture invariant: {drop_target} should be in FORM_DATA"
+    )
+    synthetic = {
+        curie: entry
+        for curie, entry in _RDF_SHACL_FALLBACK_FORM_DATA.items()
+        if curie != drop_target
+    }
+    result = validate_form_data_contract(synthetic, manifest_curies)
+    assert result["passed"] is False
+    assert drop_target in result["missing_curies"]
+
+
+# ---------------------------------------------------------------------------
+# Wave 135a: schema_translation generator must skip degraded entries
+# so no pair body ever contains the literal "[degraded:" stub text.
+# ---------------------------------------------------------------------------
+
+
+def test_schema_translation_skips_degraded_placeholder_entries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Synthetic form_data with mixed complete + degraded entries.
+
+    Asserts:
+      1. Generated pairs ONLY come from ``complete`` entries.
+      2. No pair body contains the literal ``"[degraded:"`` token —
+         the stub strings must never bleed into the emitted pair list
+         that gets written to ``instruction_pairs.jsonl``.
+    """
+    from Trainforge.generators import schema_translation_generator as stg
+    from Trainforge.generators.schema_translation_generator import (
+        SurfaceFormData,
+        generate_schema_translation_pairs,
+    )
+
+    # Build a synthetic form_data with one complete + one degraded
+    # entry. Re-use the real sh:datatype entry for "complete" so we
+    # exercise the actual catalog walk on a known surface form.
+    real_datatype = stg._RDF_SHACL_FALLBACK_FORM_DATA["sh:datatype"]
+    synthetic_form_data = {
+        "sh:datatype": real_datatype,
+        "sh:minCount": SurfaceFormData(
+            curie="sh:minCount",
+            short_name="sh:minCount",
+            definitions=[
+                "[degraded: anchored definition not yet authored — see Wave 135a contract]",
+            ],
+            usage_examples=[
+                (
+                    "[degraded: anchored usage prompt not yet authored]",
+                    "[degraded: anchored usage answer not yet authored]",
+                ),
+            ],
+            anchored_status="degraded_placeholder",
+        ),
+    }
+
+    # Force the loader to return our synthetic form_data so we exercise
+    # the skip-on-degraded path inside generate_schema_translation_pairs
+    # without relying on the on-disk catalog or other entries.
+    monkeypatch.setattr(
+        stg, "_load_form_data", lambda family: synthetic_form_data
+    )
+
+    manifest = PropertyManifest(
+        family="rdf_shacl",
+        properties=[
+            PropertyEntry(
+                id="sh_datatype",
+                uri="http://www.w3.org/ns/shacl#datatype",
+                curie="sh:datatype",
+                label="SHACL datatype constraint",
+                surface_forms=["sh:datatype"],
+                min_pairs=2,
+            ),
+            PropertyEntry(
+                id="sh_mincount",
+                uri="http://www.w3.org/ns/shacl#minCount",
+                curie="sh:minCount",
+                label="SHACL minCount",
+                surface_forms=["sh:minCount"],
+                min_pairs=2,
+            ),
+        ],
+    )
+    capture = _FakeCapture()
+    pairs, _stats = generate_schema_translation_pairs(
+        manifest, capture=capture, max_pairs=10000,
+    )
+
+    assert pairs, "expected emitted pairs from the complete entry"
+
+    # 1. Every emitted pair must come from the COMPLETE entry only.
+    emitted_curies = {p["concept_tags"][0] for p in pairs}
+    assert emitted_curies == {"sh:datatype"}, (
+        f"degraded-placeholder entries must NEVER appear in emitted "
+        f"pairs. Got concept_tag CURIEs: {emitted_curies}"
+    )
+
+    # 2. The literal "[degraded:" token must not appear anywhere in
+    #    any prompt or completion of the emitted pairs.
+    for pair in pairs:
+        assert "[degraded:" not in pair["prompt"], (
+            f"degraded stub leaked into prompt: {pair['prompt']!r}"
+        )
+        assert "[degraded:" not in pair["completion"], (
+            f"degraded stub leaked into completion: "
+            f"{pair['completion']!r}"
+        )
