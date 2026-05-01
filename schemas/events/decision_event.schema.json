@@ -88,6 +88,7 @@
         "eval_run_decision",
         "example_selection",
         "existing_content_usage",
+        "family_completeness_decision",
         "file_creation",
         "form_data_backfill_session",
         "form_data_degraded_placeholder_skipped",
