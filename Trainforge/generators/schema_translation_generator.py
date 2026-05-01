@@ -71,6 +71,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1607,26 +1608,46 @@ def resolve_anchor_text_for_curie(
 
 # -----------------------------------------------------------------------------
 # Wave 135a: FORM_DATA coverage contract validator.
+# Wave 136b: extended with content-quality rejection rules.
 # -----------------------------------------------------------------------------
+
+
+# Wave 136b: forbidden definition prefixes (the Wave 121 token-stuffing
+# template patterns the FORM_DATA contract is designed to replace).
+# Anchored at the start of the string via ``re.match``.
+_OLD_SUFFIX_TEMPLATE_RE = re.compile(
+    r"^(Canonical terms:|Required terms:|Reference:|Relevant terms:"
+    r"|Key vocabulary:|The relevant terms are|This concerns)"
+)
+
+# Wave 136b: leak markers that must NEVER appear in a complete entry's
+# content. ``"[degraded:"`` is the Wave 135a stub prefix; ``"not yet
+# authored"`` is the Wave 135a stub-text suffix.
+_PLACEHOLDER_LEAK_TOKENS: Tuple[str, ...] = (
+    "[degraded:",
+    "not yet authored",
+)
+
+# Wave 136b: extracts CURIE-shaped tokens (``prefix:LocalName``) from a
+# definition string for the WRONG_CURIE_ONLY_MENTION rule.
+_CURIE_TOKEN_RE = re.compile(r"\b[a-z]+:[A-Za-z][A-Za-z0-9_]*")
 
 
 def validate_form_data_contract(
     form_data: Dict[str, SurfaceFormData],
     manifest_curies: Iterable[str],
+    *,
+    base_form_data: Optional[Dict[str, SurfaceFormData]] = None,
 ) -> Dict[str, Any]:
-    """Wave 135a — enforce the FORM_DATA coverage contract.
+    """Wave 135a / Wave 136b — enforce the FORM_DATA coverage contract.
 
-    This is the merge gate for Wave 135b. The user-stipulated safety
-    contract is:
-
-        For every CURIE in the rdf-shacl property manifest:
-          1. >=1 definition entry (real content OR explicit
-             ``[degraded:`` placeholder).
-          2. >=1 usage_example entry (real content OR explicit
-             ``[degraded:`` placeholder).
-          3. No CURIE falls back to token-stuffing UNLESS its
-             ``anchored_status`` is explicitly marked
-             ``"degraded_placeholder"``.
+    Wave 135a established the structural contract (every manifest CURIE
+    has >=1 def + >=1 usage_example, every entry's ``anchored_status``
+    is in the canonical set). Wave 136b extends the validator with
+    nine content-quality rejection rules that fire ONLY against entries
+    with ``anchored_status="complete"`` — degraded entries skip every
+    content rule because their stub strings are intentionally
+    out-of-bounds.
 
     Args:
         form_data: The catalog dict (typically
@@ -1634,24 +1655,56 @@ def validate_form_data_contract(
         manifest_curies: Iterable of CURIEs declared by the property
             manifest. Each one must have an entry in ``form_data`` with
             >=1 definition AND >=1 usage_example.
+        base_form_data: Optional Wave 136a base form_data dict (the
+            Python-fallback catalog before the YAML overlay merged).
+            When passed, the validator emits an
+            ``OVERLAY_LOAD_REGRESSION`` warning for any CURIE whose
+            status flipped from ``"complete"`` (in base) to
+            ``"degraded_placeholder"`` (in form_data) — visibility-only,
+            non-blocking.
 
     Returns:
         Dict with keys:
-          * ``passed``: bool — True iff every manifest CURIE is in
-            form_data with >=1 def + >=1 usage_example AND every entry's
-            ``anchored_status`` is one of the two valid values.
+          * ``passed``: bool — True iff structural checks AND no
+            critical content_violations.
           * ``missing_curies``: list[str] — manifest CURIEs not in
             form_data at all (sorted).
           * ``incomplete_curies``: list[str] — entries failing >=1 def
             + >=1 usage_example (sorted).
-          * ``degraded_count``: int — # of entries in form_data with
+          * ``degraded_count``: int — # of entries with
             ``anchored_status="degraded_placeholder"``.
-          * ``complete_count``: int — # of entries in form_data with
+          * ``complete_count``: int — # of entries with
             ``anchored_status="complete"``.
           * ``invalid_status_curies``: list[str] — entries whose
             ``anchored_status`` is not in the canonical set (sorted).
+          * ``content_violations``: list[dict] — Wave 136b critical
+            content-quality rule violations. Each entry has shape
+            ``{curie, code, detail}``. Only entries with
+            ``anchored_status="complete"`` are checked.
+          * ``warnings``: list[dict] — Wave 136b non-blocking warning
+            signals (currently ``OVERLAY_LOAD_REGRESSION``). Each entry
+            has shape ``{curie, code, detail}``.
     """
+    # Pre-import the length-bound constants from the canonical
+    # synthesis-provider module so this validator stays consistent with
+    # the runtime length checks the providers enforce. Imported inside
+    # the function to keep the module-level import graph minimal — the
+    # constants are referenced ONLY by Wave 136b's content rules.
+    from Trainforge.generators._anthropic_provider import (
+        COMPLETION_MAX,
+        COMPLETION_MIN,
+        PROMPT_MAX,
+        PROMPT_MIN,
+    )
+
     manifest_set = list(manifest_curies)
+    manifest_curie_set = set(manifest_set)
+    # Plus every CURIE keyed in form_data — operators can author
+    # content-only entries (e.g. comparison targets) for CURIEs the
+    # manifest doesn't declare. Treat every keyed CURIE as a potential
+    # "OTHER manifest CURIE" for the WRONG_CURIE_ONLY_MENTION rule.
+    full_curie_set = manifest_curie_set | set(form_data.keys())
+
     missing: List[str] = []
     incomplete: List[str] = []
     invalid_status: List[str] = []
@@ -1675,10 +1728,225 @@ def validate_form_data_contract(
         else:
             invalid_status.append(curie)
 
+    # Wave 136b: content-quality rules. Iterate ONLY over complete
+    # entries — degraded entries skip every content check by design
+    # (their stub strings violate length bounds and contain "[degraded:"
+    # by construction).
+    content_violations: List[Dict[str, str]] = []
+
+    for curie, entry in form_data.items():
+        if entry.anchored_status != "complete":
+            continue
+
+        # Rule: CURIE_NOT_VERBATIM_DEFINITION (per definition string).
+        for idx, definition in enumerate(entry.definitions):
+            if curie not in definition:
+                content_violations.append(
+                    {
+                        "curie": curie,
+                        "code": "CURIE_NOT_VERBATIM_DEFINITION",
+                        "detail": (
+                            f"definitions[{idx}] does not contain the "
+                            f"literal CURIE {curie!r}"
+                        ),
+                    }
+                )
+
+        # Rule: CURIE_NOT_VERBATIM_USAGE_ANSWER (per usage_examples
+        # answer field).
+        for idx, usage_tuple in enumerate(entry.usage_examples):
+            # usage_examples is List[Tuple[str, str]] = (prompt, answer)
+            if len(usage_tuple) < 2:
+                continue
+            answer = usage_tuple[1]
+            if curie not in answer:
+                content_violations.append(
+                    {
+                        "curie": curie,
+                        "code": "CURIE_NOT_VERBATIM_USAGE_ANSWER",
+                        "detail": (
+                            f"usage_examples[{idx}] answer does not "
+                            f"contain the literal CURIE {curie!r}"
+                        ),
+                    }
+                )
+
+        # Rule: OLD_SUFFIX_TEMPLATE_LEAK (per definition).
+        for idx, definition in enumerate(entry.definitions):
+            if _OLD_SUFFIX_TEMPLATE_RE.match(definition):
+                content_violations.append(
+                    {
+                        "curie": curie,
+                        "code": "OLD_SUFFIX_TEMPLATE_LEAK",
+                        "detail": (
+                            f"definitions[{idx}] starts with a "
+                            f"forbidden Wave 121 token-stuffing "
+                            f"template prefix"
+                        ),
+                    }
+                )
+
+        # Rule: PLACEHOLDER_LEAKAGE (per definition + per usage string).
+        for idx, definition in enumerate(entry.definitions):
+            for token in _PLACEHOLDER_LEAK_TOKENS:
+                if token in definition:
+                    content_violations.append(
+                        {
+                            "curie": curie,
+                            "code": "PLACEHOLDER_LEAKAGE",
+                            "detail": (
+                                f"definitions[{idx}] contains "
+                                f"placeholder marker {token!r}"
+                            ),
+                        }
+                    )
+                    break
+        for idx, usage_tuple in enumerate(entry.usage_examples):
+            if len(usage_tuple) < 2:
+                continue
+            for field_name, value in (
+                ("prompt", usage_tuple[0]),
+                ("answer", usage_tuple[1]),
+            ):
+                for token in _PLACEHOLDER_LEAK_TOKENS:
+                    if token in value:
+                        content_violations.append(
+                            {
+                                "curie": curie,
+                                "code": "PLACEHOLDER_LEAKAGE",
+                                "detail": (
+                                    f"usage_examples[{idx}] "
+                                    f"{field_name} contains "
+                                    f"placeholder marker {token!r}"
+                                ),
+                            }
+                        )
+                        break
+
+        # Rule: LENGTH_OUT_OF_BOUNDS_DEF (50 <= len <= 400).
+        for idx, definition in enumerate(entry.definitions):
+            if not (50 <= len(definition) <= 400):
+                content_violations.append(
+                    {
+                        "curie": curie,
+                        "code": "LENGTH_OUT_OF_BOUNDS_DEF",
+                        "detail": (
+                            f"definitions[{idx}] length {len(definition)} "
+                            f"outside [50, 400]"
+                        ),
+                    }
+                )
+
+        # Rule: LENGTH_OUT_OF_BOUNDS_USAGE_PROMPT (PROMPT_MIN..PROMPT_MAX).
+        # Rule: LENGTH_OUT_OF_BOUNDS_USAGE_ANSWER
+        # (COMPLETION_MIN..COMPLETION_MAX).
+        for idx, usage_tuple in enumerate(entry.usage_examples):
+            if len(usage_tuple) < 2:
+                continue
+            prompt, answer = usage_tuple[0], usage_tuple[1]
+            if not (PROMPT_MIN <= len(prompt) <= PROMPT_MAX):
+                content_violations.append(
+                    {
+                        "curie": curie,
+                        "code": "LENGTH_OUT_OF_BOUNDS_USAGE_PROMPT",
+                        "detail": (
+                            f"usage_examples[{idx}] prompt length "
+                            f"{len(prompt)} outside "
+                            f"[{PROMPT_MIN}, {PROMPT_MAX}]"
+                        ),
+                    }
+                )
+            if not (COMPLETION_MIN <= len(answer) <= COMPLETION_MAX):
+                content_violations.append(
+                    {
+                        "curie": curie,
+                        "code": "LENGTH_OUT_OF_BOUNDS_USAGE_ANSWER",
+                        "detail": (
+                            f"usage_examples[{idx}] answer length "
+                            f"{len(answer)} outside "
+                            f"[{COMPLETION_MIN}, {COMPLETION_MAX}]"
+                        ),
+                    }
+                )
+
+        # Rule: WRONG_CURIE_ONLY_MENTION (per definition).
+        # Skip when the manifest set is empty / unknown — without other
+        # CURIEs to compare against, the rule would false-positive any
+        # entry that simply doesn't mention sibling vocabulary.
+        if full_curie_set:
+            for idx, definition in enumerate(entry.definitions):
+                tokens = _CURIE_TOKEN_RE.findall(definition)
+                if not tokens:
+                    continue
+                if curie in tokens:
+                    continue  # entry's own CURIE present — fine.
+                # Entry's own CURIE not in extracted tokens. Are any
+                # OTHER manifest/keyed CURIEs in tokens? If so, the
+                # definition mentions sibling vocabulary but not its
+                # own — reject.
+                other_curies_in_def = [
+                    t
+                    for t in tokens
+                    if t in full_curie_set and t != curie
+                ]
+                if other_curies_in_def:
+                    content_violations.append(
+                        {
+                            "curie": curie,
+                            "code": "WRONG_CURIE_ONLY_MENTION",
+                            "detail": (
+                                f"definitions[{idx}] mentions sibling "
+                                f"CURIEs {other_curies_in_def} but not "
+                                f"its own {curie!r}"
+                            ),
+                        }
+                    )
+
+        # Rule: GENERIC_DEFINITIONS_NO_USAGE (entry-level, not per-item).
+        if (
+            len(entry.definitions) >= 1
+            and len(entry.usage_examples) == 0
+        ):
+            content_violations.append(
+                {
+                    "curie": curie,
+                    "code": "GENERIC_DEFINITIONS_NO_USAGE",
+                    "detail": (
+                        "complete entry has definitions but zero "
+                        "usage_examples tuples"
+                    ),
+                }
+            )
+
+    # Wave 136b: warning rule — OVERLAY_LOAD_REGRESSION.
+    # Surfaces the complete -> degraded_placeholder transition Wave
+    # 136a's loader logger.warning's. Visibility-only (non-blocking).
+    warnings_list: List[Dict[str, str]] = []
+    if base_form_data is not None:
+        for curie, base_entry in base_form_data.items():
+            if base_entry.anchored_status != "complete":
+                continue
+            current = form_data.get(curie)
+            if current is None:
+                continue
+            if current.anchored_status == "degraded_placeholder":
+                warnings_list.append(
+                    {
+                        "curie": curie,
+                        "code": "OVERLAY_LOAD_REGRESSION",
+                        "detail": (
+                            "base form_data marked this CURIE complete "
+                            "but the merged form_data marks it "
+                            "degraded_placeholder — overlay regression"
+                        ),
+                    }
+                )
+
     passed = (
         not missing
         and not incomplete
         and not invalid_status
+        and not content_violations
     )
 
     return {
@@ -1688,6 +1956,8 @@ def validate_form_data_contract(
         "degraded_count": degraded_count,
         "complete_count": complete_count,
         "invalid_status_curies": sorted(invalid_status),
+        "content_violations": content_violations,
+        "warnings": warnings_list,
     }
 
 
