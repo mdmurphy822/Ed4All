@@ -44,6 +44,7 @@ from Trainforge.generators._local_provider import (  # noqa: E402
 )
 from Trainforge.generators._together_provider import (  # noqa: E402
     MAX_HTTP_RETRIES,
+    MAX_PARSE_RETRIES,
 )
 
 
@@ -325,14 +326,14 @@ def test_too_short_completion_retries_then_raises(monkeypatch):
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     paraphrased = json.dumps({
         "prompt": "Recall the foundational concept introduced for topic X in chapter one.",
-        # Far below COMPLETION_MIN (50 chars). Repeated 3x to exhaust
-        # the length-retry budget.
+        # Far below COMPLETION_MIN (50 chars). Repeated MAX_PARSE_RETRIES
+        # times to exhaust the length-retry budget. Sized off the
+        # production constant so a budget bump (Wave 130c: 3 -> 10)
+        # auto-flows without test churn.
         "completion": "too short",
     })
     client = _client_yielding(
-        httpx.Response(200, json=_success_body(paraphrased)),
-        httpx.Response(200, json=_success_body(paraphrased)),
-        httpx.Response(200, json=_success_body(paraphrased)),
+        *[httpx.Response(200, json=_success_body(paraphrased)) for _ in range(MAX_PARSE_RETRIES)]
     )
     p = LocalSynthesisProvider(client=client)
     with patch("Trainforge.generators._together_provider.time.sleep"):
@@ -355,10 +356,10 @@ def test_too_short_prompt_retries_then_raises(monkeypatch):
             "definition before attempting application questions."
         ),
     })
+    # Sized off the production constant so a budget bump (Wave 130c:
+    # 3 -> 10) auto-flows without test churn.
     client = _client_yielding(
-        httpx.Response(200, json=_success_body(paraphrased)),
-        httpx.Response(200, json=_success_body(paraphrased)),
-        httpx.Response(200, json=_success_body(paraphrased)),
+        *[httpx.Response(200, json=_success_body(paraphrased)) for _ in range(MAX_PARSE_RETRIES)]
     )
     p = LocalSynthesisProvider(client=client)
     with patch("Trainforge.generators._together_provider.time.sleep"):
@@ -547,11 +548,13 @@ def test_local_provider_recovers_from_prose_drift(monkeypatch):
 
 
 def test_local_provider_raises_after_lenient_retry_exhaustion(monkeypatch):
-    """After 3 unrecoverable responses, raise SynthesisProviderError
-    with ``code='paraphrase_invalid_after_retry'`` (Wave 114 unified
-    the parse-failure and length-failure exhaustion paths under one
-    error code) and a truncated tail of the last response in the
-    message — postmortem visibility."""
+    """After ``MAX_PARSE_RETRIES`` unrecoverable responses, raise
+    SynthesisProviderError with ``code='paraphrase_invalid_after_retry'``
+    (Wave 114 unified the parse-failure and length-failure exhaustion
+    paths under one error code) and a truncated tail of the last
+    response in the message — postmortem visibility. Sized off the
+    production constant so a budget bump (Wave 130c: 3 -> 10)
+    auto-flows without test churn."""
     monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
     bad_response = (
         "I cannot help with that request, but here is some other "
@@ -559,9 +562,7 @@ def test_local_provider_raises_after_lenient_retry_exhaustion(monkeypatch):
         "contain a JSON object at all. " * 4
     ) + "DISTINCTIVE_TAIL_MARKER"
     client = _client_yielding(
-        httpx.Response(200, json=_success_body(bad_response)),
-        httpx.Response(200, json=_success_body(bad_response)),
-        httpx.Response(200, json=_success_body(bad_response)),
+        *[httpx.Response(200, json=_success_body(bad_response)) for _ in range(MAX_PARSE_RETRIES)]
     )
     p = LocalSynthesisProvider(client=client)
     with patch("Trainforge.generators._together_provider.time.sleep"):
@@ -888,10 +889,11 @@ def test_paraphrase_instruction_raises_preservation_failed_after_retry(
             "declared constraint and the per-property type rule."
         ),
     })
-    # Yield bad responses for all 3 retries. ``MAX_PARSE_RETRIES`` is 3
-    # so we provide 4 to guard against off-by-one.
+    # Over-provision relative to ``MAX_PARSE_RETRIES`` to guard against
+    # off-by-one. Bound off the production constant so a budget bump
+    # (Wave 130c: 3 -> 10) auto-flows without test churn.
     client = _client_yielding(*[
-        httpx.Response(200, json=_success_body(bad_paraphrase)) for _ in range(5)
+        httpx.Response(200, json=_success_body(bad_paraphrase)) for _ in range(MAX_PARSE_RETRIES + 2)
     ])
     p = LocalSynthesisProvider(client=client)
     with pytest.raises(SynthesisProviderError) as excinfo:

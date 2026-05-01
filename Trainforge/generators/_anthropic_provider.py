@@ -52,7 +52,7 @@ ENV_API_KEY = "ANTHROPIC_API_KEY"
 ENV_MODEL = "ANTHROPIC_SYNTHESIS_MODEL"
 
 # Hard cap on retry attempts when the model returns malformed JSON.
-MAX_PARSE_RETRIES = 3
+MAX_PARSE_RETRIES = 10
 
 # Length sentinels — match instruction_factory.py / preference_factory.py
 # so paraphrased output respects the same downstream gates.
