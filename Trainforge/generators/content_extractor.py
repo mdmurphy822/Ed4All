@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
+from lib.ontology.slugs import deslugify_concept
+
 # Wave 26: TOC / page-number / chapter-heading blocklist. These patterns
 # identify key-term candidates that are actually table-of-contents
 # fragments rather than real course terminology. They are applied BEFORE
@@ -353,7 +355,10 @@ class ContentExtractor:
 
             # Strategy 3: concept_tags matched in text
             for tag in concept_tags:
-                tag_lower = tag.lower().replace("-", " ").replace("_", " ")
+                # Wave 130d: route deslugify through the canonical helper
+                # so trailing CO-NN / TO-NN learning-objective refs get
+                # stripped before they bleed into key-term display text.
+                tag_lower = deslugify_concept(tag.lower())
                 if tag_lower in seen_terms:
                     continue
                 candidates_seen += 1
@@ -365,7 +370,7 @@ class ContentExtractor:
                         seen_terms.add(tag_lower)
                         candidates_accepted += 1
                         terms.append(KeyTerm(
-                            term=tag.replace("-", " ").replace("_", " ").title(),
+                            term=deslugify_concept(tag).title(),
                             definition=sentence,
                             source_chunk_id=chunk_id,
                             context_sentence=sentence,

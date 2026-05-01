@@ -61,6 +61,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.decision_capture import DecisionCapture  # noqa: E402
+from lib.ontology.slugs import deslugify_concept  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -623,7 +624,7 @@ def _question_from_concept(chunk: Dict[str, Any]) -> Tuple[str, str]:
     """Build a (question, derivation_hint) for a generic concept-question pair."""
     tags = chunk.get("concept_tags") or []
     if tags:
-        topic = str(tags[0]).replace("_", " ").replace("-", " ")
+        topic = deslugify_concept(str(tags[0]))
         return f"What is {topic}, and how does it work?", "concept_tags[0]"
     key_terms = chunk.get("key_terms") or []
     if key_terms and isinstance(key_terms[0], dict):
@@ -666,7 +667,7 @@ def _question_variants(chunk: Dict[str, Any], max_variants: int = 3) -> List[Tup
     # Variant 1: first concept_tag.
     tags = [str(t).strip() for t in (chunk.get("concept_tags") or []) if t]
     if tags:
-        topic = tags[0].replace("_", " ").replace("-", " ")
+        topic = deslugify_concept(tags[0])
         push(f"What is {topic}, and how does it work?", "concept_tags[0]")
     # Variant 2: first key_term.
     key_terms = chunk.get("key_terms") or []
@@ -684,7 +685,7 @@ def _question_variants(chunk: Dict[str, Any], max_variants: int = 3) -> List[Tup
         push(f"Explain the following idea: {head}.", "summary")
     # Variant 4: second concept_tag (if available).
     if len(tags) >= 2:
-        topic2 = tags[1].replace("_", " ").replace("-", " ")
+        topic2 = deslugify_concept(tags[1])
         push(
             f"Why does {topic2} matter in the context of this section?",
             "concept_tags[1]",
@@ -742,7 +743,7 @@ def extract_from_misconceptions(
     concept_topic = ""
     tags = chunk.get("concept_tags") or []
     if tags:
-        concept_topic = str(tags[0]).replace("_", " ").replace("-", " ")
+        concept_topic = deslugify_concept(str(tags[0]))
     for misc in misconceptions:
         if not isinstance(misc, dict):
             continue
