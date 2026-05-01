@@ -534,14 +534,25 @@ def _attach_source_grounding(
     return grounded
 
 
+# Wave 132d: the persona-prefix variant is a frame template parametrized
+# by ``{persona}``. Pre-Wave-132d this slot was hardcoded to
+# "For an RDF/SHACL learner, {prompt_lc}", which was wrong for any
+# non-SHACL course. The persona is sourced from
+# ``PropertyManifest.learner_persona`` (default ``DEFAULT_LEARNER_PERSONA``
+# = "a learner"); see ``lib/ontology/property_manifest.py``.
 _INSTRUCTION_PROMPT_FRAMES = (
     "{prompt}",
-    "For an RDF/SHACL learner, {prompt_lc}",
+    "For {persona}, {prompt_lc}",
     "Give a source-grounded answer: {prompt}",
 )
 
 
-def _apply_instruction_variant(pair: Dict[str, Any], variant_index: int) -> None:
+def _apply_instruction_variant(
+    pair: Dict[str, Any],
+    variant_index: int,
+    *,
+    learner_persona: Optional[str] = None,
+) -> None:
     pair["instruction_variant"] = int(variant_index)
     pair["requires_source_citation"] = (
         variant_index % len(_INSTRUCTION_PROMPT_FRAMES) == 2
@@ -554,9 +565,15 @@ def _apply_instruction_variant(pair: Dict[str, Any], variant_index: int) -> None
     frame = _INSTRUCTION_PROMPT_FRAMES[
         variant_index % len(_INSTRUCTION_PROMPT_FRAMES)
     ]
+    # Wave 132d: lazy-import keeps the module-import cost flat for the
+    # mock-provider call paths that don't need a manifest.
+    if not learner_persona:
+        from lib.ontology.property_manifest import DEFAULT_LEARNER_PERSONA
+        learner_persona = DEFAULT_LEARNER_PERSONA
     candidate = frame.format(
         prompt=prompt,
         prompt_lc=prompt[:1].lower() + prompt[1:],
+        persona=learner_persona,
     )
     # Leave room for the citation instruction appended later.
     if len(candidate) <= 360:
@@ -1360,7 +1377,15 @@ def run_synthesis(
                             ct_value,
                             context=f"instruction_pair.chunk_id={chunk_id}",
                         )
-                    _apply_instruction_variant(inst_result.pair, variant_index)
+                    _apply_instruction_variant(
+                        inst_result.pair,
+                        variant_index,
+                        learner_persona=(
+                            pilot_manifest.learner_persona
+                            if pilot_manifest is not None
+                            else None
+                        ),
+                    )
                     # Wave 120: audit-log when paraphrase preservation
                     # failed and the deterministic draft was used. Lets
                     # post-hoc analysis identify chunks where the LLM

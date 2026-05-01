@@ -13,6 +13,11 @@
       "description": "Course-family identifier matching `lib.ontology.property_manifest._family_slug(course_slug)` resolution (e.g. `rdf_shacl` for any `rdf-shacl-*` course slug). NOT a specific course slug — a single manifest applies to every course in the family."
     },
     "description": {"type": "string"},
+    "learner_persona": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Wave 132d: short noun-phrase describing the target learner (e.g. 'an RDF/SHACL learner', 'a chemistry undergraduate'). Threaded into Trainforge.synthesize_training._INSTRUCTION_PROMPT_FRAMES variant 1 as the persona prefix. Default 'a learner' when absent."
+    },
     "properties": {
       "type": "array",
       "minItems": 1,
