@@ -16,7 +16,9 @@ Usage:
 import argparse
 import json
 import math
+import os
 import re
+import sys
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -1002,11 +1004,77 @@ def build_parser() -> argparse.ArgumentParser:
                    help="LLM provider for teaching_role classification (default: mock)")
     p.add_argument("--llm-model", default="claude-haiku-4-5-20251001",
                    help="Model for LLM calls")
+    p.add_argument(
+        "--curriculum-provider",
+        default=None,
+        choices=["anthropic", "together", "local"],
+        help=(
+            "Curriculum-alignment provider for ambiguous-chunk teaching-role "
+            "classification. Routes through "
+            "Trainforge.generators._curriculum_provider.CurriculumAlignmentProvider. "
+            "When unset, falls back to the CURRICULUM_ALIGNMENT_PROVIDER env "
+            "var; when env is also unset, the legacy / mock path runs (no "
+            "curriculum provider injected). Recommended setting for "
+            "ToS-clean training corpora is 'local'."
+        ),
+    )
     p.add_argument("--dry-run", action="store_true",
                    help="Print stats without writing files")
     p.add_argument("--verbose", action="store_true",
                    help="Print per-chunk decisions")
     return p
+
+
+# ---------------------------------------------------------------------------
+# Curriculum provider env-var resolution (Wave 137 followup)
+# ---------------------------------------------------------------------------
+
+CURRICULUM_PROVIDER_ENV = "CURRICULUM_ALIGNMENT_PROVIDER"
+
+
+def _resolve_curriculum_provider_choice(args: argparse.Namespace) -> Optional[str]:
+    """Pick the effective curriculum-provider value.
+
+    Priority order:
+      1. Explicit ``--curriculum-provider`` CLI flag if passed.
+      2. ``CURRICULUM_ALIGNMENT_PROVIDER`` env var if set.
+      3. ``None`` — no provider injected; legacy / mock path runs.
+
+    The ``CurriculumAlignmentProvider`` class also reads the same env
+    var inside its constructor, but only when its constructor is
+    actually invoked. Pre-Wave-137-followup, ``align_chunks.main()``
+    never instantiated a provider, which made the env var dead from
+    the ``process_course.py`` invocation path. This helper closes that
+    gap by reading the env var at the CLI surface.
+    """
+    cli_value = getattr(args, "curriculum_provider", None)
+    if cli_value:
+        return cli_value
+    env_value = os.environ.get(CURRICULUM_PROVIDER_ENV)
+    if env_value:
+        return env_value
+    return None
+
+
+def _build_curriculum_provider(
+    provider_choice: str,
+    *,
+    capture: Optional[Any] = None,
+) -> Any:
+    """Instantiate ``CurriculumAlignmentProvider`` for ``provider_choice``.
+
+    Wraps the class import + construction so a bad provider string
+    surfaces as a clean CLI error (exit 2) instead of a stack trace.
+    Threads through the optional ``capture`` so every classification
+    call emits a ``curriculum_alignment_call`` decision event.
+    """
+    from Trainforge.generators._curriculum_provider import (
+        CurriculumAlignmentProvider,
+    )
+    return CurriculumAlignmentProvider(
+        provider=provider_choice,
+        capture=capture,
+    )
 
 
 def main(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
@@ -1015,6 +1083,47 @@ def main(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
 
     corpus_dir = Path(args.corpus)
     fields = [f.strip() for f in args.fields.split(",")]
+
+    # --- Wave 137 followup: resolve curriculum provider from CLI / env ---
+    # Priority: --curriculum-provider CLI flag > CURRICULUM_ALIGNMENT_PROVIDER
+    # env var > None (no provider injected; legacy / mock path runs).
+    # The CurriculumAlignmentProvider constructor itself accepts
+    # ``provider=None`` and falls back to the env, but it's never
+    # instantiated unless this CLI surface fires it. The default of
+    # ``DEFAULT_PROVIDER='anthropic'`` inside the class is intentionally
+    # unchanged — backward compatibility for direct callers.
+    curriculum_choice = _resolve_curriculum_provider_choice(args)
+    curriculum_provider = None
+    curriculum_capture = None
+    if curriculum_choice is not None:
+        # Wire a DecisionCapture for the curriculum_alignment_call events
+        # the provider emits per classification. Soft-import so a
+        # standalone Trainforge install (without lib/ on sys.path)
+        # degrades to capture=None instead of failing.
+        try:
+            from lib.decision_capture import DecisionCapture
+            course_code = (
+                Path(args.corpus).resolve().name or "UNKNOWN"
+            ).upper()
+            curriculum_capture = DecisionCapture(
+                course_code=course_code,
+                phase="curriculum-alignment",
+                tool="trainforge",
+                streaming=True,
+            )
+        except Exception:
+            curriculum_capture = None
+        try:
+            curriculum_provider = _build_curriculum_provider(
+                curriculum_choice, capture=curriculum_capture,
+            )
+        except ValueError as exc:
+            # Unknown provider string → clean exit 2.
+            print(
+                f"[Alignment] curriculum-provider error: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
 
     print(f"[Alignment] Loading corpus from {corpus_dir}")
     chunks, concept_graph = load_corpus(corpus_dir)
@@ -1039,6 +1148,7 @@ def main(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
             llm_provider=args.llm_provider,
             llm_model=args.llm_model,
             verbose=args.verbose,
+            curriculum_provider=curriculum_provider,
         )
 
     # --- Field 3: learning_outcome_refs ---
