@@ -395,6 +395,151 @@ pins. Canonical schema shape: `schemas/knowledge/courseforge_jsonld_v1.schema.js
 (`$defs.Block`, `$defs.Touch`, top-level optional `blocks[]` /
 `provenance` / `contentHash`).
 
+### Phase 3: outline-rewrite two-pass router
+
+Phase 3 layers a two-tier router over the Phase 2 `Block` format. The
+content-generator surface splits into an **outline tier** (small local
+7B model — terse, structurally-shaped first draft) and a **rewrite
+tier** (configurable cloud or large-local model — pedagogically rich
+final author). The two tiers are separated by an **inter-tier
+validation** seam that runs four deterministic gates over the outline
+output before authorising the rewrite call. Master gate: feature flag
+`COURSEFORGE_TWO_PASS=true` (opt-in, default off). When the flag is
+unset the legacy single-pass `content_generation` workflow phase runs
+unchanged; when it is set the workflow splits into
+`content_generation_outline` → `inter_tier_validation` →
+`content_generation_rewrite`.
+
+Cross-links:
+
+- `Courseforge/router/router.py::CourseforgeRouter` — orchestrator.
+  Two public dispatch methods: `route_all(blocks)` (Wave N — single
+  outline candidate per block, every successful outline proceeds to
+  rewrite) and `route_with_self_consistency(block, ...)` (Wave N+1 —
+  per-block multi-sample outline draft + validator-driven regen budget,
+  with policy-driven candidate count and budget). `route_all` calls
+  `route()` directly today; widening it to dispatch via
+  `route_with_self_consistency` is a Phase 3 followup.
+- `Courseforge/generators/_outline_provider.py::OutlineProvider` —
+  outline-tier subclass of `_BaseLLMProvider`. Defaults: `local`
+  provider, `qwen2.5:7b-instruct-q4_K_M` model, JSON-mode + lenient
+  parse + grammar-aware backend payload (GBNF / JSON-Schema / vLLM
+  guided / `format: json`).
+- `Courseforge/generators/_rewrite_provider.py::RewriteProvider` —
+  rewrite-tier subclass of `_BaseLLMProvider`. Defaults: `anthropic`
+  provider, `claude-sonnet-4-6` model. Per-block-type pinning via
+  `block_routing.yaml` (e.g. `assessment_item` always rewrite-tier
+  Anthropic, `flip_card_grid` local).
+- `Courseforge/router/policy.py::load_block_routing_policy` — loader
+  + resolver. Resolution priority (high → low): per-call kwargs >
+  `block_routing.yaml` > tier-default env vars
+  (`COURSEFORGE_OUTLINE_*` / `COURSEFORGE_REWRITE_*`) > hardcoded
+  defaults table (`DEFAULT_BLOCK_ROUTING`).
+- `Courseforge/router/inter_tier_gates.py` — four Block-input
+  validators wired into `config/workflows.yaml::inter_tier_validation`
+  per Subtask 52: `BlockCurieAnchoringValidator`,
+  `BlockContentTypeValidator`, `BlockPageObjectivesValidator`,
+  `BlockSourceRefValidator`. Each emits `GateResult` with an
+  `action` field (`regenerate` | `block` | `escalate` | `None`) that
+  the router consumes to decide whether to retry, skip rewrite, or
+  short-circuit to the failure pile.
+
+Block-routing config (`Courseforge/config/block_routing.yaml`) is an
+optional per-block-type override file; missing or empty file is the
+supported "env-vars + defaults only" mode. Schema:
+`schemas/courseforge/block_routing.schema.json` (Draft 2020-12,
+`additionalProperties: false`). Override the path via
+`COURSEFORGE_BLOCK_ROUTING_PATH`. Example:
+
+```yaml
+version: 1
+defaults:
+  outline:
+    provider: local
+    model: qwen2.5:7b-instruct-q4_K_M
+  rewrite:
+    provider: anthropic
+    model: claude-sonnet-4-6
+blocks:
+  assessment_item:
+    rewrite:
+      provider: anthropic
+      model: claude-sonnet-4-6
+  prereq_set:
+    escalate_immediately: true   # skip outline; rewrite authors from scratch
+```
+
+Per-block Phase-3 fields on the `Block` dataclass
+(`Courseforge/scripts/blocks.py:223-265`):
+
+- `validation_attempts: int` — incremented every time the inter-tier
+  validator chain fires `action="regenerate"` against the block. The
+  router caps the loop at `COURSEFORGE_OUTLINE_REGEN_BUDGET` (default
+  3, will bump to 10 in Phase 3.5). Once the cap is hit and the chain
+  still rejects the block, it is stamped with
+  `escalation_marker="outline_budget_exhausted"` and skips the
+  rewrite tier.
+- `escalation_marker: Optional[str]` — one of three values from the
+  `_ESCALATION_MARKERS` frozenset:
+  - `outline_budget_exhausted` — regen budget hit OR the
+    `escalate_immediately: true` policy short-circuit fired (Worker
+    3F path; provenance carried via `Touch.purpose="escalate_immediately"`).
+  - `structural_unfixable` — a validator returned `action="block"`
+    (Worker J semantics; the `Block` has no `status` field, so the
+    marker is the canonical signal).
+  - `validator_consensus_fail` — every self-consistency candidate
+    failed validation with no candidate dominating; the router gives
+    up rather than retry (Worker H path).
+
+`route_with_self_consistency` interacts with these fields by sampling
+N candidates (`COURSEFORGE_OUTLINE_N_CANDIDATES`, default 3) per
+block, running the validator chain against each, and selecting the
+highest-scoring passing candidate. When no candidate passes after
+the regen budget is exhausted, the surviving best-effort candidate is
+stamped with the appropriate `escalation_marker` and returned with
+`validation_attempts` reflecting the total loop iterations. Legacy
+validators that return `action=None, passed=False` retain
+retry-loop semantics (regenerate); only EXPLICIT `action="block"`
+or `action="escalate"` triggers a short-circuit.
+
+Decision-capture is per-tier and per-decision; every router-side
+choice and every LLM call lands as a typed event:
+
+- `_emit_block_outline_call` (in `OutlineProvider`) — one
+  `block_outline_call` decision per outline-tier LLM call. Rationale
+  interpolates block_id, model, candidate index, success / parse
+  failure status.
+- `_emit_block_rewrite_call` (in `RewriteProvider`) — one
+  `block_rewrite_call` decision per rewrite-tier LLM call.
+- `_emit_block_validation_action` (in `CourseforgeRouter`) — one
+  `block_validation_action` decision per validator chain run with
+  `action`, `passed`, and the decisive validator name.
+- `_emit_block_escalation` (in `CourseforgeRouter`) — one
+  `block_escalation` decision per terminal escalation (budget
+  exhausted, structural-unfixable block, consensus failure). Phase
+  enum values: `courseforge-content-generator-outline` and
+  `courseforge-content-generator-rewrite` (added per Subtask 7).
+
+Known cross-validator inconsistencies (Worker M flagged for Phase
+3.5 cleanup, intentionally documented here so consumers don't trip
+on them):
+
+- `BlockPageObjectivesValidator` requires a `valid_objective_ids`
+  input key alongside `blocks` — undocumented in the validator
+  registry and asymmetric with the other three Block validators
+  which take only `blocks`. The router populates the key from the
+  course's synthesised objectives JSON before dispatch.
+- `BlockContentTypeValidator` enforces the chunk-type taxonomy
+  (Trainforge-side enum) rather than the section-level
+  content-type taxonomy. Symmetric naming hides the divergence;
+  Phase 3.5 will rename or split.
+
+When `COURSEFORGE_TWO_PASS=false` (default), none of the above
+fires. The legacy `content_generation` phase runs the Phase 1
+single-pass `ContentGeneratorProvider`, no router instantiation
+happens, and the new `Block` fields stay at their defaults
+(`validation_attempts=0`, `escalation_marker=None`).
+
 ---
 
 ## Template Components
