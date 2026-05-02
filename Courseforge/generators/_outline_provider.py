@@ -279,6 +279,92 @@ class OutlineProvider(_BaseLLMProvider):
       on top by :class:`Courseforge.router.router.CourseforgeRouter`.
     """
 
+    def __init__(
+        self,
+        *,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        capture: Optional[Any] = None,
+        max_tokens: int = _DEFAULT_MAX_TOKENS,
+        temperature: float = _DEFAULT_TEMPERATURE,
+        # Optional dependency injections for tests.
+        client: Optional[Any] = None,
+        anthropic_client: Optional[Any] = None,
+        # Per-tier knobs (constructor kwargs override env vars).
+        n_candidates: Optional[int] = None,
+        regen_budget: Optional[int] = None,
+        grammar_mode: Optional[str] = None,
+    ) -> None:
+        # Resolve the model from the per-tier env var BEFORE delegating
+        # to ``_BaseLLMProvider.__init__`` so the base only sees a
+        # concrete ``model`` value (avoids accidentally falling back to
+        # the per-backend baseline when the operator set the per-tier
+        # ``COURSEFORGE_OUTLINE_MODEL`` knob).
+        resolved_model = (
+            model
+            or os.environ.get(ENV_MODEL)
+            or DEFAULT_MODEL
+        )
+
+        super().__init__(
+            provider=provider,
+            model=resolved_model,
+            api_key=api_key,
+            base_url=base_url,
+            capture=capture,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            client=client,
+            anthropic_client=anthropic_client,
+            env_provider_var=ENV_PROVIDER,
+            default_provider=DEFAULT_PROVIDER,
+            supported_providers=SUPPORTED_PROVIDERS,
+            system_prompt=_OUTLINE_SYSTEM_PROMPT,
+        )
+
+        # Per-tier knobs not owned by the base.
+        self._n_candidates: int = self._resolve_int(
+            n_candidates,
+            ENV_N_CANDIDATES,
+            DEFAULT_N_CANDIDATES,
+        )
+        self._regen_budget: int = self._resolve_int(
+            regen_budget,
+            ENV_REGEN_BUDGET,
+            DEFAULT_REGEN_BUDGET,
+        )
+        # ``grammar_mode`` is purely a string knob; ``None`` means
+        # autodetect from ``provider`` + ``base_url`` at call time.
+        self._grammar_mode: Optional[str] = (
+            grammar_mode
+            or os.environ.get(ENV_GRAMMAR_MODE)
+            or None
+        )
+
+    @staticmethod
+    def _resolve_int(
+        kwarg_value: Optional[int],
+        env_var: str,
+        default: int,
+    ) -> int:
+        """Resolve an int knob: kwarg → env var → default."""
+        if kwarg_value is not None:
+            return int(kwarg_value)
+        raw = os.environ.get(env_var)
+        if raw is not None and str(raw).strip():
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid %s=%r; falling back to default=%d",
+                    env_var,
+                    raw,
+                    default,
+                )
+        return default
+
     def generate_outline(
         self,
         block: Block,
