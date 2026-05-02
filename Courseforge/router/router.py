@@ -1070,9 +1070,18 @@ class CourseforgeRouter:
             )
             last_candidate = candidate
 
-            all_passed, gate_results = self._run_validator_chain(
-                candidate, validator_list, fast_fail=fast_fail
+            # Phase 3.5 Subtask 17: _run_validator_chain now returns a
+            # 3-tuple including the cumulatively-touched block. Each
+            # validator append a Touch with tier="outline_val" so the
+            # audit chain records the full validator pass/fail history.
+            # We rebind ``candidate`` (and ``last_candidate``) to the
+            # touched block so the audit chain survives every downstream
+            # branch (winner, escalation, structural-block, all-fail).
+            all_passed, gate_results, candidate = self._run_validator_chain(
+                candidate, validator_list, fast_fail=fast_fail,
+                validator_tier="outline_val",
             )
+            last_candidate = candidate
             if all_passed:
                 # Append a "self_consistency_winner" Touch so the audit
                 # chain records WHICH candidate index won. Reuses the
@@ -1400,7 +1409,8 @@ class CourseforgeRouter:
         validators: List[Any],
         *,
         fast_fail: bool = True,
-    ) -> Tuple[bool, List[Any]]:
+        validator_tier: Literal["outline_val", "rewrite_val"] = "outline_val",
+    ) -> Tuple[bool, List[Any], Block]:
         """Run an ordered chain of validators against ``block``.
 
         Cheapest-first ordering per Phase 3 §3.6 (the caller is
@@ -1448,10 +1458,20 @@ class CourseforgeRouter:
         Block-list-aware validators see a one-element list — both
         shapes work without forcing every validator to accept both.
 
-        Returns ``(all_passed, [GateResult per validator])``. When
-        ``fast_fail=True`` (default) the loop stops at the first
+        Returns ``(all_passed, [GateResult per validator], touched_block)``.
+        When ``fast_fail=True`` (default) the loop stops at the first
         non-pass action; when ``False`` it collects every result so
         the caller can aggregate per-validator failures.
+
+        Phase 3.5 Subtask 17: every validator (passing OR failing)
+        appends one :class:`Touch` to the returned block carrying
+        ``tier=validator_tier`` (``outline_val`` for the inter-tier
+        validation seam, ``rewrite_val`` for the post-rewrite seam)
+        and ``purpose="validation_pass"`` / ``"validation_fail"``
+        per the validator's outcome. The Touch chain is the canonical
+        audit-trail seam: a postmortem reader can reconstruct WHICH
+        validators ran in WHICH order, which passed, and which
+        failed, without re-parsing the GateResult list.
 
         Uses :meth:`MCP.hardening.validation_gates.GateResult.derive_default_action`
         to interpret ``GateResult.action``: legacy validators that
@@ -1464,11 +1484,15 @@ class CourseforgeRouter:
         """
         results: List[Any] = []
         all_passed = True
+        # Phase 3.5 Subtask 17: cumulatively-touched block. Each
+        # validator appends to this so the final return carries the
+        # full pass/fail audit chain.
+        touched_block: Block = block
         if not validators:
             # Empty chain → pass. Lets the self-consistency loop's
             # default behaviour be "first candidate wins" when no
             # validators are wired (Wave-N pre-Phase-4 shape).
-            return True, results
+            return True, results, touched_block
 
         # Build the input dict once per chain — both per-block and
         # Block-list-aware validators read from the same shape.
@@ -1478,6 +1502,17 @@ class CourseforgeRouter:
         # itself can be imported without pulling MCP.hardening when
         # the caller never passes any validators (e.g. Wave-N tests).
         from MCP.hardening.validation_gates import GateResult  # noqa: PLC0415
+
+        # Phase 3.5 Subtask 26: the outline-tier validator chain emits
+        # block_validation_action events with ml_features.tier="outline";
+        # the rewrite-tier chain (post_rewrite_validation phase) sets
+        # ``validator_tier="rewrite_val"`` and the corresponding event
+        # tier becomes ``"rewrite"``. Map outline_val/rewrite_val onto
+        # the canonical tier label expected by the decision-event
+        # consumer.
+        event_tier: Literal["outline", "rewrite"] = (
+            "rewrite" if validator_tier == "rewrite_val" else "outline"
+        )
 
         for validator in validators:
             validate_fn = getattr(validator, "validate", None)
@@ -1507,6 +1542,36 @@ class CourseforgeRouter:
             action = GateResult.derive_default_action(
                 gate_result.passed, gate_result.action
             )
+
+            # Phase 3.5 Subtask 17: append a per-validator Touch to
+            # the cumulative chain. Tier is the validator-tier
+            # (``outline_val`` / ``rewrite_val``); purpose disambiguates
+            # pass vs fail so a downstream reader can filter the chain
+            # by outcome without re-deriving from the GateResult list.
+            gate_id_for_touch = (
+                getattr(gate_result, "gate_id", "")
+                or getattr(gate_result, "validator_name", "")
+                or "unknown_gate"
+            )
+            touch = Touch(
+                model="validator",
+                provider="deterministic",
+                tier=validator_tier,
+                timestamp=(
+                    _dt.datetime.now(_dt.timezone.utc)
+                    .replace(microsecond=0)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                ),
+                decision_capture_id=self._build_router_capture_id(
+                    block, f"{validator_tier}:{gate_id_for_touch}"
+                ),
+                purpose=(
+                    "validation_pass" if action == "pass" else "validation_fail"
+                ),
+            )
+            touched_block = touched_block.with_touch(touch)
+
             if action != "pass":
                 # Subtask 47: emit one block_validation_action event per
                 # validator that returned a non-pass action. The
@@ -1514,25 +1579,21 @@ class CourseforgeRouter:
                 # validator non-pass chain so a postmortem reader sees
                 # WHICH gate fired WHICH action with WHICH issues.
                 #
-                # Phase 3.5 Subtask 26: tier="outline" because
-                # _run_validator_chain is the outline-tier seam (the
-                # post-rewrite validation helper Wave B Subtask 13
-                # lands will pass tier="rewrite" at its own call site).
+                # Phase 3.5 Subtask 26: ml_features.tier — outline vs
+                # rewrite — derived from validator_tier.
                 self._emit_block_validation_action(
                     block,
-                    gate_id=getattr(gate_result, "gate_id", "")
-                    or getattr(gate_result, "validator_name", "")
-                    or "unknown_gate",
+                    gate_id=gate_id_for_touch,
                     action=action,
                     score=getattr(gate_result, "score", None),
                     issues=list(getattr(gate_result, "issues", []) or []),
-                    tier="outline",
+                    tier=event_tier,
                 )
                 all_passed = False
                 if fast_fail:
                     break
 
-        return all_passed, results
+        return all_passed, results, touched_block
 
     def _emit_self_consistency_decision(
         self,
