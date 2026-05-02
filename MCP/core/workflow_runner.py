@@ -12,6 +12,7 @@ Usage:
 
 import json
 import logging
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -1158,7 +1159,22 @@ class WorkflowRunner:
         guard then skips execution naturally, preserving the
         synthesised output dict (this method would have overwritten it
         with a bare ``{"_skipped": True, "_completed": True}``).
+
+        Phase 3 Subtask 1: phases may carry an ``enabled_when_env``
+        predicate (``"VAR=value"`` or ``"VAR!=value"``); when present,
+        the predicate is evaluated against the live environment and
+        the phase skips when unsatisfied. This gate runs BEFORE the
+        legacy optional-phase logic so a non-optional phase can still
+        skip via the env predicate (e.g. the legacy
+        ``content_generation`` phase carries
+        ``enabled_when_env: "COURSEFORGE_TWO_PASS!=true"`` to disable
+        itself when the new two-pass router is engaged).
         """
+        predicate = getattr(phase, "enabled_when_env", None)
+        if predicate:
+            if not self._eval_enabled_when_env(predicate):
+                return True
+
         if not getattr(phase, "optional", False):
             return False
 
@@ -1167,6 +1183,56 @@ class WorkflowRunner:
             return not workflow_params.get("generate_assessments", True)
 
         return False
+
+    @staticmethod
+    def _eval_enabled_when_env(predicate: str) -> bool:
+        """Evaluate an ``enabled_when_env`` predicate against ``os.environ``.
+
+        Grammar (Phase 3 Subtask 1):
+            "<NAME>=<value>"   -> True when ``os.environ[NAME] == value`` (case-insensitive)
+            "<NAME>!=<value>"  -> True when ``os.environ[NAME] != value`` (case-insensitive)
+
+        The literal ``true`` matches any of ``1`` / ``true`` / ``yes`` /
+        ``on`` (case-insensitive), mirroring
+        ``Courseforge/scripts/blocks.py::_EMIT_BLOCKS_TRUTHY`` at ``:40``
+        so the two-pass-router gate is consistent with the Phase 2
+        emit-blocks gate.
+
+        Malformed predicates (no operator, empty NAME, etc.) return
+        ``True`` so a typo doesn't silently skip a phase — the
+        predicate is treated as "enabled by default" and surfaces the
+        bug at YAML-load review time instead.
+        """
+        if not predicate or not isinstance(predicate, str):
+            return True
+
+        truthy = {"1", "true", "yes", "on"}
+
+        # Order matters: check ``!=`` before ``=`` so the longer
+        # operator wins.
+        if "!=" in predicate:
+            name, _, value = predicate.partition("!=")
+            negate = True
+        elif "=" in predicate:
+            name, _, value = predicate.partition("=")
+            negate = False
+        else:
+            return True
+
+        name = name.strip()
+        value = value.strip()
+        if not name:
+            return True
+
+        env_value = os.environ.get(name, "").strip().lower()
+        target = value.lower()
+
+        if target == "true":
+            matched = env_value in truthy
+        else:
+            matched = env_value == target
+
+        return (not matched) if negate else matched
 
     def _synthesize_dart_skip_output(
         self, workflow_params: Dict[str, Any]
