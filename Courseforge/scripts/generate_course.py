@@ -1013,6 +1013,7 @@ def _render_self_check(
     *,
     source_ids: Optional[List[str]] = None,
     source_primary: Optional[str] = None,
+    page_id: str = "",
 ) -> str:
     """Render self-check quiz questions with JS feedback and data-cf-* metadata.
 
@@ -1020,8 +1021,19 @@ def _render_self_check(
     derived from the per-question ``source_references`` when declared, or
     the page-level ``source_ids`` otherwise. Emit happens at the wrapper
     level only (P2 decision).
+
+    Phase 2 (Subtask 18): refactored to construct one
+    ``Block(block_type="self_check_question")`` per question and emit
+    the wrapper attribute string via ``block.to_html_attrs()``.
+    Per-question ``source_references`` override the page-level ids on
+    the Block before emit, preserving the Wave-9 fallback contract.
+    Attribute order is preserved: component → purpose → teaching-role
+    → bloom-level → objective-ref → source-ids → source-primary.
     """
-    blocks = []
+    bound_page_id = page_id or _LEGACY_PAGE_ID
+    # REC-VOC-02: deterministic teaching_role from (component, purpose) pair.
+    sc_role = _map_teaching_role("self-check", "formative-assessment")
+    blocks: List[str] = []
     for i, q in enumerate(questions, 1):
         opts = []
         for _j, opt in enumerate(q["options"]):
@@ -1034,19 +1046,7 @@ def _render_self_check(
                 f'        <div class="sc-feedback">{fb}</div>'
             )
         options_html = "\n".join(opts)
-        # Build data-cf-* attributes for the self-check
-        bloom = q.get("bloom_level", "remember")
-        obj_ref = q.get("objective_ref", "")
-        # REC-VOC-02: deterministic teaching_role from (component, purpose) pair.
-        sc_role = _map_teaching_role("self-check", "formative-assessment")
-        sc_role_attr = f' data-cf-teaching-role="{sc_role}"' if sc_role else ""
-        sc_attrs = (
-            f' data-cf-component="self-check" data-cf-purpose="formative-assessment"'
-            f'{sc_role_attr}'
-            f' data-cf-bloom-level="{bloom}"'
-        )
-        if obj_ref:
-            sc_attrs += f' data-cf-objective-ref="{html_mod.escape(obj_ref)}"'
+        # Per-question source override falls back to page-level ids.
         q_refs = q.get("source_references")
         if q_refs:
             q_ids = _refs_to_id_list(q_refs)
@@ -1054,7 +1054,24 @@ def _render_self_check(
         else:
             q_ids = source_ids
             q_primary = source_primary
-        sc_attrs += _source_attr_string(q_ids, q_primary)
+        bloom = q.get("bloom_level", "remember")
+        obj_ref = q.get("objective_ref", "")
+        block = Block(
+            block_id=Block.stable_id(
+                bound_page_id, "self_check_question",
+                _slugify(obj_ref) if obj_ref else f"q{i}", i - 1,
+            ),
+            block_type="self_check_question",
+            page_id=bound_page_id,
+            sequence=i - 1,
+            content={"question": q["question"], "options": q["options"]},
+            bloom_level=bloom,
+            teaching_role=sc_role or None,
+            objective_ids=(obj_ref,) if obj_ref else (),
+            source_ids=tuple(q_ids) if q_ids else (),
+            source_primary=q_primary,
+        )
+        sc_attrs = block.to_html_attrs()
         blocks.append(f"""
     <div class="self-check"{sc_attrs}>
       <h3>Question {i}</h3>
