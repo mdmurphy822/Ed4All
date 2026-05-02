@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/courseforge/v1/BlockRouting.schema.json",
+  "title": "Courseforge Block Routing Policy",
+  "description": "Operator-tunable routing policy for the Courseforge two-pass router (Phase 3). Maps block_type + tier (outline | rewrite) to a provider/model spec, with optional per-block_id overrides. Loaded by Courseforge/router/policy.py::load_block_routing_policy and consumed by CourseforgeRouter._resolve_spec as the second-priority resolver after per-call kwargs but before tier-default env vars and the hardcoded fallback table.",
+  "type": "object",
+  "required": ["version"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "const": 1,
+      "description": "Schema version. Pinned to 1 for the Phase 3 surface; bumped if the shape ever breaks backward compatibility."
+    },
+    "defaults": {
+      "type": "object",
+      "description": "Tier-level default specs applied when no per-block_type entry matches. Each tier (outline | rewrite) carries an optional Spec.",
+      "additionalProperties": false,
+      "properties": {
+        "outline": {"$ref": "#/$defs/Spec"},
+        "rewrite": {"$ref": "#/$defs/Spec"}
+      }
+    },
+    "blocks": {
+      "type": "object",
+      "description": "Per-block_type override surface. Keys are the canonical 16-value Courseforge.scripts.blocks.BLOCK_TYPES enum.",
+      "additionalProperties": false,
+      "patternProperties": {
+        "^(objective|concept|example|assessment_item|explanation|prereq_set|activity|misconception|callout|flip_card_grid|self_check_question|summary_takeaway|reflection_prompt|discussion_prompt|chrome|recap)$": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "outline": {"$ref": "#/$defs/Spec"},
+            "rewrite": {"$ref": "#/$defs/Spec"},
+            "n_candidates": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Override for self-consistency candidate count for this block_type's outline tier."
+            },
+            "regen_budget": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Override for the regeneration-attempt budget on this block_type's outline tier."
+            },
+            "escalate_immediately": {
+              "type": "boolean",
+              "description": "When true, skip outline dispatch entirely for this block_type and short-circuit to the rewrite tier with escalation_marker='outline_skipped_by_policy'."
+            }
+          }
+        }
+      }
+    },
+    "overrides": {
+      "type": "array",
+      "description": "Per-block_id overrides. Walked first by BlockRoutingPolicy.resolve before per-block_type / defaults entries. block_id supports fnmatch globs (matched via match_block_id_glob).",
+      "items": {
+        "type": "object",
+        "required": ["block_id"],
+        "additionalProperties": false,
+        "properties": {
+          "block_id": {
+            "type": "string",
+            "description": "Stable Block ID or fnmatch glob (e.g. 'week_03_module_01#assessment_item_quiz_*')."
+          },
+          "outline": {"$ref": "#/$defs/Spec"},
+          "rewrite": {"$ref": "#/$defs/Spec"},
+          "escalate_immediately": {
+            "type": "boolean",
+            "description": "Per-block_id escalate-immediately flag; same semantics as the per-block_type field."
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "Spec": {
+      "type": "object",
+      "description": "Provider/model spec for a single (block_type, tier) cell. Fields mirror Courseforge.router.router.BlockProviderSpec; the loader projects this dict into a frozen BlockProviderSpec at policy load time.",
+      "additionalProperties": false,
+      "properties": {
+        "provider": {
+          "type": "string",
+          "enum": ["anthropic", "together", "local", "openai_compatible"],
+          "description": "Backend selector. Mirrors BlockProviderSpec._ALLOWED_PROVIDERS."
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider-specific model identifier (e.g. 'qwen2.5:7b-instruct-q4_K_M' for Ollama / 'claude-sonnet-4-6' for Anthropic / 'meta-llama/Llama-3.3-70B-Instruct-Turbo' for Together)."
+        },
+        "base_url": {
+          "type": "string",
+          "format": "uri",
+          "description": "Optional base URL override for OpenAI-compatible backends (e.g. 'http://localhost:11434/v1' for Ollama, 'http://localhost:8000/v1' for vLLM)."
+        },
+        "api_key_env": {
+          "type": "string",
+          "description": "Optional env-var name the provider should read its API key from instead of the per-provider default (ANTHROPIC_API_KEY / TOGETHER_API_KEY / LOCAL_SYNTHESIS_API_KEY)."
+        },
+        "temperature": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 2.0,
+          "description": "Sampling temperature. Outline tier conventionally 0.0 (deterministic structural sampling); rewrite tier conventionally 0.4 (controlled prose variability)."
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Max output tokens. Outline tier conventionally ~1200; rewrite tier conventionally ~2400."
+        }
+      }
+    }
+  }
+}
