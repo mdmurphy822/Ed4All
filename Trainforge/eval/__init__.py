@@ -46,6 +46,9 @@ from Trainforge.eval.invariants import (  # noqa: F401
 from Trainforge.eval.key_term_precision import KeyTermPrecisionEvaluator  # noqa: F401
 from Trainforge.eval.regression import RegressionEvaluator  # noqa: F401
 from Trainforge.eval.slm_eval_harness import EvalReport, SLMEvalHarness  # noqa: F401
+from Trainforge.eval.teaching_role_alignment import (  # noqa: F401
+    TeachingRoleAlignmentEvaluator,
+)
 from Trainforge.eval.syntactic import (  # noqa: F401
     evaluate_owl_entailment,
     evaluate_shacl_shape,
@@ -68,6 +71,7 @@ __all__ = [
     "PrerequisiteOrderInvariant",
     "RegressionEvaluator",
     "SLMEvalHarness",
+    "TeachingRoleAlignmentEvaluator",
     "evaluate_owl_entailment",
     "evaluate_shacl_shape",
     "evaluate_shacl_validation",
