@@ -584,3 +584,383 @@ def test_backfill_accumulates_violations_across_redrafts(tmp_path):
     assert "VIOLATION_CODE_3" in " ".join(runner_calls[3])
     # Cumulative count grows monotonically (no amnesia).
     assert len(runner_calls[3]) > len(runner_calls[2]) > len(runner_calls[1])
+
+
+# ----------------------------------------------------------------------
+# Plan §2.2 / Worker B — per-session resume log
+#
+# Operator running a multi-hour backfill needs visibility into which
+# CURIEs hit ``max_redrafts_exceeded`` in a prior session and a way to
+# decide whether to retry. The session log is a hidden JSONL sidecar
+# (``LibV2/courses/<slug>/.backfill_session.jsonl``, falling back to
+# next-to-the-catalog-YAML when no course slug is wired).
+# ----------------------------------------------------------------------
+
+
+def _build_session_log_main_argv(tmp_path: Path, *extra: str) -> List[str]:
+    """Render a baseline argv that points main() at tmp_path's yaml
+    overlay. Tests must additionally patch
+    ``cli._resolve_session_log_path`` (or ``cli.PROJECT_ROOT``) so the
+    session log lands inside ``tmp_path`` and doesn't pollute the real
+    LibV2 course tree.
+    """
+    yaml_path = tmp_path / "schema_translation_catalog.test_family.yaml"
+    yaml_path.write_text(
+        "family: test_family\nforms: {}\n", encoding="utf-8"
+    )
+    return [
+        "--course-code", "non-existent-course-fixture",
+        "--family", "test_family",
+        "--yaml-path", str(yaml_path),
+        "--limit", "10",
+        "--keep-alive", "0",  # skip warmup HTTP probe in tests
+        *extra,
+    ]
+
+
+def _patch_main_dependencies(
+    *,
+    runner_side_effect,
+    validator_side_effect,
+    form_data_factory,
+):
+    """Bundle the patch.object stack used by main()-end-to-end tests."""
+    return [
+        patch.object(cli, "_run_drafting_cli", side_effect=runner_side_effect),
+        patch.object(
+            cli, "validate_form_data_contract",
+            side_effect=validator_side_effect,
+        ),
+        patch.object(cli, "_load_form_data", side_effect=form_data_factory),
+        patch.object(
+            cli, "load_property_manifest",
+            return_value=_build_synthetic_manifest(),
+        ),
+        patch.object(cli, "_resolve_chunks_jsonl", return_value=None),
+        patch.object(cli, "load_family_map", return_value=None),
+    ]
+
+
+def test_session_log_appended_per_curie_attempt(tmp_path):
+    """Three CURIEs through ``_process_one_curie`` produce three lines
+    in the session log with the correct outcomes. Mirrors the
+    align_chunks ``_append_*_checkpoint`` per-unit append+flush
+    contract."""
+    yaml_path = tmp_path / "schema_translation_catalog.test_family.yaml"
+    yaml_path.write_text(
+        "family: test_family\nforms: {}\n", encoding="utf-8"
+    )
+    session_log_path = tmp_path / ".backfill_session.jsonl"
+
+    # Cycle three different outcomes by varying validator behavior per
+    # CURIE: Alpha accepts, Beta fails-validation (parse error), Gamma
+    # max-redrafts-exceeded.
+    valid_yaml = _build_valid_yaml_payload("test:Alpha")
+    bad_yaml = _build_invalid_yaml_payload("test:Gamma")
+
+    def fake_runner(curie, family, course_code, provider, model,
+                    timeout=None, prior_violations=None,
+                    semantic_profile_name=None,
+                    allow_non_manifest=False):
+        if curie == "test:Alpha":
+            return 0, valid_yaml, ""
+        if curie == "test:Beta":
+            # Stdout that doesn't parse as YAML payload — triggers
+            # the "YAML did not parse" failed_validation branch.
+            return 0, "completely-non-yaml-output\n", ""
+        # test:Gamma — keep returning bad yaml so all 10 redrafts fail.
+        return 0, _build_invalid_yaml_payload("test:Gamma"), ""
+
+    def fake_validator(form_data, manifest_curies, semantic_profile=None):
+        # Distinguish Alpha (passes) vs Gamma (always fails).
+        for curie in form_data:
+            if curie == "test:Alpha":
+                return {"passed": True, "content_violations": []}
+        return {
+            "passed": False,
+            "content_violations": [
+                {"curie": "test:Gamma", "code": "PLACEHOLDER_LEAK",
+                 "detail": "leak"},
+            ],
+            "missing_curies": [],
+            "incomplete_curies": [],
+        }
+
+    def fake_form_data_for(curie):
+        return {
+            curie: SurfaceFormData(
+                curie=curie,
+                short_name=curie.split(":")[-1],
+                anchored_status="degraded_placeholder",
+                definitions=["[degraded: stub]"],
+                usage_examples=[("[degraded: prompt]", "[degraded: answer]")],
+            )
+        }
+
+    with patch.object(cli, "_run_drafting_cli", side_effect=fake_runner), \
+         patch.object(cli, "validate_form_data_contract",
+                      side_effect=fake_validator):
+        with session_log_path.open("a", encoding="utf-8") as fh:
+            for idx, curie in enumerate(
+                ["test:Alpha", "test:Beta", "test:Gamma"], start=1
+            ):
+                with patch.object(
+                    cli, "_load_form_data",
+                    return_value=fake_form_data_for(curie),
+                ):
+                    cli._process_one_curie(
+                        idx=idx,
+                        total=3,
+                        curie=curie,
+                        freq=0,
+                        label=f"{curie} label",
+                        family="test_family",
+                        course_code="test-course",
+                        provider="local",
+                        model=None,
+                        yaml_path=yaml_path,
+                        manifest_curies=[c for c, _ in _SYNTHETIC_CURIES],
+                        print_fn=lambda *a, **kw: None,
+                        session_log_fh=fh,
+                    )
+
+    # Read the session log: three lines, three different outcomes.
+    lines = [
+        json.loads(line)
+        for line in session_log_path.read_text().splitlines()
+        if line.strip()
+    ]
+    assert len(lines) == 3, f"expected 3 lines; got {len(lines)}"
+    by_curie = {row["curie"]: row for row in lines}
+    assert by_curie["test:Alpha"]["outcome"] == "accepted"
+    assert by_curie["test:Beta"]["outcome"] == "failed_validation"
+    assert by_curie["test:Gamma"]["outcome"] == "max_redrafts_exceeded"
+    # max_redrafts_exceeded carries the redraft count.
+    assert by_curie["test:Gamma"]["redrafts"] == 10
+    # Every record carries an ISO-8601 UTC timestamp.
+    for row in lines:
+        assert row["ts"].endswith("Z")
+        assert "violations_summary" in row
+
+
+def test_session_log_skips_failed_curies_on_relaunch(tmp_path):
+    """A pre-seeded session log marking ``test:Beta`` as
+    max_redrafts_exceeded causes a relaunch to skip it. The drafting
+    runner must NEVER be called for the prior-failed CURIE; the
+    skipping log message must surface."""
+    argv = _build_session_log_main_argv(tmp_path)
+    yaml_path = tmp_path / "schema_translation_catalog.test_family.yaml"
+
+    # Pin the session log path to tmp_path so the test doesn't pollute
+    # the real LibV2 course tree (or get polluted by it on rerun).
+    session_log_path = tmp_path / ".backfill_session.jsonl"
+    session_log_path.write_text(
+        json.dumps({
+            "curie": "test:Beta",
+            "outcome": "max_redrafts_exceeded",
+            "redrafts": 10,
+            "violations_summary": ["PLACEHOLDER_LEAK"],
+            "ts": "2026-05-02T12:00:00Z",
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    runner_calls: List[str] = []
+
+    def fake_runner(curie, family, course_code, provider, model,
+                    timeout=None, prior_violations=None,
+                    semantic_profile_name=None,
+                    allow_non_manifest=False):
+        runner_calls.append(curie)
+        return 0, _build_valid_yaml_payload(curie), ""
+
+    def fake_validator(form_data, manifest_curies, semantic_profile=None):
+        return {"passed": True, "content_violations": []}
+
+    fake_form_data = {
+        curie: SurfaceFormData(
+            curie=curie,
+            short_name=curie.split(":")[-1],
+            anchored_status="degraded_placeholder",
+            definitions=["[degraded: stub]"],
+            usage_examples=[("[degraded: prompt]", "[degraded: answer]")],
+        )
+        for curie, _ in _SYNTHETIC_CURIES
+    }
+
+    import logging as _logging
+    captured_logs: List[str] = []
+
+    class _CapturingHandler(_logging.Handler):
+        def emit(self, record):
+            captured_logs.append(record.getMessage())
+
+    handler = _CapturingHandler(level=_logging.INFO)
+    cli.logger.addHandler(handler)
+    cli.logger.setLevel(_logging.INFO)
+    try:
+        with patch.object(cli, "_run_drafting_cli",
+                          side_effect=fake_runner), \
+             patch.object(cli, "validate_form_data_contract",
+                          side_effect=fake_validator), \
+             patch.object(cli, "_load_form_data",
+                          return_value=fake_form_data), \
+             patch.object(cli, "load_property_manifest",
+                          return_value=_build_synthetic_manifest()), \
+             patch.object(cli, "_resolve_chunks_jsonl", return_value=None), \
+             patch.object(cli, "load_family_map", return_value=None), \
+             patch.object(cli, "_resolve_session_log_path",
+                          return_value=session_log_path):
+            rc = cli.main(argv, print_fn=lambda *a, **kw: None)
+    finally:
+        cli.logger.removeHandler(handler)
+
+    assert rc == 0, f"main() exited non-zero: {rc}"
+    # test:Beta must not be re-attempted.
+    assert "test:Beta" not in runner_calls, (
+        f"test:Beta was re-attempted despite prior max_redrafts_exceeded; "
+        f"runner saw {runner_calls}"
+    )
+    # The other two synthetic CURIEs run normally.
+    assert set(runner_calls) == {"test:Alpha", "test:Gamma"}, (
+        f"expected runner to run Alpha + Gamma; got {runner_calls}"
+    )
+    # Skipping log emitted at INFO level with the prior-failed CURIE.
+    skipping_msgs = [
+        msg for msg in captured_logs if "Skipping" in msg
+    ]
+    assert any("test:Beta" in msg for msg in skipping_msgs), (
+        f"expected Skipping log naming test:Beta; got {captured_logs}"
+    )
+    # Sanity: yaml file untouched apart from the two successful merges.
+    import yaml as _yaml
+    merged = _yaml.safe_load(yaml_path.read_text(encoding="utf-8"))
+    assert "test:Beta" not in merged.get("forms", {}), (
+        "test:Beta got appended despite skip"
+    )
+
+
+def test_session_log_retry_failed_flag_includes_them(tmp_path):
+    """``--retry-failed`` brings prior-failed CURIEs back into the
+    target list; the runner IS called for the previously-failed CURIE."""
+    argv = _build_session_log_main_argv(tmp_path, "--retry-failed")
+
+    session_log_path = tmp_path / ".backfill_session.jsonl"
+    session_log_path.write_text(
+        json.dumps({
+            "curie": "test:Beta",
+            "outcome": "max_redrafts_exceeded",
+            "redrafts": 10,
+            "violations_summary": ["PLACEHOLDER_LEAK"],
+            "ts": "2026-05-02T12:00:00Z",
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    runner_calls: List[str] = []
+
+    def fake_runner(curie, family, course_code, provider, model,
+                    timeout=None, prior_violations=None,
+                    semantic_profile_name=None,
+                    allow_non_manifest=False):
+        runner_calls.append(curie)
+        return 0, _build_valid_yaml_payload(curie), ""
+
+    def fake_validator(form_data, manifest_curies, semantic_profile=None):
+        return {"passed": True, "content_violations": []}
+
+    fake_form_data = {
+        curie: SurfaceFormData(
+            curie=curie,
+            short_name=curie.split(":")[-1],
+            anchored_status="degraded_placeholder",
+            definitions=["[degraded: stub]"],
+            usage_examples=[("[degraded: prompt]", "[degraded: answer]")],
+        )
+        for curie, _ in _SYNTHETIC_CURIES
+    }
+
+    with patch.object(cli, "_run_drafting_cli", side_effect=fake_runner), \
+         patch.object(cli, "validate_form_data_contract",
+                      side_effect=fake_validator), \
+         patch.object(cli, "_load_form_data",
+                      return_value=fake_form_data), \
+         patch.object(cli, "load_property_manifest",
+                      return_value=_build_synthetic_manifest()), \
+         patch.object(cli, "_resolve_chunks_jsonl", return_value=None), \
+         patch.object(cli, "load_family_map", return_value=None), \
+         patch.object(cli, "_resolve_session_log_path",
+                      return_value=session_log_path):
+        rc = cli.main(argv, print_fn=lambda *a, **kw: None)
+
+    assert rc == 0, f"main() exited non-zero: {rc}"
+    # All three synthetic CURIEs must have been attempted, including
+    # the one that previously hit max_redrafts_exceeded.
+    assert "test:Beta" in runner_calls, (
+        f"--retry-failed should re-attempt test:Beta; runner saw {runner_calls}"
+    )
+    assert set(runner_calls) == {"test:Alpha", "test:Beta", "test:Gamma"}
+
+
+def test_session_log_clean_session_flag_removes_log(tmp_path):
+    """``--clean-session`` deletes the session log before the run, so
+    the previously-failed CURIE is back in the target list (and the
+    runner is called for it)."""
+    argv = _build_session_log_main_argv(tmp_path, "--clean-session")
+
+    session_log_path = tmp_path / ".backfill_session.jsonl"
+    session_log_path.write_text(
+        json.dumps({
+            "curie": "test:Beta",
+            "outcome": "max_redrafts_exceeded",
+            "redrafts": 10,
+            "violations_summary": ["PLACEHOLDER_LEAK"],
+            "ts": "2026-05-02T12:00:00Z",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    assert session_log_path.exists()  # confirm pre-seeded
+
+    runner_calls: List[str] = []
+
+    def fake_runner(curie, family, course_code, provider, model,
+                    timeout=None, prior_violations=None,
+                    semantic_profile_name=None,
+                    allow_non_manifest=False):
+        runner_calls.append(curie)
+        return 0, _build_valid_yaml_payload(curie), ""
+
+    def fake_validator(form_data, manifest_curies, semantic_profile=None):
+        return {"passed": True, "content_violations": []}
+
+    fake_form_data = {
+        curie: SurfaceFormData(
+            curie=curie,
+            short_name=curie.split(":")[-1],
+            anchored_status="degraded_placeholder",
+            definitions=["[degraded: stub]"],
+            usage_examples=[("[degraded: prompt]", "[degraded: answer]")],
+        )
+        for curie, _ in _SYNTHETIC_CURIES
+    }
+
+    with patch.object(cli, "_run_drafting_cli", side_effect=fake_runner), \
+         patch.object(cli, "validate_form_data_contract",
+                      side_effect=fake_validator), \
+         patch.object(cli, "_load_form_data",
+                      return_value=fake_form_data), \
+         patch.object(cli, "load_property_manifest",
+                      return_value=_build_synthetic_manifest()), \
+         patch.object(cli, "_resolve_chunks_jsonl", return_value=None), \
+         patch.object(cli, "load_family_map", return_value=None), \
+         patch.object(cli, "_resolve_session_log_path",
+                      return_value=session_log_path):
+        rc = cli.main(argv, print_fn=lambda *a, **kw: None)
+
+    assert rc == 0, f"main() exited non-zero: {rc}"
+    # test:Beta was previously max_redrafts_exceeded but --clean-session
+    # nuked the prior history, so it's back in the target list.
+    assert "test:Beta" in runner_calls, (
+        f"--clean-session should remove prior history; runner saw {runner_calls}"
+    )
+    assert set(runner_calls) == {"test:Alpha", "test:Beta", "test:Gamma"}
