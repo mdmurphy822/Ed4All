@@ -548,11 +548,140 @@ class OutlineProvider(_BaseLLMProvider):
     ) -> Block:
         """Generate a single outline candidate for ``block``.
 
-        Implementation lands in Subtask 20.
+        Single-candidate path — the self-consistency loop is layered
+        on top by :class:`Courseforge.router.router.CourseforgeRouter`
+        (Phase 3 Subtask 37). Steps:
+
+        1. Build the user prompt via :meth:`_render_user_prompt`.
+        2. Build the per-block-type ``extra_payload`` via
+           :meth:`_build_grammar_payload`.
+        3. Dispatch up to ``MAX_PARSE_RETRIES`` times via
+           :meth:`_BaseLLMProvider._dispatch_call`, applying
+           :meth:`OpenAICompatibleClient._extract_json_lenient` to the
+           response and validating against
+           :data:`_BLOCK_TYPE_JSON_SCHEMAS[block.block_type]`. On
+           parse / Schema-validation failure, append a remediation
+           hint to the user prompt and retry.
+        4. On exhaustion, raise
+           :class:`OutlineProviderError(code="outline_exhausted")`.
+        5. On success, return a new :class:`Block` via
+           :func:`dataclasses.replace` carrying the parsed outline
+           dict as ``content`` plus a ``Touch(tier="outline",
+           purpose="draft", ...)`` entry on ``touched_by``.
         """
-        raise NotImplementedError(
-            "OutlineProvider.generate_outline lands in Phase 3 Subtask 20"
+        if block is None:
+            raise ValueError("OutlineProvider.generate_outline: block required")
+        if block.block_type not in BLOCK_TYPES:
+            raise ValueError(
+                f"OutlineProvider.generate_outline: unknown block_type "
+                f"{block.block_type!r}"
+            )
+
+        # Lazy-import the lenient JSON parser to avoid pulling
+        # OpenAICompatibleClient in test environments that stub the
+        # base class. ``_extract_json_lenient`` is a staticmethod so we
+        # don't need a client instance.
+        from Trainforge.generators._openai_compatible_client import (
+            OpenAICompatibleClient,
         )
+        import jsonschema  # type: ignore[import-untyped]
+
+        schema = _BLOCK_TYPE_JSON_SCHEMAS.get(block.block_type)
+        extra_payload = self._build_grammar_payload(block.block_type)
+
+        base_user_prompt = self._render_user_prompt(
+            block=block,
+            source_chunks=source_chunks,
+            objectives=objectives,
+        )
+
+        last_error: Optional[str] = None
+        last_raw: str = ""
+        parsed: Optional[Dict[str, Any]] = None
+        total_retries = 0
+
+        for attempt in range(MAX_PARSE_RETRIES):
+            user_prompt = base_user_prompt
+            if attempt > 0 and last_error:
+                schema_hint = (
+                    json.dumps(schema, sort_keys=True) if schema else "{}"
+                )
+                user_prompt = (
+                    f"{base_user_prompt}\n\n"
+                    "Your previous output failed JSON Schema validation: "
+                    f"{last_error}\n"
+                    "Return ONLY a JSON object matching this schema:\n"
+                    f"{schema_hint}"
+                )
+            try:
+                raw_text, retry_count = self._dispatch_call(
+                    user_prompt,
+                    extra_payload=extra_payload or None,
+                )
+            except Exception as exc:  # pragma: no cover — defensive
+                last_error = f"dispatch failure: {exc}"
+                last_raw = ""
+                continue
+
+            total_retries += int(retry_count)
+            last_raw = raw_text
+
+            candidate = OpenAICompatibleClient._extract_json_lenient(raw_text)
+            if candidate is None:
+                last_error = "lenient JSON parse returned None"
+                continue
+            if schema is not None:
+                try:
+                    jsonschema.Draft202012Validator(schema).validate(candidate)
+                except jsonschema.ValidationError as exc:
+                    # Truncate the validation message so the
+                    # remediation hint stays inside the model's
+                    # context window.
+                    last_error = str(exc.message)[:300]
+                    continue
+
+            parsed = candidate
+            break
+
+        # Emit the per-call decision-capture event regardless of
+        # outcome so the audit trail captures every dispatch.
+        self._emit_per_call_decision(
+            raw_text=last_raw,
+            retry_count=total_retries,
+            block_id=block.block_id,
+            block_type=block.block_type,
+            page_id=block.page_id,
+            success=parsed is not None,
+            attempts=attempt + 1 if parsed is not None else MAX_PARSE_RETRIES,
+            last_error=last_error,
+        )
+
+        if parsed is None:
+            raise OutlineProviderError(
+                f"Outline tier exhausted {MAX_PARSE_RETRIES} attempts for "
+                f"block {block.block_id!r} (last_error={last_error!r})",
+                code="outline_exhausted",
+            )
+
+        # Construct the touch + new Block. Provider must be one of the
+        # ``_TOUCH_PROVIDERS`` set in ``blocks.py`` — we map our
+        # provider tag onto that set (``openai_compatible`` collapses
+        # to ``local`` for the audit trail since both go through the
+        # same OA client). Anthropic / together / local map 1:1.
+        touch_provider = self._provider
+        if touch_provider == "openai_compatible":
+            touch_provider = "local"
+
+        touch = Touch(
+            model=self._model,
+            provider=touch_provider,
+            tier="outline",
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            decision_capture_id=self._last_capture_id(),
+            purpose="draft",
+        )
+        new_block = dataclasses.replace(block, content=parsed)
+        return new_block.with_touch(touch)
 
     def _render_user_prompt(
         self,
@@ -753,11 +882,45 @@ class OutlineProvider(_BaseLLMProvider):
     ) -> None:
         """Emit one ``block_outline_call`` decision-capture event.
 
-        Implementation lands in Subtask 20 (rationale interpolation
-        runs alongside the dispatch path).
+        Rationale interpolates per-call signals (block_id, block_type,
+        page_id, provider, model, output character count, retry
+        count, attempts, success/failure, last_error) per the project's
+        LLM call-site instrumentation contract (≥20 chars, dynamic
+        signals).
         """
-        raise NotImplementedError(
-            "OutlineProvider._emit_per_call_decision lands in Phase 3 Subtask 20"
+        block_id = call_context.get("block_id", "")
+        block_type = call_context.get("block_type", "")
+        page_id = call_context.get("page_id", "")
+        success = bool(call_context.get("success", False))
+        attempts = int(call_context.get("attempts", 0))
+        last_error = call_context.get("last_error")
+        char_count = len(raw_text or "")
+
+        decision = (
+            f"outline_call:{block_type}:{block_id}:"
+            f"{'success' if success else 'failed'}"
+        )
+        rationale_parts = [
+            f"block_id={block_id}",
+            f"block_type={block_type}",
+            f"page_id={page_id}",
+            f"provider={self._provider}",
+            f"model={self._model}",
+            f"output_chars={char_count}",
+            f"retry_count={retry_count}",
+            f"attempts={attempts}",
+            f"success={success}",
+        ]
+        if last_error:
+            # Truncate the last_error to keep the rationale below the
+            # decision-capture validator's soft length cap.
+            rationale_parts.append(f"last_error={str(last_error)[:120]}")
+        rationale = "; ".join(rationale_parts)
+
+        self._emit_decision(
+            decision_type="block_outline_call",
+            decision=decision,
+            rationale=rationale,
         )
 
 
