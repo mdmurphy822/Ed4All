@@ -220,6 +220,16 @@ _LEGACY_PHASE_OUTPUT_KEYS: Dict[str, List[str]] = {
         "content_paths", "page_paths", "content_dir",
         "blocks_final_path",
     ],
+    # Phase 3.5 Subtask 12: post-rewrite validation phase output keys.
+    # Mirrors inter_tier_validation's shape — emits
+    # ``blocks_validated_path`` (rewrite-tier blocks that passed every
+    # gate) and ``blocks_failed_path`` (rewrite-tier blocks that
+    # tripped at least one gate). Packaging consumes blocks_validated_path
+    # via the post_rewrite_validation -> packaging dependency chain
+    # introduced in Subtask 10 + 11.
+    "post_rewrite_validation": [
+        "blocks_validated_path", "blocks_failed_path",
+    ],
     # Wave 32 Deliverable B: surface imscc_path + content_dir so
     # IMSCCValidator + PageObjectivesValidator builders pick them up.
     "packaging": [
