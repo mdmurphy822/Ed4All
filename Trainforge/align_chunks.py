@@ -41,6 +41,26 @@ TFIDF_SIMILARITY_THRESHOLD = 0.15
 VALID_ROLES = {"introduce", "elaborate", "reinforce", "assess", "transfer", "synthesize"}
 WEEK_RE = re.compile(r"Week\s+(\d+)", re.IGNORECASE)
 
+# Phase 4 Subtask 35: env-var-first model resolution for the legacy
+# direct-classification LLM path. The default preserves the previous
+# hardcoded `claude-haiku-4-5-20251001` behavior; operators retraining
+# under a different teacher set TRAINFORGE_ALIGN_CHUNKS_MODEL.
+ALIGN_CHUNKS_MODEL_ENV = "TRAINFORGE_ALIGN_CHUNKS_MODEL"
+ALIGN_CHUNKS_MODEL_DEFAULT = "claude-haiku-4-5-20251001"
+
+
+def _resolve_align_model(explicit: Optional[str] = None) -> str:
+    """Pick the effective LLM model for teaching-role classification.
+
+    Priority order:
+      1. ``explicit`` argument (CLI flag value, kwarg) when truthy.
+      2. ``TRAINFORGE_ALIGN_CHUNKS_MODEL`` env var when set.
+      3. ``ALIGN_CHUNKS_MODEL_DEFAULT`` (preserves legacy behavior).
+    """
+    if explicit:
+        return explicit
+    return os.environ.get(ALIGN_CHUNKS_MODEL_ENV, ALIGN_CHUNKS_MODEL_DEFAULT)
+
 
 # ---------------------------------------------------------------------------
 # Data classes
@@ -618,7 +638,7 @@ def _deterministic_role(chunk: Dict) -> Tuple[Optional[str], Optional[str]]:
 def classify_teaching_roles(
     chunks: List[Dict],
     llm_provider: str = "mock",
-    llm_model: str = "claude-haiku-4-5-20251001",
+    llm_model: Optional[str] = None,
     verbose: bool = False,
     llm: Optional["LLMBackend"] = None,
     curriculum_provider: Optional["CurriculumAlignmentProvider"] = None,
@@ -640,7 +660,10 @@ def classify_teaching_roles(
         chunks: Chunks to classify in-place.
         llm_provider: ``"anthropic"`` to invoke the LLM for ambiguous chunks,
             anything else to stick with the mock/heuristic path.
-        llm_model: Model identifier passed to the backend.
+        llm_model: Model identifier passed to the backend. ``None``
+            triggers env-var-first resolution via
+            ``_resolve_align_model`` (TRAINFORGE_ALIGN_CHUNKS_MODEL,
+            falling back to ``claude-haiku-4-5-20251001``).
         verbose: Print per-chunk classifications.
         llm: Optional pre-built :class:`LLMBackend` instance. When provided,
             overrides the ``llm_provider`` path and routes LLM calls through
@@ -654,6 +677,11 @@ def classify_teaching_roles(
             ``curriculum_provider`` wins; when neither is passed, the
             existing legacy path is unchanged.
     """
+    # Phase 4 Subtask 35: env-var-first model resolution. ``None`` from
+    # the caller (incl. CLI default) triggers TRAINFORGE_ALIGN_CHUNKS_MODEL
+    # lookup; an explicit value still wins.
+    llm_model = _resolve_align_model(llm_model)
+
     # Belt-and-suspenders: catch schema drift against the canonical
     # teaching_role enum. Soft-imports so standalone Trainforge installs
     # (without the repo root on sys.path) still work.
@@ -1240,8 +1268,13 @@ def build_parser() -> argparse.ArgumentParser:
                        "CURRICULUM_ALIGNMENT_PROVIDER=local) — that route reuses the "
                        "same LOCAL_SYNTHESIS_* / TOGETHER_* env vars as synthesis."
                    ))
-    p.add_argument("--llm-model", default="claude-haiku-4-5-20251001",
-                   help="Model for LLM calls")
+    p.add_argument("--llm-model", default=None,
+                   help=(
+                       "Model for LLM calls. When unset, falls back to "
+                       "the TRAINFORGE_ALIGN_CHUNKS_MODEL env var, then "
+                       f"to {ALIGN_CHUNKS_MODEL_DEFAULT!r} (Phase 4 "
+                       "Subtask 35)."
+                   ))
     p.add_argument(
         "--curriculum-provider",
         default=None,
