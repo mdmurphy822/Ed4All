@@ -280,6 +280,17 @@ def _policy_from_dict(raw: Dict[str, Any]) -> BlockRoutingPolicy:
     for tier, spec_dict in (raw.get("defaults") or {}).items():
         if not isinstance(spec_dict, dict):
             continue
+        # Phase 3a env-var-first contract (Subtask 23): when the YAML's
+        # ``defaults[tier].model`` is the same hardcoded sentinel literal
+        # the loader / hardcoded-defaults table ships with AND the
+        # corresponding tier-default env var
+        # (``COURSEFORGE_OUTLINE_MODEL`` / ``COURSEFORGE_REWRITE_MODEL``)
+        # is set non-empty, the env var overrides the YAML value. Per-
+        # block_type overrides in YAML still win over the env var
+        # (operator-explicit > tier-default), which is enforced at the
+        # ``BlockRoutingPolicy.resolve`` layer because per-block_type
+        # entries are resolved before tier defaults.
+        spec_dict = _maybe_apply_env_model_override(spec_dict, tier=tier)
         # block_type left empty here; resolve() restamps with the
         # caller's block_type before handing the spec back.
         defaults[tier] = _spec_from_dict(spec_dict, block_type="", tier=tier)
@@ -319,6 +330,95 @@ def _policy_from_dict(raw: Dict[str, Any]) -> BlockRoutingPolicy:
         n_candidates_by_block_type=n_candidates_map,
         regen_budget_by_block_type=regen_budget_map,
     )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3a env-var-first override (Subtask 23)
+# ---------------------------------------------------------------------------
+
+# Sentinel YAML model literals that the shipped
+# ``Courseforge/config/block_routing.yaml`` carries under
+# ``defaults.outline.model`` / ``defaults.rewrite.model``. These mirror
+# the hardcoded fallback table at
+# ``Courseforge/router/router.py::_DEFAULT_OUTLINE_MODEL`` /
+# ``_DEFAULT_REWRITE_MODEL_ANTHROPIC``. Keeping the strings in sync is
+# checked by the Subtask-23 acceptance test
+# (Courseforge/router/tests/test_router.py::test_phase3a_*).
+_YAML_SENTINEL_OUTLINE_MODEL = "qwen2.5:7b-instruct-q4_K_M"
+_YAML_SENTINEL_REWRITE_MODEL = "claude-sonnet-4-6"
+
+_ENV_TIER_MODEL_VAR: Dict[str, str] = {
+    "outline": "COURSEFORGE_OUTLINE_MODEL",
+    "rewrite": "COURSEFORGE_REWRITE_MODEL",
+}
+
+_TIER_SENTINELS: Dict[str, str] = {
+    "outline": _YAML_SENTINEL_OUTLINE_MODEL,
+    "rewrite": _YAML_SENTINEL_REWRITE_MODEL,
+}
+
+
+def _maybe_apply_env_model_override(
+    spec_dict: Dict[str, Any],
+    *,
+    tier: str,
+) -> Dict[str, Any]:
+    """Apply env-var-first override to a tier-default spec dict.
+
+    Phase 3a §3.3 contract (Subtask 23): an operator who has set
+    ``COURSEFORGE_OUTLINE_MODEL`` / ``COURSEFORGE_REWRITE_MODEL``
+    expects the env var to win over the shipped YAML default. The
+    YAML's ``defaults.{tier}.model`` is intentionally pinned to the
+    hardcoded sentinel literal (so a clean checkout walks straight
+    through to the hardcoded-defaults table); when an operator sets
+    the tier-default env var, that intent should beat the sentinel.
+
+    Override only fires when:
+
+    1. ``tier`` is one of ``{"outline", "rewrite"}`` (else no-op).
+    2. The YAML model field equals the sentinel literal (so an
+       operator who explicitly pinned a non-sentinel model in YAML
+       keeps that pin — operator-explicit > tier-default env var).
+    3. The corresponding env var is set and non-empty.
+
+    Returns a copy of ``spec_dict`` with ``model`` overridden when the
+    above conditions hold; returns ``spec_dict`` unchanged otherwise
+    (no allocation).
+
+    Per-block_type overrides in ``blocks[block_type][tier]`` are NOT
+    routed through this helper, so an operator explicitly pinning a
+    per-block_type model in YAML continues to win over the env var.
+
+    Audit trail: emits an ``INFO`` log line via the module logger
+    when the override fires. Decision-capture has no surface here
+    because the loader is module-level (no ``capture`` instance in
+    scope); ``model_resolution_env_override`` is not in
+    ``schemas/events/decision_event.schema.json``'s enum, so a JSONL
+    audit event would fail strict validation. The structured log
+    line carries ``tier``, ``yaml_model``, ``env_var``, and
+    ``env_value`` fields so a postmortem reader can reconstruct the
+    override without parsing the YAML or env state at the time.
+    """
+    if tier not in _ENV_TIER_MODEL_VAR:
+        return spec_dict
+    yaml_model = spec_dict.get("model")
+    if yaml_model != _TIER_SENTINELS[tier]:
+        return spec_dict
+    env_var = _ENV_TIER_MODEL_VAR[tier]
+    env_value = os.environ.get(env_var)
+    if not env_value:
+        return spec_dict
+    env_value = env_value.strip()
+    if not env_value:
+        return spec_dict
+    logger.info(
+        "block_routing env-var-first override fired: "
+        "tier=%s yaml_model=%r env_var=%s env_value=%r",
+        tier, yaml_model, env_var, env_value,
+    )
+    overridden = dict(spec_dict)
+    overridden["model"] = env_value
+    return overridden
 
 
 def _spec_from_dict(
