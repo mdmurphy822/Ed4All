@@ -1239,27 +1239,28 @@ def _render_activities(
     *,
     source_ids: Optional[List[str]] = None,
     source_primary: Optional[str] = None,
+    page_id: str = "",
 ) -> str:
     """Render activity cards with data-cf-* metadata.
 
     Wave 9: per-activity ``source_references`` override the page-level
     ``source_ids`` when present. Emit site is the ``.activity-card``
     wrapper only (P2 decision).
+
+    Phase 2 (Subtask 19): refactored to construct one
+    ``Block(block_type="activity")`` per activity and emit the
+    ``.activity-card`` wrapper attribute string via
+    ``block.to_html_attrs()``. Per-activity ``source_references``
+    override the page-level ids on the Block before emit, mirroring
+    the Wave-9 fallback contract used by ``_render_self_check``.
     """
-    parts = []
+    bound_page_id = page_id or _LEGACY_PAGE_ID
     # REC-VOC-02: deterministic teaching_role from (component, purpose) pair.
     act_role = _map_teaching_role("activity", "practice")
-    act_role_attr = f' data-cf-teaching-role="{act_role}"' if act_role else ""
+    parts: List[str] = []
     for i, act in enumerate(activities, 1):
         bloom = act.get("bloom_level", "apply")
         obj_ref = act.get("objective_ref", "")
-        act_attrs = (
-            f' data-cf-component="activity" data-cf-purpose="practice"'
-            f'{act_role_attr}'
-            f' data-cf-bloom-level="{bloom}"'
-        )
-        if obj_ref:
-            act_attrs += f' data-cf-objective-ref="{html_mod.escape(obj_ref)}"'
         act_refs = act.get("source_references")
         if act_refs:
             act_ids = _refs_to_id_list(act_refs)
@@ -1267,7 +1268,25 @@ def _render_activities(
         else:
             act_ids = source_ids
             act_primary = source_primary
-        act_attrs += _source_attr_string(act_ids, act_primary)
+        block = Block(
+            block_id=Block.stable_id(
+                bound_page_id, "activity",
+                _slugify(act.get("title", "")) or f"a{i}", i - 1,
+            ),
+            block_type="activity",
+            page_id=bound_page_id,
+            sequence=i - 1,
+            content={
+                "title": act.get("title", ""),
+                "description": act.get("description", ""),
+            },
+            bloom_level=bloom,
+            teaching_role=act_role or None,
+            objective_ids=(obj_ref,) if obj_ref else (),
+            source_ids=tuple(act_ids) if act_ids else (),
+            source_primary=act_primary,
+        )
+        act_attrs = block.to_html_attrs()
         parts.append(f"""
     <div class="activity-card"{act_attrs}>
       <h3>Activity {i}: {html_mod.escape(act["title"])}</h3>
