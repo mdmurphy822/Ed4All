@@ -106,6 +106,41 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
             "workflow_params", "duration_weeks_explicit",
         ),
     },
+    # Phase 3 Subtask 5: input routing for the two-pass router phases.
+    # Mirrors the legacy ``content_generation`` routing for the outline
+    # tier; the rewrite tier additionally consumes
+    # ``blocks_validated_path`` from the inter-tier validation phase.
+    "content_generation_outline": {
+        "project_id": ("phase_outputs", "objective_extraction", "project_id"),
+        "source_module_map_path": (
+            "phase_outputs", "source_mapping", "source_module_map_path",
+        ),
+        "staging_dir": ("phase_outputs", "staging", "staging_dir"),
+        "duration_weeks_explicit": (
+            "workflow_params", "duration_weeks_explicit",
+        ),
+    },
+    "inter_tier_validation": {
+        "blocks_outline_path": (
+            "phase_outputs", "content_generation_outline",
+            "blocks_outline_path",
+        ),
+        "project_id": ("phase_outputs", "objective_extraction", "project_id"),
+    },
+    "content_generation_rewrite": {
+        "blocks_validated_path": (
+            "phase_outputs", "inter_tier_validation",
+            "blocks_validated_path",
+        ),
+        "project_id": ("phase_outputs", "objective_extraction", "project_id"),
+        "source_module_map_path": (
+            "phase_outputs", "source_mapping", "source_module_map_path",
+        ),
+        "staging_dir": ("phase_outputs", "staging", "staging_dir"),
+        "duration_weeks_explicit": (
+            "workflow_params", "duration_weeks_explicit",
+        ),
+    },
     "packaging": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),
     },
@@ -168,6 +203,22 @@ _LEGACY_PHASE_OUTPUT_KEYS: Dict[str, List[str]] = {
     "content_generation": [
         "project_id", "content_paths", "page_paths", "content_dir",
         "weeks_prepared",
+    ],
+    # Phase 3 Subtask 5: two-pass router phase output declarations.
+    # The outline tier emits a Block-list JSON sidecar (no HTML body);
+    # the validation tier filters into pass/fail Block lists; the
+    # rewrite tier emits the final HTML pages plus a final Block JSON
+    # for downstream consumers (Trainforge ingest reads from the
+    # rewrite-tier blocks_final_path when COURSEFORGE_TWO_PASS=true).
+    "content_generation_outline": [
+        "blocks_outline_path", "project_id", "weeks_prepared",
+    ],
+    "inter_tier_validation": [
+        "blocks_validated_path", "blocks_failed_path",
+    ],
+    "content_generation_rewrite": [
+        "content_paths", "page_paths", "content_dir",
+        "blocks_final_path",
     ],
     # Wave 32 Deliverable B: surface imscc_path + content_dir so
     # IMSCCValidator + PageObjectivesValidator builders pick them up.
