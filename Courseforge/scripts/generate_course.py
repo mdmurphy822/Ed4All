@@ -1674,7 +1674,11 @@ def _collect_section_roles(section: Dict) -> List[str]:
     return sorted(roles)
 
 
-def _build_sections_metadata(sections: List[Dict]) -> List[Dict[str, Any]]:
+def _build_sections_metadata(
+    sections: List[Dict],
+    *,
+    page_id: str = "",
+) -> List[Dict[str, Any]]:
     """Build structured section metadata for JSON-LD.
 
     Wave 9 addition (source provenance): each section may carry a
@@ -1682,15 +1686,44 @@ def _build_sections_metadata(sections: List[Dict]) -> List[Dict[str, Any]]:
     :class:`schemas/knowledge/source_reference.schema.json` SourceReference
     objects). When present and non-empty, emitted as ``sourceReferences``
     on the section entry. Absent / empty → elided for backward compat.
+
+    Phase 2 (Subtask 23): refactored to construct one ``Block(block_type=
+    "explanation", …)`` per section heading and project to the JSON-LD
+    entry via ``block.to_jsonld_entry()``. The Block's natural shape
+    (``keyTerms`` as ``Tuple[str, ...]``, ``teachingRole`` as a single
+    string) does NOT match the legacy section-emit shape (``keyTerms``
+    as a ``[{term, definition}]`` list of flip-card dicts;
+    ``teachingRole`` as a multi-string array from
+    ``_collect_section_roles``). The Block-derived entry is therefore
+    augmented with the legacy ``keyTerms`` / ``teachingRole`` shapes
+    after ``to_jsonld_entry()`` returns. Public signature kept stable
+    (``page_id`` is an optional kwarg defaulting to ``""``); Subtask 27
+    will pass it from ``generate_week`` so the same Block instances can
+    be reused for the new top-level ``blocks[]`` array.
     """
+    bound_page_id = page_id or _LEGACY_PAGE_ID
     result = []
-    for section in sections:
+    for sec_idx, section in enumerate(sections):
         content_type = section.get("content_type") or _infer_content_type(section)
-        entry: Dict[str, Any] = {
-            "heading": section["heading"],
-            "contentType": content_type,
-        }
-        # Key terms from flip_cards
+        bloom_range = section.get("bloom_range") or None
+        section_refs = section.get("source_references")
+        block = Block(
+            block_id=Block.stable_id(
+                bound_page_id, "explanation",
+                _slugify(section["heading"]) or f"section_{sec_idx}", sec_idx,
+            ),
+            block_type="explanation",
+            page_id=bound_page_id,
+            sequence=sec_idx,
+            content=section["heading"],
+            content_type_label=content_type,
+            bloom_range=bloom_range,
+            source_references=tuple(section_refs) if section_refs else (),
+        )
+        entry = block.to_jsonld_entry()
+        # Legacy keyTerms shape: list of {term, definition} dicts from
+        # flip_cards (NOT slug strings — Block.key_terms doesn't match
+        # this shape, so we override the entry directly).
         if section.get("flip_cards"):
             entry["keyTerms"] = [
                 {"term": t["term"], "definition": t["definition"]}
@@ -1698,16 +1731,11 @@ def _build_sections_metadata(sections: List[Dict]) -> List[Dict[str, Any]]:
             ]
         # REC-VOC-02: deterministic teaching_role array collected from
         # tagged components inside the section (stable, diff-friendly order).
+        # Block.teaching_role is a single string; the section-level shape
+        # is a list of distinct roles per section, so we override.
         teaching_roles = _collect_section_roles(section)
         if teaching_roles:
             entry["teachingRole"] = teaching_roles
-        bloom_range = section.get("bloom_range")
-        if bloom_range:
-            entry["bloomRange"] = [bloom_range] if isinstance(bloom_range, str) else bloom_range
-        # Wave 9: section-level source attribution (override pattern).
-        section_refs = section.get("source_references")
-        if section_refs:
-            entry["sourceReferences"] = list(section_refs)
         result.append(entry)
     return result
 
@@ -1751,6 +1779,8 @@ def _build_bloom_distribution(
 
 def _build_misconceptions_metadata(
     misconceptions: List[Dict],
+    *,
+    page_id: str = "",
 ) -> List[Dict[str, Any]]:
     """Enrich misconception dicts with Bloom metadata for the JSON-LD emit.
 
@@ -1776,9 +1806,19 @@ def _build_misconceptions_metadata(
     strip any other keys from the input dict — callers that need to
     attach extra metadata should extend the schema instead of smuggling
     undeclared keys.
+
+    Phase 2 (Subtask 23): refactored to construct one ``Block(block_type=
+    "misconception", …)`` per misconception and project to the JSON-LD
+    entry via ``block.to_jsonld_entry()``. The Bloom inference logic
+    runs first; the resolved ``bloom_level`` + ``cognitive_domain`` are
+    set on the Block so ``_misconception_jsonld()`` emits the same
+    fields. Public signature kept stable (``page_id`` is an optional
+    kwarg defaulting to ``""``); Subtask 27 will pass it so the same
+    Block instances can be reused for the new top-level ``blocks[]``.
     """
+    bound_page_id = page_id or _LEGACY_PAGE_ID
     result: List[Dict[str, Any]] = []
-    for m in misconceptions:
+    for m_idx, m in enumerate(misconceptions):
         mis_text = str(m.get("misconception") or "")
         cor_text = str(m.get("correction") or "")
         bloom_level = m.get("bloomLevel") or m.get("bloom_level")
@@ -1790,14 +1830,20 @@ def _build_misconceptions_metadata(
             if not lvl:
                 lvl, _verb = detect_bloom_level(mis_text)
             bloom_level = lvl
-        entry: Dict[str, Any] = {
-            "misconception": mis_text,
-            "correction": cor_text,
-        }
-        if bloom_level:
-            entry["bloomLevel"] = bloom_level
-            entry["cognitiveDomain"] = _bloom_to_cognitive_domain(bloom_level)
-        result.append(entry)
+        domain = _bloom_to_cognitive_domain(bloom_level) if bloom_level else None
+        block = Block(
+            block_id=Block.stable_id(
+                bound_page_id, "misconception",
+                _slugify(mis_text) or f"misconception_{m_idx}", m_idx,
+            ),
+            block_type="misconception",
+            page_id=bound_page_id,
+            sequence=m_idx,
+            content={"misconception": mis_text, "correction": cor_text},
+            bloom_level=bloom_level or None,
+            cognitive_domain=domain or None,
+        )
+        result.append(block.to_jsonld_entry())
     return result
 
 
