@@ -258,6 +258,7 @@ Courseforge HTML pages embed machine-readable instructional design metadata for 
 | `data-cf-objective-ref` | `.self-check`, `.activity-card` | Associated learning objective |
 | `data-cf-source-ids` | `<section>`, headings, component wrappers | DART `sourceId`(s) that ground this block. Shape: `dart:{slug}#{block_id}`. Carried through from DART's `data-dart-block-id` when source material is present; elided when no source grounding exists. |
 | `data-cf-source-primary` | `<section>`, headings, component wrappers | The primary `sourceId` for the block (subset of `data-cf-source-ids`) when one source dominates. |
+| `data-cf-block-id` | every block-bearing wrapper (`<section>`, headings, component wrappers) | Stable Block ID for cross-referencing JSON-LD `blocks[]` (Phase 2; gated behind `COURSEFORGE_EMIT_BLOCKS`). Shape: `{page_id}#{block_type}_{slug}_{idx}` per `Courseforge/scripts/blocks.py::Block.stable_id`. Elided when the flag is off. |
 
 Attributes stop at the **section / component wrapper level** — never on every `<p>` / `<li>` / `<tr>` in prose.
 
@@ -312,6 +313,87 @@ Emitted LO IDs follow the pattern `^[A-Z]{2,}-\d{2,}$` from the canonical helper
 - `CO-NN` — chapter-level objective.
 
 Synthesized objectives are persisted to `{project}/01_learning_objectives/synthesized_objectives.json` by the `plan_course_structure` phase in the `textbook_to_course` pipeline. Downstream Trainforge consumers match case-insensitively; the `TRAINFORGE_PRESERVE_LO_CASE` flag preserves the emit case.
+
+### Phase 2: intermediate Block format
+
+`Courseforge/scripts/blocks.py` (`:223-265`) defines the canonical
+intermediate `Block` dataclass that the renderer + JSON-LD builder
+both consume. Every page-level pedagogical unit (objective, concept,
+example, callout, flip card, self-check question, activity, …) is
+constructed as a `Block` first, then projected to HTML via
+`Block.to_html_attrs()` and to a JSON-LD entry via
+`Block.to_jsonld_entry()`. The dataclass is frozen — mutations return
+a new instance via `dataclasses.replace`, and the `with_touch`
+helper appends to the immutable `touched_by` audit chain.
+
+Field surface (mirrors the docstring at `blocks.py:223-265`):
+
+```python
+@dataclass(frozen=True)
+class Block:
+    block_id: str                    # stable: {page_id}#{block_type}_{slug}_{idx}
+    block_type: str                  # one of BLOCK_TYPES (16 values)
+    page_id: str
+    sequence: int
+    content: Union[str, Dict[str, Any]]
+    template_type: Optional[str]     # e.g. flip_card, self_check
+    key_terms: Tuple[str, ...]
+    objective_ids: Tuple[str, ...]   # canonical TO-NN / CO-NN refs
+    bloom_level: Optional[str]
+    bloom_verb: Optional[str]
+    bloom_range: Optional[str]       # section-level span (emit-only)
+    bloom_levels: Tuple[str, ...]
+    bloom_verbs: Tuple[str, ...]
+    cognitive_domain: Optional[str]
+    teaching_role: Optional[str]
+    content_type_label: Optional[str]
+    purpose: Optional[str]
+    component: Optional[str]
+    source_ids: Tuple[str, ...]      # DART dart:{slug}#{block_id} grounding
+    source_primary: Optional[str]
+    source_references: Tuple[Dict[str, Any], ...]
+    touched_by: Tuple[Touch, ...]    # cumulative outline / validation / rewrite chain
+    content_hash: Optional[str]
+    validation_attempts: int         # Phase-3 feedback-driven; default 0
+    escalation_marker: Optional[str] # one of {outline_budget_exhausted,
+                                     # structural_unfixable, validator_consensus_fail}
+```
+
+The `BLOCK_TYPES` enum (`blocks.py:77-96`) is a 16-value frozenset:
+`objective`, `concept`, `example`, `assessment_item`, `explanation`,
+`prereq_set`, `activity`, `misconception`, `callout`,
+`flip_card_grid`, `self_check_question`, `summary_takeaway`,
+`reflection_prompt`, `discussion_prompt`, `chrome`, `recap`. The
+`block_type` constructor argument is validated against this set;
+unknown values raise `ValueError`.
+
+When `COURSEFORGE_EMIT_BLOCKS=true`,
+`Courseforge/scripts/generate_course.py::_build_page_metadata`
+(`:2085-2098`) emits three additional top-level JSON-LD fields per
+page beyond the legacy `learningObjectives` / `sections` /
+`misconceptions` / `sourceReferences` shape:
+
+- `blocks[]`: ordered array of per-block JSON-LD entries built by
+  `Block.to_jsonld_entry()` — the canonical projection of the Block
+  list for the page. Trainforge's `process_course._extract_section_metadata`
+  (`Trainforge/process_course.py:2333-2341`) prefers this projection
+  over the `data-cf-*` HTML-attribute fallback when present.
+- `provenance`: `{runId, pipelineVersion, tiers[]}` — `runId` reads
+  `COURSEFORGE_RUN_ID` from the environment, `pipelineVersion` is
+  pinned to `phase2`, `tiers[]` is reserved for Phase 3's outline /
+  validation / rewrite tier provenance.
+- `contentHash`: SHA-256 hex of the meta dict canonicalised
+  (`json.dumps(..., sort_keys=True, ensure_ascii=False)`) BEFORE the
+  `contentHash` field itself is added. The hash excludes itself from
+  its own payload, which keeps it deterministic across re-runs that
+  produce identical content.
+
+When the flag is off (default), the new fields are elided and emit
+stays byte-identical to the pre-Phase-2 snapshot, which is the
+contract the legacy regression suite (`Courseforge/scripts/tests/`)
+pins. Canonical schema shape: `schemas/knowledge/courseforge_jsonld_v1.schema.json`
+(`$defs.Block`, `$defs.Touch`, top-level optional `blocks[]` /
+`provenance` / `contentHash`).
 
 ---
 
@@ -391,8 +473,10 @@ Courseforge can import and remediate IMSCC packages from:
 ### Scripts for Course Generation
 | Script | Location | Purpose |
 |--------|----------|---------|
-| `generate_course.py` | `scripts/` | Multi-file weekly course generation. Emits page-level JSON-LD, `course_metadata.json`, prerequisite-page refs, `data-cf-teaching-role`, and `data-cf-source-ids` / page-level `sourceReferences` when DART source material is staged. |
-| `package_multifile_imscc.py` | `scripts/` | Packages multi-file output into IMSCC. Structural validation is on by default (per-week `learningObjectives` must resolve to the week's LO manifest). Auto-discovers `course.json` and bundles `course_metadata.json` at the zip root. Manifest uses IMS Common Cartridge v1.3 namespaces; resources are nested under per-week `<item>` wrappers in the organization tree. **This is the runtime target of the MCP `package_imscc` tool** — `MCP/tools/pipeline_tools.py::_package_imscc` imports and delegates here instead of hand-rolling a ZIP. |
+| `generate_course.py` | `scripts/` | Multi-file weekly course generation. Emits page-level JSON-LD, `course_metadata.json`, prerequisite-page refs, `data-cf-teaching-role`, and `data-cf-source-ids` / page-level `sourceReferences` when DART source material is staged. Phase 2: accepts `--emit-mode {full,outline}` (default `full`); outline mode strips content/example/assessment HTML bodies but preserves their JSON-LD `blocks[]` projections, and stamps `course_metadata.blocks_summary.outline_only=true` so downstream consumers can detect the tier. |
+| `package_multifile_imscc.py` | `scripts/` | Packages multi-file output into IMSCC. Structural validation is on by default (per-week `learningObjectives` must resolve to the week's LO manifest). Auto-discovers `course.json` and bundles `course_metadata.json` at the zip root. Manifest uses IMS Common Cartridge v1.3 namespaces; resources are nested under per-week `<item>` wrappers in the organization tree. **This is the runtime target of the MCP `package_imscc` tool** — `MCP/tools/pipeline_tools.py::_package_imscc` imports and delegates here instead of hand-rolling a ZIP. Phase 2: accepts `--outline-only` to package an outline-tier deliverable; reads `course_metadata.blocks_summary.outline_only` written by `generate_course.py --emit-mode outline`. |
+
+`--emit-mode outline` (`generate_course.py`) and `--outline-only` (`package_multifile_imscc.py`) produce a stripped-down deliverable carrying only objectives + summaries; content/example/assessment HTML bodies are dropped while their JSON-LD `blocks[]` entries persist for downstream consumers (Trainforge `process_course.py` skips `instruction_pair` extraction when `course_metadata.blocks_summary.outline_only=true`). Outline mode is the input shape Phase 3's two-pass pipeline expects from the outline tier.
 
 ### Scripts for Intake
 | Script | Location | Purpose |
