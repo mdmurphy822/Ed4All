@@ -447,7 +447,10 @@ tracker.set_status("W001", "content_generator", "Module_3.html", "IN_PROGRESS")
        generated chunks + assessments. Routes via the
        `training-synthesizer` agent (tool: `synthesize_training`).
        Optional phase: skipped when no `ANTHROPIC_API_KEY` or when
-       `--skip-training` is passed on the CLI.
+       `--skip-training` is passed on the CLI. Wave 138a: emits per-
+       pair resume sidecar at `training_specs/.synthesis_pairs_checkpoint.jsonl`
+       so a mid-run crash on multi-hour local-LLM rebuilds resumes
+       past every accepted pair; opt out via `--no-checkpoint`.
 
 10. libv2_archival
    └── Archive course artifacts to LibV2 (raw PDFs, DART HTML, IMSCC,
@@ -667,6 +670,7 @@ Source of truth: `config/workflows.yaml::validation_gates`. Phase column below s
 | `rag_training` | `assessment_generation` | `question_quality` | QuestionQualityValidator |
 | `rag_training` | `validation` | `final_quality` | FinalQualityValidator |
 | `trainforge_train` | `post_training_validation` | `eval_gating` | EvalGatingValidator (Wave 108 — fails closed on regression / yes-bias / no-bias / source-match drop) |
+| `trainforge_train` | `post_training_validation` | `content_type_role_alignment` | EvalGatingValidator (warning, Wave 138a — surfaces `EVAL_CONTENT_TYPE_ROLE_ALIGNMENT_LOW` when `content_type_role_alignment_summary.alignment_rate` < 0.70; skips on legacy reports) |
 | `trainforge_train` | `post_training_validation` | `family_completeness` | FamilyCompletenessValidator (Wave 137b — fails closed when any CURIE family is partially complete; family clusters declared in `schemas/training/family_map.<family>.yaml`) |
 
 ---
@@ -787,6 +791,7 @@ SLM training is a **post-import LibV2 stage**, not a step in `Trainforge/process
 - **Schemas**: `schemas/models/model_card.schema.json` (Wave 89 + Wave 92's `holdout_graph_hash` extension) and `schemas/models/model_pointers.schema.json` (Wave 93 promotion ledger).
 - **Deep dive**: `Trainforge/CLAUDE.md` § "Training Pipeline" — base model registry, provider configuration, 5×3 eval matrix, 7-hash provenance, promotion workflow, decision-capture contract.
 - **Stage diagram**: see `LibV2/CLAUDE.md` for the post-import sub-stage ASCII.
+- **Eval checkpointing (Wave 138a)**: `SLMEvalHarness._run_stage` appends each completed evaluator to `<adapter>/eval/.eval_results_checkpoint.jsonl`; on resume the harness short-circuits cached stages, unlinks on clean exit, and preserves on exception. Opt out via `--no-eval-checkpoint`.
 
 ---
 
