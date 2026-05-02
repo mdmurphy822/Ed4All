@@ -550,19 +550,35 @@ class CourseforgeRouter:
                 .replace("+00:00", "Z")
             )
             touch_provider = _collapse_to_touch_provider(spec.provider)
+            # ``Block.__post_init__`` validates ``escalation_marker``
+            # against the canonical ``_ESCALATION_MARKERS`` set
+            # (``{outline_budget_exhausted, structural_unfixable,
+            # validator_consensus_fail}``). The rewrite provider's
+            # ``_ESCALATION_MARKER_CONTEXT`` documents an additional
+            # marker name (``outline_skipped_by_policy``) for the
+            # router's policy-skip semantics, but Block validation
+            # rejects it. Using ``outline_budget_exhausted`` keeps the
+            # marker on Block-validated ground while preserving the
+            # rewrite-tier escalated-prompt routing — the rewrite
+            # provider treats both markers as "the outline tier did not
+            # produce a valid emit; synthesize from source chunks".
+            # The router's ``purpose="escalate_immediately"`` Touch and
+            # the rationale on the ``block_outline_call`` decision
+            # event preserve the policy-skip provenance for postmortem.
+            short_circuit_marker = "outline_budget_exhausted"
             touch = Touch(
                 model=spec.model,
                 provider=touch_provider,
                 tier="outline",
                 timestamp=timestamp,
                 decision_capture_id=self._build_router_capture_id(
-                    block, "outline_skipped_by_policy"
+                    block, short_circuit_marker
                 ),
                 purpose="escalate_immediately",
             )
             short_circuited = dataclasses.replace(
                 block,
-                escalation_marker="outline_skipped_by_policy",
+                escalation_marker=short_circuit_marker,
                 touched_by=block.touched_by + (touch,),
             )
             self._emit_router_decision(
