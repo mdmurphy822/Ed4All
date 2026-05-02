@@ -517,6 +517,7 @@ def classify_teaching_roles(
     verbose: bool = False,
     llm: Optional["LLMBackend"] = None,
     curriculum_provider: Optional["CurriculumAlignmentProvider"] = None,
+    checkpoint_path: Optional[Path] = None,
 ) -> None:
     """Mutate chunks in-place to add teaching_role field.
 
@@ -611,16 +612,13 @@ def classify_teaching_roles(
             concept_first_seen,
             curriculum_provider,
             verbose,
+            checkpoint_path=checkpoint_path,
         )
-        for chunk in ambiguous_chunks:
-            chunk.setdefault("teaching_role_source", "llm")
         llm_count = len(ambiguous_chunks)
     elif use_llm and ambiguous_chunks:
         _classify_with_llm(
             ambiguous_chunks, concept_first_seen, llm_model, verbose, llm=llm
         )
-        for chunk in ambiguous_chunks:
-            chunk.setdefault("teaching_role_source", "llm")
         llm_count = len(ambiguous_chunks)
     else:
         # Mock: use heuristic fallback
@@ -712,16 +710,80 @@ def _classify_with_llm(
                     if role not in VALID_ROLES:
                         role = "elaborate"
                     chunk["teaching_role"] = role
+                    chunk["teaching_role_source"] = "llm"
                     if verbose:
                         print(f"  {chunk['id']}: role={role} (LLM)")
             else:
-                # Fallback
+                # Response wasn't a parseable JSON array — record per-chunk
+                # as an LLM failure so the source label is honest.
                 for chunk in batch:
                     chunk["teaching_role"] = _mock_role(chunk, concept_first_seen)
+                    chunk["teaching_role_source"] = "llm_failed"
+                    chunk["teaching_role_failure"] = {
+                        "error_class": "NoJsonArrayInResponse",
+                        "error_message": "model output did not contain a JSON array",
+                    }
         except Exception as e:
-            print(f"  WARNING: LLM batch failed ({e}), falling back to mock")
+            print(f"  WARNING: LLM batch failed ({e}), annotated as llm_failed")
             for chunk in batch:
                 chunk["teaching_role"] = _mock_role(chunk, concept_first_seen)
+                chunk["teaching_role_source"] = "llm_failed"
+                chunk["teaching_role_failure"] = {
+                    "error_class": type(e).__name__,
+                    "error_message": str(e)[:200],
+                }
+
+
+def _load_teaching_role_checkpoint(
+    checkpoint_path: Optional[Path],
+) -> Dict[str, Dict[str, Any]]:
+    """Load a per-chunk teaching-role checkpoint from a prior aborted run.
+
+    Each line is ``{"id": str, "teaching_role": str,
+    "teaching_role_source": str, "teaching_role_failure"?: dict}``.
+    Malformed lines are skipped (the checkpoint is best-effort, not
+    authoritative). A missing or empty file returns an empty dict.
+    """
+    if checkpoint_path is None or not checkpoint_path.exists():
+        return {}
+    cache: Dict[str, Dict[str, Any]] = {}
+    with checkpoint_path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            cid = obj.get("id")
+            if isinstance(cid, str) and "teaching_role" in obj:
+                cache[cid] = obj
+    return cache
+
+
+def _append_teaching_role_checkpoint(
+    checkpoint_fh: Optional[Any],
+    chunk: Dict,
+) -> None:
+    """Append the chunk's teaching-role outcome to the open checkpoint.
+
+    Writes a single JSON line + ``flush()`` so a ``tail -f`` (or a
+    crash + restart) sees the latest classification immediately. No-op
+    when the checkpoint isn't wired (``checkpoint_fh is None``).
+    """
+    if checkpoint_fh is None:
+        return
+    record = {
+        "id": chunk.get("id"),
+        "teaching_role": chunk.get("teaching_role"),
+        "teaching_role_source": chunk.get("teaching_role_source"),
+    }
+    failure = chunk.get("teaching_role_failure")
+    if failure is not None:
+        record["teaching_role_failure"] = failure
+    checkpoint_fh.write(json.dumps(record) + "\n")
+    checkpoint_fh.flush()
 
 
 def _classify_with_curriculum_provider(
@@ -729,6 +791,7 @@ def _classify_with_curriculum_provider(
     concept_first_seen: Dict[str, int],
     provider: "CurriculumAlignmentProvider",
     verbose: bool,
+    checkpoint_path: Optional[Path] = None,
 ) -> None:
     """Classify ambiguous chunks via the LLM-agnostic curriculum provider.
 
@@ -738,11 +801,61 @@ def _classify_with_curriculum_provider(
     via a JSON array prompt loses the four-class accuracy guarantee
     that the provider's invalid-role validation enforces. On any per-
     chunk failure (provider error, invalid response, transport
-    error), fall back to the mock heuristic so the downstream pipeline
-    keeps moving rather than failing the whole alignment stage.
+    error), fall back to the deterministic heuristic with a
+    ``teaching_role_source="llm_failed"`` annotation so the downstream
+    pipeline keeps moving without the failure being silent.
+
+    When ``checkpoint_path`` is set, classifications are written
+    incrementally so a 10-hour run that crashes can resume without
+    re-paying for already-classified chunks. Resume semantics: if the
+    chunk_id appears in the checkpoint, the cached
+    ``teaching_role`` / ``teaching_role_source`` / ``teaching_role_failure``
+    are applied and the LLM call is skipped.
     """
+    cache = _load_teaching_role_checkpoint(checkpoint_path)
+    checkpoint_fh: Optional[Any] = None
+    if checkpoint_path is not None:
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint_fh = checkpoint_path.open("a", encoding="utf-8")
+    try:
+        _classify_with_curriculum_provider_impl(
+            chunks=chunks,
+            concept_first_seen=concept_first_seen,
+            provider=provider,
+            verbose=verbose,
+            cache=cache,
+            checkpoint_fh=checkpoint_fh,
+        )
+    finally:
+        if checkpoint_fh is not None:
+            checkpoint_fh.close()
+
+
+def _classify_with_curriculum_provider_impl(
+    chunks: List[Dict],
+    concept_first_seen: Dict[str, int],
+    provider: "CurriculumAlignmentProvider",
+    verbose: bool,
+    cache: Dict[str, Dict[str, Any]],
+    checkpoint_fh: Optional[Any],
+) -> None:
     for chunk in chunks:
         chunk_id = str(chunk.get("id") or "")
+        cached = cache.get(chunk_id)
+        if cached is not None:
+            chunk["teaching_role"] = cached["teaching_role"]
+            chunk["teaching_role_source"] = cached.get(
+                "teaching_role_source", "llm"
+            )
+            failure = cached.get("teaching_role_failure")
+            if failure is not None:
+                chunk["teaching_role_failure"] = failure
+            if verbose:
+                print(
+                    f"  {chunk_id}: role={chunk['teaching_role']} "
+                    f"(checkpoint-cached)"
+                )
+            continue
         # Pull a small window of neighbors as pedagogical context. The
         # caller doesn't carry an explicit prev/next pointer; the
         # _position field built by build_chunk_sequence is the only
@@ -765,17 +878,30 @@ def _classify_with_curriculum_provider(
                 neighbors=neighbors,
             )
             chunk["teaching_role"] = role
+            chunk["teaching_role_source"] = "llm"
             if verbose:
                 print(
                     f"  {chunk_id}: role={role} (curriculum-provider)"
                 )
         except Exception as exc:  # noqa: BLE001
+            # Don't pretend a mock provider stepped in — record that the
+            # LLM call failed for this chunk so audits can find these
+            # without grepping decision captures. Downstream still needs
+            # a teaching_role value, so the deterministic heuristic
+            # supplies one, but the source label is honest about what
+            # happened and the failure metadata names the failure mode.
+            chunk["teaching_role"] = _mock_role(chunk, concept_first_seen)
+            chunk["teaching_role_source"] = "llm_failed"
+            chunk["teaching_role_failure"] = {
+                "error_class": type(exc).__name__,
+                "error_message": str(exc)[:200],
+            }
             if verbose:
                 print(
                     f"  WARNING: curriculum-provider failed for "
-                    f"{chunk_id} ({exc}); falling back to mock"
+                    f"{chunk_id} ({exc}); annotated as llm_failed"
                 )
-            chunk["teaching_role"] = _mock_role(chunk, concept_first_seen)
+        _append_teaching_role_checkpoint(checkpoint_fh, chunk)
 
 
 # ---------------------------------------------------------------------------
@@ -1149,12 +1275,20 @@ def main(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
     # --- Field 2: teaching_role ---
     if "teaching_role" in fields:
         print("\n[2/3] Classifying teaching_role...")
+        # Hidden sidecar so a multi-hour curriculum-alignment run that
+        # crashes can resume without re-paying for already-classified
+        # chunks. Only the curriculum-provider path consults this — the
+        # deterministic + heuristic + mock paths run in milliseconds.
+        teaching_role_checkpoint = (
+            corpus_dir / "corpus" / ".teaching_role_checkpoint.jsonl"
+        )
         classify_teaching_roles(
             chunks,
             llm_provider=args.llm_provider,
             llm_model=args.llm_model,
             verbose=args.verbose,
             curriculum_provider=curriculum_provider,
+            checkpoint_path=teaching_role_checkpoint,
         )
 
     # --- Field 3: learning_outcome_refs ---
@@ -1201,6 +1335,16 @@ def main(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
             valid_outcome_ids=valid_ids,
             orphan_week_scoped_refs=orphan_count,
         )
+        # Clean exit — chunks.jsonl now carries the authoritative
+        # teaching_role values, so the resume sidecar is redundant. On a
+        # crash this unlink never runs and the sidecar preserves
+        # progress for the next attempt.
+        if "teaching_role" in fields:
+            checkpoint = (
+                corpus_dir / "corpus" / ".teaching_role_checkpoint.jsonl"
+            )
+            if checkpoint.exists():
+                checkpoint.unlink()
         print(f"\n  Written to {corpus_dir / 'corpus'}")
     else:
         print("\n  [DRY RUN] No files written")
