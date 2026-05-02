@@ -42,6 +42,7 @@ local map 1:1.
 from __future__ import annotations
 
 import dataclasses
+import datetime as _dt
 import logging
 import os
 from dataclasses import dataclass, field
@@ -429,6 +430,303 @@ class CourseforgeRouter:
             )
             return None
         return spec
+
+    # ------------------------------------------------------------------
+    # Provider construction (lazy)
+    # ------------------------------------------------------------------
+
+    def _get_outline_provider(self, spec: BlockProviderSpec) -> Any:
+        """Return an OutlineProvider instance for ``spec``.
+
+        Lazy-imports :class:`OutlineProvider` so the router module
+        itself can be imported without pulling the provider's
+        dependencies (httpx / anthropic SDK / OpenAICompatibleClient).
+        Caches by ``(provider, model, base_url)`` so repeated dispatches
+        for the same spec reuse the same instance — important because
+        the OpenAI-compatible client maintains an internal connection
+        pool we don't want to thrash.
+        """
+        if self._outline_provider_override is not None:
+            return self._outline_provider_override
+        cache_key = ("outline", spec.provider, spec.model)
+        cached = self._provider_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        from Courseforge.generators._outline_provider import (  # noqa: PLC0415
+            OutlineProvider,
+        )
+        # ``openai_compatible`` is the router's fourth provider value;
+        # the OutlineProvider supports it natively (its
+        # SUPPORTED_PROVIDERS includes it). Pass through unchanged so
+        # the OutlineProvider can route through OpenAICompatibleClient
+        # at a non-Ollama / non-Together base_url.
+        provider_arg = spec.provider
+        instance = OutlineProvider(
+            provider=provider_arg if provider_arg != "openai_compatible" else "local",
+            model=spec.model,
+            base_url=spec.base_url,
+            capture=self._capture,
+            max_tokens=spec.max_tokens,
+            temperature=spec.temperature,
+        )
+        self._provider_cache[cache_key] = instance
+        return instance
+
+    def _get_rewrite_provider(self, spec: BlockProviderSpec) -> Any:
+        """Return a RewriteProvider instance for ``spec``.
+
+        Same lazy-import + cache strategy as :meth:`_get_outline_provider`.
+        """
+        if self._rewrite_provider_override is not None:
+            return self._rewrite_provider_override
+        cache_key = ("rewrite", spec.provider, spec.model)
+        cached = self._provider_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        from Courseforge.generators._rewrite_provider import (  # noqa: PLC0415
+            RewriteProvider,
+        )
+        # RewriteProvider's base only accepts {"anthropic","together","local"};
+        # collapse "openai_compatible" to "local" so the constructor passes.
+        provider_arg = (
+            spec.provider if spec.provider != "openai_compatible" else "local"
+        )
+        instance = RewriteProvider(
+            provider=provider_arg,
+            model=spec.model,
+            base_url=spec.base_url,
+            capture=self._capture,
+            max_tokens=spec.max_tokens,
+            temperature=spec.temperature,
+        )
+        self._provider_cache[cache_key] = instance
+        return instance
+
+    # ------------------------------------------------------------------
+    # Per-block dispatch
+    # ------------------------------------------------------------------
+
+    def route(
+        self,
+        block: Block,
+        *,
+        tier: Literal["outline", "rewrite"],
+        source_chunks: Optional[List[Any]] = None,
+        objectives: Optional[List[Any]] = None,
+        **overrides: Any,
+    ) -> Block:
+        """Dispatch a single Block through the chosen ``tier``.
+
+        Steps:
+
+        1. Resolve the :class:`BlockProviderSpec` via :meth:`_resolve_spec`.
+        2. ``escalate_immediately`` short-circuit (outline tier only):
+           when ``spec.escalate_immediately`` is True and ``tier`` is
+           ``"outline"``, skip the LLM call entirely; return the block
+           with ``escalation_marker="outline_skipped_by_policy"`` and a
+           deterministic Touch entry so the rewrite tier sees the marker
+           and routes through ``_render_escalated_user_prompt``.
+        3. Lazy-instantiate the provider for ``spec`` via
+           :meth:`_get_outline_provider` / :meth:`_get_rewrite_provider`.
+        4. Dispatch to ``provider.generate_outline(block, ...)`` or
+           ``provider.generate_rewrite(block, ...)``.
+        5. Emit one ``block_outline_call`` / ``block_rewrite_call``
+           decision-capture event with the resolved
+           ``(provider, model, policy_source)`` audit metadata.
+
+        Per Phase 3 §9.2 the provider classes already emit one event
+        per LLM call; this router event is the additional
+        policy-source audit event so a postmortem can reconstruct
+        WHICH layer of the resolution chain governed the dispatch.
+        """
+        spec = self._resolve_spec(block, tier, **overrides)
+
+        # 2. escalate_immediately short-circuit (outline tier only).
+        if tier == "outline" and spec.escalate_immediately:
+            timestamp = (
+                _dt.datetime.now(_dt.timezone.utc)
+                .replace(microsecond=0)
+                .isoformat()
+                .replace("+00:00", "Z")
+            )
+            touch_provider = _collapse_to_touch_provider(spec.provider)
+            touch = Touch(
+                model=spec.model,
+                provider=touch_provider,
+                tier="outline",
+                timestamp=timestamp,
+                decision_capture_id=self._build_router_capture_id(
+                    block, "outline_skipped_by_policy"
+                ),
+                purpose="escalate_immediately",
+            )
+            short_circuited = dataclasses.replace(
+                block,
+                escalation_marker="outline_skipped_by_policy",
+                touched_by=block.touched_by + (touch,),
+            )
+            self._emit_router_decision(
+                tier=tier,
+                spec=spec,
+                block=block,
+                policy_source=self._classify_policy_source(spec, overrides),
+                outcome="short_circuited",
+                extra_rationale=(
+                    "spec.escalate_immediately=True; outline tier "
+                    "skipped — block flagged for rewrite-tier escalation"
+                ),
+            )
+            return short_circuited
+
+        # 3 + 4. Lazy-instantiate + dispatch.
+        if tier == "outline":
+            provider_instance = self._get_outline_provider(spec)
+            try:
+                out = provider_instance.generate_outline(
+                    block,
+                    source_chunks=source_chunks or [],
+                    objectives=objectives or [],
+                )
+                outcome = "success"
+                err: Optional[str] = None
+            except Exception as exc:
+                outcome = "failed"
+                err = f"{type(exc).__name__}: {exc}"[:200]
+                self._emit_router_decision(
+                    tier=tier,
+                    spec=spec,
+                    block=block,
+                    policy_source=self._classify_policy_source(spec, overrides),
+                    outcome=outcome,
+                    extra_rationale=f"dispatch_error={err}",
+                )
+                raise
+        else:  # rewrite
+            provider_instance = self._get_rewrite_provider(spec)
+            try:
+                out = provider_instance.generate_rewrite(
+                    block,
+                    source_chunks=source_chunks or [],
+                    objectives=objectives or [],
+                )
+                outcome = "success"
+                err = None
+            except Exception as exc:
+                outcome = "failed"
+                err = f"{type(exc).__name__}: {exc}"[:200]
+                self._emit_router_decision(
+                    tier=tier,
+                    spec=spec,
+                    block=block,
+                    policy_source=self._classify_policy_source(spec, overrides),
+                    outcome=outcome,
+                    extra_rationale=f"dispatch_error={err}",
+                )
+                raise
+
+        # 5. Emit the per-call router decision event.
+        self._emit_router_decision(
+            tier=tier,
+            spec=spec,
+            block=block,
+            policy_source=self._classify_policy_source(spec, overrides),
+            outcome=outcome,
+        )
+        return out
+
+    # ------------------------------------------------------------------
+    # Decision-capture helpers
+    # ------------------------------------------------------------------
+
+    def _classify_policy_source(
+        self,
+        spec: BlockProviderSpec,
+        overrides: Dict[str, Any],
+    ) -> str:
+        """Classify which resolution layer produced the ``spec``.
+
+        Returns one of ``"per_call"`` / ``"yaml_policy"`` / ``"env_var"``
+        / ``"hardcoded_default"``. Used purely for decision-capture
+        rationale; the router does NOT branch on this value.
+        """
+        if overrides:
+            return "per_call"
+        if self._policy is not None and getattr(self._policy, "resolve", None):
+            try:
+                if self._policy.resolve(
+                    spec.block_type, spec.block_type, spec.tier
+                ) is not None:
+                    return "yaml_policy"
+            except Exception:  # pragma: no cover — defensive
+                pass
+        env_provider, env_model = self._read_tier_env(spec.tier)
+        if env_provider or env_model:
+            return "env_var"
+        return "hardcoded_default"
+
+    def _build_router_capture_id(
+        self, block: Block, marker: str
+    ) -> str:
+        """Build a deterministic capture ID for router-emitted Touches.
+
+        Mirrors the ``in-memory:{id}`` form the providers fall back to
+        when no DecisionCapture is wired. Including the block_id +
+        marker keeps the Touch.decision_capture_id non-empty (Wave 112
+        invariant) and traceable in postmortem logs.
+        """
+        return f"router:{block.block_id}:{marker}"
+
+    def _emit_router_decision(
+        self,
+        *,
+        tier: str,
+        spec: BlockProviderSpec,
+        block: Block,
+        policy_source: str,
+        outcome: str,
+        extra_rationale: str = "",
+    ) -> None:
+        """Emit the per-route ``block_outline_call`` / ``block_rewrite_call``
+        audit event.
+
+        Swallows capture errors so a flaky capture handle never breaks
+        the dispatch. The provider classes emit their own per-LLM-call
+        event; this one is the router-layer audit event that records
+        WHICH policy layer governed the dispatch (per Phase 3 §9.2).
+        """
+        if self._capture is None:
+            return
+        decision_type = (
+            "block_outline_call" if tier == "outline" else "block_rewrite_call"
+        )
+        rationale_parts = [
+            f"router_dispatch tier={tier}",
+            f"block_id={block.block_id}",
+            f"block_type={block.block_type}",
+            f"page_id={block.page_id}",
+            f"provider={spec.provider}",
+            f"model={spec.model}",
+            f"policy_source={policy_source}",
+            f"outcome={outcome}",
+        ]
+        if spec.base_url:
+            rationale_parts.append(f"base_url={spec.base_url}")
+        if extra_rationale:
+            rationale_parts.append(extra_rationale)
+        rationale = "; ".join(rationale_parts)
+        try:
+            self._capture.log_decision(
+                decision_type=decision_type,
+                decision=(
+                    f"router_route:{tier}:{block.block_type}:{block.block_id}"
+                    f":{outcome}"
+                ),
+                rationale=rationale,
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "router decision-capture emit failed: %s", exc
+            )
 
     @staticmethod
     def _apply_overrides(
