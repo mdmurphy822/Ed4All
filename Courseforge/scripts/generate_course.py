@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import html as html_mod
 import json
 import logging
@@ -1868,6 +1869,7 @@ def _build_page_metadata(
     classification: Optional[Dict] = None,
     prerequisite_pages: Optional[List[str]] = None,
     source_references: Optional[List[Dict[str, Any]]] = None,
+    blocks: Optional[List[Block]] = None,
 ) -> Dict[str, Any]:
     """Build the JSON-LD metadata dict for a single page.
 
@@ -1886,6 +1888,20 @@ def _build_page_metadata(
         ``prerequisite_pages`` elision pattern — empty / None → key
         omitted so the page still validates against the schema for
         non-textbook workflows (course_generation).
+
+    Phase 2 (Subtask 26):
+      * ``blocks``: optional list of :class:`Block` instances. When
+        ``COURSEFORGE_EMIT_BLOCKS`` is truthy AND ``blocks`` is non-
+        empty, the meta dict gains three new top-level fields:
+        ``blocks`` (the list of camelCase entries via
+        ``block.to_jsonld_entry()``), ``provenance`` (a deterministic
+        baseline ``{runId, pipelineVersion, tiers}`` envelope; tiers
+        populated only when a multi-tier provider has authored the
+        page), and ``contentHash`` (sha256 hex of the meta dict
+        BEFORE ``contentHash`` is added; the field excludes itself).
+        With the env-flag off OR ``blocks`` empty / None, the legacy
+        emit path is byte-identical so the snapshot suite stays
+        green.
     """
     meta: Dict[str, Any] = {
         "@context": "https://ed4all.dev/ns/courseforge/v1",
@@ -1915,6 +1931,20 @@ def _build_page_metadata(
         meta["prerequisitePages"] = list(prerequisite_pages)
     if source_references:
         meta["sourceReferences"] = list(source_references)
+    # Phase 2 (Subtask 26): emit the new top-level blocks[] / provenance
+    # / contentHash fields when the flag is on AND the caller passed a
+    # non-empty Block list. Order: blocks → provenance → contentHash so
+    # the hash payload (everything BEFORE contentHash) is well-defined.
+    if _courseforge_emit_blocks_enabled() and blocks:
+        meta["blocks"] = [b.to_jsonld_entry() for b in blocks]
+        meta["provenance"] = {
+            "runId": os.environ.get("COURSEFORGE_RUN_ID", ""),
+            "pipelineVersion": "phase2",
+            "tiers": [],
+        }
+        meta["contentHash"] = hashlib.sha256(
+            json.dumps(meta, sort_keys=True, ensure_ascii=False).encode("utf-8")
+        ).hexdigest()
     return meta
 
 
