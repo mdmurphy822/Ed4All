@@ -174,6 +174,19 @@ _DEFAULT_OUTLINE_N_CANDIDATES = 3
 # (escalating to the rewrite tier with an enriched prompt).
 _DEFAULT_OUTLINE_REGEN_BUDGET = 3
 
+# Subtask 48: validator-action priority. The router dispatches on the
+# highest-priority action across all validator results in a candidate's
+# gate-results list. Order: ``block`` is the most severe (the block is
+# structurally unfixable — give up immediately); ``escalate`` is the
+# rewrite-tier hand-off path; ``regenerate`` continues the self-
+# consistency loop; ``pass`` is the steady-state success signal.
+_ACTION_PRIORITY: Dict[str, int] = {
+    "pass": 0,
+    "regenerate": 1,
+    "escalate": 2,
+    "block": 3,
+}
+
 # Per-Phase-3 §4: outline tier defaults to a 7B local model; rewrite
 # tier prefers a multi-step-reasoning Anthropic model for blocks that
 # require deeper pedagogy (assessment items, prereq sets, misconceptions)
@@ -917,15 +930,31 @@ class CourseforgeRouter:
            return the block with a ``Touch(purpose="self_consistency_winner")``
            appended carrying the ``winning_candidate_index=i`` audit
            field on the Subtask-39 decision-capture event.
-        4. If all N candidates fail every validator, return the LAST
-           candidate with ``validation_attempts=n``. The
-           ``escalation_marker`` is NOT set here — Subtask 41 in the
-           next batch handles the regen-budget + escalation contract.
-        5. Records per-candidate failure distribution into a local dict
-           that's emitted on the audit event by Subtask 39.
+        4. Subtask 48: dispatch on the highest-priority action across
+           all validator results in the gate-results list. Priority
+           order ``block > escalate > regenerate > pass``:
+
+           - ``block`` → stamp ``escalation_marker="structural_unfixable"``,
+             break the loop immediately, return for downstream consumers
+             to skip the rewrite tier entirely. Bypasses the regen budget
+             because structural-unfixable is a "give up entirely" signal.
+           - ``escalate`` → stamp
+             ``escalation_marker="validator_consensus_fail"``, break the
+             loop, return for the rewrite tier's enriched-prompt branch.
+           - ``regenerate`` → bump the cumulative validation_attempts
+             accumulator and continue the loop. On budget exhaustion
+             (Subtask 41) stamp ``outline_budget_exhausted`` and break.
+           - ``pass`` → return the candidate (winner branch above).
+
+        5. If all N candidates fail every validator without triggering
+           the block / escalate / budget-exhaustion paths, return the
+           LAST candidate with ``validation_attempts=n``.
+        6. Records per-candidate failure distribution into a local dict
+           that's emitted on the audit event by Subtask 39, and per-
+           validator action events via Subtask 47.
 
         Returns the winning block on success, or the last candidate
-        with ``validation_attempts=n`` on full-loop failure.
+        with the appropriate escalation marker on failure.
         """
         # 1. Resolve n_candidates per the precedence chain.
         resolved_n = self._resolve_n_candidates(block, n_candidates)
@@ -965,11 +994,18 @@ class CourseforgeRouter:
         # ``validation_attempts`` count. ``escalated`` carries the
         # mid-loop escalation block when the regen budget is exhausted
         # (Subtask 41); it short-circuits the post-loop return resolution.
+        # ``blocked`` carries the mid-loop short-circuit block when a
+        # validator returned action="block" (Subtask 48 — structural-
+        # failure path that bypasses both the regen budget and the
+        # rewrite tier; the block's escalation_marker is stamped
+        # ``structural_unfixable`` so downstream consumers (route_all,
+        # packaging) skip rewrite per Phase 4 §1.5 mapping).
         failure_distribution: Dict[str, int] = {}
         last_candidate: Optional[Block] = None
         winning_index: Optional[int] = None
         winner: Optional[Block] = None
         escalated: Optional[Block] = None
+        blocked: Optional[Block] = None
 
         # ``cumulative_attempts`` tracks the running validation_attempts
         # count across candidates so the regen-budget check sees the
@@ -1027,10 +1063,31 @@ class CourseforgeRouter:
             # regardless of which discriminator surfaced it.
             from MCP.hardening.validation_gates import GateResult  # noqa: PLC0415
 
+            # Subtask 48: compute the highest-priority action across
+            # ALL gate_results. ``_ACTION_PRIORITY`` orders the actions
+            # block > escalate > regenerate > pass; the router dispatches
+            # on the most severe action in the result list.
+            #
+            # Back-compat note: legacy validators that don't set the
+            # ``action`` field ALWAYS map to ``"regenerate"`` for the
+            # router's loop-control semantics (continue the retry loop)
+            # — NOT the ``"block"`` value ``derive_default_action``
+            # returns. The block / escalate paths are opt-in: a Phase-3-
+            # aware validator must explicitly set ``action="block"`` or
+            # ``"escalate"`` to engage the structural-failure /
+            # consensus-fail short-circuit. This keeps every pre-Phase-3
+            # test (validators with passed=False / action=None) running
+            # the legacy retry loop unchanged.
+            highest_action = "pass"
+            highest_priority = 0
             for gate_result in gate_results:
-                action = GateResult.derive_default_action(
-                    gate_result.passed, gate_result.action
-                )
+                explicit_action = getattr(gate_result, "action", None)
+                if explicit_action is not None:
+                    action = explicit_action
+                else:
+                    # Legacy validator: pass on success, regenerate on
+                    # failure (retry-loop semantics).
+                    action = "pass" if gate_result.passed else "regenerate"
                 if action == "pass":
                     continue
                 # Use validator_name when present; fall back to
@@ -1044,12 +1101,77 @@ class CourseforgeRouter:
                 failure_distribution[gate_name] = (
                     failure_distribution.get(gate_name, 0) + 1
                 )
+                priority = _ACTION_PRIORITY.get(action, 0)
+                if priority > highest_priority:
+                    highest_priority = priority
+                    highest_action = action
 
-            # Subtask 41: bump the cumulative validation_attempts
-            # accumulator on every failed pass and rebind
-            # ``last_candidate`` so its frozen-dataclass
-            # ``validation_attempts`` field mirrors the cumulative
-            # count.
+            # Subtask 48: ``block`` action — structural failure that
+            # bypasses both the regen-budget retry loop and the rewrite
+            # tier. Stamp ``escalation_marker="structural_unfixable"``
+            # so route_all (and the downstream packager) detect the
+            # block as outline-failed and skip the rewrite pass; the
+            # marker IS in the canonical ``_ESCALATION_MARKERS`` set.
+            # The block does NOT contribute to ``cumulative_attempts``
+            # because the regen budget is for retry-able failures —
+            # ``block`` action is a "give up entirely" signal that
+            # bypasses retry semantics.
+            if highest_action == "block":
+                blocked = dataclasses.replace(
+                    last_candidate,
+                    escalation_marker="structural_unfixable",
+                    validation_attempts=cumulative_attempts + 1,
+                )
+                # Audit-trail: the block_validation_action events were
+                # already emitted inside _run_validator_chain (Subtask
+                # 47). Reuse ``_emit_block_escalation`` for the route-
+                # level escalation event so the JSONL stream shows the
+                # same event class for every escalation path
+                # (regardless of which path landed it). ``attempts=0``
+                # signals the structural-unfixable path because the
+                # regen budget was NOT consumed.
+                self._emit_block_escalation(
+                    blocked,
+                    marker="structural_unfixable",
+                    attempts=0,
+                    n_candidates=i + 1,
+                )
+                break
+
+            # Subtask 48: ``escalate`` action — exit the candidate loop
+            # immediately and route through the rewrite tier with the
+            # ``validator_consensus_fail`` marker. The marker IS in the
+            # canonical ``_ESCALATION_MARKERS`` set; the rewrite-tier
+            # provider sees the marker and switches to the enriched
+            # ``_render_escalated_user_prompt`` template per the contract
+            # in the module docstring (lines 99-106).
+            if highest_action == "escalate":
+                escalated = dataclasses.replace(
+                    last_candidate,
+                    escalation_marker="validator_consensus_fail",
+                    validation_attempts=cumulative_attempts + 1,
+                )
+                self._emit_block_escalation(
+                    escalated,
+                    marker="validator_consensus_fail",
+                    attempts=escalated.validation_attempts,
+                    n_candidates=i + 1,
+                )
+                break
+
+            # Subtask 41 + 48: ``regenerate`` (or unset/derived
+            # ``block`` from a legacy passed=False) → bump the
+            # cumulative validation_attempts accumulator and continue
+            # the self-consistency loop. Note that legacy validators
+            # without an explicit action that fail map to ``"block"``
+            # via derive_default_action, but we treat them as
+            # regenerate-equivalent here (continue the loop) because
+            # the legacy contract — pre-Phase-3 — ALWAYS expected
+            # retry-on-failure behaviour. New Phase-3-aware validators
+            # opt INTO the structural-unfixable path by setting
+            # ``action="block"`` explicitly; the
+            # ``derive_default_action`` collapse is a back-compat
+            # bridge, not a structural-failure signal.
             cumulative_attempts += 1
             last_candidate = dataclasses.replace(
                 last_candidate,
@@ -1078,11 +1200,22 @@ class CourseforgeRouter:
         if winner is not None:
             outcome_block = winner
             failed_count = winning_index if winning_index is not None else 0
+        elif blocked is not None:
+            # Subtask 48: a validator returned action="block" mid-loop.
+            # ``blocked`` carries the ``structural_unfixable`` marker;
+            # downstream consumers detect the marker and skip the
+            # rewrite tier entirely. ``failed_count`` reports the
+            # cumulative attempts consumed before the block fired so
+            # the audit event reflects the outline-tier compute spent.
+            outcome_block = blocked
+            failed_count = cumulative_attempts + 1
         elif escalated is not None:
-            # Subtask 41: regen budget exhausted mid-loop. ``escalated``
-            # carries the budget-exhausted marker + the cumulative
-            # validation_attempts; failed_count counts the cumulative
-            # attempts that consumed the budget.
+            # Subtask 41 / Subtask 48: outline tier escalation. Either
+            # the regen budget was exhausted (Subtask 41 marker
+            # ``outline_budget_exhausted``) or a validator returned
+            # action="escalate" (Subtask 48 marker
+            # ``validator_consensus_fail``). Both paths route the
+            # block through the rewrite tier's enriched-prompt branch.
             outcome_block = escalated
             failed_count = cumulative_attempts
         else:
