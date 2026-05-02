@@ -4,12 +4,17 @@
 Provides a Phase-1 in-process LLM seam for the Courseforge content-
 generator surface. Mirrors :class:`Trainforge.generators._curriculum_provider.CurriculumAlignmentProvider`
 line-for-line so the operator-facing env-var contract and decision-
-capture posture match across the project's LLM call sites. The HTTP
-machinery for the OpenAI-compatible backends is composed from
-:class:`Trainforge.generators._openai_compatible_client.OpenAICompatibleClient`
-so this provider only owns the task semantics: the page-authoring
-prompt, the rendered-HTML return contract, and the per-call decision-
-capture emit.
+capture posture match across the project's LLM call sites.
+
+Phase 3 Subtask 10: the HTTP / dispatch / decision-capture plumbing
+moved into :class:`Courseforge.generators._base._BaseLLMProvider`;
+this module now owns only the page-authoring task surface (the
+``generate_page`` public entry, the page-context user prompt, and
+the per-call ``content_generator_call`` decision-capture event).
+The constructor signature, decision-capture rationale, and Block
+return shape are byte-stable across the refactor — Phase 1 tests
+(``Courseforge/tests/test_content_generator_provider.py``) pin the
+contract.
 
 Operator selects the backend via ``COURSEFORGE_PROVIDER`` env or the
 ``provider`` constructor kwarg. Default is ``"anthropic"`` for backward
@@ -35,7 +40,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,44 +61,11 @@ from blocks import (  # noqa: E402  (Phase 2 intermediate format)
     _slugify,
 )
 
+from Courseforge.generators._base import (  # noqa: E402
+    _BaseLLMProvider,
+)
 from Trainforge.generators._anthropic_provider import (  # noqa: E402
     SynthesisProviderError,
-)
-from Trainforge.generators._anthropic_provider import (
-    DEFAULT_SYNTHESIS_MODEL as ANTHROPIC_DEFAULT_MODEL,
-)
-from Trainforge.generators._anthropic_provider import (
-    ENV_API_KEY as ANTHROPIC_ENV_API_KEY,
-)
-from Trainforge.generators._local_provider import (
-    DEFAULT_BASE_URL as LOCAL_DEFAULT_BASE_URL,
-)
-from Trainforge.generators._local_provider import (
-    DEFAULT_SYNTHESIS_MODEL as LOCAL_DEFAULT_MODEL,
-)
-from Trainforge.generators._local_provider import (
-    ENV_API_KEY as LOCAL_ENV_API_KEY,
-)
-from Trainforge.generators._local_provider import (
-    ENV_BASE_URL as LOCAL_ENV_BASE_URL,
-)
-from Trainforge.generators._local_provider import (
-    ENV_MODEL as LOCAL_ENV_MODEL,
-)
-from Trainforge.generators._openai_compatible_client import (
-    OpenAICompatibleClient,
-)
-from Trainforge.generators._together_provider import (
-    DEFAULT_BASE_URL as TOGETHER_DEFAULT_BASE_URL,
-)
-from Trainforge.generators._together_provider import (
-    DEFAULT_SYNTHESIS_MODEL as TOGETHER_DEFAULT_MODEL,
-)
-from Trainforge.generators._together_provider import (
-    ENV_API_KEY as TOGETHER_ENV_API_KEY,
-)
-from Trainforge.generators._together_provider import (
-    ENV_MODEL as TOGETHER_ENV_MODEL,
 )
 
 logger = logging.getLogger(__name__)
@@ -137,7 +108,7 @@ _SYSTEM_PROMPT = (
 # ---------------------------------------------------------------------------
 
 
-class ContentGeneratorProvider:
+class ContentGeneratorProvider(_BaseLLMProvider):
     """LLM-agnostic Courseforge content-generator authoring provider.
 
     Constructor selects the backend via the ``provider`` kwarg
@@ -156,9 +127,10 @@ class ContentGeneratorProvider:
     Public method:
 
     - ``generate_page(*, course_code, week_number, page_id,
-      page_template, page_context) -> str`` — returns rendered HTML as
-      ``str``. (Phase 2: will return a ``Block`` dataclass; the env-var
-      name does not change.)
+      page_template, page_context) -> Block`` — returns a
+      :class:`Block` (Phase 2 Subtask 35) carrying the rendered prose,
+      parsed structure, and a single Touch entry annotating the
+      outline-tier provenance of the in-process LLM call.
 
     Decision capture: every call emits one
     ``decision_type="content_generator_call"`` event whose rationale
@@ -181,95 +153,21 @@ class ContentGeneratorProvider:
         client: Optional[Any] = None,
         anthropic_client: Optional[Any] = None,
     ) -> None:
-        resolved_provider = (
-            provider
-            or os.environ.get(ENV_PROVIDER)
-            or DEFAULT_PROVIDER
-        ).lower()
-        if resolved_provider not in SUPPORTED_PROVIDERS:
-            raise ValueError(
-                f"ContentGeneratorProvider: unknown provider "
-                f"{resolved_provider!r}; expected one of "
-                f"{list(SUPPORTED_PROVIDERS)}"
-            )
-        self._provider = resolved_provider
-        self._capture = capture
-        self._max_tokens = int(max_tokens)
-        self._temperature = float(temperature)
-
-        # Each branch resolves model / base_url / api_key off the
-        # synthesis-pipeline env vars so an operator running a single
-        # local server (Ollama on :11434, say) doesn't have to set a
-        # separate COURSEFORGE_*_BASE_URL for the same endpoint.
-        if resolved_provider == "anthropic":
-            self._model = (
-                model
-                or os.environ.get("ANTHROPIC_SYNTHESIS_MODEL")
-                or ANTHROPIC_DEFAULT_MODEL
-            )
-            resolved_key = api_key or os.environ.get(ANTHROPIC_ENV_API_KEY)
-            if anthropic_client is None and not resolved_key:
-                raise RuntimeError(
-                    f"{ANTHROPIC_ENV_API_KEY} required for "
-                    f"ContentGeneratorProvider(provider='anthropic'); "
-                    "set the env var or inject an anthropic_client "
-                    "(tests)."
-                )
-            self._api_key = resolved_key
-            self._anthropic_client = anthropic_client
-            self._oa_client: Optional[OpenAICompatibleClient] = None
-            self._base_url: Optional[str] = None
-
-        elif resolved_provider == "together":
-            self._model = (
-                model
-                or os.environ.get(TOGETHER_ENV_MODEL)
-                or TOGETHER_DEFAULT_MODEL
-            )
-            resolved_key = api_key or os.environ.get(TOGETHER_ENV_API_KEY)
-            if client is None and not resolved_key:
-                raise RuntimeError(
-                    f"{TOGETHER_ENV_API_KEY} required for "
-                    f"ContentGeneratorProvider(provider='together'); "
-                    "set the env var or inject a client (tests)."
-                )
-            self._api_key = resolved_key
-            self._base_url = (base_url or TOGETHER_DEFAULT_BASE_URL).rstrip("/")
-            self._oa_client = OpenAICompatibleClient(
-                base_url=self._base_url,
-                model=self._model,
-                api_key=self._api_key,
-                capture=None,
-                provider_label="together",
-                client=client,
-            )
-            self._anthropic_client = None
-
-        else:  # local
-            self._model = (
-                model
-                or os.environ.get(LOCAL_ENV_MODEL)
-                or LOCAL_DEFAULT_MODEL
-            )
-            resolved_key = (
-                api_key
-                or os.environ.get(LOCAL_ENV_API_KEY)
-                or "local"
-            )
-            self._api_key = resolved_key
-            env_base_url = os.environ.get(LOCAL_ENV_BASE_URL)
-            self._base_url = (
-                base_url or env_base_url or LOCAL_DEFAULT_BASE_URL
-            ).rstrip("/")
-            self._oa_client = OpenAICompatibleClient(
-                base_url=self._base_url,
-                model=self._model,
-                api_key=self._api_key,
-                capture=None,
-                provider_label="local",
-                client=client,
-            )
-            self._anthropic_client = None
+        super().__init__(
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            capture=capture,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            client=client,
+            anthropic_client=anthropic_client,
+            env_provider_var=ENV_PROVIDER,
+            default_provider=DEFAULT_PROVIDER,
+            supported_providers=SUPPORTED_PROVIDERS,
+            system_prompt=_SYSTEM_PROMPT,
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -334,12 +232,12 @@ class ContentGeneratorProvider:
         )
         text, retry_count = self._dispatch_call(user_prompt)
 
-        self._emit_decision(
+        self._emit_per_call_decision(
+            raw_text=text,
+            retry_count=retry_count,
             course_code=course_code,
             week_number=week_number,
             page_id=page_id,
-            retry_count=retry_count,
-            raw_text=text,
         )
 
         # Phase 2 Subtask 35: parse the rendered HTML into the
@@ -426,170 +324,62 @@ class ContentGeneratorProvider:
             "commentary."
         )
 
-    def _dispatch_call(self, user_prompt: str) -> tuple:
-        """Route through the selected backend; return ``(text, retries)``."""
-        if self._provider == "anthropic":
-            return self._call_anthropic(user_prompt)
-        # Together / Local both go through OpenAICompatibleClient via
-        # the embedded ``self._oa_client``. We drop down to
-        # ``_post_with_retry`` here so the retry count surfaces on the
-        # decision-capture rationale.
-        assert self._oa_client is not None
-        messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ]
-        payload = {
-            "model": self._model,
-            "messages": messages,
-            "temperature": self._temperature,
-            "max_tokens": self._max_tokens,
-        }
-        body, retry_count = self._oa_client._post_with_retry(payload)
-        text = self._oa_client._extract_text(body)
-        return text, retry_count
-
-    def _call_anthropic(self, user_prompt: str) -> tuple:
-        """Run the call against the Anthropic SDK.
-
-        Lazy-imports ``anthropic`` so callers using only Together /
-        Local don't pay the import cost. Mirrors the
-        :class:`Trainforge.generators._anthropic_provider.AnthropicSynthesisProvider`
-        pattern for consistency. Returns
-        ``(assistant_text, retry_count=0)`` — the SDK has its own
-        retry policy so we don't double-count here.
-        """
-        client = self._anthropic_client
-        if client is None:
-            try:
-                import anthropic  # noqa: PLC0415 — lazy by design
-            except ImportError as exc:  # pragma: no cover — covered via mocks
-                raise RuntimeError(
-                    "anthropic package required for "
-                    "ContentGeneratorProvider(provider='anthropic'). "
-                    "Install with: pip install anthropic"
-                ) from exc
-            client = anthropic.Anthropic(api_key=self._api_key)
-            self._anthropic_client = client
-        response = client.messages.create(
-            model=self._model,
-            max_tokens=self._max_tokens,
-            temperature=self._temperature,
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": user_prompt}],
-        )
-        # Pull text from a content list (mirrors the AnthropicSynthesisProvider
-        # ``_extract_text``). Mocks may pass a dict; SDK passes typed objects.
-        content = getattr(response, "content", None)
-        if content is None and isinstance(response, dict):
-            content = response.get("content")
-        if not content:
-            return "", 0
-        parts: List[str] = []
-        for block in content:
-            block_type = getattr(block, "type", None) or (
-                block.get("type") if isinstance(block, dict) else None
-            )
-            if block_type != "text":
-                continue
-            t = getattr(block, "text", None) or (
-                block.get("text") if isinstance(block, dict) else None
-            )
-            if t:
-                parts.append(str(t))
-        return "".join(parts), 0
-
     # ------------------------------------------------------------------
-    # Decision capture
+    # Decision capture (page-authoring specific)
     # ------------------------------------------------------------------
 
-    def _last_capture_id(self) -> str:
-        """Return ``{file_basename}:{event_index}`` for the most recent
-        decision-capture event emitted via :meth:`_emit_decision`.
-
-        Format mirrors the Wave 112 audit-trail convention so a
-        ``Touch.decision_capture_id`` always resolves to the exact
-        JSONL line that explained the LLM call. When the capture handle
-        isn't a real :class:`DecisionCapture` (test injection of a
-        ``_FakeCapture`` shape, ``capture=None``, or a streaming-disabled
-        capture missing a stream path), falls back to
-        ``in-memory:{id(self)}`` so the Wave 112 invariant
-        (``decision_capture_id`` must be ≥1 char) is preserved without
-        forcing tests to wire up a full capture surface.
-        """
-        capture = self._capture
-        if capture is None:
-            return f"in-memory:{id(self)}"
-
-        # Resolve event index. ``DecisionCapture`` exposes ``decisions``;
-        # the test fake exposes ``events``. Fall back to 0 when neither
-        # surface is present.
-        index: Optional[int] = None
-        for attr in ("decisions", "events"):
-            seq = getattr(capture, attr, None)
-            if isinstance(seq, list):
-                # ``log_decision`` was already called for the current
-                # event, so the most recent entry sits at
-                # ``len(seq) - 1``. Negative falls back to 0.
-                index = max(len(seq) - 1, 0)
-                break
-
-        # Resolve file basename from the streaming-mode stream path
-        # when present; otherwise tag the capture as in-memory.
-        stream_path = getattr(capture, "_stream_path", None)
-        if stream_path is not None:
-            try:
-                basename = Path(str(stream_path)).name
-            except (TypeError, ValueError):  # pragma: no cover — defensive
-                basename = None
-            if basename:
-                return f"{basename}:{index if index is not None else 0}"
-
-        return f"in-memory:{id(self)}"
-
-    def _emit_decision(
+    def _emit_per_call_decision(
         self,
         *,
-        course_code: str,
-        week_number: int,
-        page_id: str,
-        retry_count: int,
         raw_text: str,
+        retry_count: int,
+        **call_context: Any,
     ) -> None:
-        if self._capture is None:
-            return
-        try:
-            self._capture.log_decision(
-                decision_type="content_generator_call",
-                decision=(
-                    f"Courseforge content-generator authored page "
-                    f"page_id={page_id} for course_code={course_code}, "
-                    f"week_number={week_number} via "
-                    f"provider={self._provider}, model={self._model}, "
-                    f"retry_count={retry_count}."
-                ),
-                rationale=(
-                    f"Routing Courseforge content-generator call for "
-                    f"page_id={page_id} (course_code={course_code}, "
-                    f"week_number={week_number}) through "
-                    f"provider={self._provider}, model={self._model}"
-                    + (
-                        f", base_url={self._base_url}"
-                        if self._base_url
-                        else ""
-                    )
-                    + f". Output chars={len(raw_text or '')}; "
-                    f"retry_count={retry_count}. Backend choice is "
-                    "operator-controlled via the COURSEFORGE_PROVIDER "
-                    "env (anthropic / together / local) so the content-"
-                    "generator surface stays LLM-agnostic — the same "
-                    "page-authoring call site routes through Anthropic, "
-                    "ToS-clean Together, or an offline local server "
-                    "depending on the operator's licensing posture."
-                ),
+        """Emit one ``content_generator_call`` decision-capture event
+        per :meth:`generate_page` invocation.
+
+        Rationale interpolates ``page_id``, ``course_code``,
+        ``week_number``, ``provider``, ``model``, ``base_url`` (when
+        present), output character count, and retry count per the
+        project's LLM call-site instrumentation contract (≥20 chars,
+        dynamic signals interpolated). Delegates to
+        :meth:`_BaseLLMProvider._emit_decision` for the swallow-on-error
+        capture-emit semantics.
+        """
+        course_code = call_context.get("course_code", "")
+        week_number = call_context.get("week_number", 0)
+        page_id = call_context.get("page_id", "")
+        decision = (
+            f"Courseforge content-generator authored page "
+            f"page_id={page_id} for course_code={course_code}, "
+            f"week_number={week_number} via "
+            f"provider={self._provider}, model={self._model}, "
+            f"retry_count={retry_count}."
+        )
+        rationale = (
+            f"Routing Courseforge content-generator call for "
+            f"page_id={page_id} (course_code={course_code}, "
+            f"week_number={week_number}) through "
+            f"provider={self._provider}, model={self._model}"
+            + (
+                f", base_url={self._base_url}"
+                if self._base_url
+                else ""
             )
-        except Exception as exc:  # pragma: no cover — defensive
-            logger.warning("content_generator_call capture failed: %s", exc)
+            + f". Output chars={len(raw_text or '')}; "
+            f"retry_count={retry_count}. Backend choice is "
+            "operator-controlled via the COURSEFORGE_PROVIDER "
+            "env (anthropic / together / local) so the content-"
+            "generator surface stays LLM-agnostic — the same "
+            "page-authoring call site routes through Anthropic, "
+            "ToS-clean Together, or an offline local server "
+            "depending on the operator's licensing posture."
+        )
+        self._emit_decision(
+            decision_type="content_generator_call",
+            decision=decision,
+            rationale=rationale,
+        )
 
 
 __all__ = [
