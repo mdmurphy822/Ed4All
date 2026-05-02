@@ -686,22 +686,19 @@ def _process_one_curie(
             f"--- end warnings ---"
         )
 
-    # Wave 137 follow-up: wrap action prompt + validate in a retry
-    # loop. On append-time validator failure, surface violations and
-    # offer redraft / edit-again / skip / quit instead of giving up
-    # after one attempt. Auto-flip PENDING_REVIEW on `y` (operator
-    # approved as-is = implicit review).
+    # Wave 137 follow-up: action prompt + validate inside a loop with
+    # auto-redraft on append-time validator failure. Operator only
+    # makes y/n/e/q choices; redrafts happen automatically up to
+    # MAX_REDRAFTS=5 before the loop returns a failure outcome that
+    # contributes to a non-zero main() exit code. Auto-flip
+    # PENDING_REVIEW on `y` (operator approved = implicit review).
     operator_handle = _resolve_operator_handle()
     current_yaml = stdout
-    last_violations: List[Dict[str, Any]] = []
     redraft_count = 0
-    MAX_REDRAFTS = 2
+    MAX_REDRAFTS = 5
 
     while True:
-        if last_violations:
-            action = _read_retry_action(input_fn=input_fn)
-        else:
-            action = _read_action(input_fn=input_fn)
+        action = _read_action(input_fn=input_fn)
 
         if action == "q":
             return "quit_after"
@@ -709,32 +706,6 @@ def _process_one_curie(
         if action == "n":
             print_fn("  Skipped.")
             return "skipped"
-
-        if action == "r":
-            if redraft_count >= MAX_REDRAFTS:
-                print_fn(
-                    f"  reached max redrafts ({MAX_REDRAFTS}); skipping. "
-                    f"Operator can re-run the loop later."
-                )
-                return "skipped"
-            redraft_count += 1
-            print_fn(f"  Redrafting (attempt {redraft_count + 1})...")
-            rc, current_yaml, stderr = runner(
-                curie, family, course_code, provider, model, timeout
-            )
-            if rc != 0 and rc != 3:
-                print_fn(
-                    f"  redraft transport failed (exit {rc}); stderr=\n{stderr}"
-                )
-                return "failed_validation"
-            print_fn(current_yaml)
-            if rc == 3:
-                print_fn(
-                    f"\n--- DRAFTING-CLI VALIDATION WARNINGS ---\n"
-                    f"{stderr}\n--- end warnings ---"
-                )
-            last_violations = []
-            continue
 
         # y or e: parse YAML payload from current_yaml.
         if action == "e":
@@ -789,9 +760,35 @@ def _process_one_curie(
                 print_fn(f"    {v}")
             _rollback_overlay(yaml_path, pre_full)
             _invalidate_form_data_cache()
-            # Wave 137 follow-up: don't give up — loop back with retry
-            # menu. Operator decides edit / redraft / skip / quit.
-            last_violations = this_curie_violations
+            # Wave 137 follow-up: auto-redraft on rejection. Operator
+            # only makes y/n/e/q choices; the redraft itself is
+            # automatic up to MAX_REDRAFTS=5. After exhaustion, return
+            # max_redrafts_exceeded so main() can flag non-zero exit.
+            redraft_count += 1
+            if redraft_count >= MAX_REDRAFTS:
+                print_fn(
+                    f"  Reached MAX_REDRAFTS={MAX_REDRAFTS} on {curie} — "
+                    f"giving up. Operator should hand-curate this CURIE "
+                    f"or skip it permanently."
+                )
+                return "max_redrafts_exceeded"
+            print_fn(
+                f"  Auto-redrafting (attempt {redraft_count + 1}/{MAX_REDRAFTS})..."
+            )
+            rc, current_yaml, stderr = runner(
+                curie, family, course_code, provider, model, timeout
+            )
+            if rc != 0 and rc != 3:
+                print_fn(
+                    f"  redraft transport failed (exit {rc}); stderr=\n{stderr}"
+                )
+                return "failed_validation"
+            print_fn(current_yaml)
+            if rc == 3:
+                print_fn(
+                    f"\n--- DRAFTING-CLI VALIDATION WARNINGS ---\n"
+                    f"{stderr}\n--- end warnings ---"
+                )
             continue
 
         print_fn(f"  OK {outcome_label}")
@@ -985,6 +982,7 @@ def main(
         "skipped": 0,
         "edited": 0,
         "failed_validation": 0,
+        "max_redrafts_exceeded": 0,
         "quit_after": 0,
     }
     quit_flag = False
@@ -1020,6 +1018,7 @@ def main(
     print_fn(f"  skipped           : {counters['skipped']}")
     print_fn(f"  edited            : {counters['edited']}")
     print_fn(f"  failed_validation : {counters['failed_validation']}")
+    print_fn(f"  max_redrafts_exceeded : {counters['max_redrafts_exceeded']}")
     print_fn(f"  quit_after        : {counters['quit_after']}")
 
     capture = DecisionCapture(
@@ -1037,9 +1036,22 @@ def main(
             f"skipped={counters['skipped']} "
             f"edited={counters['edited']} "
             f"failed={counters['failed_validation']} "
+            f"max_redrafts_exceeded={counters['max_redrafts_exceeded']} "
             f"quit={'true' if quit_flag else 'false'}"
         ),
     )
+    # Wave 137 follow-up: any CURIE that hit the auto-redraft ceiling
+    # surfaces as a non-zero exit code so the operator (or downstream
+    # CI) sees a clear failure signal even after a successful summary.
+    if counters["max_redrafts_exceeded"] > 0:
+        print_fn(
+            f"\nERROR: {counters['max_redrafts_exceeded']} CURIE(s) "
+            f"exceeded MAX_REDRAFTS=5 — exiting with non-zero status. "
+            f"Review the per-CURIE rejections above and either hand-"
+            f"curate those entries or re-run a fresh session after "
+            f"adjusting the drafting prompt."
+        )
+        return 4
     return 0
 
 
