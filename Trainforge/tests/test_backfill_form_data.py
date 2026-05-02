@@ -641,3 +641,95 @@ def test_backfill_max_redrafts_exhausted_returns_dedicated_outcome(tmp_path):
     assert outcome == "max_redrafts_exceeded", (
         f"expected 'max_redrafts_exceeded' after 5 auto-redrafts; got {outcome!r}"
     )
+
+
+def test_backfill_accumulates_violations_across_redrafts(tmp_path):
+    """Wave 137 follow-up: each redraft's prompt receives the
+    CUMULATIVE set of unique violations across all prior attempts,
+    not just the immediately-previous attempt's. Persistent failure
+    modes reinforce across the chain."""
+    yaml_path = tmp_path / "schema_translation_catalog.test_family.yaml"
+    yaml_path.write_text("family: test_family\nforms: {}\n", encoding="utf-8")
+
+    target_curie = "test:Beta"
+    bad_yaml = _build_invalid_yaml_payload(target_curie)
+
+    runner_calls: List[Tuple[Optional[List[str]], ...]] = []
+
+    def fake_runner(curie, family, course_code, provider, model,
+                    timeout=None, prior_violations=None):
+        # Capture every prior_violations payload threaded into the
+        # subprocess so we can assert cumulative growth.
+        runner_calls.append(tuple(prior_violations or []))
+        return 0, bad_yaml, ""
+
+    # Each attempt produces a DIFFERENT violation, so the cumulative
+    # set should grow across attempts.
+    call_index = {"i": 0}
+
+    def fake_validator(form_data, manifest_curies):
+        call_index["i"] += 1
+        return {
+            "passed": False,
+            "content_violations": [
+                {
+                    "curie": target_curie,
+                    "code": f"VIOLATION_CODE_{call_index['i']}",
+                    "detail": f"detail for attempt {call_index['i']}",
+                },
+            ],
+            "missing_curies": [],
+            "incomplete_curies": [],
+        }
+
+    inputs = iter(["y"] * 6)
+
+    def fake_input(_prompt):
+        return next(inputs)
+
+    fake_form_data = {
+        target_curie: SurfaceFormData(
+            curie=target_curie,
+            short_name="Beta",
+            anchored_status="degraded_placeholder",
+            definitions=["[degraded: stub]"],
+            usage_examples=[("[degraded: prompt]", "[degraded: answer]")],
+        )
+    }
+
+    with patch.object(cli, "_run_drafting_cli", side_effect=fake_runner), \
+         patch.object(cli, "validate_form_data_contract",
+                      side_effect=fake_validator), \
+         patch.object(cli, "_load_form_data", return_value=fake_form_data), \
+         patch.object(cli, "load_property_manifest",
+                      return_value=_build_synthetic_manifest()), \
+         patch.object(cli, "_resolve_chunks_jsonl", return_value=None):
+        cli._process_one_curie(
+            idx=1,
+            total=1,
+            curie=target_curie,
+            freq=0,
+            label="Beta label",
+            family="test_family",
+            course_code="test-course",
+            provider="local",
+            model=None,
+            yaml_path=yaml_path,
+            manifest_curies=[c for c, _ in _SYNTHETIC_CURIES],
+            input_fn=fake_input,
+            print_fn=lambda *a, **kw: None,
+        )
+
+    # Initial attempt: no prior_violations.
+    assert runner_calls[0] == ()
+    # Auto-redraft 1: should carry the violation from attempt 1.
+    assert "VIOLATION_CODE_1" in " ".join(runner_calls[1])
+    # Auto-redraft 2: should carry violations from attempts 1 + 2.
+    assert "VIOLATION_CODE_1" in " ".join(runner_calls[2])
+    assert "VIOLATION_CODE_2" in " ".join(runner_calls[2])
+    # Auto-redraft 3: should carry attempts 1 + 2 + 3.
+    assert "VIOLATION_CODE_1" in " ".join(runner_calls[3])
+    assert "VIOLATION_CODE_2" in " ".join(runner_calls[3])
+    assert "VIOLATION_CODE_3" in " ".join(runner_calls[3])
+    # Cumulative count grows monotonically (no amnesia).
+    assert len(runner_calls[3]) > len(runner_calls[2]) > len(runner_calls[1])

@@ -702,10 +702,19 @@ def _process_one_curie(
     # MAX_REDRAFTS=5 before the loop returns a failure outcome that
     # contributes to a non-zero main() exit code. Auto-flip
     # PENDING_REVIEW on `y` (operator approved = implicit review).
+    #
+    # Feedback accumulates across redrafts: every attempt's violations
+    # are deduped by (code, detail) and fed to the NEXT prompt, capped
+    # at the most recent 10 entries to bound prompt length. Persistent
+    # failure modes (Qwen keeps dropping the CURIE; keeps producing
+    # low-diversity defs) reinforce across attempts rather than being
+    # forgotten.
     operator_handle = _resolve_operator_handle()
     current_yaml = stdout
     redraft_count = 0
     MAX_REDRAFTS = 5
+    accumulated_violations: List[str] = []
+    seen_violation_keys: set = set()
 
     while True:
         action = _read_action(input_fn=input_fn)
@@ -782,21 +791,36 @@ def _process_one_curie(
                     f"or skip it permanently."
                 )
                 return "max_redrafts_exceeded"
-            # Wave 137 follow-up: feed the violations back into the
-            # next drafting attempt so Qwen has specific signal to fix
-            # what went wrong, not just naive retry.
-            violation_summaries = [
-                f"{v.get('code', 'UNKNOWN')}: {v.get('detail', '')}"
-                for v in this_curie_violations
-                if isinstance(v, dict)
-            ]
+            # Wave 137 follow-up: ACCUMULATE violations across all
+            # redraft attempts, deduped by (code, detail), capped to
+            # last 10. Persistent failure modes reinforce across the
+            # chain — Qwen sees not just "this attempt failed because
+            # X" but "every attempt has failed because X, you must
+            # not do X."
+            new_this_attempt = 0
+            for v in this_curie_violations:
+                if not isinstance(v, dict):
+                    continue
+                code = v.get("code", "UNKNOWN")
+                detail = v.get("detail", "")
+                key = (code, detail)
+                if key in seen_violation_keys:
+                    continue
+                seen_violation_keys.add(key)
+                accumulated_violations.append(f"{code}: {detail}")
+                new_this_attempt += 1
+            # Keep most recent 10 (drop oldest if we exceeded).
+            accumulated_violations = accumulated_violations[-10:]
+            carried_forward = len(accumulated_violations) - new_this_attempt
             print_fn(
                 f"  Auto-redrafting (attempt {redraft_count + 1}/{MAX_REDRAFTS}) "
-                f"with {len(violation_summaries)} violation(s) fed back..."
+                f"with {len(accumulated_violations)} cumulative violation(s) "
+                f"fed back ({new_this_attempt} new this attempt, "
+                f"{carried_forward} carried forward)..."
             )
             rc, current_yaml, stderr = runner(
                 curie, family, course_code, provider, model, timeout,
-                violation_summaries,
+                accumulated_violations,
             )
             if rc != 0 and rc != 3:
                 print_fn(
