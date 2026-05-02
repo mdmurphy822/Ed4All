@@ -1,0 +1,64 @@
+# Courseforge two-pass router block-routing policy (Phase 3).
+#
+# Schema: schemas/courseforge/block_routing.schema.json
+# Loader: Courseforge/router/policy.py::load_block_routing_policy
+# Consumer: Courseforge/router/router.py::CourseforgeRouter._resolve_spec
+#
+# Resolution priority (Phase 3 §3.3): per-call kwargs > this YAML >
+# tier-default env vars (COURSEFORGE_OUTLINE_PROVIDER /
+# COURSEFORGE_OUTLINE_MODEL / COURSEFORGE_REWRITE_PROVIDER /
+# COURSEFORGE_REWRITE_MODEL) > hardcoded defaults table.
+#
+# Override the path to this file via COURSEFORGE_BLOCK_ROUTING_PATH.
+# Deleting the file or pointing the env var at a missing path is the
+# supported "no operator overrides" mode — the loader returns an
+# empty policy and the router walks straight through to env vars +
+# hardcoded defaults.
+
+version: 1
+
+defaults:
+  outline:
+    provider: local
+    model: qwen2.5:7b-instruct-q4_K_M
+    base_url: http://localhost:11434/v1
+    temperature: 0.0
+    max_tokens: 1200
+  rewrite:
+    provider: anthropic
+    model: claude-sonnet-4-6
+    temperature: 0.4
+    max_tokens: 2400
+
+blocks:
+  # assessment_item: stem + distractors are pedagogy-critical and the
+  # Anthropic rewrite tier consistently produces tighter misconception-
+  # targeting distractors than the local 14B model. Pin the rewrite tier
+  # explicitly so an operator who flips defaults.rewrite to local doesn't
+  # silently regress assessment quality.
+  assessment_item:
+    rewrite:
+      provider: anthropic
+      model: claude-sonnet-4-6
+      temperature: 0.4
+      max_tokens: 2400
+
+  # flip_card_grid: structurally simple (term/definition pairs); the
+  # local 7B model handles outline + rewrite at consistently acceptable
+  # quality. Pinning outline to local here is documentation, not a
+  # functional override — it matches the default — but makes the
+  # operator-facing intent explicit when scanning this file.
+  flip_card_grid:
+    outline:
+      provider: local
+      model: qwen2.5:7b-instruct-q4_K_M
+      base_url: http://localhost:11434/v1
+      temperature: 0.0
+      max_tokens: 1200
+
+  # prereq_set: the outline tier's structural contract (ordered list of
+  # prereq concept refs) is something the 7B local model frequently
+  # mis-shapes. Skip outline entirely and let rewrite author the block
+  # from scratch with the enriched prompt — see Subtask 42.
+  prereq_set:
+    escalate_immediately: true
