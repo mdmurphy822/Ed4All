@@ -374,10 +374,32 @@ _SHACL_CONTEXT_PATH = (
 )
 _ENFORCE_SHACL_ENV = "COURSEFORGE_ENFORCE_SHACL"
 
+# Phase 2 emit-blocks env-flag (Subtask 25). Mirrors the
+# ``_shacl_enforcement_enabled`` opt-in pattern: default off so legacy
+# byte-stable emit stays unchanged; flip on once the renderer migration
+# (Round 3) lands the new ``data-cf-block-id`` attribute + top-level
+# ``blocks[]`` JSON-LD array. The matching helper inside
+# ``Courseforge/scripts/blocks.py::_emit_blocks_enabled`` reads the same
+# env var so :meth:`Block.to_html_attrs` can append the new attribute
+# without importing this module (avoids a cyclic import once Round 3
+# threads ``Block`` through the renderer functions).
+_EMIT_BLOCKS_ENV = "COURSEFORGE_EMIT_BLOCKS"
+
 
 def _shacl_enforcement_enabled() -> bool:
     """Read the SHACL enforcement env var each call so tests can toggle it."""
     return os.getenv(_ENFORCE_SHACL_ENV, "").strip().lower() in _ENFORCE_TRUTHY_VALUES
+
+
+def _courseforge_emit_blocks_enabled() -> bool:
+    """Return True when ``COURSEFORGE_EMIT_BLOCKS`` is set to a truthy value.
+
+    Mirrors :func:`_shacl_enforcement_enabled`. Default off so the
+    Phase 2 ``blocks[]`` / ``data-cf-block-id`` emit stays gated until
+    byte-stable confirmation completes (per pre-resolved decision #8 in
+    ``plans/phase2_intermediate_format_detailed.md``).
+    """
+    return os.getenv(_EMIT_BLOCKS_ENV, "").strip().lower() in _ENFORCE_TRUTHY_VALUES
 
 
 def _shacl_deps_available() -> bool:

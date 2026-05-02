@@ -23,12 +23,55 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import html as _html_mod
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 __all__ = ["Block", "Touch", "BLOCK_TYPES"]
+
+
+# Phase-2 emit flag (mirror of ``generate_course._courseforge_emit_blocks_enabled``;
+# the helper here lives at module level so :class:`Block` can append the new
+# ``data-cf-block-id`` attribute without importing the larger renderer module).
+_EMIT_BLOCKS_ENV = "COURSEFORGE_EMIT_BLOCKS"
+_EMIT_BLOCKS_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _emit_blocks_enabled() -> bool:
+    """Read ``COURSEFORGE_EMIT_BLOCKS`` each call so tests can toggle it.
+
+    Default off — the new ``data-cf-block-id`` attribute is purely additive
+    and must not break byte-stable emit until the Phase 2 migration window
+    closes (per pre-resolved decision #8).
+    """
+    return os.environ.get(_EMIT_BLOCKS_ENV, "").strip().lower() in _EMIT_BLOCKS_TRUTHY
+
+
+def _esc(text: str) -> str:
+    """HTML-escape mirroring ``html.escape`` (matches ``html_mod.escape`` in generate_course.py)."""
+    return _html_mod.escape(text)
+
+
+def _source_attr_string(
+    source_ids: Tuple[str, ...],
+    source_primary: Optional[str],
+) -> str:
+    """Wave 9 source attribute string — mirrors ``generate_course._source_attr_string``.
+
+    Inlined here so :meth:`Block.to_html_attrs` does not need to import the
+    renderer module (avoids a cyclic import once Round 3 lands the renderer
+    migration).
+    """
+    if not source_ids:
+        return ""
+    joined = ",".join(_esc(sid) for sid in source_ids if sid)
+    out = f' data-cf-source-ids="{joined}"'
+    if source_primary:
+        out += f' data-cf-source-primary="{_esc(source_primary)}"'
+    return out
 
 
 BLOCK_TYPES: frozenset = frozenset(
@@ -239,3 +282,296 @@ class Block:
             "utf-8"
         )
         return hashlib.sha256(encoded).hexdigest()
+
+    # ------------------------------------------------------------------
+    # Subtask 6 — HTML attribute string emit
+    # ------------------------------------------------------------------
+
+    def to_html_attrs(self) -> str:
+        """Render the ``data-cf-*`` attribute string for this block.
+
+        Reproduces the exact format the legacy renderers in
+        ``generate_course.py`` emit so the renderer migration in Round 3
+        stays byte-stable when ``COURSEFORGE_EMIT_BLOCKS`` is off.
+
+        When ``COURSEFORGE_EMIT_BLOCKS`` is set to a truthy value, the
+        attribute string gains a trailing ``data-cf-block-id="..."``
+        attribute — the only NEW HTML attribute Phase 2 introduces.
+        Off by default so legacy snapshot tests stay green.
+        """
+        block_type = self.block_type
+        if block_type == "objective":
+            attrs = self._objective_attrs()
+        elif block_type == "flip_card_grid":
+            attrs = self._flip_card_grid_attrs()
+        elif block_type == "self_check_question":
+            attrs = self._self_check_question_attrs()
+        elif block_type == "activity":
+            attrs = self._activity_attrs()
+        elif block_type in {
+            "explanation",
+            "example",
+            "concept",
+            "summary_takeaway",
+        } or block_type in _CONTENT_SECTION_BLOCK_TYPES:
+            # Heading content-section blocks share one attribute shape
+            # (`_render_content_sections:1018-1035`). The block_type
+            # itself is the resolved `content_type` — emit it directly.
+            attrs = self._content_section_attrs()
+        elif block_type == "callout":
+            attrs = self._callout_attrs()
+        elif block_type == "chrome":
+            attrs = ' data-cf-role="template-chrome"'
+        elif block_type in {
+            "prereq_set",
+            "reflection_prompt",
+            "discussion_prompt",
+            "recap",
+        }:
+            # Wrapper-only blocks (the inline `<section>` wrappers in
+            # `generate_week`). Source-id attrs only.
+            attrs = _source_attr_string(self.source_ids, self.source_primary)
+        elif block_type == "misconception":
+            # Misconceptions today emit only via JSON-LD (no data-cf-*
+            # attribute on the rendered HTML). Emit empty so the only
+            # change with the flag on is the appended block_id.
+            attrs = ""
+        elif block_type == "assessment_item":
+            # Assessment items in IMSCC live in QTI XML, not HTML.
+            # Reserved for Phase 4+; emit empty for now.
+            attrs = ""
+        else:  # pragma: no cover — defensive; __post_init__ already validates.
+            attrs = ""
+
+        if _emit_blocks_enabled() and self.block_id:
+            attrs += f' data-cf-block-id="{_esc(self.block_id)}"'
+        return attrs
+
+    # --- per-block-type helpers (kept private to make dispatch readable) ---
+
+    def _objective_attrs(self) -> str:
+        """Match `_render_objectives:854-860`."""
+        attrs = ""
+        if self.objective_ids:
+            attrs += f' data-cf-objective-id="{_esc(self.objective_ids[0])}"'
+        if self.bloom_level:
+            attrs += f' data-cf-bloom-level="{self.bloom_level}"'
+        if self.bloom_verb:
+            attrs += f' data-cf-bloom-verb="{self.bloom_verb}"'
+        if self.cognitive_domain:
+            attrs += f' data-cf-cognitive-domain="{self.cognitive_domain}"'
+        return attrs
+
+    def _flip_card_grid_attrs(self) -> str:
+        """Match `_render_flip_cards:887-889`.
+
+        Per-card emit. When ``key_terms`` carries a single term slug, it
+        is emitted on the wrapper as ``data-cf-term``. Multi-term grids
+        emit one Block per card upstream.
+        """
+        role_attr = (
+            f' data-cf-teaching-role="{self.teaching_role}"' if self.teaching_role else ""
+        )
+        attrs = (
+            ' data-cf-component="flip-card"'
+            ' data-cf-purpose="term-definition"'
+            f"{role_attr}"
+        )
+        if self.key_terms:
+            # Single-term per-card emit; first slug wins. Matches the
+            # legacy ``term_slug = _slugify(t["term"])`` per-card pattern.
+            attrs += f' data-cf-term="{_esc(self.key_terms[0])}"'
+        return attrs
+
+    def _self_check_question_attrs(self) -> str:
+        """Match `_render_self_check:929-944`."""
+        role_attr = (
+            f' data-cf-teaching-role="{self.teaching_role}"' if self.teaching_role else ""
+        )
+        bloom = self.bloom_level or "remember"
+        attrs = (
+            ' data-cf-component="self-check"'
+            ' data-cf-purpose="formative-assessment"'
+            f"{role_attr}"
+            f' data-cf-bloom-level="{bloom}"'
+        )
+        if self.objective_ids and self.objective_ids[0]:
+            attrs += f' data-cf-objective-ref="{_esc(self.objective_ids[0])}"'
+        attrs += _source_attr_string(self.source_ids, self.source_primary)
+        return attrs
+
+    def _activity_attrs(self) -> str:
+        """Match `_render_activities:1126-1140`."""
+        role_attr = (
+            f' data-cf-teaching-role="{self.teaching_role}"' if self.teaching_role else ""
+        )
+        bloom = self.bloom_level or "apply"
+        attrs = (
+            ' data-cf-component="activity"'
+            ' data-cf-purpose="practice"'
+            f"{role_attr}"
+            f' data-cf-bloom-level="{bloom}"'
+        )
+        if self.objective_ids and self.objective_ids[0]:
+            attrs += f' data-cf-objective-ref="{_esc(self.objective_ids[0])}"'
+        attrs += _source_attr_string(self.source_ids, self.source_primary)
+        return attrs
+
+    def _content_section_attrs(self) -> str:
+        """Match `_render_content_sections:1018-1035` (heading attrs).
+
+        ``content_type_label`` carries the resolved content_type (or it
+        falls back to ``block_type``); ``key_terms`` carries the term
+        slugs already slugified by the renderer; ``bloom_range`` is the
+        section span string.
+        """
+        content_type = self.content_type_label or self.block_type
+        attrs = f' data-cf-content-type="{content_type}"'
+        if self.key_terms:
+            joined = ",".join(self.key_terms)
+            attrs += f' data-cf-key-terms="{joined}"'
+        if self.bloom_range:
+            attrs += f' data-cf-bloom-range="{self.bloom_range}"'
+        attrs += _source_attr_string(self.source_ids, self.source_primary)
+        return attrs
+
+    def _callout_attrs(self) -> str:
+        """Match `_render_content_sections:1071-1073`."""
+        content_type = self.content_type_label or "note"
+        return f' data-cf-content-type="{content_type}"'
+
+    # ------------------------------------------------------------------
+    # Subtask 7 — JSON-LD entry emit
+    # ------------------------------------------------------------------
+
+    def to_jsonld_entry(self) -> Dict[str, Any]:
+        """Render the JSON-LD entry dict for this block.
+
+        Matches the camelCase shape the existing ``_build_*_metadata``
+        helpers in ``generate_course.py`` emit (Subtask 7). The entry
+        shape is dispatched on ``block_type``: legacy-shape entries
+        (``objective`` / ``explanation`` / ``misconception`` etc.) carry
+        the same keys the legacy builders emit so an inline migration
+        of those builders in Round 3 keeps consumers unchanged. New
+        block types (``flip_card_grid`` / ``self_check_question`` /
+        ``activity`` / ``chrome`` / ``prereq_set`` / ``summary_takeaway`` /
+        ``reflection_prompt`` / ``discussion_prompt`` / ``recap``) emit
+        a minimal Phase-2-shaped entry carrying ``blockId`` /
+        ``blockType`` / ``sequence`` plus ``touchedBy`` / ``contentHash``
+        for the new top-level ``blocks[]`` array.
+        """
+        block_type = self.block_type
+        if block_type == "objective":
+            return self._objective_jsonld()
+        if block_type == "misconception":
+            return self._misconception_jsonld()
+        if block_type in _CONTENT_SECTION_BLOCK_TYPES or block_type in {
+            "explanation",
+            "example",
+            "concept",
+            "summary_takeaway",
+        }:
+            # Legacy `_build_sections_metadata` shape — only fired when
+            # the Block represents a section heading.
+            return self._section_jsonld()
+        # Default Phase-2 shape: small audit-only entry for the new
+        # `blocks[]` array.
+        return self._minimal_block_jsonld()
+
+    def _objective_jsonld(self) -> Dict[str, Any]:
+        """Match `_build_objectives_metadata:1364-1420`."""
+        statement = self.content if isinstance(self.content, str) else ""
+        entry: Dict[str, Any] = {
+            "id": self.objective_ids[0] if self.objective_ids else "",
+            "statement": statement,
+            "bloomLevel": self.bloom_level,
+            "bloomVerb": self.bloom_verb,
+            "cognitiveDomain": self.cognitive_domain,
+        }
+        if self.bloom_levels:
+            entry["bloomLevels"] = list(self.bloom_levels)
+        if self.bloom_verbs:
+            entry["bloomVerbs"] = list(self.bloom_verbs)
+        if self.key_terms:
+            entry["keyConcepts"] = list(self.key_terms)
+            if self.bloom_level:
+                entry["targetedConcepts"] = [
+                    {"concept": slug, "bloomLevel": self.bloom_level}
+                    for slug in self.key_terms
+                ]
+        return entry
+
+    def _section_jsonld(self) -> Dict[str, Any]:
+        """Match `_build_sections_metadata:1467-1490`."""
+        heading = self.content if isinstance(self.content, str) else ""
+        content_type = self.content_type_label or self.block_type
+        entry: Dict[str, Any] = {
+            "heading": heading,
+            "contentType": content_type,
+        }
+        if self.key_terms:
+            entry["keyTerms"] = list(self.key_terms)
+        if self.teaching_role:
+            entry["teachingRole"] = [self.teaching_role]
+        if self.bloom_range:
+            entry["bloomRange"] = (
+                [self.bloom_range]
+                if isinstance(self.bloom_range, str)
+                else list(self.bloom_range)
+            )
+        if self.source_references:
+            entry["sourceReferences"] = [dict(r) for r in self.source_references]
+        return entry
+
+    def _misconception_jsonld(self) -> Dict[str, Any]:
+        """Match `_build_misconceptions_metadata:1571-1578`."""
+        if isinstance(self.content, dict):
+            mis_text = str(self.content.get("misconception", ""))
+            cor_text = str(self.content.get("correction", ""))
+        else:
+            mis_text = ""
+            cor_text = ""
+        entry: Dict[str, Any] = {
+            "misconception": mis_text,
+            "correction": cor_text,
+        }
+        if self.bloom_level:
+            entry["bloomLevel"] = self.bloom_level
+            if self.cognitive_domain:
+                entry["cognitiveDomain"] = self.cognitive_domain
+        return entry
+
+    def _minimal_block_jsonld(self) -> Dict[str, Any]:
+        """Phase-2 default entry shape for blocks that don't have a
+        legacy JSON-LD builder counterpart.
+
+        Carries the audit fields (``blockId`` / ``blockType`` /
+        ``sequence``) plus the new ``touchedBy`` / ``contentHash``
+        fields so the new top-level ``blocks[]`` array keeps full
+        attribution per pre-resolved decision #2.
+        """
+        entry: Dict[str, Any] = {
+            "blockId": self.block_id,
+            "blockType": self.block_type,
+            "sequence": self.sequence,
+        }
+        if self.touched_by:
+            entry["touchedBy"] = self._render_touched_by()
+        if self.content_hash:
+            entry["contentHash"] = self.content_hash
+        return entry
+
+    def _render_touched_by(self) -> List[Dict[str, Any]]:
+        """Project the touch chain into the JSON-LD ``touchedBy`` array."""
+        return [t.to_jsonld() for t in self.touched_by]
+
+
+# Block types whose ``to_html_attrs`` / ``to_jsonld_entry`` should follow
+# the legacy `_render_content_sections` / `_build_sections_metadata`
+# shape. Section-heading content_types map onto these block_types
+# directly (one block_type per resolved content_type label). Right now
+# the canonical 16-type enum doesn't include ``procedure`` /
+# ``comparison`` / ``definition`` / ``overview`` / ``summary`` /
+# ``exercise`` — those resolve to ``content_type_label`` on the
+# Block instead, while ``block_type`` stays in the canonical enum.
+_CONTENT_SECTION_BLOCK_TYPES: frozenset = frozenset()
