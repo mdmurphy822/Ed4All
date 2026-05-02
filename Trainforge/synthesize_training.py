@@ -672,6 +672,112 @@ def _resolve_pedagogy_graph_path(
     return None
 
 
+# ---------------------------------------------------------------------------
+# Worker A — per-pair resume checkpoint sidecar
+# ---------------------------------------------------------------------------
+#
+# A long local-LLM rebuild (10+ hours on a 14B-Q4 paraphrase pass over a
+# few hundred chunks) that crashes mid-loop loses every emitted pair on
+# restart: the chunk loop re-paraphrases everything from scratch
+# regardless of what the Wave 116 ``.jsonl.in_progress`` sidecar already
+# holds. The Wave 116 sidecar is observability only — its file handle is
+# opened in ``"w"`` mode, which truncates on restart.
+#
+# This sidecar is the resume cache. One JSON line per ACCEPTED pair
+# (post-validation, post-decoration, ready to land in the final
+# ``instruction_records`` / ``preference_records`` buffers). On restart
+# the loader rebuilds a ``(chunk_id, kind, variant_index)`` → record
+# cache and the chunk loop short-circuits past every cached key, never
+# dispatching to the LLM for it.
+#
+# Mirrors the ``align_chunks.py::_load_teaching_role_checkpoint`` /
+# ``_append_teaching_role_checkpoint`` pattern: tolerant load (malformed
+# lines / schema-version mismatches drop without poisoning the run),
+# append + flush per emit, unlink on clean exit, preserve on every
+# exception path so postmortem inspection still works.
+
+_SYNTHESIS_CHECKPOINT_SCHEMA_VERSION = "v1"
+
+
+def _load_synthesis_pairs_checkpoint(
+    path: Optional[Path],
+) -> Dict[Tuple[str, str, int], Dict[str, Any]]:
+    """Tolerant loader for the per-pair resume sidecar.
+
+    Returns a ``{(chunk_id, kind, variant_index): record}`` map. Malformed
+    JSON lines are skipped silently. Records whose ``schema_version``
+    doesn't match :data:`_SYNTHESIS_CHECKPOINT_SCHEMA_VERSION` are skipped
+    with a ``logger.warning`` so the operator can see why a stale
+    checkpoint isn't being honoured. Returns empty dict when ``path`` is
+    ``None`` or the file doesn't exist (back-compat — first-run case).
+
+    The caller decides what to do with the loaded cache; this function
+    only loads, never deletes or rewrites the file.
+    """
+    if path is None or not path.exists():
+        return {}
+    cache: Dict[Tuple[str, str, int], Dict[str, Any]] = {}
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("schema_version") != _SYNTHESIS_CHECKPOINT_SCHEMA_VERSION:
+                logger.warning(
+                    "Synthesis checkpoint schema_version mismatch (expected %r, "
+                    "got %r) — skipping entry",
+                    _SYNTHESIS_CHECKPOINT_SCHEMA_VERSION,
+                    obj.get("schema_version"),
+                )
+                continue
+            chunk_id = obj.get("chunk_id")
+            kind = obj.get("kind")
+            variant = obj.get("variant_index")
+            if chunk_id and kind in ("instruction", "preference"):
+                try:
+                    variant_int = int(variant or 0)
+                except (TypeError, ValueError):
+                    continue
+                cache[(str(chunk_id), str(kind), variant_int)] = obj
+    return cache
+
+
+def _append_synthesis_pairs_checkpoint(
+    fh: Optional[Any],
+    *,
+    chunk_id: str,
+    kind: str,
+    variant_index: int,
+    pair: Dict[str, Any],
+    provider: str,
+    seed: Optional[int] = None,
+) -> None:
+    """Append one accepted pair to the resume sidecar with immediate flush.
+
+    Always a no-op when ``fh`` is None (resume cache disabled). Schema
+    version is pinned by :data:`_SYNTHESIS_CHECKPOINT_SCHEMA_VERSION`;
+    bumping it loudly invalidates pre-bump checkpoints via the
+    ``logger.warning`` path in :func:`_load_synthesis_pairs_checkpoint`.
+    """
+    if fh is None:
+        return
+    record = {
+        "schema_version": _SYNTHESIS_CHECKPOINT_SCHEMA_VERSION,
+        "chunk_id": chunk_id,
+        "kind": kind,
+        "variant_index": variant_index,
+        "pair": pair,
+        "provider": provider,
+        "seed": seed,
+    }
+    fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    fh.flush()
+
+
 def run_synthesis(
     corpus_dir: Path,
     course_code: str,
@@ -692,6 +798,7 @@ def run_synthesis(
     instruction_variants_per_chunk: int = 1,
     dispatcher: Optional[Any] = None,
     cache_path: Optional[Path] = None,
+    synthesis_pairs_checkpoint_path: Optional[Path] = None,
     max_dispatches: Optional[int] = None,
     telemetry_path: Optional[Path] = None,
     pilot_report_every: int = 20,
@@ -797,6 +904,51 @@ def run_synthesis(
     instruction_progress.parent.mkdir(parents=True, exist_ok=True)
     inst_progress_fh = instruction_progress.open("w", encoding="utf-8")
     pref_progress_fh = preference_progress.open("w", encoding="utf-8")
+
+    # Worker A: per-pair resume checkpoint sidecar. Hidden dotfile so
+    # operators looking at ``training_specs/`` see the canonical artifacts
+    # + Wave 116 ``.in_progress`` observability sidecars without visual
+    # noise from machinery they don't need to inspect by hand. Default
+    # to checkpoint-on whenever the call site has a write target on disk
+    # (i.e. always under the canonical ``run_synthesis`` invocation);
+    # the CLI ``--no-checkpoint`` flag (see :func:`main`) routes the
+    # disable case via a ``Path`` sentinel that ends in
+    # ``.no_checkpoint`` — :func:`main` is the only caller that sets
+    # the sentinel; programmatic callers wanting opt-out can pass any
+    # ``Path`` whose suffix matches.
+    #
+    # NOTE: the existing ``cache_path`` kwarg is the CLAUDE-SESSION
+    # content-addressed paraphrase cache, not this resume cache. They
+    # are deliberately separate paths and serve different purposes;
+    # ``cache_path`` is wired only when ``provider == "claude_session"``,
+    # whereas this checkpoint covers every provider that writes to disk.
+    _CHECKPOINT_DISABLE_SENTINEL = "<disable-synthesis-checkpoint>"
+    if synthesis_pairs_checkpoint_path is None:
+        checkpoint_path: Optional[Path] = (
+            training_specs_dir / ".synthesis_pairs_checkpoint.jsonl"
+        )
+    elif (
+        isinstance(synthesis_pairs_checkpoint_path, Path)
+        and synthesis_pairs_checkpoint_path.name == _CHECKPOINT_DISABLE_SENTINEL
+    ):
+        checkpoint_path = None
+    else:
+        checkpoint_path = Path(synthesis_pairs_checkpoint_path)
+    pair_checkpoint_cache = _load_synthesis_pairs_checkpoint(checkpoint_path)
+    if pair_checkpoint_cache:
+        logger.info(
+            "Worker A: resuming from synthesis checkpoint at %s — "
+            "%d cached pair(s) will skip the LLM dispatch.",
+            checkpoint_path,
+            len(pair_checkpoint_cache),
+        )
+    if checkpoint_path is not None:
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        checkpoint_fh: Optional[Any] = checkpoint_path.open(
+            "a", encoding="utf-8",
+        )
+    else:
+        checkpoint_fh = None
 
     # Wave 117 / 119: load property manifest once. The manifest gates
     # ALL pilot-report writes (in-flight and final). pilot_report_every
@@ -1378,6 +1530,15 @@ def run_synthesis(
             effective_preserve_tokens = (
                 chunk_preserve_tokens + extra_anchor_tokens
             )
+            # Worker A: pull a cache-stable chunk_id once per chunk so
+            # the per-variant resume-cache lookup uses the same value the
+            # synthesize_instruction_pair / synthesize_preference_pair
+            # path would have written into ``pair["chunk_id"]``. Falls
+            # back to the same ``id`` / ``chunk_id`` precedence used
+            # everywhere else in this module.
+            chunk_id_for_checkpoint = str(
+                chunk.get("id") or chunk.get("chunk_id") or ""
+            )
             # --- Instruction pair ---
             for variant_index in range(instruction_variants):
                 inst_capped = (
@@ -1388,6 +1549,57 @@ def run_synthesis(
                     stats.capped_at_max_pairs = True
                     break
                 pair_seed = seed + idx + (variant_index * 100_000)
+                # Worker A: per-pair resume-cache check. If the prior
+                # run already emitted this (chunk_id, "instruction",
+                # variant_index) triple, replay the cached pair into
+                # the canonical buffers + sidecars and skip the LLM
+                # dispatch entirely. Provider mismatch invalidates the
+                # entry so a ``local`` cache isn't honoured by a
+                # ``together`` re-run.
+                _cp_key = (
+                    chunk_id_for_checkpoint, "instruction", variant_index,
+                )
+                if chunk_id_for_checkpoint and _cp_key in pair_checkpoint_cache:
+                    cached_record = pair_checkpoint_cache[_cp_key]
+                    cached_provider = cached_record.get("provider")
+                    if cached_provider != provider:
+                        logger.warning(
+                            "Synthesis checkpoint provider mismatch for "
+                            "%s: cached=%r, current=%r — discarding",
+                            _cp_key, cached_provider, provider,
+                        )
+                    else:
+                        cached_pair = cached_record.get("pair") or {}
+                        cached_prompt = cached_pair.get("prompt", "")
+                        if cached_prompt in emitted_inst_prompts:
+                            # Cross-chunk dedupe still applies on resume
+                            # — skip the cached record, don't re-emit.
+                            stats.instruction_pairs_rejected += 1
+                            stats.rejected_reasons[
+                                "instruction:duplicate_prompt"
+                            ] = (
+                                stats.rejected_reasons.get(
+                                    "instruction:duplicate_prompt", 0,
+                                ) + 1
+                            )
+                            continue
+                        instruction_records.append(cached_pair)
+                        emitted_inst_prompts.add(cached_prompt)
+                        stats.instruction_pairs_emitted += 1
+                        # Mirror the cached pair to the Wave 116 sidecar
+                        # so ``tail -f`` continues to surface every
+                        # accepted pair, regardless of whether it came
+                        # from the LLM or the resume cache.
+                        inst_progress_fh.write(
+                            json.dumps(
+                                cached_pair,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            )
+                            + "\n"
+                        )
+                        inst_progress_fh.flush()
+                        continue
                 try:
                     inst_result = synthesize_instruction_pair(
                         chunk,
@@ -1512,6 +1724,19 @@ def run_synthesis(
                         + "\n"
                     )
                     inst_progress_fh.flush()
+                    # Worker A: append the accepted pair to the resume
+                    # checkpoint. A subsequent run that loads this
+                    # sidecar will skip the LLM dispatch for this
+                    # (chunk_id, "instruction", variant_index) triple.
+                    _append_synthesis_pairs_checkpoint(
+                        checkpoint_fh,
+                        chunk_id=str(inst_result.pair.get("chunk_id", "")),
+                        kind="instruction",
+                        variant_index=variant_index,
+                        pair=inst_result.pair,
+                        provider=provider,
+                        seed=pair_seed,
+                    )
 
             # --- Preference pair ---
             pair_seed = seed + idx
@@ -1519,8 +1744,57 @@ def run_synthesis(
                 per_artifact_cap is not None
                 and stats.preference_pairs_emitted >= per_artifact_cap
             )
+            # Worker A: per-pair resume-cache check for the preference
+            # branch. Single-variant (only one preference pair per
+            # chunk), so the variant_index is always 0.
+            _pref_cp_key = (chunk_id_for_checkpoint, "preference", 0)
+            _pref_cache_hit = (
+                chunk_id_for_checkpoint
+                and _pref_cp_key in pair_checkpoint_cache
+                and not pref_capped
+            )
+            if _pref_cache_hit:
+                cached_record = pair_checkpoint_cache[_pref_cp_key]
+                cached_provider = cached_record.get("provider")
+                if cached_provider != provider:
+                    logger.warning(
+                        "Synthesis checkpoint provider mismatch for "
+                        "%s: cached=%r, current=%r — discarding",
+                        _pref_cp_key, cached_provider, provider,
+                    )
+                    _pref_cache_hit = False
+                else:
+                    cached_pair = cached_record.get("pair") or {}
+                    cached_prompt = cached_pair.get("prompt", "")
+                    if cached_prompt in emitted_pref_prompts:
+                        stats.preference_pairs_rejected += 1
+                        stats.rejected_reasons[
+                            "preference:duplicate_prompt"
+                        ] = (
+                            stats.rejected_reasons.get(
+                                "preference:duplicate_prompt", 0,
+                            ) + 1
+                        )
+                    else:
+                        preference_records.append(cached_pair)
+                        emitted_pref_prompts.add(cached_prompt)
+                        stats.preference_pairs_emitted += 1
+                        pref_progress_fh.write(
+                            json.dumps(
+                                cached_pair,
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            )
+                            + "\n"
+                        )
+                        pref_progress_fh.flush()
             if pref_capped:
                 stats.capped_at_max_pairs = True
+            elif _pref_cache_hit:
+                # Cache hit handled above — fall through to the
+                # post-pair pilot_report progress block at end of
+                # the chunk loop without dispatching to the LLM.
+                pass
             else:
                 try:
                     pref_result = synthesize_preference_pair(
@@ -1597,6 +1871,19 @@ def run_synthesis(
                             + "\n"
                         )
                         pref_progress_fh.flush()
+                        # Worker A: append the accepted preference
+                        # pair to the resume checkpoint.
+                        _append_synthesis_pairs_checkpoint(
+                            checkpoint_fh,
+                            chunk_id=str(
+                                pref_result.pair.get("chunk_id", "")
+                            ),
+                            kind="preference",
+                            variant_index=0,
+                            pair=pref_result.pair,
+                            provider=provider,
+                            seed=pair_seed,
+                        )
 
             # Wave 117: every N processed chunks, regenerate the
             # in-flight pilot_report.md so the operator running a
@@ -1988,9 +2275,24 @@ def run_synthesis(
             pref_progress_fh.close()
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("Failed to close preference sidecar: %s", e)
+        # Worker A: close the resume checkpoint handle, mirroring the
+        # existing Wave-116 sidecar close logic. The append handle
+        # always closes; the file itself is unlinked only on a
+        # fully-clean exit so a SynthesisBudgetExceeded / unexpected
+        # exception leaves the checkpoint on disk for the next run to
+        # resume from.
+        if checkpoint_fh is not None:
+            try:
+                checkpoint_fh.close()
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(
+                    "Failed to close synthesis checkpoint sidecar: %s", e,
+                )
         if clean_exit and _budget_exhausted_exc is None:
             instruction_progress.unlink(missing_ok=True)
             preference_progress.unlink(missing_ok=True)
+            if checkpoint_path is not None and checkpoint_path.exists():
+                checkpoint_path.unlink()
 
         if owns_capture:
             try:
@@ -2033,6 +2335,7 @@ def run_synthesis_from_libv2(
     abstention_max_pairs: int = 1000,
     with_schema_translation: bool = False,
     schema_translation_max_pairs: int = 50,
+    synthesis_pairs_checkpoint_path: Optional[Path] = None,
 ) -> SynthesisStats:
     """Run synthesis directly against a LibV2 course archive.
 
@@ -2100,6 +2403,7 @@ def run_synthesis_from_libv2(
         abstention_max_pairs=abstention_max_pairs,
         with_schema_translation=with_schema_translation,
         schema_translation_max_pairs=schema_translation_max_pairs,
+        synthesis_pairs_checkpoint_path=synthesis_pairs_checkpoint_path,
     )
 
 
@@ -2194,6 +2498,21 @@ def build_parser() -> argparse.ArgumentParser:
             "property-coverage / template-distribution visibility. Set "
             "to 0 to disable. No-op when the course has no property "
             "manifest. Default: 20 chunks."
+        ),
+    )
+    p.add_argument(
+        "--no-checkpoint",
+        action="store_true",
+        default=False,
+        help=(
+            "Worker A: opt OUT of the per-pair resume checkpoint sidecar "
+            "(default: checkpoint enabled). The sidecar at "
+            "<training_specs>/.synthesis_pairs_checkpoint.jsonl records "
+            "every accepted instruction / preference pair and is unlinked "
+            "on a clean run. A subsequent run on the same corpus reads "
+            "the sidecar and skips the LLM dispatch for any pair already "
+            "present, so a 10-hour local-LLM rebuild that crashes at "
+            "hour 9 doesn't re-pay for the first 9 hours' work."
         ),
     )
     # Wave 77 additions
@@ -2548,6 +2867,18 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
         getattr(args, "schema_translation_max_pairs", 50)
     )
 
+    # Worker A: --no-checkpoint opts out of the per-pair resume cache.
+    # Default behaviour (flag absent) leaves
+    # ``synthesis_pairs_checkpoint_path=None`` so ``run_synthesis``
+    # auto-derives ``<training_specs>/.synthesis_pairs_checkpoint.jsonl``.
+    # Disable by passing a Path sentinel that ``run_synthesis``
+    # recognises and treats as "no checkpoint" (see the matching
+    # _CHECKPOINT_DISABLE_SENTINEL block in run_synthesis).
+    no_checkpoint = bool(getattr(args, "no_checkpoint", False))
+    checkpoint_arg: Optional[Path] = (
+        Path("<disable-synthesis-checkpoint>") if no_checkpoint else None
+    )
+
     if getattr(args, "slug", None):
         stats = run_synthesis_from_libv2(
             slug=args.slug,
@@ -2575,6 +2906,7 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             abstention_max_pairs=abstention_max_pairs,
             with_schema_translation=with_schema_translation,
             schema_translation_max_pairs=schema_translation_max_pairs,
+            synthesis_pairs_checkpoint_path=checkpoint_arg,
         )
     else:
         if not args.course_code:
@@ -2609,6 +2941,7 @@ def main(args: Optional[argparse.Namespace] = None) -> SynthesisStats:
             abstention_max_pairs=abstention_max_pairs,
             with_schema_translation=with_schema_translation,
             schema_translation_max_pairs=schema_translation_max_pairs,
+            synthesis_pairs_checkpoint_path=checkpoint_arg,
         )
 
     print("\n[Synthesis] Complete.")
