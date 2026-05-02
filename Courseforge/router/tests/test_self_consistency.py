@@ -210,10 +210,20 @@ def test_third_candidate_passes_after_two_fail(monkeypatch):
 
 
 def test_all_candidates_fail_returns_last_with_validation_attempts_n(monkeypatch):
-    """When every candidate fails, the router returns the LAST candidate
-    with validation_attempts incremented by N. Per Subtask 37 the
-    escalation_marker is left untouched (Subtask 41's responsibility)."""
+    """When every candidate fails AND the regen budget is exhausted at
+    or before N, the router returns the LAST candidate with
+    validation_attempts incremented per fail and the canonical
+    ``outline_budget_exhausted`` marker stamped (Subtask 41).
+
+    With N=3 and the default regen_budget=3, the third failure brings
+    validation_attempts to 3 == budget → escalation marker fires and
+    the loop breaks early after the third dispatch. The earlier
+    Subtask-37 contract (marker left None for budget>N runs) is
+    exercised by ``test_validation_attempts_increments_below_budget``
+    in ``test_regen_budget.py``.
+    """
     monkeypatch.delenv("COURSEFORGE_OUTLINE_N_CANDIDATES", raising=False)
+    monkeypatch.delenv("COURSEFORGE_OUTLINE_REGEN_BUDGET", raising=False)
     blk = _block()
     provider = _SequenceOutlineProvider([blk, blk, blk])
     validator = _SequenceValidator(
@@ -223,18 +233,25 @@ def test_all_candidates_fail_returns_last_with_validation_attempts_n(monkeypatch
     r = CourseforgeRouter(outline_provider=provider, n_candidates=3)
     out = r.route_with_self_consistency(blk, validators=[validator])
     assert len(provider.calls) == 3
-    # validation_attempts bumped to N.
+    # validation_attempts bumped per failure to budget=N=3.
     assert out.validation_attempts == 3
-    # escalation_marker NOT set by Subtask 37.
-    assert out.escalation_marker is None
+    # Subtask 41: canonical marker stamped on budget exhaustion.
+    assert out.escalation_marker == "outline_budget_exhausted"
     # No winning Touch on a full-loop failure.
     assert not any(t.purpose == "self_consistency_winner" for t in out.touched_by)
 
 
 def test_n_candidates_resolves_from_env_var(monkeypatch):
     """``COURSEFORGE_OUTLINE_N_CANDIDATES`` env var beats the hardcoded
-    default when neither per-call kwarg nor policy entry is set."""
+    default when neither per-call kwarg nor policy entry is set.
+
+    Subtask 41 follow-on: also pin the regen budget to a value >= N
+    so the budget-exhaustion check doesn't fire early and the loop
+    actually runs through all N dispatches (otherwise the env-var
+    resolution itself wouldn't be observable).
+    """
     monkeypatch.setenv("COURSEFORGE_OUTLINE_N_CANDIDATES", "5")
+    monkeypatch.setenv("COURSEFORGE_OUTLINE_REGEN_BUDGET", "10")
     blk = _block()
     provider = _SequenceOutlineProvider([blk] * 5)
     validator = _SequenceValidator(
@@ -250,7 +267,12 @@ def test_n_candidates_resolves_from_env_var(monkeypatch):
 
 def test_n_candidates_resolves_from_policy_block_override(monkeypatch):
     """When the policy supplies ``n_candidates_by_block_type``, that
-    value beats env var + constructor default."""
+    value beats env var + constructor default.
+
+    Subtask 41 follow-on: pin a per-call ``regen_budget`` >= N so the
+    budget-exhaustion path doesn't short-circuit before the policy
+    N-candidates resolution is observable.
+    """
     monkeypatch.setenv("COURSEFORGE_OUTLINE_N_CANDIDATES", "10")
     blk = _block(block_type="concept")
     provider = _SequenceOutlineProvider([blk] * 5)
@@ -262,7 +284,9 @@ def test_n_candidates_resolves_from_policy_block_override(monkeypatch):
     r = CourseforgeRouter(
         policy=policy, outline_provider=provider, n_candidates=2
     )
-    out = r.route_with_self_consistency(blk, validators=[validator])
+    out = r.route_with_self_consistency(
+        blk, validators=[validator], regen_budget=10
+    )
     # Policy wins over env var (10) and constructor default (2).
     assert len(provider.calls) == 4
     assert out.validation_attempts == 4
