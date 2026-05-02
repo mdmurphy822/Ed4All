@@ -81,6 +81,7 @@
         "content_depth",
         "content_selection",
         "content_structure",
+        "content_generator_call",
         "curriculum_alignment_call",
         "distractor_generation",
         "error_handling",

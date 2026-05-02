@@ -1,0 +1,1 @@
+"""Courseforge generators package."""
