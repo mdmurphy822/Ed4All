@@ -1064,6 +1064,25 @@ workflows:
               on_error: warn
             description: Phase 3.5 post-rewrite — verify rewrite-tier source_ids resolve against the DART staging manifest
 
+          # Phase 4 Wave N1 Subtask 12: SHACL parallel of the four
+          # rewrite-tier Block validators above. Distinct gate_id
+          # (``rewrite_shacl`` vs the inter-tier ``outline_shacl``) so
+          # downstream decision-event filtering can stratify the two
+          # validation seams. The validator's _coerce_block_payloads
+          # handles dict and HTML-string entries via the
+          # _extract_jsonld_blocks helper (mirrors the shape-dispatch
+          # in Courseforge/router/inter_tier_gates.py for rewrite-tier
+          # input). Severity warning per sub-plan §9 PoC contract.
+          - gate_id: rewrite_shacl
+            validator: lib.validators.courseforge_outline_shacl.CourseforgeOutlineShaclValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Phase 4 PoC SHACL parallel of rewrite-tier Block validators. Informational; Python gates remain authoritative.
+
       - name: packaging
         agents: [brightspace-packager]
         parallel: false
