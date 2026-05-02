@@ -1,23 +1,31 @@
-"""Wave 136d: tests for the FORM_DATA backfill loop.
+"""Wave 137 follow-up: tests for the FORM_DATA backfill loop.
 
-Five tests pin the operator-paused contract:
+Wave 136d originally shipped an interactive operator-paused contract
+(y/n/e/q). The Wave 137 follow-up converted that to a fully-automatic
+loop: each CURIE is auto-drafted, auto-validated, and on validator
+failure auto-redrafted up to MAX_REDRAFTS=10 times with cumulative
+violation feedback. No operator interaction; review happens at git
+diff time.
+
+Tests pin the automatic contract:
 
 1. ``test_backfill_sorts_by_frequency_descending`` — synthetic
    chunks.jsonl with known CURIE frequencies; the loop visits them
    in descending-frequency order.
-2. ``test_backfill_pause_y_appends_yaml_to_file`` — mock subprocess
-   (drafting CLI) returns a valid YAML payload; mock stdin returns
-   ``y``; assert the target YAML overlay has the new entry while
-   preserving every pre-existing entry.
-3. ``test_backfill_pause_n_skips_curie`` — mock stdin returns ``n``;
-   the YAML overlay file is unchanged.
-4. ``test_backfill_pause_q_exits_early_with_summary`` — mock stdin
-   returns ``q`` after the first prompt; subsequent CURIEs are not
-   visited.
-5. ``test_backfill_rejects_when_validator_fails_after_append`` —
+2. ``test_backfill_auto_accepts_on_validator_pass`` — mock subprocess
+   returns valid YAML; validator passes; the overlay gets the new
+   entry while every pre-existing entry survives. No input_fn needed.
+3. ``test_backfill_rejects_when_validator_fails_after_append`` —
    subprocess returns valid-looking YAML that trips Wave 136b's
-   content validator on append (placeholder-leak token); assert
-   rollback occurred and the summary counts ``failed_validation``.
+   content validator on append; the loop auto-redrafts MAX_REDRAFTS
+   times, returns ``max_redrafts_exceeded``, and the YAML file ends
+   byte-identical to pre-merge.
+4. ``test_backfill_max_redrafts_exhausted_returns_dedicated_outcome``
+   — every draft fails; expect MAX_REDRAFTS=10 + 1 initial = 11
+   runner calls and a ``max_redrafts_exceeded`` outcome.
+5. ``test_backfill_accumulates_violations_across_redrafts`` — each
+   redraft's prompt receives the cumulative dedup'd set of prior
+   violations.
 
 All test fixtures use synthetic ``test:Foo``-style CURIEs because
 this CLI must work generically across families. The property
@@ -235,13 +243,15 @@ def test_backfill_sorts_by_frequency_descending(tmp_path):
 
 
 # ----------------------------------------------------------------------
-# Test 2: pause `y` -> append + preserve existing entries
+# Test 2: validator passes -> auto-accept + preserve existing entries
 # ----------------------------------------------------------------------
 
 
-def test_backfill_pause_y_appends_yaml_to_file(tmp_path):
-    """Mock subprocess returns valid YAML; stdin says ``y``; YAML overlay
-    gets the new entry while preserving the pre-existing entry."""
+def test_backfill_auto_accepts_on_validator_pass(tmp_path):
+    """Wave 137 followup: fully-automatic mode. Mock subprocess returns
+    valid YAML, validator passes, loop auto-accepts (no operator
+    prompt). YAML overlay gets the new entry while preserving the
+    pre-existing entry."""
     yaml_path = tmp_path / "schema_translation_catalog.test_family.yaml"
     # Pre-seed an existing complete entry that must NOT be erased.
     pre_text = (
@@ -267,15 +277,9 @@ def test_backfill_pause_y_appends_yaml_to_file(tmp_path):
         assert curie == target_curie
         return 0, fake_stdout_yaml, ""
 
-    # Stdin: y for the first (and only) CURIE.
-    inputs = iter(["y"])
-
-    def fake_input(_prompt: str) -> str:
-        return next(inputs)
-
-    # Sentinel to capture the post-validate report. Stub validator to
-    # always pass — Wave 136b's full validator is exercised in its own
-    # test file; here we just want to assert the merge works.
+    # Stub validator to always pass — Wave 136b's full validator is
+    # exercised in its own test file; here we just want to assert the
+    # merge works.
     def fake_validator(form_data, manifest_curies):
         return {"passed": True, "content_violations": []}
 
@@ -314,7 +318,6 @@ def test_backfill_pause_y_appends_yaml_to_file(tmp_path):
             model=None,
             yaml_path=yaml_path,
             manifest_curies=[c for c, _ in _SYNTHETIC_CURIES],
-            input_fn=fake_input,
             print_fn=captured_print,
         )
     assert rc == "accepted", f"expected 'accepted'; got {rc!r}"
@@ -336,146 +339,16 @@ def test_backfill_pause_y_appends_yaml_to_file(tmp_path):
 
 
 # ----------------------------------------------------------------------
-# Test 3: pause `n` -> skip, file unchanged
-# ----------------------------------------------------------------------
-
-
-def test_backfill_pause_n_skips_curie(tmp_path):
-    """``n`` -> file unchanged, return value 'skipped'."""
-    yaml_path = tmp_path / "schema_translation_catalog.test_family.yaml"
-    pre_text = (
-        "family: test_family\n"
-        "forms:\n"
-        "  test:Existing:\n"
-        "    short_name: Existing\n"
-        "    anchored_status: complete\n"
-        "    definitions:\n"
-        "    - test:Existing is a pre-seeded entry that must survive an "
-        "n-skip round-trip without modification of any kind.\n"
-        "    usage_examples:\n"
-        "    - - Pre-seeded prompt about test:Existing.\n"
-        "      - Pre-seeded answer demonstrating test:Existing usage.\n"
-    )
-    yaml_path.write_text(pre_text, encoding="utf-8")
-    pre_bytes = yaml_path.read_bytes()
-
-    target_curie = "test:Beta"
-    fake_stdout_yaml = _build_valid_yaml_payload(target_curie)
-
-    def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None):
-        return 0, fake_stdout_yaml, ""
-
-    inputs = iter(["n"])
-
-    def fake_input(_prompt: str) -> str:
-        return next(inputs)
-
-    sink = io.StringIO()
-
-    def captured_print(*args, **kwargs):
-        kwargs["file"] = sink
-        print(*args, **kwargs)
-
-    with patch.object(cli, "_run_drafting_cli", side_effect=fake_runner):
-        outcome = cli._process_one_curie(
-            idx=1,
-            total=1,
-            curie=target_curie,
-            freq=0,
-            label="Beta label",
-            family="test_family",
-            course_code="test-course",
-            provider="local",
-            model=None,
-            yaml_path=yaml_path,
-            manifest_curies=[c for c, _ in _SYNTHETIC_CURIES],
-            input_fn=fake_input,
-            print_fn=captured_print,
-        )
-
-    assert outcome == "skipped", f"expected 'skipped'; got {outcome!r}"
-    assert yaml_path.read_bytes() == pre_bytes, (
-        "YAML overlay was modified despite 'n' skip"
-    )
-
-
-# ----------------------------------------------------------------------
-# Test 4: pause `q` -> early exit, subsequent CURIEs not visited
-# ----------------------------------------------------------------------
-
-
-def test_backfill_pause_q_exits_early_with_summary(tmp_path, monkeypatch):
-    """``q`` after first prompt -> the second CURIE's drafting CLI is
-    never called."""
-    yaml_path = tmp_path / "schema_translation_catalog.test_family.yaml"
-    yaml_path.write_text(
-        "family: test_family\nforms: {}\n", encoding="utf-8"
-    )
-
-    visited_runner_calls: List[str] = []
-
-    def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None):
-        visited_runner_calls.append(curie)
-        return 0, _build_valid_yaml_payload(curie), ""
-
-    inputs = iter(["q"])  # quit on first prompt
-
-    def fake_input(_prompt: str) -> str:
-        return next(inputs)
-
-    sink = io.StringIO()
-
-    def captured_print(*args, **kwargs):
-        kwargs["file"] = sink
-        print(*args, **kwargs)
-
-    # Monkey-patch loader / chunks resolution so the loop sees three
-    # synthetic CURIEs, all degraded.
-    monkeypatch.setattr(cli, "load_property_manifest",
-                        lambda *_a, **_k: _build_synthetic_manifest())
-    monkeypatch.setattr(cli, "_load_form_data",
-                        lambda *_a, **_k: _build_synthetic_form_data())
-    monkeypatch.setattr(cli, "_invalidate_form_data_cache",
-                        lambda: None)
-    monkeypatch.setattr(cli, "_resolve_chunks_jsonl",
-                        lambda *_a, **_k: None)
-    monkeypatch.setattr(cli, "_run_drafting_cli", fake_runner)
-    monkeypatch.setattr(cli, "DecisionCapture",
-                        lambda **_k: SimpleNamespace(
-                            log_decision=lambda **__k: None))
-
-    rc = cli.main(
-        [
-            "--course-code", "test-course",
-            "--family", "test_family",
-            "--limit", "5",
-            "--yaml-path", str(yaml_path),
-        ],
-        input_fn=fake_input,
-        print_fn=captured_print,
-    )
-    assert rc == 0
-    # We quit on the FIRST prompt, so only the first CURIE should have
-    # been dispatched to the drafting CLI.
-    assert len(visited_runner_calls) == 1, (
-        f"expected exactly 1 runner call; got {visited_runner_calls}"
-    )
-    # Summary should be present.
-    summary = sink.getvalue()
-    assert "backfill_form_data summary" in summary
-    assert "quit_after        : 1" in summary
-    # And accepted=0 (the runner output was discarded).
-    assert "accepted          : 0" in summary
-
-
-# ----------------------------------------------------------------------
-# Test 5: validator failure after append -> rollback + failed_validation
+# Test 3: validator failure after append -> rollback + failed_validation
 # ----------------------------------------------------------------------
 
 
 def test_backfill_rejects_when_validator_fails_after_append(tmp_path):
-    """Wave 136b validator fails on the appended entry; rollback restores
-    the prior YAML and outcome counts under ``failed_validation``."""
+    """Wave 136b validator fails on every appended entry. Wave 137
+    follow-up (fully-automatic): the loop auto-redrafts MAX_REDRAFTS=10
+    times then returns ``max_redrafts_exceeded``; the YAML file ends
+    byte-identical to pre-merge state because every append is rolled
+    back."""
     yaml_path = tmp_path / "schema_translation_catalog.test_family.yaml"
     pre_text = (
         "family: test_family\n"
@@ -499,8 +372,6 @@ def test_backfill_rejects_when_validator_fails_after_append(tmp_path):
     def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None):
         return 0, bad_yaml, ""
 
-    # Stub validator to fail with a content_violation specific to this
-    # CURIE — mimics Wave 136b's PLACEHOLDER_LEAK rule firing.
     def fake_validator(form_data, manifest_curies):
         return {
             "passed": False,
@@ -511,15 +382,6 @@ def test_backfill_rejects_when_validator_fails_after_append(tmp_path):
             "missing_curies": [],
             "incomplete_curies": [],
         }
-
-    # Wave 137 follow-up: append-failure auto-redrafts (no `r` prompt).
-    # Operator: "y" (approve) → reject + auto-redraft (returns same
-    # bad_yaml because fake_runner is stateless) → "n" on second
-    # prompt → skip.
-    inputs = iter(["y", "n"])
-
-    def fake_input(_prompt: str) -> str:
-        return next(inputs)
 
     sink = io.StringIO()
 
@@ -556,27 +418,22 @@ def test_backfill_rejects_when_validator_fails_after_append(tmp_path):
             model=None,
             yaml_path=yaml_path,
             manifest_curies=[c for c, _ in _SYNTHETIC_CURIES],
-            input_fn=fake_input,
             print_fn=captured_print,
         )
-    # Wave 137 follow-up: outcome flips from "failed_validation" to
-    # "skipped" because the operator's `n` after rejection means skip,
-    # not retry. The rollback contract is unchanged.
-    assert outcome == "skipped", (
-        f"expected 'skipped' (post-Wave-137-followup retry-loop); got {outcome!r}"
+    assert outcome == "max_redrafts_exceeded", (
+        f"expected 'max_redrafts_exceeded' (auto-redraft chain exhausted); got {outcome!r}"
     )
-    # Critical: the YAML file must be byte-identical to pre-merge.
     assert yaml_path.read_bytes() == pre_bytes, (
         "rollback failed — YAML file did not return to pre-merge state"
     )
 
 
 def test_backfill_max_redrafts_exhausted_returns_dedicated_outcome(tmp_path):
-    """Wave 137 follow-up: when the operator approves 5 successive
-    drafts and all 5 fail append-time validation, the loop returns
-    ``max_redrafts_exceeded`` (not ``skipped`` or ``failed_validation``)
-    so the main() exit code can flag the failure. After 5 redrafts
-    the loop gives up and returns the dedicated outcome."""
+    """Wave 137 follow-up (fully-automatic): when every draft fails
+    append-time validation, the loop runs MAX_REDRAFTS=10 attempts and
+    then returns ``max_redrafts_exceeded`` (not ``skipped`` or
+    ``failed_validation``) so the main() exit code can flag the
+    failure."""
     yaml_path = tmp_path / "schema_translation_catalog.test_family.yaml"
     pre_text = "family: test_family\nforms: {}\n"
     yaml_path.write_text(pre_text, encoding="utf-8")
@@ -599,12 +456,6 @@ def test_backfill_max_redrafts_exhausted_returns_dedicated_outcome(tmp_path):
             "missing_curies": [],
             "incomplete_curies": [],
         }
-
-    # Operator approves 5 times; each rejection auto-redrafts.
-    inputs = iter(["y"] * 6)  # extra "y" guard if implementation off-by-one
-
-    def fake_input(_prompt):
-        return next(inputs)
 
     fake_form_data = {
         target_curie: SurfaceFormData(
@@ -635,11 +486,15 @@ def test_backfill_max_redrafts_exhausted_returns_dedicated_outcome(tmp_path):
             model=None,
             yaml_path=yaml_path,
             manifest_curies=[c for c, _ in _SYNTHETIC_CURIES],
-            input_fn=fake_input,
             print_fn=lambda *a, **kw: None,
         )
     assert outcome == "max_redrafts_exceeded", (
-        f"expected 'max_redrafts_exceeded' after 5 auto-redrafts; got {outcome!r}"
+        f"expected 'max_redrafts_exceeded' after MAX_REDRAFTS auto-redrafts; got {outcome!r}"
+    )
+    # MAX_REDRAFTS=10 means 10 attempts total: 1 initial + 9 redrafts
+    # (the 10th rejection trips the cap before the 11th call would fire).
+    assert len(runner_calls) == 10, (
+        f"expected 10 runner calls (MAX_REDRAFTS attempts); got {len(runner_calls)}"
     )
 
 
@@ -682,11 +537,6 @@ def test_backfill_accumulates_violations_across_redrafts(tmp_path):
             "incomplete_curies": [],
         }
 
-    inputs = iter(["y"] * 6)
-
-    def fake_input(_prompt):
-        return next(inputs)
-
     fake_form_data = {
         target_curie: SurfaceFormData(
             curie=target_curie,
@@ -716,7 +566,6 @@ def test_backfill_accumulates_violations_across_redrafts(tmp_path):
             model=None,
             yaml_path=yaml_path,
             manifest_curies=[c for c, _ in _SYNTHETIC_CURIES],
-            input_fn=fake_input,
             print_fn=lambda *a, **kw: None,
         )
 

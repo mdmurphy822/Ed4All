@@ -644,123 +644,72 @@ def _process_one_curie(
     model: Optional[str],
     yaml_path: Path,
     manifest_curies: List[str],
-    input_fn,
     print_fn,
     runner=None,
-    editor_fn=None,
     timeout: Optional[float] = None,
+    input_fn=None,  # accepted for back-compat; unused in fully-automatic mode
+    editor_fn=None,  # accepted for back-compat; unused in fully-automatic mode
 ) -> str:
-    # Resolve at call time via module-attribute lookup so
+    """Drive one CURIE through the FULLY-AUTOMATIC backfill loop.
+
+    Wave 137 followup: removed the y/n/e/q operator-pause prompt and
+    the review checklist auto-print. Operator review happens at
+    `git diff` / commit time instead of interactively. Auto-redraft
+    runs up to MAX_REDRAFTS=10 with cumulative violation feedback;
+    auto-flip PENDING_REVIEW always (no operator approval gate).
+
+    Returns one of:
+      ``"accepted"``  — drafted entry passed validator, appended.
+      ``"failed_validation"``  — transport / parse failure (no retry).
+      ``"max_redrafts_exceeded"``  — Qwen couldn't satisfy validator
+                                     within MAX_REDRAFTS attempts.
+    """
+    # Resolve runner at call time via module-attribute lookup so
     # ``patch.object(cli, "_run_drafting_cli", ...)`` in tests is
     # honored. Capturing module-level callables in default arg values
     # would freeze the binding at function-definition time.
     _module = sys.modules[__name__]
     if runner is None:
         runner = getattr(_module, "_run_drafting_cli")
-    if editor_fn is None:
-        editor_fn = getattr(_module, "_editor_round_trip")
-    """Drive one CURIE through the operator-paused loop.
 
-    Returns one of: ``"accepted"``, ``"skipped"``, ``"edited"``,
-    ``"failed_validation"``, ``"quit_after"``.
-    """
     print_fn(
         f"\n[{idx}/{total}] CURIE={curie} corpus_freq={freq} label={label}"
     )
 
-    rc, stdout, stderr = runner(curie, family, course_code, provider, model, timeout)
-
-    # Wave 137 follow-up: rc=3 means the drafting CLI's pre-print
-    # validation surfaced content violations. The YAML is STILL on
-    # stdout — the operator should see it + the violations and decide
-    # whether to skip (Qwen produced an unfixable draft) or edit
-    # (manually fix the flagged sentences).
-    #
-    # rc != 0 and != 3 means a transport / setup failure — no YAML to
-    # show; mark as failed_validation and move on.
-    if rc != 0 and rc != 3:
-        print_fn(
-            f"  drafting CLI failed (exit {rc}); stderr=\n{stderr}",
-        )
-        return "failed_validation"
-
-    # Print the rendered YAML + next-steps comment block verbatim.
-    print_fn(stdout)
-    if rc == 3:
-        # Surface the content violations so the operator sees them
-        # alongside the YAML + can decide y/n/e informed by the
-        # specific issues Qwen produced.
-        print_fn(
-            f"\n--- DRAFTING-CLI VALIDATION WARNINGS (operator decides) ---\n"
-            f"{stderr}\n"
-            f"--- end warnings ---"
-        )
-
-    # Wave 137 follow-up: action prompt + validate inside a loop with
-    # auto-redraft on append-time validator failure. Operator only
-    # makes y/n/e/q choices; redrafts happen automatically up to
-    # MAX_REDRAFTS=5 before the loop returns a failure outcome that
-    # contributes to a non-zero main() exit code. Auto-flip
-    # PENDING_REVIEW on `y` (operator approved = implicit review).
-    #
-    # Feedback accumulates across redrafts: every attempt's violations
-    # are deduped by (code, detail) and fed to the NEXT prompt, capped
-    # at the most recent 10 entries to bound prompt length. Persistent
-    # failure modes (Qwen keeps dropping the CURIE; keeps producing
-    # low-diversity defs) reinforce across attempts rather than being
-    # forgotten.
     operator_handle = _resolve_operator_handle()
-    current_yaml = stdout
     redraft_count = 0
-    MAX_REDRAFTS = 5
+    MAX_REDRAFTS = 10
     accumulated_violations: List[str] = []
     seen_violation_keys: set = set()
 
+    # Initial draft.
+    rc, current_yaml, stderr = runner(
+        curie, family, course_code, provider, model, timeout
+    )
+    if rc != 0 and rc != 3:
+        print_fn(
+            f"  drafting CLI transport failed (exit {rc}); stderr=\n{stderr}"
+        )
+        return "failed_validation"
+
     while True:
-        action = _read_action(input_fn=input_fn)
-
-        if action == "q":
-            return "quit_after"
-
-        if action == "n":
-            print_fn("  Skipped.")
-            return "skipped"
-
-        # y or e: parse YAML payload from current_yaml.
-        if action == "e":
-            try:
-                edited_text = editor_fn(current_yaml)
-            except Exception as exc:
-                print_fn(f"  editor session failed: {exc}; skipping.")
-                return "skipped"
-            try:
-                payload = _extract_yaml_payload_from_drafting_stdout(edited_text)
-            except Exception as exc:
-                print_fn(f"  edited YAML did not parse: {exc}; reprompting.")
-                last_violations = [{"detail": f"YAML parse: {exc}"}]
-                continue
-            current_yaml = edited_text
-            outcome_label = "edited"
-        else:
-            # action == "y"
-            try:
-                payload = _extract_yaml_payload_from_drafting_stdout(current_yaml)
-            except Exception as exc:
-                print_fn(f"  YAML did not parse: {exc}; skipping.")
-                return "skipped"
-            # Wave 137 follow-up: auto-flip PENDING_REVIEW on `y`.
-            payload = _auto_flip_pending_review(payload, curie, operator_handle)
-            outcome_label = "accepted"
+        # Parse YAML.
+        try:
+            payload = _extract_yaml_payload_from_drafting_stdout(current_yaml)
+        except Exception as exc:
+            print_fn(f"  YAML did not parse: {exc}; skipping.")
+            return "failed_validation"
+        # Auto-flip PENDING_REVIEW: this script IS the review surface;
+        # the operator commits the diff at the end.
+        payload = _auto_flip_pending_review(payload, curie, operator_handle)
 
         forms = payload.get("forms") or {}
         new_entry_yaml = forms.get(curie)
         if not isinstance(new_entry_yaml, dict):
-            print_fn(
-                f"  YAML did not contain forms.{curie}; skipping."
-            )
-            return "skipped"
+            print_fn(f"  YAML did not contain forms.{curie}; skipping.")
+            return "failed_validation"
 
-        # Atomic merge + post-validate + retry-on-failure.
+        # Merge + validate + auto-redraft on rejection.
         snapshot = _merge_curie_into_overlay(yaml_path, curie, new_entry_yaml)
         pre_full = snapshot["_pre_full"]
         _invalidate_form_data_cache()
@@ -771,72 +720,58 @@ def _process_one_curie(
             v for v in violations
             if isinstance(v, dict) and v.get("curie") == curie
         ]
-        if this_curie_violations:
-            print_fn(
-                f"  APPEND-TIME VALIDATOR REJECTED entry for {curie}:"
-            )
-            for v in this_curie_violations:
-                print_fn(f"    {v}")
-            _rollback_overlay(yaml_path, pre_full)
-            _invalidate_form_data_cache()
-            # Wave 137 follow-up: auto-redraft on rejection. Operator
-            # only makes y/n/e/q choices; the redraft itself is
-            # automatic up to MAX_REDRAFTS=5. After exhaustion, return
-            # max_redrafts_exceeded so main() can flag non-zero exit.
-            redraft_count += 1
-            if redraft_count >= MAX_REDRAFTS:
-                print_fn(
-                    f"  Reached MAX_REDRAFTS={MAX_REDRAFTS} on {curie} — "
-                    f"giving up. Operator should hand-curate this CURIE "
-                    f"or skip it permanently."
-                )
-                return "max_redrafts_exceeded"
-            # Wave 137 follow-up: ACCUMULATE violations across all
-            # redraft attempts, deduped by (code, detail), capped to
-            # last 10. Persistent failure modes reinforce across the
-            # chain — Qwen sees not just "this attempt failed because
-            # X" but "every attempt has failed because X, you must
-            # not do X."
-            new_this_attempt = 0
-            for v in this_curie_violations:
-                if not isinstance(v, dict):
-                    continue
-                code = v.get("code", "UNKNOWN")
-                detail = v.get("detail", "")
-                key = (code, detail)
-                if key in seen_violation_keys:
-                    continue
-                seen_violation_keys.add(key)
-                accumulated_violations.append(f"{code}: {detail}")
-                new_this_attempt += 1
-            # Keep most recent 10 (drop oldest if we exceeded).
-            accumulated_violations = accumulated_violations[-10:]
-            carried_forward = len(accumulated_violations) - new_this_attempt
-            print_fn(
-                f"  Auto-redrafting (attempt {redraft_count + 1}/{MAX_REDRAFTS}) "
-                f"with {len(accumulated_violations)} cumulative violation(s) "
-                f"fed back ({new_this_attempt} new this attempt, "
-                f"{carried_forward} carried forward)..."
-            )
-            rc, current_yaml, stderr = runner(
-                curie, family, course_code, provider, model, timeout,
-                accumulated_violations,
-            )
-            if rc != 0 and rc != 3:
-                print_fn(
-                    f"  redraft transport failed (exit {rc}); stderr=\n{stderr}"
-                )
-                return "failed_validation"
-            print_fn(current_yaml)
-            if rc == 3:
-                print_fn(
-                    f"\n--- DRAFTING-CLI VALIDATION WARNINGS ---\n"
-                    f"{stderr}\n--- end warnings ---"
-                )
-            continue
+        if not this_curie_violations:
+            print_fn(f"  OK accepted (after {redraft_count} redraft(s))")
+            return "accepted"
 
-        print_fn(f"  OK {outcome_label}")
-        return outcome_label if outcome_label == "edited" else "accepted"
+        # Validator rejected: log + rollback + redraft (or give up).
+        print_fn(f"  APPEND-TIME VALIDATOR REJECTED entry for {curie}:")
+        for v in this_curie_violations:
+            print_fn(f"    {v}")
+        _rollback_overlay(yaml_path, pre_full)
+        _invalidate_form_data_cache()
+
+        redraft_count += 1
+        if redraft_count >= MAX_REDRAFTS:
+            print_fn(
+                f"  Reached MAX_REDRAFTS={MAX_REDRAFTS} on {curie} — "
+                f"giving up. Operator should hand-curate this CURIE."
+            )
+            return "max_redrafts_exceeded"
+
+        # Accumulate violations across all attempts, dedupe by
+        # (code, detail), cap to last 10. Persistent failure modes
+        # reinforce across the chain — Qwen sees the cumulative
+        # pattern, not just the latest attempt.
+        new_this_attempt = 0
+        for v in this_curie_violations:
+            if not isinstance(v, dict):
+                continue
+            code = v.get("code", "UNKNOWN")
+            detail = v.get("detail", "")
+            key = (code, detail)
+            if key in seen_violation_keys:
+                continue
+            seen_violation_keys.add(key)
+            accumulated_violations.append(f"{code}: {detail}")
+            new_this_attempt += 1
+        accumulated_violations = accumulated_violations[-10:]
+        carried_forward = len(accumulated_violations) - new_this_attempt
+        print_fn(
+            f"  Auto-redrafting (attempt {redraft_count + 1}/{MAX_REDRAFTS}) "
+            f"with {len(accumulated_violations)} cumulative violation(s) "
+            f"fed back ({new_this_attempt} new this attempt, "
+            f"{carried_forward} carried forward)..."
+        )
+        rc, current_yaml, stderr = runner(
+            curie, family, course_code, provider, model, timeout,
+            accumulated_violations,
+        )
+        if rc != 0 and rc != 3:
+            print_fn(
+                f"  redraft transport failed (exit {rc}); stderr=\n{stderr}"
+            )
+            return "failed_validation"
 
 
 # ----------------------------------------------------------------------
@@ -1020,16 +955,12 @@ def main(
     if args.keep_alive and args.keep_alive != "0":
         _warmup_provider(args.provider, args.model, args.keep_alive, print_fn=print_fn)
 
-    # Step 5: drive each CURIE through the operator pause loop.
+    # Step 5: drive each CURIE through the fully-automatic loop.
     counters = {
         "accepted": 0,
-        "skipped": 0,
-        "edited": 0,
         "failed_validation": 0,
         "max_redrafts_exceeded": 0,
-        "quit_after": 0,
     }
-    quit_flag = False
     total = len(targets)
     for idx, (curie, freq) in enumerate(targets, start=1):
         outcome = _process_one_curie(
@@ -1044,26 +975,19 @@ def main(
             model=args.model,
             yaml_path=yaml_path,
             manifest_curies=manifest_curies,
-            input_fn=input_fn,
             print_fn=print_fn,
             timeout=args.timeout,
         )
         counters[outcome] = counters.get(outcome, 0) + 1
-        if outcome == "quit_after":
-            quit_flag = True
-            break
 
     # Step 6: end-of-run summary + decision-capture event.
     print_fn(
         "\n=== backfill_form_data summary ==="
     )
-    print_fn(f"  family            : {args.family}")
-    print_fn(f"  accepted          : {counters['accepted']}")
-    print_fn(f"  skipped           : {counters['skipped']}")
-    print_fn(f"  edited            : {counters['edited']}")
-    print_fn(f"  failed_validation : {counters['failed_validation']}")
-    print_fn(f"  max_redrafts_exceeded : {counters['max_redrafts_exceeded']}")
-    print_fn(f"  quit_after        : {counters['quit_after']}")
+    print_fn(f"  family                  : {args.family}")
+    print_fn(f"  accepted                : {counters['accepted']}")
+    print_fn(f"  failed_validation       : {counters['failed_validation']}")
+    print_fn(f"  max_redrafts_exceeded   : {counters['max_redrafts_exceeded']}")
 
     capture = DecisionCapture(
         course_code=args.course_code,
@@ -1077,20 +1001,17 @@ def main(
         rationale=(
             f"family={args.family} "
             f"accepted={counters['accepted']} "
-            f"skipped={counters['skipped']} "
-            f"edited={counters['edited']} "
             f"failed={counters['failed_validation']} "
-            f"max_redrafts_exceeded={counters['max_redrafts_exceeded']} "
-            f"quit={'true' if quit_flag else 'false'}"
+            f"max_redrafts_exceeded={counters['max_redrafts_exceeded']}"
         ),
     )
     # Wave 137 follow-up: any CURIE that hit the auto-redraft ceiling
     # surfaces as a non-zero exit code so the operator (or downstream
-    # CI) sees a clear failure signal even after a successful summary.
+    # CI) sees a clear failure signal.
     if counters["max_redrafts_exceeded"] > 0:
         print_fn(
             f"\nERROR: {counters['max_redrafts_exceeded']} CURIE(s) "
-            f"exceeded MAX_REDRAFTS=5 — exiting with non-zero status. "
+            f"exceeded MAX_REDRAFTS=10 — exiting with non-zero status. "
             f"Review the per-CURIE rejections above and either hand-"
             f"curate those entries or re-run a fresh session after "
             f"adjusting the drafting prompt."
