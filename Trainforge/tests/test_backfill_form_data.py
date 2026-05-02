@@ -273,7 +273,7 @@ def test_backfill_auto_accepts_on_validator_pass(tmp_path):
 
     fake_stdout_yaml = _build_valid_yaml_payload(target_curie)
 
-    def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None, semantic_profile_name=None):
+    def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None, semantic_profile_name=None, allow_non_manifest=False):
         assert curie == target_curie
         return 0, fake_stdout_yaml, ""
 
@@ -369,7 +369,7 @@ def test_backfill_rejects_when_validator_fails_after_append(tmp_path):
     target_curie = "test:Beta"
     bad_yaml = _build_invalid_yaml_payload(target_curie)
 
-    def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None, semantic_profile_name=None):
+    def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None, semantic_profile_name=None, allow_non_manifest=False):
         return 0, bad_yaml, ""
 
     def fake_validator(form_data, manifest_curies, semantic_profile=None):
@@ -443,7 +443,7 @@ def test_backfill_max_redrafts_exhausted_returns_dedicated_outcome(tmp_path):
 
     runner_calls = []
 
-    def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None, semantic_profile_name=None):
+    def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None, semantic_profile_name=None, allow_non_manifest=False):
         runner_calls.append(curie)
         return 0, bad_yaml, ""
 
@@ -513,7 +513,8 @@ def test_backfill_accumulates_violations_across_redrafts(tmp_path):
 
     def fake_runner(curie, family, course_code, provider, model,
                     timeout=None, prior_violations=None,
-                    semantic_profile_name=None):
+                    semantic_profile_name=None,
+                    allow_non_manifest=False):
         # Capture every prior_violations payload threaded into the
         # subprocess so we can assert cumulative growth.
         runner_calls.append(tuple(prior_violations or []))

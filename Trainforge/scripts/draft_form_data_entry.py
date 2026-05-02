@@ -526,6 +526,21 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "validator. The profile's target_curie must match --curie."
         ),
     )
+    # Wave 137 followup: allow drafting a CURIE that isn't in the
+    # property manifest. Used by --discover-from-corpus runs through
+    # the backfill loop where the corpus surfaces vocabulary the
+    # manifest hasn't declared yet. Falls back to surface_forms=[curie],
+    # min_pairs=2 (lowest tier).
+    parser.add_argument(
+        "--allow-non-manifest",
+        action="store_true",
+        help=(
+            "Permit --curie values that aren't declared in the "
+            "property manifest. Synthesizes a default PropertyEntry "
+            "with surface_forms=[curie], min_pairs=2. Used by the "
+            "backfill loop's --discover-from-corpus path."
+        ),
+    )
     return parser
 
 
@@ -544,17 +559,35 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     declared_curies = [p.curie for p in manifest.properties]
     if args.curie not in declared_curies:
-        print(
-            f"ERROR: CURIE {args.curie!r} is not declared in the "
-            f"property manifest for course {args.course_code!r}. "
-            f"Manifest declares {len(declared_curies)} CURIEs; first "
-            f"5: {declared_curies[:5]}.",
-            file=sys.stderr,
+        if not args.allow_non_manifest:
+            print(
+                f"ERROR: CURIE {args.curie!r} is not declared in the "
+                f"property manifest for course {args.course_code!r}. "
+                f"Manifest declares {len(declared_curies)} CURIEs; first "
+                f"5: {declared_curies[:5]}. Pass --allow-non-manifest to "
+                f"draft against a synthetic property entry.",
+                file=sys.stderr,
+            )
+            return 2
+        # Wave 137 followup: --allow-non-manifest synthesizes a
+        # default PropertyEntry shape so corpus-discovered CURIEs
+        # outside the manifest can still flow through the drafting
+        # contract. Surface_forms defaults to [curie] (single-form);
+        # the operator widens them later if the discovered CURIE
+        # gets promoted into the manifest.
+        from lib.ontology.property_manifest import PropertyEntry as _PE
+        prefix, _, local = args.curie.partition(":")
+        entry = _PE(
+            id=f"{prefix}_{local.lower()}",
+            uri="",
+            curie=args.curie,
+            label=args.curie,
+            surface_forms=[args.curie],
+            min_pairs=2,
         )
-        return 2
-
-    # Step 2: pull the operator-authored entry.
-    entry = next(p for p in manifest.properties if p.curie == args.curie)
+    else:
+        # Step 2: pull the operator-authored entry.
+        entry = next(p for p in manifest.properties if p.curie == args.curie)
 
     # Step 3: complete-skip guard. Fail-soft (exit 0) so operators
     # running this in a tight loop don't get a non-zero exit on
