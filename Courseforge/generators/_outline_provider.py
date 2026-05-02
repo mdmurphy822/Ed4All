@@ -394,13 +394,98 @@ class OutlineProvider(_BaseLLMProvider):
             "OutlineProvider.generate_outline lands in Phase 3 Subtask 20"
         )
 
-    def _render_user_prompt(self, *args: Any, **kwargs: Any) -> str:
-        """Render the outline-tier user prompt.
+    def _render_user_prompt(
+        self,
+        *,
+        block: Block,
+        source_chunks: List[Dict[str, Any]],
+        objectives: List[Dict[str, Any]],
+    ) -> str:
+        """Render the outline-tier user prompt for ``block``.
 
-        Implementation lands in Subtask 17.
+        Sections (in order):
+
+        1. Header: ``Block ID: <id>; Type: <type>``.
+        2. Source chunks: id + body, body truncated at 1200 chars each
+           so a long chapter doesn't blow the model's context window.
+        3. Objectives: id + statement.
+        4. Target schema: built from ``_OUTLINE_KIND_BOUNDS[block_type]``
+           — informs the model of the structural bounds the JSON
+           schema (Subtask 19) hard-enforces.
+        5. Per-block-type variations:
+           - ``assessment_item``: stem + answer must reference the
+             listed objective_refs.
+           - ``prereq_set``: list ``prerequisitePages`` explicitly.
+        6. Explicit "RESPOND ONLY WITH A JSON OBJECT containing ..."
+           closing directive — mirrors the Wave-113 strict-JSON
+           hardening.
         """
-        raise NotImplementedError(
-            "OutlineProvider._render_user_prompt lands in Phase 3 Subtask 17"
+        block_type = block.block_type
+        bounds = _OUTLINE_KIND_BOUNDS.get(block_type, {})
+
+        # Truncate per-chunk body at 1200 chars; mirrors the
+        # ``_LOCAL_INSTRUCTION_SYSTEM_PROMPT`` chunk-window heuristic
+        # used in :mod:`Trainforge.generators._local_provider`.
+        chunk_lines: List[str] = []
+        for chunk in source_chunks or []:
+            cid = str(chunk.get("id") or chunk.get("chunk_id") or "")
+            body = str(chunk.get("body") or chunk.get("text") or "")
+            if len(body) > 1200:
+                body = body[:1197] + "..."
+            chunk_lines.append(f"  - [{cid}] {body}")
+        chunks_block = "\n".join(chunk_lines) if chunk_lines else "  (none)"
+
+        objective_lines: List[str] = []
+        for obj in objectives or []:
+            oid = str(obj.get("id") or obj.get("objective_id") or "")
+            stmt = str(obj.get("statement") or obj.get("text") or "")
+            objective_lines.append(f"  - {oid}: {stmt}")
+        objectives_block = (
+            "\n".join(objective_lines) if objective_lines else "  (none)"
+        )
+
+        bounds_lines: List[str] = []
+        for field_name, (lo, hi) in bounds.items():
+            bounds_lines.append(f"  - {field_name}: ({lo}, {hi})")
+        bounds_block = (
+            "\n".join(bounds_lines) if bounds_lines else "  (no per-type bounds)"
+        )
+
+        # Per-block-type variations — appended after the bounds block
+        # so the model sees the type-specific contract last (recency
+        # bias of the 7B-class default model).
+        variation_lines: List[str] = []
+        if block_type == "assessment_item":
+            variation_lines.append(
+                "Assessment item contract: the stem AND the answer "
+                "key must reference at least one of the listed "
+                "objective_refs verbatim."
+            )
+        elif block_type == "prereq_set":
+            variation_lines.append(
+                "Prereq set contract: list every prerequisite page "
+                "explicitly under a top-level ``prerequisitePages`` "
+                "array; each entry is a string page_id."
+            )
+        variation_block = "\n".join(variation_lines) if variation_lines else ""
+
+        return (
+            f"Block ID: {block.block_id}; Type: {block_type}\n"
+            f"Page ID: {block.page_id}\n\n"
+            "Source chunks (preserve every source_id verbatim in "
+            "source_refs):\n"
+            f"{chunks_block}\n\n"
+            "Objectives (preserve every objective id verbatim in "
+            "objective_refs):\n"
+            f"{objectives_block}\n\n"
+            "Target structural bounds (per-block-type):\n"
+            f"{bounds_block}\n\n"
+            f"{variation_block}\n\n"
+            "RESPOND ONLY WITH A JSON OBJECT containing: block_id, "
+            "block_type, content_type, bloom_level, objective_refs, "
+            "curies, key_claims, section_skeleton, source_refs, "
+            "structural_warnings. No preamble, no markdown, no "
+            "commentary."
         )
 
     def _build_grammar_payload(self, block_type: str) -> Dict[str, Any]:
