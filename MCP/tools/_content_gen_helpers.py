@@ -1584,6 +1584,7 @@ def build_week_data(
     all_objectives: List[Dict[str, Any]],
     course_code: str,
     content_provider: Optional[Any] = None,
+    content_router: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Assemble the ``week_data`` dict that
     :func:`Courseforge.scripts.generate_course.generate_week` consumes.

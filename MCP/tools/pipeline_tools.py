@@ -2859,6 +2859,43 @@ def _build_tool_registry() -> dict:
                     )
                     raise
 
+            # Phase 3 Subtask 61: when ``COURSEFORGE_TWO_PASS=true`` is
+            # set, instantiate a :class:`CourseforgeRouter` and pass it
+            # through to :func:`build_week_data` so the per-page emit
+            # dispatches via the two-pass outline → inter-tier validate
+            # → rewrite pipeline instead of the legacy single-pass
+            # ``ContentGeneratorProvider``. The router is fully additive
+            # — when the flag is off, ``content_router`` stays ``None``
+            # and the legacy ``content_provider`` path runs unchanged
+            # (preserves Phase 1 byte-stable behavior). Construction
+            # mirrors the ``content_provider`` block above: load the
+            # YAML policy + DecisionCapture once at the call site, fail
+            # loud on init exceptions so an operator's opt-in intent is
+            # surfaced rather than silently downgraded to legacy.
+            content_router = None
+            if _courseforge_two_pass_enabled():
+                try:
+                    from Courseforge.router.router import CourseforgeRouter
+                    from Courseforge.router.policy import (
+                        load_block_routing_policy,
+                    )
+                    content_router = CourseforgeRouter(
+                        capture=capture,
+                        policy=load_block_routing_policy(),
+                    )
+                    logger.info(
+                        "COURSEFORGE_TWO_PASS=true; routing "
+                        "content-generator through two-pass "
+                        "CourseforgeRouter (outline → validate → rewrite).",
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "CourseforgeRouter init failed under "
+                        "COURSEFORGE_TWO_PASS=true: %s",
+                        exc,
+                    )
+                    raise
+
             # ---------------------------------------------------------- #
             # Emit each week via generate_week.                           #
             # ---------------------------------------------------------- #
@@ -2921,6 +2958,7 @@ def _build_tool_registry() -> dict:
                     all_objectives=all_objectives,
                     course_code=course_code,
                     content_provider=content_provider,
+                    content_router=content_router,
                 )
 
                 try:
