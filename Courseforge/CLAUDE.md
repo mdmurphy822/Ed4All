@@ -540,6 +540,187 @@ single-pass `ContentGeneratorProvider`, no router instantiation
 happens, and the new `Block` fields stay at their defaults
 (`validation_attempts=0`, `escalation_marker=None`).
 
+### Phase 3.5: symmetric validation + remediation
+
+Phase 3.5 closes three gaps left open by Phase 3: (1) the rewrite tier
+emitted HTML with no validator gate downstream of it, so a rewrite that
+silently dropped a CURIE / `content_type` / `objective_ref` / `sourceId`
+sailed straight into packaging; (2) regen budgets defaulted to `3`,
+which proved too tight once self-consistency calibration ran on a real
+corpus; (3) `COURSEFORGE_TWO_PASS=true` runs would dispatch the
+legacy single-pass content-generator tool against the new phase names
+because the executor only resolved tools by agent name. Phase 3.5
+adds **symmetric post-rewrite validation**, **remediation-injection
+loops**, **bumped regen budgets**, and a **phase-name-aware tool
+dispatch shim**. None of these changes alter behavior when
+`COURSEFORGE_TWO_PASS` is unset.
+
+Cross-links:
+
+- `Courseforge/router/remediation.py` — canonical remediation module.
+  Builds a structured suffix from a failed `GateResult` and the
+  block's prior validation history; the suffix is appended to the
+  outline / rewrite prompt on the next regen iteration so the model
+  sees concrete failure signals instead of a blind retry. Wired into
+  both `route_with_self_consistency` (outline tier, Subtask 18) and
+  `route_rewrite_with_remediation` (rewrite tier, Subtask 19).
+- `Courseforge/router/inter_tier_gates.py` — shape-discriminating
+  Block adapters. Each of the four `Block*Validator` classes
+  (`BlockCurieAnchoringValidator`, `BlockContentTypeValidator`,
+  `BlockPageObjectivesValidator`, `BlockSourceRefValidator`)
+  dispatches on `isinstance(block.content, dict | str)`: the dict
+  path preserves the legacy outline-tier contract byte-stable, while
+  the str path strips HTML and validates rewrite-tier output via the
+  same gate chain. Single chain, two input shapes — symmetry is
+  carried by the validator, not the workflow definition.
+- `post_rewrite_validation` workflow phase (`config/workflows.yaml`,
+  both `course_generation` and `textbook_to_course` workflows).
+  Mirrors `inter_tier_validation` against the rewrite-tier
+  `blocks_final_path` so HTML-emit drift is caught before packaging.
+  Gates: `rewrite_curie_anchoring`, `rewrite_content_type`,
+  `rewrite_page_objectives`, `rewrite_source_refs`. Severity matches
+  the inter-tier seam (warning at the gate level; the router's
+  `route_rewrite_with_remediation` loop is what fails closed when
+  the rewrite-tier regen budget runs out).
+- `_TOUCH_TIERS` extended with `outline_val` + `rewrite_val`
+  (Subtask 14). Validator-tier Touches now stamp the `Block.touched_by`
+  chain at the validation seam, so the canonical post-Phase-3.5
+  Touch chain on a clean two-pass run is `outline → outline_val →
+  rewrite → rewrite_val`. JSON-LD + SHACL Touch.tier enums (Subtasks
+  15-16) carry the same enum values so downstream consumers (Trainforge
+  chunk extraction, training data export) can filter on tier without
+  string-matching against magic values.
+- Bumped regen budgets (Subtask 20):
+  `_DEFAULT_OUTLINE_REGEN_BUDGET = 10` (was `3`) and a new
+  `_DEFAULT_REWRITE_REGEN_BUDGET = 10`. The bump from `3` was driven
+  by self-consistency calibration on a real corpus; budget `3` was
+  the placeholder before any data existed. Override per-block-type
+  via `block_routing.yaml`'s new `regen_budget_rewrite` field
+  (Subtask 21) or globally via the new `COURSEFORGE_REWRITE_REGEN_BUDGET`
+  env var.
+- `route_rewrite_with_remediation` (Subtask 19) — rewrite-tier
+  analogue of `route_with_self_consistency`. Runs the post-rewrite
+  validator chain, and when a gate returns `action="regenerate"`,
+  injects the remediation suffix and re-rolls up to the rewrite-tier
+  budget. Once the budget is exhausted with no candidate passing,
+  the surviving best-effort candidate is stamped with
+  `escalation_marker="validator_consensus_fail"` (semantic mirror of
+  the outline-tier `validator_consensus_fail` from Worker H —
+  consensus failure at the rewrite seam reuses the same marker
+  rather than minting a new one, since the consumer-side handling
+  is identical).
+- `_PHASE_TOOL_MAPPING` dispatch shim in `MCP/core/executor.py`
+  (Subtask 31). The executor's `_dispatch_agent_task` now checks
+  `_PHASE_TOOL_MAPPING.get(phase_name)` BEFORE falling back to
+  `AGENT_TOOL_MAPPING.get(agent_type)`. Mapping:
+  `content_generation_outline → run_content_generation_outline`,
+  `inter_tier_validation → run_inter_tier_validation`,
+  `content_generation_rewrite → run_content_generation_rewrite`,
+  `post_rewrite_validation → run_post_rewrite_validation`. Closes
+  the Phase 3 review's HIGH-severity gap where
+  `COURSEFORGE_TWO_PASS=true` would otherwise run the legacy
+  single-pass `generate_course_content` tool against three
+  separately-named phases.
+- Three new tool handlers in `MCP/tools/pipeline_tools.py`:
+  `_run_content_generation_outline` (Subtask 28),
+  `_run_inter_tier_validation` (Subtask 29),
+  `_run_content_generation_rewrite` (Subtask 30). Each emits a
+  snake_case Block JSONL projection via `_block_to_snake_case_entry`
+  (the round-trip helper from `MCP/tools/pipeline_tools.py` —
+  Worker N1's silent-bug fix on Wave B; the JSONL must round-trip
+  through `Block(**snake_case_kwargs)` cleanly so the next phase's
+  handler can reload the block scaffolds without an aliased-attr
+  parse step). Decision-capture parity with the Wave-B
+  `_run_post_rewrite_validation` helper.
+- `route_all` self-consistency dispatch (Subtask 33). When
+  `n_candidates > 1` (resolved via the same priority chain as
+  every other policy field), `route_all` now dispatches each block
+  through `route_with_self_consistency` instead of calling
+  `route()` directly. Closes Worker H's flagged followup; backward
+  compatible because the fall-through `n_candidates == 1` path
+  still calls `route()`.
+- `block_validation_action` event extended with a `tier` field
+  (Subtask 17 + 26). Disambiguates the inter-tier validation seam
+  (`tier="outline"`) from the post-rewrite validation seam
+  (`tier="rewrite"`) for downstream training-capture consumers.
+
+Phase 3.5 follow-ups intentionally not closed in this batch:
+
+- `inter_tier_validation` and `post_rewrite_validation` declare
+  `agents: []` in `config/workflows.yaml` (Worker N1 flagged). The
+  `_PHASE_TOOL_MAPPING` shim makes this work — the executor synthesises
+  a single phase-scoped task and routes it through the phase-name
+  handler — but a future cleanup should mint a synthetic
+  `validator-only` agent type so the workflow YAML stays semantically
+  symmetric with the rest of the Phase 3 pipeline.
+
+When `COURSEFORGE_TWO_PASS=false` (default), none of the Phase 3.5
+additions fire either: the legacy `content_generation` phase runs the
+Phase 1 single-pass surface, the new tool handlers stay unloaded, the
+`_PHASE_TOOL_MAPPING` shim's keys never match any phase the workflow
+emits, and the bumped regen-budget defaults are never read.
+
+### Operator smoke runbook (post-Phase-3.5)
+
+The following sequence verifies the Phase 3.5 wiring end-to-end on a
+clean checkout. Run after `git pull`, before merging Phase 3.5 work
+to a downstream branch.
+
+```bash
+# 1. Set the master gate.
+export COURSEFORGE_TWO_PASS=true
+
+# 2. Run the textbook_to_course workflow with the new phase split.
+ed4all run textbook-to-course \
+  --corpus tests/fixtures/textbooks/demo_303.pdf \
+  --course-name DEMO_303
+
+# 3. Verify the canonical post-Phase-3.5 Touch chain on a sample block:
+#    outline → outline_val → rewrite → rewrite_val.
+jq -r '.[0].touched_by[].tier' \
+  Courseforge/exports/PROJ-DEMO_303-*/03_content_development/blocks_validated.json
+# Expected (sorted unique across all blocks): local, outline,
+# outline_val, rewrite, rewrite_val.
+
+# 4. Verify remediation injection fired at both seams. The
+#    block_validation_action events carry a tier field that
+#    disambiguates the inter-tier seam ("outline") from the
+#    post-rewrite seam ("rewrite").
+jq -r 'select(.decision_type=="block_validation_action") | .ml_features.tier' \
+  training-captures/courseforge/DEMO_303/phase_courseforge-content-generator-outline/*.jsonl
+# Expected: at least one "outline" tier event.
+jq -r 'select(.decision_type=="block_validation_action") | .ml_features.tier' \
+  training-captures/courseforge/DEMO_303/phase_courseforge-post-rewrite-validation/*.jsonl
+# Expected: at least one "rewrite" tier event.
+
+# 5. Verify validator-consensus failure stamps the rewrite tier when
+#    the rewrite-tier regen budget runs out (the symmetric counterpart
+#    of the outline-tier validator_consensus_fail marker).
+jq -r '.[] | select(.escalation_marker=="validator_consensus_fail")
+        | {block_id: .block_id, attempts: .validation_attempts}' \
+  Courseforge/exports/PROJ-DEMO_303-*/03_content_development/blocks_validated.json
+# Expected: any blocks listed here exhausted their tier budget.
+
+# 6. Verify the executor's _PHASE_TOOL_MAPPING dispatched the three
+#    new handlers instead of the legacy generate_course_content tool.
+grep -E "phase=(content_generation_outline|inter_tier_validation|content_generation_rewrite|post_rewrite_validation)" \
+  state/runs/*/workflow.log
+# Expected: four log entries per workflow run, one per phase, in
+# dependency order.
+
+# 7. Run the regression suite to confirm no drift.
+pytest Courseforge/router/tests/test_remediation.py \
+       Courseforge/router/tests/test_inter_tier_gates_shape_dispatch.py \
+       Courseforge/router/tests/test_remediation_injection.py \
+       Courseforge/router/tests/test_route_all_self_consistency.py \
+       MCP/tools/tests/test_pipeline_tools_phase3_handlers.py \
+       lib/tests/test_phase3_5_decision_event_tier_field.py -v
+```
+
+Cross-link: the canonical Phase 3.5 plan (`plans/phase3_5_post_rewrite_validation.md`)
+includes a parallel "Final smoke test" section keyed to subtask
+verification; the runbook above is its operator-facing companion.
+
 ---
 
 ## Template Components
