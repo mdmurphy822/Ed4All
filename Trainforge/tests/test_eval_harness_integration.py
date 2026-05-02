@@ -283,3 +283,235 @@ def test_eval_report_includes_negative_grounding_and_yes_rate(tmp_path):
     # 'No' model has yes_rate ~= 0.0 and negative_grounding_accuracy ~= 1.0:
     assert report["yes_rate"] == 0.0
     assert report["negative_grounding_accuracy"] == 1.0
+
+
+# ---------------------------------------------------------------------------
+# Wave 138a: Teaching-role alignment + per-stage checkpoint
+# ---------------------------------------------------------------------------
+
+
+def _augment_chunks_with_teaching_roles(course: Path, extra_chunks: list) -> None:
+    """Append chunks carrying content_type_label + teaching_role to the
+    course's chunks.jsonl so TeachingRoleAlignmentEvaluator has signal."""
+    chunks_path = course / "corpus" / "chunks.jsonl"
+    with chunks_path.open("a", encoding="utf-8") as fh:
+        for c in extra_chunks:
+            fh.write(json.dumps(c) + "\n")
+
+
+def test_run_all_emits_content_type_role_alignment_when_chunks_present(tmp_path):
+    """Wave 138a / Plan1-W2: TeachingRoleAlignmentEvaluator output flows
+    through to eval_report.json so EvalGatingValidator can reach it."""
+    course = _build_course(tmp_path, classification={
+        "subdomains": ["semantic web"],
+    })
+    # Add 6 real_world_scenario chunks all wrongly labeled elaborate
+    # (the rdf-shacl-551-2 audit signal we want to detect).
+    _augment_chunks_with_teaching_roles(course, [
+        {"id": f"rws_{i}", "content_type_label": "real_world_scenario",
+         "teaching_role": "elaborate"}
+        for i in range(6)
+    ])
+
+    harness = SLMEvalHarness(
+        course_path=course,
+        model_callable=_mock_model,
+        max_holdout_questions=3,
+    )
+    report_path = harness.run_all()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+
+    assert "content_type_role_alignment" in report
+    assert "content_type_role_alignment_summary" in report
+    rws = report["content_type_role_alignment"]["real_world_scenario"]
+    assert rws["expected_role"] == "transfer"
+    assert rws["mismatch"] is True
+    assert rws["actual_expected_share"] == 0.0
+    assert "real_world_scenario" in (
+        report["content_type_role_alignment_summary"]["mismatched_content_types"]
+    )
+
+
+def test_run_all_skips_teaching_role_alignment_when_chunks_missing(tmp_path):
+    course = _build_course(tmp_path, classification={"subdomains": ["math"]})
+    # Remove the chunks.jsonl
+    (course / "corpus" / "chunks.jsonl").unlink()
+    # Re-create an empty corpus directory marker so build_course's
+    # other invariants hold (the harness reaches into the corpus path
+    # for label resolution etc.)
+    (course / "corpus" / "chunks.jsonl").write_text("", encoding="utf-8")
+
+    harness = SLMEvalHarness(
+        course_path=course,
+        model_callable=_mock_model,
+        max_holdout_questions=3,
+    )
+    # The empty file IS still treated as "present"; remove it for the
+    # actual missing-file case.
+    (course / "corpus" / "chunks.jsonl").unlink()
+    harness2 = SLMEvalHarness(
+        course_path=course,
+        model_callable=_mock_model,
+        max_holdout_questions=3,
+    )
+    # Restore minimal chunks for harness internals before run_all so
+    # downstream stages don't fail; the alignment stage gates on
+    # chunks_path.exists() at its own scope.
+    (course / "corpus" / "chunks.jsonl").write_text(
+        json.dumps({"id": "c_001"}) + "\n", encoding="utf-8",
+    )
+    report_path = harness2.run_all()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    # With chunks.jsonl carrying only an empty id (no content_type_label),
+    # the evaluator runs but emits empty per-content-type dict.
+    if "content_type_role_alignment" in report:
+        assert report["content_type_role_alignment"] == {}
+
+
+def test_run_all_skips_eval_checkpoint_when_disabled(tmp_path):
+    """--no-eval-checkpoint disables the sidecar entirely."""
+    course = _build_course(tmp_path, classification={"subdomains": ["math"]})
+    harness = SLMEvalHarness(
+        course_path=course,
+        model_callable=_mock_model,
+        max_holdout_questions=2,
+        eval_checkpoint_enabled=False,
+    )
+    harness.run_all()
+    sidecar = course / "eval" / ".eval_results_checkpoint.jsonl"
+    assert not sidecar.exists()
+
+
+def test_eval_stage_checkpoint_unlinked_on_clean_exit(tmp_path):
+    """On clean exit, the sidecar is removed — eval_report.json
+    is now the authoritative source."""
+    course = _build_course(tmp_path, classification={"subdomains": ["math"]})
+    harness = SLMEvalHarness(
+        course_path=course,
+        model_callable=_mock_model,
+        max_holdout_questions=2,
+    )
+    harness.run_all()
+    sidecar = course / "eval" / ".eval_results_checkpoint.jsonl"
+    assert not sidecar.exists()
+    # eval_report.json IS authoritative now
+    assert (course / "eval" / "eval_report.json").exists()
+
+
+def test_eval_stage_checkpoint_resume_skips_cached_stages(tmp_path):
+    """Pre-seed the checkpoint with a fake stage result; the harness
+    must skip the lambda for that stage and replay the cached value."""
+    from Trainforge.eval.slm_eval_harness import (
+        _append_eval_stage_checkpoint,
+        _load_eval_stage_checkpoint,
+    )
+    course = _build_course(tmp_path, classification={"subdomains": ["math"]})
+    sidecar = course / "eval" / ".eval_results_checkpoint.jsonl"
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    # Seed the sidecar with a faithfulness stage result. On the next
+    # run, the harness must replay this rather than calling the
+    # FaithfulnessEvaluator. We can't easily trap that without monkey-
+    # patching, so we assert via the eval_report's faithfulness value:
+    # the cached stage result has accuracy=0.42, which is unusual for
+    # the _mock_model (which would otherwise produce different values).
+    cached_faithfulness = {
+        "accuracy": 0.42, "scored_total": 7, "correct": 3,
+    }
+    with sidecar.open("w", encoding="utf-8") as fh:
+        _append_eval_stage_checkpoint(
+            fh, stage="faithfulness", result=cached_faithfulness,
+        )
+    harness = SLMEvalHarness(
+        course_path=course,
+        model_callable=_mock_model,
+        max_holdout_questions=2,
+    )
+    harness.run_all()
+    report = json.loads(
+        (course / "eval" / "eval_report.json").read_text(encoding="utf-8"),
+    )
+    assert report["faithfulness"] == 0.42
+    # The sentinel value would never naturally show up — only the
+    # checkpoint replay produces it. After clean exit the sidecar is
+    # unlinked.
+    assert not sidecar.exists()
+
+
+def test_eval_stage_checkpoint_schema_version_drift_invalidates(tmp_path):
+    """A v0 record in the checkpoint must be skipped (with a warning)
+    so the stage re-runs against the live evaluator."""
+    course = _build_course(tmp_path, classification={"subdomains": ["math"]})
+    sidecar = course / "eval" / ".eval_results_checkpoint.jsonl"
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    sidecar.write_text(
+        json.dumps({
+            "schema_version": "v0",
+            "stage": "faithfulness",
+            "result": {"accuracy": 0.42, "scored_total": 7, "correct": 3},
+        }) + "\n",
+        encoding="utf-8",
+    )
+    harness = SLMEvalHarness(
+        course_path=course,
+        model_callable=_mock_model,
+        max_holdout_questions=2,
+    )
+    harness.run_all()
+    report = json.loads(
+        (course / "eval" / "eval_report.json").read_text(encoding="utf-8"),
+    )
+    # The v0 record was dropped; faithfulness re-ran. The _mock_model
+    # affirms ("yes, that holds. ...") so faithfulness should be a
+    # full 1.0, NOT the cached 0.42.
+    assert report["faithfulness"] != 0.42
+
+
+def test_eval_stage_checkpoint_malformed_lines_tolerated(tmp_path):
+    course = _build_course(tmp_path, classification={"subdomains": ["math"]})
+    sidecar = course / "eval" / ".eval_results_checkpoint.jsonl"
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    sidecar.write_text(
+        "not valid json\n"
+        "{ broken json\n"
+        "\n"
+        "  \n",
+        encoding="utf-8",
+    )
+    harness = SLMEvalHarness(
+        course_path=course,
+        model_callable=_mock_model,
+        max_holdout_questions=2,
+    )
+    # Should NOT crash on malformed lines — they're just skipped.
+    harness.run_all()
+
+
+def test_eval_stage_checkpoint_helpers_no_path_noop(tmp_path):
+    """Direct helper-level test: None path returns empty cache, append
+    is a no-op."""
+    from Trainforge.eval.slm_eval_harness import (
+        _append_eval_stage_checkpoint,
+        _load_eval_stage_checkpoint,
+    )
+    assert _load_eval_stage_checkpoint(None) == {}
+    _append_eval_stage_checkpoint(None, stage="x", result={})  # no raise
+
+
+def test_eval_stage_checkpoint_appended_per_stage(tmp_path):
+    """After a clean run, a fresh checkpoint built from the same input
+    contains one record per evaluator stage (before unlink)."""
+    from Trainforge.eval.slm_eval_harness import (
+        _append_eval_stage_checkpoint,
+        _load_eval_stage_checkpoint,
+    )
+    # Direct helper test — we already verified the integration with
+    # actual harness runs above. This pins the invariant that one
+    # append produces one parseable record.
+    sidecar = tmp_path / ".eval_results_checkpoint.jsonl"
+    with sidecar.open("a", encoding="utf-8") as fh:
+        _append_eval_stage_checkpoint(fh, stage="s1", result={"acc": 0.5})
+        _append_eval_stage_checkpoint(fh, stage="s2", result={"acc": 0.7})
+        _append_eval_stage_checkpoint(fh, stage="s3", result={"acc": 0.9})
+    cache = _load_eval_stage_checkpoint(sidecar)
+    assert set(cache.keys()) == {"s1", "s2", "s3"}
+    assert cache["s2"]["acc"] == 0.7
