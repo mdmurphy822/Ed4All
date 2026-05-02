@@ -279,6 +279,31 @@ class HTMLContentParser:
         # Extract sections (with data-cf-* attribute support)
         sections = self._extract_sections(html_content)
 
+        # Phase 2 Subtask 30: prefer JSON-LD ``blocks[]`` when present.
+        # The Courseforge emitter (gated behind ``COURSEFORGE_EMIT_BLOCKS=true``)
+        # publishes a Phase-2 canonical ``blocks[]`` projection of the
+        # page's renderer output. When present, project section-typed
+        # blocks into ``ContentSection`` entries that complement the
+        # legacy regex DOM walk:
+        #
+        #   - blocks[] wins for metadata fields it carries directly
+        #     (content_type / key_terms / template_type).
+        #   - The DOM walk wins for structural fields the JSON-LD
+        #     doesn't carry (heading text, prose body, level,
+        #     components).
+        #
+        # When ``blocks[]`` is absent (legacy Courseforge corpora,
+        # COURSEFORGE_EMIT_BLOCKS=false, or non-Courseforge IMSCC), the
+        # block-derived list is empty and ``sections`` keeps the
+        # legacy DOM-walk contents unchanged. This preserves the
+        # regression contract: Courseforge corpora emit byte-stable
+        # under the default flag, and non-Courseforge IMSCC takes the
+        # fallback path.
+        if json_ld is not None:
+            block_entries = self._extract_blocks_from_jsonld(json_ld)
+            if block_entries:
+                sections.extend(self._content_sections_from_blocks(block_entries))
+
         # Extract learning objectives (JSON-LD > data-attr > regex)
         objectives = self._extract_objectives(html_content, json_ld)
 
@@ -454,6 +479,119 @@ class HTMLContentParser:
             except (json_mod.JSONDecodeError, ValueError):
                 continue
         return None
+
+    # Phase 2 (Subtask 30): the subset of canonical Phase-2 ``block_type``
+    # values that map onto a ``ContentSection`` heading on the consumer
+    # side. The Block dataclass at ``Courseforge/scripts/blocks.py``
+    # constrains ``block_type`` to a 16-value enum; the values below are
+    # the ones the existing legacy ``_extract_sections`` regex DOM walk
+    # also produces sections for. ``content_type_label`` on the Block
+    # carries the finer-grained classification (Worker F's 8-value
+    # ``SectionContentType`` enum: ``definition`` / ``example`` /
+    # ``procedure`` / ``comparison`` / ``exercise`` / ``overview`` /
+    # ``summary`` / ``explanation``) and is what the Trainforge consumer
+    # ultimately reads as ``ContentSection.content_type``.
+    _SECTION_BLOCK_TYPES: frozenset = frozenset({
+        "explanation",
+        "example",
+        "procedure",
+        "comparison",
+        "definition",
+        "overview",
+        "summary",
+        "exercise",
+    })
+
+    def _extract_blocks_from_jsonld(
+        self, json_ld: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        """Phase 2 Subtask 30: surface JSON-LD ``blocks[]`` for direct
+        consumption.
+
+        When ``json_ld`` carries a ``blocks`` list (Courseforge emit
+        gated behind ``COURSEFORGE_EMIT_BLOCKS=true``), return the list
+        directly so callers can map each entry to a ``ContentSection``
+        / ``LearningObjective`` without re-walking the DOM. When the
+        field is absent (legacy emit, non-Courseforge IMSCC, or
+        ``COURSEFORGE_EMIT_BLOCKS=false``), return an empty list and
+        the caller falls through to the existing regex DOM walk.
+
+        Wire-key contract (mirrored from Courseforge/scripts/blocks.py
+        ``Block.to_jsonld_entry`` and ``schemas/knowledge/courseforge_jsonld_v1.schema.json::$defs/Block``):
+
+          - ``blockId`` — stable position-based ID.
+          - ``blockType`` — one of the 16 canonical Phase-2 block types.
+          - ``sequence`` — 0/1-indexed position within the page.
+          - ``contentTypeLabel`` — finer-grained content classification
+            (subset of Worker F's ``SectionContentType`` enum).
+          - ``keyTerms`` — slugified key terms attached to the block.
+          - ``templateType`` — Courseforge template variant name.
+
+        The shape is camelCase on the wire (JSON-LD convention) and
+        the consumer translates to snake_case on the
+        ``ContentSection`` / ``LearningObjective`` dataclasses.
+        """
+        if not isinstance(json_ld, dict):
+            return []
+        blocks = json_ld.get("blocks")
+        if not isinstance(blocks, list):
+            return []
+        # Filter to dict entries — defensive against malformed payloads
+        # that slip past schema validation (e.g. legacy corpora that
+        # predate the Wave 67 schema tightening).
+        return [b for b in blocks if isinstance(b, dict)]
+
+    def _content_sections_from_blocks(
+        self, blocks: List[Dict[str, Any]]
+    ) -> List[ContentSection]:
+        """Phase 2 Subtask 30: build ``ContentSection`` entries from
+        Phase-2 ``blocks[]`` JSON-LD entries.
+
+        Only emits a ``ContentSection`` for blocks whose ``blockType``
+        is in :pyattr:`_SECTION_BLOCK_TYPES`. The returned sections
+        carry ``content_type`` from ``contentTypeLabel`` (falling back
+        to ``blockType`` when the finer-grained label is absent),
+        ``key_terms`` from ``keyTerms``, and ``template_type`` from
+        ``templateType``. The remaining ``ContentSection`` fields
+        (``heading`` / ``level`` / ``content`` / ``word_count`` /
+        ``components`` / ``teaching_role`` / ``objective_refs`` /
+        ``source_references``) stay empty here — the legacy regex DOM
+        walk in :pymeth:`_extract_sections` populates them by walking
+        the rendered HTML.
+
+        The caller (``parse``) merges these block-derived sections
+        with the DOM-walk sections so the two surfaces complement each
+        other: blocks[] wins for the metadata fields it carries
+        (``content_type`` / ``key_terms`` / ``template_type``), the
+        DOM walk wins for the structural fields the JSON-LD doesn't
+        carry (heading text, prose body, level, components).
+        """
+        sections: List[ContentSection] = []
+        for block in blocks:
+            block_type = block.get("blockType")
+            if block_type not in self._SECTION_BLOCK_TYPES:
+                continue
+            content_type = block.get("contentTypeLabel") or block_type
+            raw_key_terms = block.get("keyTerms") or []
+            key_terms: List[str] = [
+                kt for kt in raw_key_terms if isinstance(kt, str) and kt
+            ]
+            template_type = block.get("templateType")
+            if not isinstance(template_type, str) or not template_type:
+                template_type = None
+            sections.append(
+                ContentSection(
+                    heading="",
+                    level=0,
+                    content="",
+                    word_count=0,
+                    components=[],
+                    content_type=content_type,
+                    key_terms=key_terms,
+                    template_type=template_type,
+                )
+            )
+        return sections
 
     def _extract_misconceptions_from_attrs(
         self,
