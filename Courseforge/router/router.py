@@ -865,21 +865,40 @@ class CourseforgeRouter:
         Returns the full list with input ordering preserved. Each block
         is routed through:
 
-        1. **Outline tier** — :meth:`route` with ``tier="outline"`` per
-           block. Single-candidate path for Wave N (the
-           self-consistency loop is layered on top by Subtask 37 in
-           Wave N+1). On dispatch failure the block is marked
-           ``content="failed"``-style by capturing the exception and
-           setting ``escalation_marker="outline_budget_exhausted"``;
+        1. **Outline tier** — when an explicit per-block n_candidates
+           value resolves to > 1 (via per-block-type policy entry,
+           ``COURSEFORGE_OUTLINE_N_CANDIDATES`` env var, or
+           constructor-time instance attribute), the block is dispatched
+           via :meth:`route_with_self_consistency` so the per-block
+           sampling loop + validator-driven regen budget runs. When no
+           explicit override is present, the block falls through to the
+           single-candidate :meth:`route` path with ``tier="outline"``
+           (preserves the legacy direct-dispatch behavior the integration
+           regression suite pins). On dispatch failure the block is
+           marked ``content="failed"``-style by capturing the exception
+           and setting ``escalation_marker="outline_budget_exhausted"``;
            the failed block is included in the returned list but is
            NOT dispatched to the rewrite tier.
-        2. **Inter-tier validation** — Wave N stub. The Wave N+1
-           Subtasks 36/38 land the validator chain that decides whether
-           a block proceeds to rewrite or is flagged failed. For
-           Wave N every successful outline-tier emit proceeds to
-           rewrite.
+        2. **Inter-tier validation** — currently inline at the
+           ``route_with_self_consistency`` layer (Phase-3.5 Subtask 17
+           wires validator-tier Touch emission into
+           :meth:`_run_validator_chain`). The standalone
+           ``inter_tier_validation`` workflow phase runs the
+           Block-input validator chain across the full set of outlined
+           blocks; ``route_all`` here returns the post-outline /
+           post-rewrite Block list to the workflow phase that owns the
+           inter-tier seam.
         3. **Rewrite tier** — :meth:`route` with ``tier="rewrite"``
-           per surviving block. Failed-outline blocks skip this stage.
+           per surviving block (asymmetric default: the rewrite tier
+           does NOT auto-route through
+           :meth:`route_rewrite_with_remediation` even when an explicit
+           per-block n_candidates > 1 is set, because rewrite-tier
+           multi-sampling is rarely the right call — ``assessment_item``
+           pinned to Anthropic at temperature 0 is deterministic enough
+           that re-rolling adds latency without measurable
+           pass-rate gain). Operators that want rewrite-tier
+           remediation must call :meth:`route_rewrite_with_remediation`
+           explicitly. Failed-outline blocks skip this stage.
 
         ``source_chunks_by_block_id`` is an optional dict keyed by
         ``block.block_id`` carrying that block's pre-resolved source
@@ -887,12 +906,21 @@ class CourseforgeRouter:
         list (the providers will note the absence in their prompts via
         ``_format_source_chunks(...)``).
 
-        Wave-N constraints (per Worker 3D scope):
-        - No self-consistency loop (single outline candidate per block).
-        - No inter-tier validator chain (every successful outline
-          dispatches straight to rewrite).
-        - No regen budget tracking on the router level (the providers
-          enforce their own parse-retry budgets internally).
+        Phase 3.5 Subtask 33 contract:
+        - Outline pass dispatches via
+          :meth:`route_with_self_consistency` when an EXPLICIT
+          n_candidates > 1 resolves for the block (via
+          :meth:`_resolve_explicit_n_candidates`). The hardcoded default
+          ``_DEFAULT_OUTLINE_N_CANDIDATES = 3`` is intentionally NOT
+          treated as "explicit" here — the absence of an opt-in
+          per-block-type policy entry / env var / instance attribute
+          means the legacy direct-dispatch behaviour wins, preserving
+          byte-stability with every existing :meth:`route_all` caller
+          (including the integration regression suite at
+          ``tests/integration/test_courseforge_two_pass_end_to_end.py``).
+        - Rewrite pass stays on the direct :meth:`route` call regardless
+          of n_candidates resolution (asymmetric default — see contract
+          note in the rewrite-tier section above).
         - Failed-outline blocks return early with an
           ``outline_budget_exhausted`` marker and skip the rewrite
           stage; the caller sees them in the returned list at their
@@ -906,13 +934,32 @@ class CourseforgeRouter:
         outline_results: List[Tuple[int, Block, bool]] = []
         for idx, block in enumerate(blocks):
             block_chunks = chunks_lookup.get(block.block_id, [])
+            # Phase 3.5 Subtask 33: opt-in self-consistency dispatch.
+            # ``_resolve_explicit_n_candidates`` returns the explicit
+            # value when ANY of (policy / env var / instance attr)
+            # supplies a positive int; ``None`` when no explicit
+            # override exists. We deliberately do NOT consult
+            # ``_DEFAULT_OUTLINE_N_CANDIDATES`` here — the default
+            # exists to size the loop INSIDE
+            # ``route_with_self_consistency`` once the caller has
+            # already opted in, not to flip every legacy
+            # ``route_all`` caller into the multi-candidate path.
+            explicit_n = self._resolve_explicit_n_candidates(block)
             try:
-                outlined = self.route(
-                    block,
-                    tier="outline",
-                    source_chunks=block_chunks,
-                    objectives=objectives_list,
-                )
+                if explicit_n is not None and explicit_n > 1:
+                    outlined = self.route_with_self_consistency(
+                        block,
+                        n_candidates=explicit_n,
+                        source_chunks=block_chunks,
+                        objectives=objectives_list,
+                    )
+                else:
+                    outlined = self.route(
+                        block,
+                        tier="outline",
+                        source_chunks=block_chunks,
+                        objectives=objectives_list,
+                    )
                 # When the outline tier short-circuited via
                 # ``escalate_immediately``, ``outlined.escalation_marker``
                 # is non-None — that's the signal the rewrite-tier
@@ -1689,6 +1736,60 @@ class CourseforgeRouter:
 
         # 5. Hardcoded default.
         return _DEFAULT_OUTLINE_N_CANDIDATES
+
+    def _resolve_explicit_n_candidates(self, block: Block) -> Optional[int]:
+        """Return the per-block n_candidates value ONLY if explicitly set.
+
+        Phase 3.5 Subtask 33 helper. Mirrors :meth:`_resolve_n_candidates`'s
+        precedence chain but stops at layer 4 — the hardcoded default
+        :data:`_DEFAULT_OUTLINE_N_CANDIDATES` is intentionally NOT
+        consulted, so the helper returns ``None`` when no operator has
+        opted into multi-candidate sampling for this block. The caller
+        (``route_all``) uses ``None`` as the signal to fall through to
+        the legacy single-candidate :meth:`route` dispatch path,
+        preserving byte-stability with every existing caller that
+        doesn't set up a policy / env var / instance attribute (e.g.
+        the integration regression suite).
+
+        Precedence (highest first; mirrors :meth:`_resolve_n_candidates`):
+
+        1. ``self._policy.n_candidates_by_block_type[block.block_type]``
+           (explicit per-block-type policy entry).
+        2. ``COURSEFORGE_OUTLINE_N_CANDIDATES`` env var (parsed as int;
+           silently falls through on parse failure).
+        3. ``self._n_candidates_override`` (constructor-time instance
+           attribute set via ``CourseforgeRouter(n_candidates=...)``).
+        4. ``None`` — no explicit opt-in present.
+        """
+        # 1. Policy fast-lookup map.
+        policy = self._policy
+        if policy is not None:
+            policy_map = getattr(policy, "n_candidates_by_block_type", None)
+            if isinstance(policy_map, dict):
+                policy_n = policy_map.get(block.block_type)
+                if isinstance(policy_n, int) and policy_n > 0:
+                    return policy_n
+
+        # 2. Env var.
+        env_value = os.environ.get(_ENV_OUTLINE_N_CANDIDATES)
+        if env_value:
+            try:
+                env_n = int(env_value.strip())
+                if env_n > 0:
+                    return env_n
+            except (TypeError, ValueError):
+                # Parse failure falls through.
+                pass
+
+        # 3. Constructor-time instance attribute.
+        if (
+            isinstance(self._n_candidates_override, int)
+            and self._n_candidates_override > 0
+        ):
+            return self._n_candidates_override
+
+        # 4. No explicit opt-in.
+        return None
 
     def _resolve_regen_budget(
         self, block: Block, override: Optional[int]
