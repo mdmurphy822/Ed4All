@@ -1966,6 +1966,320 @@ def _courseforge_two_pass_enabled() -> bool:
     )
 
 
+# ---------------------------------------------------------------------------
+# Phase 3.5 Subtask 13: post_rewrite_validation phase helper
+# ---------------------------------------------------------------------------
+
+
+async def _run_post_rewrite_validation(**kwargs) -> str:
+    """Run the four shape-discriminating Block-input validators against
+    rewrite-tier blocks loaded from ``blocks_final_path``.
+
+    Phase 3.5 Subtask 13. Mirrors the shape-discriminator wiring that
+    ``inter_tier_validation`` does on outline-tier blocks, but consumes
+    the rewrite-tier ``blocks_final_path`` (which the rewrite tier emits
+    after producing the final HTML body) so a rewrite-tier emit that
+    drops a CURIE / content_type / objective_ref / source_id silently
+    is caught before packaging consumes it.
+
+    Inputs (kwargs):
+        blocks_final_path: Path to the rewrite-tier blocks JSONL/JSON
+            sidecar. Each entry is a dict carrying at minimum
+            ``{block_id, block_type, page_id, sequence, content,
+            objective_ids, source_ids, ...}``. Entries are deserialised
+            via :class:`Courseforge.scripts.blocks.Block` field
+            assignment; unknown / extra fields are tolerated by dropping
+            them (mirrors the to_jsonld_entry() emit shape).
+        project_id: Course project slug (used to locate the
+            decision-capture sidecar + the synthesized_objectives.json
+            that BlockPageObjectivesValidator consumes).
+
+    Outputs (JSON envelope):
+        blocks_validated_path: Path to a JSONL file carrying the
+            rewrite-tier blocks that passed every gate (subset of input).
+        blocks_failed_path: Path to a JSONL file carrying the
+            rewrite-tier blocks that tripped at least one gate.
+        gate_results: List of per-gate ``GateResult.to_dict()`` payloads
+            so a downstream consumer (or operator) can introspect the
+            failure distribution without re-running the validators.
+
+    Decision-capture: emits one ``block_validation_action`` decision
+    per failed validator with ``ml_features.tier="rewrite"`` so a
+    postmortem reader can stratify outline-tier failures (which trigger
+    regen / escalate / block in route_with_self_consistency) from
+    rewrite-tier failures (which surface here, post-emit).
+
+    Wave B scope: this helper is the standalone callable. The
+    ``_PHASE_TOOL_MAPPING`` wiring that lets the executor dispatch
+    on phase-name lands in Wave C; until that wave the helper is
+    invoked directly by integration tests / operators.
+    """
+    from pathlib import Path as _Path
+
+    blocks_final_path_raw = kwargs.get("blocks_final_path") or ""
+    project_id = kwargs.get("project_id") or ""
+
+    if not blocks_final_path_raw:
+        return json.dumps({
+            "success": False,
+            "error": "blocks_final_path is required",
+        })
+
+    blocks_path = _Path(blocks_final_path_raw)
+    if not blocks_path.exists():
+        return json.dumps({
+            "success": False,
+            "error": f"blocks_final_path does not exist: {blocks_path}",
+        })
+
+    # Lazy-import the Block dataclass + validators so this helper can
+    # land without forcing every callsite to import the router surface.
+    from Courseforge.scripts.blocks import Block, Touch  # type: ignore[import-not-found]
+    from Courseforge.router.inter_tier_gates import (
+        BlockContentTypeValidator,
+        BlockCurieAnchoringValidator,
+        BlockPageObjectivesValidator,
+        BlockSourceRefValidator,
+    )
+
+    # Deserialise blocks. Accept JSONL (one block per line) and JSON
+    # (top-level list, or top-level object with a ``blocks`` key).
+    raw_text = blocks_path.read_text(encoding="utf-8")
+    raw_entries: list = []
+    try:
+        if blocks_path.suffix == ".jsonl":
+            for line in raw_text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                raw_entries.append(json.loads(line))
+        else:
+            parsed = json.loads(raw_text)
+            if isinstance(parsed, list):
+                raw_entries = parsed
+            elif isinstance(parsed, dict):
+                raw_entries = parsed.get("blocks", []) or []
+    except json.JSONDecodeError as exc:
+        return json.dumps({
+            "success": False,
+            "error": f"failed to parse {blocks_path}: {exc}",
+        })
+
+    def _entry_to_block(entry: dict) -> Optional["Block"]:  # type: ignore[name-defined]
+        """Project a JSON entry onto a frozen Block, dropping unknown keys.
+
+        The blocks_final_path emit shape is the canonical
+        :func:`Block.to_jsonld_entry` output PLUS the structural
+        fields the rewrite tier persists for re-execution. We only
+        consume the fields :class:`Block` accepts; everything else
+        is dropped.
+        """
+        accepted = {
+            "block_id", "block_type", "page_id", "sequence", "content",
+            "template_type", "key_terms", "objective_ids",
+            "bloom_level", "bloom_verb", "bloom_range",
+            "bloom_levels", "bloom_verbs", "cognitive_domain",
+            "teaching_role", "content_type_label", "purpose",
+            "component", "source_ids", "source_primary",
+            "source_references", "content_hash",
+            "validation_attempts", "escalation_marker",
+        }
+        kwargs_clean: dict = {}
+        for k, v in (entry or {}).items():
+            if k not in accepted:
+                continue
+            # Tuple-typed fields take tuple input; lists from JSON are
+            # acceptable to dataclasses.replace via Block.__init__ but
+            # the frozen dataclass coerces nothing — pass tuples.
+            if k in {
+                "key_terms", "objective_ids", "bloom_levels",
+                "bloom_verbs", "source_ids", "source_references",
+            }:
+                if isinstance(v, list):
+                    v = tuple(v) if k != "source_references" else tuple(
+                        dict(r) if isinstance(r, dict) else r for r in v
+                    )
+            kwargs_clean[k] = v
+        # Required fields with sensible defaults when absent.
+        if "block_id" not in kwargs_clean or "block_type" not in kwargs_clean:
+            return None
+        kwargs_clean.setdefault("page_id", kwargs_clean.get("block_id", ""))
+        kwargs_clean.setdefault("sequence", 0)
+        kwargs_clean.setdefault("content", "")
+        try:
+            return Block(**kwargs_clean)
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "post_rewrite_validation: skipping malformed block entry "
+                "block_id=%r: %s",
+                entry.get("block_id"),
+                exc,
+            )
+            return None
+
+    blocks: list = []
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            continue
+        blk = _entry_to_block(entry)
+        if blk is not None:
+            blocks.append(blk)
+
+    if not blocks:
+        return json.dumps({
+            "success": False,
+            "error": (
+                f"no blocks parseable from {blocks_path}; expected JSON-LD "
+                f"shape with at least one Block-shaped entry"
+            ),
+        })
+
+    # Resolve the canonical objectives JSON for BlockPageObjectivesValidator.
+    objectives_path: Optional[_Path] = None
+    if project_id:
+        candidate = (
+            PROJECT_ROOT
+            / "Courseforge"
+            / "exports"
+            / project_id
+            / "01_learning_objectives"
+            / "synthesized_objectives.json"
+        )
+        if candidate.exists():
+            objectives_path = candidate
+
+    # Instantiate the validators + run each one. We pass tier="rewrite"
+    # to the decision capture (Subtask 26's ml_features.tier field) so
+    # postmortem readers can stratify outline-tier vs rewrite-tier
+    # failures.
+    validators = [
+        ("rewrite_curie_anchoring", BlockCurieAnchoringValidator()),
+        ("rewrite_content_type", BlockContentTypeValidator()),
+        ("rewrite_page_objectives", BlockPageObjectivesValidator()),
+        ("rewrite_source_refs", BlockSourceRefValidator()),
+    ]
+
+    inputs: dict = {"blocks": blocks}
+    if objectives_path is not None:
+        inputs["objectives_path"] = str(objectives_path)
+
+    gate_results: list = []
+    failing_gate_ids: set = set()
+    for gate_id, validator in validators:
+        try:
+            result = validator.validate({**inputs, "gate_id": gate_id})
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "post_rewrite_validation: validator %s raised: %s",
+                gate_id, exc,
+            )
+            continue
+        try:
+            result_dict = result.to_dict()
+        except Exception:  # pragma: no cover — defensive
+            result_dict = {
+                "gate_id": gate_id,
+                "passed": getattr(result, "passed", False),
+                "issues": [],
+            }
+        gate_results.append(result_dict)
+        if not result.passed:
+            failing_gate_ids.add(gate_id)
+
+    # Decision-capture: emit per-failure ``block_validation_action`` events
+    # so postmortem readers see the rewrite-tier failure chain. We
+    # reuse the project_id-derived course code for the capture sidecar
+    # and surface ``ml_features.tier="rewrite"`` per Subtask 26.
+    if failing_gate_ids:
+        try:
+            from lib.decision_capture import DecisionCapture
+            capture = DecisionCapture(
+                course_code=project_id or "post_rewrite_validation",
+                phase="post_rewrite_validation",
+                tool="courseforge",
+                streaming=True,
+            )
+            for result_dict in gate_results:
+                if result_dict.get("passed"):
+                    continue
+                gate_id = result_dict.get("gate_id", "unknown_gate")
+                issues = result_dict.get("issues", []) or []
+                top_issues = issues[:3]
+                summary = "; ".join(
+                    f"{i.get('code','?')}({i.get('severity','?')}):"
+                    f"{i.get('message','')}"
+                    for i in top_issues
+                ) or "no_issues"
+                capture.log_decision(
+                    decision_type="block_validation_action",
+                    decision=(
+                        f"post_rewrite_validation:{gate_id}:"
+                        f"{result_dict.get('passed')}"
+                    ),
+                    rationale=(
+                        f"Post-rewrite gate {gate_id} returned "
+                        f"passed={result_dict.get('passed')} on "
+                        f"{len(blocks)} rewrite-tier blocks; "
+                        f"top_issues=[{summary}]"
+                    ),
+                    ml_features={
+                        "gate_id": gate_id,
+                        "passed": result_dict.get("passed"),
+                        "issues_count": len(issues),
+                        "block_count": len(blocks),
+                        # Subtask 26: tier provenance — rewrite-tier
+                        # post-emit validator failure (vs outline-tier
+                        # in-loop failures).
+                        "tier": "rewrite",
+                    },
+                )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "post_rewrite_validation: decision-capture emit failed: %s",
+                exc,
+            )
+
+    # Persist blocks_validated_path + blocks_failed_path siblings to
+    # blocks_final_path. The validated path carries the input list
+    # untouched (validators are read-only); the failed path carries
+    # block IDs + the gate they tripped so downstream consumers (and
+    # the audit trail) can correlate without re-running the validators.
+    out_dir = blocks_path.parent
+    validated_path = out_dir / "blocks_validated.jsonl"
+    failed_path = out_dir / "blocks_failed.jsonl"
+
+    failed_block_ids: set = set()
+    for result_dict in gate_results:
+        if result_dict.get("passed"):
+            continue
+        for issue in result_dict.get("issues", []) or []:
+            loc = issue.get("location") if isinstance(issue, dict) else None
+            if isinstance(loc, str) and loc:
+                failed_block_ids.add(loc)
+
+    with validated_path.open("w", encoding="utf-8") as fh:
+        for blk in blocks:
+            if blk.block_id in failed_block_ids:
+                continue
+            fh.write(json.dumps(blk.to_jsonld_entry(), ensure_ascii=False))
+            fh.write("\n")
+    with failed_path.open("w", encoding="utf-8") as fh:
+        for blk in blocks:
+            if blk.block_id not in failed_block_ids:
+                continue
+            fh.write(json.dumps(blk.to_jsonld_entry(), ensure_ascii=False))
+            fh.write("\n")
+
+    return json.dumps({
+        "success": True,
+        "blocks_validated_path": str(validated_path),
+        "blocks_failed_path": str(failed_path),
+        "gate_results": gate_results,
+        "block_count": len(blocks),
+        "failed_block_count": len(failed_block_ids),
+    })
+
+
 def _build_tool_registry() -> dict:
     """
     Build a tool registry mapping tool names to callable async functions.
