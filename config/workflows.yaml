@@ -842,9 +842,13 @@ workflows:
           - weeks_prepared
 
       - name: inter_tier_validation
-        # No agent — runs Python validators only. The phase loop
-        # detects ``agents: []`` + zero ``inputs_from`` LLM workers and
-        # short-circuits to the validator chain.
+        # No agent — runs Python validators only. Phase 4 Subtask 1:
+        # the workflow runner synthesizes a single virtual task for
+        # ``agents: []`` phases registered in
+        # ``MCP.core.executor._PHASE_TOOL_MAPPING`` so the dedicated
+        # phase handler (``run_inter_tier_validation``) lands its
+        # blocks-validated / blocks-failed JSONL output to disk in
+        # addition to running the validation_gates chain below.
         agents: []
         parallel: false
         max_concurrent: 1
