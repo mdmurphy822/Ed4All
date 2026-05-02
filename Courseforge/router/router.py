@@ -809,11 +809,20 @@ class CourseforgeRouter:
                 raise
         else:  # rewrite
             provider_instance = self._get_rewrite_provider(spec)
+            # Phase 3.5 Subtask 19: thread remediation_suffix through to
+            # RewriteProvider.generate_rewrite so the rewrite-tier
+            # remediation loop (route_rewrite_with_remediation) can
+            # surface prior validator-chain failures on each retry.
             try:
+                rewrite_kwargs: Dict[str, Any] = {
+                    "source_chunks": source_chunks or [],
+                    "objectives": objectives or [],
+                }
+                if remediation_suffix is not None:
+                    rewrite_kwargs["remediation_suffix"] = remediation_suffix
                 out = provider_instance.generate_rewrite(
                     block,
-                    source_chunks=source_chunks or [],
-                    objectives=objectives or [],
+                    **rewrite_kwargs,
                 )
                 outcome = "success"
                 err = None
@@ -1355,6 +1364,279 @@ class CourseforgeRouter:
             failed_candidate_count=failed_count,
             validator_failure_distribution=failure_distribution,
         )
+
+        return outcome_block
+
+    # ------------------------------------------------------------------
+    # Rewrite-tier remediation dispatch (Phase 3.5 Subtask 19)
+    # ------------------------------------------------------------------
+
+    def route_rewrite_with_remediation(
+        self,
+        block: Block,
+        *,
+        n_candidates: Optional[int] = None,
+        regen_budget: Optional[int] = None,
+        validators: Optional[List[Any]] = None,
+        source_chunks: Optional[List[Any]] = None,
+        objectives: Optional[List[Any]] = None,
+        fast_fail: bool = True,
+        **overrides: Any,
+    ) -> Block:
+        """Sample rewrite-tier candidates with router-side remediation.
+
+        Phase 3.5 Subtask 19. Mirrors :meth:`route_with_self_consistency`
+        but dispatches ``tier="rewrite"`` and pulls the budget from
+        :meth:`_resolve_rewrite_regen_budget` (Subtask 20). Each failed
+        validator-chain run feeds the canonical
+        :func:`Courseforge.router.remediation._append_remediation_for_gates`
+        builder; the resulting suffix is threaded into the next
+        rewrite-tier candidate via the ``remediation_suffix`` kwarg
+        on :meth:`route` so the re-roll sees what went wrong on the
+        prior attempt and the directive to fix it.
+
+        Loop structure mirrors ``route_with_self_consistency`` for
+        conceptual symmetry — the architectural decision is intentional:
+        outline-tier and rewrite-tier remediation share the same
+        validator-driven retry shape, only the dispatched tier and the
+        budget resolver differ. A future wave may unify the two methods
+        behind a common ``_route_with_remediation(tier=...)`` helper, but
+        this round keeps them distinct so each tier's
+        decision-capture seam (block_outline_call vs
+        block_rewrite_call) and escalation marker (outline_budget_exhausted
+        vs validator_consensus_fail) stay explicit at the call site.
+
+        On budget exhaustion the surviving best-effort candidate is
+        stamped with ``escalation_marker="validator_consensus_fail"``
+        per the rewrite-tier symmetric path mirroring Worker J's
+        outline-tier ``structural_unfixable`` semantics. The rewrite
+        side cannot use ``outline_budget_exhausted`` (that marker
+        signals "outline tier ran out of budget; rewrite should
+        synthesise from scratch") so the consensus-fail marker is the
+        canonical "rewrite tier could not converge on a passing
+        candidate" signal.
+        """
+        # 1. Resolve n_candidates per the precedence chain (reuses the
+        # outline-tier resolver — the per-tier override is the rewrite
+        # budget; n-candidates symmetry is preserved).
+        resolved_n = self._resolve_n_candidates(block, n_candidates)
+        validator_list: List[Any] = list(validators or [])
+
+        # 2. Resolve the spec for the rewrite tier (no escalate-immediately
+        # short-circuit — that's an outline-tier-only flag).
+        spec = self._resolve_spec(block, "rewrite", **overrides)
+
+        # 3. Resolve the rewrite-tier regen budget per the Subtask 20
+        # precedence chain.
+        resolved_budget = self._resolve_rewrite_regen_budget(block, regen_budget)
+
+        failure_distribution: Dict[str, int] = {}
+        last_candidate: Optional[Block] = None
+        winning_index: Optional[int] = None
+        winner: Optional[Block] = None
+        escalated: Optional[Block] = None
+        blocked: Optional[Block] = None
+        cumulative_attempts = block.validation_attempts
+        remediation_suffix: Optional[str] = None
+
+        for i in range(resolved_n):
+            candidate = self.route(
+                block,
+                tier="rewrite",
+                source_chunks=source_chunks,
+                objectives=objectives,
+                remediation_suffix=remediation_suffix,
+                **overrides,
+            )
+            last_candidate = candidate
+
+            all_passed, gate_results, candidate = self._run_validator_chain(
+                candidate, validator_list, fast_fail=fast_fail,
+                validator_tier="rewrite_val",
+            )
+            last_candidate = candidate
+            if all_passed:
+                timestamp = (
+                    _dt.datetime.now(_dt.timezone.utc)
+                    .replace(microsecond=0)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+                touch = Touch(
+                    model=spec.model,
+                    provider=_collapse_to_touch_provider(spec.provider),
+                    tier="rewrite",
+                    timestamp=timestamp,
+                    decision_capture_id=self._build_router_capture_id(
+                        candidate, f"rewrite_remediation_winner_{i}"
+                    ),
+                    purpose="self_consistency_winner",
+                )
+                winner = candidate.with_touch(touch)
+                winning_index = i
+                break
+
+            # Aggregate the highest-priority action across gate_results
+            # — same pattern as the outline-tier loop at Subtask 48.
+            from MCP.hardening.validation_gates import GateResult  # noqa: PLC0415
+
+            highest_action = "pass"
+            highest_priority = 0
+            for gate_result in gate_results:
+                explicit_action = getattr(gate_result, "action", None)
+                if explicit_action is not None:
+                    action = explicit_action
+                else:
+                    action = "pass" if gate_result.passed else "regenerate"
+                if action == "pass":
+                    continue
+                gate_name = (
+                    getattr(gate_result, "validator_name", None)
+                    or getattr(gate_result, "gate_id", None)
+                    or "unknown_validator"
+                )
+                failure_distribution[gate_name] = (
+                    failure_distribution.get(gate_name, 0) + 1
+                )
+                priority = _ACTION_PRIORITY.get(action, 0)
+                if priority > highest_priority:
+                    highest_priority = priority
+                    highest_action = action
+
+            # ``block`` action: the rewrite tier's symmetric
+            # structural-unfixable path. Stamps
+            # ``validator_consensus_fail`` because the rewrite tier
+            # cannot use ``outline_budget_exhausted`` (that marker
+            # belongs to the outline-tier escalation path).
+            if highest_action == "block":
+                blocked = dataclasses.replace(
+                    last_candidate,
+                    escalation_marker="validator_consensus_fail",
+                    validation_attempts=cumulative_attempts + 1,
+                )
+                self._emit_block_escalation(
+                    blocked,
+                    marker="validator_consensus_fail",
+                    attempts=0,
+                    n_candidates=i + 1,
+                )
+                break
+
+            # ``escalate`` action: also stamps consensus-fail on the
+            # rewrite tier (no further escalation surface beyond the
+            # rewrite tier exists in Phase 3.5).
+            if highest_action == "escalate":
+                escalated = dataclasses.replace(
+                    last_candidate,
+                    escalation_marker="validator_consensus_fail",
+                    validation_attempts=cumulative_attempts + 1,
+                )
+                self._emit_block_escalation(
+                    escalated,
+                    marker="validator_consensus_fail",
+                    attempts=escalated.validation_attempts,
+                    n_candidates=i + 1,
+                )
+                break
+
+            # ``regenerate`` (or legacy passed=False without action) →
+            # bump the cumulative validation_attempts accumulator and
+            # build the remediation suffix for the next iteration.
+            cumulative_attempts += 1
+            last_candidate = dataclasses.replace(
+                last_candidate,
+                validation_attempts=cumulative_attempts,
+            )
+
+            # Budget check — when exhausted, stamp the rewrite-side
+            # symmetric ``validator_consensus_fail`` marker and break.
+            if cumulative_attempts >= resolved_budget:
+                escalated = dataclasses.replace(
+                    last_candidate,
+                    escalation_marker="validator_consensus_fail",
+                )
+                self._emit_block_escalation(
+                    escalated,
+                    marker="validator_consensus_fail",
+                    attempts=escalated.validation_attempts,
+                    n_candidates=i + 1,
+                )
+                break
+
+            # Build the remediation suffix from the prior validator-chain
+            # failures so the next rewrite-tier candidate sees what went
+            # wrong on this attempt (mirrors the outline-tier seam in
+            # route_with_self_consistency).
+            from Courseforge.router.remediation import (  # noqa: PLC0415
+                _append_remediation_for_gates,
+            )
+            built_suffix = _append_remediation_for_gates("", gate_results)
+            remediation_suffix = (
+                built_suffix.lstrip("\n") if built_suffix else None
+            )
+
+        # 4. Resolve the return-block (priority order matches
+        # route_with_self_consistency).
+        if winner is not None:
+            outcome_block = winner
+            failed_count = winning_index if winning_index is not None else 0
+        elif blocked is not None:
+            outcome_block = blocked
+            failed_count = cumulative_attempts + 1
+        elif escalated is not None:
+            outcome_block = escalated
+            failed_count = cumulative_attempts
+        else:
+            assert last_candidate is not None
+            outcome_block = last_candidate
+            failed_count = resolved_n
+
+        # 5. Per-loop decision-capture event. Reuse the
+        # _emit_self_consistency_decision helper but tag it as the
+        # rewrite-tier loop via the spec.tier field; the helper's
+        # decision_type is 'block_outline_call' so we instead emit
+        # the rewrite event directly to keep the audit-trail clean.
+        if self._capture is not None:
+            outcome = (
+                "winner_found"
+                if winning_index is not None
+                else "all_candidates_failed"
+            )
+            rationale_parts = [
+                "router_rewrite_remediation",
+                f"block_id={block.block_id}",
+                f"block_type={block.block_type}",
+                f"page_id={block.page_id}",
+                f"provider={spec.provider}",
+                f"model={spec.model}",
+                f"n_candidates_requested={resolved_n}",
+                f"winning_candidate_index={winning_index}",
+                f"failed_candidate_count={failed_count}",
+                f"outcome={outcome}",
+            ]
+            ml_features: Dict[str, Any] = {
+                "n_candidates_requested": resolved_n,
+                "winning_candidate_index": winning_index,
+                "failed_candidate_count": failed_count,
+                "validator_failure_distribution": dict(failure_distribution),
+                "tier": "rewrite",
+            }
+            try:
+                self._capture.log_decision(
+                    decision_type="block_rewrite_call",
+                    decision=(
+                        f"rewrite_remediation:{block.block_type}:"
+                        f"{block.block_id}:{outcome}"
+                    ),
+                    rationale="; ".join(rationale_parts),
+                    ml_features=ml_features,
+                )
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "router rewrite-remediation decision-capture emit "
+                    "failed: %s",
+                    exc,
+                )
 
         return outcome_block
 
