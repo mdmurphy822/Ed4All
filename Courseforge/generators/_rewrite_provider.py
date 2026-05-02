@@ -62,10 +62,11 @@ operates on flat instruction / preference dicts).
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from Courseforge.generators._base import _BaseLLMProvider
 
@@ -143,6 +144,191 @@ _REWRITE_SYSTEM_PROMPT = (
     "examples, voice. DO NOT add facts not in the outline's key_claims "
     "or in the source chunks."
 )
+
+
+# ---------------------------------------------------------------------------
+# Block-type → HTML output contract map (Subtask 24).
+# ---------------------------------------------------------------------------
+#
+# Per-block-type HTML attribute contracts the rewrite tier must follow
+# when authoring the rendered body. Mirrors ``Block.to_html_attrs``
+# (`Courseforge/scripts/blocks.py:336-465`) so the rewrite output is
+# downstream-extractable by the same priority chain Trainforge's
+# ``process_course._extract_section_metadata`` walks.
+
+_BLOCK_TYPE_OUTPUT_CONTRACTS: Dict[str, str] = {
+    "objective": (
+        "Emit a `<li>` carrying `data-cf-objective-id` (canonical "
+        "TO-NN / CO-NN), `data-cf-bloom-level`, `data-cf-bloom-verb`, "
+        "and `data-cf-cognitive-domain` attributes. The objective "
+        "statement is the `<li>`'s text content."
+    ),
+    "concept": (
+        "Emit a `<section data-cf-source-ids=...>` wrapping an `<h2>` "
+        "or `<h3>` heading carrying `data-cf-content-type` + "
+        "`data-cf-bloom-range` + `data-cf-key-terms`, followed by "
+        "explanatory paragraphs."
+    ),
+    "example": (
+        "Emit a `<section data-cf-source-ids=...>` wrapping an `<h3>` "
+        "and `<p>` paragraphs presenting a worked example. Carry "
+        "`data-cf-content-type=\"example\"` on the heading."
+    ),
+    "explanation": (
+        "Emit a `<section data-cf-source-ids=...>` wrapping an `<h2>` "
+        "or `<h3>` and explanatory paragraphs. Carry "
+        "`data-cf-content-type=\"explanation\"` on the heading."
+    ),
+    "summary_takeaway": (
+        "Emit a `<section data-cf-source-ids=...>` wrapping an `<h3>` "
+        "and a short `<ul>` of takeaways. Carry "
+        "`data-cf-content-type=\"summary\"` on the heading."
+    ),
+    "callout": (
+        "Emit a `<div class=\"callout callout-{kind}\">` carrying "
+        "`data-cf-component=\"callout\"` + `data-cf-purpose` + "
+        "`data-cf-content-type=\"callout\"`."
+    ),
+    "flip_card_grid": (
+        "Emit a `<div class=\"flip-card-grid\">` whose children are "
+        "per-card `<div class=\"flip-card\">` elements carrying "
+        "`data-cf-component=\"flip-card\"`, "
+        "`data-cf-purpose=\"term-definition\"`, "
+        "`data-cf-teaching-role`, and `data-cf-term`."
+    ),
+    "self_check_question": (
+        "Emit a `<div class=\"self-check\">` carrying "
+        "`data-cf-component=\"self-check\"`, "
+        "`data-cf-purpose=\"formative-assessment\"`, "
+        "`data-cf-bloom-level`, `data-cf-objective-ref`, and "
+        "`data-cf-source-ids` / `data-cf-source-primary`."
+    ),
+    "activity": (
+        "Emit a `<div class=\"activity-card\">` carrying "
+        "`data-cf-component=\"activity\"`, `data-cf-purpose=\"practice\"`, "
+        "`data-cf-bloom-level`, `data-cf-objective-ref`, and "
+        "`data-cf-source-ids`."
+    ),
+    "misconception": (
+        "Emit a `<section>` whose JSON-LD entry carries the "
+        "misconception ID (mc_[0-9a-f]{16}) plus correction. The HTML "
+        "body need not carry data-cf-* attributes — JSON-LD is the "
+        "authoritative shape for misconception blocks."
+    ),
+    "assessment_item": (
+        "Emit a `<div class=\"assessment-item\">` carrying the "
+        "question stem, options, and correct-answer marker. "
+        "Assessment items in IMSCC live in QTI XML downstream; the "
+        "HTML emit here is the authoring fixture."
+    ),
+    "prereq_set": (
+        "Emit a `<section data-cf-source-ids=...>` wrapping an `<h2>` "
+        "or `<h3>` and an `<ol>` of prerequisite topic refs."
+    ),
+    "reflection_prompt": (
+        "Emit a `<section data-cf-source-ids=...>` wrapping an "
+        "`<h3>` and one or more `<p>` reflection prompts."
+    ),
+    "discussion_prompt": (
+        "Emit a `<section data-cf-source-ids=...>` wrapping an "
+        "`<h3>` and one or more `<p>` discussion prompts."
+    ),
+    "chrome": (
+        "Emit page chrome (header / footer / nav). Carry "
+        "`data-cf-role=\"template-chrome\"` on the wrapper."
+    ),
+    "recap": (
+        "Emit a `<section data-cf-source-ids=...>` wrapping an "
+        "`<h2>` or `<h3>` and a recap of the prior week's key terms."
+    ),
+}
+
+
+def _block_type_output_contract(block_type: str) -> str:
+    """Return the per-block-type HTML attribute contract paragraph.
+
+    Falls back to a generic instruction when the block_type has no
+    entry in the table — defensive only; ``Block.__post_init__``
+    already validates the set.
+    """
+    return _BLOCK_TYPE_OUTPUT_CONTRACTS.get(
+        block_type,
+        (
+            f"Emit the rendered HTML body for a block of type "
+            f"{block_type!r}. Carry `data-cf-source-ids` on the top "
+            f"wrapper to attribute the source chunks."
+        ),
+    )
+
+
+def _safe_json_dumps(content: Any) -> str:
+    """Serialize ``Block.content`` to a JSON string for the prompt.
+
+    ``Block.content`` is ``Union[str, Dict[str, Any]]``. Strings pass
+    through unchanged so the legacy Phase 1 path that emits a
+    ``content=html`` Block still renders sensibly through the rewrite
+    tier. Dicts are serialised with ``ensure_ascii=False`` so CURIEs
+    (``sh:NodeShape``, ``rdfs:subClassOf``, …) survive verbatim —
+    critical for the Subtask 26 CURIE-preservation gate.
+    """
+    if isinstance(content, str):
+        return content
+    try:
+        return json.dumps(
+            content, ensure_ascii=False, sort_keys=True
+        )
+    except (TypeError, ValueError) as exc:
+        # Defensive — a non-serialisable content payload would prevent
+        # the rewrite tier from even seeing the outline. Surface a
+        # readable repr instead so postmortem still has the data.
+        logger.warning("Outline payload not JSON-serialisable: %s", exc)
+        return repr(content)
+
+
+def _format_source_chunks(chunks: Sequence[Any]) -> str:
+    """Format the source-chunk list into a readable prompt block.
+
+    Accepts either dict shape (``{"chunk_id": ..., "text": ...}``) or
+    a chunk-like object exposing ``chunk_id`` / ``text`` attributes.
+    Empty input renders ``"(none)"``.
+    """
+    if not chunks:
+        return "(none)"
+    parts: List[str] = []
+    for c in chunks:
+        if isinstance(c, dict):
+            cid = c.get("chunk_id") or c.get("id") or "<unknown>"
+            text = c.get("text") or c.get("content") or ""
+        else:
+            cid = (
+                getattr(c, "chunk_id", None)
+                or getattr(c, "id", None)
+                or "<unknown>"
+            )
+            text = getattr(c, "text", "") or getattr(c, "content", "")
+        parts.append(f"- [{cid}] {text}")
+    return "\n".join(parts)
+
+
+def _format_objectives(objectives: Sequence[Any]) -> str:
+    """Format the objectives list into a readable prompt block.
+
+    Accepts either dict shape (``{"id": ..., "statement": ...}``) or
+    object with ``id`` + ``statement`` attributes. Empty input renders
+    ``"(none)"``.
+    """
+    if not objectives:
+        return "(none)"
+    parts: List[str] = []
+    for o in objectives:
+        if isinstance(o, dict):
+            oid = o.get("id") or "<unknown>"
+            statement = o.get("statement") or ""
+        else:
+            oid = getattr(o, "id", "<unknown>")
+            statement = getattr(o, "statement", "")
+        parts.append(f"- {oid}: {statement}")
+    return "\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
@@ -259,18 +445,70 @@ class RewriteProvider(_BaseLLMProvider):
             system_prompt=_REWRITE_SYSTEM_PROMPT,
         )
 
-    # _render_user_prompt filled in by Subtask 24.
-
     # _render_escalated_user_prompt filled in by Subtask 25.
 
     # generate_rewrite filled in by Subtask 26.
 
     # ------------------------------------------------------------------
-    # Abstract method stubs (filled in by Subtasks 24-26).
+    # User-prompt rendering (Subtask 24)
     # ------------------------------------------------------------------
 
-    def _render_user_prompt(self, *args: Any, **kwargs: Any) -> str:
-        raise NotImplementedError("filled in by Subtask 24")
+    def _render_user_prompt(
+        self,
+        *,
+        block: Block,
+        source_chunks: Optional[Sequence[Any]] = None,
+        objectives: Optional[Sequence[Any]] = None,
+    ) -> str:
+        """Render the rewrite-tier user prompt from an outline-dict Block.
+
+        At this point the block's ``content`` field is the outline dict
+        produced by the outline tier (typically containing
+        ``key_claims`` / ``curies`` / ``source_refs`` / ``objective_refs``
+        plus block-type-specific keys). The rewrite tier authors the
+        rendered HTML body, preserving every CURIE the outline declared
+        and citing the supplied source chunks.
+
+        Sections of the prompt:
+
+        - **Block context**: block_type / block_id / page_id.
+        - **Outline**: ``json.dumps(block.content)`` so the model has
+          the outline-tier dict verbatim as a single payload.
+        - **Source chunks**: chunk text + chunk_id pairs (for
+          ``data-cf-source-ids`` attribution).
+        - **Objectives**: id + statement pairs (for
+          ``data-cf-objective-id`` / ``data-cf-objective-ref``
+          attribution).
+        - **Output contract**: per-block-type HTML attribute contract
+          (mirrors ``Block.to_html_attrs``).
+        - **Final instruction**: emit ONLY rendered HTML, no markdown
+          fences / commentary.
+        """
+        outline_payload = _safe_json_dumps(block.content)
+        source_block = _format_source_chunks(source_chunks or [])
+        objectives_block = _format_objectives(objectives or [])
+        output_contract = _block_type_output_contract(block.block_type)
+
+        return (
+            f"Block type: {block.block_type}\n"
+            f"Block id: {block.block_id}\n"
+            f"Page id: {block.page_id}\n"
+            "\n"
+            "Outline (structurally correct, pedagogical-depth missing):\n"
+            f"{outline_payload}\n"
+            "\n"
+            "Source chunks (cite via source_refs):\n"
+            f"{source_block}\n"
+            "\n"
+            "Objectives:\n"
+            f"{objectives_block}\n"
+            "\n"
+            "Output contract (HTML attributes for this block_type):\n"
+            f"{output_contract}\n"
+            "\n"
+            "Author the rendered HTML body for this block now. Emit "
+            "ONLY the HTML — no preamble, no markdown, no commentary."
+        )
 
     def _emit_per_call_decision(
         self,
