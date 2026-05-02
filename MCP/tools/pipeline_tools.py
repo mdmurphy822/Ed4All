@@ -1942,6 +1942,30 @@ def _emit_dart_sidecars_if_requested(
 
 
 
+# Phase 3 Subtask 6: Courseforge two-pass-router enable flag. Mirror
+# of ``Courseforge/scripts/blocks.py::_emit_blocks_enabled`` (the
+# Phase 2 emit-blocks toggle) — same truthy set, same case-insensitive
+# read-each-call pattern so tests can toggle the flag inline. Used by
+# the rewrite of ``_generate_course_content`` (Subtask 39-41 in the
+# Phase 3 plan) to dispatch to the two-pass OutlineProvider +
+# RewriteProvider path instead of the legacy single-pass renderer.
+_COURSEFORGE_TWO_PASS_ENV = "COURSEFORGE_TWO_PASS"
+_COURSEFORGE_TWO_PASS_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _courseforge_two_pass_enabled() -> bool:
+    """Read ``COURSEFORGE_TWO_PASS`` each call so tests can toggle it.
+
+    Default off — the Phase 3 two-pass router is purely additive and
+    must not alter byte-stable legacy emits until the migration window
+    closes.
+    """
+    return (
+        os.environ.get(_COURSEFORGE_TWO_PASS_ENV, "").strip().lower()
+        in _COURSEFORGE_TWO_PASS_TRUTHY
+    )
+
+
 def _build_tool_registry() -> dict:
     """
     Build a tool registry mapping tool names to callable async functions.
