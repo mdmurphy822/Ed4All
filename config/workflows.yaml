@@ -816,9 +816,15 @@ workflows:
         # Initially warning-severity per Phase 3 §A — promoted to
         # block in a follow-up wave once the outline-tier validators
         # have stable false-positive rates on a real corpus.
+        # Subtask 52: validators routed through the Block-input
+        # adapters in Courseforge.router.inter_tier_gates so the
+        # workflow runner can consume the outline-tier Block list
+        # directly (the legacy lib.validators.* surface targets the
+        # synthesis-side instruction_pairs.jsonl + page-HTML inputs,
+        # which the outline tier doesn't produce yet).
         validation_gates:
           - gate_id: outline_curie_anchoring
-            validator: lib.validators.curie_anchoring.CurieAnchoringValidator
+            validator: Courseforge.router.inter_tier_gates.BlockCurieAnchoringValidator
             severity: critical
             threshold:
               max_critical_issues: 0
@@ -828,7 +834,7 @@ workflows:
             description: Phase 3 inter-tier — verify outline-tier Blocks anchor on a CURIE per §3 (warn-only initially)
 
           - gate_id: outline_content_type
-            validator: lib.validators.content_type.ContentTypeValidator
+            validator: Courseforge.router.inter_tier_gates.BlockContentTypeValidator
             severity: critical
             threshold:
               max_critical_issues: 0
@@ -838,7 +844,7 @@ workflows:
             description: Phase 3 inter-tier — verify outline-tier Block content_type stays in the canonical 8-value enum
 
           - gate_id: outline_page_objectives
-            validator: lib.validators.page_objectives.PageObjectivesValidator
+            validator: Courseforge.router.inter_tier_gates.BlockPageObjectivesValidator
             severity: critical
             threshold:
               max_critical_issues: 0
@@ -848,7 +854,7 @@ workflows:
             description: Phase 3 inter-tier — verify outline-tier Blocks reference the page's declared objectives
 
           - gate_id: outline_source_refs
-            validator: lib.validators.source_refs.PageSourceRefValidator
+            validator: Courseforge.router.inter_tier_gates.BlockSourceRefValidator
             severity: critical
             threshold:
               max_critical_issues: 0
