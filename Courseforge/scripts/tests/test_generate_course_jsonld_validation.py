@@ -307,3 +307,158 @@ def test_wrap_page_raises_when_strict_and_emit_drifts(
         generate_week(
             week_data, tmp_path / "out", "SAMPLE_101", source_module_map=None,
         )
+
+
+# ---------------------------------------------------------------------- #
+# 6. Phase 2 (Subtasks 10-11): blocks[] / provenance / contentHash
+# ---------------------------------------------------------------------- #
+
+
+def _block_payload() -> dict:
+    """Minimal Block dict matching $defs/Block (camelCase wire shape)."""
+    return {
+        "blockId": "week_01_content_01_intro#objective_TO-01_0",
+        "blockType": "objective",
+        "sequence": 0,
+        "pageId": "week_01_content_01_intro",
+        "objectiveIds": ["TO-01"],
+        "bloomLevel": "remember",
+        "touchedBy": [],
+    }
+
+
+def _touch_payload() -> dict:
+    """Minimal Touch dict matching $defs/Touch."""
+    return {
+        "model": "qwen2.5-14b-instruct-q4_K_M",
+        "provider": "local",
+        "tier": "outline",
+        "timestamp": "2026-05-02T12:00:00Z",
+        "decisionCaptureId": "decisions_2026-05-02.jsonl:0",
+        "purpose": "draft",
+    }
+
+
+def test_jsonld_blocks_array_validates_against_extended_schema():
+    """A payload carrying a single Block (with a Touch) validates."""
+    validator = generate_course._get_jsonld_validator()
+    assert validator is not None
+    meta = _minimally_valid_metadata()
+    block = _block_payload()
+    block["touchedBy"] = [_touch_payload()]
+    meta["blocks"] = [block]
+    errors = list(validator.iter_errors(meta))
+    assert not errors, (
+        "Expected blocks[] payload to validate; got: "
+        + json.dumps(
+            [
+                f"{'.'.join(str(p) for p in e.absolute_path) or '(root)'}: {e.message}"
+                for e in errors
+            ],
+            indent=2,
+        )
+    )
+
+
+def test_jsonld_block_missing_block_id_fails_validation():
+    """A Block missing the required blockId fails validation."""
+    validator = generate_course._get_jsonld_validator()
+    assert validator is not None
+    meta = _minimally_valid_metadata()
+    bad_block = _block_payload()
+    del bad_block["blockId"]
+    meta["blocks"] = [bad_block]
+    errors = list(validator.iter_errors(meta))
+    assert errors, "Expected a validation error for missing blockId"
+    assert any("blockId" in e.message for e in errors), (
+        f"Errors should mention blockId; got: {[e.message for e in errors]}"
+    )
+
+
+def test_jsonld_block_invalid_block_type_fails_validation():
+    """A Block with a blockType outside the 16-value enum fails."""
+    validator = generate_course._get_jsonld_validator()
+    assert validator is not None
+    meta = _minimally_valid_metadata()
+    bad_block = _block_payload()
+    bad_block["blockType"] = "not_a_real_type"
+    meta["blocks"] = [bad_block]
+    errors = list(validator.iter_errors(meta))
+    assert errors, "Expected a validation error for invalid blockType"
+    # The enum violation surfaces as 'is not one of' under jsonschema.
+    assert any(
+        "blockType" in ".".join(str(p) for p in e.absolute_path)
+        or "not_a_real_type" in e.message
+        for e in errors
+    ), f"Errors should reference blockType / the bad enum: {[e.message for e in errors]}"
+
+
+def test_jsonld_provenance_object_validates():
+    """A populated provenance object (runId + tiers) validates."""
+    validator = generate_course._get_jsonld_validator()
+    assert validator is not None
+    meta = _minimally_valid_metadata()
+    meta["provenance"] = {
+        "runId": "WF-20260502-abc12345",
+        "pipelineVersion": "0.3.0",
+        "tiers": [
+            {"tier": "outline", "model": "qwen2.5-14b", "provider": "local"},
+            {"tier": "validation", "model": "qwen2.5-14b", "provider": "local"},
+        ],
+    }
+    errors = list(validator.iter_errors(meta))
+    assert not errors, (
+        "Expected provenance object to validate; got: "
+        + json.dumps(
+            [
+                f"{'.'.join(str(p) for p in e.absolute_path) or '(root)'}: {e.message}"
+                for e in errors
+            ],
+            indent=2,
+        )
+    )
+
+
+def test_jsonld_content_hash_pattern_enforced():
+    """contentHash must match ^[a-f0-9]{64}$ — non-hex strings fail."""
+    validator = generate_course._get_jsonld_validator()
+    assert validator is not None
+    meta = _minimally_valid_metadata()
+    meta["contentHash"] = "not-a-hex-string"
+    errors = list(validator.iter_errors(meta))
+    assert errors, "Expected a pattern-violation for non-hex contentHash"
+    assert any("contentHash" in ".".join(str(p) for p in e.absolute_path)
+               or "pattern" in e.message
+               for e in errors), (
+        f"Errors should reference contentHash or the pattern: "
+        f"{[e.message for e in errors]}"
+    )
+
+    # Sanity: a valid 64-char hex string passes.
+    meta["contentHash"] = "a" * 64
+    assert not list(validator.iter_errors(meta))
+
+
+def test_jsonld_legacy_payload_without_blocks_still_validates():
+    """Regression: existing pages that emit no blocks[]/provenance/
+    contentHash keep validating cleanly. Phase 2 is purely additive."""
+    validator = generate_course._get_jsonld_validator()
+    assert validator is not None
+    legacy = _minimally_valid_metadata()
+    # Throw in a non-trivial existing optional field (sections) to make
+    # sure we're not accidentally relying on bare-required-fields-only
+    # to paper over schema drift.
+    legacy["sections"] = [
+        {"heading": "Intro", "contentType": "overview"},
+    ]
+    errors = list(validator.iter_errors(legacy))
+    assert not errors, (
+        "Expected legacy payload (no blocks[]) to keep validating; got: "
+        + json.dumps(
+            [
+                f"{'.'.join(str(p) for p in e.absolute_path) or '(root)'}: {e.message}"
+                for e in errors
+            ],
+            indent=2,
+        )
+    )

@@ -403,3 +403,90 @@ def test_context_cache_survives_many_calls(well_formed_metadata):
 
     assert generate_course._load_shacl_context.cache_info().misses == 1
     assert generate_course._load_shacl_shapes_graph.cache_info().misses == 1
+
+
+# ---------------------------------------------------------------------- #
+# 7. Phase 2 Subtask 14: Block touched_by cardinality + Touch shape
+# ---------------------------------------------------------------------- #
+
+
+def _block_payload(touched_by: list | None = None) -> dict:
+    """Build a CourseModule payload carrying one Block with
+    ``@type: "Block"`` so the cfshapes:BlockShape (sh:targetClass
+    ed4all:Block) fires during SHACL validation. Phase 2 emits
+    ``blocks[]`` as a top-level optional array; in the JSON-LD context
+    the array is mapped via ``ed4all:hasBlock`` to a set of nodes,
+    each typed as ``ed4all:Block`` via the ``@type: "Block"`` alias.
+    """
+    block = {
+        "@type": "Block",
+        "blockId": "week_01_content_01_intro#objective_TO-01_0",
+        "blockType": "objective",
+        "sequence": 0,
+    }
+    if touched_by is not None:
+        block["touchedBy"] = touched_by
+    return {
+        "@context": "https://ed4all.dev/ns/courseforge/v1",
+        "@type": "CourseModule",
+        "courseCode": "SAMPLE_101",
+        "weekNumber": 1,
+        "moduleType": "content",
+        "pageId": "week_01_content_01_intro",
+        "blocks": [block],
+    }
+
+
+def test_block_touched_by_cardinality_validated_by_shacl():
+    """Phase 2 Subtask 14: assert SHACL enforces the Block + Touch
+    contract.
+
+    Two cases:
+      1. A Block with empty ``touchedBy[]`` (the cardinality minimum is
+         0) conforms.
+      2. A Block carrying a Touch missing ``decisionCaptureId`` (Wave
+         112 invariant; SHACL pins it via ``sh:minCount 1``) does NOT
+         conform — the violation message references the Touch shape.
+
+    Skip cleanly if the RDF stack isn't importable (mirrors the
+    module-level ``pytest.importorskip`` pattern at the top of this
+    file).
+    """
+    # Case 1: empty touchedBy[] is valid (sh:minCount 0).
+    valid_payload = _block_payload(touched_by=[])
+    conforms, text = _validate_page_jsonld_shacl(valid_payload)
+    assert conforms, (
+        f"Block with empty touchedBy[] should validate; SHACL said:\n{text}"
+    )
+
+    # Case 2: Touch missing decisionCaptureId fires the TouchShape
+    # cardinality violation. Note: per the SHACL Touch shape, ``tier``,
+    # ``provider``, and ``decisionCaptureId`` are each required (minCount 1);
+    # leaving ``decisionCaptureId`` off (while keeping the other two)
+    # isolates the Wave 112 invariant as the failure reason.
+    bad_touch = {
+        "@type": "Touch",
+        "model": "qwen2.5-14b",
+        "provider": "local",
+        "tier": "outline",
+        "timestamp": "2026-05-02T00:00:00Z",
+        # decisionCaptureId deliberately omitted — Wave 112 invariant
+        # requires it to be present + non-empty.
+        "purpose": "draft",
+    }
+    invalid_payload = _block_payload(touched_by=[bad_touch])
+    conforms, text = _validate_page_jsonld_shacl(invalid_payload)
+    assert not conforms, (
+        "Touch missing decisionCaptureId should fail SHACL; "
+        f"got conforms=True. Results:\n{text}"
+    )
+    # Sanity: the violation should reference the missing predicate or
+    # the TouchShape directly.
+    assert (
+        "decisionCaptureId" in text
+        or "TouchShape" in text
+        or "decision_capture_id" in text.lower()
+    ), (
+        "Expected SHACL violation text to mention decisionCaptureId / "
+        f"TouchShape; got:\n{text}"
+    )

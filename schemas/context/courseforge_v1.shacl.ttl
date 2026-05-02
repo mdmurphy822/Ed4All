@@ -409,3 +409,141 @@ cfshapes:TypedEdgeShape
     sh:nodeKind sh:IRI ;
     sh:message "TypedEdge.target (ed4all:target) is required and must be an IRI." ;
   ] .
+
+# ---------------------------------------------------------------------------
+# BlockShape — Phase 2 Subtask 13
+# ---------------------------------------------------------------------------
+# Targets ed4all:Block. Validates the canonical Phase 2 intermediate block
+# (companion to Courseforge/scripts/blocks.py::Block). Mirrors the JSON
+# Schema $defs/Block in schemas/knowledge/courseforge_jsonld_v1.schema.json.
+#
+# Shape contract:
+#   - blockId: required, single, non-empty xsd:string.
+#   - blockType: required, single, sh:in over the 16-value enum.
+#   - sequence: required, single, xsd:integer minInclusive 0.
+#   - contentHash: optional, single, xsd:string matching ^[a-f0-9]{64}$.
+#   - touchedBy: optional list of TouchShape-conformant nodes (minCount 0).
+#   - validationAttempts: optional, single, xsd:nonNegativeInteger
+#       (Phase-3 regeneration-budget counter).
+#   - escalationMarker: optional, single, sh:in over the 3-value enum
+#       (Phase-3 escalation tag).
+
+cfshapes:BlockShape
+  a sh:NodeShape ;
+  sh:targetClass ed4all:Block ;
+  rdfs:label "Courseforge Block Shape" ;
+  rdfs:comment "Phase 2 Subtask 13: validates the canonical intermediate Block companion to Courseforge/scripts/blocks.py::Block. Phase-3 fields validationAttempts + escalationMarker support the per-block regeneration-budget primitive." ;
+
+  sh:property [
+    sh:path ed4all:blockId ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:string ;
+    sh:minLength 1 ;
+    sh:message "Block.blockId is required, single, and non-empty." ;
+  ] ;
+
+  sh:property [
+    sh:path ed4all:blockType ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+    sh:in (
+      "objective"
+      "concept"
+      "example"
+      "assessment_item"
+      "explanation"
+      "prereq_set"
+      "activity"
+      "misconception"
+      "callout"
+      "flip_card_grid"
+      "self_check_question"
+      "summary_takeaway"
+      "reflection_prompt"
+      "discussion_prompt"
+      "chrome"
+      "recap"
+    ) ;
+    sh:message "Block.blockType must be one of the 16 canonical Phase 2 block types." ;
+  ] ;
+
+  sh:property [
+    sh:path ed4all:sequence ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:integer ;
+    sh:minInclusive 0 ;
+    sh:message "Block.sequence is required, single, and a non-negative integer." ;
+  ] ;
+
+  sh:property [
+    sh:path ed4all:contentHash ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:string ;
+    sh:pattern "^[a-f0-9]{64}$" ;
+    sh:message "Block.contentHash (when present) must be a 64-char lowercase hex string (sha256)." ;
+  ] ;
+
+  sh:property [
+    sh:path ed4all:touchedBy ;
+    sh:minCount 0 ;
+    sh:nodeKind sh:BlankNodeOrIRI ;
+    sh:node cfshapes:TouchShape ;
+    sh:message "Each value of ed4all:touchedBy (touched_by[]) must conform to cfshapes:TouchShape." ;
+  ] ;
+
+  sh:property [
+    sh:path ed4all:validationAttempts ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:nonNegativeInteger ;
+    sh:message "Block.validationAttempts (when present) must be a single non-negative integer (Phase-3 regeneration-budget counter)." ;
+  ] ;
+
+  sh:property [
+    sh:path ed4all:escalationMarker ;
+    sh:maxCount 1 ;
+    sh:in (
+      "outline_budget_exhausted"
+      "structural_unfixable"
+      "validator_consensus_fail"
+    ) ;
+    sh:message "Block.escalationMarker (when present) must be one of the canonical Phase-3 escalation markers." ;
+  ] .
+
+# ---------------------------------------------------------------------------
+# TouchShape — Phase 2 Subtask 13
+# ---------------------------------------------------------------------------
+# Targets ed4all:Touch. Validates one revision attribution event in a Block's
+# touch chain (companion to Courseforge/scripts/blocks.py::Touch). Wave 112
+# invariant: decisionCaptureId is non-empty.
+
+cfshapes:TouchShape
+  a sh:NodeShape ;
+  sh:targetClass ed4all:Touch ;
+  rdfs:label "Courseforge Touch Shape" ;
+  rdfs:comment "Phase 2 Subtask 13: validates one revision attribution event. Wave 112 invariant: decisionCaptureId is non-empty by construction." ;
+
+  sh:property [
+    sh:path ed4all:tier ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+    sh:in ( "outline" "validation" "rewrite" ) ;
+    sh:message "Touch.tier is required and must be one of outline / validation / rewrite." ;
+  ] ;
+
+  sh:property [
+    sh:path ed4all:provider ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+    sh:in ( "anthropic" "local" "together" "claude_session" "deterministic" ) ;
+    sh:message "Touch.provider is required and must be one of the 5 canonical providers." ;
+  ] ;
+
+  sh:property [
+    sh:path ed4all:decisionCaptureId ;
+    sh:minCount 1 ;
+    sh:maxCount 1 ;
+    sh:minLength 1 ;
+    sh:message "Touch.decisionCaptureId is required and non-empty (Wave 112 invariant)." ;
+  ] .
