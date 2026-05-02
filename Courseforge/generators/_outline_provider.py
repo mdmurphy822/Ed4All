@@ -129,7 +129,128 @@ class OutlineProviderError(RuntimeError):
 # (filled in by Subtasks 14, 16, 18, 19 below)
 # ---------------------------------------------------------------------------
 
-_OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {}
+# Per-block-type bounds for the outline tier's structural skeleton.
+# Each entry is keyed by ``block_type`` (every value in ``BLOCK_TYPES``)
+# and carries (min, max) bounds for three skeleton fields:
+#
+# - ``key_claims``     — number of factual claims the outline must
+#                         enumerate (1-3 for short blocks like
+#                         objectives; 1-5 for content blocks).
+# - ``section_skeleton`` — number of section headings / subsections
+#                         in the outline. ``(0, 0)`` for atomic blocks
+#                         (objective, callout, recap) that don't
+#                         decompose into sections.
+# - ``summary_chars``  — character count for a one-paragraph summary
+#                         of the block's content. Mirrors the shape
+#                         of ``Trainforge/generators/_local_provider.py
+#                         ::DEFAULT_LOCAL_KIND_BOUNDS``.
+#
+# These values are starting points subject to Phase 4 calibration —
+# the bounds are advisory in the system prompt and the grammar payload
+# (Subtask 18) does not hard-enforce them at sample time. The Phase 4
+# inter-tier validators may tighten or relax them per block_type.
+_OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {
+    # Atomic objectives — single claim, no sections.
+    "objective": {
+        "key_claims": (1, 3),
+        "section_skeleton": (0, 0),
+        "summary_chars": (40, 200),
+    },
+    # Concept blocks decompose into 1-3 sections (definition / examples
+    # / counter-examples) and carry up to 5 key claims.
+    "concept": {
+        "key_claims": (1, 5),
+        "section_skeleton": (1, 3),
+        "summary_chars": (80, 400),
+    },
+    # Examples are illustrative — minimum claim count, optional section
+    # decomposition (worked-step breakdown).
+    "example": {
+        "key_claims": (1, 3),
+        "section_skeleton": (0, 2),
+        "summary_chars": (60, 300),
+    },
+    # Assessment items — stem + answer key + optional rationale section.
+    "assessment_item": {
+        "key_claims": (1, 2),
+        "section_skeleton": (1, 2),
+        "summary_chars": (60, 300),
+    },
+    # Explanations are the long-form pedagogical block; allow more
+    # sections + claims.
+    "explanation": {
+        "key_claims": (2, 6),
+        "section_skeleton": (1, 4),
+        "summary_chars": (120, 500),
+    },
+    # Prerequisite sets enumerate prior concepts; sections list each
+    # prerequisite cluster.
+    "prereq_set": {
+        "key_claims": (1, 4),
+        "section_skeleton": (1, 3),
+        "summary_chars": (60, 300),
+    },
+    # Activities — instruction set + optional reflection prompt.
+    "activity": {
+        "key_claims": (1, 4),
+        "section_skeleton": (1, 3),
+        "summary_chars": (80, 400),
+    },
+    # Misconceptions — the misconception statement + the correction.
+    "misconception": {
+        "key_claims": (1, 2),
+        "section_skeleton": (1, 2),
+        "summary_chars": (60, 300),
+    },
+    # Atomic callouts — info / warning / success — single claim.
+    "callout": {
+        "key_claims": (1, 2),
+        "section_skeleton": (0, 0),
+        "summary_chars": (40, 200),
+    },
+    # Flip-card grids — N cards × (term, definition).
+    "flip_card_grid": {
+        "key_claims": (2, 8),
+        "section_skeleton": (1, 1),
+        "summary_chars": (60, 300),
+    },
+    # Self-check questions — stem + answer + feedback.
+    "self_check_question": {
+        "key_claims": (1, 3),
+        "section_skeleton": (1, 2),
+        "summary_chars": (60, 300),
+    },
+    # Summary takeaways — bullet list of synthesised claims.
+    "summary_takeaway": {
+        "key_claims": (2, 5),
+        "section_skeleton": (0, 1),
+        "summary_chars": (60, 300),
+    },
+    # Reflection prompts — single claim + the prompt itself.
+    "reflection_prompt": {
+        "key_claims": (1, 2),
+        "section_skeleton": (0, 1),
+        "summary_chars": (40, 200),
+    },
+    # Discussion prompts — opener + branching points.
+    "discussion_prompt": {
+        "key_claims": (1, 3),
+        "section_skeleton": (1, 2),
+        "summary_chars": (60, 300),
+    },
+    # Page chrome — atomic, no claims, no sections.
+    "chrome": {
+        "key_claims": (0, 1),
+        "section_skeleton": (0, 0),
+        "summary_chars": (20, 120),
+    },
+    # Recaps — short summary of prior content.
+    "recap": {
+        "key_claims": (1, 4),
+        "section_skeleton": (0, 1),
+        "summary_chars": (60, 300),
+    },
+}
 _OUTLINE_SYSTEM_PROMPT: str = ""
 _BLOCK_TYPE_GBNF: Dict[str, str] = {}
 _BLOCK_TYPE_JSON_SCHEMAS: Dict[str, Dict[str, Any]] = {}
