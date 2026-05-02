@@ -310,6 +310,61 @@ def _format_source_chunks(chunks: Sequence[Any]) -> str:
     return "\n".join(parts)
 
 
+# ---------------------------------------------------------------------------
+# Escalation-marker context map (Subtask 25).
+# ---------------------------------------------------------------------------
+#
+# Maps each ``escalation_marker`` value to a short context paragraph the
+# rewrite tier prepends to the escalated prompt. Markers come from
+# ``Courseforge/scripts/blocks.py::_ESCALATION_MARKERS`` (the canonical
+# set the dataclass validates against) plus ``outline_skipped_by_policy``
+# which the router emits when ``BlockProviderSpec.escalate_immediately``
+# pre-fires the escalation without an outline call.
+
+_ESCALATION_MARKER_CONTEXT: Dict[str, str] = {
+    "outline_budget_exhausted": (
+        "The outline contains a partial draft you MAY reference, but "
+        "the outline tier could not refine it further within budget."
+    ),
+    "structural_unfixable": (
+        "The outline tier's emit was structurally invalid against the "
+        "block's JSON schema; treat the outline as untrustworthy "
+        "context only and synthesise from the source chunks."
+    ),
+    "validator_consensus_fail": (
+        "The outline contained semantic violations the deterministic "
+        "validators flagged; rewrite from the source chunks rather "
+        "than the outline draft."
+    ),
+    "outline_skipped_by_policy": (
+        "No outline was generated (router short-circuited per "
+        "BlockProviderSpec.escalate_immediately). Create the block "
+        "from scratch using the supplied source chunks and objectives."
+    ),
+}
+
+
+def _extract_outline_curies(content: Any) -> List[str]:
+    """Return the list of CURIEs the outline declared for preservation.
+
+    The outline tier's emit shape (per Subtask 17 contract) carries a
+    ``curies`` key whose value is a list of CURIE strings. When the
+    block's content is a string (legacy / Phase 1 path), no outline
+    CURIE list exists — return an empty list.
+
+    Used both by :meth:`RewriteProvider._render_escalated_user_prompt`
+    (to surface the preserve list in the escalated prompt) and by
+    :meth:`RewriteProvider.generate_rewrite` (to enforce the
+    Subtask 26 CURIE-preservation gate).
+    """
+    if not isinstance(content, dict):
+        return []
+    raw = content.get("curies", []) or []
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [str(c) for c in raw if c]
+
+
 def _format_objectives(objectives: Sequence[Any]) -> str:
     """Format the objectives list into a readable prompt block.
 
@@ -445,9 +500,100 @@ class RewriteProvider(_BaseLLMProvider):
             system_prompt=_REWRITE_SYSTEM_PROMPT,
         )
 
-    # _render_escalated_user_prompt filled in by Subtask 25.
+    # ------------------------------------------------------------------
+    # Escalated user-prompt rendering (Subtask 25)
+    # ------------------------------------------------------------------
 
-    # generate_rewrite filled in by Subtask 26.
+    def _render_escalated_user_prompt(
+        self,
+        *,
+        block: Block,
+        source_chunks: Optional[Sequence[Any]] = None,
+        objectives: Optional[Sequence[Any]] = None,
+    ) -> str:
+        """Render a richer prompt for blocks the outline tier could not
+        handle.
+
+        Phase 3 §3.7 escalation contract: when ``block.escalation_marker``
+        is non-None, the rewrite tier switches to a richer prompt
+        template that synthesises from the source chunks + objectives
+        directly (rather than refining the outline's draft). The marker
+        discriminates the failure mode so the prompt context matches
+        what the outline tier actually produced:
+
+        - ``outline_budget_exhausted`` — the outline contains a partial
+          draft the rewrite tier MAY reference.
+        - ``structural_unfixable`` — the outline tier's emit was
+          structurally invalid; treat the outline as untrustworthy
+          context only.
+        - ``validator_consensus_fail`` — the outline contained
+          semantic violations the deterministic validators flagged.
+        - ``outline_skipped_by_policy`` — no outline was produced
+          (router short-circuited per ``BlockProviderSpec.escalate_immediately``);
+          synthesise from scratch using source + objectives only.
+
+        The escalated prompt always preserves any CURIEs in the input
+        outline's ``content["curies"]`` field — that contract carries
+        across the escalation boundary so the Subtask 26 CURIE-
+        preservation gate has a non-empty token list to enforce against
+        the rewrite output.
+        """
+        marker = block.escalation_marker or "outline_budget_exhausted"
+        marker_context = _ESCALATION_MARKER_CONTEXT.get(
+            marker,
+            "the outline tier emitted a marker we don't recognise; "
+            "treat the outline as untrustworthy context.",
+        )
+
+        # CURIE list extracted from the outline dict so the model sees
+        # the verbatim tokens it must preserve. Falls back to "(none)"
+        # when the outline doesn't carry a curies list (legitimate for
+        # blocks with no schema vocabulary).
+        curies = _extract_outline_curies(block.content)
+        curies_block = ", ".join(curies) if curies else "(none)"
+
+        # Validation-attempt count surfaces in the prompt so the
+        # rewrite tier knows how many outline turns burned before
+        # escalation — useful signal for the model when deciding
+        # whether to re-use any outline draft text.
+        attempts = block.validation_attempts
+
+        outline_payload = _safe_json_dumps(block.content)
+        source_block = _format_source_chunks(source_chunks or [])
+        objectives_block = _format_objectives(objectives or [])
+        output_contract = _block_type_output_contract(block.block_type)
+
+        return (
+            f"ESCALATED REWRITE — marker={marker}\n"
+            "\n"
+            f"The outline tier could not produce a valid "
+            f"{block.block_type} after {attempts} attempts "
+            f"(marker={marker}). {marker_context}\n"
+            "\n"
+            "Synthesize from scratch using the supplied source chunks "
+            "and objective refs, preserving the following CURIEs "
+            f"verbatim: {curies_block}. Do not introduce facts outside "
+            "the supplied source chunks.\n"
+            "\n"
+            f"Block type: {block.block_type}\n"
+            f"Block id: {block.block_id}\n"
+            f"Page id: {block.page_id}\n"
+            "\n"
+            "Outline (best-effort partial; may be empty or invalid):\n"
+            f"{outline_payload}\n"
+            "\n"
+            "Source chunks (the authoritative grounding):\n"
+            f"{source_block}\n"
+            "\n"
+            "Objectives:\n"
+            f"{objectives_block}\n"
+            "\n"
+            "Output contract (HTML attributes for this block_type):\n"
+            f"{output_contract}\n"
+            "\n"
+            "Author the rendered HTML body for this block now. Emit "
+            "ONLY the HTML — no preamble, no markdown, no commentary."
+        )
 
     # ------------------------------------------------------------------
     # User-prompt rendering (Subtask 24)
