@@ -553,6 +553,7 @@ class OutlineProvider(_BaseLLMProvider):
         *,
         source_chunks: List[Dict[str, Any]],
         objectives: List[Dict[str, Any]],
+        remediation_suffix: Optional[str] = None,
     ) -> Block:
         """Generate a single outline candidate for ``block``.
 
@@ -576,6 +577,16 @@ class OutlineProvider(_BaseLLMProvider):
            :func:`dataclasses.replace` carrying the parsed outline
            dict as ``content`` plus a ``Touch(tier="outline",
            purpose="draft", ...)`` entry on ``touched_by``.
+
+        Phase 3.5 Subtask 18: when ``remediation_suffix`` is non-None,
+        the rendered user prompt is augmented with a per-failure
+        remediation block before dispatch. The suffix is built by the
+        :func:`Courseforge.router.remediation._append_remediation_for_gates`
+        helper from the prior validator-chain failures so the
+        re-rolled candidate sees what went wrong on the previous
+        attempt and the directive to fix it. ``None`` is the default
+        so the legacy single-candidate path keeps emitting byte-stable
+        prompts.
         """
         if block is None:
             raise ValueError("OutlineProvider.generate_outline: block required")
@@ -601,6 +612,7 @@ class OutlineProvider(_BaseLLMProvider):
             block=block,
             source_chunks=source_chunks,
             objectives=objectives,
+            remediation_suffix=remediation_suffix,
         )
 
         last_error: Optional[str] = None
@@ -697,6 +709,7 @@ class OutlineProvider(_BaseLLMProvider):
         block: Block,
         source_chunks: List[Dict[str, Any]],
         objectives: List[Dict[str, Any]],
+        remediation_suffix: Optional[str] = None,
     ) -> str:
         """Render the outline-tier user prompt for ``block``.
 
@@ -716,6 +729,13 @@ class OutlineProvider(_BaseLLMProvider):
         6. Explicit "RESPOND ONLY WITH A JSON OBJECT containing ..."
            closing directive — mirrors the Wave-113 strict-JSON
            hardening.
+        7. Phase 3.5 Subtask 18: ``remediation_suffix`` (when non-None)
+           is appended after the closing directive. Built upstream by
+           the router's self-consistency loop from the prior
+           validator-chain failures via
+           :func:`Courseforge.router.remediation._append_remediation_for_gates`
+           so the re-rolled candidate sees what went wrong and the
+           directive to fix it.
         """
         block_type = block.block_type
         bounds = _OUTLINE_KIND_BOUNDS.get(block_type, {})
@@ -766,7 +786,7 @@ class OutlineProvider(_BaseLLMProvider):
             )
         variation_block = "\n".join(variation_lines) if variation_lines else ""
 
-        return (
+        out = (
             f"Block ID: {block.block_id}; Type: {block_type}\n"
             f"Page ID: {block.page_id}\n\n"
             "Source chunks (preserve every source_id verbatim in "
@@ -784,6 +804,15 @@ class OutlineProvider(_BaseLLMProvider):
             "structural_warnings. No preamble, no markdown, no "
             "commentary."
         )
+        # Phase 3.5 Subtask 18: append the remediation suffix when
+        # supplied. The suffix is the canonical
+        # _append_remediation_for_gates output (header + per-failure
+        # blocks); we only need to glue it on with two newlines so the
+        # closing JSON directive above stays distinct from the
+        # remediation context.
+        if remediation_suffix:
+            out += "\n\n" + remediation_suffix
+        return out
 
     def _build_grammar_payload(self, block_type: str) -> Dict[str, Any]:
         """Return the per-call ``extra_payload`` dict.

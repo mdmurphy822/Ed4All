@@ -658,6 +658,7 @@ class CourseforgeRouter:
         tier: Literal["outline", "rewrite"],
         source_chunks: Optional[List[Any]] = None,
         objectives: Optional[List[Any]] = None,
+        remediation_suffix: Optional[str] = None,
         **overrides: Any,
     ) -> Block:
         """Dispatch a single Block through the chosen ``tier``.
@@ -755,11 +756,21 @@ class CourseforgeRouter:
         # 3 + 4. Lazy-instantiate + dispatch.
         if tier == "outline":
             provider_instance = self._get_outline_provider(spec)
+            # Phase 3.5 Subtask 18: thread the remediation_suffix
+            # through to OutlineProvider.generate_outline so a re-rolled
+            # candidate sees the prior failure context. The provider
+            # widens the kwarg with a default of None (back-compat
+            # preserved for callers that don't pass it).
             try:
+                outline_kwargs: Dict[str, Any] = {
+                    "source_chunks": source_chunks or [],
+                    "objectives": objectives or [],
+                }
+                if remediation_suffix is not None:
+                    outline_kwargs["remediation_suffix"] = remediation_suffix
                 out = provider_instance.generate_outline(
                     block,
-                    source_chunks=source_chunks or [],
-                    objectives=objectives or [],
+                    **outline_kwargs,
                 )
                 outcome = "success"
                 err: Optional[str] = None
@@ -1060,12 +1071,21 @@ class CourseforgeRouter:
         # cumulative count before being returned.
         cumulative_attempts = block.validation_attempts
 
+        # Phase 3.5 Subtask 18: per-loop remediation suffix carried
+        # over from the prior candidate's validator-chain failures.
+        # ``None`` on the first iteration (no prior failures); set to
+        # the canonical ``_append_remediation_for_gates`` output after
+        # each failed validator chain so the next candidate sees what
+        # went wrong on the previous attempt and the directive to fix it.
+        remediation_suffix: Optional[str] = None
+
         for i in range(resolved_n):
             candidate = self.route(
                 block,
                 tier="outline",
                 source_chunks=source_chunks,
                 objectives=objectives,
+                remediation_suffix=remediation_suffix,
                 **overrides,
             )
             last_candidate = candidate
@@ -1247,6 +1267,26 @@ class CourseforgeRouter:
                     n_candidates=i + 1,
                 )
                 break
+
+            # Phase 3.5 Subtask 18: build the remediation suffix from
+            # the prior validator-chain failures so the next outline
+            # candidate sees what went wrong on this attempt and the
+            # canonical directive to fix it. The empty-string base
+            # plus the helper's per-failure block emit produces a
+            # non-empty suffix only when at least one actionable
+            # failure exists (the helper passes through when every
+            # gate result has action="pass").
+            from Courseforge.router.remediation import (  # noqa: PLC0415
+                _append_remediation_for_gates,
+            )
+            built_suffix = _append_remediation_for_gates("", gate_results)
+            # ``_append_remediation_for_gates`` returns "" unchanged when
+            # no actionable failures exist; lstrip to drop the leading
+            # "\n\n" the helper inserts so the OutlineProvider's
+            # _render_user_prompt seam doesn't double-pad the prompt.
+            remediation_suffix = (
+                built_suffix.lstrip("\n") if built_suffix else None
+            )
 
         # 4. Resolve the return-block.
         if winner is not None:

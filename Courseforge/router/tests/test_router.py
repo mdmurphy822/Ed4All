@@ -81,13 +81,19 @@ class _FakeProvider:
         self._raise_on_outline = raise_on_outline
 
     def generate_outline(
-        self, block: Block, *, source_chunks: Any, objectives: Any
+        self,
+        block: Block,
+        *,
+        source_chunks: Any,
+        objectives: Any,
+        **kwargs: Any,
     ) -> Block:
         self.outline_calls.append(
             {
                 "block": block,
                 "source_chunks": source_chunks,
                 "objectives": objectives,
+                **{k: v for k, v in kwargs.items() if k == "remediation_suffix"},
             }
         )
         if self._raise_on_outline:
@@ -472,7 +478,12 @@ def test_route_all_preserves_ordering_with_mixed_outcomes(monkeypatch):
             self.calls: List[str] = []
 
         def generate_outline(
-            self, block: Block, *, source_chunks: Any, objectives: Any
+            self,
+            block: Block,
+            *,
+            source_chunks: Any,
+            objectives: Any,
+            **kwargs: Any,
         ) -> Block:
             self.calls.append(block.block_id)
             if "failure" in block.block_id:

@@ -78,11 +78,23 @@ class _SequenceOutlineProvider:
         self.calls: List[Dict[str, Any]] = []
 
     def generate_outline(
-        self, block: Block, *, source_chunks: Any, objectives: Any
+        self,
+        block: Block,
+        *,
+        source_chunks: Any,
+        objectives: Any,
+        **kwargs: Any,
     ) -> Block:
+        # Phase 3.5 Subtask 18: ``**kwargs`` swallows the new
+        # ``remediation_suffix`` kwarg the router threads on regen.
         idx = min(len(self.calls), len(self._outputs) - 1)
         self.calls.append(
-            {"block": block, "source_chunks": source_chunks, "objectives": objectives}
+            {
+                "block": block,
+                "source_chunks": source_chunks,
+                "objectives": objectives,
+                **{k: v for k, v in kwargs.items() if k == "remediation_suffix"},
+            }
         )
         return self._outputs[idx]
 
