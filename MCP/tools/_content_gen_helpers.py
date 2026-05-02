@@ -1752,45 +1752,11 @@ def _topic_has_non_trivial_paragraph(topic: Dict[str, Any]) -> bool:
     return False
 
 
-# Phase 1 ToS unblock: minimal regex-based HTML parser for the
-# in-process content-provider's rendered HTML body. Phase 2 will swap
-# this for a Block-aware parser; until then we only need to extract
-# ``(heading, paragraphs[])`` tuples from a flat ``<section>`` /
-# ``<h2>`` + ``<p>`` shape. BeautifulSoup intentionally NOT used so
-# this stays dependency-light and the seam is easy to swap.
-_PROV_HEADING_RE = re.compile(
-    r"(?is)<h(?:1|2|3)[^>]*>(.*?)</h(?:1|2|3)>"
-)
-_PROV_PARAGRAPH_RE = re.compile(r"(?is)<p[^>]*>(.*?)</p>")
-_PROV_TAG_STRIP_RE = re.compile(r"(?is)<[^>]+>")
-
-
-def _parse_provider_page_html(html: Optional[str]) -> Tuple[Optional[str], List[str]]:
-    """Extract ``(heading, paragraphs[])`` from provider-rendered HTML.
-
-    Returns ``(None, [])`` when input is empty / unparseable. Strips
-    inner tags from extracted text so we don't double-escape when the
-    caller wraps the paragraphs in ``html.escape``. Empty paragraphs
-    (after tag strip + whitespace collapse) are dropped.
-    """
-    if not html or not isinstance(html, str):
-        return None, []
-    heading_match = _PROV_HEADING_RE.search(html)
-    heading: Optional[str] = None
-    if heading_match:
-        raw_heading = heading_match.group(1) or ""
-        heading = _PROV_TAG_STRIP_RE.sub("", raw_heading).strip()
-        if not heading:
-            heading = None
-
-    paragraphs: List[str] = []
-    for m in _PROV_PARAGRAPH_RE.finditer(html):
-        raw = m.group(1) or ""
-        text = _PROV_TAG_STRIP_RE.sub("", raw)
-        text = re.sub(r"\s+", " ", text).strip()
-        if text:
-            paragraphs.append(text)
-    return heading, paragraphs
+# Phase 2 Subtask 36: ``_parse_provider_page_html`` (and its companion
+# regexes) moved into ``Courseforge/scripts/blocks.py`` so the
+# :class:`ContentGeneratorProvider` constructs a ``Block`` directly. The
+# wire-in below now consumes ``block.content`` / ``block.key_terms``
+# without an intermediate HTML regex pass.
 
 
 def _build_content_modules_dynamic(
@@ -1885,29 +1851,47 @@ def _build_content_modules_dynamic(
                         else None
                     ),
                 }
-                rendered_html = content_provider.generate_page(
+                block = content_provider.generate_page(
                     course_code=course_code or "",
                     week_number=week_num or 0,
                     page_id=page_id,
                     page_template="<!--CONTENT_MODULE-->",
                     page_context=page_context,
                 )
-                provider_heading, provider_paragraphs = (
-                    _parse_provider_page_html(rendered_html)
-                )
-                if provider_paragraphs:
-                    sections[0]["paragraphs"] = [
-                        _html.escape(p) for p in provider_paragraphs
+                # Phase 2 Subtask 36: consume the Block directly. The
+                # Block carries the rendered prose on ``content`` (a
+                # single concatenated string) and the key-term slugs
+                # on ``key_terms``. Split the prose on double-newline
+                # to recover paragraph boundaries when the provider
+                # author preserved them; otherwise wrap the whole
+                # thing as a single paragraph so the deterministic
+                # section shape stays valid.
+                provider_content = getattr(block, "content", "") or ""
+                if isinstance(provider_content, str) and provider_content.strip():
+                    raw_paragraphs = [
+                        p.strip()
+                        for p in re.split(r"\n\s*\n", provider_content)
+                        if p.strip()
                     ]
-                    if provider_heading:
-                        sections[0]["heading"] = provider_heading
-                        module_title = provider_heading
+                    if not raw_paragraphs:
+                        raw_paragraphs = [provider_content.strip()]
+                    sections[0]["paragraphs"] = [
+                        _html.escape(p) for p in raw_paragraphs
+                    ]
+                    block_key_terms = getattr(block, "key_terms", ()) or ()
+                    if block_key_terms:
+                        # Preserve the section's key_terms shape (bare
+                        # slug strings) so downstream renderers
+                        # (``_render_content_sections`` /
+                        # ``_render_content_paragraphs``) treat the
+                        # provider-authored terms identically to topic
+                        # key terms.
+                        sections[0]["key_terms"] = list(block_key_terms)
                 else:
                     logger.warning(
-                        "content_provider.generate_page returned no "
-                        "parseable paragraphs for week=%s page=%s; "
-                        "falling back to deterministic DART-paragraph "
-                        "synthesis.",
+                        "content_provider.generate_page returned a Block "
+                        "with empty content for week=%s page=%s; falling "
+                        "back to deterministic DART-paragraph synthesis.",
                         week_num,
                         page_id,
                     )
