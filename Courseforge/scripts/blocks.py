@@ -96,7 +96,20 @@ BLOCK_TYPES: frozenset = frozenset(
 )
 
 
-_TOUCH_TIERS: frozenset = frozenset({"outline", "validation", "rewrite"})
+# Phase 3.5 Subtask 14: extend the canonical Touch.tier enum with
+# the post-validation tier labels ``outline_val`` and ``rewrite_val``.
+# These mark a Touch emitted by the inter-tier validation seam (after
+# the outline-tier draft) and the post-rewrite validation seam (after
+# the rewrite-tier emit) respectively, distinguishing audit entries
+# the validators append from the upstream authoring tier touches
+# (``outline`` / ``rewrite``). The legacy ``validation`` value is
+# retained for backwards compatibility with pre-Phase-3.5 captures.
+#
+# Plan refers to this constant as ``_TIER_VALUES``; the canonical
+# in-tree name has always been ``_TOUCH_TIERS`` (Phase 2 introduction).
+_TOUCH_TIERS: frozenset = frozenset(
+    {"outline", "validation", "rewrite", "outline_val", "rewrite_val"}
+)
 
 _TOUCH_PROVIDERS: frozenset = frozenset(
     {"anthropic", "local", "together", "claude_session", "deterministic"}
