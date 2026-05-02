@@ -127,6 +127,7 @@
         "strategy_decision",
         "structure_detection",
         "synthesis_provider_call",
+        "teaching_role_heuristic_extended",
         "textbook_integration",
         "training_run_planning",
         "typed_edge_inference",

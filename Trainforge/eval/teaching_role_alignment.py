@@ -45,16 +45,27 @@ class TeachingRoleAlignmentEvaluator:
     # Default expected-mode floors. Each entry maps a
     # ``content_type_label`` to ``{"expected_role", "min_share"}``.
     # Operators override via the ``expected_modes`` constructor kwarg
-    # or via the workflow gate's ``inputs.expected_modes`` block. The
-    # ``procedure`` and ``example`` content types are intentionally
-    # absent: per the plan's Decision Points Q2/Q3, their pedagogical
-    # role is bimodal in observed corpora and the operator has not yet
-    # committed a default.
+    # or via the workflow gate's ``inputs.expected_modes`` block.
+    #
+    # Wave 138b: ``procedure`` was added per the plan's Decision Point
+    # Q2 (operator-recommended). The rdf-shacl-551-2 corpus shows
+    # ``procedure`` chunks split as elaborate=11, introduce=3,
+    # reinforce=3, transfer=1 — elaborate is the dominant role at
+    # 11/18 (~0.61). The 0.70 floor is intentionally aspirational
+    # rather than empirical: a corpus that drops below it surfaces
+    # via the warning-severity gate, so the operator sees the
+    # alignment drift before it becomes structural.
+    #
+    # ``example`` is intentionally absent. Decision Point Q3:
+    # the rdf-shacl-551-2 distribution is bimodal (elaborate=11,
+    # reinforce=10) with no confident expected mode. Re-evaluate when
+    # a second corpus carries a confident mode.
     DEFAULT_EXPECTED_MODES: Dict[str, Dict[str, Any]] = {
         "real_world_scenario": {"expected_role": "transfer",   "min_share": 0.70},
         "scenario":            {"expected_role": "transfer",   "min_share": 0.70},
         "definition":          {"expected_role": "introduce",  "min_share": 0.70},
         "summary":             {"expected_role": "synthesize", "min_share": 0.70},
+        "procedure":           {"expected_role": "elaborate",  "min_share": 0.70},
         "assessment_item":     {"expected_role": "assess",     "min_share": 1.00},
         "assessment":          {"expected_role": "assess",     "min_share": 1.00},
         "self_check":          {"expected_role": "assess",     "min_share": 1.00},
