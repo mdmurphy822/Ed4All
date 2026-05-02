@@ -355,7 +355,17 @@ The Phase 3 review surfaced this category as MEDIUM severity (Worker H's flagged
 
 ## Final smoke test
 
+This section is the **engineer-facing** companion to the
+operator-facing smoke runbook in `Courseforge/CLAUDE.md` ("Operator
+smoke runbook (post-Phase-3.5)" under § "Phase 3.5: symmetric
+validation + remediation"). The pytest invocation here covers the
+unit-test layer added across Phase 3.5 Waves A-C; the operator
+runbook covers the end-to-end verification on a real corpus.
+Subtask 37 finalises this section to reflect what actually landed
+across Subtasks 1-36.
+
 ```bash
+# Unit-test layer (Phase 3.5 Waves A-C):
 pytest Courseforge/router/tests/test_remediation.py \
        Courseforge/router/tests/test_inter_tier_gates_shape_dispatch.py \
        Courseforge/router/tests/test_remediation_injection.py \
@@ -364,32 +374,61 @@ pytest Courseforge/router/tests/test_remediation.py \
        MCP/tools/tests/test_pipeline_tools_phase3_handlers.py \
        lib/tests/test_phase3_5_decision_event_tier_field.py -v
 
+# End-to-end integration with strict decision-event validation:
 DECISION_VALIDATION_STRICT=true pytest \
   tests/integration/test_courseforge_two_pass_end_to_end.py -v
 
-# Verify post_rewrite_validation phase fired:
+# Verify post_rewrite_validation phase fired (per-phase capture
+# directory exists alongside the outline / inter-tier / rewrite ones):
 ls Courseforge/exports/PROJ-DEMO_303-*/training-captures/courseforge/DEMO_303/ \
   | grep "phase_courseforge-post-rewrite-validation"
 
-# Verify both outline_val + rewrite_val Touches present:
+# Verify the canonical post-Phase-3.5 Touch chain is present
+# (outline → outline_val → rewrite → rewrite_val):
 jq -r '.[] | .touched_by[].tier' \
   Courseforge/exports/PROJ-DEMO_303-*/03_content_development/blocks_validated.json \
   | sort -u    # expect: local, outline, outline_val, rewrite, rewrite_val
 
-# Verify the three new Phase 3 tool handlers fire end-to-end via WorkflowRunner:
+# Verify the executor's _PHASE_TOOL_MAPPING shim dispatched all four
+# Phase 3 / 3.5 phase handlers in dependency order. The grep covers
+# all four phase names (Subtask 31's mapping table is keyed on these
+# exact strings; missing one means the legacy generate_course_content
+# tool ran instead of the dedicated handler):
 COURSEFORGE_TWO_PASS=true ed4all run textbook-to-course \
   --corpus tests/fixtures/textbooks/demo_303.pdf --course-name DEMO_303 \
-  --dry-run 2>&1 | grep -E "phase=(content_generation_outline|inter_tier_validation|content_generation_rewrite)"
-# Expect three matching log lines, in order, confirming the executor's
-# _PHASE_TOOL_MAPPING precedence shim resolved each phase to its
-# tier-distinct handler instead of the legacy generate_course_content tool.
+  --dry-run 2>&1 \
+  | grep -E "phase=(content_generation_outline|inter_tier_validation|content_generation_rewrite|post_rewrite_validation)"
+# Expect four matching log lines, in dependency order.
 
-# Verify route_all exercises self-consistency when configured:
+# Verify the remediation-injection loop fired at both seams. The
+# block_validation_action event carries a tier field (Subtask 17 + 26)
+# distinguishing the inter-tier seam from the post-rewrite seam:
+jq -r 'select(.decision_type=="block_validation_action") | .ml_features.tier' \
+  training-captures/courseforge/DEMO_303/phase_courseforge-content-generator-outline/*.jsonl \
+  | sort -u    # expect: outline
+jq -r 'select(.decision_type=="block_validation_action") | .ml_features.tier' \
+  training-captures/courseforge/DEMO_303/phase_courseforge-post-rewrite-validation/*.jsonl \
+  | sort -u    # expect: rewrite
+
+# Verify validator_consensus_fail marker stamps blocks that
+# exhausted their rewrite-tier budget (Subtask 19's symmetric mirror
+# of the outline-tier consensus-failure marker — same value, semantic
+# disambiguation via the Touch tier chain):
+jq -r '.[] | select(.escalation_marker=="validator_consensus_fail")
+        | {block_id: .block_id,
+           attempts: .validation_attempts,
+           tiers: [.touched_by[].tier]}' \
+  Courseforge/exports/PROJ-DEMO_303-*/03_content_development/blocks_validated.json
+# Any blocks listed here exhausted the rewrite-tier regen budget;
+# the tier chain ends at "rewrite_val" rather than "outline_val".
+
+# Verify route_all exercises self-consistency when configured
+# (Subtask 33's widened route_all dispatch):
 COURSEFORGE_TWO_PASS=true COURSEFORGE_OUTLINE_N_CANDIDATES=3 ed4all run textbook-to-course \
   --corpus tests/fixtures/textbooks/demo_303.pdf --course-name DEMO_303_SC \
   --dry-run 2>&1 | grep "block_outline_call.*candidate_index"
 # Expect ≥3 lines per block (one decision-capture event per candidate)
-# confirming Subtask 33's widened route_all dispatched through
+# confirming the widened route_all dispatched through
 # route_with_self_consistency.
 ```
 
