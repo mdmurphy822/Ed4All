@@ -417,7 +417,7 @@ class BlockContentTypeValidator:
     """
 
     name = "outline_content_type"
-    version = "1.0.0"
+    version = "1.1.0"
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
@@ -438,20 +438,28 @@ class BlockContentTypeValidator:
         passed_count = 0
 
         for block in blocks:
-            content = _outline_dict(block)
-            if content is None:
+            content = block.content
+            # Phase 3.5: shape-dispatch — dict and str paths both
+            # extract a single content_type label, then validate it
+            # against the canonical chunk-type taxonomy (Trainforge-side
+            # enum, NOT the section-level content-type taxonomy — see
+            # Worker M's flagged inconsistency in Courseforge/CLAUDE.md
+            # § "Phase 3: outline-rewrite two-pass router").
+            if not isinstance(content, (dict, str)):
                 continue
             audited += 1
-            ctype = content.get("content_type")
+            ctype = _extract_content_type_from_block(block)
             if not isinstance(ctype, str) or not ctype:
                 if len(issues) < _ISSUE_LIST_CAP:
                     issues.append(GateIssue(
                         severity="critical",
                         code="OUTLINE_BLOCK_MISSING_CONTENT_TYPE",
                         message=(
-                            f"Outline-tier Block {block.block_id!r} is "
-                            f"missing content['content_type'] (got "
-                            f"{ctype!r})."
+                            f"Block {block.block_id!r} is missing a "
+                            f"content_type label (dict path: "
+                            f"content['content_type']; str path: "
+                            f"data-cf-content-type attribute). Got "
+                            f"{ctype!r}."
                         ),
                         location=block.block_id,
                     ))
@@ -462,16 +470,18 @@ class BlockContentTypeValidator:
                         severity="critical",
                         code="OUTLINE_BLOCK_INVALID_CONTENT_TYPE",
                         message=(
-                            f"Outline-tier Block {block.block_id!r} declares "
-                            f"content['content_type']={ctype!r} which is not "
-                            f"in the canonical ChunkType taxonomy. Valid "
-                            f"values: {sorted(valid_types)}."
+                            f"Block {block.block_id!r} declares "
+                            f"content_type={ctype!r} which is not in the "
+                            f"canonical ChunkType taxonomy. Valid values: "
+                            f"{sorted(valid_types)}."
                         ),
                         location=block.block_id,
                         suggestion=(
                             "Re-roll the outline-tier provider with the "
                             "JSON-schema directive enumerating the valid "
-                            "content_type values."
+                            "content_type values, or correct the rewrite-"
+                            "tier emit to stamp data-cf-content-type with "
+                            "a taxonomy-compliant label."
                         ),
                     ))
             else:
