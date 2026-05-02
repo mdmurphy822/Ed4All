@@ -88,13 +88,21 @@ class _AlwaysFailingOutlineProvider:
         self.calls: List[Dict[str, Any]] = []
 
     def generate_outline(
-        self, block: Block, *, source_chunks: Any, objectives: Any
+        self,
+        block: Block,
+        *,
+        source_chunks: Any,
+        objectives: Any,
+        **kwargs: Any,
     ) -> Block:
+        # Phase 3.5 Subtask 18: ``**kwargs`` swallows the new
+        # ``remediation_suffix`` kwarg the router threads on regen.
         self.calls.append(
             {
                 "block": block,
                 "source_chunks": source_chunks,
                 "objectives": objectives,
+                **{k: v for k, v in kwargs.items() if k == "remediation_suffix"},
             }
         )
         # Return the block unchanged so the per-fail
