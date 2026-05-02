@@ -1556,8 +1556,24 @@ class WorkflowRunner:
     def _dependencies_met(
         self, phase: WorkflowPhase, phase_outputs: Dict[str, Dict]
     ) -> bool:
-        """Check that all phase dependencies have completed."""
-        for dep in (phase.depends_on or []):
+        """Check that all phase dependencies have completed.
+
+        Phase 3 Subtask 4: when a phase declares
+        ``depends_on_when_env`` paired with
+        ``depends_on_when_env_value`` and the predicate is satisfied,
+        the alt list replaces ``depends_on`` for this check. Used by
+        ``course_generation::packaging`` to switch from depending on
+        the legacy ``content_generation`` to the rewrite tier
+        ``content_generation_rewrite`` when ``COURSEFORGE_TWO_PASS=true``.
+        """
+        alt_pred = getattr(phase, "depends_on_when_env", None)
+        alt_value = getattr(phase, "depends_on_when_env_value", None)
+        if alt_pred and alt_value and self._eval_enabled_when_env(alt_pred):
+            deps = list(alt_value)
+        else:
+            deps = list(phase.depends_on or [])
+
+        for dep in deps:
             dep_output = phase_outputs.get(dep, {})
             if not dep_output.get("_completed"):
                 return False

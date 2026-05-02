@@ -44,6 +44,10 @@ workflows:
         depends_on: [planning]
         timeout_minutes: 120
         batch_timeout_minutes: 30  # Phase 0: Per-batch timeout
+        # Phase 3 Subtask 4: legacy single-pass disables itself when
+        # the new two-pass router is engaged. Default off so legacy
+        # runs stay byte-stable.
+        enabled_when_env: "COURSEFORGE_TWO_PASS!=true"
 
         # Phase 0: Validation gates
         validation_gates:
@@ -56,12 +60,80 @@ workflows:
               on_fail: block
               on_error: fail_closed
 
+      # Phase 3 Subtask 4: two-pass router phases mirrored from
+      # textbook_to_course. Engaged when ``COURSEFORGE_TWO_PASS=true``.
+      - name: content_generation_outline
+        agents: [content-generator]
+        parallel: true
+        max_concurrent: 10
+        batch_by: week
+        depends_on: [planning]
+        timeout_minutes: 30
+        batch_timeout_minutes: 10
+        description: Phase 3 — outline-tier Block emit (terse provider, no HTML body)
+        enabled_when_env: "COURSEFORGE_TWO_PASS=true"
+
+      - name: inter_tier_validation
+        agents: []
+        parallel: false
+        max_concurrent: 1
+        depends_on: [content_generation_outline]
+        timeout_minutes: 5
+        description: Phase 3 — run structural validators on the outline tier
+        enabled_when_env: "COURSEFORGE_TWO_PASS=true"
+
+        validation_gates:
+          - gate_id: outline_curie_anchoring
+            validator: lib.validators.curie_anchoring.CurieAnchoringValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+
+          - gate_id: outline_content_type
+            validator: lib.validators.content_type.ContentTypeValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+
+          - gate_id: outline_page_objectives
+            validator: lib.validators.page_objectives.PageObjectivesValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+
+      - name: content_generation_rewrite
+        agents: [content-generator]
+        parallel: true
+        max_concurrent: 10
+        batch_by: week
+        depends_on: [inter_tier_validation]
+        timeout_minutes: 90
+        batch_timeout_minutes: 30
+        description: Phase 3 — rewrite-tier HTML emit consuming validated Block outlines
+        enabled_when_env: "COURSEFORGE_TWO_PASS=true"
+
       - name: packaging
         agents: [brightspace-packager]
         parallel: true
         max_concurrent: 10
         batch_by: week
         depends_on: [content_generation]
+        # Phase 3 Subtask 4: alternate dependency when two-pass is on.
+        # ``_dependencies_met`` honours this via the same env-predicate
+        # grammar as ``enabled_when_env``: when the predicate matches,
+        # the alternate ``depends_on_when_env_value`` list replaces
+        # ``depends_on`` for the dependency check.
+        depends_on_when_env: "COURSEFORGE_TWO_PASS=true"
+        depends_on_when_env_value: [content_generation_rewrite]
         timeout_minutes: 45
 
         validation_gates:
