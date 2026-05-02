@@ -555,7 +555,7 @@ class BlockPageObjectivesValidator:
     """
 
     name = "outline_page_objectives"
-    version = "1.0.0"
+    version = "1.1.0"
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
@@ -576,6 +576,9 @@ class BlockPageObjectivesValidator:
             canonical_ids = _load_canonical_objectives(Path(objectives_path_raw))
 
         # Allow tests / direct callers to seed the objective set.
+        # Per Worker M's flag (Phase 3 review), this validator's input
+        # contract uses ``valid_objective_ids`` (asymmetric with the
+        # other three Block validators that take only ``blocks``).
         seeded = inputs.get("valid_objective_ids")
         if seeded is not None:
             canonical_ids = {str(o) for o in seeded}
@@ -585,17 +588,29 @@ class BlockPageObjectivesValidator:
         passed_count = 0
 
         for block in blocks:
+            content = block.content
+            # Phase 3.5: shape-dispatch — both paths extract a list of
+            # objective_id refs and validate against the canonical set.
+            # The dict path historically only consulted block.objective_ids;
+            # the str path falls back to scraping data-cf-objective-id
+            # attributes when the structural field is empty (unlikely
+            # for rewrite-tier output, but the helper is defensive).
+            if not isinstance(content, (dict, str)):
+                continue
             audited += 1
-            obj_ids = block.objective_ids or ()
+            obj_ids = _extract_objective_refs_from_block(block)
             if not obj_ids:
                 if len(issues) < _ISSUE_LIST_CAP:
                     issues.append(GateIssue(
                         severity="critical",
                         code="OUTLINE_BLOCK_MISSING_OBJECTIVE_REF",
                         message=(
-                            f"Outline-tier Block {block.block_id!r} declares "
-                            f"no objective_ids; every block must reference "
-                            f"at least one canonical TO-NN/CO-NN objective."
+                            f"Block {block.block_id!r} declares no "
+                            f"objective_ids (dict path: empty "
+                            f"block.objective_ids; str path: no "
+                            f"data-cf-objective-id attributes in HTML). "
+                            f"Every block must reference at least one "
+                            f"canonical TO-NN/CO-NN objective."
                         ),
                         location=block.block_id,
                     ))
@@ -613,16 +628,17 @@ class BlockPageObjectivesValidator:
                         severity="critical",
                         code="OUTLINE_BLOCK_UNKNOWN_OBJECTIVE",
                         message=(
-                            f"Outline-tier Block {block.block_id!r} "
-                            f"references objective_ids {unknown!r} that do "
-                            f"not resolve against the canonical objectives "
-                            f"JSON at {objectives_path_raw!r}."
+                            f"Block {block.block_id!r} references "
+                            f"objective_ids {unknown!r} that do not resolve "
+                            f"against the canonical objectives JSON at "
+                            f"{objectives_path_raw!r} (input key: "
+                            f"valid_objective_ids)."
                         ),
                         location=block.block_id,
                         suggestion=(
                             "Either correct the objective_id reference in "
-                            "the outline tier or extend "
-                            "synthesized_objectives.json upstream."
+                            "the outline tier / rewrite-tier HTML emit, or "
+                            "extend synthesized_objectives.json upstream."
                         ),
                     ))
             else:
@@ -699,7 +715,7 @@ class BlockSourceRefValidator:
     """
 
     name = "outline_source_refs"
-    version = "1.0.0"
+    version = "1.1.0"
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
@@ -731,25 +747,22 @@ class BlockSourceRefValidator:
         empty_manifest = manifest_path is not None and not valid_ids
 
         for block in blocks:
+            content = block.content
+            # Phase 3.5: shape-dispatch — both paths extract a list of
+            # source_id refs. Dict path harvests from
+            # block.source_references + block.source_ids (legacy);
+            # str path additionally scrapes data-cf-source-ids
+            # attributes from the rewrite-tier HTML.
+            if not isinstance(content, (dict, str)):
+                continue
             audited += 1
-            # Accept both source_ids (Tuple[str,...]) and source_references
-            # (Tuple[Dict[str,...], ...]); the rewrite tier consumes
-            # source_references but the outline tier may carry either.
-            block_ids: List[str] = []
-            for ref in block.source_references or ():
-                if isinstance(ref, dict):
-                    sid = ref.get("sourceId")
-                    if isinstance(sid, str) and sid:
-                        block_ids.append(sid)
-            for sid in block.source_ids or ():
-                if isinstance(sid, str) and sid:
-                    block_ids.append(sid)
+            block_ids: List[str] = _extract_source_refs_from_block(block)
 
             if not block_ids:
-                # No source_ids on this block — outline-tier Blocks
-                # are allowed to defer source attribution to the
-                # rewrite tier when no DART grounding applies, so
-                # an empty list passes the structural check.
+                # No source_ids on this block — Blocks are allowed to
+                # defer source attribution when no DART grounding
+                # applies, so an empty list passes the structural check
+                # on both tiers.
                 passed_count += 1
                 continue
 
