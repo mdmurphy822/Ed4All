@@ -1550,29 +1550,24 @@ def _align_bloom_matches(
     return [matches[primary_idx]] + rest
 
 
-def _build_objectives_metadata(
+def _build_objective_blocks(
     objectives: List[Dict],
     *,
     page_id: str = "",
-) -> List[Dict[str, Any]]:
-    """Build structured objective metadata for JSON-LD from week objectives.
+) -> List[Block]:
+    """Build the canonical ``List[Block]`` for a page's learning objectives.
 
-    Phase 2 (Subtask 22): refactored to construct a ``Block(block_type=
-    "objective", …)`` per LO and project to the JSON-LD entry via
-    ``block.to_jsonld_entry()``. Public signature kept stable
-    (``page_id`` is an optional kwarg that defaults to ``""``;
-    untouched callers behave identically). The Block intermediate
-    captures the canonical singular/plural Bloom + key-concept fields;
-    the page-level fields that aren't part of the Block surface
-    (``assessmentSuggestions`` / ``prerequisiteObjectives`` /
-    ``hierarchyLevel`` / ``parentObjectiveId``) are augmented onto the
-    entry dict afterwards. Subtask 27 reuses these Block instances —
-    callers can pass ``page_id`` to mint stable IDs that match the
-    ``_render_objectives`` ID scheme; legacy callers fall through to
-    ``_LEGACY_PAGE_ID``.
+    Phase 2 (Subtask 27): factored out of :func:`_build_objectives_metadata`
+    so :func:`generate_week` can capture the Block list and pass it to
+    :func:`_build_page_metadata` via ``blocks=…`` for the new top-level
+    ``blocks[]`` array. The metadata function consumes the same blocks
+    via ``[b.to_jsonld_entry() for b in blocks]`` (plus the page-level
+    field augmentation for ``assessmentSuggestions`` /
+    ``prerequisiteObjectives`` / ``hierarchyLevel`` / ``parentObjectiveId``
+    that don't live on the Block surface).
     """
     bound_page_id = page_id or _LEGACY_PAGE_ID
-    result = []
+    blocks: List[Block] = []
     for i, o in enumerate(objectives):
         bloom_level = o.get("bloom_level")
         bloom_verb = o.get("bloom_verb")
@@ -1607,39 +1602,71 @@ def _build_objectives_metadata(
             bloom_verbs=tuple(verb for _l, verb in aligned_matches),
             key_terms=tuple(key_concepts),
         )
+        blocks.append(block)
+    return blocks
+
+
+def _augment_objective_entry(entry: Dict[str, Any], o: Dict) -> None:
+    """Augment the Block-derived JSON-LD entry with the page-level fields
+    that don't live on the canonical Block surface (assessmentSuggestions /
+    prerequisiteObjectives / hierarchyLevel / parentObjectiveId).
+    """
+    # Re-derive bloom_level the same way Block construction did so the
+    # assessment-suggestion lookup keys on the same value.
+    bloom_level = o.get("bloom_level")
+    if not bloom_level:
+        bloom_level, _verb = detect_bloom_level(o["statement"])
+    # Include assessment suggestions based on Bloom's level
+    if bloom_level and bloom_level in BLOOM_VERBS:
+        from_bloom = {
+            "remember": ["multiple_choice", "true_false", "fill_in_blank"],
+            "understand": ["multiple_choice", "short_answer", "fill_in_blank"],
+            "apply": ["multiple_choice", "short_answer", "essay"],
+            "analyze": ["multiple_choice", "essay", "short_answer"],
+            "evaluate": ["essay", "multiple_choice", "short_answer"],
+            "create": ["essay", "short_answer"],
+        }
+        entry["assessmentSuggestions"] = from_bloom.get(bloom_level, [])
+    prereqs = o.get("prerequisite_objectives", [])
+    if prereqs:
+        entry["prerequisiteObjectives"] = prereqs
+    # Wave 59: explicit LO hierarchy in the JSON-LD payload. The
+    # hierarchy tier ('terminal' / 'chapter') is derivable from the
+    # canonical ID prefix — promote it to a first-class field so KG
+    # consumers don't have to re-parse IDs. The parent edge
+    # ('parentObjectiveId') is opt-in: emit only when upstream
+    # supplies it (e.g., synthesized_objectives.json). Non-canonical
+    # or missing IDs silently skip these fields.
+    lo_id = o.get("id")
+    if lo_id and _validate_lo_id(lo_id):
+        try:
+            entry["hierarchyLevel"] = _lo_hierarchy_from_id(lo_id)
+        except ValueError:
+            # Recognized pattern but unknown prefix — elide rather than
+            # emit a non-enum value that schema validation would reject.
+            pass
+    parent_id = o.get("parent_objective_id") or o.get("parentObjectiveId")
+    if parent_id and _validate_lo_id(parent_id):
+        entry["parentObjectiveId"] = parent_id
+
+
+def _build_objectives_metadata(
+    objectives: List[Dict],
+    *,
+    page_id: str = "",
+) -> List[Dict[str, Any]]:
+    """Build structured objective metadata for JSON-LD from week objectives.
+
+    Phase 2 (Subtask 22 + 27): builds the canonical ``List[Block]`` via
+    :func:`_build_objective_blocks` then projects each block to a
+    JSON-LD entry via ``block.to_jsonld_entry()`` and augments with the
+    page-level fields that don't live on the Block surface.
+    """
+    blocks = _build_objective_blocks(objectives, page_id=page_id)
+    result: List[Dict[str, Any]] = []
+    for block, o in zip(blocks, objectives):
         entry = block.to_jsonld_entry()
-        # Include assessment suggestions based on Bloom's level
-        if bloom_level and bloom_level in BLOOM_VERBS:
-            from_bloom = {
-                "remember": ["multiple_choice", "true_false", "fill_in_blank"],
-                "understand": ["multiple_choice", "short_answer", "fill_in_blank"],
-                "apply": ["multiple_choice", "short_answer", "essay"],
-                "analyze": ["multiple_choice", "essay", "short_answer"],
-                "evaluate": ["essay", "multiple_choice", "short_answer"],
-                "create": ["essay", "short_answer"],
-            }
-            entry["assessmentSuggestions"] = from_bloom.get(bloom_level, [])
-        prereqs = o.get("prerequisite_objectives", [])
-        if prereqs:
-            entry["prerequisiteObjectives"] = prereqs
-        # Wave 59: explicit LO hierarchy in the JSON-LD payload. The
-        # hierarchy tier ('terminal' / 'chapter') is derivable from the
-        # canonical ID prefix — promote it to a first-class field so KG
-        # consumers don't have to re-parse IDs. The parent edge
-        # ('parentObjectiveId') is opt-in: emit only when upstream
-        # supplies it (e.g., synthesized_objectives.json). Non-canonical
-        # or missing IDs silently skip these fields.
-        lo_id = o.get("id")
-        if lo_id and _validate_lo_id(lo_id):
-            try:
-                entry["hierarchyLevel"] = _lo_hierarchy_from_id(lo_id)
-            except ValueError:
-                # Recognized pattern but unknown prefix — elide rather than
-                # emit a non-enum value that schema validation would reject.
-                pass
-        parent_id = o.get("parent_objective_id") or o.get("parentObjectiveId")
-        if parent_id and _validate_lo_id(parent_id):
-            entry["parentObjectiveId"] = parent_id
+        _augment_objective_entry(entry, o)
         result.append(entry)
     return result
 
@@ -1675,35 +1702,19 @@ def _collect_section_roles(section: Dict) -> List[str]:
     return sorted(roles)
 
 
-def _build_sections_metadata(
+def _build_section_blocks(
     sections: List[Dict],
     *,
     page_id: str = "",
-) -> List[Dict[str, Any]]:
-    """Build structured section metadata for JSON-LD.
+) -> List[Block]:
+    """Build the canonical ``List[Block]`` for a page's sections.
 
-    Wave 9 addition (source provenance): each section may carry a
-    ``source_references`` key (list of
-    :class:`schemas/knowledge/source_reference.schema.json` SourceReference
-    objects). When present and non-empty, emitted as ``sourceReferences``
-    on the section entry. Absent / empty → elided for backward compat.
-
-    Phase 2 (Subtask 23): refactored to construct one ``Block(block_type=
-    "explanation", …)`` per section heading and project to the JSON-LD
-    entry via ``block.to_jsonld_entry()``. The Block's natural shape
-    (``keyTerms`` as ``Tuple[str, ...]``, ``teachingRole`` as a single
-    string) does NOT match the legacy section-emit shape (``keyTerms``
-    as a ``[{term, definition}]`` list of flip-card dicts;
-    ``teachingRole`` as a multi-string array from
-    ``_collect_section_roles``). The Block-derived entry is therefore
-    augmented with the legacy ``keyTerms`` / ``teachingRole`` shapes
-    after ``to_jsonld_entry()`` returns. Public signature kept stable
-    (``page_id`` is an optional kwarg defaulting to ``""``); Subtask 27
-    will pass it from ``generate_week`` so the same Block instances can
-    be reused for the new top-level ``blocks[]`` array.
+    Phase 2 (Subtask 27): factored out of :func:`_build_sections_metadata`
+    so :func:`generate_week` can capture the Block list and pass it to
+    :func:`_build_page_metadata` for the new top-level ``blocks[]``.
     """
     bound_page_id = page_id or _LEGACY_PAGE_ID
-    result = []
+    blocks: List[Block] = []
     for sec_idx, section in enumerate(sections):
         content_type = section.get("content_type") or _infer_content_type(section)
         bloom_range = section.get("bloom_range") or None
@@ -1721,22 +1732,57 @@ def _build_sections_metadata(
             bloom_range=bloom_range,
             source_references=tuple(section_refs) if section_refs else (),
         )
+        blocks.append(block)
+    return blocks
+
+
+def _augment_section_entry(entry: Dict[str, Any], section: Dict) -> None:
+    """Override the Block-derived section entry with the legacy
+    ``keyTerms`` (``[{term, definition}]``) and ``teachingRole``
+    (multi-string array) shapes that don't live on the canonical
+    Block surface.
+    """
+    # Legacy keyTerms shape: list of {term, definition} dicts from
+    # flip_cards (NOT slug strings — Block.key_terms doesn't match
+    # this shape, so we override the entry directly).
+    if section.get("flip_cards"):
+        entry["keyTerms"] = [
+            {"term": t["term"], "definition": t["definition"]}
+            for t in section["flip_cards"]
+        ]
+    # REC-VOC-02: deterministic teaching_role array collected from
+    # tagged components inside the section (stable, diff-friendly order).
+    # Block.teaching_role is a single string; the section-level shape
+    # is a list of distinct roles per section, so we override.
+    teaching_roles = _collect_section_roles(section)
+    if teaching_roles:
+        entry["teachingRole"] = teaching_roles
+
+
+def _build_sections_metadata(
+    sections: List[Dict],
+    *,
+    page_id: str = "",
+) -> List[Dict[str, Any]]:
+    """Build structured section metadata for JSON-LD.
+
+    Wave 9 addition (source provenance): each section may carry a
+    ``source_references`` key (list of
+    :class:`schemas/knowledge/source_reference.schema.json` SourceReference
+    objects). When present and non-empty, emitted as ``sourceReferences``
+    on the section entry. Absent / empty → elided for backward compat.
+
+    Phase 2 (Subtask 23 + 27): builds the canonical ``List[Block]`` via
+    :func:`_build_section_blocks` then projects each block to a JSON-LD
+    entry via ``block.to_jsonld_entry()`` and overrides the legacy
+    ``keyTerms`` / ``teachingRole`` shapes that don't live on the
+    Block surface.
+    """
+    blocks = _build_section_blocks(sections, page_id=page_id)
+    result: List[Dict[str, Any]] = []
+    for block, section in zip(blocks, sections):
         entry = block.to_jsonld_entry()
-        # Legacy keyTerms shape: list of {term, definition} dicts from
-        # flip_cards (NOT slug strings — Block.key_terms doesn't match
-        # this shape, so we override the entry directly).
-        if section.get("flip_cards"):
-            entry["keyTerms"] = [
-                {"term": t["term"], "definition": t["definition"]}
-                for t in section["flip_cards"]
-            ]
-        # REC-VOC-02: deterministic teaching_role array collected from
-        # tagged components inside the section (stable, diff-friendly order).
-        # Block.teaching_role is a single string; the section-level shape
-        # is a list of distinct roles per section, so we override.
-        teaching_roles = _collect_section_roles(section)
-        if teaching_roles:
-            entry["teachingRole"] = teaching_roles
+        _augment_section_entry(entry, section)
         result.append(entry)
     return result
 
@@ -1790,47 +1836,20 @@ def _build_bloom_distribution(
     return out
 
 
-def _build_misconceptions_metadata(
+def _build_misconception_blocks(
     misconceptions: List[Dict],
     *,
     page_id: str = "",
-) -> List[Dict[str, Any]]:
-    """Enrich misconception dicts with Bloom metadata for the JSON-LD emit.
+) -> List[Block]:
+    """Build the canonical ``List[Block]`` for a page's misconceptions.
 
-    Wave 60: misconceptions used to ship as free ``{misconception, correction}``
-    pairs with no cognitive-demand signal. The KG couldn't distinguish an
-    "apply"-level mistake (common when learners mis-sequence a procedure)
-    from an "analyze"-level one (common when learners misread evidence),
-    so diagnostic-question generation couldn't key on the right demand.
-
-    This helper infers ``bloomLevel`` / ``cognitiveDomain`` per misconception:
-
-    * Prefer an upstream-supplied ``bloomLevel`` (or snake-case ``bloom_level``)
-      on the input dict — course-planner authority over detection.
-    * Otherwise run ``detect_bloom_level`` on the correction statement
-      first (describes the correct cognitive demand), falling back to the
-      misconception statement (may carry the "should" verb when the
-      correction is terse).
-    * If neither has a canonical verb, elide both fields entirely so
-      legacy payloads stay visually identical and consumers treat absence
-      as "unknown".
-
-    ``additionalProperties: false`` on the Misconception $def means we
-    strip any other keys from the input dict — callers that need to
-    attach extra metadata should extend the schema instead of smuggling
-    undeclared keys.
-
-    Phase 2 (Subtask 23): refactored to construct one ``Block(block_type=
-    "misconception", …)`` per misconception and project to the JSON-LD
-    entry via ``block.to_jsonld_entry()``. The Bloom inference logic
-    runs first; the resolved ``bloom_level`` + ``cognitive_domain`` are
-    set on the Block so ``_misconception_jsonld()`` emits the same
-    fields. Public signature kept stable (``page_id`` is an optional
-    kwarg defaulting to ``""``); Subtask 27 will pass it so the same
-    Block instances can be reused for the new top-level ``blocks[]``.
+    Phase 2 (Subtask 27): factored out of
+    :func:`_build_misconceptions_metadata` so :func:`generate_week` can
+    capture the Block list and pass it to :func:`_build_page_metadata`
+    for the new top-level ``blocks[]``.
     """
     bound_page_id = page_id or _LEGACY_PAGE_ID
-    result: List[Dict[str, Any]] = []
+    blocks: List[Block] = []
     for m_idx, m in enumerate(misconceptions):
         mis_text = str(m.get("misconception") or "")
         cor_text = str(m.get("correction") or "")
@@ -1856,8 +1875,140 @@ def _build_misconceptions_metadata(
             bloom_level=bloom_level or None,
             cognitive_domain=domain or None,
         )
-        result.append(block.to_jsonld_entry())
-    return result
+        blocks.append(block)
+    return blocks
+
+
+def _build_misconceptions_metadata(
+    misconceptions: List[Dict],
+    *,
+    page_id: str = "",
+) -> List[Dict[str, Any]]:
+    """Enrich misconception dicts with Bloom metadata for the JSON-LD emit.
+
+    Wave 60: misconceptions used to ship as free ``{misconception, correction}``
+    pairs with no cognitive-demand signal. The KG couldn't distinguish an
+    "apply"-level mistake (common when learners mis-sequence a procedure)
+    from an "analyze"-level one (common when learners misread evidence),
+    so diagnostic-question generation couldn't key on the right demand.
+
+    Bloom-level inference (in :func:`_build_misconception_blocks`):
+
+    * Prefer an upstream-supplied ``bloomLevel`` (or snake-case ``bloom_level``)
+      on the input dict — course-planner authority over detection.
+    * Otherwise run ``detect_bloom_level`` on the correction statement
+      first (describes the correct cognitive demand), falling back to the
+      misconception statement (may carry the "should" verb when the
+      correction is terse).
+    * If neither has a canonical verb, elide both fields entirely so
+      legacy payloads stay visually identical and consumers treat absence
+      as "unknown".
+
+    ``additionalProperties: false`` on the Misconception $def means we
+    strip any other keys from the input dict — callers that need to
+    attach extra metadata should extend the schema instead of smuggling
+    undeclared keys.
+
+    Phase 2 (Subtask 23 + 27): builds the canonical ``List[Block]`` via
+    :func:`_build_misconception_blocks` then projects each block to a
+    JSON-LD entry via ``block.to_jsonld_entry()``.
+    """
+    blocks = _build_misconception_blocks(misconceptions, page_id=page_id)
+    return [block.to_jsonld_entry() for block in blocks]
+
+
+def _build_activity_blocks(
+    activities: List[Dict],
+    *,
+    page_id: str = "",
+    source_ids: Optional[List[str]] = None,
+    source_primary: Optional[str] = None,
+) -> List[Block]:
+    """Build the canonical ``List[Block]`` for a page's activities.
+
+    Phase 2 (Subtask 27): mirrors the Block construction inside
+    :func:`_render_activities` (Subtask 19) so :func:`generate_week`
+    can collect activity Blocks for the new top-level ``blocks[]`` array
+    without requiring the renderer to return them.
+    """
+    bound_page_id = page_id or _LEGACY_PAGE_ID
+    act_role = _map_teaching_role("activity", "practice")
+    blocks: List[Block] = []
+    for i, act in enumerate(activities, 1):
+        bloom = act.get("bloom_level", "apply")
+        obj_ref = act.get("objective_ref", "")
+        act_refs = act.get("source_references")
+        if act_refs:
+            act_ids = _refs_to_id_list(act_refs)
+            act_primary = _refs_primary(act_refs)
+        else:
+            act_ids = source_ids
+            act_primary = source_primary
+        block = Block(
+            block_id=Block.stable_id(
+                bound_page_id, "activity",
+                _slugify(act.get("title", "")) or f"a{i}", i - 1,
+            ),
+            block_type="activity",
+            page_id=bound_page_id,
+            sequence=i - 1,
+            content={
+                "title": act.get("title", ""),
+                "description": act.get("description", ""),
+            },
+            bloom_level=bloom,
+            teaching_role=act_role or None,
+            objective_ids=(obj_ref,) if obj_ref else (),
+            source_ids=tuple(act_ids) if act_ids else (),
+            source_primary=act_primary,
+        )
+        blocks.append(block)
+    return blocks
+
+
+def _build_self_check_blocks(
+    questions: List[Dict],
+    *,
+    page_id: str = "",
+    source_ids: Optional[List[str]] = None,
+    source_primary: Optional[str] = None,
+) -> List[Block]:
+    """Build the canonical ``List[Block]`` for a page's self-check questions.
+
+    Phase 2 (Subtask 27): mirrors the Block construction inside
+    :func:`_render_self_check` (Subtask 18). Per-question
+    ``source_references`` override the page-level ids before construction.
+    """
+    bound_page_id = page_id or _LEGACY_PAGE_ID
+    sc_role = _map_teaching_role("self-check", "formative-assessment")
+    blocks: List[Block] = []
+    for i, q in enumerate(questions, 1):
+        q_refs = q.get("source_references")
+        if q_refs:
+            q_ids = _refs_to_id_list(q_refs)
+            q_primary = _refs_primary(q_refs)
+        else:
+            q_ids = source_ids
+            q_primary = source_primary
+        bloom = q.get("bloom_level", "remember")
+        obj_ref = q.get("objective_ref", "")
+        block = Block(
+            block_id=Block.stable_id(
+                bound_page_id, "self_check_question",
+                _slugify(obj_ref) if obj_ref else f"q{i}", i - 1,
+            ),
+            block_type="self_check_question",
+            page_id=bound_page_id,
+            sequence=i - 1,
+            content={"question": q["question"], "options": q["options"]},
+            bloom_level=bloom,
+            teaching_role=sc_role or None,
+            objective_ids=(obj_ref,) if obj_ref else (),
+            source_ids=tuple(q_ids) if q_ids else (),
+            source_primary=q_primary,
+        )
+        blocks.append(block)
+    return blocks
 
 
 def _build_page_metadata(
@@ -2175,6 +2326,15 @@ def generate_week(
     if overview_body_attrs:
         overview_body += "\n    </section>"
 
+    # Phase 2 (Subtask 27): collect the canonical Block list for this
+    # page so _build_page_metadata can populate the new top-level
+    # blocks[] array when COURSEFORGE_EMIT_BLOCKS is on. Objective
+    # Blocks reuse the same construction the renderer + JSON-LD
+    # builder run; the wrapper Block already exists above.
+    overview_blocks: List[Block] = (
+        _build_objective_blocks(week_data["objectives"], page_id=overview_page_id)
+        + [_overview_wrapper_block]
+    )
     overview_meta = _build_page_metadata(
         course_code, week_num, "overview",
         overview_page_id,
@@ -2182,6 +2342,7 @@ def generate_week(
         classification=classification,
         prerequisite_pages=prereq_lookup.get(overview_page_id),
         source_references=overview_refs,
+        blocks=overview_blocks,
     )
     overview_html = _wrap_page(
         f"Week {week_num} Overview: {week_data['title']}",
@@ -2206,6 +2367,16 @@ def generate_week(
         extra_js = FLIP_CARD_JS if any(
             s.get("flip_cards") for s in content["sections"]
         ) else ""
+        # Phase 2 (Subtask 27): collect the canonical Block list for this
+        # content page (objective + section + misconception Blocks).
+        content_blocks: List[Block] = (
+            _build_objective_blocks(week_data["objectives"], page_id=page_id)
+            + _build_section_blocks(content["sections"], page_id=page_id)
+            + _build_misconception_blocks(
+                content.get("misconceptions", week_misconceptions),
+                page_id=page_id,
+            )
+        )
         content_meta = _build_page_metadata(
             course_code, week_num, "content", page_id,
             objectives=week_data["objectives"],
@@ -2214,6 +2385,7 @@ def generate_week(
             classification=classification,
             prerequisite_pages=prereq_lookup.get(page_id),
             source_references=page_refs,
+            blocks=content_blocks,
         )
         content_html = _wrap_page(
             f"Week {week_num}: {content['title']}",
@@ -2260,6 +2432,16 @@ def generate_week(
         )
         if app_body_attrs:
             app_body += "\n    </section>"
+        # Phase 2 (Subtask 27): collect the canonical Block list for this
+        # application page (objective + activity Blocks + wrapper Block).
+        app_blocks: List[Block] = (
+            _build_objective_blocks(week_data["objectives"], page_id=app_page_id)
+            + _build_activity_blocks(
+                week_data["activities"], page_id=app_page_id,
+                source_ids=app_ids, source_primary=app_primary,
+            )
+            + [_app_wrapper_block]
+        )
         app_meta = _build_page_metadata(
             course_code, week_num, "application",
             app_page_id,
@@ -2268,6 +2450,7 @@ def generate_week(
             classification=classification,
             prerequisite_pages=prereq_lookup.get(app_page_id),
             source_references=app_refs,
+            blocks=app_blocks,
         )
         app_html = _wrap_page(
             f"Week {week_num}: Application &amp; Activities",
@@ -2318,6 +2501,17 @@ def generate_week(
         )
         if sc_body_attrs:
             sc_body += "\n    </section>"
+        # Phase 2 (Subtask 27): collect the canonical Block list for this
+        # self-check page (objective + self-check question Blocks +
+        # wrapper Block).
+        sc_blocks: List[Block] = (
+            _build_objective_blocks(week_data["objectives"], page_id=sc_page_id)
+            + _build_self_check_blocks(
+                week_data["self_check_questions"], page_id=sc_page_id,
+                source_ids=sc_ids, source_primary=sc_primary,
+            )
+            + [_sc_wrapper_block]
+        )
         sc_meta = _build_page_metadata(
             course_code, week_num, "assessment",
             sc_page_id,
@@ -2326,6 +2520,7 @@ def generate_week(
             classification=classification,
             prerequisite_pages=prereq_lookup.get(sc_page_id),
             source_references=sc_refs,
+            blocks=sc_blocks,
         )
         sc_html = _wrap_page(
             f"Week {week_num}: Self-Check Quiz",
@@ -2405,6 +2600,12 @@ def generate_week(
     if summary_heading_attrs:
         summary_body += "\n    </section>"
 
+    # Phase 2 (Subtask 27): collect the canonical Block list for this
+    # summary page (objective Blocks + wrapper Block).
+    summary_blocks: List[Block] = (
+        _build_objective_blocks(week_data["objectives"], page_id=summary_page_id)
+        + [_summary_wrapper_block]
+    )
     summary_meta = _build_page_metadata(
         course_code, week_num, "summary",
         summary_page_id,
@@ -2412,6 +2613,7 @@ def generate_week(
         classification=classification,
         prerequisite_pages=prereq_lookup.get(summary_page_id),
         source_references=summary_refs,
+        blocks=summary_blocks,
     )
     summary_html = _wrap_page(
         f"Week {week_num}: Summary &amp; Reflection",
@@ -2453,6 +2655,12 @@ def generate_week(
         <li><strong>Due:</strong> {disc.get("due", "Initial post by Wednesday; replies by Sunday")}</li>
       </ul>
     </div>"""
+        # Phase 2 (Subtask 27): collect the canonical Block list for this
+        # discussion page (objective Blocks + wrapper Block).
+        disc_blocks: List[Block] = (
+            _build_objective_blocks(week_data["objectives"], page_id=disc_page_id)
+            + [_disc_wrapper_block]
+        )
         disc_meta = _build_page_metadata(
             course_code, week_num, "discussion",
             disc_page_id,
@@ -2460,6 +2668,7 @@ def generate_week(
             classification=classification,
             prerequisite_pages=prereq_lookup.get(disc_page_id),
             source_references=disc_refs,
+            blocks=disc_blocks,
         )
         disc_html = _wrap_page(
             f"Week {week_num}: Discussion",
