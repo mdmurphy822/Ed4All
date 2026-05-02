@@ -23,7 +23,7 @@ import yaml
 _LO_ID_RE = re.compile(r"^[a-zA-Z]{2,}-\d{2,}$")
 
 from .config import OrchestratorConfig, WorkflowPhase
-from .executor import ExecutionResult, TaskExecutor
+from .executor import _PHASE_TOOL_MAPPING, ExecutionResult, TaskExecutor
 
 logger = logging.getLogger(__name__)
 
@@ -1152,6 +1152,32 @@ class WorkflowRunner:
                 "dependencies": [],
             }
             tasks.append(task)
+
+        # Phase 4 Subtask 1 — synthesize a single virtual task for
+        # phases that declare ``agents: []`` but ARE registered in
+        # ``_PHASE_TOOL_MAPPING`` (e.g. ``inter_tier_validation``,
+        # ``post_rewrite_validation``, plus the two-pass
+        # outline/rewrite phases when wired without an explicit
+        # agent). Without this fallback, the per-agent loop above
+        # yields zero tasks, ``execute_phase`` runs the validation
+        # gate chain only, and the dedicated phase-handler
+        # (``run_inter_tier_validation`` / ``run_post_rewrite_validation``
+        # / etc.) never lands its blocks-validated-and-persist
+        # work to disk. The executor's ``_PHASE_TOOL_MAPPING.get``
+        # path keys off ``phase.name`` so the placeholder
+        # ``agent_type="phase-handler"`` is intentional — the agent
+        # name is irrelevant on this routing path.
+        if not tasks and _PHASE_TOOL_MAPPING.get(phase.name):
+            task_id = f"T-{phase.name}-phase-handler-{timestamp}"
+            tasks.append({
+                "id": task_id,
+                "agent_type": "phase-handler",
+                "phase": phase.name,
+                "status": "PENDING",
+                "params": routed_params.copy(),
+                "created_at": datetime.now().isoformat(),
+                "dependencies": [],
+            })
 
         return tasks
 
