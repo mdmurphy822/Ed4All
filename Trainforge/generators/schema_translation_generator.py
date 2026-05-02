@@ -1854,6 +1854,7 @@ def validate_form_data_contract(
     manifest_curies: Iterable[str],
     *,
     base_form_data: Optional[Dict[str, SurfaceFormData]] = None,
+    semantic_profile: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Wave 135a / Wave 136b — enforce the FORM_DATA coverage contract.
 
@@ -2276,6 +2277,25 @@ def validate_form_data_contract(
     # — both are non-blocking, but Rule 2 covers entry style drift while
     # OVERLAY surfaces structural regressions.
     warnings_list.extend(wave_137a_style_warnings)
+
+    # Wave 137 followup: semantic profile gating. When a profile is
+    # supplied and the entry for ``profile.target_curie`` is complete,
+    # run the profile's bad/good signal checks and append violations
+    # to ``content_violations`` (critical-severity, same shape as the
+    # other content rules so the backfill loop's cumulative-feedback
+    # helper picks them up uniformly).
+    if semantic_profile is not None:
+        from lib.ontology.semantic_profiles import evaluate_profile
+        target = semantic_profile.target_curie
+        target_entry = form_data.get(target)
+        if target_entry is not None and target_entry.anchored_status == "complete":
+            content_violations.extend(
+                evaluate_profile(
+                    semantic_profile,
+                    definitions=list(target_entry.definitions),
+                    usage_examples=list(target_entry.usage_examples),
+                )
+            )
 
     passed = (
         not missing

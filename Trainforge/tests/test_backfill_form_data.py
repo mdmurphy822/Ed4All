@@ -273,14 +273,14 @@ def test_backfill_auto_accepts_on_validator_pass(tmp_path):
 
     fake_stdout_yaml = _build_valid_yaml_payload(target_curie)
 
-    def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None):
+    def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None, semantic_profile_name=None):
         assert curie == target_curie
         return 0, fake_stdout_yaml, ""
 
     # Stub validator to always pass — Wave 136b's full validator is
     # exercised in its own test file; here we just want to assert the
     # merge works.
-    def fake_validator(form_data, manifest_curies):
+    def fake_validator(form_data, manifest_curies, semantic_profile=None):
         return {"passed": True, "content_violations": []}
 
     fake_form_data = {
@@ -369,10 +369,10 @@ def test_backfill_rejects_when_validator_fails_after_append(tmp_path):
     target_curie = "test:Beta"
     bad_yaml = _build_invalid_yaml_payload(target_curie)
 
-    def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None):
+    def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None, semantic_profile_name=None):
         return 0, bad_yaml, ""
 
-    def fake_validator(form_data, manifest_curies):
+    def fake_validator(form_data, manifest_curies, semantic_profile=None):
         return {
             "passed": False,
             "content_violations": [
@@ -443,11 +443,11 @@ def test_backfill_max_redrafts_exhausted_returns_dedicated_outcome(tmp_path):
 
     runner_calls = []
 
-    def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None):
+    def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None, semantic_profile_name=None):
         runner_calls.append(curie)
         return 0, bad_yaml, ""
 
-    def fake_validator(form_data, manifest_curies):
+    def fake_validator(form_data, manifest_curies, semantic_profile=None):
         return {
             "passed": False,
             "content_violations": [
@@ -512,7 +512,8 @@ def test_backfill_accumulates_violations_across_redrafts(tmp_path):
     runner_calls: List[Tuple[Optional[List[str]], ...]] = []
 
     def fake_runner(curie, family, course_code, provider, model,
-                    timeout=None, prior_violations=None):
+                    timeout=None, prior_violations=None,
+                    semantic_profile_name=None):
         # Capture every prior_violations payload threaded into the
         # subprocess so we can assert cumulative growth.
         runner_calls.append(tuple(prior_violations or []))
@@ -522,7 +523,7 @@ def test_backfill_accumulates_violations_across_redrafts(tmp_path):
     # set should grow across attempts.
     call_index = {"i": 0}
 
-    def fake_validator(form_data, manifest_curies):
+    def fake_validator(form_data, manifest_curies, semantic_profile=None):
         call_index["i"] += 1
         return {
             "passed": False,

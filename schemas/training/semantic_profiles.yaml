@@ -1,0 +1,88 @@
+## Semantic profiles — Wave 137 followup
+##
+## Per-CURIE acceptance contracts for FORM_DATA backfill. The structural
+## validators (Wave 136b/137a) catch placeholders, suffix templates,
+## anchor-verb capacity, diversity, provenance — but they do NOT catch
+## semantic confusion. For example the auto-redraft loop on rdf:type
+## passed every structural rule while drifting into rdfs:domain /
+## rdfs:range usage that does not make sense for rdf:type.
+##
+## A semantic profile names a target CURIE and declares:
+##   - bad_signals: substrings that must NOT appear anywhere in the
+##     entry's defs / usage_examples (zero tolerance — one match rejects)
+##   - good_signals: substrings of which AT LEAST ``min_good_signals``
+##     must appear across the entry's defs + usage_examples combined
+##   - required_in_definitions: substrings that must appear in the
+##     definitions list (≥1 occurrence anywhere across the list)
+##   - required_in_usage_examples: substrings that must appear in the
+##     usage_examples answer-side (≥1 occurrence)
+##   - prompt_directive: text injected into the drafting CLI prompt
+##     telling Qwen the must / must-not rules up front
+##
+## Profiles are critical-severity gates: a SEMANTIC_* violation rolls
+## back the append, fires through the cumulative-feedback redraft loop,
+## and counts toward MAX_REDRAFTS=10 before the loop returns
+## max_redrafts_exceeded.
+##
+## Validation: schemas/training/semantic_profiles.schema.json.
+
+profiles:
+
+  rdf_type_instanceof:
+    target_curie: "rdf:type"
+    description: |
+      rdf:type asserts class membership: a subject IS AN INSTANCE of a
+      class. It does NOT define the domain or range of a property; it
+      does NOT target nodes; it is not a SHACL constraint. This profile
+      catches the rdfs:domain / rdfs:range / sh:class confusion that
+      14B-Q4 generation drifts into when given only structural
+      validation feedback.
+
+    bad_signals:
+      - "rdf:type defines the domain"
+      - "rdf:type defines the range"
+      - "domain of rdf:type"
+      - "range of rdf:type"
+      - "rdf:type used to constrain values"
+      - "rdf:type is a property shape"
+      - "rdf:type targets a class"
+      - "rdf:type validates"
+
+    good_signals:
+      - "instance of"
+      - "member of"
+      - "is a class"
+      - "rdf:type ?Class"
+      - "rdf:type ?class"
+      - "?resource rdf:type"
+      - " a ?Class"
+      - "asserts class membership"
+
+    min_good_signals: 2
+
+    required_in_definitions:
+      - "instance"
+
+    required_in_usage_examples:
+      - "rdf:type"
+
+    prompt_directive: |
+      SEMANTIC CONTRACT (rdf:type — instance-of / class-membership):
+
+      MUST express:
+        - rdf:type asserts that a subject IS AN INSTANCE OF a class
+        - synonyms accepted: "member of", "instance of", "asserts class membership"
+        - at least one usage example must show the triple pattern
+          ?resource rdf:type ?Class . (or equivalent ?s a ?C . form)
+
+      MUST NOT express any of the following (ZERO TOLERANCE):
+        - rdf:type defines the domain or range of a property
+        - rdf:type is used to constrain values
+        - rdf:type is a property shape or targets a class via SHACL
+        - any conflation with rdfs:domain, rdfs:range, sh:class, or
+          sh:targetClass — those are SHACL/RDFS predicate-typing
+          machinery, NOT instance typing
+
+      Distinguish rdf:type from sh:class:
+        - rdf:type: a TRIPLE assertion (?s rdf:type ?C)
+        - sh:class: a SHACL CONSTRAINT (sh:property [sh:path :p ; sh:class :C])

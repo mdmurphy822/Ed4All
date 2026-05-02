@@ -148,6 +148,7 @@ PER-FIELD RULES
 def _build_drafting_prompt(
     entry: PropertyEntry,
     prior_violations: Optional[List[str]] = None,
+    semantic_profile: Optional[Any] = None,
 ) -> str:
     """Render the drafting prompt for ``entry``.
 
@@ -161,6 +162,12 @@ def _build_drafting_prompt(
     output, NOT Claude-authored example content — ToS-clean. Used by
     the backfill loop's auto-redraft path to give Qwen specific signal
     for fixing what its previous attempt got wrong.
+
+    Wave 137 followup (semantic profile): when ``semantic_profile`` is
+    supplied, its ``prompt_directive`` is prepended ABOVE the structural
+    rules — the model sees the semantic contract first because semantic
+    failure modes (rdf:type drifting into rdfs:domain/range) are
+    unrecoverable through structural-rule feedback alone.
     """
     surface_forms_csv = ", ".join(entry.surface_forms)
     base = _DRAFTING_PROMPT_TEMPLATE.format(
@@ -168,6 +175,8 @@ def _build_drafting_prompt(
         label=entry.label,
         surface_forms_csv=surface_forms_csv,
     )
+    if semantic_profile is not None and semantic_profile.prompt_directive:
+        base = semantic_profile.prompt_directive.rstrip() + "\n\n" + base
     if not prior_violations:
         return base
     # Cap at 10 lines so a runaway feedback list can't blow the prompt
@@ -500,6 +509,23 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "metadata about Qwen's own prior output, not example content)."
         ),
     )
+    # Wave 137 followup: per-CURIE semantic profile. When supplied, the
+    # profile's prompt_directive is prepended to the drafting prompt and
+    # the post-draft validator runs the profile's bad/good signal checks
+    # (in addition to the structural rules). Profiles live at
+    # schemas/training/semantic_profiles.yaml; valid names include
+    # 'rdf_type_instanceof'.
+    parser.add_argument(
+        "--semantic-profile",
+        default=None,
+        help=(
+            "Name of a semantic profile from "
+            "schemas/training/semantic_profiles.yaml. The profile's "
+            "prompt_directive is prepended to the drafting prompt and "
+            "its bad/good signal checks run alongside the structural "
+            "validator. The profile's target_curie must match --curie."
+        ),
+    )
     return parser
 
 
@@ -559,7 +585,36 @@ def main(argv: Optional[List[str]] = None) -> int:
                 file=sys.stderr,
             )
             return 2
-    prompt = _build_drafting_prompt(entry, prior_violations=prior_violations)
+
+    # Wave 137 followup: load the semantic profile (if requested) and
+    # verify its target_curie matches --curie. Profile drives both the
+    # prompt directive and the post-draft validator's profile rules.
+    semantic_profile = None
+    if args.semantic_profile:
+        from lib.ontology.semantic_profiles import load_semantic_profile
+        try:
+            semantic_profile = load_semantic_profile(args.semantic_profile)
+        except (FileNotFoundError, KeyError) as exc:
+            print(
+                f"ERROR: --semantic-profile {args.semantic_profile!r} "
+                f"failed to load: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        if semantic_profile.target_curie != args.curie:
+            print(
+                f"ERROR: --semantic-profile {args.semantic_profile!r} "
+                f"targets {semantic_profile.target_curie!r} but --curie "
+                f"is {args.curie!r}.",
+                file=sys.stderr,
+            )
+            return 2
+
+    prompt = _build_drafting_prompt(
+        entry,
+        prior_violations=prior_violations,
+        semantic_profile=semantic_profile,
+    )
 
     # Step 5: instantiate the provider.
     try:
@@ -604,7 +659,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     # The backfill loop's APPEND-time validator catches it strictly
     # (after the operator updates reviewed_by).
     synthetic = {args.curie: drafted}
-    report = validate_form_data_contract(synthetic, [args.curie])
+    report = validate_form_data_contract(
+        synthetic,
+        [args.curie],
+        semantic_profile=semantic_profile,
+    )
     real_violations = []
     expected_violations = []
     for v in report.get("content_violations", []) or []:
