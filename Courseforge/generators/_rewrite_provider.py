@@ -210,13 +210,88 @@ class RewriteProvider(_BaseLLMProvider):
       the CURIE-preservation gate.
     """
 
-    # __init__ filled in by Subtask 23.
+    def __init__(
+        self,
+        *,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        capture: Optional[Any] = None,
+        max_tokens: int = _DEFAULT_MAX_TOKENS,
+        temperature: float = _DEFAULT_TEMPERATURE,
+        # Optional dependency injections for tests.
+        client: Optional[Any] = None,
+        anthropic_client: Optional[Any] = None,
+    ) -> None:
+        # Tier-specific model resolution: ``COURSEFORGE_REWRITE_MODEL``
+        # wins over the synthesis-pipeline ``ANTHROPIC_SYNTHESIS_MODEL``
+        # / ``TOGETHER_SYNTHESIS_MODEL`` / ``LOCAL_SYNTHESIS_MODEL`` env
+        # vars the base reads. We honor it here because the base only
+        # reads the synthesis-pipeline vars by design (so a single Ollama
+        # endpoint serves both task surfaces); the per-tier model knob
+        # is the rewrite tier's own responsibility.
+        import os
+        resolved_model = model or os.environ.get(ENV_MODEL)
+
+        # ``openai_compatible`` is reserved for a future plumbing pass
+        # (the base currently routes ``local`` / ``together`` through
+        # :class:`OpenAICompatibleClient` already, so the explicit
+        # ``openai_compatible`` value would be redundant until the
+        # base grows a separate branch). Until then, the rewrite tier
+        # constructor accepts the same three the base accepts.
+        super().__init__(
+            provider=provider,
+            model=resolved_model,
+            api_key=api_key,
+            base_url=base_url,
+            capture=capture,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            client=client,
+            anthropic_client=anthropic_client,
+            env_provider_var=ENV_PROVIDER,
+            default_provider=DEFAULT_PROVIDER,
+            default_model_anthropic=DEFAULT_MODEL_ANTHROPIC,
+            default_model_together=DEFAULT_MODEL_TOGETHER,
+            default_model_local=DEFAULT_MODEL_LOCAL,
+            supported_providers=("anthropic", "together", "local"),
+            system_prompt=_REWRITE_SYSTEM_PROMPT,
+        )
 
     # _render_user_prompt filled in by Subtask 24.
 
     # _render_escalated_user_prompt filled in by Subtask 25.
 
     # generate_rewrite filled in by Subtask 26.
+
+    # ------------------------------------------------------------------
+    # Abstract method stubs (filled in by Subtasks 24-26).
+    # ------------------------------------------------------------------
+
+    def _render_user_prompt(self, *args: Any, **kwargs: Any) -> str:
+        raise NotImplementedError("filled in by Subtask 24")
+
+    def _emit_per_call_decision(
+        self,
+        *,
+        raw_text: str,
+        retry_count: int,
+        **call_context: Any,
+    ) -> None:
+        # Filled in by Subtask 26 (the rewrite-tier per-call decision
+        # event lives alongside ``generate_rewrite``). For now emit a
+        # generic capture so the abstract surface is satisfied — the
+        # block_rewrite_call / content_generator_call enum is registered
+        # in ``schemas/events/decision_event.schema.json`` already.
+        self._emit_decision(
+            decision_type="content_generator_call",
+            decision=f"rewrite output chars={len(raw_text or '')}",
+            rationale=(
+                f"Rewrite tier dispatched provider={self._provider}, "
+                f"model={self._model}, retry_count={retry_count}."
+            ),
+        )
 
 
 __all__ = [
