@@ -1,4 +1,5 @@
-"""Phase 3 inter-tier gate adapters (Subtask 50).
+"""Phase 3 inter-tier gate adapters (Subtask 50, extended in Phase 3.5
+Subtasks 6-9).
 
 Bridges the outline-tier ``Block`` list emitted by
 :class:`Courseforge.router.router.CourseforgeRouter` into the existing
@@ -30,11 +31,14 @@ GateResult.action contract (Phase 3 Subtask 46 / Phase 4 §1):
   not in the staging manifest). The router escalates instead of
   regenerating.
 
-Phase 3.5 will extend these adapters with shape discrimination so
-they also handle rewrite-tier blocks where ``block.content`` is an
-HTML string. The dict-only path in this module is intentional: the
-outline tier is the only consumer right now, and the rewrite-tier
-extension lands as a follow-up wave with its own tests.
+Phase 3.5 (Subtasks 6-9) extended these adapters with shape
+discrimination so they also handle rewrite-tier blocks where
+``block.content`` is an HTML string. Each adapter dispatches on
+``isinstance(block.content, dict | str)`` via per-validator
+``_extract_*`` helpers; the dict path preserves the legacy outline-tier
+contract byte-stable while the str path scrapes the rewrite-tier HTML
+for the same signal (CURIEs in text, ``data-cf-content-type`` /
+``data-cf-objective-id`` / ``data-cf-source-ids`` attributes).
 """
 from __future__ import annotations
 
@@ -99,14 +103,184 @@ def _outline_dict(block: Block) -> Optional[Dict[str, Any]]:
     """Return ``block.content`` if it is the outline-tier dict shape.
 
     Outline-tier Blocks carry a dict in ``content``; rewrite-tier
-    Blocks carry an HTML string. The Phase-3 adapters only audit the
-    outline tier, so any non-dict content is silently skipped (the
-    Block is treated as "not auditable by this gate").
+    Blocks carry an HTML string. Phase-3.5 shape-dispatching helpers
+    (``_extract_curies`` / ``_extract_content_type`` /
+    ``_extract_objective_refs`` / ``_extract_source_refs``) cover the
+    str path; this helper remains the canonical dict-side accessor.
     """
     content = block.content
     if isinstance(content, dict):
         return content
     return None
+
+
+# --------------------------------------------------------------------------- #
+# Phase 3.5: shape-discriminating extraction helpers
+# --------------------------------------------------------------------------- #
+
+# Cheap HTML-to-text helper: strip tags + collapse whitespace. Avoids
+# pulling in BeautifulSoup so the validator stays import-light. The
+# CURIE regex in lib.ontology.curie_extraction is robust to surrounding
+# punctuation, so a tag-strip is sufficient — we don't need a real DOM
+# walk for the curie / objective / source extraction surfaces.
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _strip_html(html: str) -> str:
+    """Strip HTML tags and collapse whitespace.
+
+    Used by the rewrite-tier (str-path) extractors. Not a full DOM
+    parser — just enough to surface text content for regex matching.
+    """
+    if not html:
+        return ""
+    text = _HTML_TAG_RE.sub(" ", html)
+    return _WHITESPACE_RE.sub(" ", text).strip()
+
+
+# Attribute extractors. Each matches the canonical Courseforge emit
+# pattern from Courseforge/scripts/blocks.py + generate_course.py:
+#   data-cf-content-type="<chunk-type>"
+#   data-cf-objective-id="<TO-NN>"  (per-element, may repeat)
+#   data-cf-source-ids="dart:slug#blk[,dart:slug#blk2]"
+# Quotes are normalised to double quotes by the renderer; we accept
+# both for forward-compat with future emit changes.
+_DATA_CF_CONTENT_TYPE_RE = re.compile(
+    r'data-cf-content-type=["\']([^"\']+)["\']'
+)
+_DATA_CF_OBJECTIVE_ID_RE = re.compile(
+    r'data-cf-objective-id=["\']([^"\']+)["\']'
+)
+_DATA_CF_SOURCE_IDS_RE = re.compile(
+    r'data-cf-source-ids=["\']([^"\']+)["\']'
+)
+
+
+def _extract_curies_from_block(block: Block) -> List[str]:
+    """Shape-discriminating CURIE extractor for Subtask 6.
+
+    Dict path (outline tier): returns ``block.content["curies"]``.
+    Str path (rewrite tier): strips HTML and uses
+    ``lib.ontology.curie_extraction.extract_curies`` over the surface
+    text. Returns a list (sorted, deduplicated) so the gate's anchoring
+    walk has a stable order regardless of dict/string source shape.
+    """
+    content = block.content
+    if isinstance(content, dict):
+        raw = content.get("curies") or []
+        return [c for c in raw if isinstance(c, str) and c]
+    if isinstance(content, str):
+        text = _strip_html(content)
+        return sorted(_extract_curies(text))
+    return []
+
+
+def _extract_content_type_from_block(block: Block) -> Optional[str]:
+    """Shape-discriminating content_type extractor for Subtask 7.
+
+    Dict path: returns ``block.content["content_type"]``.
+    Str path: regex-matches the first ``data-cf-content-type``
+    attribute in the HTML (canonical emit per
+    Courseforge/CLAUDE.md § "HTML Data Attributes").
+    """
+    content = block.content
+    if isinstance(content, dict):
+        ctype = content.get("content_type")
+        if isinstance(ctype, str) and ctype:
+            return ctype
+        return None
+    if isinstance(content, str):
+        match = _DATA_CF_CONTENT_TYPE_RE.search(content)
+        if match:
+            return match.group(1)
+        return None
+    return None
+
+
+def _extract_objective_refs_from_block(block: Block) -> List[str]:
+    """Shape-discriminating objective_id extractor for Subtask 8.
+
+    Dict path: prefers ``block.objective_ids`` (the structural field,
+    same source the Phase-3 dict-only path used). Falls back to
+    ``block.content["objective_ids"]`` if the field is empty.
+    Str path: scrapes every ``data-cf-objective-id`` attribute from
+    the rewrite-tier HTML. Multiple occurrences (one per ``<li>``) are
+    expected and deduplicated.
+
+    Returns a list preserving discovery order so the gate's "first
+    miss" diagnostic stays readable.
+    """
+    structural = list(block.objective_ids or ())
+    content = block.content
+    if isinstance(content, dict):
+        if structural:
+            return structural
+        raw = content.get("objective_ids") or []
+        return [o for o in raw if isinstance(o, str) and o]
+    if isinstance(content, str):
+        # Rewrite-tier: prefer the structural field when populated
+        # (the rewrite provider preserves it on the immutable Block);
+        # fall back to scraping the HTML for stand-alone callers.
+        if structural:
+            return structural
+        seen: List[str] = []
+        seen_set: Set[str] = set()
+        for match in _DATA_CF_OBJECTIVE_ID_RE.finditer(content):
+            oid = match.group(1)
+            if oid and oid not in seen_set:
+                seen.append(oid)
+                seen_set.add(oid)
+        return seen
+    return structural
+
+
+def _extract_source_refs_from_block(block: Block) -> List[str]:
+    """Shape-discriminating sourceId extractor for Subtask 8.
+
+    Dict path: harvests both ``block.source_references`` (preferred —
+    canonical post-Wave-35 shape) and ``block.source_ids`` (legacy
+    tuple).
+    Str path: scrapes every ``data-cf-source-ids`` attribute, splitting
+    on comma per the Courseforge emit contract (multiple ids on a
+    single block separated by ``,``). Falls back to the structural
+    fields when the HTML carries none (e.g. blocks with deferred
+    source attribution).
+
+    Returns a list preserving discovery order; the gate dedupes when
+    walking the validation universe.
+    """
+    structural: List[str] = []
+    for ref in block.source_references or ():
+        if isinstance(ref, dict):
+            sid = ref.get("sourceId")
+            if isinstance(sid, str) and sid:
+                structural.append(sid)
+    for sid in block.source_ids or ():
+        if isinstance(sid, str) and sid:
+            structural.append(sid)
+
+    content = block.content
+    if isinstance(content, dict):
+        return structural
+    if isinstance(content, str):
+        scraped: List[str] = []
+        for match in _DATA_CF_SOURCE_IDS_RE.finditer(content):
+            for sid in match.group(1).split(","):
+                sid = sid.strip()
+                if sid:
+                    scraped.append(sid)
+        # Prefer the union of structural + scraped: rewrite-tier blocks
+        # may carry source_ids on either surface. Deduplicate while
+        # preserving order.
+        seen: Set[str] = set()
+        merged: List[str] = []
+        for sid in structural + scraped:
+            if sid not in seen:
+                seen.add(sid)
+                merged.append(sid)
+        return merged
+    return structural
 
 
 # --------------------------------------------------------------------------- #
@@ -127,7 +301,7 @@ class BlockCurieAnchoringValidator:
     """
 
     name = "outline_curie_anchoring"
-    version = "1.0.0"
+    version = "1.1.0"
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
@@ -147,20 +321,42 @@ class BlockCurieAnchoringValidator:
         passed_count = 0
 
         for block in blocks:
-            content = _outline_dict(block)
-            if content is None:
+            content = block.content
+            # Phase 3.5: shape-dispatch. Dict and str paths share the
+            # CURIE-anchoring contract (declared CURIEs must appear in
+            # the textual surface) but pull the surface from different
+            # shapes.
+            if isinstance(content, dict):
+                audited += 1
+                curies = _extract_curies_from_block(block)
+                claims = content.get("key_claims") or []
+                text_blob = "\n".join(
+                    str(c) for c in claims if isinstance(c, str)
+                )
+                surface_curies = _extract_curies(text_blob)
+            elif isinstance(content, str):
+                audited += 1
+                curies = _extract_curies_from_block(block)
+                # Rewrite-tier: declared CURIEs == surfaced CURIEs by
+                # construction (the extractor scrapes them from the
+                # HTML body). The "miss" condition collapses to "no
+                # CURIEs in the HTML body at all", caught by the
+                # ``if not curies`` branch below. Anchoring is
+                # tautologically satisfied when curies is non-empty.
+                surface_curies = set(curies)
+            else:
+                # Non-dict / non-str content — nothing to audit.
                 continue
-            audited += 1
-            curies_raw = content.get("curies") or []
-            curies = [c for c in curies_raw if isinstance(c, str) and c]
+
             if not curies:
                 if len(issues) < _ISSUE_LIST_CAP:
                     issues.append(GateIssue(
                         severity="critical",
                         code="OUTLINE_BLOCK_MISSING_CURIES",
                         message=(
-                            f"Outline-tier Block {block.block_id!r} carries "
-                            f"an empty content['curies'] list. Phase 3 outline "
+                            f"Block {block.block_id!r} carries no CURIEs "
+                            f"(dict path: empty content['curies']; str path: "
+                            f"no CURIEs detected in HTML surface). Phase 3 "
                             f"contract requires at least one anchoring CURIE "
                             f"per block."
                         ),
@@ -173,15 +369,8 @@ class BlockCurieAnchoringValidator:
                         ),
                     ))
                 continue
-            # Anchoring: at least one declared CURIE must appear in
-            # the block's textual surface (key_claims is the canonical
-            # surface for outline-tier text per blocks.py:223-291).
-            claims = content.get("key_claims") or []
-            text_blob = "\n".join(
-                str(c) for c in claims if isinstance(c, str)
-            )
-            extracted = _extract_curies(text_blob)
-            anchored = any(c in extracted for c in curies)
+
+            anchored = any(c in surface_curies for c in curies)
             if anchored:
                 passed_count += 1
             else:
@@ -190,10 +379,11 @@ class BlockCurieAnchoringValidator:
                         severity="critical",
                         code="OUTLINE_BLOCK_CURIE_NOT_ANCHORED",
                         message=(
-                            f"Outline-tier Block {block.block_id!r} declares "
-                            f"CURIEs {curies!r} but none of them appear in "
-                            f"content['key_claims']. The rewrite tier can't "
-                            f"surface a CURIE that isn't anchored upstream."
+                            f"Block {block.block_id!r} declares CURIEs "
+                            f"{curies!r} but none of them appear in the "
+                            f"block's textual surface (dict path: "
+                            f"content['key_claims']; str path: rendered "
+                            f"HTML body)."
                         ),
                         location=block.block_id,
                     ))
