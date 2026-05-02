@@ -40,6 +40,7 @@ from Courseforge.generators._provider import (  # noqa: E402
     SUPPORTED_PROVIDERS,
     SynthesisProviderError,
 )
+from blocks import Block, Touch  # noqa: E402  (Phase 2 intermediate format)
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +177,18 @@ def test_local_backend_routes_to_local_base_url(monkeypatch):
         page_template="<!--TEMPLATE-->",
         page_context=_sample_page_context(),
     )
-    assert "<section>" in out
+    # Phase 2 Subtask 35: provider returns a Block, not a raw HTML str.
+    assert isinstance(out, Block)
+    assert out.block_type == "explanation"
+    assert out.page_id == "week_01_content_01_intro"
+    # The mocked handler returned a `<p>alpha alpha ...</p>` body, so the
+    # parsed paragraph content carries the same prose verbatim.
+    assert "alpha" in out.content
+    # Single Touch entry annotating the outline-tier provenance.
+    assert len(out.touched_by) == 1
+    assert out.touched_by[0].tier == "outline"
+    assert out.touched_by[0].purpose == "draft"
+    assert out.touched_by[0].provider == "local"
     assert len(seen) == 1
     assert str(seen[0].url) == "http://localhost:11434/v1/chat/completions"
 
@@ -202,7 +214,11 @@ def test_together_backend_returns_html(monkeypatch):
         page_template="<!--TEMPLATE-->",
         page_context=_sample_page_context(),
     )
-    assert "<p>" in out
+    # Phase 2 Subtask 35: provider returns a Block; the parsed prose
+    # carries "Body" (the body of the mocked `<p>Body</p>` HTML).
+    assert isinstance(out, Block)
+    assert "Body" in out.content
+    assert out.touched_by[0].provider == "together"
     assert "api.together.xyz/v1/chat/completions" in str(seen[0].url)
 
 
@@ -232,7 +248,10 @@ def test_anthropic_backend_returns_html(monkeypatch):
         page_template="<!--TEMPLATE-->",
         page_context=_sample_page_context(),
     )
-    assert "<p>" in out
+    # Phase 2 Subtask 35: provider returns a Block; "Body" in content.
+    assert isinstance(out, Block)
+    assert "Body" in out.content
+    assert out.touched_by[0].provider == "anthropic"
 
 
 # ---------------------------------------------------------------------------

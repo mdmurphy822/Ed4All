@@ -36,9 +36,28 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from Trainforge.generators._anthropic_provider import (
+# Phase 2 Subtask 35: ``blocks.py`` lives at
+# ``Courseforge/scripts/blocks.py``; ensure the sibling-of-this-package
+# directory is importable so ``from blocks import Block`` resolves the
+# same regardless of how this provider module is loaded (CLI, MCP tool,
+# pytest). Mirrors the pattern in ``Courseforge/scripts/generate_course.py``.
+_SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from blocks import (  # noqa: E402  (Phase 2 intermediate format)
+    Block,
+    Touch,
+    _parse_provider_page_html,
+    _slugify,
+)
+
+from Trainforge.generators._anthropic_provider import (  # noqa: E402
     SynthesisProviderError,
 )
 from Trainforge.generators._anthropic_provider import (
@@ -264,13 +283,12 @@ class ContentGeneratorProvider:
         page_id: str,
         page_template: str,
         page_context: Dict[str, Any],
-    ) -> str:
-        """Returns rendered HTML as str (Phase 1).
+    ) -> Block:
+        """Author a single course page.
 
-        Phase 2: will return a ``Block`` dataclass carrying the parsed
-        ``(heading, paragraphs[])`` shape. The ``COURSEFORGE_PROVIDER``
-        env-var name does NOT change in Phase 2 — only the return type
-        widens.
+        Returns a ``Block`` carrying the rendered prose, parsed
+        structure, and a single Touch entry annotating the outline-tier
+        provenance of this in-process LLM call.
 
         Args:
             course_code: Course slug (e.g. ``"DEMO_101"``). Used in the
@@ -288,7 +306,16 @@ class ContentGeneratorProvider:
                 JSON-serialised into the user prompt.
 
         Returns:
-            The rendered HTML body as a ``str``.
+            A ``Block`` with ``block_type="explanation"``, the
+            concatenated paragraphs as ``content``, the slugified
+            ``key_terms`` from the page_context, and a single
+            ``Touch(tier="outline", purpose="draft")`` entry on
+            ``touched_by`` annotating the outline-tier provenance of
+            this LLM call. ``block_type="explanation"`` is the sane
+            default for the in-process LLM provider's outline draft;
+            Phase 3's per-block-type router will dispatch alternative
+            block types (e.g. ``self_check_question`` / ``activity``)
+            to dedicated provider call sites.
 
         Raises:
             ValueError: When ``page_id`` or ``course_code`` is empty.
@@ -314,7 +341,52 @@ class ContentGeneratorProvider:
             retry_count=retry_count,
             raw_text=text,
         )
-        return text
+
+        # Phase 2 Subtask 35: parse the rendered HTML into the
+        # canonical Block intermediate.
+        heading, paragraphs = _parse_provider_page_html(text)
+
+        # Slug for the Block ID derives from the heading (or the page_id
+        # when the heading is missing). ``block_type="explanation"`` is
+        # the outline-tier draft default.
+        slug_seed = heading or page_id
+        slug = _slugify(slug_seed) or "block"
+        block_id = Block.stable_id(page_id, "explanation", slug, 0)
+
+        # ``key_terms`` may arrive as a list of {"term": str, ...} dicts
+        # or a list of bare strings; tolerate both shapes by extracting
+        # ``term`` when the entry is a dict.
+        raw_terms = page_context.get("key_terms") if isinstance(page_context, dict) else None
+        key_term_slugs: List[str] = []
+        if isinstance(raw_terms, (list, tuple)):
+            for entry in raw_terms:
+                if isinstance(entry, dict):
+                    label = entry.get("term") or entry.get("slug") or ""
+                else:
+                    label = str(entry or "")
+                slugged = _slugify(str(label))
+                if slugged:
+                    key_term_slugs.append(slugged)
+
+        block = Block(
+            block_id=block_id,
+            block_type="explanation",
+            page_id=page_id,
+            sequence=0,
+            content=" ".join(paragraphs),
+            key_terms=tuple(key_term_slugs),
+        )
+
+        touch = Touch(
+            model=self._model,
+            provider=self._provider,
+            tier="outline",
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            decision_capture_id=self._last_capture_id(),
+            purpose="draft",
+        )
+        block = block.with_touch(touch)
+        return block
 
     # ------------------------------------------------------------------
     # Internals
@@ -430,6 +502,50 @@ class ContentGeneratorProvider:
     # ------------------------------------------------------------------
     # Decision capture
     # ------------------------------------------------------------------
+
+    def _last_capture_id(self) -> str:
+        """Return ``{file_basename}:{event_index}`` for the most recent
+        decision-capture event emitted via :meth:`_emit_decision`.
+
+        Format mirrors the Wave 112 audit-trail convention so a
+        ``Touch.decision_capture_id`` always resolves to the exact
+        JSONL line that explained the LLM call. When the capture handle
+        isn't a real :class:`DecisionCapture` (test injection of a
+        ``_FakeCapture`` shape, ``capture=None``, or a streaming-disabled
+        capture missing a stream path), falls back to
+        ``in-memory:{id(self)}`` so the Wave 112 invariant
+        (``decision_capture_id`` must be ≥1 char) is preserved without
+        forcing tests to wire up a full capture surface.
+        """
+        capture = self._capture
+        if capture is None:
+            return f"in-memory:{id(self)}"
+
+        # Resolve event index. ``DecisionCapture`` exposes ``decisions``;
+        # the test fake exposes ``events``. Fall back to 0 when neither
+        # surface is present.
+        index: Optional[int] = None
+        for attr in ("decisions", "events"):
+            seq = getattr(capture, attr, None)
+            if isinstance(seq, list):
+                # ``log_decision`` was already called for the current
+                # event, so the most recent entry sits at
+                # ``len(seq) - 1``. Negative falls back to 0.
+                index = max(len(seq) - 1, 0)
+                break
+
+        # Resolve file basename from the streaming-mode stream path
+        # when present; otherwise tag the capture as in-memory.
+        stream_path = getattr(capture, "_stream_path", None)
+        if stream_path is not None:
+            try:
+                basename = Path(str(stream_path)).name
+            except (TypeError, ValueError):  # pragma: no cover — defensive
+                basename = None
+            if basename:
+                return f"{basename}:{index if index is not None else 0}"
+
+        return f"in-memory:{id(self)}"
 
     def _emit_decision(
         self,
