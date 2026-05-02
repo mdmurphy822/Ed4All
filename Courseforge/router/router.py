@@ -1332,6 +1332,20 @@ class CourseforgeRouter:
                 gate_result.passed, gate_result.action
             )
             if action != "pass":
+                # Subtask 47: emit one block_validation_action event per
+                # validator that returned a non-pass action. The
+                # decision-capture stream carries the per-block-per-
+                # validator non-pass chain so a postmortem reader sees
+                # WHICH gate fired WHICH action with WHICH issues.
+                self._emit_block_validation_action(
+                    block,
+                    gate_id=getattr(gate_result, "gate_id", "")
+                    or getattr(gate_result, "validator_name", "")
+                    or "unknown_gate",
+                    action=action,
+                    score=getattr(gate_result, "score", None),
+                    issues=list(getattr(gate_result, "issues", []) or []),
+                )
                 all_passed = False
                 if fast_fail:
                     break
@@ -1484,6 +1498,106 @@ class CourseforgeRouter:
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(
                 "router block_escalation decision-capture emit failed: %s", exc
+            )
+
+    def _emit_block_validation_action(
+        self,
+        block: Block,
+        *,
+        gate_id: str,
+        action: str,
+        score: Optional[float],
+        issues: List[Any],
+    ) -> None:
+        """Emit one ``block_validation_action`` decision-capture event
+        per validator that returned a non-``"pass"`` action (Subtask 47).
+
+        Wired from :meth:`_run_validator_chain` (Subtask 38) on every
+        validator result whose router-derived action is in
+        ``{"regenerate","escalate","block"}``. The pass action is a
+        steady-state signal (no event needed); only deviations emit so
+        a postmortem reader sees the per-block-per-validator chain of
+        non-pass discriminators.
+
+        Per Phase 3 §10 the rationale string is ≥20 characters and
+        interpolates the dynamic signals (``gate_id`` / ``action`` /
+        ``score`` / top-3 issue codes + messages) so the JSONL stream
+        carries enough context to reconstruct WHY the validator chose
+        the action without re-running the validator. The structured
+        ``ml_features`` payload mirrors the rationale fields plus the
+        full ``issues`` list (truncated to top-3 to bound payload size)
+        for ML-trainability.
+
+        Capture errors are swallowed so a flaky capture handle never
+        breaks the dispatch path (mirrors the pattern in the sibling
+        ``_emit_block_escalation`` / ``_emit_self_consistency_decision``
+        helpers).
+
+        ``issues`` is typed ``List[Any]`` rather than ``List[GateIssue]``
+        because the validators land per-issue dicts in some legacy
+        paths; the helper handles both shapes via duck-typed attribute
+        access.
+        """
+        if self._capture is None:
+            return
+        # Top-3 issue summary for the rationale string. Issues may be
+        # GateIssue dataclass instances OR plain dicts (some legacy
+        # validators return dicts); both shapes resolve via getattr +
+        # dict.get fallback.
+        top_issues: List[Dict[str, Any]] = []
+        for issue in (issues or [])[:3]:
+            code = (
+                getattr(issue, "code", None)
+                if not isinstance(issue, dict)
+                else issue.get("code")
+            ) or "unknown"
+            message = (
+                getattr(issue, "message", None)
+                if not isinstance(issue, dict)
+                else issue.get("message")
+            ) or ""
+            severity = (
+                getattr(issue, "severity", None)
+                if not isinstance(issue, dict)
+                else issue.get("severity")
+            ) or "unknown"
+            top_issues.append(
+                {"code": code, "severity": severity, "message": message}
+            )
+        issue_summary = "; ".join(
+            f"{i['code']}({i['severity']}):{i['message']}" for i in top_issues
+        ) or "no_issues_reported"
+        score_repr = "n/a" if score is None else f"{score:.3f}"
+        rationale = (
+            f"Validator {gate_id} returned action={action} for block "
+            f"{block.block_id} (block_type={block.block_type}); "
+            f"score={score_repr}; top_issues=[{issue_summary}]. "
+            f"Router will route per Phase 4 §1.5 mapping: "
+            f"regenerate→retry, escalate→rewrite tier, block→fail."
+        )
+        ml_features: Dict[str, Any] = {
+            "block_id": block.block_id,
+            "block_type": block.block_type,
+            "gate_id": gate_id,
+            "action": action,
+            "score": score,
+            "issues_top3": top_issues,
+            "issues_count": len(issues or []),
+        }
+        try:
+            self._capture.log_decision(
+                decision_type="block_validation_action",
+                decision=(
+                    f"validation_action:{block.block_type}:{block.block_id}"
+                    f":{gate_id}:{action}"
+                ),
+                rationale=rationale,
+                ml_features=ml_features,
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "router block_validation_action decision-capture emit failed: %s",
+                exc,
             )
 
     def _classify_policy_source(
