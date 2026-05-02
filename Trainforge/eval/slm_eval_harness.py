@@ -61,6 +61,58 @@ def _progress_interval() -> int:
         return 25
 
 
+def _load_eval_stage_checkpoint(
+    path: Optional[Path],
+) -> Dict[str, Any]:
+    """Tolerant per-stage checkpoint loader. Returns stage_name → result.
+
+    Malformed JSONL lines are skipped. Records whose ``schema_version``
+    isn't ``"v1"`` are dropped with a logger.warning so a future change
+    to the result shape invalidates the cache loudly rather than
+    silently replaying stale data.
+    """
+    if path is None or not path.exists():
+        return {}
+    by_stage: Dict[str, Any] = {}
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if obj.get("schema_version") != "v1":
+                logger.warning(
+                    "Eval stage checkpoint schema_version mismatch "
+                    "(expected 'v1', got %r) — dropping entry",
+                    obj.get("schema_version"),
+                )
+                continue
+            stage = obj.get("stage")
+            if stage:
+                by_stage[stage] = obj.get("result")
+    return by_stage
+
+
+def _append_eval_stage_checkpoint(
+    fh: Optional[Any],
+    *,
+    stage: str,
+    result: Any,
+) -> None:
+    """Append a single stage record to the checkpoint sidecar + flush.
+
+    No-op when ``fh is None`` (checkpointing disabled).
+    """
+    if fh is None:
+        return
+    record = {"schema_version": "v1", "stage": stage, "result": result}
+    fh.write(json.dumps(record, default=str) + "\n")
+    fh.flush()
+
+
 class _EvalProgressTracker:
     """Small JSONL + logger progress sink for long adapter eval runs."""
 
@@ -284,6 +336,11 @@ class EvalReport:
     # Wave 109 / Phase C additive: per-property accuracy when the
     # course has a property manifest. None elsewhere; keys are property IDs.
     per_property_accuracy: Optional[Dict[str, Optional[float]]] = None
+    # Wave 138a additive: per-content-type-label teaching_role
+    # distribution + expected-mode mismatches. Tier-2 corpus-derived,
+    # no LLM dispatch. None when chunks.jsonl is absent.
+    content_type_role_alignment: Optional[Dict[str, Any]] = None
+    content_type_role_alignment_summary: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {
@@ -324,6 +381,13 @@ class EvalReport:
             for k, v in self.per_property_accuracy.items():
                 rounded[k] = round(float(v), 4) if v is not None else None
             out["per_property_accuracy"] = rounded
+        # Wave 138a: payload is shaped, not numeric — no rounding.
+        if self.content_type_role_alignment is not None:
+            out["content_type_role_alignment"] = self.content_type_role_alignment
+        if self.content_type_role_alignment_summary is not None:
+            out["content_type_role_alignment_summary"] = (
+                self.content_type_role_alignment_summary
+            )
         return out
 
 
@@ -349,6 +413,8 @@ class SLMEvalHarness:
         profile: Optional[str] = None,
         max_holdout_questions: Optional[int] = None,
         smoke_mode: bool = False,
+        eval_stage_checkpoint_path: Optional[Path] = None,
+        eval_checkpoint_enabled: bool = True,
     ) -> None:
         self.course_path = Path(course_path)
         if not self.course_path.exists():
@@ -368,6 +434,21 @@ class SLMEvalHarness:
         # render it. The harness still loads the real adapter and runs
         # at small N — the point is end-to-end plumbing verification.
         self.smoke_mode = bool(smoke_mode)
+        # Wave 138a per-stage checkpoint: a 45-60 min eval that crashes
+        # at minute 50 used to start over. With this sidecar each
+        # completed stage replays from cache on resume — only the
+        # failing stage re-runs.
+        self.eval_checkpoint_enabled = bool(eval_checkpoint_enabled)
+        self.eval_stage_checkpoint_path: Optional[Path] = (
+            Path(eval_stage_checkpoint_path)
+            if eval_stage_checkpoint_path is not None
+            else (self.course_path / "eval" / ".eval_results_checkpoint.jsonl")
+            if self.eval_checkpoint_enabled
+            else None
+        )
+        # Populated at run_all start; consulted inside _run_stage.
+        self._eval_stage_cache: Dict[str, Any] = {}
+        self._eval_stage_checkpoint_fh: Optional[Any] = None
 
     def run_all(self, output_path: Optional[Path] = None) -> Path:
         """Run every enabled evaluator and emit ``eval_report.json``.
@@ -495,16 +576,42 @@ class SLMEvalHarness:
                 return len(items)
             return min(len(items), int(cap))
 
+        # Wave 138a: load any per-stage checkpoint from a prior crashed run
+        # so completed stages replay from cache rather than re-paying for
+        # 45-60 min of model dispatches.
+        self._eval_stage_cache = _load_eval_stage_checkpoint(
+            self.eval_stage_checkpoint_path
+        )
+        if self.eval_stage_checkpoint_path is not None:
+            self.eval_stage_checkpoint_path.parent.mkdir(
+                parents=True, exist_ok=True,
+            )
+            self._eval_stage_checkpoint_fh = (
+                self.eval_stage_checkpoint_path.open("a", encoding="utf-8")
+            )
+
         def _run_stage(
             name: str,
             expected_calls: Optional[int],
             fn: Callable[[], Any],
         ) -> Any:
+            # Wave 138a: skip the stage entirely if a prior run cached its
+            # result. Emit a stage_skipped event so progress tracking
+            # records the skip explicitly.
+            if name in self._eval_stage_cache:
+                progress.emit(
+                    "stage_skipped", stage=name, reason="checkpoint",
+                )
+                return self._eval_stage_cache[name]
             progress.begin_stage(name, expected_calls=expected_calls)
             try:
-                return fn()
+                result = fn()
             finally:
                 progress.end_stage(name)
+            _append_eval_stage_checkpoint(
+                self._eval_stage_checkpoint_fh, stage=name, result=result,
+            )
+            return result
 
         per_tier: Dict[str, Any] = {}
         per_invariant: Dict[str, Any] = {}
@@ -603,6 +710,43 @@ class SLMEvalHarness:
                     per_property_accuracy = pa
             except Exception as exc:  # noqa: BLE001 — advisory
                 logger.warning("PerPropertyEvaluator failed: %s", exc)
+
+        # --- Teaching-role alignment (Wave 138a, Plan1-W2) --------- #
+        # Tier-2 corpus-level check; no model dispatch. Reads
+        # corpus/chunks.jsonl, aggregates teaching_role distribution
+        # per content_type_label, flags expected-mode mismatches.
+        # Wall-time: <100ms on a 1000-chunk corpus. Output flows
+        # through to eval_report.json so EvalGatingValidator can apply
+        # the warning-severity content_type_role_alignment threshold.
+        content_type_role_alignment: Optional[Dict[str, Any]] = None
+        content_type_role_alignment_summary: Optional[Dict[str, Any]] = None
+        chunks_path = self.course_path / "corpus" / "chunks.jsonl"
+        if chunks_path.exists():
+            try:
+                from Trainforge.eval.teaching_role_alignment import (
+                    TeachingRoleAlignmentEvaluator,
+                )
+                tra_result = _run_stage(
+                    "teaching_role_alignment",
+                    None,
+                    lambda: TeachingRoleAlignmentEvaluator(
+                        chunks_path
+                    ).evaluate(),
+                )
+                per_tier["teaching_role_alignment"] = tra_result
+                content_type_role_alignment = tra_result.get(
+                    "content_type_role_alignment"
+                )
+                content_type_role_alignment_summary = tra_result.get("summary")
+            except ImportError:
+                logger.warning(
+                    "TeachingRoleAlignmentEvaluator unavailable; "
+                    "skipping teaching_role_alignment stage"
+                )
+            except Exception as exc:  # noqa: BLE001 — advisory
+                logger.warning(
+                    "TeachingRoleAlignmentEvaluator failed: %s", exc,
+                )
 
         # --- Behavioral invariants (Layer 2) ---------------------- #
         invariant_pass_rates: List[float] = []
@@ -796,6 +940,10 @@ class SLMEvalHarness:
             negative_grounding_accuracy=negative_grounding_score,
             yes_rate=faithfulness_yes_rate,
             per_property_accuracy=per_property_accuracy,
+            content_type_role_alignment=content_type_role_alignment,
+            content_type_role_alignment_summary=(
+                content_type_role_alignment_summary
+            ),
         )
 
         # Wave 104: aggregate per-question records into a single
@@ -848,6 +996,18 @@ class SLMEvalHarness:
             encoding="utf-8",
         )
         progress.finish()
+        # Wave 138a: clean exit — the canonical eval_report.json now
+        # carries every stage's authoritative result, so the resume
+        # sidecar is redundant. On a crash this block never runs and
+        # the sidecar preserves progress for the next attempt.
+        if self._eval_stage_checkpoint_fh is not None:
+            self._eval_stage_checkpoint_fh.close()
+            self._eval_stage_checkpoint_fh = None
+        if (
+            self.eval_stage_checkpoint_path is not None
+            and self.eval_stage_checkpoint_path.exists()
+        ):
+            self.eval_stage_checkpoint_path.unlink()
         return output_path
 
     def _run_baseline_compare(
@@ -975,6 +1135,20 @@ def main() -> None:  # pragma: no cover — CLI passthrough
             "Mutually exclusive with --stub."
         ),
     )
+    parser.add_argument(
+        "--no-eval-checkpoint",
+        action="store_true",
+        help=(
+            "Wave 138a: disable the per-stage eval-results checkpoint "
+            "sidecar. Default is on — each completed evaluator stage "
+            "writes its result dict to "
+            "<course>/eval/.eval_results_checkpoint.jsonl so a re-run "
+            "after a crash skips already-completed stages. Pass this "
+            "flag to opt out (e.g. when running multiple variants from "
+            "the same course directory and you don't want stale cache "
+            "lingering between runs)."
+        ),
+    )
     args = parser.parse_args()
 
     if args.smoke and args.stub:
@@ -1078,6 +1252,7 @@ def main() -> None:  # pragma: no cover — CLI passthrough
         profile=args.profile,
         max_holdout_questions=args.max_prompts,
         smoke_mode=args.smoke,
+        eval_checkpoint_enabled=not args.no_eval_checkpoint,
     )
     out = harness.run_all(output_path=output_path)
     print(f"Wrote {out}")
