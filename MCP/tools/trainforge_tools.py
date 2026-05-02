@@ -19,7 +19,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from lib.libv2_storage import LibV2Storage  # noqa: E402
-from lib.paths import TRAINFORGE_PATH, TRAINING_DIR  # noqa: E402
+from lib.paths import LIBV2_COURSES, TRAINFORGE_PATH, TRAINING_DIR  # noqa: E402
 from lib.secure_paths import sanitize_path_component, validate_path_within_root  # noqa: E402
 
 # Import RAG bridge and assessment components
@@ -882,23 +882,43 @@ def register_trainforge_tools(mcp):
         """
         Get Trainforge installation status and training data statistics.
 
+        Wave 138a extension: also surfaces per-course resume-checkpoint
+        sidecar state and the latest eval_report.json's
+        ``content_type_role_alignment_summary.alignment_rate`` so an
+        operator can see "is there in-flight work to resume" + "is the
+        latest adapter's role alignment healthy" without parsing JSON.
+
+        Resume-checkpoint sidecars surveyed (read-only):
+        - ``training_specs/.synthesis_pairs_checkpoint.jsonl``
+          (Worker A — synthesize_training)
+        - ``corpus/.teaching_role_checkpoint.jsonl``
+          (Wave 137 followup — align_chunks)
+        - ``eval/.eval_results_checkpoint.jsonl``
+          (Worker C — slm_eval_harness, per-stage)
+        - ``models/<model_id>/eval/.eval_results_checkpoint.jsonl``
+          (Worker C — per-adapter eval)
+
         Returns:
-            Installation status and data summary
+            Installation status, data summary, per-course in-flight
+            checkpoint sidecars, and latest eval role-alignment_rate.
         """
         try:
             status = {
                 "installed": TRAINFORGE_PATH.exists(),
                 "path": str(TRAINFORGE_PATH),
                 "training_output": str(TRAINING_OUTPUT),
+                "libv2_courses_path": str(LIBV2_COURSES),
                 "statistics": {
                     "total_courses": 0,
                     "total_assessments": 0,
                     "total_decisions": 0,
                     "total_questions": 0
-                }
+                },
+                "in_flight_checkpoints": [],
+                "role_alignment": [],
             }
 
-            # Count statistics
+            # Count statistics from the training-captures tree
             if TRAINING_OUTPUT.exists():
                 status["statistics"]["total_courses"] = sum(
                     1 for d in TRAINING_OUTPUT.iterdir() if d.is_dir()
@@ -911,10 +931,255 @@ def register_trainforge_tools(mcp):
 
                         decision_files = list(course_dir.rglob("decisions_*.jsonl"))
                         for df in decision_files:
-                            with open(df) as f:
-                                status["statistics"]["total_decisions"] += sum(1 for _ in f)
+                            try:
+                                with open(df) as f:
+                                    status["statistics"]["total_decisions"] += sum(1 for _ in f)
+                            except OSError:
+                                continue
+
+            # Wave 138a — survey LibV2 courses for resume-checkpoint
+            # sidecars and latest eval role-alignment_rate. Pure
+            # filesystem reads; no LLM, no graph traversal.
+            if LIBV2_COURSES.exists():
+                for course_dir in sorted(LIBV2_COURSES.iterdir()):
+                    if not course_dir.is_dir():
+                        continue
+                    course_slug = course_dir.name
+
+                    # Resume-checkpoint sidecars (existence + size only;
+                    # cheap stat). Each sidecar is "in-flight work" only
+                    # when the canonical run hasn't unlinked it.
+                    sidecar_specs = [
+                        ("synthesis_pairs",
+                         course_dir / "training_specs" / ".synthesis_pairs_checkpoint.jsonl"),
+                        ("teaching_role",
+                         course_dir / "corpus" / ".teaching_role_checkpoint.jsonl"),
+                        ("eval_stage_course",
+                         course_dir / "eval" / ".eval_results_checkpoint.jsonl"),
+                    ]
+                    for kind, sidecar_path in sidecar_specs:
+                        try:
+                            if sidecar_path.is_file():
+                                stat = sidecar_path.stat()
+                                status["in_flight_checkpoints"].append({
+                                    "course_slug": course_slug,
+                                    "kind": kind,
+                                    "path": str(sidecar_path),
+                                    "size_bytes": stat.st_size,
+                                    "mtime": datetime.fromtimestamp(
+                                        stat.st_mtime
+                                    ).isoformat(),
+                                })
+                        except OSError:
+                            continue
+
+                    # Per-adapter eval-stage sidecars under models/<id>/eval/
+                    models_dir = course_dir / "models"
+                    if models_dir.is_dir():
+                        try:
+                            adapter_dirs = sorted(
+                                d for d in models_dir.iterdir() if d.is_dir()
+                            )
+                        except OSError:
+                            adapter_dirs = []
+                        for adapter_dir in adapter_dirs:
+                            sidecar_path = (
+                                adapter_dir / "eval"
+                                / ".eval_results_checkpoint.jsonl"
+                            )
+                            try:
+                                if sidecar_path.is_file():
+                                    stat = sidecar_path.stat()
+                                    status["in_flight_checkpoints"].append({
+                                        "course_slug": course_slug,
+                                        "kind": "eval_stage_adapter",
+                                        "model_id": adapter_dir.name,
+                                        "path": str(sidecar_path),
+                                        "size_bytes": stat.st_size,
+                                        "mtime": datetime.fromtimestamp(
+                                            stat.st_mtime
+                                        ).isoformat(),
+                                    })
+                            except OSError:
+                                continue
+
+                    # Latest eval_report.json's
+                    # content_type_role_alignment_summary.alignment_rate.
+                    # Pick the most-recently-modified eval_report.json
+                    # under models/*/ (skipping smoke-mode reports per
+                    # the harness contract).
+                    latest: Optional[Dict[str, object]] = None
+                    if models_dir.is_dir():
+                        try:
+                            for adapter_dir in models_dir.iterdir():
+                                if not adapter_dir.is_dir():
+                                    continue
+                                report_path = adapter_dir / "eval_report.json"
+                                if not report_path.is_file():
+                                    continue
+                                try:
+                                    mtime = report_path.stat().st_mtime
+                                except OSError:
+                                    continue
+                                if latest is None or mtime > latest["_mtime"]:
+                                    latest = {
+                                        "_mtime": mtime,
+                                        "model_id": adapter_dir.name,
+                                        "path": report_path,
+                                    }
+                        except OSError:
+                            latest = None
+
+                    if latest is not None:
+                        try:
+                            with open(latest["path"]) as f:
+                                report = json.load(f)
+                        except (OSError, json.JSONDecodeError) as e:
+                            status["role_alignment"].append({
+                                "course_slug": course_slug,
+                                "model_id": latest["model_id"],
+                                "error": f"failed to load eval_report.json: {e}",
+                            })
+                            continue
+                        if report.get("smoke_mode") is True:
+                            # Smoke reports are intentionally not gated;
+                            # surface them as advisory.
+                            status["role_alignment"].append({
+                                "course_slug": course_slug,
+                                "model_id": latest["model_id"],
+                                "smoke_mode": True,
+                                "alignment_rate": None,
+                            })
+                            continue
+                        summary = report.get(
+                            "content_type_role_alignment_summary"
+                        )
+                        if isinstance(summary, dict):
+                            status["role_alignment"].append({
+                                "course_slug": course_slug,
+                                "model_id": latest["model_id"],
+                                "alignment_rate": summary.get("alignment_rate"),
+                                "mismatched_content_types": summary.get(
+                                    "mismatched_content_types", []
+                                ),
+                                "content_types_with_expected_mode": summary.get(
+                                    "content_types_with_expected_mode"
+                                ),
+                                "report_path": str(latest["path"]),
+                            })
+                        else:
+                            status["role_alignment"].append({
+                                "course_slug": course_slug,
+                                "model_id": latest["model_id"],
+                                "alignment_rate": None,
+                                "note": (
+                                    "eval_report.json predates Wave 138a; "
+                                    "no content_type_role_alignment_summary"
+                                ),
+                                "report_path": str(latest["path"]),
+                            })
 
             return json.dumps(status)
 
         except Exception as e:
+            logger.exception("get_trainforge_status failed")
             return json.dumps({"error": str(e)})
+
+    @mcp.tool()
+    async def analyze_teaching_role_alignment(
+        chunks_path: str,
+        min_chunks_for_flag: int = 5,
+    ) -> str:
+        """
+        Wave 138a — Tier-2 graph-derived teaching-role alignment check.
+
+        Wraps :class:`Trainforge.eval.teaching_role_alignment.TeachingRoleAlignmentEvaluator`
+        so an external MCP client can probe a corpus's
+        ``content_type_label`` -> ``teaching_role`` distribution
+        without invoking the full SLM eval harness. Pure file read +
+        Python aggregation; no LLM dispatch, no model_callable.
+        Wall-time well under 100ms on a 1000-chunk corpus.
+
+        Useful as a pre-flight check before retraining: if
+        ``alignment_rate`` is below the operator's threshold (e.g. 0.85
+        — see the Wave 138a/W3 ``EvalGatingValidator`` warning gate),
+        retraining without a curriculum-alignment fix would burn a
+        training run on a known-degraded corpus.
+
+        Args:
+            chunks_path: Absolute path to a course's ``chunks.jsonl``.
+                Typically ``LibV2/courses/<slug>/corpus/chunks.jsonl``.
+            min_chunks_for_flag: Skip content_type_label buckets with
+                fewer than this many chunks (statistical noise floor;
+                default 5, matches the evaluator default).
+
+        Returns:
+            JSON-serialized dict carrying ``content_type_role_alignment``
+            (per-label distribution + mismatch flag) and ``summary``
+            (alignment_rate + mismatched_content_types). Shape matches
+            the in-process evaluator + the Wave 138a fields surfaced in
+            ``eval_report.json``.
+        """
+        try:
+            # Sandbox: read-only path resolution. The evaluator does
+            # not write — we still validate-within-root to keep the
+            # tool consistent with other read-only Trainforge surfaces.
+            try:
+                resolved = Path(chunks_path).resolve()
+            except (OSError, RuntimeError) as e:
+                return json.dumps({
+                    "error": f"Could not resolve chunks_path: {e}",
+                    "cause": "invalid_path",
+                })
+
+            if not resolved.is_file():
+                return json.dumps({
+                    "error": f"chunks file not found: {chunks_path}",
+                    "cause": "missing_chunks",
+                })
+
+            try:
+                from Trainforge.eval.teaching_role_alignment import (
+                    TeachingRoleAlignmentEvaluator,
+                )
+            except ImportError as e:
+                return json.dumps({
+                    "error": (
+                        "TeachingRoleAlignmentEvaluator unavailable: "
+                        f"{e}"
+                    ),
+                    "cause": "import_failed",
+                })
+
+            try:
+                min_chunks = int(min_chunks_for_flag)
+            except (TypeError, ValueError):
+                return json.dumps({
+                    "error": (
+                        f"min_chunks_for_flag must be an integer, got "
+                        f"{min_chunks_for_flag!r}"
+                    ),
+                    "cause": "invalid_argument",
+                })
+            if min_chunks < 1:
+                return json.dumps({
+                    "error": "min_chunks_for_flag must be >= 1",
+                    "cause": "invalid_argument",
+                })
+
+            evaluator = TeachingRoleAlignmentEvaluator(
+                resolved,
+                min_chunks_for_flag=min_chunks,
+            )
+            result = evaluator.evaluate()
+            # Annotate the input so a downstream client knows which
+            # corpus the alignment_rate refers to.
+            result["chunks_path"] = str(resolved)
+            return json.dumps(result)
+
+        except Exception as e:
+            logger.exception("analyze_teaching_role_alignment failed")
+            return json.dumps({
+                "error": str(e),
+                "cause": "unexpected_exception",
+            })
