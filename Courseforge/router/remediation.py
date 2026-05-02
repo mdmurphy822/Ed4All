@@ -107,14 +107,109 @@ _REMEDIATION_DIRECTIVES_BY_GATE_ID: Dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
+# Per-failure issue-message truncation budget (Subtask 2). Bounds the
+# remediation suffix size when a validator emits very long error
+# messages (e.g. structural violations enumerating dozens of missing
+# refs). 200 chars keeps the suffix readable for the model without
+# exhausting its prompt budget on a multi-failure block.
+_MAX_ISSUE_MESSAGE_CHARS = 200
+
+
+def _truncate_message(message: str, max_chars: int = _MAX_ISSUE_MESSAGE_CHARS) -> str:
+    """Truncate ``message`` at ``max_chars`` chars with an ellipsis suffix.
+
+    Used by :func:`_append_remediation_for_gates` to bound issue-message
+    size in the remediation suffix. Empty / falsy input passes through
+    unchanged.
+    """
+    if not message:
+        return message
+    if len(message) <= max_chars:
+        return message
+    return message[: max_chars - 1].rstrip() + "…"
+
+
+def _format_failure_block(result: GateResult) -> str:
+    """Render one failed ``GateResult`` as a remediation block.
+
+    Per pre-resolved decision #4: each failure renders as a
+    `\\n- [<gate_id>] <issue.message>\\n  Correct by: <directive>` line
+    per issue in the result. The directive is looked up in
+    :data:`_REMEDIATION_DIRECTIVES_BY_GATE_ID`; unknown gate IDs fall
+    back to a generic "Re-emit correctly per the {validator_name}
+    contract" string so the suffix is never silent on a failure.
+
+    When the GateResult carries no issues (defensive — a failed result
+    SHOULD always carry at least one issue) the block still renders one
+    line referencing the gate_id alone so the model still gets the
+    remediation directive.
+    """
+    directive = _REMEDIATION_DIRECTIVES_BY_GATE_ID.get(
+        result.gate_id,
+        f"Re-emit correctly per the {result.validator_name} contract.",
+    )
+    if not result.issues:
+        return (
+            f"\n- [{result.gate_id}] gate failed (no issue detail)."
+            f"\n  Correct by: {directive}"
+        )
+    lines: List[str] = []
+    for issue in result.issues:
+        # ``issue`` may be a GateIssue dataclass or a plain dict (the
+        # GateResult.to_dict roundtrip path). Accept both.
+        if isinstance(issue, GateIssue):
+            message = issue.message or ""
+        elif isinstance(issue, dict):
+            message = str(issue.get("message", "") or "")
+        else:
+            message = str(issue)
+        truncated = _truncate_message(message)
+        lines.append(
+            f"\n- [{result.gate_id}] {truncated}"
+            f"\n  Correct by: {directive}"
+        )
+    return "".join(lines)
+
+
 def _append_remediation_for_gates(
     prompt: str, failures: Sequence[GateResult]
 ) -> str:
     """Append a per-failure remediation block to ``prompt``.
 
-    Filled in by Subtask 2.
+    Iterates ``failures``; for each ``GateResult`` whose action is not
+    ``"pass"`` (or whose ``passed`` flag is False when ``action`` is
+    ``None``), emits a remediation block per :func:`_format_failure_block`.
+    Pass-action results are no-ops — they don't carry a failure to
+    correct.
+
+    The appended suffix opens with the canonical
+    ``"Your previous attempt failed validation:"`` header so the model
+    has an unambiguous signal that the prompt is mid-iteration. When
+    ``failures`` contains no actionable results the prompt passes
+    through unchanged.
+
+    Returns ``prompt`` (unchanged) when no actionable failures exist;
+    otherwise returns ``prompt + "\\n\\n<header><blocks>"``.
     """
-    raise NotImplementedError("Subtask 2 deliverable")
+    actionable: List[GateResult] = []
+    for result in failures:
+        # Pre-resolved decision #4: pass-action results don't trigger
+        # remediation. The router still passes them in (as the chain
+        # output), so filter here rather than at every call site.
+        action = result.action
+        if action == "pass":
+            continue
+        # Legacy validators leave ``action=None``; treat them as
+        # actionable when ``passed`` is False (the
+        # ``GateResult.derive_default_action`` fallback semantics).
+        if action is None and result.passed:
+            continue
+        actionable.append(result)
+    if not actionable:
+        return prompt
+    blocks = [_format_failure_block(r) for r in actionable]
+    suffix = "\n\nYour previous attempt failed validation:" + "".join(blocks)
+    return prompt + suffix
 
 
 def _append_preserve_remediation(
