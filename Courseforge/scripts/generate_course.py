@@ -32,6 +32,13 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+# Phase 2: ``blocks.py`` lives next to this script; ensure the sibling
+# directory is importable so ``from blocks import Block`` resolves the
+# same regardless of how this module is invoked (CLI, MCP tool, pytest).
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
 from lib.ontology.bloom import bloom_to_cognitive_domain as _bloom_to_cognitive_domain  # noqa: E402
 from lib.ontology.bloom import detect_bloom_level  # noqa: E402
 from lib.ontology.bloom import detect_bloom_verbs as _detect_bloom_verbs  # noqa: E402
@@ -41,6 +48,16 @@ from lib.ontology.learning_objectives import validate_lo_id as _validate_lo_id  
 from lib.ontology.slugs import canonical_slug as _slugify  # noqa: E402
 from lib.ontology.taxonomy import validate_classification  # noqa: E402
 from lib.ontology.teaching_roles import map_role as _map_teaching_role  # noqa: E402
+
+from blocks import Block  # noqa: E402  (Phase 2 intermediate format)
+
+# Phase 2: sentinel page_id for renderer call sites that don't yet thread
+# the canonical page_id from ``generate_week``. Block.__post_init__
+# requires a non-empty page_id, but ``data-cf-block-id`` is gated by
+# ``_courseforge_emit_blocks_enabled`` (off by default), so the sentinel
+# never surfaces in emitted HTML. Subtask 27 will thread the real
+# page_id end-to-end.
+_LEGACY_PAGE_ID = "_legacy_"
 
 logger = logging.getLogger(__name__)
 
@@ -857,6 +874,7 @@ def _render_objectives(
     *,
     source_ids: Optional[List[str]] = None,
     source_primary: Optional[str] = None,
+    page_id: str = "",
 ) -> str:
     """Render a learning objectives box with data-cf-* metadata attributes.
 
@@ -864,25 +882,44 @@ def _render_objectives(
     ``.objectives`` wrapper carries ``data-cf-source-ids`` (and optionally
     ``data-cf-source-primary``) so downstream consumers can tie the block
     back to a DART source region.
+
+    Phase 2 (Subtask 16): refactored to build ``List[Block]`` first, then
+    emit using ``block.to_html_attrs()`` for the per-``<li>`` attribute
+    string. With ``COURSEFORGE_EMIT_BLOCKS=false`` (default) the emitter
+    is byte-identical to the legacy attribute concatenation. Caller
+    threads ``page_id`` so per-block stable IDs can be minted; falls
+    back to ``_LEGACY_PAGE_ID`` for legacy callers (rare).
     """
-    items = []
-    for o in objectives:
+    blocks: List[Block] = []
+    bound_page_id = page_id or _LEGACY_PAGE_ID
+    for i, o in enumerate(objectives):
         bloom_level = o.get("bloom_level")
         bloom_verb = o.get("bloom_verb")
         if not bloom_level:
             bloom_level, bloom_verb = detect_bloom_level(o["statement"])
         # Wave 48: schema-sourced cognitive domain
-        domain = _bloom_to_cognitive_domain(bloom_level) if bloom_level else ""
-        attrs = f' data-cf-objective-id="{html_mod.escape(o["id"])}"'
-        if bloom_level:
-            attrs += f' data-cf-bloom-level="{bloom_level}"'
-        if bloom_verb:
-            attrs += f' data-cf-bloom-verb="{bloom_verb}"'
-        if domain:
-            attrs += f' data-cf-cognitive-domain="{domain}"'
-        items.append(
-            f'      <li{attrs}><strong>{o["id"]}:</strong> {html_mod.escape(o["statement"])}</li>'
+        domain = _bloom_to_cognitive_domain(bloom_level) if bloom_level else None
+        block = Block(
+            block_id=Block.stable_id(
+                bound_page_id, "objective", _slugify(o["id"]), i
+            ),
+            block_type="objective",
+            page_id=bound_page_id,
+            sequence=i,
+            content=o["statement"],
+            objective_ids=(o["id"],),
+            bloom_level=bloom_level or None,
+            bloom_verb=bloom_verb or None,
+            cognitive_domain=domain or None,
         )
+        blocks.append(block)
+    items = [
+        f'      <li{block.to_html_attrs()}>'
+        f'<strong>{block.objective_ids[0]}:</strong> '
+        f'{html_mod.escape(block.content if isinstance(block.content, str) else "")}'
+        f'</li>'
+        for block in blocks
+    ]
     items_html = "\n".join(items)
     wrapper_source_attrs = _source_attr_string(source_ids, source_primary)
     return f"""
