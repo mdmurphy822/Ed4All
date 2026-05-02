@@ -1360,19 +1360,28 @@ class CourseforgeRouter:
     ) -> None:
         """Emit one ``block_escalation`` decision-capture event.
 
-        Wired from BOTH :meth:`route_with_self_consistency` (when the
-        outline regen budget is exhausted, Subtask 41) AND :meth:`route`
-        (when the ``escalate_immediately`` short-circuit fires,
-        Subtask 42). Each emit records the marker + attempts +
-        candidate count so a postmortem can reconstruct the
-        regen-budget exhaustion or policy-skip event without parsing
-        the per-call dispatch trail.
+        Per Phase 3 Subtask 43 this is the canonical seam for the
+        ``block_escalation`` decision-event class. Wired from both
+        escalation paths so a postmortem reader sees a single event
+        type regardless of how the block reached the rewrite tier:
+
+        - :meth:`route_with_self_consistency` (Subtask 41 path): emits
+          when the outline regen budget is exhausted mid-loop;
+          ``attempts`` is the cumulative validation_attempts count and
+          ``n_candidates`` is ``i+1`` (the loop iteration index that
+          triggered the budget check).
+        - :meth:`route` (Subtask 42 path): emits when the
+          ``escalate_immediately`` short-circuit fires; ``attempts=0``
+          and ``n_candidates=0`` signal the policy-skip path (no
+          outline candidates were ever dispatched).
 
         Per Phase 3 Subtask 43 the rationale string is at least 20
         characters and interpolates the dynamic signals
         (``block_id`` / ``block_type`` / ``marker`` / ``attempts`` /
         ``n_candidates``); the structured ``ml_features`` payload
-        carries the same fields for ML-trainability.
+        carries the same fields for ML-trainability. Capture errors
+        are swallowed so a flaky capture handle never breaks the
+        dispatch path.
         """
         if self._capture is None:
             return
