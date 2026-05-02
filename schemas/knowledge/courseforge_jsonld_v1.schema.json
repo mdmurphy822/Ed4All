@@ -68,8 +68,47 @@
     "bloomDistribution": {
       "$ref": "#/$defs/BloomDistribution",
       "description": "Wave 61: aggregate Bloom/cognitive-domain distribution across this page's learningObjectives. Emitted iff at least one LO has a populated bloomLevel. Lets KG consumers answer 'what's the cognitive-demand profile of this page/course?' without re-aggregating per-LO data."
+    },
+    "blocks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Block" },
+      "description": "Phase 2: stable in-memory Block intermediate; canonical projection of learningObjectives[]/sections[]/misconceptions[]. Optional and additive — legacy emits without blocks[] still validate. The redundancy with the older arrays is intentional during the Phase 2 migration window; a follow-up wave will collapse the older arrays once consumers prefer blocks[]."
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Phase 2: per-page run-level provenance metadata. Optional — emitted when the renderer has a populated runId.",
+      "properties": {
+        "runId": {
+          "type": "string",
+          "description": "Pipeline run identifier (matches state/runs/{run_id}/)."
+        },
+        "pipelineVersion": {
+          "type": "string",
+          "description": "Courseforge generator version string."
+        },
+        "tiers": {
+          "type": "array",
+          "description": "Per-tier provider/model attribution for this run. Mirrors the Touch.tier enum.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "tier": { "enum": ["outline", "validation", "rewrite"] },
+              "model": { "type": "string" },
+              "provider": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "contentHash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Phase 2: sha256 hex of the canonical Block payload list for re-execution drift detection. Same content -> same hash regardless of which tier authored the page."
     }
   },
+  "$comment": "Phase 2 migration window: blocks[] is the stable intermediate projection of learningObjectives[]/sections[]/misconceptions[]. The redundancy is intentional and will be collapsed in a follow-up wave once Trainforge consumers prefer blocks[].",
   "$defs": {
     "LearningObjective": {
       "type": "object",
@@ -248,6 +287,159 @@
         "cognitiveDomain": {
           "$ref": "https://ed4all.dev/ns/taxonomies/v1/cognitive_domain.schema.json#/$defs/CognitiveDomain",
           "description": "Wave 60: knowledge domain derived from bloomLevel via lib.ontology.bloom.bloom_to_cognitive_domain. Emitted iff bloomLevel is populated."
+        }
+      }
+    },
+    "Touch": {
+      "type": "object",
+      "required": ["model", "provider", "tier", "timestamp", "decisionCaptureId", "purpose"],
+      "additionalProperties": false,
+      "description": "Phase 2: one revision attribution event in a Block's touch chain. Each tier (outline / validation / rewrite) emits a Touch when it modifies the block. Companion to Courseforge/scripts/blocks.py::Touch. The chain is cumulative — full retention per Phase 2 pre-resolved decision #2.",
+      "properties": {
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "LLM model identifier that authored the touch (e.g., 'qwen2.5-14b-instruct-q4_K_M', 'claude-sonnet-4-6')."
+        },
+        "provider": {
+          "enum": ["anthropic", "local", "together", "claude_session", "deterministic"],
+          "description": "Provider backend that produced the touch. 'deterministic' covers Phase-1 deterministic templating paths."
+        },
+        "tier": {
+          "enum": ["outline", "validation", "rewrite"],
+          "description": "Phase 3 tier that produced the touch. outline = first-pass draft; validation = validator-driven retouch; rewrite = budget-exhausted escalation."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO-8601 timestamp at which the touch was emitted."
+        },
+        "decisionCaptureId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Wave 112 invariant: '{capture_file_basename}:{event_index}' pointing into the JSONL written by _emit_decision. Non-empty by construction."
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Free-text purpose of the touch (e.g., 'draft', 'fix-bloom-level', 'rewrite-after-budget')."
+        }
+      }
+    },
+    "Block": {
+      "type": "object",
+      "required": ["blockId", "blockType", "sequence"],
+      "additionalProperties": false,
+      "description": "Phase 2: canonical intermediate block. Companion to Courseforge/scripts/blocks.py::Block. Stable in-memory representation between the Phase-1 ContentGeneratorProvider (str HTML today) and the legacy renderer surface; Phase 2 widens the provider to return Block instances. Phase 3 adds validationAttempts + escalationMarker for the per-block regeneration-budget primitive.",
+      "properties": {
+        "blockId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Position-based ID per Phase 2 pre-resolved decision #1: '{page_id}#{block_type}_{slug}_{idx}'."
+        },
+        "blockType": {
+          "enum": [
+            "objective",
+            "concept",
+            "example",
+            "assessment_item",
+            "explanation",
+            "prereq_set",
+            "activity",
+            "misconception",
+            "callout",
+            "flip_card_grid",
+            "self_check_question",
+            "summary_takeaway",
+            "reflection_prompt",
+            "discussion_prompt",
+            "chrome",
+            "recap"
+          ],
+          "description": "One of the 16 canonical Phase 2 block types (mirror of Courseforge/scripts/blocks.py::BLOCK_TYPES)."
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "1-indexed (or 0-indexed; renderer-specific) position within the page. Stable within a render and used to disambiguate same-type blocks."
+        },
+        "contentHash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$",
+          "description": "SHA-256 hex of the canonical Block payload. Excludes touched_by, sequence, validation_attempts, escalation_marker so a touch- or budget-only revision keeps a stable hash."
+        },
+        "touchedBy": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Touch" },
+          "description": "Cumulative touch chain — every revision is appended. Bounded ~12k entries × ~80 bytes ≈ ~1 MB JSON before gzip per course; well within IMSCC payload budgets."
+        },
+        "pageId": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Page identifier the block belongs to. Same shape as the top-level pageId."
+        },
+        "bloomLevel": {
+          "oneOf": [
+            { "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel" },
+            { "type": "null" }
+          ],
+          "description": "Bloom's taxonomy level for the block (when applicable to the block_type)."
+        },
+        "contentTypeLabel": {
+          "type": "string",
+          "description": "Section content classification (mirrors data-cf-content-type emit; 8-value enum from content_type taxonomy when applicable)."
+        },
+        "objectiveIds": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z]{2,}-\\d{2,}$"
+          },
+          "description": "Canonical LO IDs (TO-NN / CO-NN) the block teaches or assesses."
+        },
+        "sourceIds": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "DART sourceId(s) that ground this block (shape: 'dart:{slug}#{block_id}')."
+        },
+        "sourcePrimary": {
+          "type": "string",
+          "description": "The primary sourceId for the block when one source dominates (subset of sourceIds)."
+        },
+        "templateType": {
+          "type": "string",
+          "description": "Template variant name when the block is rendered by a templated component."
+        },
+        "keyTerms": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Slugified key terms attached to the block (mirrors data-cf-key-terms)."
+        },
+        "teachingRole": {
+          "type": "string",
+          "description": "Pedagogical teaching role (mirrors data-cf-teaching-role)."
+        },
+        "purpose": {
+          "type": "string",
+          "description": "Pedagogical purpose (mirrors data-cf-purpose; e.g., 'term-definition', 'formative-assessment')."
+        },
+        "component": {
+          "type": "string",
+          "description": "Interactive component type (mirrors data-cf-component; e.g., 'flip-card', 'self-check', 'activity-card')."
+        },
+        "validationAttempts": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Phase-3 regeneration-budget counter; incremented per failed validator pass on the outline tier."
+        },
+        "escalationMarker": {
+          "type": "string",
+          "enum": [
+            "outline_budget_exhausted",
+            "structural_unfixable",
+            "validator_consensus_fail"
+          ],
+          "description": "Phase-3 escalation tag; set to a non-null marker when the block was escalated to the rewrite tier."
         }
       }
     }

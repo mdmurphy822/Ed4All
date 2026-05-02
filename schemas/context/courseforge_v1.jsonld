@@ -20,6 +20,8 @@
     "Misconception": "ed4all:Misconception",
     "TargetedConcept": "ed4all:TargetedConcept",
     "BloomDistribution": "ed4all:BloomDistribution",
+    "Block": "ed4all:Block",
+    "Touch": "ed4all:Touch",
 
     "id": "@id",
 
@@ -78,6 +80,19 @@
 
     "run_id": { "@id": "prov:wasGeneratedBy", "@type": "@id" },
     "created_at": { "@id": "dcterms:created", "@type": "xsd:dateTime" },
-    "generated_at": { "@id": "dcterms:issued", "@type": "xsd:dateTime" }
+    "generated_at": { "@id": "dcterms:issued", "@type": "xsd:dateTime" },
+
+    "blocks": { "@id": "ed4all:hasBlock", "@container": "@set" },
+    "blockId": "ed4all:blockId",
+    "blockType": "ed4all:blockType",
+    "sequence": { "@id": "ed4all:sequence", "@type": "xsd:integer" },
+    "touchedBy": { "@id": "ed4all:touchedBy", "@container": "@set" },
+    "tier": "ed4all:tier",
+    "provider": "ed4all:provider",
+    "decisionCaptureId": "ed4all:decisionCaptureId",
+    "provenance": "ed4all:provenance",
+    "contentHash": "ed4all:contentHash",
+    "validationAttempts": { "@id": "ed4all:validationAttempts", "@type": "xsd:nonNegativeInteger" },
+    "escalationMarker": "ed4all:escalationMarker"
   }
 }
