@@ -107,6 +107,19 @@ training = [
     # this pin is only required when LM_EVAL_ENABLED is set.
     "lm-eval>=0.4.0,<1.0.0",
 ]
+# Phase 4 Subtask 7: optional embedding deps for the statistical-tier
+# validators in `lib/embedding/`. Kept out of the default install so
+# CPU-only dev boxes don't pull in torch + transformers wheels just to
+# run the orchestrator. Validators degrade to warning-severity
+# `EMBEDDING_DEPS_MISSING` GateIssues when the extras are absent (per
+# `lib/embedding/sentence_embedder.py::try_load_embedder`); strict-mode
+# opt-in via `TRAINFORGE_REQUIRE_EMBEDDINGS=true` flips to critical.
+embedding = [
+    "sentence-transformers>=2.5.0,<4.0.0",
+    "numpy>=1.24.0",
+    "transformers>=4.49,<4.50",
+    "torch>=2.0.0",
+]
 full = ["ed4all[dart,server,dev]"]
 
 [project.scripts]
