@@ -635,6 +635,135 @@ class CourseforgeRouter:
         return out
 
     # ------------------------------------------------------------------
+    # Two-pass dispatch over a Block list
+    # ------------------------------------------------------------------
+
+    def route_all(
+        self,
+        blocks: List[Block],
+        *,
+        source_chunks_by_block_id: Optional[Dict[str, List[Any]]] = None,
+        objectives: Optional[List[Any]] = None,
+    ) -> List[Block]:
+        """Two-pass dispatch over an ordered list of Blocks.
+
+        Returns the full list with input ordering preserved. Each block
+        is routed through:
+
+        1. **Outline tier** — :meth:`route` with ``tier="outline"`` per
+           block. Single-candidate path for Wave N (the
+           self-consistency loop is layered on top by Subtask 37 in
+           Wave N+1). On dispatch failure the block is marked
+           ``content="failed"``-style by capturing the exception and
+           setting ``escalation_marker="outline_budget_exhausted"``;
+           the failed block is included in the returned list but is
+           NOT dispatched to the rewrite tier.
+        2. **Inter-tier validation** — Wave N stub. The Wave N+1
+           Subtasks 36/38 land the validator chain that decides whether
+           a block proceeds to rewrite or is flagged failed. For
+           Wave N every successful outline-tier emit proceeds to
+           rewrite.
+        3. **Rewrite tier** — :meth:`route` with ``tier="rewrite"``
+           per surviving block. Failed-outline blocks skip this stage.
+
+        ``source_chunks_by_block_id`` is an optional dict keyed by
+        ``block.block_id`` carrying that block's pre-resolved source
+        chunks; when absent the per-block source chunks are an empty
+        list (the providers will note the absence in their prompts via
+        ``_format_source_chunks(...)``).
+
+        Wave-N constraints (per Worker 3D scope):
+        - No self-consistency loop (single outline candidate per block).
+        - No inter-tier validator chain (every successful outline
+          dispatches straight to rewrite).
+        - No regen budget tracking on the router level (the providers
+          enforce their own parse-retry budgets internally).
+        - Failed-outline blocks return early with an
+          ``outline_budget_exhausted`` marker and skip the rewrite
+          stage; the caller sees them in the returned list at their
+          original position so downstream packaging can persist them
+          for re-execution.
+        """
+        chunks_lookup: Dict[str, List[Any]] = source_chunks_by_block_id or {}
+        objectives_list: List[Any] = list(objectives or [])
+
+        # Pass 1: outline tier per block.
+        outline_results: List[Tuple[int, Block, bool]] = []
+        for idx, block in enumerate(blocks):
+            block_chunks = chunks_lookup.get(block.block_id, [])
+            try:
+                outlined = self.route(
+                    block,
+                    tier="outline",
+                    source_chunks=block_chunks,
+                    objectives=objectives_list,
+                )
+                # When the outline tier short-circuited via
+                # ``escalate_immediately``, ``outlined.escalation_marker``
+                # is non-None — that's the signal the rewrite-tier
+                # branch routes through ``_render_escalated_user_prompt``.
+                # The block still proceeds to rewrite (the marker is
+                # the routing signal, not a failure).
+                outline_results.append((idx, outlined, True))
+            except Exception as exc:
+                logger.warning(
+                    "route_all: outline tier failed for block_id=%s: %s",
+                    block.block_id, exc,
+                )
+                # Mark the block as outline-failed so it's persisted
+                # (with marker) for re-execution and skipped by the
+                # rewrite pass. ``escalation_marker`` lives in the
+                # canonical _ESCALATION_MARKERS set, which keeps
+                # Block.__post_init__ from raising on the replace.
+                failed = dataclasses.replace(
+                    block,
+                    escalation_marker="outline_budget_exhausted",
+                )
+                outline_results.append((idx, failed, False))
+
+        # Pass 2 (Wave N stub): inter-tier validation. Every successful
+        # outline emit proceeds to rewrite. Subtasks 36/38 in Wave N+1
+        # plug in the validator chain.
+
+        # Pass 3: rewrite tier per surviving block.
+        rewrite_results: List[Tuple[int, Block]] = []
+        for idx, outlined, ok in outline_results:
+            if not ok:
+                # Outline-failed blocks bypass rewrite; they ride the
+                # return list at their original index.
+                rewrite_results.append((idx, outlined))
+                continue
+            block_chunks = chunks_lookup.get(outlined.block_id, [])
+            try:
+                rewritten = self.route(
+                    outlined,
+                    tier="rewrite",
+                    source_chunks=block_chunks,
+                    objectives=objectives_list,
+                )
+                rewrite_results.append((idx, rewritten))
+            except Exception as exc:
+                logger.warning(
+                    "route_all: rewrite tier failed for block_id=%s: %s",
+                    outlined.block_id, exc,
+                )
+                # Rewrite failure: keep the outlined block (with marker)
+                # so the caller can persist for re-execution.
+                failed_rewrite = (
+                    outlined
+                    if outlined.escalation_marker is not None
+                    else dataclasses.replace(
+                        outlined,
+                        escalation_marker="validator_consensus_fail",
+                    )
+                )
+                rewrite_results.append((idx, failed_rewrite))
+
+        # Reassemble ordered output.
+        rewrite_results.sort(key=lambda pair: pair[0])
+        return [b for _, b in rewrite_results]
+
+    # ------------------------------------------------------------------
     # Decision-capture helpers
     # ------------------------------------------------------------------
 
