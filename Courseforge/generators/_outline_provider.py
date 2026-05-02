@@ -266,7 +266,39 @@ _OUTLINE_SYSTEM_PROMPT: str = (
     "prose — generate the structural skeleton only. Output ONLY the "
     "JSON object — no preamble, no markdown, no commentary."
 )
-_BLOCK_TYPE_GBNF: Dict[str, str] = {}
+# Per-block-type GBNF grammar strings for llama.cpp / vLLM constrained
+# decoding. Each grammar accepts a JSON object with at least the
+# canonical fields the outline tier emits (block_id, block_type, ...).
+#
+# Per Phase 3 §2.1.1, these are starting-point grammars subject to
+# Phase 4 calibration. The grammars deliberately admit a permissive
+# JSON-object surface (mirrors llama.cpp's bundled
+# ``grammars/json.gbnf``) rather than a fully-typed shape — the JSON
+# Schema validator (Subtask 19) does the strict structural check
+# AFTER the model emits, so the GBNF only needs to keep the model
+# inside JSON-grammar territory and prevent prose drift.
+#
+# Authoring per-block-type fully-typed GBNFs (e.g. enforcing
+# ``"block_type": "objective"`` as a string literal in-grammar) is
+# deferred to Phase 4 — at the 7B-class default model, the JSON-only
+# constraint plus a strong system prompt already keeps drift below
+# the parse-retry budget on the rdf-shacl-551-2 calibration corpus.
+_GENERIC_JSON_GBNF: str = r"""root   ::= object
+value  ::= object | array | string | number | ("true" | "false" | "null") ws
+object ::= "{" ws ( string ":" ws value ("," ws string ":" ws value)* )? "}" ws
+array  ::= "[" ws ( value ("," ws value)* )? "]" ws
+string ::= "\"" ( [^"\\] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F]{4}) )* "\"" ws
+number ::= ("-"? ([0-9] | [1-9] [0-9]*)) ("." [0-9]+)? ([eE] [-+]? [0-9]+)? ws
+ws ::= ([ \t\n] ws)?"""
+
+# Lightweight per-block-type GBNF map. Every block_type currently
+# maps to the generic JSON grammar; the dict shape exists so a Phase
+# 4 author can drop in a tighter per-type grammar without touching
+# any call site. The ``_build_grammar_payload`` dispatch reads this
+# dict directly.
+_BLOCK_TYPE_GBNF: Dict[str, str] = {
+    block_type: _GENERIC_JSON_GBNF for block_type in BLOCK_TYPES
+}
 _BLOCK_TYPE_JSON_SCHEMAS: Dict[str, Dict[str, Any]] = {}
 
 
@@ -489,14 +521,96 @@ class OutlineProvider(_BaseLLMProvider):
         )
 
     def _build_grammar_payload(self, block_type: str) -> Dict[str, Any]:
-        """Return the per-call ``extra_payload`` dict carrying the
-        grammar / JSON-schema constraint for the resolved provider.
+        """Return the per-call ``extra_payload`` dict.
 
-        Implementation lands in Subtask 18.
+        The returned dict is merged into the OpenAI-compatible POST
+        body just before the wire-call by Subtask 21's extension to
+        :meth:`_BaseLLMProvider._dispatch_call`. Dispatch on
+        ``(self._provider, self._base_url, self._grammar_mode)``
+        per Phase 3 §2.1.1:
+
+        - ``mode=="gbnf"`` OR
+          (``provider in {"local","openai_compatible"}`` AND
+           ``base_url`` looks like llama.cpp / lmstudio) →
+          ``{"grammar": <gbnf-string>}``.
+        - ``mode=="json_schema"`` → full Ollama 0.5+ JSON-Schema dict
+          via ``{"format": <schema_dict>}``.
+        - ``provider=="together"`` → strict OpenAI-style
+          ``{"response_format": {"type": "json_schema", ...}}``.
+        - vLLM (detected by base_url) →
+          ``{"extra_body": {"guided_json": <schema_dict>}}``.
+        - Anthropic / unrecognised → ``{}`` (rely on Wave-113
+          ``json_mode=True`` on the OA client).
         """
-        raise NotImplementedError(
-            "OutlineProvider._build_grammar_payload lands in Phase 3 Subtask 18"
-        )
+        schema = _BLOCK_TYPE_JSON_SCHEMAS.get(block_type)
+        gbnf = _BLOCK_TYPE_GBNF.get(block_type)
+        base_url = (self._base_url or "").lower()
+        mode = (self._grammar_mode or "").lower() or None
+        provider = self._provider
+
+        # Explicit mode wins.
+        if mode == "gbnf":
+            if gbnf:
+                return {"grammar": gbnf}
+            return {}
+        if mode == "json_schema":
+            if schema is not None:
+                return {"format": schema}
+            return {}
+        if mode == "json_object":
+            # Wave-113 OA-style ``json_object`` — already injected by
+            # the OpenAICompatibleClient when ``json_mode=True``; no
+            # additional payload needed.
+            return {}
+        if mode == "none":
+            return {}
+
+        # Auto-detect path.
+        if provider == "together":
+            if schema is not None:
+                return {
+                    "response_format": {
+                        "type": "json_schema",
+                        "json_schema": {
+                            "name": f"OutlineBlock_{block_type}",
+                            "schema": schema,
+                            "strict": True,
+                        },
+                    }
+                }
+            return {}
+
+        if provider in {"local", "openai_compatible"}:
+            # llama.cpp / LM Studio expose a ``grammar`` payload field;
+            # detect by base_url substring (llama.cpp default is
+            # :8080, LM Studio :1234, but the URL substring is the
+            # canonical signal).
+            if any(
+                marker in base_url
+                for marker in ("llama", "lmstudio", "lm-studio")
+            ):
+                if gbnf:
+                    return {"grammar": gbnf}
+                return {}
+            # vLLM exposes ``guided_json`` under ``extra_body``.
+            if "vllm" in base_url:
+                if schema is not None:
+                    return {"extra_body": {"guided_json": schema}}
+                return {}
+            # Default for ``local`` (Ollama) — fall back to the
+            # GBNF grammar payload. Ollama's older flag is
+            # ``format: "json"`` (Wave-113 default on the OA client),
+            # so the ``grammar`` field is silently ignored on
+            # legacy Ollama and consumed by llama.cpp-compatible
+            # servers; either way the JSON-mode-only path remains
+            # the wire-level fallback.
+            if gbnf:
+                return {"grammar": gbnf}
+            return {}
+
+        # Anthropic and any other unrecognised backend — let the
+        # Wave-113 ``json_mode`` carry the constraint.
+        return {}
 
     def _outline_kind_bounds(self) -> Dict[str, Dict[str, Tuple[int, int]]]:
         """Return the per-block-type bounds table (Subtask 14)."""
