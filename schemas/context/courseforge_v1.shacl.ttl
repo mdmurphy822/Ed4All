@@ -524,12 +524,15 @@ cfshapes:TouchShape
   rdfs:label "Courseforge Touch Shape" ;
   rdfs:comment "Phase 2 Subtask 13: validates one revision attribution event. Wave 112 invariant: decisionCaptureId is non-empty by construction." ;
 
+  # Phase 3.5 Subtask 15: extend Touch.tier with the post-validation
+  # tier labels ``outline_val`` / ``rewrite_val`` so SHACL accepts
+  # validator-emitted Touches alongside the legacy authoring-tier set.
   sh:property [
     sh:path ed4all:tier ;
     sh:minCount 1 ;
     sh:maxCount 1 ;
-    sh:in ( "outline" "validation" "rewrite" ) ;
-    sh:message "Touch.tier is required and must be one of outline / validation / rewrite." ;
+    sh:in ( "outline" "validation" "rewrite" "outline_val" "rewrite_val" ) ;
+    sh:message "Touch.tier is required and must be one of outline / validation / rewrite / outline_val / rewrite_val." ;
   ] ;
 
   sh:property [
