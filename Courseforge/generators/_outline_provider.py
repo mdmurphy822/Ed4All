@@ -299,7 +299,135 @@ ws ::= ([ \t\n] ws)?"""
 _BLOCK_TYPE_GBNF: Dict[str, str] = {
     block_type: _GENERIC_JSON_GBNF for block_type in BLOCK_TYPES
 }
+# ---------------------------------------------------------------------------
+# Per-block-type JSON Schema map (Subtask 19).
+# Each value is a Draft 2020-12 schema requiring the canonical outline
+# fields (block_id, block_type, content_type, bloom_level,
+# objective_refs, curies, key_claims, section_skeleton, source_refs,
+# structural_warnings) plus per-block-type extras (e.g. assessment_item
+# requires stem + answer_key; prereq_set requires prerequisitePages).
+# ``additionalProperties: false`` keeps the model from drifting into
+# fabricated fields.
+# ---------------------------------------------------------------------------
+
+_BLOOM_LEVEL_ENUM: List[str] = [
+    "remember",
+    "understand",
+    "apply",
+    "analyze",
+    "evaluate",
+    "create",
+]
+
+# CURIE pattern mirrors the canonical SHACL/RDF surface form check
+# used elsewhere in the project (e.g. lib/ontology/* prefix maps).
+_CURIE_PATTERN: str = r"^[a-z][a-z0-9]*:[A-Za-z0-9_-]+$"
+
+
+def _build_block_outline_schema(
+    block_type: str,
+    *,
+    extra_required: Optional[List[str]] = None,
+    extra_properties: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Construct the per-block-type JSON Schema payload."""
+    bounds = _OUTLINE_KIND_BOUNDS.get(block_type, {})
+    key_claim_min, key_claim_max = bounds.get("key_claims", (0, 32))
+    section_min, section_max = bounds.get("section_skeleton", (0, 16))
+
+    properties: Dict[str, Dict[str, Any]] = {
+        "block_id": {"type": "string", "minLength": 1},
+        "block_type": {"const": block_type},
+        "content_type": {"type": "string", "minLength": 1},
+        "bloom_level": {"type": "string", "enum": _BLOOM_LEVEL_ENUM},
+        "objective_refs": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+        },
+        "curies": {
+            "type": "array",
+            "items": {"type": "string", "pattern": _CURIE_PATTERN},
+        },
+        "key_claims": {
+            "type": "array",
+            "items": {"type": "string", "minLength": 1},
+            "minItems": key_claim_min,
+            "maxItems": key_claim_max,
+        },
+        "section_skeleton": {
+            "type": "array",
+            "items": {"type": "object"},
+            "minItems": section_min,
+            "maxItems": section_max,
+        },
+        "source_refs": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "sourceId": {"type": "string", "minLength": 1},
+                    "role": {"type": "string", "minLength": 1},
+                },
+                "required": ["sourceId", "role"],
+            },
+        },
+        "structural_warnings": {
+            "type": "array",
+            "items": {"type": "string"},
+            "default": [],
+        },
+    }
+    required: List[str] = [
+        "block_id",
+        "block_type",
+        "content_type",
+        "bloom_level",
+        "objective_refs",
+        "curies",
+        "key_claims",
+        "section_skeleton",
+        "source_refs",
+        "structural_warnings",
+    ]
+    if extra_properties:
+        properties.update(extra_properties)
+    if extra_required:
+        required.extend(extra_required)
+
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
 _BLOCK_TYPE_JSON_SCHEMAS: Dict[str, Dict[str, Any]] = {}
+for _bt in BLOCK_TYPES:
+    if _bt == "assessment_item":
+        _BLOCK_TYPE_JSON_SCHEMAS[_bt] = _build_block_outline_schema(
+            _bt,
+            extra_required=["stem", "answer_key"],
+            extra_properties={
+                "stem": {"type": "string", "minLength": 1},
+                "answer_key": {"type": "string", "minLength": 1},
+            },
+        )
+    elif _bt == "prereq_set":
+        _BLOCK_TYPE_JSON_SCHEMAS[_bt] = _build_block_outline_schema(
+            _bt,
+            extra_required=["prerequisitePages"],
+            extra_properties={
+                "prerequisitePages": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "minItems": 1,
+                }
+            },
+        )
+    else:
+        _BLOCK_TYPE_JSON_SCHEMAS[_bt] = _build_block_outline_schema(_bt)
 
 
 # ---------------------------------------------------------------------------
