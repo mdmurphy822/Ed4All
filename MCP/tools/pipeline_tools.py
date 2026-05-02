@@ -2261,13 +2261,17 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
         for blk in blocks:
             if blk.block_id in failed_block_ids:
                 continue
-            fh.write(json.dumps(blk.to_jsonld_entry(), ensure_ascii=False))
+            fh.write(json.dumps(
+                _block_to_snake_case_entry(blk), ensure_ascii=False,
+            ))
             fh.write("\n")
     with failed_path.open("w", encoding="utf-8") as fh:
         for blk in blocks:
             if blk.block_id not in failed_block_ids:
                 continue
-            fh.write(json.dumps(blk.to_jsonld_entry(), ensure_ascii=False))
+            fh.write(json.dumps(
+                _block_to_snake_case_entry(blk), ensure_ascii=False,
+            ))
             fh.write("\n")
 
     return json.dumps({
@@ -2278,6 +2282,74 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
         "block_count": len(blocks),
         "failed_block_count": len(failed_block_ids),
     })
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.5 Subtask 28-30: snake_case Block JSONL shape helper
+# ---------------------------------------------------------------------------
+#
+# ``Block.to_jsonld_entry()`` emits the legacy camelCase section /
+# objective / misconception shape (``heading`` / ``contentType`` for
+# explanation blocks, ``blockId`` / ``blockType`` for minimal-shape
+# blocks, etc.) — that's the wire shape Trainforge / Courseforge
+# JSON-LD consumers expect, but it's NOT round-trippable through
+# ``Block(**fields)`` because the field names are camelCase and the
+# block-type-specific dispatch drops dataclass fields the constructor
+# would otherwise accept.
+#
+# The two-pass router phase helpers need a JSONL shape that (a)
+# round-trips cleanly through ``Block(**snake_case_kwargs)`` so a
+# downstream phase can rehydrate the Block, and (b) carries every
+# field the Block dataclass exposes (block_id, block_type, page_id,
+# sequence, content, objective_ids, source_ids, ...). The helper
+# below projects a Block to that snake_case shape, mirroring the
+# accepted-keys set ``_entry_to_block`` uses to reconstruct.
+
+
+def _block_to_snake_case_entry(block: Any) -> Dict[str, Any]:
+    """Project a :class:`Block` to a snake_case JSONL entry that
+    round-trips through ``Block(**entry)``.
+
+    Mirrors the accepted-keys set the helper-internal
+    ``_entry_to_block`` consumers (in ``_run_post_rewrite_validation``,
+    ``_run_inter_tier_validation``, ``_run_content_generation_rewrite``)
+    use to rehydrate. Tuples are projected to lists for JSON
+    serialisation; ``source_references`` entries are coerced to plain
+    dicts.
+    """
+    entry: Dict[str, Any] = {
+        "block_id": block.block_id,
+        "block_type": block.block_type,
+        "page_id": block.page_id,
+        "sequence": block.sequence,
+        "content": block.content,
+    }
+    optional_scalars = (
+        "template_type", "bloom_level", "bloom_verb", "bloom_range",
+        "cognitive_domain", "teaching_role", "content_type_label",
+        "purpose", "component", "source_primary", "content_hash",
+        "escalation_marker",
+    )
+    for name in optional_scalars:
+        value = getattr(block, name, None)
+        if value is not None:
+            entry[name] = value
+    optional_tuples = (
+        "key_terms", "objective_ids", "bloom_levels", "bloom_verbs",
+        "source_ids",
+    )
+    for name in optional_tuples:
+        value = getattr(block, name, ()) or ()
+        if value:
+            entry[name] = list(value)
+    refs = getattr(block, "source_references", ()) or ()
+    if refs:
+        entry["source_references"] = [
+            dict(r) if isinstance(r, dict) else r for r in refs
+        ]
+    if getattr(block, "validation_attempts", 0):
+        entry["validation_attempts"] = int(block.validation_attempts)
+    return entry
 
 
 # ---------------------------------------------------------------------------
@@ -2545,7 +2617,9 @@ async def _run_content_generation_outline(**kwargs) -> str:
     blocks_outline_path = out_dir / "blocks_outline.jsonl"
     with blocks_outline_path.open("w", encoding="utf-8") as fh:
         for blk in outline_blocks:
-            fh.write(json.dumps(blk.to_jsonld_entry(), ensure_ascii=False))
+            fh.write(json.dumps(
+                _block_to_snake_case_entry(blk), ensure_ascii=False,
+            ))
             fh.write("\n")
 
     if capture is not None:
@@ -2826,13 +2900,17 @@ async def _run_inter_tier_validation(**kwargs) -> str:
         for blk in blocks:
             if blk.block_id in failed_block_ids:
                 continue
-            fh.write(json.dumps(blk.to_jsonld_entry(), ensure_ascii=False))
+            fh.write(json.dumps(
+                _block_to_snake_case_entry(blk), ensure_ascii=False,
+            ))
             fh.write("\n")
     with failed_path.open("w", encoding="utf-8") as fh:
         for blk in blocks:
             if blk.block_id not in failed_block_ids:
                 continue
-            fh.write(json.dumps(blk.to_jsonld_entry(), ensure_ascii=False))
+            fh.write(json.dumps(
+                _block_to_snake_case_entry(blk), ensure_ascii=False,
+            ))
             fh.write("\n")
 
     return json.dumps({
@@ -3043,7 +3121,9 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
     blocks_final_path = out_dir / "blocks_final.jsonl"
     with blocks_final_path.open("w", encoding="utf-8") as fh:
         for blk in rewrite_blocks:
-            fh.write(json.dumps(blk.to_jsonld_entry(), ensure_ascii=False))
+            fh.write(json.dumps(
+                _block_to_snake_case_entry(blk), ensure_ascii=False,
+            ))
             fh.write("\n")
 
     # Group blocks by page_id and emit a minimal HTML page per group.
