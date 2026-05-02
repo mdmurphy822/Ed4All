@@ -47,6 +47,12 @@ class WorkflowPhase:
     timeout_minutes: int = 60
     validation_gates: Optional[List[Dict[str, Any]]] = None
     description: str = ""
+    # Phase 3 Subtask 2: env-driven enable predicate. Format
+    # ``"VAR=value"`` or ``"VAR!=value"`` (case-insensitive). Evaluated
+    # by ``WorkflowRunner._eval_enabled_when_env``; phases with an
+    # unsatisfied predicate skip via ``_should_skip_phase``. Default
+    # ``None`` preserves byte-stable behavior on every legacy phase.
+    enabled_when_env: Optional[str] = None
 
 
 @dataclass
@@ -156,6 +162,9 @@ class OrchestratorConfig:
                             timeout_minutes=p.get("timeout_minutes", 60),
                             validation_gates=p.get("validation_gates"),
                             description=p.get("description", ""),
+                            # Phase 3 Subtask 2: pass through the
+                            # optional env-predicate from YAML.
+                            enabled_when_env=p.get("enabled_when_env"),
                         ))
 
                     instance.workflows[name] = WorkflowConfig(
