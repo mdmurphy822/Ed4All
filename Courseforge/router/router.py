@@ -1513,6 +1513,11 @@ class CourseforgeRouter:
                 # decision-capture stream carries the per-block-per-
                 # validator non-pass chain so a postmortem reader sees
                 # WHICH gate fired WHICH action with WHICH issues.
+                #
+                # Phase 3.5 Subtask 26: tier="outline" because
+                # _run_validator_chain is the outline-tier seam (the
+                # post-rewrite validation helper Wave B Subtask 13
+                # lands will pass tier="rewrite" at its own call site).
                 self._emit_block_validation_action(
                     block,
                     gate_id=getattr(gate_result, "gate_id", "")
@@ -1521,6 +1526,7 @@ class CourseforgeRouter:
                     action=action,
                     score=getattr(gate_result, "score", None),
                     issues=list(getattr(gate_result, "issues", []) or []),
+                    tier="outline",
                 )
                 all_passed = False
                 if fast_fail:
@@ -1684,6 +1690,7 @@ class CourseforgeRouter:
         action: str,
         score: Optional[float],
         issues: List[Any],
+        tier: Literal["outline", "rewrite"] = "outline",
     ) -> None:
         """Emit one ``block_validation_action`` decision-capture event
         per validator that returned a non-``"pass"`` action (Subtask 47).
@@ -1703,6 +1710,22 @@ class CourseforgeRouter:
         ``ml_features`` payload mirrors the rationale fields plus the
         full ``issues`` list (truncated to top-3 to bound payload size)
         for ML-trainability.
+
+        Phase 3.5 Subtask 26: the ``tier`` parameter records WHICH tier
+        the validator chain was run against. The outline-tier
+        :meth:`_run_validator_chain` call sites pass ``tier="outline"``
+        (the default keeps the existing call sites byte-stable); Wave B
+        Subtask 13's ``_run_post_rewrite_validation`` helper will pass
+        ``tier="rewrite"`` so a postmortem reader can disambiguate
+        outline-tier validator failures (which trigger
+        regenerate / escalate / block per the loop semantics) from
+        rewrite-tier validator failures (which surface as escalation
+        events with ``tier="rewrite"`` provenance). The field threads
+        into ``ml_features.tier`` so ML training can stratify by tier
+        without reparsing the rationale string. Schema does NOT pin
+        ``additionalProperties: false`` on ``ml_features``, so adding
+        the field is backward-compatible — pre-Phase-3.5 captures
+        without ``tier`` continue to deserialize.
 
         Capture errors are swallowed so a flaky capture handle never
         breaks the dispatch path (mirrors the pattern in the sibling
@@ -1759,6 +1782,10 @@ class CourseforgeRouter:
             "score": score,
             "issues_top3": top_issues,
             "issues_count": len(issues or []),
+            # Phase 3.5 Subtask 26: tier provenance — outline (current
+            # call site) vs rewrite (Wave B Subtask 13's
+            # _run_post_rewrite_validation helper).
+            "tier": tier,
         }
         try:
             self._capture.log_decision(
