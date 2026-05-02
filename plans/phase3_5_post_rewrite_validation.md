@@ -37,7 +37,7 @@ Refines `plans/courseforge_architecture_roadmap.md` §2 (row Phase 3.5) and §3.
 
 ## Atomic subtasks
 
-Estimated total LOC: ~1,800 (300 remediation module + 250 rewrite_val phase wiring + 200 shape-discriminating adapters + 120 Phase 3a env-var fixes + 250 router-side remediation injection + 200 Touch tier expansion + 150 schema/SHACL updates + 350 tests + 100 docs).
+Estimated total LOC: ~2,400 (300 remediation module + 250 rewrite_val phase wiring + 200 shape-discriminating adapters + 120 Phase 3a env-var fixes + 250 router-side remediation injection + 200 Touch tier expansion + 150 schema/SHACL updates + 350 tests + 100 docs + ~600 for Categories I + J: ~320 workflow handlers + ~30 executor phase-name dispatch + ~250 handler tests + ~30 route_all rewiring + ~150 route_all tests).
 
 ### A. Remediation module extraction (4 subtasks)
 
@@ -251,23 +251,93 @@ Estimated total LOC: ~1,800 (300 remediation module + 250 rewrite_val phase wiri
 - **Change:** Test that `DECISION_VALIDATION_STRICT=true` accepts `block_validation_action` events carrying `ml_features.tier="outline"` and `tier="rewrite"`.
 - **Verification:** `DECISION_VALIDATION_STRICT=true pytest lib/tests/test_phase3_5_decision_event_tier_field.py -v` reports ≥2 PASSED.
 
+### I. Workflow phase tool handlers (5 subtasks)
+
+The Phase 3 review surfaced this category as HIGH severity: `config/workflows.yaml::textbook_to_course` and `course_generation` already declare three new Phase 3 phases (`content_generation_outline`, `inter_tier_validation`, `content_generation_rewrite`) gated `enabled_when_env: "COURSEFORGE_TWO_PASS=true"`, but **no Python tool handlers exist for them in `MCP/tools/pipeline_tools.py`**. Both content-generation phases declare `agents: ['content-generator']` which routes via `MCP/core/executor.py::AGENT_TOOL_MAPPING:147` to the legacy single-pass `generate_course_content` tool. Under current wiring, `COURSEFORGE_TWO_PASS=true` would run the legacy single-pass surface TWICE rather than splitting into tier-distinct dispatches. The fix is three new tool handlers + a phase-name-aware dispatch shim in the executor (Option B from the Phase 3 review — single-file change to executor; no new agent registrations needed).
+
+#### Subtask 28: Add `_run_content_generation_outline` tool handler
+- **Files:** `/home/user/Ed4All/MCP/tools/pipeline_tools.py` (new helper near the existing `_generate_course_content` at `:2692`)
+- **Depends on:** Subtask 9 (the four `Block*Validator` shape-discriminating adapters from Category B must be in place so the router-side validator chain actually consumes outline-tier dict-content blocks)
+- **Estimated LOC:** ~120
+- **Change:** New `async def _run_content_generation_outline(*, course_planning_path, staging_path, dart_chunks_path=None, project_id=None, capture=None, **_)` registered in the tool registry as `run_content_generation_outline`. Reads `synthesized_objectives.json` from `course_planning_path`, the staging manifest from `staging_path`, and (when present) the DART chunks JSONL. Instantiates `CourseforgeRouter` (Option B path) with `policy=load_block_routing_policy()` and `capture=...`. For each (week, page) tuple in the staging manifest, builds a `List[Block]` of stub blocks (one per (page, block_type) the page would emit) seeded from the page's outline objectives + source-chunk grounding. Calls `router.route_all(blocks)` filtered to the outline tier (or pre-filters internally so only outline-tier dispatch fires; rewrite-tier dispatch is the rewrite handler's job). Persists outline-tier blocks to `Courseforge/exports/PROJ-<course>-<...>/01_outline/blocks_outline.jsonl` (one Block JSON per line). Returns `{"blocks_outline_path": <path>, "project_id": <project_id>, "weeks_prepared": [<list-of-weeks-routed>]}` matching the workflow phase outputs declared at `MCP/core/workflow_runner.py:213-215`. Decision-capture: emit one `block_outline_call` event per block dispatched (the router emits these via `_emit_block_outline_call`; the handler relies on the existing emit chain rather than emitting a parallel handler-scope event).
+- **Verification:** `pytest MCP/tools/tests/test_pipeline_tools_phase3_handlers.py::test_run_content_generation_outline_emits_blocks_jsonl -v` PASSES — asserts the handler reads `course_planning_path` + `staging_path`, instantiates the router (mocked), and writes a non-empty `blocks_outline.jsonl` at the expected path with one Block entry per (week, page, block_type) tuple.
+
+#### Subtask 29: Add `_run_inter_tier_validation` tool handler
+- **Files:** `/home/user/Ed4All/MCP/tools/pipeline_tools.py`
+- **Depends on:** Subtask 28
+- **Estimated LOC:** ~80
+- **Change:** New `async def _run_inter_tier_validation(*, blocks_outline_path, project_id=None, capture=None, **_)` registered as `run_inter_tier_validation`. Reads the outline-tier blocks JSONL from upstream phase. Instantiates the four `Block*Validator` classes (`BlockCurieAnchoringValidator`, `BlockContentTypeValidator`, `BlockPageObjectivesValidator`, `BlockSourceRefValidator`) from `Courseforge.router.inter_tier_gates`. Runs each validator over the block list (using the shape-discriminating dispatch from Category B Subtasks 6-8). Persists `blocks_validated_path` (passing blocks) and `blocks_failed_path` (failing blocks with their failure markers stamped via `Block.with_touch(Touch(tier="outline_val", purpose="validation_fail", ...))`) per the workflow phase outputs declared at `MCP/core/workflow_runner.py:216-218`. Emits one `block_validation_action` decision-capture event per failed validator with `ml_features.tier="outline"` per Subtask 26's extension. Returns `{"blocks_validated_path": <path>, "blocks_failed_path": <path>}`.
+- **Verification:** `pytest MCP/tools/tests/test_pipeline_tools_phase3_handlers.py::test_run_inter_tier_validation_splits_pass_fail_lists -v` PASSES — asserts the handler reads `blocks_outline_path`, instantiates the four validators, and writes both `blocks_validated.jsonl` and `blocks_failed.jsonl` (the latter possibly empty when all blocks pass).
+
+#### Subtask 30: Add `_run_content_generation_rewrite` tool handler
+- **Files:** `/home/user/Ed4All/MCP/tools/pipeline_tools.py`
+- **Depends on:** Subtask 29
+- **Estimated LOC:** ~120
+- **Change:** New `async def _run_content_generation_rewrite(*, blocks_validated_path, project_id=None, capture=None, **_)` registered as `run_content_generation_rewrite`. Reads `blocks_validated_path` from upstream phase (the post-validation passing-blocks list). For each validated block, dispatches via `router.route(block, tier="rewrite", source_chunks=..., objectives=...)` (or `router.route_all(blocks)` filtered to the rewrite tier). Renders the rewrite-tier HTML output via the existing `generate_course.py` page-builder helpers (or directly via `Block.to_html_attrs()` + the existing template stamping pipeline so byte-stable parity is preserved with the legacy single-pass output). Persists the final blocks list to `Courseforge/exports/PROJ-<course>-<...>/04_rewrite/blocks_final.jsonl` and the per-page HTML files to `Courseforge/exports/PROJ-<course>-<...>/03_content_development/week_NN/`. Returns `{"content_paths": [...], "page_paths": [...], "content_dir": "<dir>", "blocks_final_path": "<path>"}` matching the workflow phase outputs declared at `MCP/core/workflow_runner.py:219-222`.
+- **Verification:** `pytest MCP/tools/tests/test_pipeline_tools_phase3_handlers.py::test_run_content_generation_rewrite_emits_html_and_blocks_final -v` PASSES — asserts the handler reads `blocks_validated_path`, dispatches each block through the rewrite tier (mocked), and writes `blocks_final.jsonl` plus a non-empty list of HTML page paths.
+
+#### Subtask 31: Add phase-name-aware dispatch shim to `MCP/core/executor.py`
+- **Files:** `/home/user/Ed4All/MCP/core/executor.py:135` (alongside `AGENT_TOOL_MAPPING` and the `_invoke_tool` / `_dispatch_agent_task` paths)
+- **Depends on:** Subtasks 28, 29, 30
+- **Estimated LOC:** ~30
+- **Change:** Add new module-level constant `_PHASE_TOOL_MAPPING: Dict[str, str]` declaring `{"content_generation_outline": "run_content_generation_outline", "inter_tier_validation": "run_inter_tier_validation", "content_generation_rewrite": "run_content_generation_rewrite"}`. In `_dispatch_agent_task` (at `:558` where it calls `AGENT_TOOL_MAPPING.get(agent_type)`), add a precedence check: `tool_name = _PHASE_TOOL_MAPPING.get(phase_name) or AGENT_TOOL_MAPPING.get(agent_type)`. The new mapping wins over agent-based routing for these three phase names ONLY — every other phase keeps the existing agent-based dispatch unchanged. Mirror the precedence check in any other call sites that resolve the tool name (the `validate_agent_tool_mapping` self-test at `:462-528` should also accept the new constant's targets). Add a docstring block immediately above `_PHASE_TOOL_MAPPING` documenting the Phase 3.5 contract: phase-name dispatch overrides agent-name dispatch when the phase appears in the map.
+- **Verification:** `python -c "from MCP.core.executor import _PHASE_TOOL_MAPPING, AGENT_TOOL_MAPPING; assert _PHASE_TOOL_MAPPING['content_generation_outline'] == 'run_content_generation_outline' and _PHASE_TOOL_MAPPING['inter_tier_validation'] == 'run_inter_tier_validation' and _PHASE_TOOL_MAPPING['content_generation_rewrite'] == 'run_content_generation_rewrite'"` exits 0.
+
+#### Subtask 32: Add `MCP/tools/tests/test_pipeline_tools_phase3_handlers.py` with ≥6 tests
+- **Files:** create `/home/user/Ed4All/MCP/tools/tests/test_pipeline_tools_phase3_handlers.py`
+- **Depends on:** Subtasks 28, 29, 30, 31
+- **Estimated LOC:** ~250
+- **Change:** Tests, one per new handler (3) + integration tests that the three handlers chain via `WorkflowRunner.run_workflow(...)` when `COURSEFORGE_TWO_PASS=true` (3+):
+  - `test_run_content_generation_outline_emits_blocks_jsonl` (Subtask 28 verification)
+  - `test_run_inter_tier_validation_splits_pass_fail_lists` (Subtask 29 verification)
+  - `test_run_content_generation_rewrite_emits_html_and_blocks_final` (Subtask 30 verification)
+  - `test_executor_phase_name_dispatch_overrides_agent_mapping` — asserts `_dispatch_agent_task` resolves `content_generation_outline` to `run_content_generation_outline` even when `agent_type="content-generator"` would normally route to `generate_course_content`.
+  - `test_two_pass_phase_chain_runs_under_workflow_runner` — sets `COURSEFORGE_TWO_PASS=true`, runs a minimal `textbook_to_course` workflow with mocked router + providers, asserts all three new phases fire in order and the legacy `content_generation` phase is skipped (by `enabled_when_env: "COURSEFORGE_TWO_PASS!=true"`).
+  - `test_two_pass_phase_outputs_match_legacy_phase_output_keys_table` — asserts each new handler's return dict carries every key listed in `_LEGACY_PHASE_OUTPUT_KEYS` for that phase (Phase 3 Subtask 5 contract; the new handlers must align with the table the workflow runner already populates at `MCP/core/workflow_runner.py:213-222`).
+  Stub the router (`CourseforgeRouter` and its `route` / `route_all` methods) and the providers; assert handlers' I/O contracts.
+- **Verification:** `pytest MCP/tools/tests/test_pipeline_tools_phase3_handlers.py -v` reports ≥6 PASSED.
+
+### J. `route_all` self-consistency integration (2 subtasks)
+
+The Phase 3 review surfaced this category as MEDIUM severity (Worker H's flagged followup). `Courseforge/router/router.py::route_all` (currently at `:772-895`) calls `self.route(block, tier="outline"|"rewrite", ...)` directly at `:826` and `:869`. The self-consistency multi-candidate retry path `route_with_self_consistency` (at `:901-1041`) is only exercised when callers explicitly invoke it — `route_all` (the main two-pass dispatch surface used by the Subtask 28 + 30 handlers) bypasses it. Phase 3.5 closes the gap by routing `route_all` through `route_with_self_consistency` per block, gated by `spec.n_candidates > 1`. The deterministic `n_candidates == 1` path keeps calling `route` directly to avoid per-block loop overhead.
+
+#### Subtask 33: Update `route_all` to dispatch through `route_with_self_consistency` when `n_candidates > 1`
+- **Files:** `/home/user/Ed4All/Courseforge/router/router.py` (the `route_all` method body — currently `:822-893`; both the outline-tier loop at `:823-853` and the rewrite-tier loop at `:861-893`)
+- **Depends on:** none (the `route_with_self_consistency` method is already in tree per the plan's Investigation findings)
+- **Estimated LOC:** ~30
+- **Change:** Inside the outline-tier `for idx, block in enumerate(blocks):` loop, before the `try` block: resolve the block's `spec` via `self._resolve_spec(block, tier="outline")`; if `spec.n_candidates > 1`, dispatch via `self.route_with_self_consistency(block, tier="outline", n_candidates=spec.n_candidates, regen_budget=spec.regen_budget, source_chunks=block_chunks, objectives=objectives_list)`; else continue calling `self.route(block, tier="outline", ...)` as today. Mirror the same pattern in the rewrite-tier loop using `tier="rewrite"` (n_candidates rarely > 1 for rewrite, but the symmetric dispatch shape keeps the contract consistent and lets per-block-type YAML overrides drive both tiers). Preserve the existing `try/except` failure-mark semantics — any uncaught exception from either dispatch path still produces an outline-failed block stamped `escalation_marker="outline_budget_exhausted"` and persisted via `dataclasses.replace`. Update the docstring at `:779-816` to remove the "single outline candidate per block" Wave-N constraint and document the new `spec.n_candidates`-gated dispatch.
+- **Verification:** `pytest Courseforge/router/tests/test_route_all_self_consistency.py::test_route_all_dispatches_through_self_consistency_when_n_candidates_gt_1 -v` and `::test_route_all_calls_route_directly_when_n_candidates_eq_1 -v` both PASS.
+
+#### Subtask 34: Add `Courseforge/router/tests/test_route_all_self_consistency.py`
+- **Files:** create `/home/user/Ed4All/Courseforge/router/tests/test_route_all_self_consistency.py`
+- **Depends on:** Subtask 33
+- **Estimated LOC:** ~150
+- **Change:** Tests:
+  - `test_route_all_dispatches_through_self_consistency_when_n_candidates_gt_1` — patches `CourseforgeRouter.route_with_self_consistency` and `CourseforgeRouter.route`; sets up a policy where one block's `spec.n_candidates == 3`; asserts only `route_with_self_consistency` fires for that block.
+  - `test_route_all_calls_route_directly_when_n_candidates_eq_1` — symmetric assertion: when every block's `spec.n_candidates == 1` (the deterministic default), only `route` fires; `route_with_self_consistency` is never invoked.
+  - `test_route_all_outline_failure_still_skips_rewrite` — regression: an exception in either dispatch path still produces an outline-failed block stamped `escalation_marker="outline_budget_exhausted"` and skips the rewrite-tier dispatch.
+  - `test_route_all_rewrite_tier_n_candidates_gt_1_dispatches_through_self_consistency` — symmetric assertion for the rewrite tier (rare case, but the dispatch shape is symmetric).
+  - `test_route_all_byte_stable_with_existing_two_pass_integration_test` — runs against the existing `tests/integration/test_courseforge_two_pass_end_to_end.py` fixture (or a copy of its setup); asserts the integration test still passes byte-stable after Subtask 33's change.
+  Stub the router's providers + validators; assert via mock-call-count and mock-call-args.
+- **Verification:** `pytest Courseforge/router/tests/test_route_all_self_consistency.py -v` reports ≥5 PASSED.
+
 ### H. Documentation + smoke (3 subtasks)
 
-#### Subtask 28: Update `Courseforge/CLAUDE.md` with Phase 3.5 section
+#### Subtask 35: Update `Courseforge/CLAUDE.md` with Phase 3.5 section
 - **Files:** `/home/user/Ed4All/Courseforge/CLAUDE.md`
-- **Depends on:** Subtasks 13, 19
+- **Depends on:** Subtasks 13, 19, 32, 34
 - **Estimated LOC:** ~80
-- **Change:** New section `### Phase 3.5: symmetric validation + remediation`. Cross-link `Courseforge/router/remediation.py`, `Courseforge/router/inter_tier_gates.py` (shape-discriminating section), the `post_rewrite_validation` workflow phase, the `outline_val`/`rewrite_val` Touch tier values, and the bumped regen budgets (`_DEFAULT_*_REGEN_BUDGET = 10`).
+- **Change:** New section `### Phase 3.5: symmetric validation + remediation`. Cross-link `Courseforge/router/remediation.py`, `Courseforge/router/inter_tier_gates.py` (shape-discriminating section), the `post_rewrite_validation` workflow phase, the `outline_val`/`rewrite_val` Touch tier values, the bumped regen budgets (`_DEFAULT_*_REGEN_BUDGET = 10`), the new Phase 3 tool handlers (`_run_content_generation_outline` / `_run_inter_tier_validation` / `_run_content_generation_rewrite` and the executor `_PHASE_TOOL_MAPPING` precedence), and the `route_all` self-consistency widening (Subtask 33).
 
-#### Subtask 29: Add `COURSEFORGE_REWRITE_REGEN_BUDGET` row to root `CLAUDE.md` flag table
+#### Subtask 36: Add `COURSEFORGE_REWRITE_REGEN_BUDGET` row to root `CLAUDE.md` flag table
 - **Files:** `/home/user/Ed4All/CLAUDE.md` (insert in the existing alphabetical `COURSEFORGE_*` block)
 - **Depends on:** Subtask 20
 - **Estimated LOC:** ~10
 - **Change:** Single row matching the density of `COURSEFORGE_OUTLINE_REGEN_BUDGET` documenting the new env var + bumped default 10.
 
-#### Subtask 30: End-to-end smoke command sequence
+#### Subtask 37: End-to-end smoke command sequence
 - **Files:** runbook
-- **Depends on:** Subtasks 1-29
+- **Depends on:** Subtasks 1-36
 - **Verification:** See "Final smoke test" below.
 
 ---
@@ -276,7 +346,10 @@ Estimated total LOC: ~1,800 (300 remediation module + 250 rewrite_val phase wiri
 
 - Wave 3.5-N1 (Foundation): A (1-4) + B (5-9) + F (23-25). Parallelisable.
 - Wave 3.5-N2 (Workflow + Touch + Router wiring): C (10-13) + D (14-17) + E (18-22).
-- Wave 3.5-N3 (Events + Docs + Smoke): G (26-27) + H (28-30).
+- Wave 3.5-N3 (Events): G (26-27).
+- Wave 3.5-N4 (Workflow handler integration — Category I): I (28-32). Depends on Wave 3.5-N1's Category B (the four shape-discriminating `Block*Validator` adapters Subtask 29 consumes) AND Wave 3.5-N2's Category E (the bumped regen budgets + remediation injection that the Subtask 28 + 30 router-instantiation paths inherit). Lands the three new tool handlers + executor phase-name dispatch shim that close the Phase 3 review's HIGH-severity gap (`COURSEFORGE_TWO_PASS=true` would otherwise run the legacy single-pass surface twice).
+- Wave 3.5-N5 (`route_all` integration — Category J): J (33-34). Depends on Wave 3.5-N2's Category E (`route_with_self_consistency` is the dispatch target Subtask 33 widens `route_all` to call). Closes Worker H's flagged followup (`route_all` was bypassing self-consistency).
+- Wave 3.5-N6 (Docs + Smoke): H (35-37). Depends on every preceding wave so the smoke command sequence covers every subtask.
 
 ---
 
@@ -286,7 +359,9 @@ Estimated total LOC: ~1,800 (300 remediation module + 250 rewrite_val phase wiri
 pytest Courseforge/router/tests/test_remediation.py \
        Courseforge/router/tests/test_inter_tier_gates_shape_dispatch.py \
        Courseforge/router/tests/test_remediation_injection.py \
+       Courseforge/router/tests/test_route_all_self_consistency.py \
        MCP/tests/test_pipeline_tools.py -k post_rewrite_validation \
+       MCP/tools/tests/test_pipeline_tools_phase3_handlers.py \
        lib/tests/test_phase3_5_decision_event_tier_field.py -v
 
 DECISION_VALIDATION_STRICT=true pytest \
@@ -300,6 +375,22 @@ ls Courseforge/exports/PROJ-DEMO_303-*/training-captures/courseforge/DEMO_303/ \
 jq -r '.[] | .touched_by[].tier' \
   Courseforge/exports/PROJ-DEMO_303-*/03_content_development/blocks_validated.json \
   | sort -u    # expect: local, outline, outline_val, rewrite, rewrite_val
+
+# Verify the three new Phase 3 tool handlers fire end-to-end via WorkflowRunner:
+COURSEFORGE_TWO_PASS=true ed4all run textbook-to-course \
+  --corpus tests/fixtures/textbooks/demo_303.pdf --course-name DEMO_303 \
+  --dry-run 2>&1 | grep -E "phase=(content_generation_outline|inter_tier_validation|content_generation_rewrite)"
+# Expect three matching log lines, in order, confirming the executor's
+# _PHASE_TOOL_MAPPING precedence shim resolved each phase to its
+# tier-distinct handler instead of the legacy generate_course_content tool.
+
+# Verify route_all exercises self-consistency when configured:
+COURSEFORGE_TWO_PASS=true COURSEFORGE_OUTLINE_N_CANDIDATES=3 ed4all run textbook-to-course \
+  --corpus tests/fixtures/textbooks/demo_303.pdf --course-name DEMO_303_SC \
+  --dry-run 2>&1 | grep "block_outline_call.*candidate_index"
+# Expect ≥3 lines per block (one decision-capture event per candidate)
+# confirming Subtask 33's widened route_all dispatched through
+# route_with_self_consistency.
 ```
 
 ---
@@ -307,6 +398,10 @@ jq -r '.[] | .touched_by[].tier' \
 ### Critical Files for Implementation
 - `/home/user/Ed4All/Courseforge/router/remediation.py` (NEW)
 - `/home/user/Ed4All/Courseforge/router/inter_tier_gates.py` (NEW or extended — shape-discriminating adapters)
-- `/home/user/Ed4All/Courseforge/router/router.py` (extend with `route_rewrite_with_remediation` + bumped budgets + remediation injection)
+- `/home/user/Ed4All/Courseforge/router/router.py` (extend with `route_rewrite_with_remediation` + bumped budgets + remediation injection + `route_all` self-consistency widening per Category J Subtask 33)
 - `/home/user/Ed4All/config/workflows.yaml` (insert `post_rewrite_validation` phase)
 - `/home/user/Ed4All/Courseforge/scripts/blocks.py` + schemas (Touch tier expansion)
+- `/home/user/Ed4All/MCP/tools/pipeline_tools.py` (NEW handlers: `_run_content_generation_outline`, `_run_inter_tier_validation`, `_run_content_generation_rewrite` per Category I Subtasks 28-30)
+- `/home/user/Ed4All/MCP/core/executor.py` (NEW `_PHASE_TOOL_MAPPING` constant + phase-name-aware dispatch precedence in `_dispatch_agent_task` per Category I Subtask 31)
+- `/home/user/Ed4All/MCP/tools/tests/test_pipeline_tools_phase3_handlers.py` (NEW — Category I Subtask 32)
+- `/home/user/Ed4All/Courseforge/router/tests/test_route_all_self_consistency.py` (NEW — Category J Subtask 34)
