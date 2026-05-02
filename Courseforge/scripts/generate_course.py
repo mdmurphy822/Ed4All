@@ -2042,6 +2042,7 @@ def generate_week(
     overview_body = _render_objectives(
         week_data["objectives"], source_ids=overview_ids,
         source_primary=overview_primary,
+        page_id=overview_page_id,
     )
     # Wave 41: wrap the overview body (non-objectives region) in a
     # <section data-cf-source-ids="…"> so
@@ -2051,7 +2052,26 @@ def generate_week(
     # readings list would otherwise be DOM siblings of a sourceless
     # <main>. No wrapper emitted when overview_ids is empty (preserves
     # the test_no_map_no_emit back-compat contract).
-    overview_body_attrs = _source_attr_string(overview_ids, overview_primary)
+    #
+    # Phase 2 (Subtask 21): the wrapper attribute string is built via a
+    # ``Block(block_type="prereq_set", …)`` — wrapper-only block types
+    # in BLOCK_TYPES (``prereq_set`` / ``reflection_prompt`` /
+    # ``discussion_prompt`` / ``recap``) all emit source-attrs only,
+    # which exactly matches the legacy ``_source_attr_string`` output.
+    # ``prereq_set`` is the closest semantic fit for an overview body
+    # (sets up prerequisites before content). The ``data-cf-block-id``
+    # suffix stays gated by ``COURSEFORGE_EMIT_BLOCKS``, so the emit is
+    # byte-stable when the flag is off.
+    _overview_wrapper_block = Block(
+        block_id=Block.stable_id(overview_page_id, "prereq_set", "overview", 0),
+        block_type="prereq_set",
+        page_id=overview_page_id,
+        sequence=0,
+        content="",
+        source_ids=tuple(overview_ids) if overview_ids else (),
+        source_primary=overview_primary,
+    )
+    overview_body_attrs = _overview_wrapper_block.to_html_attrs()
     if overview_body_attrs:
         overview_body += f"\n    <section{overview_body_attrs}>"
     if week_data.get("overview_text"):
@@ -2092,6 +2112,7 @@ def generate_week(
             content["sections"],
             source_ids=page_ids_list,
             source_primary=page_primary,
+            page_id=page_id,
         )
         extra_js = FLIP_CARD_JS if any(
             s.get("flip_cards") for s in content["sections"]
@@ -2125,13 +2146,28 @@ def generate_week(
         # The .activity-card wrappers already carry per-card source-ids,
         # but the opening <h2> would otherwise be a direct <main> child
         # with no grounding ancestor.
-        app_body_attrs = _source_attr_string(app_ids, app_primary)
+        #
+        # Phase 2 (Subtask 21): wrapper attrs come from a wrapper-only
+        # Block (block_type="recap" — the activity body recaps content
+        # via practice). All four wrapper-only block types emit identical
+        # source-attrs strings; the choice is documentational.
+        _app_wrapper_block = Block(
+            block_id=Block.stable_id(app_page_id, "recap", "application", 0),
+            block_type="recap",
+            page_id=app_page_id,
+            sequence=0,
+            content="",
+            source_ids=tuple(app_ids) if app_ids else (),
+            source_primary=app_primary,
+        )
+        app_body_attrs = _app_wrapper_block.to_html_attrs()
         app_body = ""
         if app_body_attrs:
             app_body += f"\n    <section{app_body_attrs}>"
         app_body += "\n    <h2>Learning Activities</h2>"
         app_body += _render_activities(
             week_data["activities"], source_ids=app_ids, source_primary=app_primary,
+            page_id=app_page_id,
         )
         if app_body_attrs:
             app_body += "\n    </section>"
@@ -2163,7 +2199,23 @@ def generate_week(
         # answer…" intro paragraph would otherwise be a direct <main>
         # child and flagged as ungrounded by
         # :class:`ContentGroundingValidator`'s ancestor walk.
-        sc_body_attrs = _source_attr_string(sc_ids, sc_primary)
+        #
+        # Phase 2 (Subtask 21): wrapper attrs come from a wrapper-only
+        # Block (block_type="reflection_prompt" — self-check intro
+        # frames a reflection moment). All wrapper-only block types
+        # emit identical source-attrs strings; the choice is purely
+        # documentational and stays byte-stable with
+        # ``COURSEFORGE_EMIT_BLOCKS=false``.
+        _sc_wrapper_block = Block(
+            block_id=Block.stable_id(sc_page_id, "reflection_prompt", "self_check", 0),
+            block_type="reflection_prompt",
+            page_id=sc_page_id,
+            sequence=0,
+            content="",
+            source_ids=tuple(sc_ids) if sc_ids else (),
+            source_primary=sc_primary,
+        )
+        sc_body_attrs = _sc_wrapper_block.to_html_attrs()
         sc_body = ""
         if sc_body_attrs:
             sc_body += f"\n    <section{sc_body_attrs}>"
@@ -2173,6 +2225,7 @@ def generate_week(
             week_data["self_check_questions"],
             source_ids=sc_ids,
             source_primary=sc_primary,
+            page_id=sc_page_id,
         )
         if sc_body_attrs:
             sc_body += "\n    </section>"
@@ -2197,7 +2250,22 @@ def generate_week(
     summary_refs = _page_refs_for(source_module_map, week_num, summary_page_id)
     summary_ids = _refs_to_id_list(summary_refs)
     summary_primary = _refs_primary(summary_refs)
-    summary_heading_attrs = _source_attr_string(summary_ids, summary_primary)
+    # Phase 2 (Subtask 21): both the Wave-43 Chapter Recap <section> and
+    # the Key Takeaways <section>+<h2> share one source-attrs string —
+    # they're three emit sites with the same source ids. Build a single
+    # wrapper-only Block (block_type="recap" — semantically the most
+    # accurate fit for the summary page's "wrap up" role) and reuse its
+    # ``to_html_attrs()`` output for all three sites.
+    _summary_wrapper_block = Block(
+        block_id=Block.stable_id(summary_page_id, "recap", "summary", 0),
+        block_type="recap",
+        page_id=summary_page_id,
+        sequence=0,
+        content="",
+        source_ids=tuple(summary_ids) if summary_ids else (),
+        source_primary=summary_primary,
+    )
+    summary_heading_attrs = _summary_wrapper_block.to_html_attrs()
     # Wave 41: wrap the entire summary body (key takeaways list,
     # reflection block, next-week preview) in a <section
     # data-cf-source-ids="…">. Pre-Wave-41 only the <h2> carried
@@ -2270,7 +2338,21 @@ def generate_week(
         disc_refs = _page_refs_for(source_module_map, week_num, disc_page_id)
         disc_ids = _refs_to_id_list(disc_refs)
         disc_primary = _refs_primary(disc_refs)
-        disc_attrs = _source_attr_string(disc_ids, disc_primary)
+        # Phase 2 (Subtask 21): semantic match — the discussion-prompt
+        # wrapper carries the canonical ``discussion_prompt`` block_type
+        # (one of the four wrapper-only types in BLOCK_TYPES). Emit is
+        # source-attrs only, byte-stable with the legacy
+        # ``_source_attr_string`` call.
+        _disc_wrapper_block = Block(
+            block_id=Block.stable_id(disc_page_id, "discussion_prompt", "discussion", 0),
+            block_type="discussion_prompt",
+            page_id=disc_page_id,
+            sequence=0,
+            content="",
+            source_ids=tuple(disc_ids) if disc_ids else (),
+            source_primary=disc_primary,
+        )
+        disc_attrs = _disc_wrapper_block.to_html_attrs()
         disc_body = f"""
     <div class="discussion-prompt"{disc_attrs}>
       <h2>Discussion Forum</h2>
