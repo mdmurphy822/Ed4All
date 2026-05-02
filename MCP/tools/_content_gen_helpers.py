@@ -1656,6 +1656,7 @@ def build_week_data(
         content_provider=content_provider,
         course_code=course_code,
         week_num=week_num,
+        content_router=content_router,
     )
 
     # Activities — one practice activity tied to first objective. The
@@ -1767,6 +1768,7 @@ def _build_content_modules_dynamic(
     content_provider: Optional[Any] = None,
     course_code: Optional[str] = None,
     week_num: Optional[int] = None,
+    content_router: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """Return ``content_modules`` list — **one module per LO or topic**.
 
@@ -1786,6 +1788,22 @@ def _build_content_modules_dynamic(
         literal source content, not a placeholder.
 
     Minimum one module to preserve the integration test's 5-page floor.
+
+    Phase 3 Subtask 62: when a ``content_router`` is supplied (the
+    operator opted-in via ``COURSEFORGE_TWO_PASS=true``), this helper
+    pre-builds one ``Block`` stub per topic position with empty
+    ``content`` and dispatches the whole list through
+    :meth:`CourseforgeRouter.route_all` (one outline pass + one rewrite
+    pass per block). The rewritten block's ``content`` is then consumed
+    into ``sections[0]["paragraphs"]`` exactly the way the legacy
+    ``content_provider`` consumes its per-page Block return value.
+    Blocks that failed the outline tier (``escalation_marker`` set,
+    typically ``outline_budget_exhausted``) are skipped — the
+    deterministic DART-paragraph floor stays in place for those
+    positions, mirroring the legacy provider's exception fallback.
+    The legacy ``content_provider.generate_page`` per-iteration path
+    runs as the ``elif content_provider is not None`` branch when the
+    router is absent.
     """
     # Per-file misconceptions. When a topic has extracted misconceptions,
     # those attach to the module drawing from that topic.
@@ -1793,6 +1811,87 @@ def _build_content_modules_dynamic(
     topic_count = len(week_topics)
     obj_count = len(week_objectives)
     module_count = max(topic_count, obj_count, 1)
+
+    # Phase 3 Subtask 62: pre-build the Block list and dispatch via
+    # ``route_all`` once when a router is supplied. The dict keys the
+    # rewritten Block list by ``i`` (the topic position) so the
+    # per-iteration loop below can look up its block in O(1).
+    rewritten_blocks_by_index: Dict[int, Any] = {}
+    if content_router is not None:
+        try:
+            from Courseforge.scripts.blocks import Block
+
+            stubs: List[Any] = []
+            stub_indices: List[int] = []
+            chunks_lookup: Dict[str, List[Any]] = {}
+            for i in range(module_count):
+                topic = week_topics[i] if i < topic_count else None
+                if topic is None:
+                    continue
+                page_id = (
+                    f"week_{(week_num or 0):02d}_content_{(i + 1):02d}"
+                )
+                obj = week_objectives[i] if i < obj_count else None
+                objective_ids: Tuple[str, ...] = tuple(
+                    str(o.get("id")) for o in (week_objectives or [])
+                    if o.get("id")
+                )
+                key_terms: Tuple[str, ...] = tuple(
+                    topic.get("key_terms") or []
+                )
+                # Block stub: empty content (router fills it on the
+                # rewrite pass). ``block_type='explanation'`` matches
+                # the section-role label that ``_topic_to_section``
+                # synthesizes for non-first positions, and is a valid
+                # canonical entry in ``BLOCK_TYPES``.
+                block_id = Block.stable_id(
+                    page_id=page_id,
+                    block_type="explanation",
+                    slug=canonical_slug(topic.get("heading") or "content"),
+                    idx=i,
+                )
+                stub = Block(
+                    block_id=block_id,
+                    block_type="explanation",
+                    page_id=page_id,
+                    sequence=i,
+                    content="",
+                    key_terms=key_terms,
+                    objective_ids=objective_ids,
+                )
+                stubs.append(stub)
+                stub_indices.append(i)
+                # Per-block source chunks: surface the topic's paragraphs
+                # + heading as the grounding context. The provider
+                # formatter consumes these via ``_format_source_chunks``.
+                chunks_lookup[block_id] = [
+                    {
+                        "heading": topic.get("heading"),
+                        "paragraphs": topic.get("paragraphs") or [],
+                    }
+                ]
+
+            if stubs:
+                objectives_payload = [
+                    {"id": o.get("id"), "statement": o.get("statement")}
+                    for o in (week_objectives or [])
+                ]
+                rewritten = content_router.route_all(
+                    stubs,
+                    source_chunks_by_block_id=chunks_lookup,
+                    objectives=objectives_payload,
+                )
+                for idx, block in zip(stub_indices, rewritten):
+                    rewritten_blocks_by_index[idx] = block
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "content_router.route_all failed for week=%s: %s; "
+                "falling back to deterministic DART-paragraph synthesis "
+                "for this week's content modules.",
+                week_num,
+                exc,
+            )
+            rewritten_blocks_by_index = {}
 
     for i in range(module_count):
         topic = week_topics[i] if i < topic_count else None
@@ -1818,13 +1917,57 @@ def _build_content_modules_dynamic(
         section_role = "definition" if i == 0 else "explanation"
         sections = [_topic_to_section(topic, section_role=section_role)]
 
+        # Phase 3 Subtask 62: when a ``content_router`` was supplied,
+        # consume the rewritten Block harvested by the upfront
+        # ``route_all`` dispatch. Blocks with ``escalation_marker`` set
+        # (outline tier failed and was skipped by the rewrite pass) fall
+        # through to the deterministic DART-paragraph floor — mirroring
+        # the legacy provider's exception-fallback behavior.
+        if content_router is not None:
+            block = rewritten_blocks_by_index.get(i)
+            if block is not None and getattr(block, "escalation_marker", None) is None:
+                router_content = getattr(block, "content", "") or ""
+                if isinstance(router_content, str) and router_content.strip():
+                    raw_paragraphs = [
+                        p.strip()
+                        for p in re.split(r"\n\s*\n", router_content)
+                        if p.strip()
+                    ]
+                    if not raw_paragraphs:
+                        raw_paragraphs = [router_content.strip()]
+                    sections[0]["paragraphs"] = [
+                        _html.escape(p) for p in raw_paragraphs
+                    ]
+                    block_key_terms = getattr(block, "key_terms", ()) or ()
+                    if block_key_terms:
+                        sections[0]["key_terms"] = list(block_key_terms)
+                else:
+                    logger.warning(
+                        "content_router.route_all returned a Block with "
+                        "empty content for week=%s page=%s; falling back "
+                        "to deterministic DART-paragraph synthesis.",
+                        week_num,
+                        getattr(block, "page_id", None),
+                    )
+            elif block is not None:
+                logger.warning(
+                    "content_router.route_all skipped rewrite for "
+                    "week=%s page=%s due to escalation_marker=%s; "
+                    "falling back to deterministic DART-paragraph "
+                    "synthesis.",
+                    week_num,
+                    getattr(block, "page_id", None),
+                    getattr(block, "escalation_marker", None),
+                )
+
         # Phase 1 ToS unblock: when an in-process content_provider is
-        # wired, attempt to author the page prose via the provider and
-        # overlay the parsed paragraphs onto the deterministic section.
-        # Failure modes (empty return, parse miss, provider exception)
-        # all fall back to the legacy DART-paragraph path WITHOUT
-        # raising — the deterministic surface stays the floor.
-        if content_provider is not None:
+        # wired (and no router was), attempt to author the page prose
+        # via the provider and overlay the parsed paragraphs onto the
+        # deterministic section. Failure modes (empty return, parse
+        # miss, provider exception) all fall back to the legacy
+        # DART-paragraph path WITHOUT raising — the deterministic
+        # surface stays the floor.
+        elif content_provider is not None:
             try:
                 page_id = (
                     f"week_{(week_num or 0):02d}_content_{(i + 1):02d}"
