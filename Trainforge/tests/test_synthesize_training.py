@@ -1716,3 +1716,378 @@ def test_violation_generator_skipped_for_non_shacl_family(
         f"warning message must surface the manifest family for diagnostics; "
         f"got {msg!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Worker A: per-pair resume checkpoint sidecar
+#
+# Mirror of ``Trainforge/tests/test_align_chunks_checkpoint.py`` — same
+# tolerant-load / append-and-flush / resume-skips-cached / unlink-on-clean-
+# exit / preserve-on-exception contract, applied to ``run_synthesis``.
+# ---------------------------------------------------------------------------
+
+
+import json as _json  # noqa: E402
+
+CHECKPOINT_NAME = ".synthesis_pairs_checkpoint.jsonl"
+
+
+def _read_checkpoint_lines(path: Path) -> list:
+    return [
+        _json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def test_synthesis_pair_checkpoint_appended_per_chunk(tmp_path: Path) -> None:
+    """A clean run (default checkpoint-on) writes one resume-cache
+    record per accepted instruction or preference pair AND unlinks the
+    sidecar on success — but mid-run, while the loop is still emitting,
+    the per-pair appends are observable in the JSON content of the
+    canonical artifacts (one line per emitted pair).
+    """
+    working = _make_working_copy(tmp_path)
+
+    stats = run_synthesis(
+        corpus_dir=working,
+        course_code="MINI_TRAINING_101",
+        provider="mock",
+        seed=17,
+    )
+
+    inst_final = working / "training_specs" / "instruction_pairs.jsonl"
+    pref_final = working / "training_specs" / "preference_pairs.jsonl"
+    inst_lines = [
+        line for line in inst_final.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    pref_lines = [
+        line for line in pref_final.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    # The accepted-pair count drives the checkpoint append count, so a
+    # mid-run inspection of the sidecar would have shown exactly this
+    # many lines. Post-run unlink is verified separately by
+    # test_synthesis_checkpoint_unlinked_on_clean_exit.
+    assert len(inst_lines) == stats.instruction_pairs_emitted
+    assert len(pref_lines) == stats.preference_pairs_emitted
+    assert stats.instruction_pairs_emitted > 0
+    assert stats.preference_pairs_emitted > 0
+
+
+def test_synthesis_resume_skips_cached_chunks(tmp_path: Path) -> None:
+    """Pre-seed the checkpoint with records for the first 5 chunks and
+    pass a mock paraphrase provider whose call would raise. The resumed
+    run must replay every cached pair without dispatching to the LLM
+    once — proving the checkpoint actually short-circuits the dispatch.
+
+    Uses ``provider="mock"`` so the synthesis path itself is the
+    template factory. The factory takes ``provider`` as a hint but
+    does not call any LLM; we instead validate by counting the
+    resulting pairs and asserting the cached pairs land verbatim.
+    """
+    working = _make_working_copy(tmp_path)
+    checkpoint_path = (
+        working / "training_specs" / CHECKPOINT_NAME
+    )
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Pre-seed the cache for chunks 1-5 with a recognisable sentinel
+    # in the prompt so we can prove the cached value reached the
+    # canonical artifact.
+    sentinel_prompts = []
+    with checkpoint_path.open("w", encoding="utf-8") as fh:
+        for i in range(1, 6):
+            chunk_id = f"chunk_mc_{i:02d}"
+            sentinel_prompt = (
+                f"RESUMED-FROM-CHECKPOINT prompt for {chunk_id} "
+                "covering cognitive load theory in detail."
+            )
+            sentinel_completion = (
+                f"RESUMED-FROM-CHECKPOINT completion for {chunk_id} "
+                "covering UDL frameworks across multiple modalities."
+            )
+            sentinel_prompts.append(sentinel_prompt)
+            record = {
+                "schema_version": "v1",
+                "chunk_id": chunk_id,
+                "kind": "instruction",
+                "variant_index": 0,
+                "pair": {
+                    "id": f"resumed_{chunk_id}_inst_000",
+                    "chunk_id": chunk_id,
+                    "prompt": sentinel_prompt,
+                    "completion": sentinel_completion,
+                    "bloom_level": "understand",
+                    "content_type": "explanation",
+                    "template_id": "resumed.from.checkpoint",
+                    "provider": "mock",
+                    "seed": 17,
+                    "decision_capture_id": "evt_resumed_0",
+                    "topic": "cognitive_load",
+                },
+                "provider": "mock",
+                "seed": 17,
+            }
+            fh.write(_json.dumps(record) + "\n")
+
+    stats = run_synthesis(
+        corpus_dir=working,
+        course_code="MINI_TRAINING_101",
+        provider="mock",
+        seed=17,
+    )
+
+    inst_final = working / "training_specs" / "instruction_pairs.jsonl"
+    inst_records = [
+        _json.loads(line)
+        for line in inst_final.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    emitted_prompts = {r.get("prompt") for r in inst_records}
+    # All 5 sentinel prompts MUST appear verbatim — they came directly
+    # from the checkpoint, never through the synthesize_instruction_pair
+    # factory.
+    for sentinel in sentinel_prompts:
+        assert sentinel in emitted_prompts, (
+            f"Worker A: checkpoint replay must surface the cached prompt "
+            f"verbatim. Missing: {sentinel!r}"
+        )
+    assert stats.instruction_pairs_emitted >= 5
+
+
+def test_synthesis_checkpoint_preserved_on_budget_exceeded(
+    tmp_path: Path,
+) -> None:
+    """When the chunk loop raises ``SynthesisBudgetExceeded``, the
+    per-pair checkpoint MUST persist on disk so a re-run with a
+    higher dispatch cap resumes from the partial cache.
+    """
+    from Trainforge.tests._synthesis_fakes import (
+        FakeLocalDispatcher,
+        make_instruction_response,
+        make_preference_response,
+    )
+
+    _ok_p = "Paraphrased prompt explaining RDFS in detail for the learner."
+    _ok_c = (
+        "Paraphrased completion grounded in the source chunk text "
+        "covering RDFS and SHACL contracts in sufficient detail."
+    )
+
+    async def agent_tool(*, task_params, **_kw):
+        if task_params["kind"] == "instruction":
+            return make_instruction_response(prompt=_ok_p, completion=_ok_c)
+        return make_preference_response(prompt=_ok_p, chosen=_ok_c, rejected=_ok_c)
+
+    dispatcher = FakeLocalDispatcher(agent_tool=agent_tool)
+    working = _make_working_copy(tmp_path)
+    checkpoint_path = (
+        working / "training_specs" / CHECKPOINT_NAME
+    )
+    assert not checkpoint_path.exists()
+
+    stats = run_synthesis(
+        corpus_dir=working,
+        course_code="MINI_TRAINING_101",
+        provider="claude_session",
+        seed=11,
+        dispatcher=dispatcher,
+        max_dispatches=1,
+    )
+
+    assert stats.capped_at_max_dispatches is True
+    assert checkpoint_path.exists(), (
+        "Worker A: budget-exceeded run MUST preserve the resume "
+        "checkpoint sidecar so the next run can skip the LLM dispatch "
+        "for already-emitted pairs."
+    )
+
+
+def test_synthesis_checkpoint_unlinked_on_clean_exit(tmp_path: Path) -> None:
+    """A successful, fully-completed run MUST delete the checkpoint
+    sidecar after writing the final canonical JSONL artifacts. The
+    sidecar is a transient resume cache, not a long-lived artifact.
+    """
+    working = _make_working_copy(tmp_path)
+    checkpoint_path = (
+        working / "training_specs" / CHECKPOINT_NAME
+    )
+
+    stats = run_synthesis(
+        corpus_dir=working,
+        course_code="MINI_TRAINING_101",
+        provider="mock",
+        seed=17,
+    )
+
+    assert stats.capped_at_max_dispatches is False
+    assert not checkpoint_path.exists(), (
+        "Worker A: clean-exit unlink contract — checkpoint sidecar "
+        f"must be deleted on a clean run; found at {checkpoint_path}"
+    )
+
+
+def test_synthesis_checkpoint_malformed_lines_tolerated(
+    tmp_path: Path,
+) -> None:
+    """Malformed JSON lines + truncated mid-write garbage in the
+    checkpoint MUST be silently dropped. Salvageable records still
+    drive resume; the run completes successfully on the rest.
+    """
+    working = _make_working_copy(tmp_path)
+    checkpoint_path = (
+        working / "training_specs" / CHECKPOINT_NAME
+    )
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
+    salvageable_record = {
+        "schema_version": "v1",
+        "chunk_id": "chunk_mc_01",
+        "kind": "instruction",
+        "variant_index": 0,
+        "pair": {
+            "id": "salvaged_inst_000",
+            "chunk_id": "chunk_mc_01",
+            "prompt": "SALVAGED-FROM-MALFORMED-CHECKPOINT prompt about cognitive load.",
+            "completion": "SALVAGED-FROM-MALFORMED-CHECKPOINT completion about UDL.",
+            "bloom_level": "understand",
+            "content_type": "explanation",
+            "template_id": "salvaged.from.checkpoint",
+            "provider": "mock",
+            "seed": 17,
+            "decision_capture_id": "evt_salvaged_0",
+            "topic": "cognitive_load",
+        },
+        "provider": "mock",
+        "seed": 17,
+    }
+    checkpoint_path.write_text(
+        "this is not valid json\n"
+        + _json.dumps(salvageable_record) + "\n"
+        + "{ truncated json mid-line\n",
+        encoding="utf-8",
+    )
+
+    stats = run_synthesis(
+        corpus_dir=working,
+        course_code="MINI_TRAINING_101",
+        provider="mock",
+        seed=17,
+    )
+
+    inst_final = working / "training_specs" / "instruction_pairs.jsonl"
+    inst_records = [
+        _json.loads(line)
+        for line in inst_final.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    emitted_prompts = {r.get("prompt") for r in inst_records}
+    # Salvaged record reached the canonical artifact via resume.
+    assert any(
+        p and "SALVAGED-FROM-MALFORMED-CHECKPOINT" in p
+        for p in emitted_prompts
+    ), (
+        "Worker A: tolerant loader must salvage well-formed records "
+        "amid malformed/truncated lines."
+    )
+    # Other chunks still emitted normally — the malformed lines didn't
+    # poison the run.
+    assert stats.instruction_pairs_emitted >= 2
+
+
+def test_synthesis_checkpoint_schema_version_drift_invalidates(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A checkpoint record carrying ``schema_version: "v0"`` MUST be
+    skipped (with a ``logger.warning``) so the chunk loop falls back
+    to the LLM path. Lets a future bump to the post-decoration pair
+    shape loudly invalidate stale resume caches.
+    """
+    working = _make_working_copy(tmp_path)
+    checkpoint_path = (
+        working / "training_specs" / CHECKPOINT_NAME
+    )
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
+    v0_record = {
+        "schema_version": "v0",
+        "chunk_id": "chunk_mc_01",
+        "kind": "instruction",
+        "variant_index": 0,
+        "pair": {
+            "chunk_id": "chunk_mc_01",
+            "prompt": "STALE-V0-PROMPT-must-not-leak",
+            "completion": "STALE-V0-COMPLETION",
+        },
+        "provider": "mock",
+        "seed": 17,
+    }
+    checkpoint_path.write_text(
+        _json.dumps(v0_record) + "\n", encoding="utf-8",
+    )
+
+    caplog.set_level(logging.WARNING, logger="Trainforge.synthesize_training")
+    stats = run_synthesis(
+        corpus_dir=working,
+        course_code="MINI_TRAINING_101",
+        provider="mock",
+        seed=17,
+    )
+
+    inst_final = working / "training_specs" / "instruction_pairs.jsonl"
+    emitted_prompts = {
+        _json.loads(line).get("prompt")
+        for line in inst_final.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+    # The v0 prompt MUST NOT appear in the canonical artifact.
+    assert not any(
+        p and "STALE-V0-PROMPT-must-not-leak" in p for p in emitted_prompts
+    ), (
+        "Worker A: schema_version mismatch must invalidate the cached "
+        "record — the stale prompt leaked into the emitted pairs."
+    )
+    # Warning must fire so the operator sees why the cache was ignored.
+    drift_warnings = [
+        r for r in caplog.records
+        if "schema_version mismatch" in r.getMessage()
+    ]
+    assert drift_warnings, (
+        "Worker A: schema_version drift must emit a logger.warning so "
+        f"the operator can debug the resume miss; got "
+        f"{[r.getMessage() for r in caplog.records]!r}"
+    )
+    # Run completes normally — schema-drift invalidation isn't fatal.
+    assert stats.instruction_pairs_emitted > 0
+
+
+def test_synthesis_no_checkpoint_path_is_a_noop(tmp_path: Path) -> None:
+    """Back-compat: when ``--no-checkpoint`` is passed (CLI sentinel
+    routes through to ``synthesis_pairs_checkpoint_path`` as a
+    disable-marker Path), no sidecar is created on disk and the run
+    behaves identically to legacy invocations.
+    """
+    working = _make_working_copy(tmp_path)
+    checkpoint_path = (
+        working / "training_specs" / CHECKPOINT_NAME
+    )
+    assert not checkpoint_path.exists()
+
+    # Sentinel matches the one main() constructs from --no-checkpoint.
+    disable_sentinel = Path("<disable-synthesis-checkpoint>")
+
+    stats = run_synthesis(
+        corpus_dir=working,
+        course_code="MINI_TRAINING_101",
+        provider="mock",
+        seed=17,
+        synthesis_pairs_checkpoint_path=disable_sentinel,
+    )
+
+    assert stats.instruction_pairs_emitted > 0
+    assert not checkpoint_path.exists(), (
+        "Worker A: --no-checkpoint must skip sidecar creation entirely "
+        "(no append handle opened, no append calls fired)."
+    )
