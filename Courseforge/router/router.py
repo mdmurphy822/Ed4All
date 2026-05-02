@@ -158,6 +158,10 @@ _ENV_REWRITE_MODEL = "COURSEFORGE_REWRITE_MODEL"
 _ENV_LEGACY_PROVIDER = "COURSEFORGE_PROVIDER"
 _ENV_OUTLINE_N_CANDIDATES = "COURSEFORGE_OUTLINE_N_CANDIDATES"
 _ENV_OUTLINE_REGEN_BUDGET = "COURSEFORGE_OUTLINE_REGEN_BUDGET"
+# Phase 3.5 Subtask 20: rewrite-tier regen budget env var,
+# parallel to ``_ENV_OUTLINE_REGEN_BUDGET`` for the rewrite-tier
+# remediation loop introduced in Subtask 19.
+_ENV_REWRITE_REGEN_BUDGET = "COURSEFORGE_REWRITE_REGEN_BUDGET"
 
 # Default outline-tier candidate count when neither per-call kwarg, policy
 # entry, env var, nor instance attr resolves a value. Per Phase 3 §3.6
@@ -172,7 +176,24 @@ _DEFAULT_OUTLINE_N_CANDIDATES = 3
 # accumulate inside the self-consistency loop before the router stamps
 # ``escalation_marker="outline_budget_exhausted"`` and breaks early
 # (escalating to the rewrite tier with an enriched prompt).
-_DEFAULT_OUTLINE_REGEN_BUDGET = 3
+#
+# Phase 3.5 Subtask 20: bumped from 3 to 10 now that the
+# remediation-suffix injection (Subtask 18) makes each retry far
+# more likely to succeed than re-issuing the SAME prompt. Per
+# Phase 3 §3.7 the budget is intentionally generous when the loop
+# is doing useful per-attempt work (i.e. the remediation suffix
+# threads in the prior failure context); pre-Subtask-18 the
+# default-3 budget was the right size because retries did not
+# carry per-failure context.
+_DEFAULT_OUTLINE_REGEN_BUDGET = 10
+
+# Phase 3.5 Subtask 20: rewrite-tier regen budget. Symmetric to the
+# outline-tier budget — bounds how many failed validator passes the
+# rewrite tier can accumulate inside the new
+# :meth:`route_rewrite_with_remediation` loop (Subtask 19) before
+# the router stamps ``escalation_marker="validator_consensus_fail"``
+# and gives up. Default 10 mirrors the bumped outline-tier default.
+_DEFAULT_REWRITE_REGEN_BUDGET = 10
 
 # Subtask 48: validator-action priority. The router dispatches on the
 # highest-priority action across all validator results in a candidate's
@@ -1442,6 +1463,59 @@ class CourseforgeRouter:
 
         # 5. Hardcoded default.
         return _DEFAULT_OUTLINE_REGEN_BUDGET
+
+    def _resolve_rewrite_regen_budget(
+        self, block: Block, override: Optional[int]
+    ) -> int:
+        """Resolve the per-block rewrite-tier regen budget (Phase 3.5
+        Subtask 20). Symmetric to :meth:`_resolve_regen_budget` but
+        consults the rewrite-tier knobs instead of the outline-tier
+        ones.
+
+        Precedence (highest first):
+
+        1. ``override`` arg (the per-call ``regen_budget`` kwarg on
+           :meth:`route_rewrite_with_remediation`).
+        2. ``self._policy.regen_budget_rewrite_by_block_type[block.block_type]``
+           (Subtask 21 fast-lookup map on
+           :class:`Courseforge.router.policy.BlockRoutingPolicy`).
+        3. ``COURSEFORGE_REWRITE_REGEN_BUDGET`` env var (parsed as
+           int; silently falls through on parse failure).
+        4. :data:`_DEFAULT_REWRITE_REGEN_BUDGET` (10).
+
+        The budget is the number of failed validation passes the
+        rewrite tier can accumulate inside
+        :meth:`route_rewrite_with_remediation` before the router stamps
+        ``escalation_marker="validator_consensus_fail"`` and gives up.
+        """
+        # 1. Per-call kwarg.
+        if isinstance(override, int) and override > 0:
+            return override
+
+        # 2. Policy fast-lookup map (Subtask 21).
+        policy = self._policy
+        if policy is not None:
+            policy_map = getattr(
+                policy, "regen_budget_rewrite_by_block_type", None
+            )
+            if isinstance(policy_map, dict):
+                policy_b = policy_map.get(block.block_type)
+                if isinstance(policy_b, int) and policy_b > 0:
+                    return policy_b
+
+        # 3. Env var.
+        env_value = os.environ.get(_ENV_REWRITE_REGEN_BUDGET)
+        if env_value:
+            try:
+                env_b = int(env_value.strip())
+                if env_b > 0:
+                    return env_b
+            except (TypeError, ValueError):
+                # Parse failure falls through to the next layer.
+                pass
+
+        # 4. Hardcoded default.
+        return _DEFAULT_REWRITE_REGEN_BUDGET
 
     def _run_validator_chain(
         self,

@@ -208,7 +208,12 @@ def test_legacy_validator_passed_false_treated_as_block_action(monkeypatch):
     r = CourseforgeRouter(
         outline_provider=provider, capture=capture, n_candidates=3
     )
-    out = r.route_with_self_consistency(blk, validators=[validator])
+    # Phase 3.5 Subtask 20 bumped the default budget from 3 to 10, so
+    # pin budget=3 explicitly here to keep the budget-exhaustion path
+    # observable at N=3.
+    out = r.route_with_self_consistency(
+        blk, validators=[validator], regen_budget=3
+    )
     # Loop ran all 3 candidates (back-compat: legacy fail → retry).
     assert len(provider.calls) == 3
     # Budget exhaustion path fires (validation_attempts==3 == budget).

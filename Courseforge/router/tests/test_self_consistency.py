@@ -229,7 +229,10 @@ def test_all_candidates_fail_returns_last_with_validation_attempts_n(monkeypatch
     validation_attempts incremented per fail and the canonical
     ``outline_budget_exhausted`` marker stamped (Subtask 41).
 
-    With N=3 and the default regen_budget=3, the third failure brings
+    With N=3 and regen_budget=3 (pinned via the per-call kwarg
+    instead of relying on the hardcoded default — Subtask 20 bumped
+    that to 10, so the test pins the budget explicitly to keep
+    the budget-exhaustion path observable), the third failure brings
     validation_attempts to 3 == budget → escalation marker fires and
     the loop breaks early after the third dispatch. The earlier
     Subtask-37 contract (marker left None for budget>N runs) is
@@ -245,7 +248,9 @@ def test_all_candidates_fail_returns_last_with_validation_attempts_n(monkeypatch
         results=[_make_gate_result(passed=False)],
     )
     r = CourseforgeRouter(outline_provider=provider, n_candidates=3)
-    out = r.route_with_self_consistency(blk, validators=[validator])
+    out = r.route_with_self_consistency(
+        blk, validators=[validator], regen_budget=3
+    )
     assert len(provider.calls) == 3
     # validation_attempts bumped per failure to budget=N=3.
     assert out.validation_attempts == 3
