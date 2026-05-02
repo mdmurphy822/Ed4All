@@ -85,6 +85,7 @@ _ENV_REWRITE_PROVIDER = "COURSEFORGE_REWRITE_PROVIDER"
 _ENV_REWRITE_MODEL = "COURSEFORGE_REWRITE_MODEL"
 _ENV_LEGACY_PROVIDER = "COURSEFORGE_PROVIDER"
 _ENV_OUTLINE_N_CANDIDATES = "COURSEFORGE_OUTLINE_N_CANDIDATES"
+_ENV_OUTLINE_REGEN_BUDGET = "COURSEFORGE_OUTLINE_REGEN_BUDGET"
 
 # Default outline-tier candidate count when neither per-call kwarg, policy
 # entry, env var, nor instance attr resolves a value. Per Phase 3 §3.6
@@ -92,6 +93,14 @@ _ENV_OUTLINE_N_CANDIDATES = "COURSEFORGE_OUTLINE_N_CANDIDATES"
 # the first that passes the validator chain; N=3 balances latency
 # against pass-rate at the 7B-class outline model.
 _DEFAULT_OUTLINE_N_CANDIDATES = 3
+
+# Default per-block regen budget when neither per-call kwarg, policy
+# entry, env var, nor instance attr resolves a value. Per Phase 3 §3.7
+# the budget is the number of failed validation attempts a block can
+# accumulate inside the self-consistency loop before the router stamps
+# ``escalation_marker="outline_budget_exhausted"`` and breaks early
+# (escalating to the rewrite tier with an enriched prompt).
+_DEFAULT_OUTLINE_REGEN_BUDGET = 3
 
 # Per-Phase-3 §4: outline tier defaults to a 7B local model; rewrite
 # tier prefers a multi-step-reasoning Anthropic model for blocks that
@@ -796,6 +805,7 @@ class CourseforgeRouter:
         block: Block,
         *,
         n_candidates: Optional[int] = None,
+        regen_budget: Optional[int] = None,
         validators: Optional[List[Any]] = None,
         source_chunks: Optional[List[Any]] = None,
         objectives: Optional[List[Any]] = None,
@@ -855,16 +865,36 @@ class CourseforgeRouter:
                 **overrides,
             )
 
+        # 3a. Resolve the regen_budget per the precedence chain (Subtask 41).
+        # When the budget is exhausted mid-loop the candidate is stamped
+        # with ``escalation_marker="outline_budget_exhausted"`` and the
+        # loop breaks early — the rewrite tier sees the marker and
+        # routes through the escalated-prompt branch.
+        resolved_budget = self._resolve_regen_budget(block, regen_budget)
+
         # 3. Sequential N-candidate loop.
         # ``failure_distribution`` keys are validator names; values are
         # per-validator failure counts across all N candidates.
         # ``last_candidate`` carries the most recent dispatch output so
         # the all-fail branch can return it with the correct
-        # ``validation_attempts`` count.
+        # ``validation_attempts`` count. ``escalated`` carries the
+        # mid-loop escalation block when the regen budget is exhausted
+        # (Subtask 41); it short-circuits the post-loop return resolution.
         failure_distribution: Dict[str, int] = {}
         last_candidate: Optional[Block] = None
         winning_index: Optional[int] = None
         winner: Optional[Block] = None
+        escalated: Optional[Block] = None
+
+        # ``cumulative_attempts`` tracks the running validation_attempts
+        # count across candidates so the regen-budget check sees the
+        # cumulative total (Subtask 41). Each candidate is a fresh
+        # output from the outline provider — its own
+        # ``validation_attempts`` field is typically 0 — so the budget
+        # accumulator lives on the loop, not on the per-candidate
+        # Block. The final ``last_candidate`` is rebound with the
+        # cumulative count before being returned.
+        cumulative_attempts = block.validation_attempts
 
         for i in range(resolved_n):
             candidate = self.route(
@@ -904,11 +934,12 @@ class CourseforgeRouter:
                 winning_index = i
                 break
 
-            # Failure: increment per-validator counters for the audit
-            # event. ``GateResult.derive_default_action`` collapses
-            # legacy validators (no ``action`` set) onto ``"block"`` on
-            # failure — the failure-distribution dict counts the gate
-            # name regardless of which discriminator surfaced it.
+            # Failure: increment ``validation_attempts`` per Subtask 41
+            # + bump the per-validator counter for the audit event.
+            # ``GateResult.derive_default_action`` collapses legacy
+            # validators (no ``action`` set) onto ``"block"`` on failure
+            # — the failure-distribution dict counts the gate name
+            # regardless of which discriminator surfaced it.
             from MCP.hardening.validation_gates import GateResult  # noqa: PLC0415
 
             for gate_result in gate_results:
@@ -929,21 +960,54 @@ class CourseforgeRouter:
                     failure_distribution.get(gate_name, 0) + 1
                 )
 
+            # Subtask 41: bump the cumulative validation_attempts
+            # accumulator on every failed pass and rebind
+            # ``last_candidate`` so its frozen-dataclass
+            # ``validation_attempts`` field mirrors the cumulative
+            # count.
+            cumulative_attempts += 1
+            last_candidate = dataclasses.replace(
+                last_candidate,
+                validation_attempts=cumulative_attempts,
+            )
+
+            # Subtask 41: regen-budget check. When the bumped count meets
+            # or exceeds the resolved budget, stamp the canonical
+            # ``outline_budget_exhausted`` marker and break early.
+            # ``Block.__post_init__`` validates the marker against the
+            # canonical ``_ESCALATION_MARKERS`` set.
+            if cumulative_attempts >= resolved_budget:
+                escalated = dataclasses.replace(
+                    last_candidate,
+                    escalation_marker="outline_budget_exhausted",
+                )
+                self._emit_block_escalation(
+                    escalated,
+                    marker="outline_budget_exhausted",
+                    attempts=escalated.validation_attempts,
+                    n_candidates=i + 1,
+                )
+                break
+
         # 4. Resolve the return-block.
         if winner is not None:
             outcome_block = winner
             failed_count = winning_index if winning_index is not None else 0
+        elif escalated is not None:
+            # Subtask 41: regen budget exhausted mid-loop. ``escalated``
+            # carries the budget-exhausted marker + the cumulative
+            # validation_attempts; failed_count counts the cumulative
+            # attempts that consumed the budget.
+            outcome_block = escalated
+            failed_count = cumulative_attempts
         else:
-            # All N candidates failed every validator. Stamp
-            # ``validation_attempts=n`` on the last candidate so
-            # downstream regen-budget logic (Subtask 41) can detect
-            # the exhaustion. Do NOT set ``escalation_marker`` — that's
-            # Subtask 41's responsibility.
+            # All N candidates failed every validator but the regen
+            # budget was higher than N (so no escalation marker fired).
+            # ``last_candidate`` already carries the correct cumulative
+            # ``validation_attempts`` count from the per-failure
+            # increment above; no further bump needed.
             assert last_candidate is not None  # the loop ran at least once
-            outcome_block = dataclasses.replace(
-                last_candidate,
-                validation_attempts=last_candidate.validation_attempts + resolved_n,
-            )
+            outcome_block = last_candidate
             failed_count = resolved_n
 
         # 5. Emit the per-self-consistency-loop decision-capture event
@@ -1012,6 +1076,62 @@ class CourseforgeRouter:
 
         # 5. Hardcoded default.
         return _DEFAULT_OUTLINE_N_CANDIDATES
+
+    def _resolve_regen_budget(
+        self, block: Block, override: Optional[int]
+    ) -> int:
+        """Resolve the per-block regen budget (Subtask 41).
+
+        Precedence (highest first):
+
+        1. ``override`` arg (the per-call ``regen_budget`` kwarg).
+        2. ``self._policy.regen_budget_by_block_type[block.block_type]``
+           (Worker G's fast-lookup map on :class:`BlockRoutingPolicy`).
+        3. ``COURSEFORGE_OUTLINE_REGEN_BUDGET`` env var (parsed as int;
+           silently falls through on parse failure).
+        4. ``self._regen_budget_override`` (constructor-time instance
+           attribute set via ``CourseforgeRouter(regen_budget=...)``).
+        5. :data:`_DEFAULT_OUTLINE_REGEN_BUDGET` (3).
+
+        The budget is the number of failed validation passes a block
+        can accumulate inside :meth:`route_with_self_consistency`
+        before the router stamps
+        ``escalation_marker="outline_budget_exhausted"`` and breaks
+        early.
+        """
+        # 1. Per-call kwarg.
+        if isinstance(override, int) and override > 0:
+            return override
+
+        # 2. Policy fast-lookup map (Worker G).
+        policy = self._policy
+        if policy is not None:
+            policy_map = getattr(policy, "regen_budget_by_block_type", None)
+            if isinstance(policy_map, dict):
+                policy_b = policy_map.get(block.block_type)
+                if isinstance(policy_b, int) and policy_b > 0:
+                    return policy_b
+
+        # 3. Env var.
+        env_value = os.environ.get(_ENV_OUTLINE_REGEN_BUDGET)
+        if env_value:
+            try:
+                env_b = int(env_value.strip())
+                if env_b > 0:
+                    return env_b
+            except (TypeError, ValueError):
+                # Parse failure falls through to the next layer.
+                pass
+
+        # 4. Constructor-time instance attribute.
+        if (
+            isinstance(self._regen_budget_override, int)
+            and self._regen_budget_override > 0
+        ):
+            return self._regen_budget_override
+
+        # 5. Hardcoded default.
+        return _DEFAULT_OUTLINE_REGEN_BUDGET
 
     def _run_validator_chain(
         self,
@@ -1216,6 +1336,61 @@ class CourseforgeRouter:
     # ------------------------------------------------------------------
     # Decision-capture helpers
     # ------------------------------------------------------------------
+
+    def _emit_block_escalation(
+        self,
+        block: Block,
+        *,
+        marker: str,
+        attempts: int,
+        n_candidates: int,
+    ) -> None:
+        """Emit one ``block_escalation`` decision-capture event.
+
+        Wired from BOTH :meth:`route_with_self_consistency` (when the
+        outline regen budget is exhausted, Subtask 41) AND :meth:`route`
+        (when the ``escalate_immediately`` short-circuit fires,
+        Subtask 42). Each emit records the marker + attempts +
+        candidate count so a postmortem can reconstruct the
+        regen-budget exhaustion or policy-skip event without parsing
+        the per-call dispatch trail.
+
+        Per Phase 3 Subtask 43 the rationale string is at least 20
+        characters and interpolates the dynamic signals
+        (``block_id`` / ``block_type`` / ``marker`` / ``attempts`` /
+        ``n_candidates``); the structured ``ml_features`` payload
+        carries the same fields for ML-trainability.
+        """
+        if self._capture is None:
+            return
+        rationale = (
+            f"Block {block.block_id} (block_type={block.block_type}) "
+            f"escalated to rewrite tier with marker={marker} after "
+            f"{attempts} validation attempts across {n_candidates} "
+            f"candidates. Outline tier exhausted regen budget; rewrite "
+            f"tier will receive an enriched prompt with full source "
+            f"chunks + objective refs to author from scratch."
+        )
+        ml_features: Dict[str, Any] = {
+            "block_id": block.block_id,
+            "block_type": block.block_type,
+            "marker": marker,
+            "attempts": attempts,
+            "n_candidates": n_candidates,
+        }
+        try:
+            self._capture.log_decision(
+                decision_type="block_escalation",
+                decision=(
+                    f"escalate:{block.block_type}:{block.block_id}:{marker}"
+                ),
+                rationale=rationale,
+                ml_features=ml_features,
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "router block_escalation decision-capture emit failed: %s", exc
+            )
 
     def _classify_policy_source(
         self,
