@@ -914,11 +914,92 @@ workflows:
               on_error: fail_closed
             description: Verify every non-trivial paragraph in rewrite-tier HTML is grounded in DART source (Phase 3 carry-over)
 
+      # Phase 3.5 Subtask 10: post-rewrite validation phase. Runs the
+      # same four Block-input validators from inter_tier_validation
+      # against the rewrite-tier blocks_final_path, so a rewrite-tier
+      # HTML emit that drops a CURIE / content_type / objective_ref /
+      # source_id silently is caught before packaging consumes it.
+      # Validators are shape-discriminating (Wave A Subtasks 6-9):
+      # rewrite-tier Block.content is an HTML string while outline-tier
+      # Block.content is a dict; the same adapters handle both via
+      # isinstance(content, dict | str) dispatch.
+      - name: post_rewrite_validation
+        agents: []
+        parallel: false
+        max_concurrent: 1
+        depends_on: [content_generation_rewrite]
+        timeout_minutes: 5
+        description: Phase 3.5 — re-run inter-tier validators on rewrite-tier blocks
+        enabled_when_env: "COURSEFORGE_TWO_PASS=true"
+
+        inputs_from:
+          - param: blocks_final_path
+            source: phase_outputs
+            phase: content_generation_rewrite
+            output: blocks_final_path
+          - param: project_id
+            source: phase_outputs
+            phase: objective_extraction
+            output: project_id
+
+        outputs:
+          - blocks_validated_path
+          - blocks_failed_path
+
+        validation_gates:
+          - gate_id: rewrite_curie_anchoring
+            validator: Courseforge.router.inter_tier_gates.BlockCurieAnchoringValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Phase 3.5 post-rewrite — verify rewrite-tier Blocks anchor on a CURIE per §3 (warn-only initially)
+
+          - gate_id: rewrite_content_type
+            validator: Courseforge.router.inter_tier_gates.BlockContentTypeValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Phase 3.5 post-rewrite — verify rewrite-tier Block content_type stays in the canonical 8-value enum
+
+          - gate_id: rewrite_page_objectives
+            validator: Courseforge.router.inter_tier_gates.BlockPageObjectivesValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Phase 3.5 post-rewrite — verify rewrite-tier Blocks reference the page's declared objectives
+
+          - gate_id: rewrite_source_refs
+            validator: Courseforge.router.inter_tier_gates.BlockSourceRefValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Phase 3.5 post-rewrite — verify rewrite-tier source_ids resolve against the DART staging manifest
+
       - name: packaging
         agents: [brightspace-packager]
         parallel: false
         max_concurrent: 1
         depends_on: [content_generation]
+        # Phase 3.5 Subtask 10: alternate dependency when two-pass is on.
+        # ``_dependencies_met`` honours this via the same env-predicate
+        # grammar as ``enabled_when_env``: when the predicate matches,
+        # the alternate ``depends_on_when_env_value`` list replaces
+        # ``depends_on``. Two-pass packaging now waits on
+        # post_rewrite_validation rather than content_generation.
+        depends_on_when_env: "COURSEFORGE_TWO_PASS=true"
+        depends_on_when_env_value: [post_rewrite_validation]
         timeout_minutes: 45
         description: Package course as IMSCC
 
