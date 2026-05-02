@@ -88,6 +88,10 @@
         "validation_gates": {
           "type": "array",
           "items": {"$ref": "#/$defs/Gate"}
+        },
+        "enabled_when_env": {
+          "type": "string",
+          "description": "Phase 3 Subtask 2: optional env-driven enable predicate. Format ``\"VAR=value\"`` or ``\"VAR!=value\"`` (case-insensitive). Phase skips when predicate is unsatisfied."
         }
       }
     },
