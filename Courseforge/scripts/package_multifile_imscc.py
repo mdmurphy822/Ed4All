@@ -113,8 +113,27 @@ def _extract_week_title(week_dir: Path, week_num: int) -> str:
     return f"Week {week_num}: {title}"
 
 
-def build_manifest(content_dir: Path, course_code: str, course_title: str) -> str:
-    """Build imsmanifest.xml for multi-file weekly content."""
+def build_manifest(
+    content_dir: Path,
+    course_code: str,
+    course_title: str,
+    *,
+    outline_only: bool = False,
+) -> str:
+    """Build imsmanifest.xml for multi-file weekly content.
+
+    Phase 2 (Subtask 29):
+      * ``outline_only`` — when ``True``, the per-week ``html_files`` walk
+        filters to only ``*overview.html`` and ``*summary.html`` pages
+        (drops content / application / self_check / discussion). The
+        general LOM ``<description>`` text is also tagged with the prefix
+        ``"[OUTLINE] "`` so LMS-side viewers see at a glance that the
+        package carries outline-tier content only. The companion
+        ``course_metadata.json`` stub augmentation (``blocks_summary
+        .outline_only=true``) is written upstream by
+        ``generate_course.py`` (Subtask 28); this function only consumes
+        / surfaces that signal in the manifest.
+    """
     ns = "http://www.imsglobal.org/xsd/imsccv1p3/imscp_v1p1"
     lom_ns = "http://ltsc.ieee.org/xsd/imsccv1p3/LOM/resource"
     lom_manifest_ns = "http://ltsc.ieee.org/xsd/imsccv1p3/LOM/manifest"
@@ -144,10 +163,17 @@ def build_manifest(content_dir: Path, course_code: str, course_title: str) -> st
     title_el = ET.SubElement(general, lm("title"))
     ET.SubElement(title_el, lm("string"), {"language": "en"}).text = f"{course_code}: {course_title}"
     desc_el = ET.SubElement(general, lm("description"))
-    ET.SubElement(desc_el, lm("string"), {"language": "en"}).text = (
+    description_text = (
         "A 12-week graduate course covering learning theory, instructional design, "
         "cognitive load, blended teaching, assessment, and accessibility."
     )
+    # Phase 2 (Subtask 29): tag the LOM description with an `[OUTLINE] `
+    # prefix in outline-only packaging so LMS-side viewers can detect the
+    # outline-tier deliverable shape without parsing
+    # course_metadata.json::blocks_summary.
+    if outline_only:
+        description_text = "[OUTLINE] " + description_text
+    ET.SubElement(desc_el, lm("string"), {"language": "en"}).text = description_text
 
     # Organizations
     organizations = ET.SubElement(manifest, cc("organizations"))
@@ -190,6 +216,19 @@ def build_manifest(content_dir: Path, course_code: str, course_title: str) -> st
             return (99, name)
 
         html_files = sorted(week_dir.glob("*.html"), key=sort_key)
+
+        # Phase 2 (Subtask 29): in outline-only mode, drop every page
+        # except the overview + summary deliverables (the outline-tier
+        # surfaces). Content / application / self_check / discussion
+        # pages are excluded from BOTH the manifest organization tree
+        # and the resources section so the IMSCC payload itself stays
+        # outline-shaped (no orphan resources, no ITEM entries pointing
+        # at suppressed pages).
+        if outline_only:
+            html_files = [
+                f for f in html_files
+                if f.name.endswith("overview.html") or f.name.endswith("summary.html")
+            ]
 
         for html_file in html_files:
             rel_path = f"{week_name}/{html_file.name}"
@@ -250,6 +289,7 @@ def package_imscc(
     *,
     objectives_path: Optional[Path] = None,
     skip_validation: bool = False,
+    outline_only: bool = False,
 ):
     """Create the IMSCC zip package.
 
@@ -265,6 +305,15 @@ def package_imscc(
     opt-out that bypasses validation even when an objectives file is
     available. Hard-fail (``SystemExit(2)``) only occurs on a genuine
     validation FAILURE — never on a missing objectives file alone.
+
+    Phase 2 (Subtask 29):
+      * ``outline_only`` — when ``True``, the per-week zip walk filters to
+        only ``*overview.html`` and ``*summary.html`` pages so the IMSCC
+        payload mirrors the manifest organization tree (no orphan
+        resources). The manifest description gets a ``[OUTLINE] `` prefix.
+        The companion ``course_metadata.json`` augmentation is upstream
+        (``generate_course.py --emit-mode outline``); this packager only
+        consumes / surfaces the marker.
     """
     # Auto-discover objectives if not explicitly provided (default-on behavior).
     if objectives_path is None and not skip_validation:
@@ -292,7 +341,9 @@ def package_imscc(
             raise SystemExit(2)
         print("[validate] All week pages pass per-week LO contract.")
 
-    manifest_xml = build_manifest(content_dir, course_code, course_title)
+    manifest_xml = build_manifest(
+        content_dir, course_code, course_title, outline_only=outline_only,
+    )
 
     stub_included = False
 
@@ -315,6 +366,14 @@ def package_imscc(
             if not week_dir.is_dir():
                 continue
             for html_file in sorted(week_dir.glob("*.html")):
+                # Phase 2 (Subtask 29): mirror the manifest filter so the
+                # zip payload matches the organization tree (no orphan
+                # resources / no resources missing from manifest).
+                if outline_only and not (
+                    html_file.name.endswith("overview.html")
+                    or html_file.name.endswith("summary.html")
+                ):
+                    continue
                 zf.write(html_file, f"{week_dir.name}/{html_file.name}")
                 file_count += 1
 
@@ -345,6 +404,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--skip-validation", action="store_true",
                    help=("Opt out of per-week LO validation (not recommended "
                          "for production builds)."))
+    p.add_argument(
+        "--outline-only",
+        action="store_true",
+        help=(
+            "Phase 2 (Subtask 29): package only outline-tier deliverables "
+            "(overview + summary pages per week). The IMSCC manifest "
+            "description gets an `[OUTLINE] ` prefix; content / "
+            "application / self_check / discussion pages are dropped from "
+            "both the manifest organization tree and the zip payload. "
+            "Pair with `generate_course.py --emit-mode outline` upstream "
+            "so course_metadata.json::blocks_summary.outline_only=true "
+            "is bundled into the package."
+        ),
+    )
     return p
 
 
@@ -356,4 +429,5 @@ if __name__ == "__main__":
         args.course_code, args.course_title,
         objectives_path=args.objectives,
         skip_validation=args.skip_validation,
+        outline_only=args.outline_only,
     )
