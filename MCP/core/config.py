@@ -53,6 +53,16 @@ class WorkflowPhase:
     # unsatisfied predicate skip via ``_should_skip_phase``. Default
     # ``None`` preserves byte-stable behavior on every legacy phase.
     enabled_when_env: Optional[str] = None
+    # Phase 3 Subtask 4: alternate ``depends_on`` list active when the
+    # paired predicate is satisfied. Used by ``course_generation``'s
+    # ``packaging`` phase to switch from depending on
+    # ``content_generation`` to depending on
+    # ``content_generation_rewrite`` when ``COURSEFORGE_TWO_PASS=true``.
+    # When the predicate does not match (or is unset), the standard
+    # ``depends_on`` list applies. Both ``depends_on_when_env`` and
+    # ``depends_on_when_env_value`` must be set together.
+    depends_on_when_env: Optional[str] = None
+    depends_on_when_env_value: Optional[List[str]] = None
 
 
 @dataclass
@@ -165,6 +175,13 @@ class OrchestratorConfig:
                             # Phase 3 Subtask 2: pass through the
                             # optional env-predicate from YAML.
                             enabled_when_env=p.get("enabled_when_env"),
+                            # Phase 3 Subtask 4: alt-dependency keys.
+                            depends_on_when_env=p.get(
+                                "depends_on_when_env"
+                            ),
+                            depends_on_when_env_value=p.get(
+                                "depends_on_when_env_value"
+                            ),
                         ))
 
                     instance.workflows[name] = WorkflowConfig(

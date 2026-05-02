@@ -92,6 +92,15 @@
         "enabled_when_env": {
           "type": "string",
           "description": "Phase 3 Subtask 2: optional env-driven enable predicate. Format ``\"VAR=value\"`` or ``\"VAR!=value\"`` (case-insensitive). Phase skips when predicate is unsatisfied."
+        },
+        "depends_on_when_env": {
+          "type": "string",
+          "description": "Phase 3 Subtask 4: optional env-predicate that, when satisfied, replaces ``depends_on`` with ``depends_on_when_env_value`` for the dependency check. Same predicate grammar as ``enabled_when_env``."
+        },
+        "depends_on_when_env_value": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Phase 3 Subtask 4: alternate ``depends_on`` list applied when ``depends_on_when_env`` matches."
         }
       }
     },
