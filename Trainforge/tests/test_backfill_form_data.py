@@ -512,8 +512,10 @@ def test_backfill_rejects_when_validator_fails_after_append(tmp_path):
             "incomplete_curies": [],
         }
 
-    # Wave 137 follow-up: loop now prompts again on append-failure
-    # instead of giving up. Operator: "y" (approve) → reject → "n" (skip).
+    # Wave 137 follow-up: append-failure auto-redrafts (no `r` prompt).
+    # Operator: "y" (approve) → reject + auto-redraft (returns same
+    # bad_yaml because fake_runner is stateless) → "n" on second
+    # prompt → skip.
     inputs = iter(["y", "n"])
 
     def fake_input(_prompt: str) -> str:
@@ -566,4 +568,76 @@ def test_backfill_rejects_when_validator_fails_after_append(tmp_path):
     # Critical: the YAML file must be byte-identical to pre-merge.
     assert yaml_path.read_bytes() == pre_bytes, (
         "rollback failed — YAML file did not return to pre-merge state"
+    )
+
+
+def test_backfill_max_redrafts_exhausted_returns_dedicated_outcome(tmp_path):
+    """Wave 137 follow-up: when the operator approves 5 successive
+    drafts and all 5 fail append-time validation, the loop returns
+    ``max_redrafts_exceeded`` (not ``skipped`` or ``failed_validation``)
+    so the main() exit code can flag the failure. After 5 redrafts
+    the loop gives up and returns the dedicated outcome."""
+    yaml_path = tmp_path / "schema_translation_catalog.test_family.yaml"
+    pre_text = "family: test_family\nforms: {}\n"
+    yaml_path.write_text(pre_text, encoding="utf-8")
+
+    target_curie = "test:Beta"
+    bad_yaml = _build_invalid_yaml_payload(target_curie)
+
+    runner_calls = []
+
+    def fake_runner(curie, family, course_code, provider, model, timeout=None):
+        runner_calls.append(curie)
+        return 0, bad_yaml, ""
+
+    def fake_validator(form_data, manifest_curies):
+        return {
+            "passed": False,
+            "content_violations": [
+                {"curie": target_curie, "rule": "PLACEHOLDER_LEAK", "detail": "..."},
+            ],
+            "missing_curies": [],
+            "incomplete_curies": [],
+        }
+
+    # Operator approves 5 times; each rejection auto-redrafts.
+    inputs = iter(["y"] * 6)  # extra "y" guard if implementation off-by-one
+
+    def fake_input(_prompt):
+        return next(inputs)
+
+    fake_form_data = {
+        target_curie: SurfaceFormData(
+            curie=target_curie,
+            short_name="Beta",
+            anchored_status="degraded_placeholder",
+            definitions=["[degraded: stub]"],
+            usage_examples=[("[degraded: prompt]", "[degraded: answer]")],
+        )
+    }
+
+    with patch.object(cli, "_run_drafting_cli", side_effect=fake_runner), \
+         patch.object(cli, "validate_form_data_contract",
+                      side_effect=fake_validator), \
+         patch.object(cli, "_load_form_data", return_value=fake_form_data), \
+         patch.object(cli, "load_property_manifest",
+                      return_value=_build_synthetic_manifest()), \
+         patch.object(cli, "_resolve_chunks_jsonl", return_value=None):
+        outcome = cli._process_one_curie(
+            idx=1,
+            total=1,
+            curie=target_curie,
+            freq=0,
+            label="Beta label",
+            family="test_family",
+            course_code="test-course",
+            provider="local",
+            model=None,
+            yaml_path=yaml_path,
+            manifest_curies=[c for c, _ in _SYNTHETIC_CURIES],
+            input_fn=fake_input,
+            print_fn=lambda *a, **kw: None,
+        )
+    assert outcome == "max_redrafts_exceeded", (
+        f"expected 'max_redrafts_exceeded' after 5 auto-redrafts; got {outcome!r}"
     )
