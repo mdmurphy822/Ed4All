@@ -1549,10 +1549,30 @@ def _align_bloom_matches(
     return [matches[primary_idx]] + rest
 
 
-def _build_objectives_metadata(objectives: List[Dict]) -> List[Dict[str, Any]]:
-    """Build structured objective metadata for JSON-LD from week objectives."""
+def _build_objectives_metadata(
+    objectives: List[Dict],
+    *,
+    page_id: str = "",
+) -> List[Dict[str, Any]]:
+    """Build structured objective metadata for JSON-LD from week objectives.
+
+    Phase 2 (Subtask 22): refactored to construct a ``Block(block_type=
+    "objective", …)`` per LO and project to the JSON-LD entry via
+    ``block.to_jsonld_entry()``. Public signature kept stable
+    (``page_id`` is an optional kwarg that defaults to ``""``;
+    untouched callers behave identically). The Block intermediate
+    captures the canonical singular/plural Bloom + key-concept fields;
+    the page-level fields that aren't part of the Block surface
+    (``assessmentSuggestions`` / ``prerequisiteObjectives`` /
+    ``hierarchyLevel`` / ``parentObjectiveId``) are augmented onto the
+    entry dict afterwards. Subtask 27 reuses these Block instances —
+    callers can pass ``page_id`` to mint stable IDs that match the
+    ``_render_objectives`` ID scheme; legacy callers fall through to
+    ``_LEGACY_PAGE_ID``.
+    """
+    bound_page_id = page_id or _LEGACY_PAGE_ID
     result = []
-    for o in objectives:
+    for i, o in enumerate(objectives):
         bloom_level = o.get("bloom_level")
         bloom_verb = o.get("bloom_verb")
         if not bloom_level:
@@ -1564,48 +1584,29 @@ def _build_objectives_metadata(objectives: List[Dict]) -> List[Dict[str, Any]]:
         # bloomVerbs[0] == bloomVerb so consumers can treat the plural
         # arrays as the authoritative list and the singular fields as a
         # convenience view onto the first element.
-        #
-        # Common case (bloom_level derived from detection above):
-        #   detect_bloom_verbs returns the same (level, verb) as
-        #   detect_bloom_level at index 0 by construction, so the
-        #   invariant holds trivially.
-        #
-        # Pre-set case (bloom_level supplied upstream, e.g. from
-        # synthesized_objectives.json): the pre-set singular is
-        # authoritative. If it appears in the detected list, rotate
-        # that entry to position 0 so the invariant holds. If it does
-        # not appear at all (detection and singular disagree), elide
-        # the plurals — the consumer keeps using the singular field.
         aligned_matches = _align_bloom_matches(
             _detect_bloom_verbs(o["statement"]), bloom_level, bloom_verb
         )
         # Wave 48: schema-sourced cognitive domain
-        domain = _bloom_to_cognitive_domain(bloom_level)
+        domain = _bloom_to_cognitive_domain(bloom_level) if bloom_level else None
         key_concepts = [_slugify(c) for c in o.get("key_concepts", []) if _slugify(c)]
-        entry: Dict[str, Any] = {
-            "id": o["id"],
-            "statement": o["statement"],
-            "bloomLevel": bloom_level,
-            "bloomVerb": bloom_verb,
-            "cognitiveDomain": domain,
-        }
-        if aligned_matches:
-            entry["bloomLevels"] = [lvl for lvl, _v in aligned_matches]
-            entry["bloomVerbs"] = [verb for _l, verb in aligned_matches]
-        if key_concepts:
-            entry["keyConcepts"] = key_concepts
-            # Wave 57: emit Bloom-qualified LO→concept edges. Every keyConcept
-            # gets paired with the parent LO's bloomLevel so downstream KG
-            # consumers can materialize `LO --[bloomLevel]--> concept` edges
-            # directly, without re-inferring cognitive demand via chunk co-
-            # occurrence. Elided when bloom_level is null (no signal to tag
-            # the edge with) so schema validators stay happy without a
-            # nullable edge type.
-            if bloom_level:
-                entry["targetedConcepts"] = [
-                    {"concept": slug, "bloomLevel": bloom_level}
-                    for slug in key_concepts
-                ]
+        block = Block(
+            block_id=Block.stable_id(
+                bound_page_id, "objective", _slugify(o["id"]), i
+            ),
+            block_type="objective",
+            page_id=bound_page_id,
+            sequence=i,
+            content=o["statement"],
+            objective_ids=(o["id"],),
+            bloom_level=bloom_level or None,
+            bloom_verb=bloom_verb or None,
+            cognitive_domain=domain or None,
+            bloom_levels=tuple(lvl for lvl, _v in aligned_matches),
+            bloom_verbs=tuple(verb for _l, verb in aligned_matches),
+            key_terms=tuple(key_concepts),
+        )
+        entry = block.to_jsonld_entry()
         # Include assessment suggestions based on Bloom's level
         if bloom_level and bloom_level in BLOOM_VERBS:
             from_bloom = {
