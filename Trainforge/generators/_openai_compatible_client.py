@@ -231,6 +231,32 @@ class OpenAICompatibleClient:
                 ``stop``, ``response_format``, etc.) without the client
                 needing to grow surface.
 
+                Phase 3 router contract: Courseforge's two-pass router
+                routes per-block-type constrained-decoding payloads
+                through this kwarg without the client growing per-
+                provider branches. Recognised grammar-related fields
+                that pass through unchanged:
+
+                - ``grammar`` (str): GBNF grammar string for
+                  llama.cpp-compatible servers.
+                - ``format`` (dict): JSON-Schema dict for Ollama 0.5+
+                  constrained-decoding mode (distinct from the
+                  ``"json"`` literal that ``json_mode=True`` injects).
+                - ``guided_grammar`` / ``guided_json`` /
+                  ``guided_regex`` (vLLM): typically passed nested
+                  inside ``extra_body`` per the vLLM API surface.
+                - ``extra_body`` (dict): vLLM passthrough container
+                  for the ``guided_*`` fields.
+                - ``response_format`` (dict): OpenAI-style
+                  json_schema mode (``{"type": "json_schema",
+                  "json_schema": {...}}``); used by Together AI's
+                  strict structured-output path.
+
+                The client does not validate or interpret these — it
+                just passes them through to the wire. Servers that
+                don't recognise a given field silently ignore it
+                (Wave-113 ``json_mode`` uses the same pattern).
+
         Returns:
             The assistant message ``content`` string from the first
             choice.
