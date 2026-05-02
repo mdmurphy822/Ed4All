@@ -306,8 +306,8 @@
           "description": "Provider backend that produced the touch. 'deterministic' covers Phase-1 deterministic templating paths."
         },
         "tier": {
-          "enum": ["outline", "validation", "rewrite"],
-          "description": "Phase 3 tier that produced the touch. outline = first-pass draft; validation = validator-driven retouch; rewrite = budget-exhausted escalation."
+          "enum": ["outline", "validation", "rewrite", "outline_val", "rewrite_val"],
+          "description": "Phase 3 / 3.5 tier that produced the touch. outline = first-pass draft; validation = validator-driven retouch (legacy); rewrite = budget-exhausted escalation; outline_val = post-outline inter-tier validator pass/fail signal (Phase 3.5 Subtask 17); rewrite_val = post-rewrite validator pass/fail signal (Phase 3.5 Subtask 13)."
         },
         "timestamp": {
           "type": "string",
