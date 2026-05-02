@@ -644,5 +644,62 @@ def test_two_pass_outline_dispatch_failure_marks_escalation(
         assert "rewrite" in tiers
 
 
-# Subtask 60 ('test_all_phase3_decision_events_pass_strict_schema_validation')
-# extends this file in a follow-up commit.
+# ---------------------------------------------------------------------------
+# Subtask 60: strict-schema decision-event validation
+# ---------------------------------------------------------------------------
+
+
+def test_all_phase3_decision_events_pass_strict_schema_validation(
+    monkeypatch, tmp_path
+):
+    """With ``DECISION_VALIDATION_STRICT=true`` set, every decision
+    event captured during the two-pass workflow validates against
+    ``schemas/events/decision_event.schema.json``. Closes the
+    regression class Wave 120 Phase A re-fixed for the curriculum
+    surface.
+
+    The strict validator checks (per schema):
+    - ``decision_type`` is in the canonical enum (Phase 3 added
+      ``block_outline_call`` / ``block_rewrite_call`` /
+      ``block_validation_action`` / ``block_escalation`` to the enum).
+    - ``phase`` is in the canonical hyphenated enum.
+    - ``course_id`` matches ``^[A-Z][A-Z0-9_-]{1,}$`` (Wave-120 fix).
+    - ``run_id`` / ``timestamp`` / ``operation`` / ``decision`` /
+      ``rationale`` are non-empty (top-level required fields).
+    """
+    import jsonschema  # noqa: PLC0415  — soft dep present via pytest deps
+
+    monkeypatch.setenv("COURSEFORGE_TWO_PASS", "true")
+    monkeypatch.setenv("DECISION_VALIDATION_STRICT", "true")
+
+    blocks, outlines, htmls, objectives = _build_mini_course()
+    capture = _FakeCapture()
+    outline_provider = _MockOutlineProvider(
+        canned_outlines=outlines, capture=capture
+    )
+    rewrite_provider = _MockRewriteProvider(
+        canned_html_by_block_id=htmls, capture=capture
+    )
+    router = CourseforgeRouter(
+        outline_provider=outline_provider,
+        rewrite_provider=rewrite_provider,
+        capture=capture,
+    )
+
+    out = router.route_all(
+        blocks,
+        source_chunks_by_block_id={},
+        objectives=objectives,
+    )
+    assert len(out) == 4
+    assert capture.events, "expected at least one captured decision event"
+
+    schema = _load_decision_event_schema()
+    validator = jsonschema.Draft202012Validator(schema)
+    for idx, event in enumerate(capture.events):
+        errors = list(validator.iter_errors(event))
+        assert not errors, (
+            f"event[{idx}] (decision_type={event.get('decision_type')!r}) "
+            f"failed strict schema validation: "
+            f"{[(list(e.absolute_path), e.message) for e in errors]}"
+        )
