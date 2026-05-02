@@ -1020,23 +1020,90 @@ class CourseforgeRouter:
         *,
         fast_fail: bool = True,
     ) -> Tuple[bool, List[Any]]:
-        """Run a chain of validators against ``block``; return
-        ``(all_passed, gate_results)``.
+        """Run an ordered chain of validators against ``block``.
 
-        Wave-N (Subtask 37) shape: minimal pass-through implementation.
-        Subtask 38 lands the cheapest-first ordering documentation +
-        Phase-4-seam stubs; the surface stays the same.
+        Cheapest-first ordering per Phase 3 §3.6 (the caller is
+        responsible for pre-sorting ``validators`` into this order; the
+        router walks the list as given so per-block-type weighting and
+        Phase 4 / Phase 5 reordering land at the inter-tier-gate seam,
+        not here):
+
+        1. **Grammar / JSON Schema** — already enforced sample-time by
+           the outline provider's constrained-decoding payload (Subtask
+           18 ``OutlineProvider._build_grammar_payload`` emits the
+           per-provider grammar / response_format / format dict). The
+           validator-chain entry for this layer is listed for shape
+           only; for Phase 3 it's a no-op shim so the chain stays
+           stable when later phases promote the grammar check off
+           sample-time.
+        2. **SHACL** — Phase 4 seam. The Trainforge SHACL rule runner
+           (``Trainforge/rag/shacl_rule_runner.py``) is the precedent;
+           Phase 4 will introduce a ``BlockSHACLValidator`` shim that
+           projects the block's JSON-LD entry into a SHACL-validatable
+           graph and runs ``schemas/context/courseforge_v1.shacl-rules.ttl``
+           against it. For Phase 3 it's a no-op shim.
+        3. **CURIE resolution** — Phase 4 seam. The Trainforge
+           ``CurieAnchoringValidator`` (``lib/validators/curie_anchoring.py``)
+           is the precedent. Phase 3 no-op shim.
+        4. **Embedding similarity** — Phase 4 seam. Reserved for the
+           round-trip semantic-similarity check between the block's
+           outline content and the source-chunk text. Phase 3 no-op
+           shim.
+        5. **Round-trip check** — Phase 4 seam. Reserved for the
+           outline → rewrite → outline projection check. Phase 3
+           no-op shim.
+
+        For Phase 3 ALL non-grammar validators are no-op shims; the
+        ones that actually fire are passed in via the ``validators``
+        arg (Phase 4 + Phase 5 will populate the inter-tier validators
+        from this list via Subtask 50).
+
+        Each validator must implement
+        ``validate(inputs: Dict[str, Any]) -> GateResult`` (the
+        :class:`MCP.hardening.validation_gates.Validator` Protocol).
+        The router invokes
+        ``validator.validate({"block": block, "blocks": [block]})`` so
+        per-block validators see a single-block input dict and
+        Block-list-aware validators see a one-element list — both
+        shapes work without forcing every validator to accept both.
+
+        Returns ``(all_passed, [GateResult per validator])``. When
+        ``fast_fail=True`` (default) the loop stops at the first
+        non-pass action; when ``False`` it collects every result so
+        the caller can aggregate per-validator failures.
+
+        Uses :meth:`MCP.hardening.validation_gates.GateResult.derive_default_action`
+        to interpret ``GateResult.action``: legacy validators that
+        leave ``action`` unset collapse to ``"pass"`` on success /
+        ``"block"`` on failure (Worker J46 / Subtask 46 contract).
+        Phase-3-aware validators emit ``action="regenerate"`` /
+        ``"escalate"`` / ``"block"`` directly; the router treats any
+        non-``"pass"`` action as a failure that increments the
+        per-validator failure-distribution counter.
         """
         results: List[Any] = []
         all_passed = True
         if not validators:
+            # Empty chain → pass. Lets the self-consistency loop's
+            # default behaviour be "first candidate wins" when no
+            # validators are wired (Wave-N pre-Phase-4 shape).
             return True, results
 
+        # Build the input dict once per chain — both per-block and
+        # Block-list-aware validators read from the same shape.
         inputs = {"block": block, "blocks": [block]}
+
+        # Lazy-import the canonical action helper so the router module
+        # itself can be imported without pulling MCP.hardening when
+        # the caller never passes any validators (e.g. Wave-N tests).
+        from MCP.hardening.validation_gates import GateResult  # noqa: PLC0415
 
         for validator in validators:
             validate_fn = getattr(validator, "validate", None)
             if not callable(validate_fn):
+                # Defensive: skip non-conforming validators instead of
+                # blowing up the loop. Logged so a postmortem can spot
+                # the misconfiguration.
                 logger.warning(
                     "_run_validator_chain: validator %r missing validate(); skipping",
                     type(validator).__name__,
@@ -1055,8 +1122,6 @@ class CourseforgeRouter:
                 continue
 
             results.append(gate_result)
-
-            from MCP.hardening.validation_gates import GateResult  # noqa: PLC0415
 
             action = GateResult.derive_default_action(
                 gate_result.passed, gate_result.action
