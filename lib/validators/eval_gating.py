@@ -45,6 +45,10 @@ _DEFAULT_THRESHOLDS = {
     "max_calibration_ece": 0.30,
     # Wave 109 / Phase C: per-property accuracy floor.
     "min_per_property_accuracy": 0.40,
+    # Wave 138a / W3: content_type_role_alignment_rate floor. Tier-2
+    # corpus-derived check (no LLM dispatch). Warning-severity for v1
+    # per operator; promote to critical after two clean rebuilds.
+    "min_content_type_role_alignment_rate": 0.70,
 }
 
 
@@ -245,6 +249,33 @@ class EvalGatingValidator:
                 location=str(report_path),
             ))
 
+        # Wave 138a / W3: teaching-role alignment advisory. Tier-2
+        # corpus-derived signal — the harness emits a per-content-type
+        # `content_type_role_alignment` block plus a sibling
+        # `content_type_role_alignment_summary` carrying the aggregate
+        # `alignment_rate` and the list of mismatched content types.
+        # Skip silently when the report does not carry the field
+        # (legacy / pre-Wave-138 reports).
+        ctra_summary = report.get("content_type_role_alignment_summary")
+        ctra_alignment_rate: Optional[float] = None
+        ctra_mismatched: List[str] = []
+        if isinstance(ctra_summary, dict) and report.get("content_type_role_alignment") is not None:
+            ctra_alignment_rate = _as_float(ctra_summary.get("alignment_rate"))
+            mismatched_raw = ctra_summary.get("mismatched_content_types") or []
+            if isinstance(mismatched_raw, list):
+                ctra_mismatched = [str(m) for m in mismatched_raw]
+            min_ctra = thresholds["min_content_type_role_alignment_rate"]
+            if ctra_alignment_rate is not None and ctra_alignment_rate < min_ctra:
+                issues.append(GateIssue(
+                    severity="warning",
+                    code="EVAL_CONTENT_TYPE_ROLE_ALIGNMENT_LOW",
+                    message=(
+                        f"alignment_rate {ctra_alignment_rate:.3f} below "
+                        f"{min_ctra}; mismatched: {ctra_mismatched}"
+                    ),
+                    location=str(report_path),
+                ))
+
         critical_count = sum(1 for i in issues if i.severity == "critical")
         passed = critical_count == 0
         score = max(0.0, 1.0 - len(issues) * 0.1) if issues else 1.0
@@ -261,7 +292,9 @@ class EvalGatingValidator:
                     f"baseline_delta={baseline_delta} "
                     f"yes_rate={yes_rate} "
                     f"negative_grounding_accuracy={neg} "
-                    f"per_property={per_property}. "
+                    f"per_property={per_property} "
+                    f"alignment_rate={ctra_alignment_rate} "
+                    f"mismatched={ctra_mismatched}. "
                     f"Critical issues: {critical_count}; "
                     f"thresholds={thresholds}."
                 )

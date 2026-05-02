@@ -167,3 +167,84 @@ def test_per_property_passes_when_all_scored_above_floor(tmp_path: Path) -> None
         "thresholds": {"min_per_property_accuracy": 0.40},
     })
     assert result.passed is True
+
+
+# ---------------------------------------------------------------------------
+# Wave 138a / W3: content_type_role_alignment warning-severity gate.
+# ---------------------------------------------------------------------------
+
+
+def test_content_type_role_alignment_below_threshold_emits_warning(
+    tmp_path: Path,
+) -> None:
+    """alignment_rate below the 0.70 floor emits a warning (no critical)."""
+    model_dir = tmp_path / "models" / "test-ctra-low"
+    model_dir.mkdir(parents=True)
+    _write_report(
+        model_dir,
+        content_type_role_alignment={
+            "real_world_scenario": {
+                "total_chunks": 22,
+                "role_distribution": {
+                    "reinforce": 8, "elaborate": 7, "introduce": 4, "transfer": 1,
+                },
+                "expected_role": "transfer",
+                "actual_expected_share": 0.045,
+                "mismatch": True,
+                "skipped_below_threshold": False,
+            },
+        },
+        content_type_role_alignment_summary={
+            "alignment_rate": 0.55,
+            "mismatched_content_types": ["real_world_scenario"],
+        },
+    )
+    result = EvalGatingValidator().validate({"model_dir": str(model_dir)})
+    # Warning-severity: must NOT block promotion.
+    assert result.passed is True
+    critical = [i for i in result.issues if i.severity == "critical"]
+    assert critical == []
+    warnings = [i for i in result.issues if i.severity == "warning"]
+    codes = [i.code for i in warnings]
+    assert "EVAL_CONTENT_TYPE_ROLE_ALIGNMENT_LOW" in codes
+    msg = " ".join(i.message for i in warnings)
+    assert "real_world_scenario" in msg
+    assert "0.550" in msg or "0.55" in msg
+
+
+def test_content_type_role_alignment_above_threshold_passes(tmp_path: Path) -> None:
+    """alignment_rate above the floor emits no warning."""
+    model_dir = tmp_path / "models" / "test-ctra-pass"
+    model_dir.mkdir(parents=True)
+    _write_report(
+        model_dir,
+        content_type_role_alignment={
+            "real_world_scenario": {
+                "total_chunks": 22,
+                "role_distribution": {"transfer": 18, "elaborate": 4},
+                "expected_role": "transfer",
+                "actual_expected_share": 0.818,
+                "mismatch": False,
+                "skipped_below_threshold": False,
+            },
+        },
+        content_type_role_alignment_summary={
+            "alignment_rate": 0.85,
+            "mismatched_content_types": [],
+        },
+    )
+    result = EvalGatingValidator().validate({"model_dir": str(model_dir)})
+    assert result.passed is True
+    codes = [i.code for i in result.issues]
+    assert "EVAL_CONTENT_TYPE_ROLE_ALIGNMENT_LOW" not in codes
+
+
+def test_content_type_role_alignment_absent_skips_check(tmp_path: Path) -> None:
+    """Legacy reports without the new field don't trip the validator."""
+    model_dir = tmp_path / "models" / "test-ctra-absent"
+    model_dir.mkdir(parents=True)
+    _write_report(model_dir)  # no content_type_role_alignment fields
+    result = EvalGatingValidator().validate({"model_dir": str(model_dir)})
+    assert result.passed is True
+    codes = [i.code for i in result.issues]
+    assert "EVAL_CONTENT_TYPE_ROLE_ALIGNMENT_LOW" not in codes
