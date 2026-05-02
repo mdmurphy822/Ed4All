@@ -325,6 +325,16 @@
             "maximum": 1.0
           },
           "description": "Wave 111 / Phase E: per-property accuracy from PerPropertyEvaluator. Keys are property IDs from the course's property manifest (e.g. sh_datatype, owl_sameas); values are 0..1 floats or null when unscored. Surfaces the same numbers EvalGatingValidator gates on so an audit can replay why a promotion was blocked."
+        },
+        "content_type_role_alignment": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Per-content-type-label teaching_role distribution + expected-mode mismatches. Tier-2 corpus-derived; no LLM dispatch. Surfaced so an audit can replay why an alignment warning fired."
+        },
+        "content_type_role_alignment_summary": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Per-content-type-label teaching_role distribution + expected-mode mismatches. Tier-2 corpus-derived; no LLM dispatch. Surfaced so an audit can replay why an alignment warning fired."
         }
       }
     },
