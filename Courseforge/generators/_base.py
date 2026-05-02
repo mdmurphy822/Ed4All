@@ -62,7 +62,7 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from Trainforge.generators._anthropic_provider import (
     DEFAULT_SYNTHESIS_MODEL as ANTHROPIC_DEFAULT_MODEL,
@@ -292,7 +292,12 @@ class _BaseLLMProvider(ABC):
     # Dispatch plumbing (shared)
     # ------------------------------------------------------------------
 
-    def _dispatch_call(self, user_prompt: str) -> Tuple[str, int]:
+    def _dispatch_call(
+        self,
+        user_prompt: str,
+        *,
+        extra_payload: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[str, int]:
         """Route through the selected backend; return ``(text, retries)``.
 
         Together / Local both go through
@@ -300,6 +305,19 @@ class _BaseLLMProvider(ABC):
         ``self._oa_client``. We drop down to ``_post_with_retry`` so
         the retry count surfaces on the decision-capture rationale.
         Anthropic routes through the SDK via :meth:`_call_anthropic`.
+
+        Phase 3 Subtask 21: ``extra_payload`` is an optional dict whose
+        keys are merged into the OpenAI-compatible request body before
+        the POST. The Phase 3 router uses this to plumb per-block-type
+        grammar / JSON-Schema payloads (``grammar``, ``guided_json``,
+        ``guided_grammar``, ``guided_regex``, ``format`` as a JSON-Schema
+        dict for Ollama 0.5+, ``response_format`` for json_schema mode)
+        through to the wire without mutating the client. Caller-supplied
+        keys take precedence over the base payload (a `model` override
+        in ``extra_payload`` would replace the constructor-resolved
+        model). When ``provider == "anthropic"``, ``extra_payload`` is
+        ignored — the Anthropic SDK does not accept arbitrary
+        OpenAI-compatible fields.
         """
         if self._provider == "anthropic":
             return self._call_anthropic(user_prompt)
@@ -308,12 +326,19 @@ class _BaseLLMProvider(ABC):
             {"role": "system", "content": self._system_prompt},
             {"role": "user", "content": user_prompt},
         ]
-        payload = {
+        payload: Dict[str, Any] = {
             "model": self._model,
             "messages": messages,
             "temperature": self._temperature,
             "max_tokens": self._max_tokens,
         }
+        if extra_payload:
+            # Caller-supplied values win — mirrors
+            # ``OpenAICompatibleClient.chat_completion`` (`:252-256`)
+            # so the merge semantics stay consistent across the two
+            # OpenAI-compatible call sites.
+            for key, value in extra_payload.items():
+                payload[key] = value
         body, retry_count = self._oa_client._post_with_retry(payload)
         text = self._oa_client._extract_text(body)
         return text, retry_count
