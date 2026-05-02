@@ -290,7 +290,8 @@ Priority extraction chain (extends the Courseforge chain above): JSON-LD > `data
 | `generate_assessments` | Generate questions |
 | `validate_assessment` | Validate assessment quality |
 | `export_training_data` | Export training captures |
-| `get_trainforge_status` | Get processing status |
+| `get_trainforge_status` | Get processing status. Wave 138a extension surfaces per-course in-flight resume-checkpoint sidecars (synthesize_training pairs, align_chunks teaching-role, slm_eval_harness per-stage course + adapter) and the latest `eval_report.json::content_type_role_alignment_summary.alignment_rate` per adapter so operators see role-alignment health without parsing JSON. |
+| `analyze_teaching_role_alignment` | Wave 138a Tier-2 graph-derived check. Wraps `Trainforge.eval.teaching_role_alignment.TeachingRoleAlignmentEvaluator` so an external MCP client can probe a corpus's `content_type_label` -> `teaching_role` distribution without invoking the full SLM eval harness. Pure file read; no LLM dispatch. Returns `content_type_role_alignment` + `summary` (alignment_rate + mismatched_content_types). Useful as a pre-flight check before retraining. |
 | `synthesize_training` | Synthesize SFT + DPO training pairs from a Trainforge corpus. `provider` accepts `"mock"`, `"anthropic"`, `"claude_session"`, `"together"` (Together AI's OSS-teacher path; ToS-clean for training-data generation, default model `meta-llama/Llama-3.3-70B-Instruct-Turbo`, override via `TOGETHER_SYNTHESIS_MODEL`; requires `TOGETHER_API_KEY`), or `"local"` (a local OpenAI-compatible model server such as Ollama / vLLM / llama.cpp / LM Studio; default base URL `http://localhost:11434/v1`, override via `LOCAL_SYNTHESIS_BASE_URL`; default model `qwen2.5:14b-instruct-q4_K_M`, override via `LOCAL_SYNTHESIS_MODEL`; API key optional). |
 
 ### Pipeline Tools
