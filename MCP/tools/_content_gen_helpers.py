@@ -18,6 +18,7 @@ No external deps beyond the stdlib + existing Ed4All libraries.
 from __future__ import annotations
 
 import html as _html
+import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,6 +30,8 @@ from lib.ontology.bloom import (
 )
 from lib.ontology.learning_objectives import mint_lo_id
 from lib.ontology.slugs import canonical_slug
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants and regexes
@@ -1580,6 +1583,7 @@ def build_week_data(
     week_objectives: List[Dict[str, Any]],
     all_objectives: List[Dict[str, Any]],
     course_code: str,
+    content_provider: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Assemble the ``week_data`` dict that
     :func:`Courseforge.scripts.generate_course.generate_week` consumes.
@@ -1648,6 +1652,9 @@ def build_week_data(
         week_topics=renderable_topics,
         week_objectives=week_objectives,
         week_title=week_title,
+        content_provider=content_provider,
+        course_code=course_code,
+        week_num=week_num,
     )
 
     # Activities — one practice activity tied to first objective. The
@@ -1745,10 +1752,54 @@ def _topic_has_non_trivial_paragraph(topic: Dict[str, Any]) -> bool:
     return False
 
 
+# Phase 1 ToS unblock: minimal regex-based HTML parser for the
+# in-process content-provider's rendered HTML body. Phase 2 will swap
+# this for a Block-aware parser; until then we only need to extract
+# ``(heading, paragraphs[])`` tuples from a flat ``<section>`` /
+# ``<h2>`` + ``<p>`` shape. BeautifulSoup intentionally NOT used so
+# this stays dependency-light and the seam is easy to swap.
+_PROV_HEADING_RE = re.compile(
+    r"(?is)<h(?:1|2|3)[^>]*>(.*?)</h(?:1|2|3)>"
+)
+_PROV_PARAGRAPH_RE = re.compile(r"(?is)<p[^>]*>(.*?)</p>")
+_PROV_TAG_STRIP_RE = re.compile(r"(?is)<[^>]+>")
+
+
+def _parse_provider_page_html(html: Optional[str]) -> Tuple[Optional[str], List[str]]:
+    """Extract ``(heading, paragraphs[])`` from provider-rendered HTML.
+
+    Returns ``(None, [])`` when input is empty / unparseable. Strips
+    inner tags from extracted text so we don't double-escape when the
+    caller wraps the paragraphs in ``html.escape``. Empty paragraphs
+    (after tag strip + whitespace collapse) are dropped.
+    """
+    if not html or not isinstance(html, str):
+        return None, []
+    heading_match = _PROV_HEADING_RE.search(html)
+    heading: Optional[str] = None
+    if heading_match:
+        raw_heading = heading_match.group(1) or ""
+        heading = _PROV_TAG_STRIP_RE.sub("", raw_heading).strip()
+        if not heading:
+            heading = None
+
+    paragraphs: List[str] = []
+    for m in _PROV_PARAGRAPH_RE.finditer(html):
+        raw = m.group(1) or ""
+        text = _PROV_TAG_STRIP_RE.sub("", raw)
+        text = re.sub(r"\s+", " ", text).strip()
+        if text:
+            paragraphs.append(text)
+    return heading, paragraphs
+
+
 def _build_content_modules_dynamic(
     week_topics: List[Dict[str, Any]],
     week_objectives: List[Dict[str, Any]],
     week_title: str,
+    content_provider: Optional[Any] = None,
+    course_code: Optional[str] = None,
+    week_num: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Return ``content_modules`` list — **one module per LO or topic**.
 
@@ -1799,6 +1850,76 @@ def _build_content_modules_dynamic(
         # Sections: built from the topic's paragraphs.
         section_role = "definition" if i == 0 else "explanation"
         sections = [_topic_to_section(topic, section_role=section_role)]
+
+        # Phase 1 ToS unblock: when an in-process content_provider is
+        # wired, attempt to author the page prose via the provider and
+        # overlay the parsed paragraphs onto the deterministic section.
+        # Failure modes (empty return, parse miss, provider exception)
+        # all fall back to the legacy DART-paragraph path WITHOUT
+        # raising — the deterministic surface stays the floor.
+        if content_provider is not None:
+            try:
+                page_id = (
+                    f"week_{(week_num or 0):02d}_content_{(i + 1):02d}"
+                )
+                page_context = {
+                    "topic_heading": topic.get("heading"),
+                    "key_terms": topic.get("key_terms") or [],
+                    "objectives": [
+                        {
+                            "id": o.get("id"),
+                            "statement": o.get("statement"),
+                        }
+                        for o in (week_objectives or [])
+                    ],
+                    "primary_topic": {
+                        "title": topic.get("heading"),
+                        "paragraphs": topic.get("paragraphs") or [],
+                    },
+                    "objective_focus": (
+                        {
+                            "id": obj.get("id"),
+                            "statement": obj.get("statement"),
+                        }
+                        if obj
+                        else None
+                    ),
+                }
+                rendered_html = content_provider.generate_page(
+                    course_code=course_code or "",
+                    week_number=week_num or 0,
+                    page_id=page_id,
+                    page_template="<!--CONTENT_MODULE-->",
+                    page_context=page_context,
+                )
+                provider_heading, provider_paragraphs = (
+                    _parse_provider_page_html(rendered_html)
+                )
+                if provider_paragraphs:
+                    sections[0]["paragraphs"] = [
+                        _html.escape(p) for p in provider_paragraphs
+                    ]
+                    if provider_heading:
+                        sections[0]["heading"] = provider_heading
+                        module_title = provider_heading
+                else:
+                    logger.warning(
+                        "content_provider.generate_page returned no "
+                        "parseable paragraphs for week=%s page=%s; "
+                        "falling back to deterministic DART-paragraph "
+                        "synthesis.",
+                        week_num,
+                        page_id,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "content_provider.generate_page failed for week=%s "
+                    "module_index=%s: %s; falling back to deterministic "
+                    "DART-paragraph synthesis.",
+                    week_num,
+                    i,
+                    exc,
+                )
 
         # Per-module misconceptions come from the linked topic.
         module_misconceptions = list(topic.get("extracted_misconceptions") or [])
