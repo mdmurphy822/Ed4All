@@ -2326,13 +2326,72 @@ class CourseProcessor:
         # Signals for hypothesis discrimination (Worker M1 instrumentation).
         cf_meta = item.get("courseforge_metadata")
         jsonld_has_sections = bool(cf_meta and cf_meta.get("sections"))
+        jsonld_has_blocks = bool(cf_meta and cf_meta.get("blocks"))
         jsonld_parse_failed = bool(item.get("_jsonld_parse_failed"))
         section_match_found = False
+
+        # Phase 2 Subtask 31: prefer JSON-LD ``blocks[]`` when present.
+        # Courseforge with ``COURSEFORGE_EMIT_BLOCKS=true`` emits a
+        # canonical Phase-2 ``blocks[]`` projection on every page; for
+        # the section-type entries, the legacy ``_section_jsonld()``
+        # shape (``{heading, contentType, keyTerms?, bloomRange?, ...}``)
+        # is the wire shape. Walk those first and match by heading;
+        # populate ``bloom_level``/``content_type_label``/``key_terms``
+        # from the matched block. Trace value ``"jsonld_blocks_match"``.
+        # When no block matches in ``blocks[]`` (legacy emit, or a
+        # heading that drifts from the JSON-LD-keyed heading), fall
+        # through to the existing ``cf_meta["sections"]`` path so
+        # legacy corpora keep their pre-Phase-2 metadata-extraction
+        # semantics unchanged.
+        if jsonld_has_blocks:
+            for cand in candidate_headings:
+                matched_block = None
+                for block in cf_meta["blocks"]:
+                    if not isinstance(block, dict):
+                        continue
+                    if block.get("heading", "").lower() == cand:
+                        matched_block = block
+                        break
+                if not matched_block:
+                    continue
+                section_match_found = True
+                blk_content_type = matched_block.get("contentType") or matched_block.get(
+                    "contentTypeLabel"
+                )
+                if blk_content_type:
+                    content_type_label = blk_content_type
+                    trace["content_type_label"] = "jsonld_blocks_match"
+                blk_bloom_range = matched_block.get("bloomRange", [])
+                if blk_bloom_range:
+                    bloom_level = (
+                        blk_bloom_range[0]
+                        if isinstance(blk_bloom_range, list)
+                        else blk_bloom_range
+                    )
+                elif matched_block.get("bloomLevel"):
+                    bloom_level = matched_block["bloomLevel"]
+                for kt in matched_block.get("keyTerms", []):
+                    if isinstance(kt, dict) and kt.get("term"):
+                        key_terms.append(
+                            {"term": kt["term"], "definition": kt.get("definition", "")}
+                        )
+                    elif isinstance(kt, str) and kt:
+                        # Phase-2 ``_minimal_block_jsonld`` shape carries
+                        # ``keyTerms`` as a string list (slugs); the
+                        # legacy ``_section_jsonld`` shape carries it as
+                        # ``[{term, definition}]`` dicts. Honor both so
+                        # the consumer is robust to either emit shape.
+                        key_terms.append({"term": kt, "definition": ""})
+                if key_terms:
+                    trace["key_terms"] = "jsonld_blocks_match"
+                elif content_type_label:
+                    trace["key_terms"] = "jsonld_blocks_match"
+                break
 
         # Try JSON-LD sections metadata. Walk candidate headings in order —
         # the first matching JSON-LD section wins (anchor heading is
         # checked first to preserve back-compat).
-        if jsonld_has_sections:
+        if jsonld_has_sections and not content_type_label:
             for cand in candidate_headings:
                 matched_sec = None
                 for sec in cf_meta["sections"]:
