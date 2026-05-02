@@ -830,12 +830,25 @@ class TaskExecutor:
         agent_type = None
         if isinstance(task_params, dict):
             agent_type = task_params.get("agent_type")
+        # Phase 1 ToS-unblock: COURSEFORGE_PROVIDER short-circuits the
+        # Wave-74 subagent dispatch for the content-generator agent only.
+        # Operators who set the env var want their LLM provider (anthropic
+        # / together / local), not the Claude Code subagent. Other Wave-74
+        # agents (course-outliner, oscqr-course-evaluator, etc.) keep
+        # dispatching unchanged.
+        _courseforge_provider_set = bool(
+            os.environ.get("COURSEFORGE_PROVIDER", "").strip()
+        )
+        _force_inprocess_for_courseforge = (
+            _courseforge_provider_set and agent_type == "content-generator"
+        )
         if (
             _agent_dispatch_enabled()
             and self.dispatcher is not None
             and isinstance(agent_type, str)
             and agent_type in AGENT_SUBAGENT_SET
             and hasattr(self.dispatcher, "dispatch_task")
+            and not _force_inprocess_for_courseforge
         ):
             # Param-mapping still runs so downstream agent prompts see
             # the same shape the Python tool would have received.
@@ -865,6 +878,12 @@ class TaskExecutor:
                     run_id=self.run_id,
                 ),
                 timeout=self.batch_timeout_seconds,
+            )
+
+        if _force_inprocess_for_courseforge:
+            logger.info(
+                "COURSEFORGE_PROVIDER set; bypassing content-generator "
+                "subagent dispatch."
             )
 
         # Legacy in-process path — unchanged from pre-Wave-74.
