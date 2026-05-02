@@ -394,6 +394,67 @@ def _rollback_overlay(target_path: Path, pre_full: Dict[str, Any]) -> None:
     _atomic_write_yaml(pre_full, target_path)
 
 
+def _resolve_operator_handle() -> str:
+    """Wave 137 follow-up: derive operator handle for auto-flipping
+    PENDING_REVIEW. Order: OPERATOR_HANDLE env var → git config
+    user.email's local part → ``@operator`` fallback."""
+    explicit = os.environ.get("OPERATOR_HANDLE", "").strip()
+    if explicit:
+        return explicit if explicit.startswith("@") else f"@{explicit}"
+    try:
+        result = subprocess.run(
+            ["git", "config", "user.email"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        email = result.stdout.strip()
+        if email and "@" in email:
+            local = email.split("@")[0]
+            return f"@{local}"
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+    return "@operator"
+
+
+def _auto_flip_pending_review(
+    payload: Dict[str, Any],
+    curie: str,
+    operator_handle: str,
+) -> Dict[str, Any]:
+    """Wave 137 follow-up: replace provenance.reviewed_by sentinel
+    PENDING_REVIEW with the operator's canonical handle when the
+    operator hits ``y`` (approved as-is). Wave 137c-2 ships the
+    sentinel as a forcing function for operator review; ``y`` IS
+    the review confirmation, so the flip is implicit."""
+    forms = payload.get("forms") or {}
+    entry = forms.get(curie)
+    if not isinstance(entry, dict):
+        return payload
+    prov = entry.get("provenance")
+    if isinstance(prov, dict) and prov.get("reviewed_by") == "PENDING_REVIEW":
+        prov["reviewed_by"] = operator_handle
+    return payload
+
+
+def _read_retry_action(input_fn=input) -> str:
+    """Wave 137 follow-up: extended action menu offered after an
+    append-time validation failure. Adds [r]edraft (re-run Qwen)
+    on top of the y/n/e/q set. Operator chooses based on whether
+    the violations look like one-line fixes (e), the LLM produced
+    something fundamentally off (r), or it's not worth pursuing (n)."""
+    while True:
+        try:
+            raw = input_fn(
+                "  Action? [r]edraft  [e]dit-this  [n]o-skip  [q]uit\n  > "
+            )
+        except EOFError:
+            return "q"
+        action = (raw or "").strip().lower()
+        if action in ("r", "e", "n", "q"):
+            return action
+
+
 def _warmup_provider(
     provider: str,
     model: Optional[str],
@@ -625,75 +686,116 @@ def _process_one_curie(
             f"--- end warnings ---"
         )
 
-    # First action prompt.
-    action = _read_action(input_fn=input_fn)
+    # Wave 137 follow-up: wrap action prompt + validate in a retry
+    # loop. On append-time validator failure, surface violations and
+    # offer redraft / edit-again / skip / quit instead of giving up
+    # after one attempt. Auto-flip PENDING_REVIEW on `y` (operator
+    # approved as-is = implicit review).
+    operator_handle = _resolve_operator_handle()
+    current_yaml = stdout
+    last_violations: List[Dict[str, Any]] = []
+    redraft_count = 0
+    MAX_REDRAFTS = 2
 
-    if action == "q":
-        return "quit_after"
+    while True:
+        if last_violations:
+            action = _read_retry_action(input_fn=input_fn)
+        else:
+            action = _read_action(input_fn=input_fn)
 
-    if action == "n":
-        print_fn("  Skipped.")
-        return "skipped"
+        if action == "q":
+            return "quit_after"
 
-    # y or e: parse the YAML payload from drafting stdout.
-    if action == "e":
-        try:
-            edited_text = editor_fn(stdout)
-        except Exception as exc:
-            print_fn(f"  editor session failed: {exc}; skipping.")
+        if action == "n":
+            print_fn("  Skipped.")
             return "skipped"
-        try:
-            payload = _extract_yaml_payload_from_drafting_stdout(edited_text)
-        except Exception as exc:
-            print_fn(f"  edited YAML did not parse: {exc}; skipping.")
-            return "skipped"
-        outcome_label = "edited"
-    else:
-        # action == "y"
-        try:
-            payload = _extract_yaml_payload_from_drafting_stdout(stdout)
-        except Exception as exc:
-            print_fn(f"  drafting YAML did not parse: {exc}; skipping.")
-            return "skipped"
-        outcome_label = "accepted"
 
-    forms = payload.get("forms") or {}
-    new_entry_yaml = forms.get(curie)
-    if not isinstance(new_entry_yaml, dict):
-        print_fn(
-            f"  drafted YAML did not contain forms.{curie}; skipping."
-        )
-        return "skipped"
+        if action == "r":
+            if redraft_count >= MAX_REDRAFTS:
+                print_fn(
+                    f"  reached max redrafts ({MAX_REDRAFTS}); skipping. "
+                    f"Operator can re-run the loop later."
+                )
+                return "skipped"
+            redraft_count += 1
+            print_fn(f"  Redrafting (attempt {redraft_count + 1})...")
+            rc, current_yaml, stderr = runner(
+                curie, family, course_code, provider, model, timeout
+            )
+            if rc != 0 and rc != 3:
+                print_fn(
+                    f"  redraft transport failed (exit {rc}); stderr=\n{stderr}"
+                )
+                return "failed_validation"
+            print_fn(current_yaml)
+            if rc == 3:
+                print_fn(
+                    f"\n--- DRAFTING-CLI VALIDATION WARNINGS ---\n"
+                    f"{stderr}\n--- end warnings ---"
+                )
+            last_violations = []
+            continue
 
-    # Atomic merge + post-validate + rollback on failure.
-    snapshot = _merge_curie_into_overlay(yaml_path, curie, new_entry_yaml)
-    pre_full = snapshot["_pre_full"]
-    _invalidate_form_data_cache()
-    reloaded = _load_form_data(family)
-    report = validate_form_data_contract(reloaded, manifest_curies)
-    violations = report.get("content_violations") or []
-    # Filter to violations specific to THIS CURIE — we accept upstream
-    # entries' violations as out-of-scope for this operator pass.
-    this_curie_violations = [
-        v for v in violations
-        if isinstance(v, dict) and v.get("curie") == curie
-    ]
-    if this_curie_violations or not report.get("passed"):
-        # Rollback when this CURIE is the violator OR when overall
-        # contract failure suddenly appeared after the append.
+        # y or e: parse YAML payload from current_yaml.
+        if action == "e":
+            try:
+                edited_text = editor_fn(current_yaml)
+            except Exception as exc:
+                print_fn(f"  editor session failed: {exc}; skipping.")
+                return "skipped"
+            try:
+                payload = _extract_yaml_payload_from_drafting_stdout(edited_text)
+            except Exception as exc:
+                print_fn(f"  edited YAML did not parse: {exc}; reprompting.")
+                last_violations = [{"detail": f"YAML parse: {exc}"}]
+                continue
+            current_yaml = edited_text
+            outcome_label = "edited"
+        else:
+            # action == "y"
+            try:
+                payload = _extract_yaml_payload_from_drafting_stdout(current_yaml)
+            except Exception as exc:
+                print_fn(f"  YAML did not parse: {exc}; skipping.")
+                return "skipped"
+            # Wave 137 follow-up: auto-flip PENDING_REVIEW on `y`.
+            payload = _auto_flip_pending_review(payload, curie, operator_handle)
+            outcome_label = "accepted"
+
+        forms = payload.get("forms") or {}
+        new_entry_yaml = forms.get(curie)
+        if not isinstance(new_entry_yaml, dict):
+            print_fn(
+                f"  YAML did not contain forms.{curie}; skipping."
+            )
+            return "skipped"
+
+        # Atomic merge + post-validate + retry-on-failure.
+        snapshot = _merge_curie_into_overlay(yaml_path, curie, new_entry_yaml)
+        pre_full = snapshot["_pre_full"]
+        _invalidate_form_data_cache()
+        reloaded = _load_form_data(family)
+        report = validate_form_data_contract(reloaded, manifest_curies)
+        violations = report.get("content_violations") or []
+        this_curie_violations = [
+            v for v in violations
+            if isinstance(v, dict) and v.get("curie") == curie
+        ]
         if this_curie_violations:
             print_fn(
-                f"  Wave 136b validator rejected the appended entry "
-                f"for {curie}:"
+                f"  APPEND-TIME VALIDATOR REJECTED entry for {curie}:"
             )
             for v in this_curie_violations:
                 print_fn(f"    {v}")
             _rollback_overlay(yaml_path, pre_full)
             _invalidate_form_data_cache()
-            return "failed_validation"
+            # Wave 137 follow-up: don't give up — loop back with retry
+            # menu. Operator decides edit / redraft / skip / quit.
+            last_violations = this_curie_violations
+            continue
 
-    print_fn(f"  OK {outcome_label}")
-    return outcome_label if outcome_label == "edited" else "accepted"
+        print_fn(f"  OK {outcome_label}")
+        return outcome_label if outcome_label == "edited" else "accepted"
 
 
 # ----------------------------------------------------------------------

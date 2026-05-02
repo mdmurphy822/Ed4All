@@ -512,7 +512,9 @@ def test_backfill_rejects_when_validator_fails_after_append(tmp_path):
             "incomplete_curies": [],
         }
 
-    inputs = iter(["y"])
+    # Wave 137 follow-up: loop now prompts again on append-failure
+    # instead of giving up. Operator: "y" (approve) → reject → "n" (skip).
+    inputs = iter(["y", "n"])
 
     def fake_input(_prompt: str) -> str:
         return next(inputs)
@@ -555,8 +557,11 @@ def test_backfill_rejects_when_validator_fails_after_append(tmp_path):
             input_fn=fake_input,
             print_fn=captured_print,
         )
-    assert outcome == "failed_validation", (
-        f"expected 'failed_validation'; got {outcome!r}"
+    # Wave 137 follow-up: outcome flips from "failed_validation" to
+    # "skipped" because the operator's `n` after rejection means skip,
+    # not retry. The rollback contract is unchanged.
+    assert outcome == "skipped", (
+        f"expected 'skipped' (post-Wave-137-followup retry-loop); got {outcome!r}"
     )
     # Critical: the YAML file must be byte-identical to pre-merge.
     assert yaml_path.read_bytes() == pre_bytes, (
