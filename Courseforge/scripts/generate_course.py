@@ -1756,6 +1756,18 @@ def _build_bloom_distribution(
     Returns ``None`` when no LO has a bloomLevel (caller elides the
     field from the page JSON-LD so legacy payloads stay identical).
     Zero-count levels / domains are elided from the per-key dicts.
+
+    Phase 2 (Subtask 24): the simpler alternative was selected — input
+    stays as the dict list returned by :func:`_build_objectives_metadata`
+    (zero-line code change). DEFERRED IMPROVEMENT: a future refactor
+    could widen the signature to accept either ``List[Dict]`` or
+    ``List[Block]`` and aggregate from ``block.bloom_level`` directly
+    when Block instances are passed. That would let the caller skip
+    the dict round-trip when it already has the Block list (per
+    Subtask 27's plumbing). Holding off in Phase 2 because the dict-
+    list path is still the canonical view of LO metadata that has to
+    survive on the JSON-LD wire — switching signatures would just
+    create two parallel paths without consolidating.
     """
     by_level: Dict[str, int] = {}
     by_domain: Dict[str, int] = {}
