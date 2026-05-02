@@ -206,6 +206,93 @@ def test_unknown_provider_raises_value_error():
 
 
 # ---------------------------------------------------------------------------
+# Phase 3a env-var-first audit tests (Subtask 25)
+# ---------------------------------------------------------------------------
+#
+# These tests pin the four-layer precedence chain comment block on
+# ``CourseforgeRouter._resolve_spec``: per-call kwargs > YAML policy >
+# env vars > hardcoded defaults. Cross-link: the inline comment block
+# at ``Courseforge/router/router.py::_resolve_spec`` references
+# ``test_phase3a_env_var_overrides_hardcoded_default`` and
+# ``test_phase3a_yaml_wins_over_env_var`` by name; renaming or deleting
+# either test must be paired with a router-side comment update.
+
+
+def test_phase3a_env_var_overrides_hardcoded_default(monkeypatch):
+    """Phase 3a §3.3 contract: env var beats the hardcoded default.
+
+    Setup: no per-call kwargs, no YAML policy, both
+    ``COURSEFORGE_OUTLINE_PROVIDER`` and ``COURSEFORGE_OUTLINE_MODEL``
+    set. The resolved spec MUST carry the env-var values, NOT the
+    hardcoded baseline. Symmetrically asserts the rewrite tier so a
+    future schema change to the chain doesn't silently regress one
+    tier while leaving the other untouched.
+    """
+    # Outline tier — env var must win over hardcoded.
+    monkeypatch.setenv("COURSEFORGE_OUTLINE_PROVIDER", "together")
+    monkeypatch.setenv("COURSEFORGE_OUTLINE_MODEL", "env-outline-model")
+    r = CourseforgeRouter()  # no policy, no per-call kwargs
+    spec = r._resolve_spec(_block(block_type="concept"), "outline")
+    # Hardcoded default for ("concept", "outline") is "local" /
+    # "qwen2.5:7b-instruct-q4_K_M"; env var values must shadow both.
+    hardcoded = _HARDCODED_DEFAULTS[("concept", "outline")]
+    assert spec.provider != hardcoded.provider, (
+        "env var should have shadowed hardcoded provider"
+    )
+    assert spec.model != hardcoded.model, (
+        "env var should have shadowed hardcoded model"
+    )
+    assert spec.provider == "together"
+    assert spec.model == "env-outline-model"
+
+    # Rewrite tier — same contract under the rewrite env vars.
+    monkeypatch.setenv("COURSEFORGE_REWRITE_PROVIDER", "local")
+    monkeypatch.setenv("COURSEFORGE_REWRITE_MODEL", "env-rewrite-model")
+    spec_rw = r._resolve_spec(_block(block_type="concept"), "rewrite")
+    hardcoded_rw = _HARDCODED_DEFAULTS[("concept", "rewrite")]
+    assert spec_rw.provider != hardcoded_rw.provider or hardcoded_rw.provider == "local"
+    assert spec_rw.model != hardcoded_rw.model
+    assert spec_rw.provider == "local"
+    assert spec_rw.model == "env-rewrite-model"
+
+
+def test_phase3a_yaml_wins_over_env_var(monkeypatch):
+    """Phase 3a §3.3 contract: YAML policy beats tier-default env vars.
+
+    Setup: env vars AND YAML policy both set; no per-call kwargs. The
+    YAML policy entry must win — operator-explicit YAML > tier-default
+    env var (the operator who wrote the YAML file made an explicit
+    per-block choice; the env var is a tier-default knob).
+
+    The Phase 3a env-var-first override on the YAML LOADER (Subtask 23
+    in ``Courseforge/router/policy.py::_maybe_apply_env_model_override``)
+    fires only when the YAML's ``defaults[tier].model`` is the
+    hardcoded sentinel literal — an operator-explicit non-sentinel
+    value in YAML preserves operator intent. This test pins the
+    DISPATCH-side YAML > env var contract; the loader-side
+    env-var-first override is a separate orthogonal contract pinned by
+    ``Courseforge/router/tests/test_policy.py`` and the inline
+    ``policy.py`` doctest.
+    """
+    monkeypatch.setenv("COURSEFORGE_OUTLINE_PROVIDER", "together")
+    monkeypatch.setenv("COURSEFORGE_OUTLINE_MODEL", "env-model")
+    yaml_spec = BlockProviderSpec(
+        block_type="concept",
+        tier="outline",
+        provider="anthropic",
+        model="explicit-yaml-model",
+    )
+    r = CourseforgeRouter(policy=_StubPolicy(yaml_spec))
+    spec = r._resolve_spec(_block(block_type="concept"), "outline")
+    # YAML wins over env var.
+    assert spec.provider == "anthropic"
+    assert spec.model == "explicit-yaml-model"
+    # Env-var values were NOT applied.
+    assert spec.provider != "together"
+    assert spec.model != "env-model"
+
+
+# ---------------------------------------------------------------------------
 # Per-block dispatch
 # ---------------------------------------------------------------------------
 

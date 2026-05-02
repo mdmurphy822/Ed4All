@@ -439,6 +439,49 @@ class CourseforgeRouter:
                 f"{list(_ALLOWED_TIERS)}; got {tier!r}"
             )
 
+        # ------------------------------------------------------------------
+        # Phase 3a four-layer precedence chain (Subtask 25).
+        # ------------------------------------------------------------------
+        # Resolution priority (highest → lowest):
+        #
+        #   1. Per-call kwargs (``**overrides``)
+        #          — operator-explicit per-route override; wins outright.
+        #          — applied LAST in this method so it overlays every
+        #            other layer.
+        #
+        #   2. YAML policy (``self._policy.resolve(...)``)
+        #          — operator-tunable ``Courseforge/config/block_routing.yaml``;
+        #            wins over env vars + hardcoded defaults.
+        #          — populated by the Subtask-34 loader; ``None`` when no
+        #            YAML file is present (clean checkout) or when the
+        #            policy doesn't carry an entry for this (block_id,
+        #            block_type, tier) triple.
+        #          — applied THIRD in this method (after the env-var
+        #            overlay, BEFORE per-call overrides).
+        #
+        #   3. Tier-default env vars
+        #          — ``COURSEFORGE_OUTLINE_PROVIDER`` /
+        #            ``COURSEFORGE_OUTLINE_MODEL`` /
+        #            ``COURSEFORGE_REWRITE_PROVIDER`` /
+        #            ``COURSEFORGE_REWRITE_MODEL``.
+        #          — supplements the baseline; doesn't replace it (env
+        #            vars carry only ``provider`` / ``model``, not the
+        #            full :class:`BlockProviderSpec` shape).
+        #          — applied SECOND in this method (overlays the
+        #            hardcoded baseline before the policy lookup).
+        #
+        #   4. Hardcoded defaults table (``_HARDCODED_DEFAULTS``)
+        #          — final fallback; covers every (block_type, tier)
+        #            value in :data:`Courseforge.scripts.blocks.BLOCK_TYPES`.
+        #          — applied FIRST in this method as the baseline.
+        #
+        # The build order below is REVERSE priority so the highest-
+        # priority source wins by overlaying the lower-priority layers.
+        # Audit tests pinning this contract:
+        # ``test_phase3a_env_var_overrides_hardcoded_default`` and
+        # ``test_phase3a_yaml_wins_over_env_var`` in
+        # ``Courseforge/router/tests/test_router.py``.
+
         # 4. Hardcoded default (always present — populated for every
         # value in BLOCK_TYPES at module import).
         baseline = _HARDCODED_DEFAULTS.get((block.block_type, tier))
