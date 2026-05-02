@@ -84,6 +84,14 @@ _ENV_OUTLINE_MODEL = "COURSEFORGE_OUTLINE_MODEL"
 _ENV_REWRITE_PROVIDER = "COURSEFORGE_REWRITE_PROVIDER"
 _ENV_REWRITE_MODEL = "COURSEFORGE_REWRITE_MODEL"
 _ENV_LEGACY_PROVIDER = "COURSEFORGE_PROVIDER"
+_ENV_OUTLINE_N_CANDIDATES = "COURSEFORGE_OUTLINE_N_CANDIDATES"
+
+# Default outline-tier candidate count when neither per-call kwarg, policy
+# entry, env var, nor instance attr resolves a value. Per Phase 3 §3.6
+# the self-consistency loop dispatches up to N candidates and returns
+# the first that passes the validator chain; N=3 balances latency
+# against pass-rate at the 7B-class outline model.
+_DEFAULT_OUTLINE_N_CANDIDATES = 3
 
 # Per-Phase-3 §4: outline tier defaults to a 7B local model; rewrite
 # tier prefers a multi-step-reasoning Anthropic model for blocks that
@@ -778,6 +786,340 @@ class CourseforgeRouter:
         # Reassemble ordered output.
         rewrite_results.sort(key=lambda pair: pair[0])
         return [b for _, b in rewrite_results]
+
+    # ------------------------------------------------------------------
+    # Self-consistency dispatch (Phase 3 §3.6 — Subtask 37)
+    # ------------------------------------------------------------------
+
+    def route_with_self_consistency(
+        self,
+        block: Block,
+        *,
+        n_candidates: Optional[int] = None,
+        validators: Optional[List[Any]] = None,
+        source_chunks: Optional[List[Any]] = None,
+        objectives: Optional[List[Any]] = None,
+        fast_fail: bool = True,
+        **overrides: Any,
+    ) -> Block:
+        """Sample N outline candidates and return the first that passes
+        the validator chain.
+
+        Per Phase 3 §3.6 self-consistency loop:
+
+        1. Resolve ``n`` from arg → ``policy.n_candidates_by_block_type``
+           → ``COURSEFORGE_OUTLINE_N_CANDIDATES`` env var → instance
+           attribute → :data:`_DEFAULT_OUTLINE_N_CANDIDATES` (3).
+        2. ``escalate_immediately`` short-circuit: when the resolved
+           spec carries ``escalate_immediately=True`` the outline tier
+           is skipped entirely; ``route(block, tier="outline", ...)``
+           handles that path and returns a Block with the
+           ``outline_skipped_by_policy`` provenance Touch — we delegate
+           and return the result without entering the candidate loop.
+        3. For ``i in range(n)``: dispatch one outline candidate via
+           :meth:`route` (single ``tier="outline"`` call). Run the
+           validator chain (Subtask 38) on the candidate. If all pass,
+           return the block with a ``Touch(purpose="self_consistency_winner")``
+           appended carrying the ``winning_candidate_index=i`` audit
+           field on the Subtask-39 decision-capture event.
+        4. If all N candidates fail every validator, return the LAST
+           candidate with ``validation_attempts=n``. The
+           ``escalation_marker`` is NOT set here — Subtask 41 in the
+           next batch handles the regen-budget + escalation contract.
+        5. Records per-candidate failure distribution into a local dict
+           that's emitted on the audit event by Subtask 39.
+
+        Returns the winning block on success, or the last candidate
+        with ``validation_attempts=n`` on full-loop failure.
+        """
+        # 1. Resolve n_candidates per the precedence chain.
+        resolved_n = self._resolve_n_candidates(block, n_candidates)
+
+        # Validators default to an empty list (Phase 4+ wires concrete
+        # validators in via the inter_tier_validation phase / Subtask
+        # 50). Empty list → first candidate "passes" trivially → loop
+        # exits after one dispatch with no validation gating.
+        validator_list: List[Any] = list(validators or [])
+
+        # 2. Resolve the spec once — its ``escalate_immediately`` flag
+        # short-circuits the outline tier per the contract in
+        # :meth:`route`. We delegate so the policy-skip Touch +
+        # decision-event emit live in one place.
+        spec = self._resolve_spec(block, "outline", **overrides)
+        if spec.escalate_immediately:
+            return self.route(
+                block,
+                tier="outline",
+                source_chunks=source_chunks,
+                objectives=objectives,
+                **overrides,
+            )
+
+        # 3. Sequential N-candidate loop.
+        # ``failure_distribution`` keys are validator names; values are
+        # per-validator failure counts across all N candidates.
+        # ``last_candidate`` carries the most recent dispatch output so
+        # the all-fail branch can return it with the correct
+        # ``validation_attempts`` count.
+        failure_distribution: Dict[str, int] = {}
+        last_candidate: Optional[Block] = None
+        winning_index: Optional[int] = None
+        winner: Optional[Block] = None
+
+        for i in range(resolved_n):
+            candidate = self.route(
+                block,
+                tier="outline",
+                source_chunks=source_chunks,
+                objectives=objectives,
+                **overrides,
+            )
+            last_candidate = candidate
+
+            all_passed, gate_results = self._run_validator_chain(
+                candidate, validator_list, fast_fail=fast_fail
+            )
+            if all_passed:
+                # Append a "self_consistency_winner" Touch so the audit
+                # chain records WHICH candidate index won. Reuses the
+                # short-circuit Touch construction pattern from
+                # ``route``.
+                timestamp = (
+                    _dt.datetime.now(_dt.timezone.utc)
+                    .replace(microsecond=0)
+                    .isoformat()
+                    .replace("+00:00", "Z")
+                )
+                touch = Touch(
+                    model=spec.model,
+                    provider=_collapse_to_touch_provider(spec.provider),
+                    tier="outline",
+                    timestamp=timestamp,
+                    decision_capture_id=self._build_router_capture_id(
+                        candidate, f"self_consistency_winner_{i}"
+                    ),
+                    purpose="self_consistency_winner",
+                )
+                winner = candidate.with_touch(touch)
+                winning_index = i
+                break
+
+            # Failure: increment per-validator counters for the audit
+            # event. ``GateResult.derive_default_action`` collapses
+            # legacy validators (no ``action`` set) onto ``"block"`` on
+            # failure — the failure-distribution dict counts the gate
+            # name regardless of which discriminator surfaced it.
+            from MCP.hardening.validation_gates import GateResult  # noqa: PLC0415
+
+            for gate_result in gate_results:
+                action = GateResult.derive_default_action(
+                    gate_result.passed, gate_result.action
+                )
+                if action == "pass":
+                    continue
+                # Use validator_name when present; fall back to
+                # gate_id for legacy validators that don't set the
+                # human-readable name.
+                gate_name = (
+                    getattr(gate_result, "validator_name", None)
+                    or getattr(gate_result, "gate_id", None)
+                    or "unknown_validator"
+                )
+                failure_distribution[gate_name] = (
+                    failure_distribution.get(gate_name, 0) + 1
+                )
+
+        # 4. Resolve the return-block.
+        if winner is not None:
+            outcome_block = winner
+            failed_count = winning_index if winning_index is not None else 0
+        else:
+            # All N candidates failed every validator. Stamp
+            # ``validation_attempts=n`` on the last candidate so
+            # downstream regen-budget logic (Subtask 41) can detect
+            # the exhaustion. Do NOT set ``escalation_marker`` — that's
+            # Subtask 41's responsibility.
+            assert last_candidate is not None  # the loop ran at least once
+            outcome_block = dataclasses.replace(
+                last_candidate,
+                validation_attempts=last_candidate.validation_attempts + resolved_n,
+            )
+            failed_count = resolved_n
+
+        # 5. Emit the per-self-consistency-loop decision-capture event
+        # (Subtask 39 lands the ml_features payload). For Subtask 37
+        # we already emit the audit event with the winning index +
+        # failure distribution baked into the rationale string; the
+        # Subtask 39 commit promotes the same data into the
+        # structured ``ml_features`` payload for ML-trainability.
+        self._emit_self_consistency_decision(
+            block=block,
+            spec=spec,
+            n_candidates_requested=resolved_n,
+            winning_candidate_index=winning_index,
+            failed_candidate_count=failed_count,
+            validator_failure_distribution=failure_distribution,
+        )
+
+        return outcome_block
+
+    def _resolve_n_candidates(
+        self, block: Block, override: Optional[int]
+    ) -> int:
+        """Resolve the per-block N-candidate count.
+
+        Precedence (highest first):
+
+        1. ``override`` arg (the per-call ``n_candidates`` kwarg).
+        2. ``self._policy.n_candidates_by_block_type[block.block_type]``
+           (Worker G's fast-lookup map on :class:`BlockRoutingPolicy`).
+        3. ``COURSEFORGE_OUTLINE_N_CANDIDATES`` env var (parsed as int;
+           silently falls through on parse failure).
+        4. ``self._n_candidates_override`` (constructor-time instance
+           attribute set via ``CourseforgeRouter(n_candidates=...)``).
+        5. :data:`_DEFAULT_OUTLINE_N_CANDIDATES` (3).
+        """
+        # 1. Per-call kwarg.
+        if isinstance(override, int) and override > 0:
+            return override
+
+        # 2. Policy fast-lookup map (Worker G).
+        policy = self._policy
+        if policy is not None:
+            policy_map = getattr(policy, "n_candidates_by_block_type", None)
+            if isinstance(policy_map, dict):
+                policy_n = policy_map.get(block.block_type)
+                if isinstance(policy_n, int) and policy_n > 0:
+                    return policy_n
+
+        # 3. Env var.
+        env_value = os.environ.get(_ENV_OUTLINE_N_CANDIDATES)
+        if env_value:
+            try:
+                env_n = int(env_value.strip())
+                if env_n > 0:
+                    return env_n
+            except (TypeError, ValueError):
+                # Parse failure falls through to the next layer.
+                pass
+
+        # 4. Constructor-time instance attribute.
+        if (
+            isinstance(self._n_candidates_override, int)
+            and self._n_candidates_override > 0
+        ):
+            return self._n_candidates_override
+
+        # 5. Hardcoded default.
+        return _DEFAULT_OUTLINE_N_CANDIDATES
+
+    def _run_validator_chain(
+        self,
+        block: Block,
+        validators: List[Any],
+        *,
+        fast_fail: bool = True,
+    ) -> Tuple[bool, List[Any]]:
+        """Run a chain of validators against ``block``; return
+        ``(all_passed, gate_results)``.
+
+        Wave-N (Subtask 37) shape: minimal pass-through implementation.
+        Subtask 38 lands the cheapest-first ordering documentation +
+        Phase-4-seam stubs; the surface stays the same.
+        """
+        results: List[Any] = []
+        all_passed = True
+        if not validators:
+            return True, results
+
+        inputs = {"block": block, "blocks": [block]}
+
+        for validator in validators:
+            validate_fn = getattr(validator, "validate", None)
+            if not callable(validate_fn):
+                logger.warning(
+                    "_run_validator_chain: validator %r missing validate(); skipping",
+                    type(validator).__name__,
+                )
+                continue
+            try:
+                gate_result = validate_fn(inputs)
+            except Exception as exc:  # pragma: no cover — defensive
+                logger.warning(
+                    "_run_validator_chain: validator %r raised: %s",
+                    type(validator).__name__, exc,
+                )
+                all_passed = False
+                if fast_fail:
+                    break
+                continue
+
+            results.append(gate_result)
+
+            from MCP.hardening.validation_gates import GateResult  # noqa: PLC0415
+
+            action = GateResult.derive_default_action(
+                gate_result.passed, gate_result.action
+            )
+            if action != "pass":
+                all_passed = False
+                if fast_fail:
+                    break
+
+        return all_passed, results
+
+    def _emit_self_consistency_decision(
+        self,
+        *,
+        block: Block,
+        spec: BlockProviderSpec,
+        n_candidates_requested: int,
+        winning_candidate_index: Optional[int],
+        failed_candidate_count: int,
+        validator_failure_distribution: Dict[str, int],
+    ) -> None:
+        """Emit the per-loop ``block_outline_call`` audit event.
+
+        Subtask 37 emits the loop-summary event with the
+        ``winning_candidate_index`` / ``failed_candidate_count`` /
+        ``validator_failure_distribution`` baked into the rationale.
+        Subtask 39 promotes the same fields into the structured
+        ``ml_features`` payload for ML-trainability. Both behaviours
+        coexist: the rationale carries the human-readable form, the
+        ml_features payload carries the structured form.
+        """
+        if self._capture is None:
+            return
+        outcome = (
+            "winner_found"
+            if winning_candidate_index is not None
+            else "all_candidates_failed"
+        )
+        rationale_parts = [
+            "router_self_consistency",
+            f"block_id={block.block_id}",
+            f"block_type={block.block_type}",
+            f"page_id={block.page_id}",
+            f"provider={spec.provider}",
+            f"model={spec.model}",
+            f"n_candidates_requested={n_candidates_requested}",
+            f"winning_candidate_index={winning_candidate_index}",
+            f"failed_candidate_count={failed_candidate_count}",
+            f"outcome={outcome}",
+        ]
+        try:
+            self._capture.log_decision(
+                decision_type="block_outline_call",
+                decision=(
+                    f"self_consistency:{block.block_type}:{block.block_id}"
+                    f":{outcome}"
+                ),
+                rationale="; ".join(rationale_parts),
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "router self-consistency decision-capture emit failed: %s", exc
+            )
 
     # ------------------------------------------------------------------
     # Decision-capture helpers
