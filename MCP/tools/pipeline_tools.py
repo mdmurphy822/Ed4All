@@ -13,7 +13,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 # Add project root to path for imports
 _MCP_DIR = Path(__file__).resolve().parents[1]
@@ -2280,6 +2280,851 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
     })
 
 
+# ---------------------------------------------------------------------------
+# Phase 3.5 Subtasks 28-30: two-pass content_generation phase helpers
+# ---------------------------------------------------------------------------
+#
+# These three helpers implement the outline -> validate -> rewrite seam the
+# Phase 3 two-pass router introduces. Each is a thin async wrapper that:
+#
+#   * loads its upstream phase outputs (course_planning_path / staging_path
+#     for outline; blocks_outline_path for validation; blocks_validated_path
+#     for rewrite),
+#   * dispatches the tier-appropriate work via :class:`CourseforgeRouter` or
+#     the :mod:`Courseforge.router.inter_tier_gates` validator chain, and
+#   * persists the canonical phase outputs declared in
+#     ``MCP/core/workflow_runner.py::_LEGACY_PHASE_OUTPUT_KEYS`` (Phase 3
+#     Subtask 5).
+#
+# Wave-N constraints (per Phase 3.5 Wave C scope):
+# - Pre-filter the Block list before invoking ``CourseforgeRouter.route_all``
+#   instead of widening that method's signature with a ``tier_filter`` kwarg.
+#   Worker N2 is concurrently widening ``route_all`` itself for self-
+#   consistency dispatch; pre-filtering keeps these helpers disjoint from
+#   that change.
+# - Decision-capture mirrors the ``_run_post_rewrite_validation`` shape:
+#   each helper emits at least one ``phase`` provenance event and one
+#   per-failure ``block_validation_action`` event with
+#   ``ml_features.tier="outline"`` for inter_tier_validation failures.
+
+
+async def _run_content_generation_outline(**kwargs) -> str:
+    """Run the outline tier of the Phase 3 two-pass content pipeline.
+
+    Phase 3.5 Subtask 28. For each (week, page) tuple derivable from the
+    staging manifest + course_planning objectives, build a list of
+    :class:`Block` stubs and dispatch them through
+    :meth:`CourseforgeRouter.route_all` in outline-only mode (we
+    pre-filter the input list here rather than widening route_all's
+    signature; Worker N2's self-consistency widening is disjoint).
+
+    Inputs (kwargs):
+        project_id: Course project slug. Used to locate the project
+            directory under ``Courseforge/exports/``.
+        course_planning_path: Optional explicit path to
+            ``synthesized_objectives.json``. Falls back to the project's
+            canonical ``01_learning_objectives/synthesized_objectives.json``.
+        staging_dir: Path to the per-run DART staging directory
+            produced by ``stage_dart_outputs``.
+        source_module_map_path: Optional path to ``source_module_map.json``
+            for Wave 9 source-routing.
+        duration_weeks: Optional weeks override (Wave 40 auto-scaling
+            still respected via project_config.json).
+
+    Outputs (JSON envelope):
+        blocks_outline_path: Path to a JSONL file containing every
+            outline-tier Block emitted across all weeks.
+        project_id: Pass-through.
+        weeks_prepared: Number of weeks for which at least one outline
+            Block was emitted.
+    """
+    from Courseforge.scripts.blocks import Block, BLOCK_TYPES  # noqa: F401
+    from MCP.tools import _content_gen_helpers as _cgh
+
+    project_id = kwargs.get("project_id", "")
+    if not project_id:
+        return json.dumps({
+            "success": False,
+            "error": "_run_content_generation_outline requires project_id",
+        })
+
+    project_path = PROJECT_ROOT / "Courseforge" / "exports" / project_id
+    out_dir = project_path / "01_outline"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Resolve duration_weeks via project_config (mirrors _generate_course_content).
+    config_path = project_path / "project_config.json"
+    config: Dict[str, Any] = {}
+    if config_path.exists():
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            config = {}
+    duration_explicit = bool(kwargs.get("duration_weeks_explicit", False))
+    kwarg_duration = kwargs.get("duration_weeks")
+    if duration_explicit and kwarg_duration:
+        duration_weeks = int(kwarg_duration)
+    else:
+        duration_weeks = int(
+            config.get("duration_weeks") or kwarg_duration or 12
+        )
+    course_code = config.get("course_name") or project_id
+
+    # Stage + objectives loading (mirrors _generate_course_content).
+    staging_kwarg = kwargs.get("staging_dir")
+    staging_dir = Path(staging_kwarg) if staging_kwarg else None
+    html_files = _cgh.collect_staged_html(staging_dir, COURSEFORGE_INPUTS)
+    topics = _cgh.parse_dart_html_files(html_files)
+    objectives_path = (
+        kwargs.get("course_planning_path")
+        or config.get("objectives_path")
+        or kwargs.get("objectives_path")
+    )
+    if not objectives_path:
+        candidate = (
+            project_path
+            / "01_learning_objectives"
+            / "synthesized_objectives.json"
+        )
+        if candidate.exists():
+            objectives_path = str(candidate)
+    terminal_objectives, chapter_objectives = _cgh.load_objectives_json(
+        objectives_path
+    )
+    if not terminal_objectives and not chapter_objectives:
+        terminal_objectives, chapter_objectives = (
+            _cgh.synthesize_objectives_from_topics(topics, duration_weeks)
+        )
+    topics_by_week = _cgh._group_topics_by_week(topics, duration_weeks)
+
+    # Decision capture for the outline phase.
+    capture = None
+    try:
+        from lib.decision_capture import DecisionCapture
+        capture = DecisionCapture(
+            course_code=course_code,
+            phase="courseforge-content-generator-outline",
+            tool="courseforge",
+            streaming=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "DecisionCapture init failed in content_generation_outline: %s",
+            exc,
+        )
+        capture = None
+
+    # Instantiate the router. Fail loud on init errors — the operator
+    # opted in via COURSEFORGE_TWO_PASS=true; silent fallback would
+    # mask a misconfiguration.
+    try:
+        from Courseforge.router.router import CourseforgeRouter
+        from Courseforge.router.policy import load_block_routing_policy
+        router = CourseforgeRouter(
+            capture=capture,
+            policy=load_block_routing_policy(),
+        )
+    except Exception as exc:
+        logger.exception(
+            "CourseforgeRouter init failed in outline phase: %s", exc,
+        )
+        return json.dumps({
+            "success": False,
+            "error": f"router init failed: {exc}",
+            "project_id": project_id,
+        })
+
+    # Build per-week per-page Block stubs. We mirror the page layout
+    # ``_generate_course_content`` produces (overview / content_NN /
+    # application / self_check / summary) at the Block level.
+    all_blocks: List[Any] = []
+    chunks_lookup: Dict[str, List[Any]] = {}
+    weeks_with_blocks = 0
+
+    from lib.ontology.slugs import canonical_slug as _slug
+
+    for week_num in range(1, duration_weeks + 1):
+        week_topics = (
+            topics_by_week[week_num - 1]
+            if (week_num - 1) < len(topics_by_week)
+            else []
+        )
+        week_objectives = []
+        if terminal_objectives:
+            t_step = max(
+                1,
+                (len(terminal_objectives) + duration_weeks - 1)
+                // duration_weeks,
+            )
+            t_start = (week_num - 1) * t_step
+            week_objectives = list(
+                terminal_objectives[t_start:t_start + t_step]
+            )
+        objective_ids: Tuple[str, ...] = tuple(
+            str(o.get("id")) for o in week_objectives if o.get("id")
+        )
+
+        # One block stub per topic (or one minimum if no topics).
+        topic_count = len(week_topics)
+        page_count = max(topic_count, 1)
+        week_block_added = False
+        for i in range(page_count):
+            topic = week_topics[i] if i < topic_count else None
+            heading = (topic or {}).get("heading") or f"week_{week_num:02d}"
+            page_id = f"week_{week_num:02d}_content_{i + 1:02d}"
+            slug_value = _slug(heading or "content")
+            block_id = Block.stable_id(
+                page_id=page_id,
+                block_type="explanation",
+                slug=slug_value,
+                idx=i,
+            )
+            try:
+                stub = Block(
+                    block_id=block_id,
+                    block_type="explanation",
+                    page_id=page_id,
+                    sequence=i,
+                    content="",
+                    objective_ids=objective_ids,
+                    key_terms=tuple((topic or {}).get("key_terms") or []),
+                )
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    "outline phase: skipping malformed Block stub "
+                    "for week=%d, page=%d: %s",
+                    week_num, i + 1, exc,
+                )
+                continue
+            all_blocks.append(stub)
+            chunks_lookup[block_id] = [
+                {
+                    "heading": heading,
+                    "paragraphs": (topic or {}).get("paragraphs") or [],
+                }
+            ]
+            week_block_added = True
+        if week_block_added:
+            weeks_with_blocks += 1
+
+    # Pre-filter to outline tier: invoke route() per block with
+    # tier="outline" so we don't spin the rewrite tier here. (Subtask
+    # plan: pre-filter rather than widen route_all's signature; that's
+    # Worker N2's scope.)
+    objectives_payload = [
+        {"id": o.get("id"), "statement": o.get("statement")}
+        for o in (terminal_objectives + chapter_objectives)
+    ]
+    outline_blocks: List[Any] = []
+    for blk in all_blocks:
+        block_chunks = chunks_lookup.get(blk.block_id, [])
+        try:
+            outlined = router.route(
+                blk,
+                tier="outline",
+                source_chunks=block_chunks,
+                objectives=objectives_payload,
+            )
+            outline_blocks.append(outlined)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "outline phase: route() failed for block_id=%s: %s",
+                blk.block_id, exc,
+            )
+            # Persist a stub-with-marker so downstream sees the failure.
+            try:
+                import dataclasses as _dc
+                outline_blocks.append(_dc.replace(
+                    blk, escalation_marker="outline_budget_exhausted",
+                ))
+            except (TypeError, ValueError):
+                continue
+
+    # Persist outline blocks to JSONL (one entry per Block via
+    # to_jsonld_entry — same shape post_rewrite_validation consumes).
+    blocks_outline_path = out_dir / "blocks_outline.jsonl"
+    with blocks_outline_path.open("w", encoding="utf-8") as fh:
+        for blk in outline_blocks:
+            fh.write(json.dumps(blk.to_jsonld_entry(), ensure_ascii=False))
+            fh.write("\n")
+
+    if capture is not None:
+        try:
+            capture.log_decision(
+                decision_type="phase_start",
+                decision=(
+                    f"content_generation_outline: emitted "
+                    f"{len(outline_blocks)} outline-tier blocks across "
+                    f"{weeks_with_blocks} weeks."
+                ),
+                rationale=(
+                    f"Pre-filtered route() per block with tier='outline'; "
+                    f"persisted to {blocks_outline_path.name} for the "
+                    f"inter_tier_validation phase to consume."
+                ),
+                ml_features={
+                    "block_count": len(outline_blocks),
+                    "weeks_prepared": weeks_with_blocks,
+                    "tier": "outline",
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    return json.dumps({
+        "success": True,
+        "blocks_outline_path": str(blocks_outline_path),
+        "project_id": project_id,
+        "weeks_prepared": weeks_with_blocks,
+        "block_count": len(outline_blocks),
+    })
+
+
+async def _run_inter_tier_validation(**kwargs) -> str:
+    """Run the four shape-discriminating Block-input validators against
+    outline-tier blocks loaded from ``blocks_outline_path``.
+
+    Phase 3.5 Subtask 29. Mirrors ``_run_post_rewrite_validation`` but
+    consumes the outline-tier ``blocks_outline_path`` so a failed
+    outline-tier emit (CURIE / content_type / objective_ref / source_id
+    drop) is caught before the rewrite tier wastes cycles authoring HTML
+    against the broken outline.
+
+    Inputs (kwargs):
+        blocks_outline_path: Path to the outline-tier JSONL file emitted
+            by ``_run_content_generation_outline`` (Subtask 28).
+        project_id: Course project slug (used to locate the
+            ``synthesized_objectives.json`` for BlockPageObjectivesValidator).
+
+    Outputs (JSON envelope):
+        blocks_validated_path: JSONL of Blocks that passed every gate.
+        blocks_failed_path: JSONL of Blocks that tripped at least one gate.
+        gate_results: Per-gate ``GateResult.to_dict()`` payloads.
+
+    Decision-capture: emits one ``block_validation_action`` event per
+    failed validator with ``ml_features.tier="outline"`` so postmortem
+    readers can stratify outline-tier vs rewrite-tier failures.
+    """
+    from pathlib import Path as _Path
+
+    blocks_outline_path_raw = kwargs.get("blocks_outline_path") or ""
+    project_id = kwargs.get("project_id") or ""
+
+    if not blocks_outline_path_raw:
+        return json.dumps({
+            "success": False,
+            "error": "blocks_outline_path is required",
+        })
+
+    blocks_path = _Path(blocks_outline_path_raw)
+    if not blocks_path.exists():
+        return json.dumps({
+            "success": False,
+            "error": f"blocks_outline_path does not exist: {blocks_path}",
+        })
+
+    from Courseforge.scripts.blocks import Block  # type: ignore[import-not-found]
+    from Courseforge.router.inter_tier_gates import (
+        BlockContentTypeValidator,
+        BlockCurieAnchoringValidator,
+        BlockPageObjectivesValidator,
+        BlockSourceRefValidator,
+    )
+
+    raw_text = blocks_path.read_text(encoding="utf-8")
+    raw_entries: list = []
+    try:
+        if blocks_path.suffix == ".jsonl":
+            for line in raw_text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                raw_entries.append(json.loads(line))
+        else:
+            parsed = json.loads(raw_text)
+            if isinstance(parsed, list):
+                raw_entries = parsed
+            elif isinstance(parsed, dict):
+                raw_entries = parsed.get("blocks", []) or []
+    except json.JSONDecodeError as exc:
+        return json.dumps({
+            "success": False,
+            "error": f"failed to parse {blocks_path}: {exc}",
+        })
+
+    def _entry_to_block(entry: dict) -> Optional["Block"]:  # type: ignore[name-defined]
+        accepted = {
+            "block_id", "block_type", "page_id", "sequence", "content",
+            "template_type", "key_terms", "objective_ids",
+            "bloom_level", "bloom_verb", "bloom_range",
+            "bloom_levels", "bloom_verbs", "cognitive_domain",
+            "teaching_role", "content_type_label", "purpose",
+            "component", "source_ids", "source_primary",
+            "source_references", "content_hash",
+            "validation_attempts", "escalation_marker",
+        }
+        kwargs_clean: dict = {}
+        for k, v in (entry or {}).items():
+            if k not in accepted:
+                continue
+            if k in {
+                "key_terms", "objective_ids", "bloom_levels",
+                "bloom_verbs", "source_ids", "source_references",
+            }:
+                if isinstance(v, list):
+                    v = tuple(v) if k != "source_references" else tuple(
+                        dict(r) if isinstance(r, dict) else r for r in v
+                    )
+            kwargs_clean[k] = v
+        if "block_id" not in kwargs_clean or "block_type" not in kwargs_clean:
+            return None
+        kwargs_clean.setdefault("page_id", kwargs_clean.get("block_id", ""))
+        kwargs_clean.setdefault("sequence", 0)
+        kwargs_clean.setdefault("content", "")
+        try:
+            return Block(**kwargs_clean)
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "inter_tier_validation: skipping malformed block entry "
+                "block_id=%r: %s",
+                entry.get("block_id"),
+                exc,
+            )
+            return None
+
+    blocks: list = []
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            continue
+        blk = _entry_to_block(entry)
+        if blk is not None:
+            blocks.append(blk)
+
+    if not blocks:
+        return json.dumps({
+            "success": False,
+            "error": (
+                f"no blocks parseable from {blocks_path}; expected JSON-LD "
+                f"shape with at least one Block-shaped entry"
+            ),
+        })
+
+    # Resolve canonical objectives JSON for BlockPageObjectivesValidator.
+    objectives_path: Optional[_Path] = None
+    if project_id:
+        candidate = (
+            PROJECT_ROOT
+            / "Courseforge"
+            / "exports"
+            / project_id
+            / "01_learning_objectives"
+            / "synthesized_objectives.json"
+        )
+        if candidate.exists():
+            objectives_path = candidate
+
+    validators = [
+        ("outline_curie_anchoring", BlockCurieAnchoringValidator()),
+        ("outline_content_type", BlockContentTypeValidator()),
+        ("outline_page_objectives", BlockPageObjectivesValidator()),
+        ("outline_source_refs", BlockSourceRefValidator()),
+    ]
+
+    inputs: dict = {"blocks": blocks}
+    if objectives_path is not None:
+        inputs["objectives_path"] = str(objectives_path)
+
+    gate_results: list = []
+    failing_gate_ids: set = set()
+    for gate_id, validator in validators:
+        try:
+            result = validator.validate({**inputs, "gate_id": gate_id})
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "inter_tier_validation: validator %s raised: %s",
+                gate_id, exc,
+            )
+            continue
+        try:
+            result_dict = result.to_dict()
+        except Exception:  # pragma: no cover — defensive
+            result_dict = {
+                "gate_id": gate_id,
+                "passed": getattr(result, "passed", False),
+                "issues": [],
+            }
+        gate_results.append(result_dict)
+        if not result.passed:
+            failing_gate_ids.add(gate_id)
+
+    # Decision-capture: emit per-failure block_validation_action events
+    # with ml_features.tier="outline" so postmortem reader can stratify
+    # outline-tier vs rewrite-tier failures (Subtask 26 surface).
+    if failing_gate_ids:
+        try:
+            from lib.decision_capture import DecisionCapture
+            capture = DecisionCapture(
+                course_code=project_id or "inter_tier_validation",
+                phase="inter_tier_validation",
+                tool="courseforge",
+                streaming=True,
+            )
+            for result_dict in gate_results:
+                if result_dict.get("passed"):
+                    continue
+                gate_id = result_dict.get("gate_id", "unknown_gate")
+                issues = result_dict.get("issues", []) or []
+                top_issues = issues[:3]
+                summary = "; ".join(
+                    f"{i.get('code','?')}({i.get('severity','?')}):"
+                    f"{i.get('message','')}"
+                    for i in top_issues
+                ) or "no_issues"
+                capture.log_decision(
+                    decision_type="block_validation_action",
+                    decision=(
+                        f"inter_tier_validation:{gate_id}:"
+                        f"{result_dict.get('passed')}"
+                    ),
+                    rationale=(
+                        f"Inter-tier gate {gate_id} returned "
+                        f"passed={result_dict.get('passed')} on "
+                        f"{len(blocks)} outline-tier blocks; "
+                        f"top_issues=[{summary}]"
+                    ),
+                    ml_features={
+                        "gate_id": gate_id,
+                        "passed": result_dict.get("passed"),
+                        "issues_count": len(issues),
+                        "block_count": len(blocks),
+                        # Subtask 26: tier provenance — outline-tier
+                        # in-loop validator failure (vs rewrite-tier
+                        # post-emit failures handled by post_rewrite_validation).
+                        "tier": "outline",
+                    },
+                )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "inter_tier_validation: decision-capture emit failed: %s",
+                exc,
+            )
+
+    out_dir = blocks_path.parent
+    validated_path = out_dir / "blocks_validated.jsonl"
+    failed_path = out_dir / "blocks_failed.jsonl"
+
+    failed_block_ids: set = set()
+    for result_dict in gate_results:
+        if result_dict.get("passed"):
+            continue
+        for issue in result_dict.get("issues", []) or []:
+            loc = issue.get("location") if isinstance(issue, dict) else None
+            if isinstance(loc, str) and loc:
+                failed_block_ids.add(loc)
+
+    with validated_path.open("w", encoding="utf-8") as fh:
+        for blk in blocks:
+            if blk.block_id in failed_block_ids:
+                continue
+            fh.write(json.dumps(blk.to_jsonld_entry(), ensure_ascii=False))
+            fh.write("\n")
+    with failed_path.open("w", encoding="utf-8") as fh:
+        for blk in blocks:
+            if blk.block_id not in failed_block_ids:
+                continue
+            fh.write(json.dumps(blk.to_jsonld_entry(), ensure_ascii=False))
+            fh.write("\n")
+
+    return json.dumps({
+        "success": True,
+        "blocks_validated_path": str(validated_path),
+        "blocks_failed_path": str(failed_path),
+        "gate_results": gate_results,
+        "block_count": len(blocks),
+        "failed_block_count": len(failed_block_ids),
+    })
+
+
+async def _run_content_generation_rewrite(**kwargs) -> str:
+    """Run the rewrite tier of the Phase 3 two-pass content pipeline.
+
+    Phase 3.5 Subtask 30. Reads the validated outline-tier Blocks from
+    ``blocks_validated_path`` (the inter_tier_validation phase output),
+    then dispatches each block through :meth:`CourseforgeRouter.route`
+    with ``tier="rewrite"``. The rewrite tier is responsible for the
+    final HTML body emit; we persist both the per-block JSONL
+    (``blocks_final.jsonl``, consumed by post_rewrite_validation) and
+    the per-page HTML files (consumed by packaging + content_grounding).
+
+    Inputs (kwargs):
+        blocks_validated_path: JSONL of validated outline-tier blocks.
+        project_id: Course project slug.
+        source_module_map_path: Optional Wave 9 source-routing path.
+        staging_dir: Staging directory from stage_dart_outputs.
+
+    Outputs (JSON envelope):
+        content_paths: Comma-joined string of emitted HTML paths
+            (router canonical key for legacy gate-input parsers).
+        page_paths: List of emitted HTML paths.
+        content_dir: Directory where pages were written.
+        blocks_final_path: JSONL of rewrite-tier Blocks (consumed by
+            post_rewrite_validation).
+        project_id: Pass-through.
+    """
+    from pathlib import Path as _Path
+
+    blocks_validated_path_raw = kwargs.get("blocks_validated_path") or ""
+    project_id = kwargs.get("project_id") or ""
+
+    if not project_id:
+        return json.dumps({
+            "success": False,
+            "error": "_run_content_generation_rewrite requires project_id",
+        })
+    if not blocks_validated_path_raw:
+        return json.dumps({
+            "success": False,
+            "error": "blocks_validated_path is required",
+        })
+
+    blocks_path = _Path(blocks_validated_path_raw)
+    if not blocks_path.exists():
+        return json.dumps({
+            "success": False,
+            "error": f"blocks_validated_path does not exist: {blocks_path}",
+        })
+
+    project_path = PROJECT_ROOT / "Courseforge" / "exports" / project_id
+    out_dir = project_path / "04_rewrite"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    content_dir = project_path / "03_content_development"
+    content_dir.mkdir(parents=True, exist_ok=True)
+
+    config_path = project_path / "project_config.json"
+    config: Dict[str, Any] = {}
+    if config_path.exists():
+        try:
+            config = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            config = {}
+    course_code = config.get("course_name") or project_id
+
+    from Courseforge.scripts.blocks import Block  # noqa: F401
+
+    raw_text = blocks_path.read_text(encoding="utf-8")
+    raw_entries: list = []
+    try:
+        if blocks_path.suffix == ".jsonl":
+            for line in raw_text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                raw_entries.append(json.loads(line))
+        else:
+            parsed = json.loads(raw_text)
+            if isinstance(parsed, list):
+                raw_entries = parsed
+            elif isinstance(parsed, dict):
+                raw_entries = parsed.get("blocks", []) or []
+    except json.JSONDecodeError as exc:
+        return json.dumps({
+            "success": False,
+            "error": f"failed to parse {blocks_path}: {exc}",
+        })
+
+    def _entry_to_block(entry: dict) -> Optional["Block"]:  # type: ignore[name-defined]
+        accepted = {
+            "block_id", "block_type", "page_id", "sequence", "content",
+            "template_type", "key_terms", "objective_ids",
+            "bloom_level", "bloom_verb", "bloom_range",
+            "bloom_levels", "bloom_verbs", "cognitive_domain",
+            "teaching_role", "content_type_label", "purpose",
+            "component", "source_ids", "source_primary",
+            "source_references", "content_hash",
+            "validation_attempts", "escalation_marker",
+        }
+        kwargs_clean: dict = {}
+        for k, v in (entry or {}).items():
+            if k not in accepted:
+                continue
+            if k in {
+                "key_terms", "objective_ids", "bloom_levels",
+                "bloom_verbs", "source_ids", "source_references",
+            }:
+                if isinstance(v, list):
+                    v = tuple(v) if k != "source_references" else tuple(
+                        dict(r) if isinstance(r, dict) else r for r in v
+                    )
+            kwargs_clean[k] = v
+        if "block_id" not in kwargs_clean or "block_type" not in kwargs_clean:
+            return None
+        kwargs_clean.setdefault("page_id", kwargs_clean.get("block_id", ""))
+        kwargs_clean.setdefault("sequence", 0)
+        kwargs_clean.setdefault("content", "")
+        try:
+            return Block(**kwargs_clean)
+        except (TypeError, ValueError):
+            return None
+
+    outline_blocks: list = []
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            continue
+        blk = _entry_to_block(entry)
+        if blk is not None:
+            outline_blocks.append(blk)
+
+    capture = None
+    try:
+        from lib.decision_capture import DecisionCapture
+        capture = DecisionCapture(
+            course_code=course_code,
+            phase="courseforge-content-generator-rewrite",
+            tool="courseforge",
+            streaming=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "DecisionCapture init failed in content_generation_rewrite: %s",
+            exc,
+        )
+        capture = None
+
+    try:
+        from Courseforge.router.router import CourseforgeRouter
+        from Courseforge.router.policy import load_block_routing_policy
+        router = CourseforgeRouter(
+            capture=capture,
+            policy=load_block_routing_policy(),
+        )
+    except Exception as exc:
+        logger.exception(
+            "CourseforgeRouter init failed in rewrite phase: %s", exc,
+        )
+        return json.dumps({
+            "success": False,
+            "error": f"router init failed: {exc}",
+            "project_id": project_id,
+        })
+
+    # Pre-filter to rewrite tier: invoke route() per block with
+    # tier="rewrite". (Subtask plan: pre-filter rather than widen
+    # route_all's signature; that's Worker N2's scope.) Blocks with
+    # an existing escalation_marker (outline tier failed) bypass the
+    # rewrite call and ride through to the final list with the marker
+    # intact so packaging persists them for re-execution.
+    rewrite_blocks: list = []
+    for blk in outline_blocks:
+        if blk.escalation_marker is not None:
+            rewrite_blocks.append(blk)
+            continue
+        try:
+            rewritten = router.route(
+                blk,
+                tier="rewrite",
+                source_chunks=[],
+                objectives=[],
+            )
+            rewrite_blocks.append(rewritten)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "rewrite phase: route() failed for block_id=%s: %s",
+                blk.block_id, exc,
+            )
+            try:
+                import dataclasses as _dc
+                rewrite_blocks.append(_dc.replace(
+                    blk, escalation_marker="validator_consensus_fail",
+                ))
+            except (TypeError, ValueError):
+                continue
+
+    # Persist final blocks JSONL (consumed by post_rewrite_validation).
+    blocks_final_path = out_dir / "blocks_final.jsonl"
+    with blocks_final_path.open("w", encoding="utf-8") as fh:
+        for blk in rewrite_blocks:
+            fh.write(json.dumps(blk.to_jsonld_entry(), ensure_ascii=False))
+            fh.write("\n")
+
+    # Group blocks by page_id and emit a minimal HTML page per group.
+    # The two-pass router's HTML is the rewritten Block.content (string);
+    # we wrap it in the minimum semantic structure the validators
+    # require (an objectives section per page, plus the body text).
+    pages_by_id: Dict[str, list] = {}
+    for blk in rewrite_blocks:
+        pages_by_id.setdefault(blk.page_id, []).append(blk)
+
+    page_paths: list = []
+    for page_id, page_blocks in pages_by_id.items():
+        page_path = content_dir / f"{page_id}.html"
+        objective_ids = []
+        for b in page_blocks:
+            for oid in b.objective_ids or ():
+                if oid not in objective_ids:
+                    objective_ids.append(oid)
+        objective_lis = "".join(
+            f'<li data-cf-objective-id="{oid}">{oid}</li>'
+            for oid in objective_ids
+        )
+        body_parts = []
+        for b in page_blocks:
+            content = b.content if isinstance(b.content, str) else ""
+            if not content.strip():
+                continue
+            body_parts.append(
+                f'<section data-cf-block-id="{b.block_id}">'
+                f'{content}</section>'
+            )
+        page_html = (
+            "<!DOCTYPE html>\n<html><head>"
+            f"<title>{page_id}</title></head><body>"
+            f'<section class="objectives"><h2>Objectives</h2>'
+            f'<ul>{objective_lis}</ul></section>'
+            f"<main>{''.join(body_parts)}</main>"
+            "</body></html>"
+        )
+        try:
+            page_path.write_text(page_html, encoding="utf-8")
+            page_paths.append(str(page_path))
+        except OSError as exc:
+            logger.warning(
+                "rewrite phase: failed to write %s: %s", page_path, exc,
+            )
+
+    if capture is not None:
+        try:
+            capture.log_decision(
+                decision_type="phase_start",
+                decision=(
+                    f"content_generation_rewrite: emitted "
+                    f"{len(rewrite_blocks)} rewrite-tier blocks across "
+                    f"{len(page_paths)} pages."
+                ),
+                rationale=(
+                    f"Pre-filtered route() per block with tier='rewrite'; "
+                    f"persisted to {blocks_final_path.name} for "
+                    f"post_rewrite_validation to consume."
+                ),
+                ml_features={
+                    "block_count": len(rewrite_blocks),
+                    "page_count": len(page_paths),
+                    "tier": "rewrite",
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    return json.dumps({
+        "success": True,
+        "content_paths": ",".join(page_paths),
+        "page_paths": page_paths,
+        "content_dir": str(content_dir),
+        "blocks_final_path": str(blocks_final_path),
+        "project_id": project_id,
+        "block_count": len(rewrite_blocks),
+    })
+
+
 def _build_tool_registry() -> dict:
     """
     Build a tool registry mapping tool names to callable async functions.
@@ -3394,6 +4239,20 @@ def _build_tool_registry() -> dict:
 
         registry["generate_course_content"] = _generate_course_content
         # END BLOCK: Worker α
+
+        # Phase 3.5 Subtasks 28-30: register the three two-pass router
+        # phase helpers so the executor's _PHASE_TOOL_MAPPING shim
+        # (Subtask 31) can dispatch to them by phase name.
+        registry["run_content_generation_outline"] = (
+            _run_content_generation_outline
+        )
+        registry["run_inter_tier_validation"] = _run_inter_tier_validation
+        registry["run_content_generation_rewrite"] = (
+            _run_content_generation_rewrite
+        )
+        # Phase 3.5 Subtask 13 + Wave C: also register the post_rewrite_validation
+        # helper so phase-name dispatch can route to it (Subtask 31).
+        registry["run_post_rewrite_validation"] = _run_post_rewrite_validation
 
         async def _package_imscc(**kwargs):
             """Build a real IMS Common Cartridge package from generated content.
