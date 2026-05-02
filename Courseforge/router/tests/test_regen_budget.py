@@ -153,8 +153,16 @@ class _RecordingRewriteProvider:
         self.calls: List[Dict[str, Any]] = []
 
     def generate_rewrite(
-        self, block: Block, *, source_chunks: Any, objectives: Any
+        self,
+        block: Block,
+        *,
+        source_chunks: Any,
+        objectives: Any,
+        **kwargs: Any,
     ) -> Block:
+        # Phase 3.5 Subtask 19: ``**kwargs`` swallows the new
+        # ``remediation_suffix`` kwarg the rewrite remediation loop
+        # threads on regen.
         self.calls.append(
             {
                 "block": block,
@@ -162,6 +170,7 @@ class _RecordingRewriteProvider:
                 "objectives": objectives,
                 "escalation_marker": block.escalation_marker,
                 "validation_attempts": block.validation_attempts,
+                **{k: v for k, v in kwargs.items() if k == "remediation_suffix"},
             }
         )
         return block

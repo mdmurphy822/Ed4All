@@ -784,6 +784,7 @@ class RewriteProvider(_BaseLLMProvider):
         *,
         source_chunks: Optional[Sequence[Any]] = None,
         objectives: Optional[Sequence[Any]] = None,
+        remediation_suffix: Optional[str] = None,
     ) -> Block:
         """Rewrite an outline-tier block into rendered HTML.
 
@@ -791,6 +792,14 @@ class RewriteProvider(_BaseLLMProvider):
         :meth:`_render_escalated_user_prompt`, None through
         :meth:`_render_user_prompt`. Dispatch via the inherited
         :meth:`_dispatch_call`; capture the HTML response.
+
+        Phase 3.5 Subtask 19: when ``remediation_suffix`` is non-None
+        (set by :meth:`CourseforgeRouter.route_rewrite_with_remediation`
+        after a failed validator chain), the suffix is appended to the
+        rendered user prompt before dispatch so the re-roll sees what
+        went wrong on the prior attempt and the directive to fix it.
+        ``None`` is the default so the legacy single-shot path keeps
+        emitting byte-stable prompts.
 
         CURIE-preservation gate: when the input outline declared CURIEs
         in ``block.content["curies"]``, the gate asserts each CURIE
@@ -830,6 +839,13 @@ class RewriteProvider(_BaseLLMProvider):
                 source_chunks=source_chunks,
                 objectives=objectives,
             )
+
+        # Phase 3.5 Subtask 19: append the rewrite-tier remediation
+        # suffix (when non-None) AFTER the per-escalation-flag prompt
+        # selection so the router-supplied per-failure context flows
+        # through both the standard and escalated rewrite paths.
+        if remediation_suffix:
+            user_prompt = user_prompt + "\n\n" + remediation_suffix
 
         last_text = ""
         last_missing: List[str] = []
