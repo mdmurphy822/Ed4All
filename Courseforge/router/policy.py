@@ -104,6 +104,12 @@ class BlockRoutingPolicy:
     - ``n_candidates_by_block_type`` / ``regen_budget_by_block_type``
       — same fast-lookup pattern for the self-consistency knobs
       consumed by Subtasks 37 / 41.
+    - ``regen_budget_rewrite_by_block_type`` (Phase 3.5 Subtask 21):
+      per-block-type override for the rewrite-tier regen budget
+      consumed by
+      :meth:`Courseforge.router.router.CourseforgeRouter._resolve_rewrite_regen_budget`.
+      Symmetric to ``regen_budget_by_block_type`` (which applies to
+      the outline tier).
     """
 
     defaults: Dict[str, BlockProviderSpec] = field(default_factory=dict)
@@ -114,6 +120,10 @@ class BlockRoutingPolicy:
     )
     n_candidates_by_block_type: Dict[str, int] = field(default_factory=dict)
     regen_budget_by_block_type: Dict[str, int] = field(default_factory=dict)
+    # Phase 3.5 Subtask 21: rewrite-tier regen budget map.
+    regen_budget_rewrite_by_block_type: Dict[str, int] = field(
+        default_factory=dict
+    )
 
     def is_empty(self) -> bool:
         """Return True when the policy carries no defaults / blocks /
@@ -299,6 +309,8 @@ def _policy_from_dict(raw: Dict[str, Any]) -> BlockRoutingPolicy:
     escalate_map: Dict[str, bool] = {}
     n_candidates_map: Dict[str, int] = {}
     regen_budget_map: Dict[str, int] = {}
+    # Phase 3.5 Subtask 21: rewrite-tier regen budget map.
+    regen_budget_rewrite_map: Dict[str, int] = {}
     for block_type, entry in (raw.get("blocks") or {}).items():
         if not isinstance(entry, dict):
             continue
@@ -319,6 +331,10 @@ def _policy_from_dict(raw: Dict[str, Any]) -> BlockRoutingPolicy:
         regen_budget = entry.get("regen_budget")
         if isinstance(regen_budget, int):
             regen_budget_map[block_type] = regen_budget
+        # Phase 3.5 Subtask 21: rewrite-tier per-block-type budget.
+        regen_budget_rewrite = entry.get("regen_budget_rewrite")
+        if isinstance(regen_budget_rewrite, int):
+            regen_budget_rewrite_map[block_type] = regen_budget_rewrite
 
     overrides: List[Dict[str, Any]] = list(raw.get("overrides") or [])
 
@@ -329,6 +345,7 @@ def _policy_from_dict(raw: Dict[str, Any]) -> BlockRoutingPolicy:
         escalate_immediately_by_block_type=escalate_map,
         n_candidates_by_block_type=n_candidates_map,
         regen_budget_by_block_type=regen_budget_map,
+        regen_budget_rewrite_by_block_type=regen_budget_rewrite_map,
     )
 
 

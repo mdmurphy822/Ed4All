@@ -41,6 +41,11 @@
               "minimum": 1,
               "description": "Override for the regeneration-attempt budget on this block_type's outline tier."
             },
+            "regen_budget_rewrite": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Phase 3.5 Subtask 21: per-block-type override for the rewrite-tier regen budget consumed by Courseforge.router.router.CourseforgeRouter.route_rewrite_with_remediation. Symmetric to ``regen_budget`` (which applies to the outline tier)."
+            },
             "escalate_immediately": {
               "type": "boolean",
               "description": "When true, skip outline dispatch entirely for this block_type and short-circuit to the rewrite tier with escalation_marker='outline_skipped_by_policy'."
