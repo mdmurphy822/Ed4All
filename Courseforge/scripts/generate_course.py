@@ -1122,6 +1122,7 @@ def _render_content_sections(
     *,
     source_ids: Optional[List[str]] = None,
     source_primary: Optional[str] = None,
+    page_id: str = "",
 ) -> str:
     """Render content sections with h2/h3 headings, data-cf-* metadata, and paragraphs.
 
@@ -1131,25 +1132,53 @@ def _render_content_sections(
     ``data-cf-source-ids``. Otherwise the page-level ``source_ids`` are
     used for every heading that doesn't override. Never emitted on
     per-``<p>`` / ``<li>`` / ``<tr>`` children.
+
+    Phase 2 (Subtask 20): refactored to construct Blocks for each
+    heading + optional callout and emit the wrapper attribute strings
+    via ``block.to_html_attrs()``. Three structural emits stay
+    literal:
+
+    * The Wave-35 ``<section data-cf-source-ids="…">`` ancestor-walk
+      wrapper opens before the heading and closes after the optional
+      table — its attribute string comes from ``_source_attr_string``
+      directly so the open/close pair stays a perfect bracket. We do
+      NOT route this wrapper through Block.to_html_attrs() because the
+      same source-id string also has to land verbatim on the heading
+      block, and an alternative shape would risk byte-divergence.
+    * ``<p>`` body emits stay literal (Wave-9 P2 decision: no
+      attributes on raw ``<p>``).
+    * The flip_card_grid is rendered via the migrated
+      :func:`_render_flip_cards` (Subtask 17), which now builds Blocks
+      internally.
     """
-    parts = []
-    for section in sections:
+    bound_page_id = page_id or _LEGACY_PAGE_ID
+    parts: List[str] = []
+    for sec_idx, section in enumerate(sections):
         heading = html_mod.escape(section["heading"])
         level = section.get("level", 2)
         tag = f"h{level}"
 
-        # Build data-cf-* attributes for the heading
+        # Build the heading Block. Several content_type heuristics
+        # (procedure / comparison / exercise / overview / summary /
+        # definition) are not first-class members of the canonical
+        # ``BLOCK_TYPES`` enum — we use ``block_type="explanation"``
+        # (which routes through ``_content_section_attrs`` in the
+        # emitter) and surface the actual content_type via
+        # ``content_type_label`` so emit becomes
+        # ``data-cf-content-type="<resolved>"`` byte-for-byte.
         content_type = section.get("content_type") or _infer_content_type(section)
-        key_term_slugs = ",".join(
+        # Preserve the legacy join semantics: slugs are joined into a
+        # single comma-separated value as-is (including empty entries).
+        # Block.key_terms is a tuple — we encode the legacy joined
+        # string as a single-element tuple so ``_content_section_attrs``
+        # emits ``data-cf-key-terms="<joined>"`` byte-identically. When
+        # the joined string is empty (no terms / all-empty slugs) we
+        # leave key_terms empty so the attr elides as legacy did.
+        _legacy_key_term_slugs = ",".join(
             _slugify(t["term"] if isinstance(t, dict) else t)
             for t in section.get("flip_cards", section.get("key_terms", []))
         )
         bloom_range = section.get("bloom_range", "")
-        h_attrs = f' data-cf-content-type="{content_type}"'
-        if key_term_slugs:
-            h_attrs += f' data-cf-key-terms="{key_term_slugs}"'
-        if bloom_range:
-            h_attrs += f' data-cf-bloom-range="{bloom_range}"'
 
         # Wave 9: per-section source override takes precedence over
         # page-level ids. Falls back to page ids when the section doesn't
@@ -1161,8 +1190,35 @@ def _render_content_sections(
         else:
             section_ids = source_ids
             section_primary = source_primary
-        section_attrs = _source_attr_string(section_ids, section_primary)
-        h_attrs += section_attrs
+        # Pre-compute the source attr string once: it must appear
+        # verbatim on BOTH the Wave-35 <section> wrapper AND the
+        # heading itself (legacy contract — an h2 can carry source-ids
+        # even when the wrapping <section> doesn't, but the wrapper is
+        # only emitted when the attrs are non-empty).
+        section_attrs_str = _source_attr_string(section_ids, section_primary)
+
+        heading_block = Block(
+            block_id=Block.stable_id(
+                bound_page_id, "explanation",
+                _slugify(section["heading"]) or f"section_{sec_idx}", sec_idx,
+            ),
+            block_type="explanation",
+            page_id=bound_page_id,
+            sequence=sec_idx,
+            content=section["heading"],
+            content_type_label=content_type,
+            # Single-element tuple carries the already-joined slug
+            # string so ``_content_section_attrs`` emits
+            # ``data-cf-key-terms="<joined>"`` byte-identically (it
+            # joins ``key_terms`` with a comma — a one-element join is
+            # the identity). Empty joined string → empty tuple → attr
+            # elided, matching the legacy ``if key_term_slugs:`` guard.
+            key_terms=(_legacy_key_term_slugs,) if _legacy_key_term_slugs else (),
+            bloom_range=bloom_range or None,
+            source_ids=tuple(section_ids) if section_ids else (),
+            source_primary=section_primary,
+        )
+        h_attrs = heading_block.to_html_attrs()
 
         # Wave 35: wrap every h2/h3 + paragraph group in a <section>
         # carrying the same data-cf-source-ids so
@@ -1173,8 +1229,8 @@ def _render_content_sections(
         # flagged every body paragraph as ungrounded. Section-wrapping
         # preserves the Wave 9 invariant (attributes live on section /
         # heading / component wrappers, never on raw <p>/<li>/<tr>).
-        if section_attrs:
-            parts.append(f"    <section{section_attrs}>")
+        if section_attrs_str:
+            parts.append(f"    <section{section_attrs_str}>")
         parts.append(f"    <{tag}{h_attrs}>{heading}</{tag}>")
         for para in section.get("paragraphs", []):
             # Apply key-term markup
@@ -1187,20 +1243,36 @@ def _render_content_sections(
                     p, count=1, flags=re.IGNORECASE
                 )
             parts.append(f"    <p>{p}</p>")
-        # Render any flip cards in this section
+        # Render any flip cards in this section (now Block-driven via Subtask 17).
         if section.get("flip_cards"):
-            parts.append(_render_flip_cards(section["flip_cards"]))
+            parts.append(
+                _render_flip_cards(section["flip_cards"], page_id=bound_page_id)
+            )
         # Render any callout
         if section.get("callout"):
             c = section["callout"]
             cls = f'callout {c.get("type", "")}'.strip()
+            # Validator runs on every callout emit (test contract:
+            # ``test_render_content_sections_routes_callout_through_validator``).
             callout_type = _validate_callout_content_type(
                 "application-note" if c.get("type") == "callout-warning" else "note"
             )
+            callout_block = Block(
+                block_id=Block.stable_id(
+                    bound_page_id, "callout",
+                    _slugify(c.get("heading", "")) or f"callout_{sec_idx}", sec_idx,
+                ),
+                block_type="callout",
+                page_id=bound_page_id,
+                sequence=sec_idx,
+                content={"items": list(c.get("items", []))},
+                content_type_label=callout_type,
+            )
+            callout_attrs = callout_block.to_html_attrs()
             parts.append(
                 f'    <div class="{cls}" role="region"'
                 f' aria-label="{html_mod.escape(c.get("label", "Note"))}"'
-                f' data-cf-content-type="{callout_type}">'
+                f'{callout_attrs}>'
             )
             parts.append(f'      <h3>{html_mod.escape(c.get("heading", "Note"))}</h3>')
             for item in c.get("items", []):
@@ -1229,7 +1301,7 @@ def _render_content_sections(
         # opened above the heading. No-op when no source_refs were in
         # play — pre-Wave-35 sections had no wrapper and we keep that
         # back-compat for non-textbook workflows.
-        if section_attrs:
+        if section_attrs_str:
             parts.append("    </section>")
     return "\n".join(parts)
 
