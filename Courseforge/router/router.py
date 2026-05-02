@@ -609,6 +609,19 @@ class CourseforgeRouter:
                     "skipped — block flagged for rewrite-tier escalation"
                 ),
             )
+            # Subtask 42 + 43: emit a ``block_escalation`` decision-capture
+            # event from the policy-skip path so the audit trail
+            # surfaces a single canonical event for both budget-exhaustion
+            # (Subtask 41) and policy-skip escalation classes. ``attempts``
+            # is 0 because the outline tier never ran; ``n_candidates`` is
+            # 0 for the same reason — both signal the policy-skip path
+            # to a postmortem reader.
+            self._emit_block_escalation(
+                short_circuited,
+                marker=short_circuit_marker,
+                attempts=0,
+                n_candidates=0,
+            )
             return short_circuited
 
         # 3 + 4. Lazy-instantiate + dispatch.
