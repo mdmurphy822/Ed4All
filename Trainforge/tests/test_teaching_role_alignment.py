@@ -298,6 +298,37 @@ def test_evaluate_dominant_role_alphabetical_tiebreak(tmp_path: Path) -> None:
     assert entry["role_distribution"]["reinforce"] == 3
 
 
+def test_evaluate_procedure_default_expected_mode_elaborate(
+    tmp_path: Path,
+) -> None:
+    """Wave 138b: ``procedure`` is in DEFAULT_EXPECTED_MODES with
+    expected_role='elaborate', min_share=0.70 (per the plan's
+    Decision Point Q2). 6 procedure chunks all 'elaborate' →
+    actual_expected_share=1.0, mismatch=False, no constructor
+    override required."""
+    chunks = _write_chunks(
+        tmp_path / "chunks.jsonl",
+        [
+            _chunk(f"chunk_p{i:03d}",
+                   content_type_label="procedure",
+                   teaching_role="elaborate")
+            for i in range(6)
+        ],
+    )
+    result = TeachingRoleAlignmentEvaluator(chunks).evaluate()
+
+    entry = result["content_type_role_alignment"]["procedure"]
+    assert entry["expected_role"] == "elaborate"
+    assert entry["expected_share"] == 0.70
+    assert entry["actual_expected_share"] == 1.0
+    assert entry["mismatch"] is False
+    assert entry["dominant_role"] == "elaborate"
+
+    summary = result["summary"]
+    assert summary["content_types_with_expected_mode"] == 1
+    assert summary["alignment_rate"] == 1.0
+
+
 def test_evaluate_skips_chunks_with_null_content_type_label(
     tmp_path: Path,
 ) -> None:

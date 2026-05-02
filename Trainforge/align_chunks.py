@@ -416,17 +416,83 @@ def compute_prereq_concepts(
 # Field 2: teaching_role
 # ---------------------------------------------------------------------------
 
-def _heuristic_role(chunk: Dict) -> Optional[str]:
-    """Try to classify teaching role by deterministic rules. Returns None if ambiguous."""
+def _heuristic_role(
+    chunk: Dict,
+    *,
+    capture: Optional[Any] = None,
+) -> Optional[str]:
+    """Try to classify teaching role by deterministic rules. Returns None if ambiguous.
+
+    Wave 138b extension: ``content_type_label``-aware branches catch
+    the systematic underlabeling of ``real_world_scenario`` /
+    ``scenario`` chunks the Wave 138a TeachingRoleAlignmentEvaluator
+    surfaced (0/8 transfer rate on rdf-shacl-551-2 vs expected ≥70%).
+    The 4-role LLM curriculum-alignment enum
+    (introduce / elaborate / reinforce / synthesize) cannot return
+    ``transfer`` or ``assess`` by design — those are heuristic-only.
+    Without the new branch, scenario chunks fall through to the LLM
+    and never get ``transfer``.
+
+    The ordering preserves the legacy ``assessment_item`` /
+    ``overview`` / ``summary`` / ``application`` checks. The new
+    ``content_type_label`` branch fires AFTER the ``chunk_type``
+    check (so an explicit ``assessment_item`` chunk_type still wins
+    over a ``content_type_label="summary"`` annotation) but BEFORE
+    the ``resource_type`` checks (so ``content_type_label`` signal
+    beats container-derived heuristics).
+
+    When ``capture`` is set and one of the new ``content_type_label``
+    rules fires, a ``teaching_role_heuristic_extended`` decision event
+    is emitted with the chunk_id, chosen role, and triggering label
+    interpolated into the rationale. The capture is optional so
+    legacy callers that don't thread one through still work.
+    """
     chunk_type = chunk.get("chunk_type", "")
     source = chunk.get("source", {})
     resource_type = source.get("resource_type", "")
+    content_type_label = chunk.get("content_type_label", "") or ""
 
     # Only actual assessment items get "assess" — explanatory preambles within
     # quiz pages (chunk_type=explanation, resource_type=quiz) should be
     # classified by content, not by their container.
     if chunk_type == "assessment_item":
         return "assess"
+
+    # Wave 138b: content_type_label-aware rules. The Wave 138a
+    # TeachingRoleAlignmentEvaluator surfaced systematic
+    # underlabeling of real_world_scenario / scenario chunks (0/8
+    # transfer on rdf-shacl-551-2 vs expected ≥70%). The 4-role LLM
+    # enum (introduce / elaborate / reinforce / synthesize) cannot
+    # return ``transfer`` or ``assess`` — those are heuristic-only by
+    # design. Without this branch, scenario chunks fall through to
+    # the LLM and never get ``transfer``.
+    new_role: Optional[str] = None
+    new_rule: Optional[str] = None
+    if content_type_label in ("real_world_scenario", "scenario"):
+        new_role = "transfer"
+        new_rule = "content_type_label_scenario"
+    elif content_type_label in (
+        "self_check", "assessment", "assessment_item"
+    ):
+        new_role = "assess"
+        new_rule = "content_type_label_assessment"
+    elif content_type_label == "summary":
+        new_role = "synthesize"
+        new_rule = "content_type_label_summary"
+    if new_role is not None:
+        if capture is not None:
+            try:
+                _log_heuristic_extended_decision(
+                    capture=capture,
+                    chunk=chunk,
+                    role=new_role,
+                    rule=new_rule or "unknown",
+                )
+            except Exception:
+                # Decision capture is observability — never block a
+                # classification on a logging failure.
+                pass
+        return new_role
 
     if resource_type == "overview" and source.get("position_in_module", 0) == 0:
         return "introduce"
@@ -440,6 +506,45 @@ def _heuristic_role(chunk: Dict) -> Optional[str]:
         return "transfer"
 
     return None
+
+
+def _log_heuristic_extended_decision(
+    *,
+    capture: Any,
+    chunk: Dict,
+    role: str,
+    rule: str,
+) -> None:
+    """Emit a ``teaching_role_heuristic_extended`` decision event.
+
+    Each fire records the chunk_id, the rule that triggered, the
+    triggering ``content_type_label`` value, and the chosen role —
+    so an audit can replay why the heuristic chose ``transfer`` /
+    ``assess`` / ``synthesize`` for this chunk instead of falling
+    through to the LLM.
+    """
+    chunk_id = str(chunk.get("id") or "<unknown>")
+    label = str(chunk.get("content_type_label") or "")
+    chunk_type = str(chunk.get("chunk_type") or "")
+    rationale = (
+        f"Wave 138b heuristic extension: chunk={chunk_id} routed to "
+        f"role={role} via rule={rule} (content_type_label={label!r}, "
+        f"chunk_type={chunk_type!r}). The 4-role LLM enum cannot "
+        f"emit transfer/assess; without this branch the chunk would "
+        f"fall through and miss its expected role."
+    )
+    capture.log_decision(
+        decision_type="teaching_role_heuristic_extended",
+        decision=f"role={role}",
+        rationale=rationale,
+        metadata={
+            "chunk_id": chunk_id,
+            "rule": rule,
+            "content_type_label": label,
+            "chunk_type": chunk_type,
+            "role": role,
+        },
+    )
 
 
 def _mock_role(chunk: Dict, concept_first_seen: Dict[str, int]) -> str:
@@ -518,6 +623,7 @@ def classify_teaching_roles(
     llm: Optional["LLMBackend"] = None,
     curriculum_provider: Optional["CurriculumAlignmentProvider"] = None,
     checkpoint_path: Optional[Path] = None,
+    heuristic_capture: Optional[Any] = None,
 ) -> None:
     """Mutate chunks in-place to add teaching_role field.
 
@@ -586,8 +692,8 @@ def classify_teaching_roles(
                 print(f"  {chunk['id']}: role={det_role} (deterministic:{det_source})")
             continue
 
-        # 2. Existing heuristic
-        role = _heuristic_role(chunk)
+        # 2. Existing heuristic (Wave 138b: content_type_label-aware)
+        role = _heuristic_role(chunk, capture=heuristic_capture)
         if role:
             chunk["teaching_role"] = role
             chunk["teaching_role_source"] = "heuristic"
@@ -1282,6 +1388,25 @@ def main(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
         teaching_role_checkpoint = (
             corpus_dir / "corpus" / ".teaching_role_checkpoint.jsonl"
         )
+        # Wave 138b: emit a `teaching_role_heuristic_extended` decision
+        # event each time the new content_type_label-aware heuristic
+        # branch fires. Soft-import so a standalone Trainforge install
+        # (without lib/ on sys.path) degrades to capture=None instead
+        # of failing.
+        heuristic_capture: Optional[Any] = None
+        try:
+            from lib.decision_capture import DecisionCapture as _DC
+            course_code = (
+                Path(args.corpus).resolve().name or "UNKNOWN"
+            ).upper()
+            heuristic_capture = _DC(
+                course_code=course_code,
+                phase="curriculum-alignment",
+                tool="trainforge",
+                streaming=True,
+            )
+        except Exception:
+            heuristic_capture = None
         classify_teaching_roles(
             chunks,
             llm_provider=args.llm_provider,
@@ -1289,6 +1414,7 @@ def main(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
             verbose=args.verbose,
             curriculum_provider=curriculum_provider,
             checkpoint_path=teaching_role_checkpoint,
+            heuristic_capture=heuristic_capture,
         )
 
     # --- Field 3: learning_outcome_refs ---
