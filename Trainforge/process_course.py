@@ -5116,8 +5116,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--align", action="store_true",
                    help="Run alignment stage after processing (prereq_concepts, teaching_role, learning_outcome_refs)")
-    p.add_argument("--llm-provider", default="mock", choices=["mock", "anthropic"],
-                   help="LLM provider for alignment stage (default: mock)")
+    p.add_argument("--llm-provider", default="mock", choices=["mock", "anthropic", "together", "local"],
+                   help=(
+                       "LLM provider for the legacy --align direct-classification path "
+                       "(default: mock). For the license-clean teaching-role surface, "
+                       "prefer setting CURRICULUM_ALIGNMENT_PROVIDER=local instead — "
+                       "that route is wired through Trainforge.align_chunks.main() "
+                       "and honours the same LOCAL_SYNTHESIS_* / TOGETHER_* env vars "
+                       "as synthesis."
+                   ))
     p.add_argument("--import-to-libv2", action="store_true", help="Import into LibV2 after processing")
     p.add_argument(
         "--prune-after-import",
@@ -5131,8 +5138,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--synthesize", action="store_true",
                    help="Synthesize SFT/DPO training pairs from chunks after base processing (Worker C).")
-    p.add_argument("--synthesis-provider", default="mock", choices=["mock", "anthropic"],
-                   help="Provider for training-pair synthesis (default: mock).")
+    p.add_argument("--synthesis-provider", default="mock",
+                   choices=["mock", "anthropic", "claude_session", "together", "local"],
+                   help=(
+                       "Provider for training-pair synthesis (default: mock). "
+                       "License-clean choices: 'local' (Apache 2.0 Qwen via Ollama, "
+                       "reads LOCAL_SYNTHESIS_BASE_URL/MODEL) or 'together' (Together "
+                       "AI OSS, reads TOGETHER_API_KEY/MODEL). 'anthropic' and "
+                       "'claude_session' produce ToS-restricted outputs — see "
+                       "docs/LICENSING.md."
+                   ))
     p.add_argument("--synthesis-seed", type=int, default=17,
                    help="Base deterministic seed for training-pair synthesis (default: 17).")
     p.add_argument(

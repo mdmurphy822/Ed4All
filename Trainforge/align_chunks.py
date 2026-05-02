@@ -1000,8 +1000,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Path to objectives JSON (required for learning_outcome_refs)")
     p.add_argument("--fields", default="prereq_concepts,teaching_role,learning_outcome_refs",
                    help="Comma-separated fields to compute (default: all)")
-    p.add_argument("--llm-provider", default="mock", choices=["mock", "anthropic"],
-                   help="LLM provider for teaching_role classification (default: mock)")
+    p.add_argument("--llm-provider", default="mock", choices=["mock", "anthropic", "together", "local"],
+                   help=(
+                       "LLM provider for the legacy direct-classification path "
+                       "(default: mock). For the license-clean teaching-role surface, "
+                       "prefer --curriculum-provider local (or "
+                       "CURRICULUM_ALIGNMENT_PROVIDER=local) — that route reuses the "
+                       "same LOCAL_SYNTHESIS_* / TOGETHER_* env vars as synthesis."
+                   ))
     p.add_argument("--llm-model", default="claude-haiku-4-5-20251001",
                    help="Model for LLM calls")
     p.add_argument(
