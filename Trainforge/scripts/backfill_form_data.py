@@ -527,6 +527,7 @@ def _run_drafting_cli(
     model: Optional[str],
     timeout: Optional[float] = None,
     prior_violations: Optional[List[str]] = None,
+    semantic_profile_name: Optional[str] = None,
 ) -> Tuple[int, str, str]:
     """Dispatch the Wave 136c drafting CLI as a subprocess.
 
@@ -569,6 +570,8 @@ def _run_drafting_cli(
         cmd.extend(["--timeout", str(timeout)])
     if prior_violations:
         cmd.extend(["--prior-violations", json.dumps(prior_violations)])
+    if semantic_profile_name:
+        cmd.extend(["--semantic-profile", semantic_profile_name])
     proc = subprocess.run(
         cmd,
         capture_output=True,
@@ -647,6 +650,7 @@ def _process_one_curie(
     print_fn,
     runner=None,
     timeout: Optional[float] = None,
+    semantic_profile: Optional[Any] = None,
     input_fn=None,  # accepted for back-compat; unused in fully-automatic mode
     editor_fn=None,  # accepted for back-compat; unused in fully-automatic mode
 ) -> str:
@@ -683,8 +687,13 @@ def _process_one_curie(
     seen_violation_keys: set = set()
 
     # Initial draft.
+    semantic_profile_name = (
+        semantic_profile.name if semantic_profile is not None else None
+    )
     rc, current_yaml, stderr = runner(
-        curie, family, course_code, provider, model, timeout
+        curie, family, course_code, provider, model, timeout,
+        None,  # prior_violations
+        semantic_profile_name,
     )
     if rc != 0 and rc != 3:
         print_fn(
@@ -714,7 +723,9 @@ def _process_one_curie(
         pre_full = snapshot["_pre_full"]
         _invalidate_form_data_cache()
         reloaded = _load_form_data(family)
-        report = validate_form_data_contract(reloaded, manifest_curies)
+        report = validate_form_data_contract(
+            reloaded, manifest_curies, semantic_profile=semantic_profile,
+        )
         violations = report.get("content_violations") or []
         this_curie_violations = [
             v for v in violations
@@ -766,6 +777,7 @@ def _process_one_curie(
         rc, current_yaml, stderr = runner(
             curie, family, course_code, provider, model, timeout,
             accumulated_violations,
+            semantic_profile_name,
         )
         if rc != 0 and rc != 3:
             print_fn(
@@ -855,6 +867,40 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "'30m', '1h', '5m', '0' to skip warmup). Default 30m."
         ),
     )
+    # Wave 137 followup: scope the loop to one CURIE for targeted
+    # backfill (typically pairs with --semantic-profile). Without this
+    # flag the loop processes every degraded CURIE in the family up to
+    # --limit. With it, only the named CURIE runs (--limit / --by /
+    # --family-cluster are ignored for the target list).
+    parser.add_argument(
+        "--curie",
+        default=None,
+        help=(
+            "Restrict the session to one CURIE (e.g. 'rdf:type'). The "
+            "CURIE must be declared in the property manifest. Bypasses "
+            "--limit / --by / --family-cluster. Pairs with "
+            "--semantic-profile for hard-contract auto-generation of "
+            "high-coupling CURIEs."
+        ),
+    )
+    # Wave 137 followup: per-CURIE semantic profile. Loaded from
+    # schemas/training/semantic_profiles.yaml and passed through to
+    # both (a) the drafting subprocess as --semantic-profile and (b)
+    # the post-merge validator's profile rules. The profile's
+    # target_curie must match --curie.
+    parser.add_argument(
+        "--semantic-profile",
+        default=None,
+        help=(
+            "Name of a semantic profile from "
+            "schemas/training/semantic_profiles.yaml. The profile is "
+            "passed to the drafting CLI (prepending the prompt with "
+            "the profile's must/must-not directive) AND to the post-"
+            "merge validator (firing SEMANTIC_* violations into the "
+            "auto-redraft cumulative-feedback chain). Requires --curie "
+            "with a matching target."
+        ),
+    )
     return parser
 
 
@@ -882,17 +928,63 @@ def main(
     manifest_curies = [p.curie for p in manifest.properties]
     label_by_curie: Dict[str, str] = {p.curie: p.label for p in manifest.properties}
 
+    # Wave 137 followup: load semantic profile (if requested) and
+    # cross-validate against --curie. The profile drives both the
+    # drafting prompt and the post-merge validator.
+    semantic_profile = None
+    if args.semantic_profile:
+        from lib.ontology.semantic_profiles import load_semantic_profile
+        try:
+            semantic_profile = load_semantic_profile(args.semantic_profile)
+        except (FileNotFoundError, KeyError) as exc:
+            print(
+                f"ERROR: --semantic-profile {args.semantic_profile!r} "
+                f"failed to load: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+        if not args.curie:
+            print(
+                f"ERROR: --semantic-profile requires --curie "
+                f"(profile targets {semantic_profile.target_curie!r}).",
+                file=sys.stderr,
+            )
+            return 2
+        if semantic_profile.target_curie != args.curie:
+            print(
+                f"ERROR: --semantic-profile {args.semantic_profile!r} "
+                f"targets {semantic_profile.target_curie!r} but --curie "
+                f"is {args.curie!r}.",
+                file=sys.stderr,
+            )
+            return 2
+
     # Step 2: load the post-overlay form_data and pick degraded entries.
     _invalidate_form_data_cache()
     form_data = _load_form_data(args.family)
-    degraded = [
-        c for c, e in form_data.items()
-        if e.anchored_status == "degraded_placeholder"
-    ]
-    # Restrict to manifest-declared CURIEs — the post-overlay form_data
-    # may include legacy non-manifest entries that the operator
-    # shouldn't be backfilling here.
-    degraded = [c for c in degraded if c in manifest_curies]
+
+    # Wave 137 followup: --curie scopes the loop to one target.
+    # Bypasses the degraded-placeholder filter so the operator can
+    # force-redraft a `complete` entry that's semantically wrong (e.g.
+    # rdf:type drifted into rdfs:domain/range usage).
+    if args.curie:
+        if args.curie not in manifest_curies:
+            print(
+                f"ERROR: --curie {args.curie!r} is not declared in the "
+                f"property manifest for family={args.family!r}.",
+                file=sys.stderr,
+            )
+            return 2
+        degraded = [args.curie]
+    else:
+        degraded = [
+            c for c, e in form_data.items()
+            if e.anchored_status == "degraded_placeholder"
+        ]
+        # Restrict to manifest-declared CURIEs — the post-overlay form_data
+        # may include legacy non-manifest entries that the operator
+        # shouldn't be backfilling here.
+        degraded = [c for c in degraded if c in manifest_curies]
 
     if not degraded:
         print_fn(
@@ -937,16 +1029,22 @@ def main(
             )
             return 2
 
-    ordered = _sort_targets_clustered(
-        degraded,
-        counts,
-        family_map=family_map,
-        by=args.by,
-        family_filter=args.family_cluster,
-    )
+    if args.curie:
+        # Wave 137 followup: --curie scoping bypasses sort + cluster
+        # filter + --limit. The single target carries its measured
+        # corpus frequency for telemetry consistency.
+        targets = [(args.curie, counts.get(args.curie, 0))]
+    else:
+        ordered = _sort_targets_clustered(
+            degraded,
+            counts,
+            family_map=family_map,
+            by=args.by,
+            family_filter=args.family_cluster,
+        )
 
-    # Step 4: cap to --limit.
-    targets = ordered[: args.limit]
+        # Step 4: cap to --limit.
+        targets = ordered[: args.limit]
 
     yaml_path = _resolve_yaml_path(args.family, args.yaml_path)
 
@@ -977,6 +1075,7 @@ def main(
             manifest_curies=manifest_curies,
             print_fn=print_fn,
             timeout=args.timeout,
+            semantic_profile=semantic_profile,
         )
         counters[outcome] = counters.get(outcome, 0) + 1
 

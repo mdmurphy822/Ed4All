@@ -1,0 +1,63 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "urn:ed4all:schemas:semantic_profiles_schema",
+  "title": "Semantic Profiles for FORM_DATA backfill",
+  "description": "Per-CURIE acceptance contract layered on top of the Wave 136b / 137a structural validators. Catches semantic confusion the structural rules cannot detect.",
+  "type": "object",
+  "required": ["profiles"],
+  "properties": {
+    "profiles": {
+      "type": "object",
+      "additionalProperties": {"$ref": "#/definitions/profile"}
+    }
+  },
+  "definitions": {
+    "profile": {
+      "type": "object",
+      "required": [
+        "target_curie",
+        "bad_signals",
+        "good_signals",
+        "min_good_signals"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "target_curie": {
+          "type": "string",
+          "pattern": "^[A-Za-z][A-Za-z0-9_]*:[A-Za-z][A-Za-z0-9_]*$",
+          "description": "The CURIE this profile gates (e.g. 'rdf:type')."
+        },
+        "description": {"type": "string"},
+        "bad_signals": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "description": "Substrings that must NOT appear anywhere in defs/usage. Zero tolerance — one match rejects."
+        },
+        "good_signals": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "description": "Substrings of which at least min_good_signals must appear across defs + usage combined."
+        },
+        "min_good_signals": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Minimum count of distinct good_signals matches across the entry."
+        },
+        "required_in_definitions": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "description": "Substrings that must appear at least once across the definitions list."
+        },
+        "required_in_usage_examples": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1},
+          "description": "Substrings that must appear at least once in the usage_examples answer-side."
+        },
+        "prompt_directive": {
+          "type": "string",
+          "description": "Text injected into the drafting CLI prompt declaring the contract up front."
+        }
+      }
+    }
+  }
+}
