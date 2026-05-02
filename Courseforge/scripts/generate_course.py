@@ -932,20 +932,74 @@ def _render_objectives(
     </div>"""
 
 
-def _render_flip_cards(terms: List[Dict]) -> str:
-    """Render a grid of flip cards for key terms with data-cf-* metadata."""
+def _render_flip_cards(terms: List[Dict], *, page_id: str = "") -> str:
+    """Render a grid of flip cards for key terms with data-cf-* metadata.
+
+    Phase 2 (Subtask 17): refactored to build one ``Block`` per card
+    (``block_type="flip_card_grid"``) and emit the wrapper attribute
+    string via ``block.to_html_attrs()``. The Block emits the
+    ``data-cf-component / data-cf-purpose / data-cf-teaching-role /
+    data-cf-term`` attributes in the same order the legacy renderer
+    did; the legacy newline + indent layout between ``aria-label`` and
+    ``data-cf-*`` is preserved by splitting the emit format string
+    around the Block-supplied attr fragments.
+    """
     # REC-VOC-02: deterministic teaching_role from (component, purpose) pair.
     fc_role = _map_teaching_role("flip-card", "term-definition")
     fc_role_attr = f' data-cf-teaching-role="{fc_role}"' if fc_role else ""
-    cards = []
-    for _i, t in enumerate(terms):
+    bound_page_id = page_id or _LEGACY_PAGE_ID
+    cards: List[str] = []
+    for i, t in enumerate(terms):
         front = html_mod.escape(t["term"])
         back = html_mod.escape(t["definition"])
         term_slug = _slugify(t["term"])
+        block = Block(
+            block_id=Block.stable_id(
+                bound_page_id, "flip_card_grid", term_slug, i
+            ),
+            block_type="flip_card_grid",
+            page_id=bound_page_id,
+            sequence=i,
+            content={"term": t["term"], "definition": t["definition"]},
+            key_terms=(term_slug,) if term_slug else (),
+            teaching_role=fc_role or None,
+        )
+        # Block.to_html_attrs() emits the per-card attrs in legacy order.
+        # Block-only data-cf-block-id (gated by COURSEFORGE_EMIT_BLOCKS)
+        # appends after data-cf-term, preserving byte-stability when off.
+        block_attrs = block.to_html_attrs()
+        # Strip the leading-space-prefixed component+purpose fragment so
+        # we can preserve the legacy newline-indent layout: those two
+        # attrs sit on their own line below ``aria-label="…"``, while
+        # the remaining attrs (teaching-role + term + optional block-id)
+        # stay on the third indented line. We split deterministically on
+        # the canonical prefix the Block emits.
+        _component_purpose = (
+            ' data-cf-component="flip-card" data-cf-purpose="term-definition"'
+        )
+        if block_attrs.startswith(_component_purpose):
+            tail = block_attrs[len(_component_purpose):]
+        else:  # pragma: no cover — Block emit shape is contractually fixed.
+            tail = block_attrs
+        # ``tail`` may begin with `' data-cf-teaching-role="…"'` (still
+        # leading-space) and ends with `' data-cf-term="…"'` (and the
+        # optional `' data-cf-block-id="…"'` when the flag is on). We
+        # peel the teaching-role onto the second line and the rest onto
+        # the third line to mirror the pre-migration string layout.
+        if fc_role_attr:
+            assert tail.startswith(fc_role_attr)
+            second_line_role = fc_role_attr  # leading space already present
+            tail = tail[len(fc_role_attr):]
+        else:
+            second_line_role = ""
+        # Whatever remains belongs on line 3 (data-cf-term + optional
+        # data-cf-block-id). Strip exactly one leading space so the
+        # legacy "           data-cf-term=" indent is byte-identical.
+        third_line_attrs = tail[1:] if tail.startswith(" ") else tail
         cards.append(f"""
       <div class="flip-card" tabindex="0" role="button" aria-label="Flip card: {front}"
-           data-cf-component="flip-card" data-cf-purpose="term-definition"{fc_role_attr}
-           data-cf-term="{term_slug}">
+           data-cf-component="flip-card" data-cf-purpose="term-definition"{second_line_role}
+           {third_line_attrs}>
         <div class="flip-card-inner">
           <div class="flip-card-front">{front}</div>
           <div class="flip-card-back">{back}</div>
