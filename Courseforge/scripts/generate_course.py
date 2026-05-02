@@ -2227,6 +2227,7 @@ def generate_week(
     classification: Optional[Dict] = None,
     prerequisite_map: Optional[Dict[str, List[str]]] = None,
     source_module_map: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
+    emit_mode: str = "full",
 ):
     """Generate all files for a single week.
 
@@ -2251,7 +2252,22 @@ def generate_week(
         ``sourceReferences[]`` and ``data-cf-source-ids`` attributes on
         each page's HTML. Absent / empty → no source attribution emitted;
         backward-compat for non-textbook workflows.
+
+    Phase 2 (Subtask 28) addition:
+      * ``emit_mode`` — ``"full"`` (default) renders the legacy full-body
+        HTML for every page type. ``"outline"`` keeps only outline-tier
+        block bodies (objective / prereq_set / summary_takeaway / chrome /
+        recap) in HTML; content / example / explanation / activity /
+        self_check_question Block bodies are suppressed (empty HTML body)
+        but their JSON-LD ``blocks[]`` entries persist so downstream
+        consumers see the structural skeleton. Outline mode is the input
+        shape Phase 3's two-pass pipeline expects from the outline tier.
     """
+    if emit_mode not in ("full", "outline"):
+        raise ValueError(
+            f"emit_mode must be 'full' or 'outline', got {emit_mode!r}"
+        )
+    outline_only = emit_mode == "outline"
     week_num = week_data["week_number"]
     week_dir = output_dir / f"week_{week_num:02d}"
     week_dir.mkdir(parents=True, exist_ok=True)
@@ -2358,15 +2374,25 @@ def generate_week(
         page_refs = _page_refs_for(source_module_map, week_num, page_id)
         page_ids_list = _refs_to_id_list(page_refs)
         page_primary = _refs_primary(page_refs)
-        content_body = _render_content_sections(
-            content["sections"],
-            source_ids=page_ids_list,
-            source_primary=page_primary,
-            page_id=page_id,
-        )
-        extra_js = FLIP_CARD_JS if any(
-            s.get("flip_cards") for s in content["sections"]
-        ) else ""
+        # Phase 2 (Subtask 28): in outline mode, suppress the content-section
+        # HTML body. The corresponding section / explanation / example /
+        # callout / flip_card_grid Blocks are still emitted to JSON-LD
+        # blocks[] (when COURSEFORGE_EMIT_BLOCKS is on) so downstream
+        # consumers see the structural skeleton, but the rendered HTML
+        # body is empty — outline-tier deliverable shape.
+        if outline_only:
+            content_body = ""
+            extra_js = ""
+        else:
+            content_body = _render_content_sections(
+                content["sections"],
+                source_ids=page_ids_list,
+                source_primary=page_primary,
+                page_id=page_id,
+            )
+            extra_js = FLIP_CARD_JS if any(
+                s.get("flip_cards") for s in content["sections"]
+            ) else ""
         # Phase 2 (Subtask 27): collect the canonical Block list for this
         # content page (objective + section + misconception Blocks).
         content_blocks: List[Block] = (
@@ -2423,15 +2449,22 @@ def generate_week(
         )
         app_body_attrs = _app_wrapper_block.to_html_attrs()
         app_body = ""
-        if app_body_attrs:
-            app_body += f"\n    <section{app_body_attrs}>"
-        app_body += "\n    <h2>Learning Activities</h2>"
-        app_body += _render_activities(
-            week_data["activities"], source_ids=app_ids, source_primary=app_primary,
-            page_id=app_page_id,
-        )
-        if app_body_attrs:
-            app_body += "\n    </section>"
+        # Phase 2 (Subtask 28): in outline mode, suppress the activity-card
+        # HTML rendering. The activity Blocks still flow into JSON-LD
+        # blocks[] via app_blocks below; only the visible card HTML is
+        # dropped so the outline-tier page carries no activity bodies.
+        if outline_only:
+            app_body = ""
+        else:
+            if app_body_attrs:
+                app_body += f"\n    <section{app_body_attrs}>"
+            app_body += "\n    <h2>Learning Activities</h2>"
+            app_body += _render_activities(
+                week_data["activities"], source_ids=app_ids, source_primary=app_primary,
+                page_id=app_page_id,
+            )
+            if app_body_attrs:
+                app_body += "\n    </section>"
         # Phase 2 (Subtask 27): collect the canonical Block list for this
         # application page (objective + activity Blocks + wrapper Block).
         app_blocks: List[Block] = (
@@ -2489,18 +2522,26 @@ def generate_week(
         )
         sc_body_attrs = _sc_wrapper_block.to_html_attrs()
         sc_body = ""
-        if sc_body_attrs:
-            sc_body += f"\n    <section{sc_body_attrs}>"
-        sc_body += "\n    <h2>Self-Check: Test Your Understanding</h2>"
-        sc_body += "\n    <p>Select the best answer for each question. You will receive immediate feedback.</p>"
-        sc_body += _render_self_check(
-            week_data["self_check_questions"],
-            source_ids=sc_ids,
-            source_primary=sc_primary,
-            page_id=sc_page_id,
-        )
-        if sc_body_attrs:
-            sc_body += "\n    </section>"
+        # Phase 2 (Subtask 28): in outline mode, suppress the rendered
+        # self-check question HTML (radio-button cards + intro prose).
+        # The self_check_question Blocks still flow into JSON-LD blocks[]
+        # via sc_blocks below — outline-tier consumers see the question
+        # skeleton without their HTML bodies.
+        if outline_only:
+            sc_body = ""
+        else:
+            if sc_body_attrs:
+                sc_body += f"\n    <section{sc_body_attrs}>"
+            sc_body += "\n    <h2>Self-Check: Test Your Understanding</h2>"
+            sc_body += "\n    <p>Select the best answer for each question. You will receive immediate feedback.</p>"
+            sc_body += _render_self_check(
+                week_data["self_check_questions"],
+                source_ids=sc_ids,
+                source_primary=sc_primary,
+                page_id=sc_page_id,
+            )
+            if sc_body_attrs:
+                sc_body += "\n    </section>"
         # Phase 2 (Subtask 27): collect the canonical Block list for this
         # self-check page (objective + self-check question Blocks +
         # wrapper Block).
@@ -2522,9 +2563,14 @@ def generate_week(
             source_references=sc_refs,
             blocks=sc_blocks,
         )
+        # Phase 2 (Subtask 28): in outline mode the self-check question
+        # bodies are suppressed, so the SELF_CHECK_JS handler has nothing
+        # to bind to. Drop the script in outline mode to keep the
+        # outline-tier HTML truly content-free.
         sc_html = _wrap_page(
             f"Week {week_num}: Self-Check Quiz",
-            course_code, week_num, sc_body, SELF_CHECK_JS,
+            course_code, week_num, sc_body,
+            "" if outline_only else SELF_CHECK_JS,
             page_metadata=sc_meta,
         )
         (week_dir / f"week_{week_num:02d}_self_check.html").write_text(sc_html, encoding="utf-8")
@@ -2644,7 +2690,14 @@ def generate_week(
             source_primary=disc_primary,
         )
         disc_attrs = _disc_wrapper_block.to_html_attrs()
-        disc_body = f"""
+        # Phase 2 (Subtask 28): in outline mode, drop the visible
+        # discussion-prompt body. The discussion_prompt Block stays in
+        # JSON-LD blocks[] (via disc_blocks) so the outline-tier
+        # consumer still knows the page exists structurally.
+        if outline_only:
+            disc_body = ""
+        else:
+            disc_body = f"""
     <div class="discussion-prompt"{disc_attrs}>
       <h2>Discussion Forum</h2>
       <p>{disc["prompt"]}</p>
@@ -2688,6 +2741,7 @@ def generate_course(
     objectives_path: Optional[str] = None,
     classification: Optional[Dict] = None,
     source_module_map_path: Optional[str] = None,
+    emit_mode: str = "full",
 ):
     """Generate a full course from a JSON data file.
 
@@ -2717,7 +2771,22 @@ def generate_course(
             ``sourceReferences[]`` in JSON-LD and ``data-cf-source-ids``
             on HTML wrappers. Absent / empty → no provenance emit
             (backward compat).
+        emit_mode: Phase 2 (Subtask 28). ``"full"`` (default) renders the
+            legacy full-body HTML for every page type. ``"outline"`` keeps
+            only outline-tier block bodies (objective / prereq_set /
+            summary_takeaway / chrome / recap) in HTML; content / example /
+            explanation / activity / self_check_question Block bodies are
+            suppressed (empty HTML body) but their JSON-LD ``blocks[]``
+            entries persist so downstream consumers see the structural
+            skeleton. When ``emit_mode == "outline"`` the emitted
+            ``course_metadata.json`` stub gains a ``blocks_summary`` key
+            with ``{"outline_only": true}`` so the IMSCC packager (and
+            other downstream consumers) can detect the outline shape.
     """
+    if emit_mode not in ("full", "outline"):
+        raise ValueError(
+            f"emit_mode must be 'full' or 'outline', got {emit_mode!r}"
+        )
     data = json.loads(Path(course_data_path).read_text())
     out = Path(output_dir)
     course_code = data.get("course_code", "COURSE_101")
@@ -2770,33 +2839,43 @@ def generate_course(
             classification=effective_classification,
             prerequisite_map=prerequisite_map,
             source_module_map=source_module_map,
+            emit_mode=emit_mode,
         )
         total_files += count
         print(f"  Week {week['week_number']:2d}: {count} files - {', '.join(files)}")
 
-    # Emit course-level classification stub (REC-TAX-01). Only emitted when
-    # classification is populated — preserves backward compat for existing
-    # pipelines that never declared a taxonomy.
-    if effective_classification:
+    # Emit course-level classification stub (REC-TAX-01). Emitted when
+    # either classification is populated, OR Phase 2 outline mode is on
+    # (so the packager / downstream Trainforge consumer can read the
+    # outline_only marker). Pure backward-compat for the legacy default
+    # path (full mode + no classification → no stub).
+    if effective_classification or emit_mode == "outline":
         out.mkdir(parents=True, exist_ok=True)
-        stub = {
+        stub: Dict[str, Any] = {
             "course_code": course_code,
             "course_title": data.get("course_title") or data.get("title") or course_code,
-            "classification": {
+        }
+        if effective_classification:
+            stub["classification"] = {
                 "division": effective_classification.get("division"),
                 "primary_domain": effective_classification.get("primary_domain"),
                 "subdomains": list(effective_classification.get("subdomains") or []),
                 "topics": list(effective_classification.get("topics") or []),
-            },
-            "ontology_mappings": {
+            }
+            stub["ontology_mappings"] = {
                 "acm_ccs": list(
                     (data.get("ontology_mappings") or {}).get("acm_ccs") or []
                 ),
                 "lcsh": list(
                     (data.get("ontology_mappings") or {}).get("lcsh") or []
                 ),
-            },
-        }
+            }
+        # Phase 2 (Subtask 28): stamp blocks_summary.outline_only=true so
+        # downstream packagers / consumers can detect the outline-tier
+        # deliverable. Full emit-mode never stamps this key, preserving
+        # the legacy stub shape byte-for-byte.
+        if emit_mode == "outline":
+            stub["blocks_summary"] = {"outline_only": True}
         stub_path = out / "course_metadata.json"
         stub_path.write_text(json.dumps(stub, indent=2) + "\n", encoding="utf-8")
         print(f"Wrote course classification stub: {stub_path}")
@@ -2863,6 +2942,21 @@ def _build_cli_parser() -> argparse.ArgumentParser:
             "data-cf-source-ids on HTML wrappers. Absent → no provenance emit."
         ),
     )
+    parser.add_argument(
+        "--emit-mode",
+        default="full",
+        choices=["full", "outline"],
+        help=(
+            "Phase 2 (Subtask 28): 'full' (default) renders the legacy "
+            "full-body HTML for every page type. 'outline' keeps only "
+            "outline-tier block bodies (objective / prereq_set / "
+            "summary_takeaway / chrome / recap) in HTML; content / "
+            "example / explanation / activity / self_check_question Block "
+            "bodies are suppressed (empty HTML body) but their JSON-LD "
+            "blocks[] entries persist. Outline mode is the input shape "
+            "Phase 3's two-pass pipeline expects from the outline tier."
+        ),
+    )
     return parser
 
 
@@ -2894,4 +2988,5 @@ if __name__ == "__main__":
         objectives_path=args.objectives,
         classification=classification,
         source_module_map_path=args.source_module_map,
+        emit_mode=args.emit_mode,
     )
