@@ -12,7 +12,7 @@ import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Protocol, Tuple
+from typing import Any, Dict, List, Literal, Optional, Protocol, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +60,11 @@ class GateResult:
     waived: bool = False
     waiver_info: Optional[Dict[str, str]] = None
     error: Optional[str] = None
+    # Phase 3 Subtask 46: validator action signal consumed by the
+    # Courseforge two-pass router. Legacy validators don't set this;
+    # the router calls `derive_default_action()` to interpret them as
+    # "pass" on success / "block" on failure.
+    action: Optional[Literal["pass", "regenerate", "escalate", "block"]] = None
 
     def to_dict(self) -> Dict:
         """Convert to dictionary."""
@@ -76,6 +81,18 @@ class GateResult:
     def warning_count(self) -> int:
         """Count of warning issues."""
         return sum(1 for i in self.issues if i.severity == "warning")
+
+    @classmethod
+    def derive_default_action(cls, passed: bool, action: Optional[str]) -> str:
+        """Resolve a router-consumable action for a (passed, action) pair.
+
+        New Phase-3/4 validators set `action` directly. Legacy validators
+        leave it `None`; treat them as "pass" on success / "block" on
+        failure for back-compat.
+        """
+        if action is not None:
+            return action
+        return "pass" if passed else "block"
 
 
 @dataclass
