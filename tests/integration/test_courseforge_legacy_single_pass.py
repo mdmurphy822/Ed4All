@@ -216,6 +216,9 @@ def test_two_pass_predicate_flip_swaps_active_phase_set(monkeypatch):
     assert alt_pred and alt_value
     assert runner._eval_enabled_when_env(alt_pred) is True
     active_deps = list(alt_value)
-    assert "content_generation_rewrite" in active_deps
+    # Phase 3.5 Subtask 11: packaging now waits on post_rewrite_validation
+    # (which runs after content_generation_rewrite) rather than directly
+    # on content_generation_rewrite.
+    assert "post_rewrite_validation" in active_deps
     # And the legacy edge does NOT activate when the predicate matches.
     assert "content_generation" not in active_deps
