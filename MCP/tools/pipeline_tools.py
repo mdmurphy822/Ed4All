@@ -2771,6 +2771,14 @@ def _build_tool_registry() -> dict:
             # ---------------------------------------------------------- #
             # Decision capture — content-generator phase.                 #
             # ---------------------------------------------------------- #
+            # Phase 1 ToS unblock: COURSEFORGE_PROVIDER env (anthropic /
+            # together / local) opens an in-process LLM seam alongside
+            # the Wave-74 subagent dispatch path. Default unset =>
+            # deterministic DART-paragraph synthesis (legacy behavior).
+            _courseforge_provider_env = os.environ.get(
+                "COURSEFORGE_PROVIDER", ""
+            ).strip()
+
             capture = None
             try:
                 from lib.decision_capture import DecisionCapture
@@ -2800,6 +2808,32 @@ def _build_tool_registry() -> dict:
                     "DecisionCapture init failed in content-generator: %s", exc
                 )
                 capture = None
+
+            # Instantiate the in-process LLM provider when the env var
+            # is set. We fail-loud here (e.g. missing ANTHROPIC_API_KEY)
+            # rather than silently falling back to deterministic so the
+            # operator's intent is honored or surfaced clearly.
+            content_provider = None
+            if _courseforge_provider_env:
+                try:
+                    from Courseforge.generators._provider import (
+                        ContentGeneratorProvider,
+                    )
+                    content_provider = ContentGeneratorProvider(
+                        capture=capture,
+                    )
+                    logger.info(
+                        "COURSEFORGE_PROVIDER=%s; routing content-generator "
+                        "through in-process provider.",
+                        _courseforge_provider_env,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "ContentGeneratorProvider init failed (provider=%s): %s",
+                        _courseforge_provider_env,
+                        exc,
+                    )
+                    raise
 
             # ---------------------------------------------------------- #
             # Emit each week via generate_week.                           #
@@ -2862,6 +2896,7 @@ def _build_tool_registry() -> dict:
                     week_objectives=week_objectives_deduped,
                     all_objectives=all_objectives,
                     course_code=course_code,
+                    content_provider=content_provider,
                 )
 
                 try:
