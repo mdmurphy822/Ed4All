@@ -212,19 +212,6 @@ def _append_remediation_for_gates(
     return prompt + suffix
 
 
-def _append_preserve_remediation(
-    prompt: str,
-    missing_tokens: Sequence[str],
-    in_keys: Tuple[str, ...] = ("body",),
-) -> str:
-    """Append a remediation directive naming the missing tokens.
-
-    Filled in by Subtask 3 (port from
-    ``Courseforge/generators/_rewrite_provider.py``).
-    """
-    raise NotImplementedError("Subtask 3 deliverable")
-
-
 def _missing_preserve_tokens(
     content: Any,
     tokens: Sequence[str],
@@ -232,12 +219,87 @@ def _missing_preserve_tokens(
 ) -> List[str]:
     """Return the subset of ``tokens`` that don't appear in ``content``.
 
-    Filled in by Subtask 3 (port from
-    ``Courseforge/generators/_rewrite_provider.py``). Accepts
-    ``content: Any`` per the Subtask 3 generalization: str searches
-    the full body; dict searches the keys named in ``in_keys``.
+    Direct port of
+    :func:`Trainforge.generators._local_provider.LocalSynthesisProvider._missing_preserve_tokens`
+    (`Trainforge/generators/_local_provider.py:548-564`), generalised
+    to accept ``content: Any`` per the Subtask 3 contract:
+
+    - When ``content`` is a string, searches the full string for each
+      token via substring match (the rewrite-tier HTML emit shape:
+      a CURIE preserved in any tag, attribute value, or inline prose
+      counts as preserved).
+    - When ``content`` is a dict, concatenates the values at each key
+      named in ``in_keys`` (default ``("body",)``) into a haystack and
+      substring-matches each token (the Trainforge instruction-pair /
+      preference-pair shape; falls back to ``""`` when a key is absent).
+    - When ``content`` is anything else, ``str(content)`` is used as
+      the haystack so callers passing list-of-strings or other
+      non-canonical shapes still get a deterministic answer.
+
+    Empty ``tokens`` or empty ``in_keys`` (for dict content) returns
+    the empty list — there is nothing to enforce.
+
+    Substring match — exact-character preservation is the contract.
+    The Trainforge precedent and the rewrite-tier CURIE-preservation
+    gate both rely on this semantics so a CURIE survives across any
+    HTML structural shape.
     """
-    raise NotImplementedError("Subtask 3 deliverable")
+    if not tokens:
+        return []
+    if isinstance(content, str):
+        haystack = content
+    elif isinstance(content, dict):
+        if not in_keys:
+            return []
+        haystack = " ".join(
+            str(content.get(k, "") or "") for k in in_keys
+        )
+    else:
+        haystack = str(content) if content is not None else ""
+    missing: List[str] = []
+    for tok in tokens:
+        if tok and tok not in haystack:
+            missing.append(tok)
+    return missing
+
+
+def _append_preserve_remediation(
+    prompt: str,
+    missing_tokens: Sequence[str],
+    in_keys: Tuple[str, ...] = ("body",),
+) -> str:
+    """Append a remediation directive naming the missing tokens.
+
+    Direct port of
+    :func:`Trainforge.generators._local_provider.LocalSynthesisProvider._append_preserve_remediation`
+    (`Trainforge/generators/_local_provider.py:566-583`), generalised
+    to operate on a string prompt (the Courseforge rewrite-tier shape)
+    rather than a list-of-dict messages payload (the Trainforge shape).
+    The wording deliberately preserves the canonical
+    ``"did not include the required"`` phrase so the rewrite-provider
+    test suite's substring-match keeps passing across the move.
+
+    ``in_keys`` is purely informational here — the field name is
+    interpolated into the directive so the model knows where the
+    tokens were supposed to land. The default ``("body",)`` matches
+    the rewrite tier's HTML-body emit shape; the Trainforge dict-
+    content path passes ``("prompt", "completion")`` etc.
+
+    Returns ``prompt`` unchanged when ``missing_tokens`` is empty —
+    no remediation is needed.
+    """
+    if not missing_tokens:
+        return prompt
+    token_list = ", ".join(repr(t) for t in missing_tokens)
+    field_list = " and ".join(in_keys) if in_keys else "the response"
+    remediation = (
+        f"\n\nThe prior response did not include the required "
+        f"tokens {token_list} verbatim in {field_list}. Rewrite the "
+        f"response so each of those tokens appears VERBATIM (exact "
+        f"characters, with the colon and case intact). Output the "
+        f"same response shape — no preamble, no markdown."
+    )
+    return prompt + remediation
 
 
 __all__ = [

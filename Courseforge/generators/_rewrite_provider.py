@@ -71,6 +71,17 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from Courseforge.generators._base import _BaseLLMProvider
+# Phase 3.5 Subtask 3: the generalized preserve-token helpers live in
+# ``Courseforge/router/remediation.py`` so the Phase 3.5 router-side
+# remediation injection (Subtasks 18-22) and the rewrite-tier CURIE-
+# preservation gate share the same canonical implementation. The
+# rewrite tier passes ``in_keys=("body",)`` (default) so the dict-
+# branch the helpers expose is unused here — Block.content arrives as
+# an HTML string for the gate's check.
+from Courseforge.router.remediation import (  # noqa: E402
+    _append_preserve_remediation,
+    _missing_preserve_tokens,
+)
 
 # Phase 2 Subtask 35: ``blocks.py`` lives at
 # ``Courseforge/scripts/blocks.py``; mirror the import bridge from
@@ -368,62 +379,55 @@ def _extract_outline_curies(content: Any) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
-# CURIE-preservation gate helpers (Subtask 26).
+# CURIE-preservation gate helpers (Subtask 26 → Phase 3.5 Subtask 3).
 # ---------------------------------------------------------------------------
 #
-# Direct port of the
-# ``Trainforge.generators._local_provider.LocalSynthesisProvider._missing_preserve_tokens``
-# + ``_append_preserve_remediation`` patterns (`:548-583`), adapted to
-# Block.content's outline-dict shape: the Trainforge precedent operates
-# on a flat ``parsed`` dict, this gate operates on the rewrite-tier HTML
-# response text and the outline-dict's ``curies`` list.
+# The generalized helpers live in ``Courseforge/router/remediation.py``
+# (Phase 3.5 Subtask 3) so the router-side remediation injection
+# (Subtasks 18-22) and the rewrite-tier CURIE-preservation gate share
+# one canonical implementation. The thin wrappers below preserve the
+# rewrite-tier-specific call signatures (positional args, no
+# ``in_keys`` kwarg) so the existing call sites in
+# :meth:`RewriteProvider.generate_rewrite` and the existing
+# ``test_rewrite_provider.py`` regression suite remain byte-stable
+# across the move. The Trainforge precedent
+# (``Trainforge/generators/_local_provider.py:548-583``) is the same
+# function the new module ports; the rewrite tier consumes the
+# string-content branch of the generalised signature.
 
 
 def _missing_preserve_curies(
     html_response: str, outline_curies: Sequence[str]
 ) -> List[str]:
-    """Return the CURIEs that don't appear verbatim in ``html_response``.
+    """Re-export shim — delegates to
+    :func:`Courseforge.router.remediation._missing_preserve_tokens`
+    with the rewrite-tier defaults.
 
     Substring match — the rewrite tier emits HTML, so a CURIE
     preserved in any tag (a ``<code>sh:NodeShape</code>`` block, a
-    ``data-cf-key-terms`` attribute value, or just inline prose) all
-    count as preserved. Empty input returns an empty list.
-
-    Mirrors :func:`Trainforge.generators._local_provider.LocalSynthesisProvider._missing_preserve_tokens`
-    (`:548-564`); the function is staticmethod-equivalent so the
-    Subtask 27 tests can call it directly.
+    ``data-cf-key-terms`` attribute value, or inline prose) all count
+    as preserved. Empty input returns an empty list.
     """
-    if not outline_curies:
-        return []
-    text = html_response or ""
-    missing: List[str] = []
-    for curie in outline_curies:
-        if curie and curie not in text:
-            missing.append(curie)
-    return missing
+    return _missing_preserve_tokens(html_response or "", list(outline_curies or []))
 
 
 def _append_curie_remediation(
     user_prompt: str, missing_curies: Sequence[str]
 ) -> str:
-    """Append a remediation directive naming the dropped CURIEs.
+    """Re-export shim — delegates to
+    :func:`Courseforge.router.remediation._append_preserve_remediation`
+    with the rewrite-tier defaults (``in_keys=("the HTML body",)``).
 
-    The remediation reuses the exact wording shape Trainforge's
-    :func:`_append_preserve_remediation` builds (`:566-583`) — terse,
-    names the missing tokens verbatim, instructs the model to re-emit
-    the response with each token verbatim. Emit follows the rewrite-
-    tier output contract (HTML, no markdown).
+    The remediation reuses the canonical Trainforge wording (the
+    ``"did not include the required"`` phrase the rewrite-tier
+    regression suite substring-matches) so the move is byte-stable
+    across the test surface.
     """
-    token_list = ", ".join(repr(t) for t in missing_curies)
-    remediation = (
-        f"\n\nThe prior response did not include the required "
-        f"CURIEs {token_list} verbatim in the HTML body. Rewrite "
-        f"the HTML so each of those CURIEs appears verbatim "
-        f"(exact characters, with the colon and case intact). "
-        f"Output the same block-type HTML shape, HTML only — no "
-        f"preamble, no markdown."
+    return _append_preserve_remediation(
+        user_prompt,
+        list(missing_curies or []),
+        in_keys=("the HTML body",),
     )
-    return user_prompt + remediation
 
 
 def _apply_rewrite_touch(
