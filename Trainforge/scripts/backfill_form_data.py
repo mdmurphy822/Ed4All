@@ -59,6 +59,7 @@ import re
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -107,6 +108,98 @@ def _resolve_chunks_jsonl(course_code: str) -> Optional[Path]:
         if p.is_file():
             return p
     return None
+
+
+# ----------------------------------------------------------------------
+# Session log — Plan §2.2 / Worker B
+#
+# Per-session sidecar at ``LibV2/courses/<slug>/.backfill_session.jsonl``
+# (or next to the catalog YAML when no course slug is wired). One JSONL
+# line per ``_process_one_curie`` return; loader is tolerant (malformed
+# lines skipped). Mirrors the ``align_chunks.py`` checkpoint pattern.
+# ----------------------------------------------------------------------
+
+
+def _resolve_session_log_path(
+    course_code: str, yaml_path: Path,
+) -> Path:
+    """Return ``LibV2/courses/<slug>/.backfill_session.jsonl`` when the
+    course directory exists; otherwise fall back to a sidecar next to
+    the catalog YAML (``<yaml-dir>/.backfill_session_<family>.jsonl``).
+
+    The course-rooted location is preferred because the backfill
+    session is per-course state, not per-family. The fallback keeps
+    the helper usable in test fixtures and ad-hoc runs that don't
+    have a corresponding LibV2 course on disk.
+    """
+    course_dir = PROJECT_ROOT / "LibV2" / "courses" / course_code
+    if course_dir.is_dir():
+        return course_dir / ".backfill_session.jsonl"
+    # Fallback: alongside the catalog YAML. Family stem extracted from
+    # the YAML filename so multi-family operator runs don't collide.
+    m = re.search(
+        r"schema_translation_catalog\.([^.]+)\.yaml$", yaml_path.name
+    )
+    family = m.group(1) if m else "unknown"
+    return yaml_path.parent / f".backfill_session_{family}.jsonl"
+
+
+def _load_backfill_session_log(
+    path: Optional[Path],
+) -> Dict[str, Dict[str, Any]]:
+    """Tolerant loader. Returns curie → most-recent-record dict.
+
+    Multiple records for the same CURIE → last wins.
+    Malformed lines are skipped (the session log is best-effort, not
+    authoritative). A missing or empty file returns an empty dict.
+    """
+    if path is None or not path.exists():
+        return {}
+    by_curie: Dict[str, Dict[str, Any]] = {}
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            curie = obj.get("curie")
+            if curie:
+                by_curie[curie] = obj
+    return by_curie
+
+
+def _append_backfill_session_log(
+    fh: Optional[Any],
+    curie: str,
+    outcome: str,
+    redrafts: int,
+    violations: List[str],
+) -> None:
+    """Append one CURIE attempt to the open session-log handle.
+
+    Writes a single JSON line + ``flush()`` so a ``tail -f`` (or a
+    crash + restart) sees the latest attempt immediately. No-op when
+    the session log isn't wired (``fh is None``).
+
+    The record carries ``outcome`` (one of ``"accepted"``,
+    ``"failed_validation"``, ``"max_redrafts_exceeded"``), the
+    redraft count for that CURIE, a per-CURIE violations summary
+    list, and a UTC ISO-8601 timestamp.
+    """
+    if fh is None:
+        return
+    record = {
+        "curie": curie,
+        "outcome": outcome,
+        "redrafts": redrafts,
+        "violations_summary": violations,
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    fh.write(json.dumps(record) + "\n")
+    fh.flush()
 
 
 def _count_curie_frequencies(
@@ -655,6 +748,7 @@ def _process_one_curie(
     timeout: Optional[float] = None,
     semantic_profile: Optional[Any] = None,
     allow_non_manifest: bool = False,
+    session_log_fh: Optional[Any] = None,
     input_fn=None,  # accepted for back-compat; unused in fully-automatic mode
     editor_fn=None,  # accepted for back-compat; unused in fully-automatic mode
 ) -> str:
@@ -671,6 +765,13 @@ def _process_one_curie(
       ``"failed_validation"``  — transport / parse failure (no retry).
       ``"max_redrafts_exceeded"``  — Qwen couldn't satisfy validator
                                      within MAX_REDRAFTS attempts.
+
+    When ``session_log_fh`` is wired, exactly one JSONL record is
+    appended to it before each return path (Plan §2.2 Worker B). The
+    record carries the outcome, redraft count, and per-CURIE
+    violations summary so an operator running a multi-hour session
+    can see which CURIEs hit ``max_redrafts_exceeded`` and decide
+    whether to retry on relaunch.
     """
     # Resolve runner at call time via module-attribute lookup so
     # ``patch.object(cli, "_run_drafting_cli", ...)`` in tests is
@@ -689,6 +790,11 @@ def _process_one_curie(
     MAX_REDRAFTS = 10
     accumulated_violations: List[str] = []
     seen_violation_keys: set = set()
+    # Per-CURIE violation summary for the session log record. Tracks
+    # the unique violation codes observed across this CURIE's attempt
+    # chain so the operator's resume-time view is metadata-shaped
+    # (codes only, no authored YAML strings).
+    violations_summary: List[str] = []
 
     # Initial draft.
     semantic_profile_name = (
@@ -704,6 +810,10 @@ def _process_one_curie(
         print_fn(
             f"  drafting CLI transport failed (exit {rc}); stderr=\n{stderr}"
         )
+        _append_backfill_session_log(
+            session_log_fh, curie, "failed_validation",
+            redraft_count, violations_summary,
+        )
         return "failed_validation"
 
     while True:
@@ -712,6 +822,10 @@ def _process_one_curie(
             payload = _extract_yaml_payload_from_drafting_stdout(current_yaml)
         except Exception as exc:
             print_fn(f"  YAML did not parse: {exc}; skipping.")
+            _append_backfill_session_log(
+                session_log_fh, curie, "failed_validation",
+                redraft_count, violations_summary,
+            )
             return "failed_validation"
         # Auto-flip PENDING_REVIEW: this script IS the review surface;
         # the operator commits the diff at the end.
@@ -721,6 +835,10 @@ def _process_one_curie(
         new_entry_yaml = forms.get(curie)
         if not isinstance(new_entry_yaml, dict):
             print_fn(f"  YAML did not contain forms.{curie}; skipping.")
+            _append_backfill_session_log(
+                session_log_fh, curie, "failed_validation",
+                redraft_count, violations_summary,
+            )
             return "failed_validation"
 
         # Merge + validate + auto-redraft on rejection.
@@ -738,6 +856,10 @@ def _process_one_curie(
         ]
         if not this_curie_violations:
             print_fn(f"  OK accepted (after {redraft_count} redraft(s))")
+            _append_backfill_session_log(
+                session_log_fh, curie, "accepted",
+                redraft_count, violations_summary,
+            )
             return "accepted"
 
         # Validator rejected: log + rollback + redraft (or give up).
@@ -747,11 +869,25 @@ def _process_one_curie(
         _rollback_overlay(yaml_path, pre_full)
         _invalidate_form_data_cache()
 
+        # Build the per-CURIE violations summary in lockstep with
+        # the cumulative-feedback dedup pass below. Captures the
+        # unique violation codes seen across the attempt chain.
+        for v in this_curie_violations:
+            if not isinstance(v, dict):
+                continue
+            code = v.get("code") or v.get("rule") or "UNKNOWN"
+            if code not in violations_summary:
+                violations_summary.append(code)
+
         redraft_count += 1
         if redraft_count >= MAX_REDRAFTS:
             print_fn(
                 f"  Reached MAX_REDRAFTS={MAX_REDRAFTS} on {curie} — "
                 f"giving up. Operator should hand-curate this CURIE."
+            )
+            _append_backfill_session_log(
+                session_log_fh, curie, "max_redrafts_exceeded",
+                redraft_count, violations_summary,
             )
             return "max_redrafts_exceeded"
 
@@ -788,6 +924,10 @@ def _process_one_curie(
         if rc != 0 and rc != 3:
             print_fn(
                 f"  redraft transport failed (exit {rc}); stderr=\n{stderr}"
+            )
+            _append_backfill_session_log(
+                session_log_fh, curie, "failed_validation",
+                redraft_count, violations_summary,
             )
             return "failed_validation"
 
@@ -935,6 +1075,29 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "the property manifest's lowest tier. Use higher values "
             "(e.g. 10) to focus on the corpus's high-coupling "
             "vocabulary first."
+        ),
+    )
+    # Plan §2.2 / Worker B: per-session resume log + flags. Default
+    # behavior preserves prior runs: an operator who doesn't pass
+    # --retry-failed and has no prior session log on disk sees zero
+    # change from the pre-Worker-B contract.
+    parser.add_argument(
+        "--retry-failed",
+        action="store_true",
+        help=(
+            "Re-attempt CURIEs that hit max_redrafts_exceeded in a "
+            "prior session. Default skips them (the operator may have "
+            "tweaked the prompt; otherwise re-running on the same "
+            "Qwen / catalog state is unlikely to succeed)."
+        ),
+    )
+    parser.add_argument(
+        "--clean-session",
+        action="store_true",
+        help=(
+            "Delete the .backfill_session.jsonl session log before "
+            "starting. Use this to start a fresh resume window after "
+            "a prompt or catalog edit."
         ),
     )
     return parser
@@ -1147,6 +1310,40 @@ def main(
 
     yaml_path = _resolve_yaml_path(args.family, args.yaml_path)
 
+    # Plan §2.2 / Worker B: per-session resume log. Resolve the
+    # session log path before opening so --clean-session can unlink
+    # cleanly, and so the prior-session filter runs against the
+    # correct file.
+    session_log_path = _resolve_session_log_path(args.course_code, yaml_path)
+    if args.clean_session and session_log_path.exists():
+        session_log_path.unlink()
+        print_fn(
+            f"--clean-session: unlinked {session_log_path}"
+        )
+    prior_session = _load_backfill_session_log(session_log_path)
+
+    # Filter out CURIEs that hit max_redrafts_exceeded in a prior
+    # session unless --retry-failed brings them back. The default
+    # behavior preserves operator wall-time: re-running on the same
+    # Qwen / catalog state is unlikely to clear the redraft ceiling.
+    if not args.retry_failed and prior_session:
+        skipped_for_prior_failure = [
+            curie for curie, freq in targets
+            if prior_session.get(curie, {}).get("outcome")
+            == "max_redrafts_exceeded"
+        ]
+        if skipped_for_prior_failure:
+            logger.info(
+                "Skipping %d CURIEs from prior max_redrafts_exceeded "
+                "session — pass --retry-failed to re-attempt: %s",
+                len(skipped_for_prior_failure),
+                skipped_for_prior_failure,
+            )
+            targets = [
+                (curie, freq) for curie, freq in targets
+                if curie not in set(skipped_for_prior_failure)
+            ]
+
     # Wave 137 follow-up: pre-warm the model so first CURIE doesn't
     # pay cold-start. Skipped if --keep-alive=0.
     if args.keep_alive and args.keep_alive != "0":
@@ -1159,25 +1356,49 @@ def main(
         "max_redrafts_exceeded": 0,
     }
     total = len(targets)
-    for idx, (curie, freq) in enumerate(targets, start=1):
-        outcome = _process_one_curie(
-            idx=idx,
-            total=total,
-            curie=curie,
-            freq=freq,
-            label=label_by_curie.get(curie, ""),
-            family=args.family,
-            course_code=args.course_code,
-            provider=args.provider,
-            model=args.model,
-            yaml_path=yaml_path,
-            manifest_curies=manifest_curies,
-            print_fn=print_fn,
-            timeout=args.timeout,
-            semantic_profile=semantic_profile,
-            allow_non_manifest=args.discover_from_corpus,
-        )
-        counters[outcome] = counters.get(outcome, 0) + 1
+    # Open the session log for append. Append-only so the operator
+    # gets the full attempt history across re-runs (loader takes
+    # last-wins per CURIE).
+    session_log_path.parent.mkdir(parents=True, exist_ok=True)
+    session_log_fh = session_log_path.open("a", encoding="utf-8")
+    try:
+        for idx, (curie, freq) in enumerate(targets, start=1):
+            outcome = _process_one_curie(
+                idx=idx,
+                total=total,
+                curie=curie,
+                freq=freq,
+                label=label_by_curie.get(curie, ""),
+                family=args.family,
+                course_code=args.course_code,
+                provider=args.provider,
+                model=args.model,
+                yaml_path=yaml_path,
+                manifest_curies=manifest_curies,
+                print_fn=print_fn,
+                timeout=args.timeout,
+                semantic_profile=semantic_profile,
+                allow_non_manifest=args.discover_from_corpus,
+                session_log_fh=session_log_fh,
+            )
+            counters[outcome] = counters.get(outcome, 0) + 1
+    finally:
+        session_log_fh.close()
+
+    # Plan §2.2 / Worker B: on clean exit, unlink the session log
+    # when the family is now fully complete (zero degraded entries
+    # remain). Mirrors align_chunks.py's clean-exit unlink — once the
+    # authoritative state (the YAML overlay) carries everything, the
+    # resume sidecar is redundant.
+    _invalidate_form_data_cache()
+    post_run_form_data = _load_form_data(args.family)
+    remaining_degraded = [
+        c for c, e in post_run_form_data.items()
+        if e.anchored_status == "degraded_placeholder"
+        and c in manifest_curies
+    ]
+    if not remaining_degraded and session_log_path.exists():
+        session_log_path.unlink()
 
     # Step 6: end-of-run summary + decision-capture event.
     print_fn(
