@@ -528,6 +528,7 @@ def _run_drafting_cli(
     timeout: Optional[float] = None,
     prior_violations: Optional[List[str]] = None,
     semantic_profile_name: Optional[str] = None,
+    allow_non_manifest: bool = False,
 ) -> Tuple[int, str, str]:
     """Dispatch the Wave 136c drafting CLI as a subprocess.
 
@@ -572,6 +573,8 @@ def _run_drafting_cli(
         cmd.extend(["--prior-violations", json.dumps(prior_violations)])
     if semantic_profile_name:
         cmd.extend(["--semantic-profile", semantic_profile_name])
+    if allow_non_manifest:
+        cmd.append("--allow-non-manifest")
     proc = subprocess.run(
         cmd,
         capture_output=True,
@@ -651,6 +654,7 @@ def _process_one_curie(
     runner=None,
     timeout: Optional[float] = None,
     semantic_profile: Optional[Any] = None,
+    allow_non_manifest: bool = False,
     input_fn=None,  # accepted for back-compat; unused in fully-automatic mode
     editor_fn=None,  # accepted for back-compat; unused in fully-automatic mode
 ) -> str:
@@ -694,6 +698,7 @@ def _process_one_curie(
         curie, family, course_code, provider, model, timeout,
         None,  # prior_violations
         semantic_profile_name,
+        allow_non_manifest,
     )
     if rc != 0 and rc != 3:
         print_fn(
@@ -778,6 +783,7 @@ def _process_one_curie(
             curie, family, course_code, provider, model, timeout,
             accumulated_violations,
             semantic_profile_name,
+            allow_non_manifest,
         )
         if rc != 0 and rc != 3:
             print_fn(
@@ -901,6 +907,36 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "with a matching target."
         ),
     )
+    # Wave 137 followup: corpus-driven CURIE discovery. When set, the
+    # loop's target list is computed from the corpus's actual CURIE
+    # inventory (via lib.ontology.curie_discovery) rather than from
+    # the static property manifest. The number of CURIEs the operator
+    # backfills scales with the corpus instead of being hand-pinned.
+    parser.add_argument(
+        "--discover-from-corpus",
+        action="store_true",
+        help=(
+            "Compute the target list from the corpus's actual CURIE "
+            "inventory instead of the manifest's degraded entries. "
+            "The loop processes (corpus-discovered CURIEs above "
+            "--min-frequency) ∪ (manifest-declared degraded). "
+            "Discovered CURIEs not yet in form_data are processed as "
+            "if degraded. Operator-local YAML overlay absorbs the "
+            "results — manifest stays unchanged."
+        ),
+    )
+    parser.add_argument(
+        "--min-frequency",
+        type=int,
+        default=2,
+        help=(
+            "Minimum chunk-occurrence frequency a CURIE must hit to "
+            "qualify for --discover-from-corpus. Default 2 — matches "
+            "the property manifest's lowest tier. Use higher values "
+            "(e.g. 10) to focus on the corpus's high-coupling "
+            "vocabulary first."
+        ),
+    )
     return parser
 
 
@@ -976,6 +1012,63 @@ def main(
             )
             return 2
         degraded = [args.curie]
+    elif args.discover_from_corpus:
+        # Wave 137 followup: corpus-driven CURIE discovery. Compute the
+        # target list from the corpus's actual CURIE inventory.
+        from lib.ontology.curie_discovery import discover_curies_from_corpus
+        chunks_path_for_discovery = _resolve_chunks_jsonl(args.course_code)
+        if chunks_path_for_discovery is None:
+            print(
+                f"ERROR: --discover-from-corpus requires a chunks.jsonl "
+                f"for course {args.course_code!r}; not found at "
+                f"LibV2/courses/{args.course_code}/corpus/chunks.jsonl",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            discovered_counts = discover_curies_from_corpus(
+                chunks_path_for_discovery,
+                min_frequency=args.min_frequency,
+            )
+        except (FileNotFoundError, ValueError) as exc:
+            print(
+                f"ERROR: corpus discovery failed: {exc}",
+                file=sys.stderr,
+            )
+            return 1
+        # Union: every corpus-discovered CURIE + every still-degraded
+        # manifest CURIE. CURIEs already complete in form_data
+        # (whether from the manifest's hand-curated 6 or prior
+        # backfill) are skipped — discovery is additive, not
+        # destructive. Operators wanting force-redraft of complete
+        # entries use --curie on each target.
+        manifest_degraded = [
+            c for c, e in form_data.items()
+            if e.anchored_status == "degraded_placeholder"
+            and c in manifest_curies
+        ]
+        already_complete = {
+            c for c, e in form_data.items()
+            if e.anchored_status == "complete"
+        }
+        target_set: List[str] = []
+        seen: set = set()
+        # Discovered first (in corpus-frequency order), manifest-
+        # degraded second (covers manifest CURIEs that don't actually
+        # appear in the corpus but are still required).
+        for curie in list(discovered_counts.keys()) + manifest_degraded:
+            if curie in seen or curie in already_complete:
+                continue
+            seen.add(curie)
+            target_set.append(curie)
+        degraded = target_set
+        print_fn(
+            f"Corpus discovery: {len(discovered_counts)} CURIEs above "
+            f"min_frequency={args.min_frequency}; "
+            f"{len(target_set)} targets after union with manifest "
+            f"degraded and exclusion of {len(already_complete)} "
+            f"already-complete entries."
+        )
     else:
         degraded = [
             c for c, e in form_data.items()
@@ -1034,6 +1127,12 @@ def main(
         # filter + --limit. The single target carries its measured
         # corpus frequency for telemetry consistency.
         targets = [(args.curie, counts.get(args.curie, 0))]
+    elif args.discover_from_corpus:
+        # Wave 137 followup: discovery preserves its own
+        # frequency-desc order; family-cluster sort doesn't apply
+        # because corpus-discovered CURIEs may not be in any family.
+        ordered = [(curie, counts.get(curie, 0)) for curie in degraded]
+        targets = ordered[: args.limit]
     else:
         ordered = _sort_targets_clustered(
             degraded,
@@ -1076,6 +1175,7 @@ def main(
             print_fn=print_fn,
             timeout=args.timeout,
             semantic_profile=semantic_profile,
+            allow_non_manifest=args.discover_from_corpus,
         )
         counters[outcome] = counters.get(outcome, 0) + 1
 
