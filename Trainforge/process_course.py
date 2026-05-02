@@ -123,6 +123,36 @@ CANONICAL_CHUNK_TYPES = frozenset({
 USE_CONTENT_HASH_IDS = os.getenv("TRAINFORGE_CONTENT_HASH_IDS", "").lower() == "true"
 
 
+# Phase 4 Subtask 36: env-var-first target-models resolution for the
+# operator-readable `dataset_config.json::target_models` list. Default
+# preserves the previous hardcoded `["claude-opus-4-6",
+# "claude-sonnet-4-6"]` pair; operators retraining against a different
+# teacher set TRAINFORGE_TARGET_MODELS as a comma-separated list.
+TARGET_MODELS_ENV = "TRAINFORGE_TARGET_MODELS"
+TARGET_MODELS_DEFAULT = ("claude-opus-4-6", "claude-sonnet-4-6")
+
+
+def _resolve_target_models() -> List[str]:
+    """Pick the effective target-models list for ``dataset_config.json``.
+
+    Priority order:
+      1. ``TRAINFORGE_TARGET_MODELS`` env var (CSV) when set.
+      2. ``TARGET_MODELS_DEFAULT`` (preserves legacy emit byte-shape).
+
+    Whitespace per token is trimmed; empty tokens (e.g. trailing comma)
+    are dropped. An env var that resolves to zero tokens falls back to
+    the default rather than emitting an empty list, since downstream
+    consumers expect ``target_models`` to be non-empty.
+    """
+    raw = os.environ.get(TARGET_MODELS_ENV)
+    if raw is None:
+        return list(TARGET_MODELS_DEFAULT)
+    tokens = [t.strip() for t in raw.split(",") if t.strip()]
+    if not tokens:
+        return list(TARGET_MODELS_DEFAULT)
+    return tokens
+
+
 def _generate_chunk_id(prefix: str, start_id: int, text: str, source_locator: str) -> str:
     """Generate a chunk ID.
 
@@ -4979,7 +5009,7 @@ class CourseProcessor:
         # Training specs
         training_specs = {
             "format": "instruction-following",
-            "target_models": ["claude-opus-4-6", "claude-sonnet-4-6"],
+            "target_models": _resolve_target_models(),
             "training_objectives": [
                 f"{self.domain}_instruction",
                 f"{self.domain}_reasoning",
@@ -5287,13 +5317,18 @@ def main():
     # Optional alignment stage
     if args.align:
         print("\n[Alignment] Running alignment stage...")
+        # Phase 4 Subtask 36: env-var-first model resolution; mirrors
+        # Subtask 35's Trainforge/align_chunks.py::_resolve_align_model
+        # so a single TRAINFORGE_ALIGN_CHUNKS_MODEL env var controls
+        # both the standalone CLI and the embedded process_course path.
         from Trainforge.align_chunks import main as align_main
+        from Trainforge.align_chunks import _resolve_align_model
         align_args = argparse.Namespace(
             corpus=args.output,
             objectives=args.objectives,
             fields="prereq_concepts,teaching_role,learning_outcome_refs",
             llm_provider=args.llm_provider,
-            llm_model="claude-haiku-4-5-20251001",
+            llm_model=_resolve_align_model(),
             dry_run=False,
             verbose=False,
         )
