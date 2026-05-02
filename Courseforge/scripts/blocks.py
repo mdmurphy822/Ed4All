@@ -30,7 +30,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-__all__ = ["Block", "Touch", "BLOCK_TYPES"]
+__all__ = ["Block", "Touch", "BLOCK_TYPES", "_parse_provider_page_html"]
 
 
 # Phase-2 emit flag (mirror of ``generate_course._courseforge_emit_blocks_enabled``;
@@ -126,6 +126,52 @@ def _slugify(text: str) -> str:
     lowered = text.strip().lower()
     collapsed = _SLUG_NON_ALNUM.sub("_", lowered).strip("_")
     return collapsed[:40]
+
+
+# ---------------------------------------------------------------------------
+# Provider HTML parser (Phase 2 Subtask 35: moved from
+# ``MCP/tools/_content_gen_helpers.py`` so :class:`ContentGeneratorProvider`
+# can build a Block from the LLM's rendered HTML without importing the
+# MCP-side helper module).
+# ---------------------------------------------------------------------------
+
+_PROV_HEADING_RE = re.compile(r"(?is)<h(?:1|2|3)[^>]*>(.*?)</h(?:1|2|3)>")
+_PROV_PARAGRAPH_RE = re.compile(r"(?is)<p[^>]*>(.*?)</p>")
+_PROV_TAG_STRIP_RE = re.compile(r"(?is)<[^>]+>")
+
+
+def _parse_provider_page_html(
+    html: Optional[str],
+) -> Tuple[Optional[str], List[str]]:
+    """Extract ``(heading, paragraphs[])`` from provider-rendered HTML.
+
+    Returns ``(None, [])`` when input is empty / unparseable. Strips
+    inner tags from extracted text so callers don't double-escape when
+    they wrap the paragraphs in ``html.escape``. Empty paragraphs (after
+    tag strip + whitespace collapse) are dropped.
+
+    Phase 1 ToS unblock: minimal regex-based HTML parser for the
+    in-process content-provider's rendered HTML body. BeautifulSoup
+    intentionally NOT used so this stays dependency-light.
+    """
+    if not html or not isinstance(html, str):
+        return None, []
+    heading_match = _PROV_HEADING_RE.search(html)
+    heading: Optional[str] = None
+    if heading_match:
+        raw_heading = heading_match.group(1) or ""
+        heading = _PROV_TAG_STRIP_RE.sub("", raw_heading).strip()
+        if not heading:
+            heading = None
+
+    paragraphs: List[str] = []
+    for m in _PROV_PARAGRAPH_RE.finditer(html):
+        raw = m.group(1) or ""
+        text = _PROV_TAG_STRIP_RE.sub("", raw)
+        text = re.sub(r"\s+", " ", text).strip()
+        if text:
+            paragraphs.append(text)
+    return heading, paragraphs
 
 
 @dataclass(frozen=True)
