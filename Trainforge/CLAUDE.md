@@ -391,6 +391,7 @@ Questions MUST target specific Bloom's levels:
 
 Trainforge extracts structured metadata from Courseforge HTML output using a priority chain:
 
+0. **JSON-LD `blocks[]`** (Phase 2, highest fidelity when `COURSEFORGE_EMIT_BLOCKS=true`): canonical projection of the `Block` dataclass (`Courseforge/scripts/blocks.py:223-265`); `block_type` carries content-type, `bloom_level`, `key_terms`, `template_type` directly per block. Surfaced into `Trainforge/parsers/html_content_parser.py::_extract_blocks_from_jsonld` (`:505`) and consumed in `Trainforge/process_course.py::_extract_section_metadata` (`:2333-2341`).
 1. **JSON-LD** (highest fidelity): `<script type="application/ld+json">` blocks with objectives, sections, misconceptions
 2. **`data-cf-*` attributes**: Inline metadata on HTML elements (objective IDs, Bloom's levels, content types)
 3. **Regex heuristics** (fallback): Pattern matching for non-Courseforge IMSCC packages
@@ -399,9 +400,9 @@ Trainforge extracts structured metadata from Courseforge HTML output using a pri
 
 | Field | Source | Description |
 |-------|--------|-------------|
-| `bloom_level` | JSON-LD / data-cf-* / verb inference | Cognitive taxonomy level |
-| `content_type_label` | JSON-LD / data-cf-content-type | Section classification (explanation, example, procedure, etc.) |
-| `key_terms` | JSON-LD keyTerms | Structured term/definition pairs |
+| `bloom_level` | JSON-LD `blocks[]` / JSON-LD sections / data-cf-* / verb inference | Cognitive taxonomy level |
+| `content_type_label` | JSON-LD `blocks[]` `block_type` / JSON-LD contentType / data-cf-content-type | Section classification (explanation, example, procedure, etc.). Phase 2: `process_course._extract_section_metadata` (`:2333-2341`) prefers the per-block projection when `blocks[]` is present. |
+| `key_terms` | JSON-LD `blocks[]` `key_terms` / JSON-LD keyTerms | Structured term/definition pairs |
 | `misconceptions` | JSON-LD misconceptions | Common errors with corrections |
 | `run_id` | Active `DecisionCapture` | Provenance — emitted unconditionally on all chunks |
 | `created_at` | Active `DecisionCapture` | Provenance timestamp — emitted unconditionally |
