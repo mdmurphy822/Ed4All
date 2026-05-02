@@ -600,6 +600,10 @@ workflows:
         timeout_minutes: 120
         batch_timeout_minutes: 30
         description: Generate course content modules
+        # Phase 3 Subtask 3: legacy single-pass content_generation
+        # disables itself when the new two-pass router is engaged.
+        # Default off so legacy runs stay byte-stable.
+        enabled_when_env: "COURSEFORGE_TWO_PASS!=true"
 
         inputs_from:
           - param: project_id
@@ -670,6 +674,167 @@ workflows:
               on_fail: block
               on_error: fail_closed
             description: Verify every non-trivial paragraph in generated HTML is grounded in DART source (Wave 31)
+
+      # Phase 3 Subtask 3: two-pass router phases. Engaged when
+      # ``COURSEFORGE_TWO_PASS=true`` is set in the environment;
+      # otherwise the legacy ``content_generation`` phase above runs
+      # instead. The three phases form an outline -> validate -> rewrite
+      # loop: outline emits Block scaffolds, inter_tier_validation
+      # runs structural validators on the outline tier, rewrite emits
+      # the final HTML pages.
+      - name: content_generation_outline
+        agents: [content-generator]
+        parallel: true
+        max_concurrent: 10
+        batch_by: week
+        depends_on: [course_planning, source_mapping, staging]
+        timeout_minutes: 30
+        batch_timeout_minutes: 10
+        description: Phase 3 — outline-tier Block emit (terse provider, no HTML body)
+        enabled_when_env: "COURSEFORGE_TWO_PASS=true"
+
+        inputs_from:
+          - param: project_id
+            source: phase_outputs
+            phase: objective_extraction
+            output: project_id
+          - param: source_module_map_path
+            source: phase_outputs
+            phase: source_mapping
+            output: source_module_map_path
+          - param: staging_dir
+            source: phase_outputs
+            phase: staging
+            output: staging_dir
+          - param: duration_weeks_explicit
+            source: workflow_params
+            key: duration_weeks_explicit
+
+        outputs:
+          - blocks_outline_path
+          - project_id
+          - weeks_prepared
+
+      - name: inter_tier_validation
+        # No agent — runs Python validators only. The phase loop
+        # detects ``agents: []`` + zero ``inputs_from`` LLM workers and
+        # short-circuits to the validator chain.
+        agents: []
+        parallel: false
+        max_concurrent: 1
+        depends_on: [content_generation_outline]
+        timeout_minutes: 5
+        description: Phase 3 — run structural validators on the outline tier
+        enabled_when_env: "COURSEFORGE_TWO_PASS=true"
+
+        inputs_from:
+          - param: blocks_outline_path
+            source: phase_outputs
+            phase: content_generation_outline
+            output: blocks_outline_path
+          - param: project_id
+            source: phase_outputs
+            phase: objective_extraction
+            output: project_id
+
+        outputs:
+          - blocks_validated_path
+          - blocks_failed_path
+
+        # Initially warning-severity per Phase 3 §A — promoted to
+        # block in a follow-up wave once the outline-tier validators
+        # have stable false-positive rates on a real corpus.
+        validation_gates:
+          - gate_id: outline_curie_anchoring
+            validator: lib.validators.curie_anchoring.CurieAnchoringValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Phase 3 inter-tier — verify outline-tier Blocks anchor on a CURIE per §3 (warn-only initially)
+
+          - gate_id: outline_content_type
+            validator: lib.validators.content_type.ContentTypeValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Phase 3 inter-tier — verify outline-tier Block content_type stays in the canonical 8-value enum
+
+          - gate_id: outline_page_objectives
+            validator: lib.validators.page_objectives.PageObjectivesValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Phase 3 inter-tier — verify outline-tier Blocks reference the page's declared objectives
+
+          - gate_id: outline_source_refs
+            validator: lib.validators.source_refs.PageSourceRefValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Phase 3 inter-tier — verify outline-tier source_ids resolve against the DART staging manifest
+
+      - name: content_generation_rewrite
+        agents: [content-generator]
+        parallel: true
+        max_concurrent: 10
+        batch_by: week
+        depends_on: [inter_tier_validation]
+        timeout_minutes: 90
+        batch_timeout_minutes: 30
+        description: Phase 3 — rewrite-tier HTML emit consuming validated Block outlines
+        enabled_when_env: "COURSEFORGE_TWO_PASS=true"
+
+        inputs_from:
+          - param: blocks_validated_path
+            source: phase_outputs
+            phase: inter_tier_validation
+            output: blocks_validated_path
+          - param: project_id
+            source: phase_outputs
+            phase: objective_extraction
+            output: project_id
+          - param: source_module_map_path
+            source: phase_outputs
+            phase: source_mapping
+            output: source_module_map_path
+          - param: staging_dir
+            source: phase_outputs
+            phase: staging
+            output: staging_dir
+          - param: duration_weeks_explicit
+            source: workflow_params
+            key: duration_weeks_explicit
+
+        outputs:
+          - content_paths
+          - page_paths
+          - content_dir
+          - blocks_final_path
+
+        validation_gates:
+          # Moved from the legacy content_generation phase — the
+          # rewrite tier is where final HTML grounding is verifiable.
+          - gate_id: content_grounding
+            validator: lib.validators.content_grounding.ContentGroundingValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Verify every non-trivial paragraph in rewrite-tier HTML is grounded in DART source (Phase 3 carry-over)
 
       - name: packaging
         agents: [brightspace-packager]
