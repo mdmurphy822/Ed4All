@@ -579,6 +579,17 @@ class RewriteProvider(_BaseLLMProvider):
         # reads the synthesis-pipeline vars by design (so a single Ollama
         # endpoint serves both task surfaces); the per-tier model knob
         # is the rewrite tier's own responsibility.
+        #
+        # Phase 3a env-var-first contract (Subtask 24): the resolution
+        # chain here is ``kwargs.get("model") or os.environ.get(ENV_MODEL)
+        # or DEFAULT_MODEL`` — the per-call kwarg wins outright (highest
+        # priority), the env var beats the hardcoded default, and the
+        # hardcoded default fires only when both are unset. The base's
+        # ``model or os.environ.get("ANTHROPIC_SYNTHESIS_MODEL") or
+        # anthropic_baseline`` chain enforces the same env-var-first
+        # contract for the synthesis-pipeline fallback. Acceptance test:
+        # ``test_phase3a_env_var_overrides_hardcoded_default`` in
+        # ``Courseforge/router/tests/test_router.py``.
         import os
         resolved_model = model or os.environ.get(ENV_MODEL)
 

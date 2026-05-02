@@ -153,6 +153,16 @@ class ContentGeneratorProvider(_BaseLLMProvider):
         client: Optional[Any] = None,
         anthropic_client: Optional[Any] = None,
     ) -> None:
+        # Phase 3a env-var-first contract (Subtask 24): Phase 1's
+        # content-generator delegates model resolution directly to the
+        # base, which enforces ``model or os.environ.get(<synthesis env
+        # var>) or <baseline>`` per backend (see
+        # :class:`_BaseLLMProvider.__init__` `:192-243`). The kwarg wins
+        # over the env var; the env var beats the hardcoded baseline.
+        # Symmetric with the Phase 3 outline / rewrite providers, which
+        # additionally honour their own per-tier env var
+        # (``COURSEFORGE_OUTLINE_MODEL`` / ``COURSEFORGE_REWRITE_MODEL``)
+        # before delegating to the base.
         super().__init__(
             provider=provider,
             model=model,

@@ -476,6 +476,14 @@ class OutlineProvider(_BaseLLMProvider):
         # concrete ``model`` value (avoids accidentally falling back to
         # the per-backend baseline when the operator set the per-tier
         # ``COURSEFORGE_OUTLINE_MODEL`` knob).
+        #
+        # Phase 3a env-var-first contract (Subtask 24): the resolution
+        # chain here is ``kwargs.get("model") or os.environ.get(ENV_MODEL)
+        # or DEFAULT_MODEL`` — the per-call kwarg wins outright (highest
+        # priority), the env var beats the hardcoded default, and the
+        # hardcoded default fires only when both are unset. Acceptance
+        # test: ``test_phase3a_env_var_overrides_hardcoded_default`` in
+        # ``Courseforge/router/tests/test_router.py``.
         resolved_model = (
             model
             or os.environ.get(ENV_MODEL)
