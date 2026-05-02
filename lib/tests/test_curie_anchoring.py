@@ -367,3 +367,119 @@ def test_passes_when_no_auditable_pairs(tmp_path: Path) -> None:
     assert result.passed is True
     info_codes = [i.code for i in result.issues if i.severity == "info"]
     assert "NO_AUDITABLE_PAIRS" in info_codes
+
+
+# --------------------------------------------------------------- #
+# Phase 3 Subtask 51 — Block-list dispatch path
+# --------------------------------------------------------------- #
+
+
+def _make_outline_block(
+    block_id: str = "page_01#concept_intro_0",
+    curies=("ed4all:Foo",),
+    key_claims=None,
+):
+    """Minimal Block fixture for the outline-tier dispatch path.
+
+    Imports inline so the legacy instruction-pair tests don't pay the
+    blocks.py sys.path cost. Mirrors the bridge in
+    Courseforge/router/router.py.
+    """
+    import sys
+    from pathlib import Path
+
+    scripts_dir = (
+        Path(__file__).resolve().parents[2] / "Courseforge" / "scripts"
+    )
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    from blocks import Block  # noqa: E402
+
+    return Block(
+        block_id=block_id,
+        block_type="concept",
+        page_id="page_01",
+        sequence=0,
+        content={
+            "curies": list(curies),
+            "key_claims": list(
+                key_claims
+                if key_claims is not None
+                else ["The ed4all:Foo predicate marks anchoring."]
+            ),
+            "content_type": "definition",
+        },
+    )
+
+
+def test_validate_blocks_returns_regenerate_action_on_curie_miss():
+    """Outline-tier Block declaring CURIEs that don't appear in
+    key_claims fails closed with action='regenerate' (Phase 4 §1
+    mapping — semantic miss the rewrite tier could fix on a re-roll).
+    """
+    blocks = [
+        _make_outline_block(
+            block_id="page_01#concept_a_0",
+            curies=("ed4all:Foo",),
+            key_claims=["The ed4all:Foo predicate marks anchoring."],
+        ),
+        # Negative case: declares ed4all:Bar but key_claims has no
+        # CURIE that resolves.
+        _make_outline_block(
+            block_id="page_01#concept_b_1",
+            curies=("ed4all:Bar",),
+            key_claims=["This claim has no anchoring CURIE."],
+        ),
+    ]
+    result = CurieAnchoringValidator().validate({"blocks": blocks})
+    assert result.passed is False
+    assert result.action == "regenerate"
+    codes = [i.code for i in result.issues]
+    assert "OUTLINE_BLOCK_CURIE_NOT_ANCHORED" in codes
+    # Score reflects 1/2 anchored.
+    assert result.score == 0.5
+
+
+def test_validate_blocks_passes_when_all_curies_anchored():
+    """Every Block has at least one CURIE present in key_claims →
+    rate=1.0, action remains None (pass)."""
+    blocks = [
+        _make_outline_block(
+            curies=("ed4all:Foo",),
+            key_claims=["The ed4all:Foo predicate marks anchoring."],
+        ),
+    ]
+    result = CurieAnchoringValidator().validate({"blocks": blocks})
+    assert result.passed is True
+    assert result.action is None
+    assert result.score == 1.0
+
+
+def test_validate_blocks_skips_rewrite_tier_html_string_blocks():
+    """A rewrite-tier Block (block.content as string) is silently
+    skipped per Phase 3.5 scope split — outline-only audit. With no
+    auditable blocks the gate passes with NO_AUDITABLE_BLOCKS info.
+    """
+    import sys
+    from pathlib import Path
+
+    scripts_dir = (
+        Path(__file__).resolve().parents[2] / "Courseforge" / "scripts"
+    )
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    from blocks import Block  # noqa: E402
+
+    blocks = [
+        Block(
+            block_id="page_01#concept_html_0",
+            block_type="concept",
+            page_id="page_01",
+            sequence=0,
+            content="<p>Rewrite-tier HTML.</p>",
+        ),
+    ]
+    result = CurieAnchoringValidator().validate({"blocks": blocks})
+    assert result.passed is True
+    info_codes = [i.code for i in result.issues if i.severity == "info"]
+    assert "NO_AUDITABLE_BLOCKS" in info_codes

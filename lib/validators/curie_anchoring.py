@@ -53,6 +53,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_MIN_PAIR_ANCHORING_RATE = 0.95
 UNANCHORED_TOP_N = 20
 
+# Phase 3 Subtask 51: cap per-block issue emit count for the
+# Block-list dispatch path. Mirrors the cap in
+# Courseforge.router.inter_tier_gates so a uniformly broken outline
+# batch doesn't drown the gate report.
+_BLOCK_ISSUE_LIST_CAP = 50
+
 
 def _is_deterministic(template_id: str) -> bool:
     """True when ``template_id`` matches a deterministic generator
@@ -152,6 +158,14 @@ class CurieAnchoringValidator:
     version = "1.0.0"
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
+        # Phase 3 Subtask 51 dispatch: when the caller passes a Block
+        # list (outline-tier inter-tier gate seam), route through the
+        # Block-list path. The legacy instruction-pair path continues
+        # to fire when ``inputs["blocks"]`` is absent — Wave 135c
+        # contract is unchanged.
+        if "blocks" in inputs:
+            return self._validate_blocks(inputs)
+
         gate_id = inputs.get("gate_id", "curie_anchoring")
 
         inst_path, chunks_path, path_err = _resolve_paths(inputs)
@@ -358,6 +372,137 @@ class CurieAnchoringValidator:
                 location=str(inst_path),
             ))
         return result
+
+    def _validate_blocks(self, inputs: Dict[str, Any]) -> GateResult:
+        """Phase 3 inter-tier gate seam (Subtask 51).
+
+        Audit a list of outline-tier ``Block`` instances rather than
+        the synthesis-side instruction_pairs.jsonl + chunks.jsonl
+        the legacy entry point consumes. The caller passes the Block
+        list via ``inputs["blocks"]``; each Block carries the outline
+        dict on ``block.content`` with ``curies`` + ``key_claims``
+        keys (mirrors Phase 2 outline emit shape).
+
+        For each Block the method extracts the declared CURIEs and
+        the textual surface (concatenated ``key_claims``); a Block is
+        ``anchored`` iff at least one declared CURIE appears in the
+        surface text. Failures emit per-Block critical issues plus
+        ``action="regenerate"`` (Phase 4 §1 mapping — outline-tier
+        anchoring misses are content-side and re-rollable).
+
+        Block.content as a string (rewrite-tier HTML) is silently
+        skipped — Phase 3.5 will extend the validator to discriminate
+        on shape; the dict path here is the outline-tier seam and
+        the only consumer in Phase 3 scope.
+        """
+        gate_id = inputs.get("gate_id", "curie_anchoring")
+        raw = inputs.get("blocks") or []
+        if not isinstance(raw, list):
+            return GateResult(
+                gate_id=gate_id,
+                validator_name=self.name,
+                validator_version=self.version,
+                passed=False,
+                issues=[GateIssue(
+                    severity="critical",
+                    code="INVALID_BLOCKS_INPUT",
+                    message=(
+                        f"inputs['blocks'] must be a list; got "
+                        f"{type(raw).__name__}."
+                    ),
+                )],
+                action="regenerate",
+            )
+
+        thresholds = inputs.get("thresholds") or inputs.get("threshold") or {}
+        min_block_anchoring_rate = float(
+            thresholds.get(
+                "min_pair_anchoring_rate", DEFAULT_MIN_PAIR_ANCHORING_RATE
+            )
+        )
+
+        issues: List[GateIssue] = []
+        audited = 0
+        anchored_count = 0
+        for block in raw:
+            content = getattr(block, "content", None)
+            if not isinstance(content, dict):
+                # Skip rewrite-tier (HTML string) blocks per Phase 3.5
+                # scope split.
+                continue
+            audited += 1
+            curies_raw = content.get("curies") or []
+            curies = [c for c in curies_raw if isinstance(c, str) and c]
+            if not curies:
+                if len(issues) < _BLOCK_ISSUE_LIST_CAP:
+                    issues.append(GateIssue(
+                        severity="critical",
+                        code="OUTLINE_BLOCK_MISSING_CURIES",
+                        message=(
+                            f"Outline-tier Block "
+                            f"{getattr(block, 'block_id', '<unknown>')!r} "
+                            f"declares no CURIEs (content['curies'] is "
+                            f"empty)."
+                        ),
+                        location=getattr(block, "block_id", None),
+                    ))
+                continue
+            claims = content.get("key_claims") or []
+            text_blob = "\n".join(
+                str(c) for c in claims if isinstance(c, str)
+            )
+            extracted = _extract_curies(text_blob)
+            anchored = any(c in extracted for c in curies)
+            if anchored:
+                anchored_count += 1
+            else:
+                if len(issues) < _BLOCK_ISSUE_LIST_CAP:
+                    issues.append(GateIssue(
+                        severity="critical",
+                        code="OUTLINE_BLOCK_CURIE_NOT_ANCHORED",
+                        message=(
+                            f"Outline-tier Block "
+                            f"{getattr(block, 'block_id', '<unknown>')!r} "
+                            f"declares CURIEs {curies!r} but none of them "
+                            f"appear in content['key_claims']."
+                        ),
+                        location=getattr(block, "block_id", None),
+                    ))
+
+        # No auditable blocks (every block was rewrite-tier HTML or
+        # the list was empty): pass with an info note. Mirrors the
+        # legacy NO_AUDITABLE_PAIRS branch.
+        if audited == 0:
+            return GateResult(
+                gate_id=gate_id,
+                validator_name=self.name,
+                validator_version=self.version,
+                passed=True,
+                score=1.0,
+                issues=[GateIssue(
+                    severity="info",
+                    code="NO_AUDITABLE_BLOCKS",
+                    message=(
+                        "No outline-tier Blocks to audit (every block "
+                        "carried HTML-string content or the input list "
+                        "was empty). Gate passes by default."
+                    ),
+                )],
+                action=None,
+            )
+
+        rate = anchored_count / audited
+        passed = (rate >= min_block_anchoring_rate) and not issues
+        action = None if passed else "regenerate"
+        return GateResult(
+            gate_id=gate_id,
+            validator_name=self.name,
+            validator_version=self.version,
+            passed=passed,
+            score=round(rate, 4),
+            issues=issues,
+            action=action,
+        )
 
 
 __all__ = ["CurieAnchoringValidator"]
