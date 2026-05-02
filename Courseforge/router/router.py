@@ -1143,15 +1143,35 @@ class CourseforgeRouter:
         failed_candidate_count: int,
         validator_failure_distribution: Dict[str, int],
     ) -> None:
-        """Emit the per-loop ``block_outline_call`` audit event.
+        """Emit the per-loop ``block_outline_call`` audit event with
+        self-consistency metadata in the structured ``ml_features``
+        payload (Subtask 39).
 
-        Subtask 37 emits the loop-summary event with the
-        ``winning_candidate_index`` / ``failed_candidate_count`` /
-        ``validator_failure_distribution`` baked into the rationale.
-        Subtask 39 promotes the same fields into the structured
-        ``ml_features`` payload for ML-trainability. Both behaviours
-        coexist: the rationale carries the human-readable form, the
-        ml_features payload carries the structured form.
+        Per Phase 3 §3.6 the ml_features payload carries:
+
+        - ``n_candidates_requested: int`` — N as resolved by
+          :meth:`_resolve_n_candidates`.
+        - ``winning_candidate_index: Optional[int]`` — 0-based index of
+          the candidate that passed; ``None`` when all candidates
+          failed every validator.
+        - ``failed_candidate_count: int`` — number of candidates that
+          failed before a winner emerged (or N when all failed).
+        - ``validator_failure_distribution: Dict[str, int]`` — keyed by
+          validator name (``GateResult.validator_name`` or
+          ``gate_id`` fallback); values are per-validator failure
+          counts across all dispatched candidates.
+
+        The rationale string mirrors the ml_features payload so a
+        human reading the JSONL stream sees the same data without
+        having to project the ml_features dict.
+
+        Schema-side: the ``decision_event.schema.json`` ``ml_features``
+        block does not pin ``additionalProperties: false`` (verified at
+        ``schemas/events/decision_event.schema.json:181-218``), so the
+        new keys validate alongside the canonical
+        ``pedagogy_pattern`` / ``engagement_patterns`` / ... fields
+        without touching the schema. Subtask 7 in the next batch is
+        the canonical home for any schema-side enum extension.
         """
         if self._capture is None:
             return
@@ -1172,6 +1192,12 @@ class CourseforgeRouter:
             f"failed_candidate_count={failed_candidate_count}",
             f"outcome={outcome}",
         ]
+        ml_features: Dict[str, Any] = {
+            "n_candidates_requested": n_candidates_requested,
+            "winning_candidate_index": winning_candidate_index,
+            "failed_candidate_count": failed_candidate_count,
+            "validator_failure_distribution": dict(validator_failure_distribution),
+        }
         try:
             self._capture.log_decision(
                 decision_type="block_outline_call",
@@ -1180,6 +1206,7 @@ class CourseforgeRouter:
                     f":{outcome}"
                 ),
                 rationale="; ".join(rationale_parts),
+                ml_features=ml_features,
             )
         except Exception as exc:  # pragma: no cover — defensive
             logger.warning(
