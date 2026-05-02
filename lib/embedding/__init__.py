@@ -25,6 +25,7 @@ from lib.embedding.sentence_embedder import (
     EmbeddingCache,
     EmbeddingDepsMissing,
     SentenceEmbedder,
+    is_strict_mode,
     try_load_embedder,
 )
 
@@ -33,5 +34,6 @@ __all__ = [
     "EmbeddingDepsMissing",
     "SentenceEmbedder",
     "cosine_similarity",
+    "is_strict_mode",
     "try_load_embedder",
 ]

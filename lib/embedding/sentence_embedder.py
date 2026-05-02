@@ -3,7 +3,13 @@
 Wraps ``sentence-transformers`` behind a thin abstraction so callers
 don't import the heavy ML stack directly. ``try_load_embedder()``
 returns ``None`` when the extras are missing — downstream validators
-fall back to a warning-severity GateIssue per Phase 4 Subtask 8.
+fall back to a warning-severity GateIssue (``EMBEDDING_DEPS_MISSING``)
+per Phase 4 Subtask 8. Strict-mode opt-in via
+``TRAINFORGE_REQUIRE_EMBEDDINGS=true`` flips the policy to critical:
+``try_load_embedder()`` raises :class:`EmbeddingDepsMissing` instead
+of swallowing the import error. Mirrors the precedent in
+``lib/validators/shacl_runner.py:557-576`` (graceful degrade by
+default, opt-in fail-closed).
 
 Default model: ``all-MiniLM-L6-v2`` (384-dim, ~80 MB on disk, the same
 model the precedent at ``Trainforge/eval/key_term_precision.py:66-71``
@@ -14,15 +20,14 @@ Public surface:
 - :class:`SentenceEmbedder` — model wrapper with ``encode(text)``.
 - :class:`EmbeddingCache` — content-addressed LRU on disk (Subtask 6).
 - :func:`try_load_embedder` — returns a ``SentenceEmbedder`` or ``None``.
-
-Subtask 8 will add strict-mode opt-in via the
-``TRAINFORGE_REQUIRE_EMBEDDINGS`` env flag.
+- :func:`is_strict_mode` — reads the ``TRAINFORGE_REQUIRE_EMBEDDINGS`` flag.
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
+import os
 from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, List, Optional
@@ -36,6 +41,25 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MODEL_NAME = "all-MiniLM-L6-v2"
 _DEFAULT_CACHE_PATH = Path("state/embedding_cache.jsonl")
 _MAX_CACHE_ENTRIES = 100_000
+
+# Subtask 8: strict-mode opt-in flag. When truthy,
+# ``try_load_embedder()`` raises :class:`EmbeddingDepsMissing` on
+# missing extras instead of returning ``None``. Truthy values match the
+# convention used by the existing ED4ALL / TRAINFORGE env-var family
+# (``true`` / ``1`` / ``yes`` / ``on``, case-insensitive).
+_STRICT_MODE_ENV_VAR = "TRAINFORGE_REQUIRE_EMBEDDINGS"
+_TRUTHY_VALUES = frozenset({"true", "1", "yes", "on"})
+
+
+def is_strict_mode() -> bool:
+    """Return True when ``TRAINFORGE_REQUIRE_EMBEDDINGS`` is truthy.
+
+    Mirrors `Courseforge/scripts/blocks.py::_EMIT_BLOCKS_TRUTHY` —
+    case-insensitive match against the canonical truthy values used
+    elsewhere in the codebase.
+    """
+    raw = os.environ.get(_STRICT_MODE_ENV_VAR, "").strip().lower()
+    return raw in _TRUTHY_VALUES
 
 
 class EmbeddingDepsMissing(RuntimeError):
@@ -239,13 +263,26 @@ def try_load_embedder(
 
     Mirrors ``Trainforge/eval/key_term_precision.py:66-71`` (the
     in-tree precedent for graceful-degradation behavior on optional
-    embedding deps). Subtask 8 will layer strict-mode raise behavior
-    on top of this base function.
+    embedding deps).
+
+    When :func:`is_strict_mode` is true (via the
+    ``TRAINFORGE_REQUIRE_EMBEDDINGS`` env flag), the function raises
+    :class:`EmbeddingDepsMissing` instead of returning ``None`` so
+    operators who explicitly require embedding-tier validation
+    fail-closed on missing extras rather than silently degrade to
+    warning-severity GateIssues. Mirrors the strict-mode pattern in
+    ``lib/validators/shacl_runner.py:557-576``.
     """
     try:
         # Probe-import; the actual model load is deferred to encode().
         import sentence_transformers  # type: ignore  # noqa: F401
     except ImportError as exc:
+        if is_strict_mode():
+            raise EmbeddingDepsMissing(
+                f"sentence-transformers is not installed but "
+                f"{_STRICT_MODE_ENV_VAR} is set: install via "
+                f"`pip install -e .[embedding]`. Underlying error: {exc}"
+            ) from exc
         logger.debug(
             "sentence-transformers not installed (%s); "
             "try_load_embedder returning None",
@@ -253,6 +290,11 @@ def try_load_embedder(
         )
         return None
     except Exception as exc:  # noqa: BLE001 — match precedent at key_term_precision.py:70
+        if is_strict_mode():
+            raise EmbeddingDepsMissing(
+                f"sentence-transformers import raised an unexpected error "
+                f"and {_STRICT_MODE_ENV_VAR} is set: {exc}"
+            ) from exc
         logger.warning(
             "sentence-transformers import raised unexpected error: %s; "
             "try_load_embedder returning None",
