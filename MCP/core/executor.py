@@ -190,6 +190,28 @@ AGENT_TOOL_MAPPING = {
 
 
 # =============================================================================
+# Phase 3.5 Subtask 31 — Phase-name-aware tool dispatch
+# =============================================================================
+# Maps workflow phase names to MCP tool names for the Phase 3 two-pass
+# router phases. The dispatcher checks ``_PHASE_TOOL_MAPPING.get(phase)``
+# BEFORE falling back to ``AGENT_TOOL_MAPPING.get(agent_type)`` so the
+# three new phases (``content_generation_outline``, ``inter_tier_validation``,
+# ``content_generation_rewrite``) plus the Wave-B ``post_rewrite_validation``
+# phase route to their dedicated handlers regardless of the agent name
+# threaded through the task. Empty agent lists (e.g. validator-only
+# phases) still get a single synthetic task created via the phase-name
+# dispatch path so the helper actually runs.
+# =============================================================================
+
+_PHASE_TOOL_MAPPING: Dict[str, str] = {
+    "content_generation_outline": "run_content_generation_outline",
+    "inter_tier_validation": "run_inter_tier_validation",
+    "content_generation_rewrite": "run_content_generation_rewrite",
+    "post_rewrite_validation": "run_post_rewrite_validation",
+}
+
+
+# =============================================================================
 # Wave 74 — Agent classification for per-task subagent dispatch
 # =============================================================================
 #
@@ -555,10 +577,23 @@ class TaskExecutor:
             )
 
         agent_type = task.get("agent_type", "")
-        tool_name = AGENT_TOOL_MAPPING.get(agent_type)
+        phase_name = task.get("phase", "")
+
+        # Phase 3.5 Subtask 31: phase-name dispatch overrides agent-based
+        # routing for the four two-pass router phases. When the phase
+        # name is in ``_PHASE_TOOL_MAPPING``, route to the phase's
+        # dedicated handler regardless of the agent_type threaded
+        # through the task. Falls back to the legacy
+        # ``AGENT_TOOL_MAPPING`` for every other phase.
+        tool_name = _PHASE_TOOL_MAPPING.get(phase_name)
+        if not tool_name:
+            tool_name = AGENT_TOOL_MAPPING.get(agent_type)
 
         if not tool_name:
-            error = f"No tool mapping for agent type: {agent_type}"
+            error = (
+                f"No tool mapping for phase '{phase_name}' or agent "
+                f"type '{agent_type}'"
+            )
             logger.error(error)
             return ExecutionResult(
                 task_id=task_id,
