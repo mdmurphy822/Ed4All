@@ -37,6 +37,78 @@ the ``provider`` field is mapped onto the canonical
 ``"openai_compatible"`` collapses to ``"local"`` because both go
 through the same OpenAICompatibleClient. Anthropic / together /
 local map 1:1.
+
+## Regeneration budget + escalation
+
+Per Phase 3 §3.7 every block has a per-(block_type) regeneration
+budget that bounds how many failed validator passes a block may
+accumulate inside :meth:`CourseforgeRouter.route_with_self_consistency`
+before the router stops sampling new outline candidates and hands the
+block off to the rewrite tier with the canonical
+``escalation_marker="outline_budget_exhausted"`` stamp. The budget is
+how the router avoids burning indefinite outline-tier compute on a
+block the outline model fundamentally cannot handle.
+
+Two failure-mode paths feed the same downstream rewrite-tier branch:
+
+1. **Budget-exhausted path** (Subtask 41 —
+   :meth:`CourseforgeRouter.route_with_self_consistency`). The
+   self-consistency loop bumps a cumulative ``validation_attempts``
+   accumulator on every failed validator pass. When the accumulator
+   meets or exceeds the resolved budget the loop breaks early; the
+   last candidate is rebound via
+   ``dataclasses.replace(..., escalation_marker="outline_budget_exhausted")``
+   and a single ``block_escalation`` decision-capture event fires
+   (``attempts=cumulative_count``, ``n_candidates=loop_iteration_index+1``).
+2. **Policy-skip path** (Subtask 42 — :meth:`CourseforgeRouter.route`
+   with ``tier="outline"`` and ``spec.escalate_immediately=True``).
+   The outline LLM dispatch is skipped entirely — no candidates are
+   ever generated. The same ``outline_budget_exhausted`` marker is
+   stamped on the return block (because ``Block._ESCALATION_MARKERS``
+   only admits ``{outline_budget_exhausted, structural_unfixable,
+   validator_consensus_fail}``); policy-skip provenance is preserved
+   on a ``Touch(purpose="escalate_immediately")`` audit record so a
+   postmortem reader can distinguish the two paths. The same
+   ``block_escalation`` event fires with ``attempts=0`` and
+   ``n_candidates=0`` to signal the policy-skip discriminator.
+
+NOTE on the marker-name deviation from Phase 3 §3.7. The plan text
+discusses ``outline_skipped_by_policy`` as a separate marker for the
+policy-skip path, but ``Block._ESCALATION_MARKERS`` does not include
+that value (closing the marker set is a Phase-2 invariant). The
+implementation collapses both paths onto the canonical
+``outline_budget_exhausted`` marker; the policy-skip discriminator
+lives on the ``Touch.purpose`` audit field, which is the canonical
+provenance surface a postmortem reader consults. Both paths route
+through the same rewrite-tier escalated-prompt branch so the
+behavioural contract is preserved.
+
+Budget resolution order (highest-priority first; mirrors the
+n-candidates resolution chain):
+
+1. Per-call ``regen_budget`` kwarg on
+   :meth:`CourseforgeRouter.route_with_self_consistency`.
+2. Policy fast-lookup map ``policy.regen_budget_by_block_type[block_type]``
+   (Worker G's :class:`BlockRoutingPolicy` surface).
+3. Env var ``COURSEFORGE_OUTLINE_REGEN_BUDGET`` (parsed as int; falls
+   through silently on parse failure).
+4. Constructor-time instance attribute
+   :class:`CourseforgeRouter` ``regen_budget=...``.
+5. Module-level default :data:`_DEFAULT_OUTLINE_REGEN_BUDGET` (3).
+
+Rewrite-tier prompt branching: when the outline-tier hand-off carries
+a non-None ``Block.escalation_marker``, the rewrite tier switches from
+:meth:`RewriteProvider._render_user_prompt` to
+:meth:`RewriteProvider._render_escalated_user_prompt` — a richer
+prompt template that synthesises from source chunks + objectives
+directly (rather than refining the outline draft) and re-asserts the
+CURIE-preservation contract so any anchored vocabulary survives the
+tier transition.
+
+Cross-links: Phase 3 plan section §3.7 documents the contract;
+Phase 5's ``--escalated-only`` CLI flag (planned) will let an operator
+re-run the rewrite tier across only those blocks the corpus emitted
+with a non-None ``escalation_marker``.
 """
 
 from __future__ import annotations
