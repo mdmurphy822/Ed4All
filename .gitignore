@@ -199,6 +199,19 @@ adapter_config.json
 hf_uploads/
 huggingface/
 
+# Local-LLM-generated FORM_DATA catalog overlays.
+# Operating principle: anything an Ollama / local / cloud LLM provider
+# emits stays local-only — license posture (Apache 2.0 for Qwen, etc.)
+# permits training use, but the project's standing policy is that
+# generated corpus content does not live in git history. The Python
+# in-source fallback (_RDF_SHACL_FALLBACK_FORM_DATA in
+# Trainforge/generators/schema_translation_generator.py) is the
+# tracked source of truth for the 6 hand-curated entries; the
+# per-family overlay YAML is the operator-local extension where
+# Qwen-generated entries land via the Wave 137 backfill loop.
+# .schema.json contracts stay tracked (hand-authored).
+schemas/training/schema_translation_catalog.*.yaml
+
 # Allow-list — fixtures for tests must stay tracked
 !Trainforge/tests/fixtures/**/instruction_pairs.jsonl
 !Trainforge/tests/fixtures/**/preference_pairs.jsonl
