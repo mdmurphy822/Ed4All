@@ -493,6 +493,15 @@ Alongside per-gate validation, `CourseProcessor._write_metadata` folds an `asses
 
 ---
 
+## Environment variables (Trainforge surfaces)
+
+Per-flag rationale lives in root `CLAUDE.md` § "Opt-In Behavior Flags". The Trainforge-owned subset (Phase 4 Subtask 35-37):
+
+- `TRAINFORGE_ALIGN_CHUNKS_MODEL` (default `claude-haiku-4-5-20251001`) — overrides the LLM model used by the legacy direct-classification path in `Trainforge/align_chunks.py::classify_teaching_roles`. Resolved via `_resolve_align_model()` with priority: explicit `--llm-model` flag > env var > default. Same env var also resolves the model passed by `Trainforge/process_course.py` when it dispatches the `--align` stage as a Namespace. Recommended: leave unset for legacy parity; set to a different teacher slug only when retraining the curriculum-alignment surface against a non-default model.
+- `TRAINFORGE_TARGET_MODELS` (default `claude-opus-4-6,claude-sonnet-4-6` CSV) — overrides `training_specs/dataset_config.json::target_models`, the operator-readable list of teacher models the corpus was synthesized against. Comma-separated; whitespace per token is trimmed. Read once at corpus emit time inside `Trainforge/process_course.py::_resolve_target_models`.
+
+---
+
 ## Training Pipeline
 
 Trainforge produces SLM (Small Language Model) adapters from already-imported LibV2 courses. End-state: `LibV2/courses/<slug>/models/<model_id>/` carries `adapter.safetensors` + `model_card.json` + `eval_report.json` + `training_run.jsonl`. The model card pins seven SHA-256 provenance hashes to the LibV2 paths that produced the adapter, making the run independently auditable. Hugging Face is the upload target.
