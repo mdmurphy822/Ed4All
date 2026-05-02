@@ -62,6 +62,8 @@ operates on flat instruction / preference dicts).
 
 from __future__ import annotations
 
+import dataclasses
+import datetime as _dt
 import json
 import logging
 import sys
@@ -365,6 +367,107 @@ def _extract_outline_curies(content: Any) -> List[str]:
     return [str(c) for c in raw if c]
 
 
+# ---------------------------------------------------------------------------
+# CURIE-preservation gate helpers (Subtask 26).
+# ---------------------------------------------------------------------------
+#
+# Direct port of the
+# ``Trainforge.generators._local_provider.LocalSynthesisProvider._missing_preserve_tokens``
+# + ``_append_preserve_remediation`` patterns (`:548-583`), adapted to
+# Block.content's outline-dict shape: the Trainforge precedent operates
+# on a flat ``parsed`` dict, this gate operates on the rewrite-tier HTML
+# response text and the outline-dict's ``curies`` list.
+
+
+def _missing_preserve_curies(
+    html_response: str, outline_curies: Sequence[str]
+) -> List[str]:
+    """Return the CURIEs that don't appear verbatim in ``html_response``.
+
+    Substring match — the rewrite tier emits HTML, so a CURIE
+    preserved in any tag (a ``<code>sh:NodeShape</code>`` block, a
+    ``data-cf-key-terms`` attribute value, or just inline prose) all
+    count as preserved. Empty input returns an empty list.
+
+    Mirrors :func:`Trainforge.generators._local_provider.LocalSynthesisProvider._missing_preserve_tokens`
+    (`:548-564`); the function is staticmethod-equivalent so the
+    Subtask 27 tests can call it directly.
+    """
+    if not outline_curies:
+        return []
+    text = html_response or ""
+    missing: List[str] = []
+    for curie in outline_curies:
+        if curie and curie not in text:
+            missing.append(curie)
+    return missing
+
+
+def _append_curie_remediation(
+    user_prompt: str, missing_curies: Sequence[str]
+) -> str:
+    """Append a remediation directive naming the dropped CURIEs.
+
+    The remediation reuses the exact wording shape Trainforge's
+    :func:`_append_preserve_remediation` builds (`:566-583`) — terse,
+    names the missing tokens verbatim, instructs the model to re-emit
+    the response with each token verbatim. Emit follows the rewrite-
+    tier output contract (HTML, no markdown).
+    """
+    token_list = ", ".join(repr(t) for t in missing_curies)
+    remediation = (
+        f"\n\nThe prior response did not include the required "
+        f"CURIEs {token_list} verbatim in the HTML body. Rewrite "
+        f"the HTML so each of those CURIEs appears verbatim "
+        f"(exact characters, with the colon and case intact). "
+        f"Output the same block-type HTML shape, HTML only — no "
+        f"preamble, no markdown."
+    )
+    return user_prompt + remediation
+
+
+def _apply_rewrite_touch(
+    *,
+    block: Block,
+    html_response: str,
+    provider: str,
+    model: str,
+    decision_capture_id: str,
+) -> Block:
+    """Return a new Block with the rewrite output and a new Touch entry.
+
+    The rewrite tier's Touch carries:
+
+    - ``tier="rewrite"``
+    - ``purpose="pedagogical_depth"``
+    - ``provider`` / ``model`` from the constructor
+    - ``timestamp`` = current UTC ISO-8601 with 'Z' suffix (matches the
+      Wave 112 capture format)
+    - ``decision_capture_id`` from the base's ``_last_capture_id`` so
+      the Touch resolves back to the JSONL line that explained the
+      LLM call.
+    """
+    timestamp = (
+        _dt.datetime.now(_dt.timezone.utc)
+        .replace(microsecond=0)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    touch = Touch(
+        model=model,
+        provider=provider,
+        tier="rewrite",
+        timestamp=timestamp,
+        decision_capture_id=decision_capture_id,
+        purpose="pedagogical_depth",
+    )
+    return dataclasses.replace(
+        block,
+        content=html_response,
+        touched_by=block.touched_by + (touch,),
+    )
+
+
 def _format_objectives(objectives: Sequence[Any]) -> str:
     """Format the objectives list into a readable prompt block.
 
@@ -656,6 +759,135 @@ class RewriteProvider(_BaseLLMProvider):
             "ONLY the HTML — no preamble, no markdown, no commentary."
         )
 
+    # ------------------------------------------------------------------
+    # Public entry point + CURIE-preservation gate (Subtask 26)
+    # ------------------------------------------------------------------
+
+    def generate_rewrite(
+        self,
+        block: Block,
+        *,
+        source_chunks: Optional[Sequence[Any]] = None,
+        objectives: Optional[Sequence[Any]] = None,
+    ) -> Block:
+        """Rewrite an outline-tier block into rendered HTML.
+
+        Branches on ``block.escalation_marker``: non-None routes through
+        :meth:`_render_escalated_user_prompt`, None through
+        :meth:`_render_user_prompt`. Dispatch via the inherited
+        :meth:`_dispatch_call`; capture the HTML response.
+
+        CURIE-preservation gate: when the input outline declared CURIEs
+        in ``block.content["curies"]``, the gate asserts each CURIE
+        appears verbatim in the HTML response. On miss, the gate appends
+        a remediation directive naming the dropped CURIEs and retries
+        the dispatch up to :data:`MAX_PARSE_RETRIES` more times. On
+        exhaustion :class:`RewriteProviderError` is raised with
+        ``code="rewrite_curie_drop"`` and the dropped tokens listed in
+        ``missing_curies`` so the router can escalate or fail-loud.
+
+        Direct port of
+        :func:`Trainforge.generators._local_provider.LocalSynthesisProvider._missing_preserve_tokens`
+        + ``_append_preserve_remediation`` (`:548-583`), adapted to
+        Block.content's outline-dict shape: the Trainforge precedent
+        operates on a flat ``parsed`` dict (instruction or preference
+        pair), this gate operates on the rewrite-tier HTML response
+        text and the outline-dict's ``curies`` list.
+
+        Returns a new Block via :func:`dataclasses.replace`:
+
+        - ``content`` ← rendered HTML string
+        - ``touched_by`` ← input chain + new
+          ``Touch(tier="rewrite", purpose="pedagogical_depth", ...)``
+        """
+        outline_curies = _extract_outline_curies(block.content)
+
+        # Build the initial user prompt per the escalation flag.
+        if block.escalation_marker is not None:
+            user_prompt = self._render_escalated_user_prompt(
+                block=block,
+                source_chunks=source_chunks,
+                objectives=objectives,
+            )
+        else:
+            user_prompt = self._render_user_prompt(
+                block=block,
+                source_chunks=source_chunks,
+                objectives=objectives,
+            )
+
+        last_text = ""
+        last_missing: List[str] = []
+        total_retries = 0
+        # Initial attempt + ``MAX_PARSE_RETRIES`` remediation retries =
+        # ``MAX_PARSE_RETRIES + 1`` total dispatches at most. Mirrors the
+        # ``for attempts in range(retry_budget)`` loop in
+        # ``_local_provider._call_with_parse``.
+        for attempt in range(MAX_PARSE_RETRIES + 1):
+            html_response, retry_count = self._dispatch_call(user_prompt)
+            total_retries += retry_count
+            last_text = html_response
+
+            missing = _missing_preserve_curies(html_response, outline_curies)
+            if not missing:
+                # Gate passed — emit the per-call decision and return.
+                self._emit_per_call_decision(
+                    raw_text=html_response,
+                    retry_count=total_retries,
+                    block_id=block.block_id,
+                    block_type=block.block_type,
+                    page_id=block.page_id,
+                    escalation_marker=block.escalation_marker,
+                    outline_curie_count=len(outline_curies),
+                    remediation_attempts=attempt,
+                )
+                return _apply_rewrite_touch(
+                    block=block,
+                    html_response=html_response,
+                    provider=self._provider,
+                    model=self._model,
+                    decision_capture_id=self._last_capture_id(),
+                )
+
+            last_missing = missing
+            logger.warning(
+                "RewriteProvider: CURIE-preservation retry %d/%d: "
+                "missing tokens=%s",
+                attempt + 1,
+                MAX_PARSE_RETRIES,
+                missing,
+            )
+            if attempt < MAX_PARSE_RETRIES:
+                user_prompt = _append_curie_remediation(
+                    user_prompt, missing,
+                )
+
+        # Exhausted retry budget. Emit the failure decision so the
+        # audit trail captures the drop, then raise.
+        self._emit_per_call_decision(
+            raw_text=last_text,
+            retry_count=total_retries,
+            block_id=block.block_id,
+            block_type=block.block_type,
+            page_id=block.page_id,
+            escalation_marker=block.escalation_marker,
+            outline_curie_count=len(outline_curies),
+            remediation_attempts=MAX_PARSE_RETRIES + 1,
+            curie_drop=True,
+            missing_curies=last_missing,
+        )
+        raise RewriteProviderError(
+            f"RewriteProvider: rewrite output dropped CURIEs after "
+            f"{MAX_PARSE_RETRIES + 1} attempts. Missing: {last_missing}; "
+            f"tail of last response: {last_text[-500:]!r}",
+            code="rewrite_curie_drop",
+            missing_curies=last_missing,
+        )
+
+    # ------------------------------------------------------------------
+    # Per-call decision capture (Subtask 26)
+    # ------------------------------------------------------------------
+
     def _emit_per_call_decision(
         self,
         *,
@@ -663,18 +895,49 @@ class RewriteProvider(_BaseLLMProvider):
         retry_count: int,
         **call_context: Any,
     ) -> None:
-        # Filled in by Subtask 26 (the rewrite-tier per-call decision
-        # event lives alongside ``generate_rewrite``). For now emit a
-        # generic capture so the abstract surface is satisfied — the
-        # block_rewrite_call / content_generator_call enum is registered
-        # in ``schemas/events/decision_event.schema.json`` already.
+        """Emit one ``block_rewrite_call`` decision per LLM call.
+
+        Per the project's LLM call-site instrumentation contract, the
+        rationale interpolates dynamic per-call signals (block_id,
+        block_type, page_id, provider, model, retry count, outline
+        CURIE count, remediation attempts, escalation marker, CURIE-
+        drop flag) so a postmortem can replay why each rewrite call
+        produced its specific output. Static boilerplate rationales
+        are forbidden.
+        """
+        block_id = call_context.get("block_id", "<unknown>")
+        block_type = call_context.get("block_type", "<unknown>")
+        page_id = call_context.get("page_id", "<unknown>")
+        outline_curie_count = call_context.get("outline_curie_count", 0)
+        remediation_attempts = call_context.get("remediation_attempts", 0)
+        escalation_marker = call_context.get("escalation_marker")
+        curie_drop = bool(call_context.get("curie_drop", False))
+        missing_curies = call_context.get("missing_curies") or []
+
+        outcome = "curie_drop" if curie_drop else "success"
+        rationale_parts = [
+            f"Rewrite tier {outcome} for block_id={block_id} "
+            f"(type={block_type}, page={page_id}) via "
+            f"provider={self._provider}, model={self._model}.",
+            f"Output chars={len(raw_text or '')}, "
+            f"retry_count={retry_count}, "
+            f"remediation_attempts={remediation_attempts}.",
+            f"Outline declared {outline_curie_count} CURIE(s) for "
+            f"preservation.",
+        ]
+        if escalation_marker:
+            rationale_parts.append(
+                f"Escalation marker: {escalation_marker}."
+            )
+        if curie_drop:
+            rationale_parts.append(
+                f"Dropped CURIEs after exhaustion: {missing_curies}."
+            )
+
         self._emit_decision(
-            decision_type="content_generator_call",
-            decision=f"rewrite output chars={len(raw_text or '')}",
-            rationale=(
-                f"Rewrite tier dispatched provider={self._provider}, "
-                f"model={self._model}, retry_count={retry_count}."
-            ),
+            decision_type="block_rewrite_call",
+            decision=f"output chars={len(raw_text or '')} ({outcome})",
+            rationale=" ".join(rationale_parts),
         )
 
 
