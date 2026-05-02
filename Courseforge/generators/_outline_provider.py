@@ -251,7 +251,21 @@ _OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {
         "summary_chars": (60, 300),
     },
 }
-_OUTLINE_SYSTEM_PROMPT: str = ""
+# Terse outline-tier system prompt. Kept ≤80 words on purpose — the
+# 7B-class default model has a small effective instruction-following
+# window. Mirrors the terseness of
+# ``Trainforge/generators/_local_provider.py
+# ::_LOCAL_INSTRUCTION_SYSTEM_PROMPT``.
+_OUTLINE_SYSTEM_PROMPT: str = (
+    "You are an outline-tier draft generator for Courseforge blocks. "
+    "Emit a structurally-correct JSON outline carrying: block_id, "
+    "block_type, content_type, bloom_level, objective_refs, curies, "
+    "key_claims, section_skeleton, source_refs, structural_warnings. "
+    "PRESERVE every CURIE and source_id verbatim from the input. Do "
+    "NOT add facts not in the supplied source_chunks. Do NOT generate "
+    "prose — generate the structural skeleton only. Output ONLY the "
+    "JSON object — no preamble, no markdown, no commentary."
+)
 _BLOCK_TYPE_GBNF: Dict[str, str] = {}
 _BLOCK_TYPE_JSON_SCHEMAS: Dict[str, Dict[str, Any]] = {}
 
