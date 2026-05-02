@@ -671,6 +671,75 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "description": "Preview how many records would be exported with given filters",
     },
 
+    # =========================================================================
+    # PHASE 4 SUBTASK 4 — TWO-PASS ROUTER PHASE-HANDLER SCHEMAS
+    # =========================================================================
+    # Phase 3.5 wired the four ``_run_*`` phase helpers into
+    # ``_build_tool_registry`` (pipeline_tools.py:4326-4335) and into
+    # ``_PHASE_TOOL_MAPPING`` (executor.py:206) but missed the third
+    # leg of the three-location wiring invariant: ``TOOL_SCHEMAS`` here.
+    # Without these entries, ``param_mapper.map_task_to_tool_params``
+    # raises ``ParameterMappingError("Unknown tool: ...")`` whenever
+    # the executor tries to invoke them via the synthetic task that
+    # Phase 4 Subtask 1 introduced — the same failure mode the Wave 30
+    # comment at the synthesize_training schema documents.
+    #
+    # All four take ``project_id`` as the only required input plus a
+    # phase-specific ``blocks_*_path`` to chain between phases. The
+    # pipeline_tools handlers tolerate missing optional kwargs by
+    # returning a structured error envelope, so the schemas keep
+    # ``required`` minimal and let the handler enforce the contract.
+    # =========================================================================
+    "run_content_generation_outline": {
+        "required": ["project_id"],
+        "optional": [
+            "source_module_map_path",
+            "staging_dir",
+            "duration_weeks_explicit",
+        ],
+        "defaults": {},
+        "param_mapping": {},
+        "description": (
+            "Phase 3 two-pass router outline tier — emits "
+            "blocks_outline_path JSONL of outline-tier Blocks."
+        ),
+    },
+
+    "run_inter_tier_validation": {
+        "required": ["blocks_outline_path", "project_id"],
+        "optional": [],
+        "defaults": {},
+        "param_mapping": {},
+        "description": (
+            "Phase 3 inter-tier validation — runs Block-input "
+            "validators on outline-tier blocks and emits "
+            "blocks_validated_path / blocks_failed_path JSONL."
+        ),
+    },
+
+    "run_content_generation_rewrite": {
+        "required": ["project_id"],
+        "optional": ["blocks_validated_path"],
+        "defaults": {},
+        "param_mapping": {},
+        "description": (
+            "Phase 3 two-pass router rewrite tier — emits final "
+            "HTML pages plus blocks_final_path JSONL."
+        ),
+    },
+
+    "run_post_rewrite_validation": {
+        "required": ["blocks_final_path", "project_id"],
+        "optional": [],
+        "defaults": {},
+        "param_mapping": {},
+        "description": (
+            "Phase 3.5 post-rewrite validation — re-runs the four "
+            "Block-input validators against rewrite-tier blocks and "
+            "emits blocks_validated_path / blocks_failed_path JSONL."
+        ),
+    },
+
 }
 
 
