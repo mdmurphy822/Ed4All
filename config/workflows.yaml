@@ -921,6 +921,25 @@ workflows:
               on_error: warn
             description: Phase 3 inter-tier — verify outline-tier source_ids resolve against the DART staging manifest
 
+          # Phase 4 Wave N1 Subtask 11: SHACL parallel of the four
+          # outline-tier Block validators above. Validates outline-tier
+          # Block JSON-LD against schemas/context/courseforge_v1.shacl.ttl
+          # (BlockShape + TouchShape + the rest of the multi-shape
+          # graph). Severity is intentionally `warning` so the four
+          # Python gates above stay authoritative during the PoC
+          # window; the SHACL output is informational and surfaces
+          # richer diagnostics (sh:sourceShape, sh:sourceConstraintComponent)
+          # for free per sub-plan §9.2.
+          - gate_id: outline_shacl
+            validator: lib.validators.courseforge_outline_shacl.CourseforgeOutlineShaclValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Phase 4 PoC SHACL parallel of outline-tier Block validators. Informational; Python gates remain authoritative.
+
       - name: content_generation_rewrite
         agents: [content-generator]
         parallel: true
