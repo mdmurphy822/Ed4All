@@ -242,8 +242,229 @@ _HARDCODED_DEFAULTS: Dict[Tuple[str, str], BlockProviderSpec] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# CourseforgeRouter
+# ---------------------------------------------------------------------------
+
+
+class CourseforgeRouter:
+    """Two-pass dispatch surface for Phase 3 content generation.
+
+    Owns three responsibilities:
+
+    1. Resolve a :class:`BlockProviderSpec` for each ``(block, tier)``
+       per Phase 3 §3.3 (per-call kwargs → YAML policy → env vars →
+       hardcoded defaults).
+    2. Lazy-instantiate the Outline / Rewrite providers on first use
+       (so a router constructed for a YAML-only run that never calls
+       a tier doesn't pay the import / construction cost).
+    3. Dispatch per-block via :meth:`route` and per-list via
+       :meth:`route_all` (two-pass over a Block list).
+
+    Wave-N scope: the YAML policy lookup is a stub (returns ``None``)
+    until Subtask 34 lands the loader. Self-consistency loop, regen
+    budget, inter-tier validators, and gate plumbing land in Wave N+1
+    (Subtasks 36-43). The router method signatures already accommodate
+    those features so the Wave-N+1 fill-ins don't re-shape the public
+    surface.
+    """
+
+    def __init__(
+        self,
+        *,
+        policy: Optional[Any] = None,
+        outline_provider: Optional[Any] = None,
+        rewrite_provider: Optional[Any] = None,
+        capture: Optional[Any] = None,
+        deterministic_gates: Optional[List[Any]] = None,
+        statistical_filter: Optional[Any] = None,
+        n_candidates: Optional[int] = None,
+        regen_budget: Optional[int] = None,
+    ) -> None:
+        # YAML policy (Subtask 34); ``None`` for Wave N — the loader
+        # lands in a follow-up subtask. ``_resolve_spec`` skips the
+        # policy lookup when this is None.
+        self._policy = policy
+
+        # Optional provider injections — when set, ``_get_outline_provider``
+        # / ``_get_rewrite_provider`` short-circuit to these instances
+        # instead of constructing one. Used by tests to inject fakes.
+        self._outline_provider_override: Optional[Any] = outline_provider
+        self._rewrite_provider_override: Optional[Any] = rewrite_provider
+
+        self._capture = capture
+        self._deterministic_gates: List[Any] = list(deterministic_gates or [])
+        self._statistical_filter = statistical_filter
+        self._n_candidates_override: Optional[int] = n_candidates
+        self._regen_budget_override: Optional[int] = regen_budget
+
+        # Lazy-instantiated provider cache. Keyed by spec hash so a per-
+        # block-type route that resolves a different model than the
+        # constructor-default doesn't reuse the wrong provider instance.
+        self._provider_cache: Dict[Tuple[str, str, str], Any] = {}
+
+    # ------------------------------------------------------------------
+    # Spec resolution
+    # ------------------------------------------------------------------
+
+    def _resolve_spec(
+        self,
+        block: Block,
+        tier: str,
+        **overrides: Any,
+    ) -> BlockProviderSpec:
+        """Resolve the :class:`BlockProviderSpec` for ``(block, tier)``.
+
+        Resolution order (Phase 3 §3.3):
+
+        1. Per-call ``**overrides`` — when ``provider`` / ``model`` /
+           ``base_url`` / ``temperature`` / ``max_tokens`` /
+           ``escalate_immediately`` is supplied as a kwarg, the override
+           wins outright. ``provider`` and ``model`` together fully
+           specify the spec; partial overrides (e.g. ``provider`` only)
+           merge over the next-most-specific source.
+        2. YAML policy entry for ``(block.block_type, tier)`` — Wave N
+           stub returns ``None``; Subtask 34 fills it in.
+        3. Tier-default env vars
+           (``COURSEFORGE_OUTLINE_PROVIDER`` / ``COURSEFORGE_OUTLINE_MODEL``
+           / ``COURSEFORGE_REWRITE_PROVIDER`` / ``COURSEFORGE_REWRITE_MODEL``).
+        4. Hardcoded defaults table (:data:`_HARDCODED_DEFAULTS`).
+        """
+        if tier not in _ALLOWED_TIERS:
+            raise ValueError(
+                f"_resolve_spec: tier must be one of "
+                f"{list(_ALLOWED_TIERS)}; got {tier!r}"
+            )
+
+        # 4. Hardcoded default (always present — populated for every
+        # value in BLOCK_TYPES at module import).
+        baseline = _HARDCODED_DEFAULTS.get((block.block_type, tier))
+        if baseline is None:
+            # Fail-loud — an unknown block_type at the router level
+            # means Block.__post_init__ accepted a value the router's
+            # defaults don't cover, which is a bug.
+            raise ValueError(
+                f"_resolve_spec: no hardcoded default for "
+                f"(block_type={block.block_type!r}, tier={tier!r})"
+            )
+
+        # Build the resolved spec by overlaying each layer in reverse
+        # priority order so the highest-priority source wins.
+        resolved: BlockProviderSpec = baseline
+
+        # 3. Tier-default env vars.
+        env_provider, env_model = self._read_tier_env(tier)
+        env_overrides: Dict[str, Any] = {}
+        if env_provider:
+            env_overrides["provider"] = env_provider
+        if env_model:
+            env_overrides["model"] = env_model
+        if env_overrides:
+            resolved = self._apply_overrides(resolved, env_overrides)
+
+        # 2. YAML policy — Wave N stub. When ``self._policy`` is non-None
+        # and exposes a ``resolve(block_id, block_type, tier)`` method,
+        # honour it. The loader (Subtask 34) returns a BlockProviderSpec
+        # or None; None falls through to the next lower layer.
+        policy_spec = self._policy_lookup(block, tier)
+        if policy_spec is not None:
+            resolved = policy_spec
+
+        # 1. Per-call overrides (highest priority).
+        if overrides:
+            resolved = self._apply_overrides(resolved, overrides)
+
+        return resolved
+
+    @staticmethod
+    def _read_tier_env(tier: str) -> Tuple[Optional[str], Optional[str]]:
+        """Read tier-default env vars; ``(provider, model)``.
+
+        Both values are ``None`` when the corresponding env var is unset
+        or empty. The router treats blank strings the same as unset so
+        an operator setting ``COURSEFORGE_OUTLINE_PROVIDER=""`` does not
+        override the hardcoded default.
+        """
+        if tier == "outline":
+            provider = os.environ.get(_ENV_OUTLINE_PROVIDER) or None
+            model = os.environ.get(_ENV_OUTLINE_MODEL) or None
+        else:
+            provider = os.environ.get(_ENV_REWRITE_PROVIDER) or None
+            model = os.environ.get(_ENV_REWRITE_MODEL) or None
+        return (
+            provider.strip() if provider else None,
+            model.strip() if model else None,
+        )
+
+    def _policy_lookup(
+        self, block: Block, tier: str
+    ) -> Optional[BlockProviderSpec]:
+        """Look up the YAML policy entry for ``(block_id, block_type, tier)``.
+
+        Wave-N stub: when ``self._policy`` is ``None`` (default) or does
+        not expose a ``resolve(...)`` method, returns ``None``. The
+        Subtask-34 loader will return a frozen
+        :class:`BlockRoutingPolicy` that exposes ``resolve``.
+        """
+        policy = self._policy
+        if policy is None:
+            return None
+        resolve = getattr(policy, "resolve", None)
+        if not callable(resolve):
+            return None
+        try:
+            spec = resolve(block.block_id, block.block_type, tier)
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "policy.resolve raised for (%s, %s, %s): %s",
+                block.block_id, block.block_type, tier, exc,
+            )
+            return None
+        if spec is None:
+            return None
+        if not isinstance(spec, BlockProviderSpec):
+            logger.warning(
+                "policy.resolve returned non-BlockProviderSpec %r; ignoring",
+                type(spec).__name__,
+            )
+            return None
+        return spec
+
+    @staticmethod
+    def _apply_overrides(
+        baseline: BlockProviderSpec,
+        overrides: Dict[str, Any],
+    ) -> BlockProviderSpec:
+        """Return a new BlockProviderSpec with ``overrides`` overlaid.
+
+        ``overrides`` may carry any subset of the spec's fields. The
+        ``block_type`` and ``tier`` fields are sticky — they cannot be
+        overridden because they identify the spec, and the router's
+        cache is keyed off them.
+        """
+        # Filter out keys we don't recognise so a typo doesn't silently
+        # drop a value — TypeError on dataclasses.replace surfaces it.
+        allowed = {
+            "provider",
+            "model",
+            "base_url",
+            "api_key_env",
+            "temperature",
+            "max_tokens",
+            "extra_payload",
+            "escalate_immediately",
+        }
+        clean: Dict[str, Any] = {
+            k: v for k, v in overrides.items() if k in allowed and v is not None
+        }
+        if not clean:
+            return baseline
+        return dataclasses.replace(baseline, **clean)
+
+
 __all__ = [
     "BlockProviderSpec",
+    "CourseforgeRouter",
     "_HARDCODED_DEFAULTS",
     "_collapse_to_touch_provider",
 ]
