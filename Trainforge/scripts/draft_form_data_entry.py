@@ -145,21 +145,43 @@ PER-FIELD RULES
 """
 
 
-def _build_drafting_prompt(entry: PropertyEntry) -> str:
+def _build_drafting_prompt(
+    entry: PropertyEntry,
+    prior_violations: Optional[List[str]] = None,
+) -> str:
     """Render the drafting prompt for ``entry``.
 
     Substitutes ``curie``, ``label``, and ``surface_forms_csv`` only.
     No example content is interpolated — that's the ToS contract this
     CLI exists to enforce.
+
+    Wave 137 follow-up: ``prior_violations`` (if non-empty) appends a
+    structural feedback block describing why the previous draft attempt
+    failed validation. The feedback is METADATA about Qwen's own prior
+    output, NOT Claude-authored example content — ToS-clean. Used by
+    the backfill loop's auto-redraft path to give Qwen specific signal
+    for fixing what its previous attempt got wrong.
     """
     surface_forms_csv = ", ".join(entry.surface_forms)
-    # Note: the template uses doubled curly braces for the JSON shape
-    # block (so .format escapes them to literal braces in the output).
-    return _DRAFTING_PROMPT_TEMPLATE.format(
+    base = _DRAFTING_PROMPT_TEMPLATE.format(
         curie=entry.curie,
         label=entry.label,
         surface_forms_csv=surface_forms_csv,
     )
+    if not prior_violations:
+        return base
+    # Cap at 10 lines so a runaway feedback list can't blow the prompt
+    # length budget on the model side.
+    feedback_lines = "\n".join(
+        f"- {v}" for v in prior_violations[:10]
+    )
+    feedback_block = (
+        "\n\nPREVIOUS ATTEMPT FAILED VALIDATION:\n"
+        f"{feedback_lines}\n\n"
+        "Avoid these specific issues in your output. The constraints "
+        "above still apply — the feedback is in addition, not instead.\n"
+    )
+    return base + feedback_block
 
 
 def _draft_one_curie(provider: Any, prompt: str) -> Dict[str, Any]:
@@ -463,6 +485,21 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "routinely exceeds the provider's standard 60s budget."
         ),
     )
+    # Wave 137 follow-up: feedback-loop on auto-redraft. The backfill
+    # loop captures append-time validator violations and passes them to
+    # the next drafting attempt as structural feedback so Qwen can fix
+    # what its previous attempt got wrong. Format: JSON-encoded list of
+    # strings (one per violation summary).
+    parser.add_argument(
+        "--prior-violations",
+        default=None,
+        help=(
+            "JSON-encoded list of strings describing the previous "
+            "drafting attempt's validator violations. Appended to the "
+            "drafting prompt as structural feedback (ToS-clean — "
+            "metadata about Qwen's own prior output, not example content)."
+        ),
+    )
     return parser
 
 
@@ -510,7 +547,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     # Step 4: build the drafting prompt.
-    prompt = _build_drafting_prompt(entry)
+    prior_violations = None
+    if args.prior_violations:
+        try:
+            prior_violations = json.loads(args.prior_violations)
+            if not isinstance(prior_violations, list):
+                raise ValueError("--prior-violations must be a JSON list")
+        except (json.JSONDecodeError, ValueError) as exc:
+            print(
+                f"ERROR: --prior-violations is not valid JSON list: {exc}",
+                file=sys.stderr,
+            )
+            return 2
+    prompt = _build_drafting_prompt(entry, prior_violations=prior_violations)
 
     # Step 5: instantiate the provider.
     try:

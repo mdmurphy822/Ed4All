@@ -263,7 +263,7 @@ def test_backfill_pause_y_appends_yaml_to_file(tmp_path):
 
     fake_stdout_yaml = _build_valid_yaml_payload(target_curie)
 
-    def fake_runner(curie, family, course_code, provider, model, timeout=None):
+    def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None):
         assert curie == target_curie
         return 0, fake_stdout_yaml, ""
 
@@ -362,7 +362,7 @@ def test_backfill_pause_n_skips_curie(tmp_path):
     target_curie = "test:Beta"
     fake_stdout_yaml = _build_valid_yaml_payload(target_curie)
 
-    def fake_runner(curie, family, course_code, provider, model, timeout=None):
+    def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None):
         return 0, fake_stdout_yaml, ""
 
     inputs = iter(["n"])
@@ -414,7 +414,7 @@ def test_backfill_pause_q_exits_early_with_summary(tmp_path, monkeypatch):
 
     visited_runner_calls: List[str] = []
 
-    def fake_runner(curie, family, course_code, provider, model, timeout=None):
+    def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None):
         visited_runner_calls.append(curie)
         return 0, _build_valid_yaml_payload(curie), ""
 
@@ -496,7 +496,7 @@ def test_backfill_rejects_when_validator_fails_after_append(tmp_path):
     target_curie = "test:Beta"
     bad_yaml = _build_invalid_yaml_payload(target_curie)
 
-    def fake_runner(curie, family, course_code, provider, model, timeout=None):
+    def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None):
         return 0, bad_yaml, ""
 
     # Stub validator to fail with a content_violation specific to this
@@ -586,7 +586,7 @@ def test_backfill_max_redrafts_exhausted_returns_dedicated_outcome(tmp_path):
 
     runner_calls = []
 
-    def fake_runner(curie, family, course_code, provider, model, timeout=None):
+    def fake_runner(curie, family, course_code, provider, model, timeout=None, prior_violations=None):
         runner_calls.append(curie)
         return 0, bad_yaml, ""
 

@@ -526,6 +526,7 @@ def _run_drafting_cli(
     provider: str,
     model: Optional[str],
     timeout: Optional[float] = None,
+    prior_violations: Optional[List[str]] = None,
 ) -> Tuple[int, str, str]:
     """Dispatch the Wave 136c drafting CLI as a subprocess.
 
@@ -538,6 +539,13 @@ def _run_drafting_cli(
     ``--timeout`` flag (per-HTTP-request budget, default there is
     300s). High-coupling CURIEs like rdf:type can exceed the
     provider's stock 60s on Qwen 14B-Q4.
+
+    ``prior_violations`` (Wave 137 follow-up): list of strings
+    describing the previous drafting attempt's validator violations.
+    JSON-encoded and forwarded to the drafting CLI's
+    ``--prior-violations`` flag, which appends them to the drafting
+    prompt as structural feedback (ToS-clean — metadata about Qwen's
+    own prior output, not example content).
     """
     cmd = [
         sys.executable,
@@ -559,6 +567,8 @@ def _run_drafting_cli(
         cmd.extend(["--model", model])
     if timeout is not None:
         cmd.extend(["--timeout", str(timeout)])
+    if prior_violations:
+        cmd.extend(["--prior-violations", json.dumps(prior_violations)])
     proc = subprocess.run(
         cmd,
         capture_output=True,
@@ -772,11 +782,21 @@ def _process_one_curie(
                     f"or skip it permanently."
                 )
                 return "max_redrafts_exceeded"
+            # Wave 137 follow-up: feed the violations back into the
+            # next drafting attempt so Qwen has specific signal to fix
+            # what went wrong, not just naive retry.
+            violation_summaries = [
+                f"{v.get('code', 'UNKNOWN')}: {v.get('detail', '')}"
+                for v in this_curie_violations
+                if isinstance(v, dict)
+            ]
             print_fn(
-                f"  Auto-redrafting (attempt {redraft_count + 1}/{MAX_REDRAFTS})..."
+                f"  Auto-redrafting (attempt {redraft_count + 1}/{MAX_REDRAFTS}) "
+                f"with {len(violation_summaries)} violation(s) fed back..."
             )
             rc, current_yaml, stderr = runner(
-                curie, family, course_code, provider, model, timeout
+                curie, family, course_code, provider, model, timeout,
+                violation_summaries,
             )
             if rc != 0 and rc != 3:
                 print_fn(

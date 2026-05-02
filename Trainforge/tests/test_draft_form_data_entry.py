@@ -369,6 +369,57 @@ def test_drafting_prompt_template_does_not_contain_example_content():
 
 
 # ----------------------------------------------------------------------
+# Wave 137 follow-up — feedback loop on auto-redraft.
+# ----------------------------------------------------------------------
+
+
+def test_drafting_prompt_appends_prior_violations_when_provided():
+    """Wave 137 follow-up: when prior_violations is non-empty,
+    _build_drafting_prompt appends a structural feedback block to
+    the base template. Bare violation summaries (NOT example
+    sentences) — ToS-clean."""
+    from types import SimpleNamespace
+    entry = SimpleNamespace(
+        curie="test:Foo",
+        label="test fixture label",
+        surface_forms=["test:Foo"],
+    )
+    bare = cli._build_drafting_prompt(entry)
+    assert "PREVIOUS ATTEMPT FAILED VALIDATION" not in bare
+    with_feedback = cli._build_drafting_prompt(
+        entry,
+        prior_violations=[
+            "CURIE_NOT_VERBATIM_DEFINITION: definitions[2] missing 'test:Foo'",
+            "LOW_DIVERSITY_DEFINITIONS: pairwise Jaccard 0.62 > 0.45",
+        ],
+    )
+    assert "PREVIOUS ATTEMPT FAILED VALIDATION" in with_feedback
+    assert "CURIE_NOT_VERBATIM_DEFINITION" in with_feedback
+    assert "LOW_DIVERSITY_DEFINITIONS" in with_feedback
+    assert "Avoid these specific issues" in with_feedback
+
+
+def test_drafting_prompt_caps_feedback_at_10_lines():
+    """Runaway violation lists can't blow the prompt length budget —
+    feedback caps at 10 violations regardless of how many were fed in."""
+    from types import SimpleNamespace
+    entry = SimpleNamespace(
+        curie="test:Foo",
+        label="test fixture label",
+        surface_forms=["test:Foo"],
+    )
+    rendered = cli._build_drafting_prompt(
+        entry,
+        prior_violations=[f"VIOLATION_{i}: detail" for i in range(20)],
+    )
+    # First 10 present, last 10 absent.
+    assert "VIOLATION_0:" in rendered
+    assert "VIOLATION_9:" in rendered
+    assert "VIOLATION_10:" not in rendered
+    assert "VIOLATION_19:" not in rendered
+
+
+# ----------------------------------------------------------------------
 # Wave 137c — drafting CLI auto-populates provenance with PENDING_REVIEW.
 # ----------------------------------------------------------------------
 
