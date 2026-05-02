@@ -15,6 +15,8 @@
 
 This contradicts the "swap Jaccard for embedding" framing in the original brief — see Open Question #1.
 
+**Validator output semantics (Phase 3 §6.5 contract).** Each of the four new gates (`outline_shacl`, `objective_assessment_similarity`, `concept_example_similarity`, `objective_roundtrip_similarity`) returns `GateResult.action="regenerate"` when its score is below threshold — NOT just `passed=False`. The Phase 3 router consumes that action signal and re-rolls the block within the self-consistency budget (Phase 3 §3.6) before promoting to `action="escalate"` when the regeneration budget exhausts (Phase 3 §3.7). This is a hard contract: validator authors writing for the four Phase 4 gates MUST emit the action field. Existing gates retain their legacy `(passed, issues)` shape; the router treats a missing `action` field as `"pass"` on success and `"block"` on failure, preserving backward compatibility.
+
 ## 2. Embedding Infrastructure
 
 **Module location.** New `lib/embedding/` package with `lib/embedding/sentence_embedder.py`. Avoids stuffing torch into `lib/validators/`. Mirrors existing eval-tier pattern at `Trainforge/eval/key_term_precision.py:66-71`.
@@ -48,9 +50,13 @@ Three reasons:
 
 **Plug-in seam.** Reserve `bloom_classifier_disagreement` as the future gate id. Add `lib/ontology/bloom.py::detect_bloom_level_with_classifier(text, classifier=None)` signature pre-emptively in Phase 4 (no body change yet) so the future plug can land additive. Document as deferred in `CLAUDE.md::Active Gates` with a "Phase 5 candidate" footnote.
 
+**Action contract for the deferred classifier.** When the deferred classifier lands, its disagreement signal is `action="regenerate"`, not blocking — consistent with Phase 3 §3.6's regeneration-budget primitive. A tagged-vs-classified Bloom mismatch is exactly the kind of soft semantic fault that re-rolling often resolves; routing it to `regenerate` lets the router's self-consistency loop converge before any escalation.
+
 ## 4. SHACL Wire-Up
 
 **Where it runs.** Insert as an `outline_shacl` gate at the end of the Phase-3 router's outline tier, *before* the rewrite tier dispatches. Per the Phase 3 plan's "inter-tier gate seam," this is the natural spot: outline tier produces the Block list, gate validates it, rewrite tier proceeds only if SHACL conformant.
+
+**SHACL repositions to a secondary semantic gate.** Phase 3 §2.1.1 makes constrained decoding (GBNF / JSON Schema / regex / vocabulary masking) the **primary** structural gate at the outline tier — the 7B literally cannot emit invalid structure at sample time. SHACL on the outline tier therefore becomes a **secondary semantic gate**: it verifies invariants the grammar can't express, including cross-block referential integrity (e.g. an `assessment_item` block's `objective_refs[]` resolves to a sibling `LearningObjective` block on the same page), CURIE consistency across siblings (every Block on a page that tags concept `X` uses the same CURIE form), and bloom-distribution shape constraints (`BloomDistributionShape` is intrinsically multi-block; no single-block grammar covers it). This is a downgrade in primacy, not in importance — the eight existing NodeShapes still fire; they just no longer have to defend against malformed JSON.
 
 **Adapter (Block list → JSON-LD → RDF):**
 - New `lib/validators/courseforge_outline_shacl.py::CourseforgeOutlineShaclValidator`.
@@ -106,6 +112,7 @@ Validators are useless without sensible thresholds. Concrete plan:
    - Empirical p99 of the cosine distribution is at least 0.05 above the proposed critical threshold (false-positive ceiling).
    - At least 2 courses' worth of warning-severity production runs have shipped without operator complaints.
 5. **Drift watchdog.** New per-run `state/phase4_thresholds_observed.jsonl` records actual p50/p99 each run; an out-of-band script alerts when drift exceeds ±0.05 from the calibrated baseline.
+6. **Regeneration metrics.** Per Phase 3 §3.7, every block carries `Block.validation_attempts` (Phase 2 deliverable; see `plans/phase2_intermediate_format_detailed.md` Subtasks 3, 10, 13). At session end the calibration script aggregates per-block-type average + p99 attempt counts and persists the histogram to `state/phase4_regen_attempts_<slug>.jsonl`. Operators dial `COURSEFORGE_OUTLINE_REGEN_BUDGET` and per-block-type overrides in `block_routing.yaml` based on observed convergence rates: a block type whose p99 attempt count is consistently 1 doesn't need a budget of 3; a block type whose p99 hits the ceiling should likely flip to `escalate_immediately: true` (Phase 3 §3.7). The calibration script also surfaces the per-validator breakdown of *why* re-rolls happened (from the `validator_failure_distribution` field added to `outline_block_call` events in Phase 3 §3.6), so operators can tell whether a high regen rate is dominated by SHACL violations vs. embedding-similarity vs. round-trip drift.
 
 ## 7. Decision-Capture Events
 

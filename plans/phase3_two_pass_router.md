@@ -71,6 +71,35 @@ This plan assumes Phase 1 (`plans/phase1_tos_unblock.md`, ToS-unblock via env-va
 
 **Failure mode:** outline-tier exhaustion (`MAX_PARSE_RETRIES`) raises `OutlineProviderError(code="outline_exhausted")`; the router marks the block `status="failed"` and emits a `block_outline_failed` decision event. The block is excluded from subsequent rewrite-tier dispatch but retained in the Block list so re-execution can target only failed blocks.
 
+#### 2.1.1 Constrained decoding as the primary structural gate
+
+A small constrained model is more reliable at the outline tier than a large unconstrained one — counterintuitive but consistently true for slot-filling against a fixed contract. The 7B's role is mechanical: emit a structurally-valid outline payload that it cannot violate at sample time. SHACL (Section 6 / Phase 4) repositions to the **secondary** gate that catches semantic violations the grammar can't express (cross-block referential integrity, CURIE consistency across siblings).
+
+Enforcement layer order (pre-generation, sample-time):
+
+1. **Grammar-constrained decoding** — primary gate. The token sampler literally cannot emit invalid structure.
+2. **JSON Schema enforcement during sampling** — engine-side type / shape constraints.
+3. **Regex constraints** on CURIE-shaped fields, Bloom verbs, identifier slots.
+4. **Token-level vocabulary masking** for controlled-vocab slots (`content_type` enum, `bloom_level` enum, `block_type` enum).
+
+Per-provider mechanism map (the outline tier's `OutlineProvider` selects the right mechanism based on the resolved provider string):
+
+| Provider | Mechanism | Payload field | Reference |
+|---|---|---|---|
+| `local` (llama.cpp / Ollama) | GBNF grammar | `grammar: <gbnf-string>` (llama.cpp); `format: <json-schema-dict>` (Ollama, recent versions) | llama.cpp server API; Ollama 0.5+ |
+| `local` (vLLM) | outlines integration | `guided_grammar` / `guided_json` / `guided_regex` | vLLM `extra_body` |
+| `local` (LM Studio) | GBNF | same as llama.cpp | LM Studio LLM Server |
+| `together` | JSON-mode + JSON Schema | `response_format: {type: "json_schema", json_schema: {...}}` | Together AI Chat Completions |
+| `anthropic` | Prompt + JSON-mode (no sample-time grammar) | n/a — falls back to JSON-mode-only + lenient parse + remediation retry | Anthropic Messages API |
+
+Anthropic doesn't expose a sample-time grammar surface, so the outline tier defaults to local providers. When `anthropic` is selected for the outline tier (rare; the ToS-clean default is `local`), the provider gracefully degrades to JSON-mode-only and relies entirely on the rewrite-tier-style preserve-tokens + remediation retry to recover from structural drift.
+
+The existing `OpenAICompatibleClient.chat_completion` already accepts an `extra_payload: Dict[str, Any]` arg (`Trainforge/generators/_openai_compatible_client.py:209-211`), which carries grammar / guided-decoding fields through to the underlying HTTP body unchanged. Phase 3 wires `OutlineProvider` to populate that extra_payload from a per-block-type grammar map and from `BlockProviderSpec.extra_payload`.
+
+A new env var `COURSEFORGE_OUTLINE_GRAMMAR_MODE` (`gbnf|json_schema|json_object|none`) selects the mechanism explicitly when an operator wants to override autodetection (e.g. force JSON-mode-only on a provider that does support grammar but the operator wants to A/B-test). Default behaviour: autodetect from `(provider, base_url, model)`.
+
+~~Pre-feedback wording elsewhere in this plan that frames SHACL as the primary structural gate is superseded by this subsection — SHACL becomes the secondary semantic gate per Phase 4 §4.~~
+
 ### 2.2 Deterministic tier (between outline and rewrite)
 
 This is the validation layer the proposal calls "deterministic gates that reject malformed outlines before the rewrite pass." See Section 6 for the specific validators promoted.
@@ -187,6 +216,69 @@ Same composition pattern as `Trainforge/generators/_curriculum_provider.py:211-2
 
 `OutlineProvider` and `RewriteProvider` each compose one `OpenAICompatibleClient`. The client's `llm_chat_call` event already exists (`_openai_compatible_client.py:534`). On top of that, the router emits ONE higher-level event per (block, tier) — per Section 9.
 
+### 3.6 Self-consistency dispatch
+
+Constrained decoding guarantees structural validity but doesn't guarantee semantic quality. The router pairs it with **self-consistency sampling**: generate N candidates per block, run the validator chain on each, return the first passer. Cheap on local hardware because the outline tier is 7B; catches tail-end failures without escalating to a stronger model.
+
+```python
+class CourseforgeRouter:
+    def route_with_self_consistency(
+        self,
+        block: Block,
+        *,
+        n_candidates: int = 3,
+        validators: Optional[List[InterTierGate]] = None,
+    ) -> Block: ...
+```
+
+**Validator chain order** (cheapest gate first; later gates only run if earlier ones pass):
+
+1. **Grammar / JSON Schema** — sample-time, always passes by construction. Listed first so the chain shape is uniform.
+2. **SHACL** — semantic invariants the grammar can't express (Phase 4 §4).
+3. **CURIE resolution** — every CURIE in `Block.outline.curies` must resolve against the concept-graph manifest (`schemas/knowledge/courseforge_jsonld_v1.schema.json`).
+4. **Embedding similarity floor** — Phase 4 §2: every example block must clear cosine threshold against the concept it claims to illustrate; every assessment-Block stem must clear threshold against its declared objective. Sub-threshold returns `action="regenerate"` per §6.5.
+5. **Round-trip check** — Phase 4 §5(a): extract objective from assessment item, verify it matches the source objective.
+
+**Generation strategy:** candidates may be generated in parallel (all N requests fired concurrently to the local server, first-passer wins, others discarded) or sequentially (cheaper on token usage when first candidate usually passes). Default sequential; parallel mode opt-in via per-call kwarg.
+
+**Decision-capture metadata** added to the `outline_block_call` event (Section 9.2):
+
+- `n_candidates_requested`: int (the operator-supplied or env-var-resolved budget).
+- `winning_candidate_index`: int (0-indexed; absent if all failed).
+- `failed_candidate_count`: int.
+- `validator_failure_distribution`: `Dict[validator_name, int]` — counts how many candidates failed each validator (informs Phase 4 calibration).
+
+**Env var:** `COURSEFORGE_OUTLINE_N_CANDIDATES` (default `3`). Per-block-type override available in `block_routing.yaml` (`blocks.<type>.outline.n_candidates`).
+
+### 3.7 Regeneration budget + escalation
+
+Some block types exceed 7B competence — usually prereq inference and multi-step reasoning ones. Infinite local retry loops eat overnight runtime when a $0.001 API call resolves it. The router enforces a per-block regeneration budget, then escalates directly to the rewrite tier (skipping further outline retries).
+
+**Per-block counter:** read from `Block.validation_attempts` (Phase 2 deliverable — see `plans/phase2_intermediate_format_detailed.md` Subtasks 3, 10, 13 for the dataclass field, JSON Schema field, and SHACL property respectively). Default `0`; the router increments on every failed validator pass within the self-consistency loop.
+
+**Escalation trigger:**
+
+```
+if block.validation_attempts >= COURSEFORGE_OUTLINE_REGEN_BUDGET:
+    block.escalation_marker = "outline_budget_exhausted"
+    # short-circuit straight to rewrite tier; skip remaining outline retries
+```
+
+`Block.escalation_marker` is one of the markers Phase 2 declares in `_ESCALATION_MARKERS` (see `plans/phase2_intermediate_format_detailed.md` Subtask 3). Phase 3 sets `"outline_budget_exhausted"`; Phase 5 may set the others.
+
+**Rewrite-tier prompt amendment:** when the rewrite tier sees a non-null `escalation_marker`, it switches to a richer prompt template:
+
+```
+The outline tier could not produce a valid {block_type} after {n} attempts (marker={escalation_marker}).
+Synthesize from scratch using {source_chunks} and {objective_refs}, preserving CURIEs:
+  {curies}
+Do not introduce facts outside the supplied source chunks.
+```
+
+**Per-block-type immediate escalation:** `block_routing.yaml` schema gains an optional per-block-type `escalate_immediately: bool` flag. When true, the router skips the outline tier entirely and routes the block straight to rewrite with `escalation_marker="outline_skipped_by_policy"`. Use cases: prereq inference, multi-step reasoning, or any block-type whose outline-tier success rate is empirically low. Maintenance contract: when an operator flips a block-type to `escalate_immediately: true`, they must justify the swap in the YAML rationale comment block (operator-facing, Section 4 already shows the convention).
+
+**Env var:** `COURSEFORGE_OUTLINE_REGEN_BUDGET` (default `3`).
+
 ## 4. `block_routing.yaml` schema
 
 **Location convention:** `Courseforge/router/block_routing.yaml` (default), or any path supplied via `COURSEFORGE_BLOCK_POLICY` env var. JSON Schema lives at `schemas/courseforge/block_routing.schema.json`.
@@ -265,6 +357,9 @@ overrides:
 | `COURSEFORGE_REWRITE_BASE_URL` | Tier-default rewrite base URL. | `https://api.together.xyz/v1` |
 | `COURSEFORGE_REWRITE_API_KEY` | Tier-default rewrite API key. | from `TOGETHER_API_KEY` if provider=`together` |
 | `COURSEFORGE_BLOCK_POLICY` | Path to `block_routing.yaml`. | `Courseforge/router/block_routing.yaml` |
+| `COURSEFORGE_OUTLINE_N_CANDIDATES` | Self-consistency sample count per block at the outline tier (Section 3.6). | `3` |
+| `COURSEFORGE_OUTLINE_REGEN_BUDGET` | Per-block regeneration budget before outline-tier escalation to rewrite (Section 3.7). | `3` |
+| `COURSEFORGE_OUTLINE_GRAMMAR_MODE` | Constrained-decoding mechanism (`gbnf|json_schema|json_object|none`). Selects how `OutlineProvider` materialises the grammar in the request payload (Section 2.1.1). | autodetect from provider |
 | `COURSEFORGE_PROVIDER` | (Phase 1) global Courseforge provider — final fallback for both tiers. | (Phase 1 default) |
 
 Each row maps to a CLAUDE.md flag table addition (style: same as the `CURRICULUM_ALIGNMENT_PROVIDER` row at `CLAUDE.md:729`).
@@ -332,6 +427,46 @@ Each row maps to a CLAUDE.md flag table addition (style: same as the `CURRICULUM
 5. **Backward compat via flag.** When `COURSEFORGE_TWO_PASS=false`, the workflow runner skips the new phases and the legacy `content_generation` runs unchanged. This is achievable with a per-phase `enabled_when:` predicate on `config/workflows.yaml` (small change to `MCP/core/workflow_runner.py` to honour it).
 
 The single-phase alternative (one `content_generation` phase with internal two-pass) was rejected because it muddles decision-capture phase tags, doubles the legacy phase's timeout, and forces re-execution to re-run the outline pass even when only rewrite needs redoing.
+
+### 6.5 Validator output shape
+
+Inter-tier validators return a structured signal the router consumes to decide whether to re-roll, escalate, or hard-fail:
+
+```python
+@dataclass(frozen=True)
+class GateResult:
+    passed: bool
+    action: Literal["pass", "regenerate", "escalate", "block"]
+    issues: List[GateIssue]
+    score: Optional[float] = None     # cosine / shape-conformance / etc., when applicable
+```
+
+**Action semantics:**
+
+| `action` | Router behaviour |
+|---|---|
+| `"pass"` | Block proceeds to next gate / next tier. |
+| `"regenerate"` | Re-roll within the self-consistency loop (Section 3.6). Increments `Block.validation_attempts`. If budget exhausted (Section 3.7), the router promotes the action to `"escalate"`. |
+| `"escalate"` | Short-circuit to the rewrite tier with `Block.escalation_marker` set. Skip remaining outline-tier retries. |
+| `"block"` | Hard-fail. Used by deterministic gates where re-rolling cannot help (e.g. CURIE-resolution against a missing manifest entry; the LLM cannot invent a manifest row). Block is marked `status="failed"` and excluded from rewrite. |
+
+**Per-validator default action mapping** (the Phase 4 detailed plan fully specifies this; Phase 3 only requires the seam):
+
+| Validator | Failure default action |
+|---|---|
+| Grammar / JSON Schema (sample-time) | n/a (cannot fail at runtime) |
+| `outline_shacl` | `regenerate` |
+| `objective_assessment_similarity` (Phase 4) | `regenerate` |
+| `concept_example_similarity` (Phase 4) | `regenerate` |
+| `objective_roundtrip_similarity` (Phase 4) | `regenerate` |
+| `bloom_classifier_disagreement` (Phase 4 deferred) | `regenerate` (when the deferred classifier lands) |
+| CURIE-resolution-against-manifest | `block` (deterministic; re-rolling can't invent a missing manifest row) |
+| `curie_anchoring` (Wave 135c, generalised) | `regenerate` (the LLM may have dropped a token; re-roll often recovers) |
+| `content_type` enum | `regenerate` |
+| `page_objectives` | `block` (LO coverage is structural, not regen-fixable) |
+| `source_refs` against staging manifest | `block` (sourceId not in manifest is a structural error) |
+
+The `Block.touched_by` provenance trail (Phase 2 deliverable) records the action chosen per gate fire, so an audit can replay the regen-vs-escalate-vs-block decision chain.
 
 ## 7. Inter-tier gate promotion
 
@@ -491,6 +626,8 @@ Stage 3 (week 3+): Default flips to `true` only after Stage 2 review passes; leg
 5. **For the Anthropic rewrite path, do we plumb prompt-caching headers?** The `OpenAICompatibleClient` doesn't, the Anthropic SDK does. Phase 1 may already specify; if not, recommend enabling on chunks ≥ 1024 tokens to amortise cost.
 6. **Do we want `block_routing.yaml` to be per-page-glob or only per-block-type?** This plan supports both via `overrides:` block-id glob. Confirm operator desire.
 7. **Inter-tier gate phase: separate workflow phase, or in-process between outline and rewrite phases?** This plan recommends in-process inside `content_generation_outline` (gate runs at phase end, before phase-output emission), to avoid a third ~empty workflow phase. Confirm.
+8. **Differentiated rewrite-tier prompts for budget-exhausted vs. immediately-escalated blocks?** Section 3.7 defines one richer prompt for both `escalation_marker="outline_budget_exhausted"` and `escalation_marker="outline_skipped_by_policy"`. A case can be made for differentiating: budget-exhausted blocks have a partial outline the rewriter can reference (signal that 7B got partway); skipped-by-policy blocks have nothing. The current plan elides the difference; confirm whether the rewrite-tier prompt template should branch on the marker.
+9. **Per-validator vs. global validator-action signal?** Section 6.5's `GateResult.action` is per-validator. An alternative: validators emit only `(passed, score, issues)` and the router decides the action via a central policy table. Per-validator gives validators agency (e.g. CURIE-resolution can hard-block while embedding-similarity can regenerate); central policy is easier to change in one place. The current plan chooses per-validator with a default mapping table (Section 6.5) the operator can override via gate config. Confirm.
 
 ---
 

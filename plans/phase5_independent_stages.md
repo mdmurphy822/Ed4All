@@ -44,6 +44,20 @@ ed4all run courseforge-rewrite \
     --blocks assessments,examples \
     --model deepseek-v3 --api-provider deepseek
 
+# Rewrite-tier re-run scoped to escalated blocks only
+# (resume after a partial failure or A/B-test rewrite-tier model swaps)
+ed4all run courseforge-rewrite \
+    --outline Courseforge/exports/PROJ-PHYS_101-20260502/01_outline \
+    --output  Courseforge/exports/PROJ-PHYS_101-20260502/04_rewrite \
+    --escalated-only \
+    --model claude-sonnet-4-6 --api-provider anthropic
+
+# Validate stage that actively re-rolls failed blocks via the Phase 3 router
+# (default: validate is read-only and only reports failures)
+ed4all run courseforge-validate \
+    --outline Courseforge/exports/PROJ-PHYS_101-20260502/01_outline \
+    --regenerate-on-fail
+
 # Full slice (equivalent to running all four in sequence)
 ed4all run courseforge \
     --course-code PHYS_101 --corpus pdfs/ \
@@ -55,10 +69,16 @@ ed4all run courseforge \
 | CLI subcommand | Phase 3 tier / phase | Underlying handler |
 |---|---|---|
 | `courseforge-outline` | outline tier | `content_generation_outline` phase from `config/workflows.yaml` (Phase 3 deliverable) |
-| `courseforge-validate` | gates only | runs Phase 4 validators against an OUTLINE_DIR; no LLM call |
+| `courseforge-validate` | gates only | runs Phase 4 validators against an OUTLINE_DIR; no LLM call by default; with `--regenerate-on-fail` actively re-rolls failed blocks via the Phase 3 router |
 | `courseforge-classify` | classifier tier | Phase 4 classifier sub-pass (Bloom/content_type/teaching_role tags) |
-| `courseforge-rewrite` | rewrite tier | `content_generation_rewrite` phase |
+| `courseforge-rewrite` | rewrite tier | `content_generation_rewrite` phase; `--escalated-only` filters to blocks with non-null `escalation_marker` |
 | `courseforge` | all four + packaging | thin wrapper that fans out via `WorkflowRunner` |
+
+### `courseforge-validate --regenerate-on-fail`
+
+Default behaviour of `courseforge-validate` is read-only: it loads the OUTLINE_DIR, runs the Phase 4 validators, and writes `02_validation_report/report.json`. The new flag promotes it to active re-execution: any block whose validator returns `GateResult.action="regenerate"` (Phase 3 §6.5) is re-rolled in place via the Phase 3 router's self-consistency loop (Phase 3 §3.6), respecting the same `COURSEFORGE_OUTLINE_REGEN_BUDGET` ceiling. Blocks whose validator returns `action="escalate"` are flagged for the rewrite tier in the report but not re-routed (validate is a same-tier operation; tier-promotion belongs to `courseforge-rewrite`). Blocks whose validator returns `action="block"` are recorded as hard failures.
+
+Default off because validate-as-side-effect changes the tool's contract; operators opt in deliberately. The flag is mutually exclusive with `--read-only` (which is the implicit default and need not be passed).
 
 ## 3. Per-block re-execution (`--blocks`)
 
@@ -95,6 +115,21 @@ Old `touched_by[]` entries are preserved (append-only). Unchanged blocks get **n
 ### Idempotency
 
 Re-running with identical inputs and `--blocks` should yield byte-identical output for blocks **outside** the filter, and an additional `touched_by[]` entry plus possibly different content for blocks **inside** the filter (LLM nondeterminism). The system does **not** seed LLM calls today (no `--seed` flag in `run.py` / `BackendSpec` per `cli/commands/run.py:350`). Phase 5 inherits that nondeterminism; record an open question to seed later.
+
+### `courseforge-rewrite --escalated-only`
+
+A second selection mode (orthogonal to `--blocks`): re-run the rewrite tier on only blocks whose Phase 3 outline tier set a non-null `Block.escalation_marker` (Phase 2 deliverable; see `plans/phase2_intermediate_format_detailed.md` Subtasks 3, 10, 13 for the dataclass field, JSON Schema field, and SHACL property respectively). Selection algorithm:
+
+1. Load every `*.json` JSON-LD page under OUTLINE_DIR.
+2. Filter to blocks where `escalation_marker is not None`.
+3. Group by `(week, page)` and dispatch to the rewrite worker.
+
+Two operator workflows this enables:
+
+- **Resume after a partial outline-tier failure.** The full outline run completes; some blocks exhausted the regen budget and carry `escalation_marker="outline_budget_exhausted"`. Operator runs `courseforge-rewrite --escalated-only` to push only those blocks through the rewrite tier without re-running the full `content_generation_rewrite` phase.
+- **A/B-testing rewrite-tier model swaps.** Generate an OUTLINE_DIR once. Run `courseforge-rewrite --escalated-only --model claude-sonnet-4-6 --output run_A` and `courseforge-rewrite --escalated-only --model deepseek-v3 --output run_B`; compare resulting `04_rewrite/manifest.json.content_hash` distributions and human-review the divergent blocks.
+
+`--escalated-only` is mutually exclusive with `--blocks` (you can't filter by both type and escalation status in the same run; nest the operator's intent into two sequential calls). When neither is set, all blocks pass through.
 
 ## 4. Stage I/O contracts
 
