@@ -16,6 +16,10 @@ AI-powered instructional design system that creates and remediates accessible, L
 **Input**: Any IMSCC package (Canvas, Blackboard, Moodle, Brightspace, etc.)
 **Output**: Fully accessible, enhanced IMSCC with 100% WCAG 2.2 AA compliance
 
+### Provider selection (Phase 1 ToS unblock)
+
+Set `COURSEFORGE_PROVIDER=local` to route content authoring through a license-clean local OSS provider; see root `CLAUDE.md` § Opt-In Behavior Flags for the env-var contract and `docs/LICENSING.md` for the ToS posture.
+
 ---
 
 ## Workflow Pipelines
