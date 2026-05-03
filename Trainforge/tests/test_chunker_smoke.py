@@ -1,21 +1,18 @@
-"""Smoke tests for the lifted ``ed4all_chunker`` package surface.
+"""Smoke tests for the ``Trainforge.chunker`` public surface.
 
-Phase 7a Subtask 5. These tests exercise the public API of the
-package independently of Trainforge so a regression in the lifted
-chunker proper, the lifted helpers, or the lifted boilerplate
-detector is caught at the package boundary — not deferred to the
-Trainforge regression suite (which would mask a packaging bug
-behind in-tree call sites).
+Originally lifted into a sibling ``ed4all-chunker`` workspace package
+in Phase 7a; folded back into ``Trainforge/chunker/`` in the
+post-Phase-8 review (see ``plans/post-phase8-review-2026-05.md``).
+The package contract is unchanged — these tests still exercise the
+public API end-to-end.
 
-Self-containment contract: nothing in this file imports anything
-from ``Trainforge`` or from the parent project. The package's
-declared in-function lazy imports
-(``Trainforge.parsers.html_content_parser`` /
-``Trainforge.parsers.xpath_walker``) are NOT exercised here — those
-fire only on call paths that need plain-text extraction or xpath
-resolution, neither of which the smoke contracts tested here
-require. See the package's chunker module docstring for the
-rationale.
+The original Phase 7a design pinned a "no eager Trainforge imports
+from the chunker package" contract via a sibling-isolation sentinel
+test. That contract no longer applies once the chunker lives inside
+Trainforge — the relocated chunker now imports
+``Trainforge.parsers.html_content_parser`` and
+``Trainforge.parsers.xpath_walker`` directly at module top (the
+former lazy imports). The sentinel test was deleted with this re-merge.
 
 Test surface (per Subtask 5 spec):
     1. Empty-input contract — ``chunk_content([], 'TEST_101', ctx=None)``
@@ -45,7 +42,7 @@ Subtask 5 plan-spec note that authoring as one file is acceptable):
         line markers.
     14. ``extract_section_html`` returns ``""`` when heading is missing.
     15. Package-level re-export sanity check — every name in
-        ``ed4all_chunker.__all__`` is importable from the top.
+        ``Trainforge.chunker.__all__`` is importable from the top.
 """
 
 from __future__ import annotations
@@ -54,7 +51,7 @@ from typing import Any, Dict, List
 
 import pytest
 
-from ed4all_chunker import (
+from Trainforge.chunker import (
     BoilerplateConfig,
     CANONICAL_CHUNK_TYPES,
     ChunkContentResult,
@@ -71,7 +68,7 @@ from ed4all_chunker import (
     strip_feedback_from_text,
     type_from_resource,
 )
-from ed4all_chunker.chunker import _generate_chunk_id
+from Trainforge.chunker.chunker import _generate_chunk_id
 
 
 # ---------------------------------------------------------------------------
@@ -550,65 +547,17 @@ def test_extract_section_html_returns_full_section_when_inside_section() -> None
 
 
 def test_package_reexports_all_declared_names() -> None:
-    import ed4all_chunker as pkg
+    import Trainforge.chunker as pkg
 
     for name in pkg.__all__:
         assert hasattr(pkg, name), (
-            f"ed4all_chunker.__all__ declares {name!r} but it is not "
+            f"Trainforge.chunker.__all__ declares {name!r} but it is not "
             "an attribute of the package — re-export drift."
         )
 
 
-# ---------------------------------------------------------------------------
-# Self-containment sentinel — pure ``import ed4all_chunker`` does NOT load
-# Trainforge transitively
-# ---------------------------------------------------------------------------
-
-
-def test_pure_import_does_not_load_trainforge_modules() -> None:
-    """``import ed4all_chunker`` MUST NOT eagerly load any Trainforge module.
-
-    The package's two declared lazy imports
-    (``Trainforge.parsers.html_content_parser`` inside
-    :func:`ed4all_chunker.helpers.extract_plain_text`; and
-    ``Trainforge.parsers.xpath_walker`` inside
-    :func:`ed4all_chunker.chunker.chunk_text_block`) are CALL-time
-    lazy imports — they fire only when those specific functions are
-    invoked. Pure ``import ed4all_chunker`` against a fresh
-    interpreter must come up clean: no Trainforge modules in
-    ``sys.modules``.
-
-    Verifying via subprocess so prior tests in this same pytest
-    session (which DO drive the chunker through call paths that
-    legitimately fire the lazy imports) don't poison the
-    ``sys.modules`` snapshot.
-
-    If a future change in the package eagerly imports Trainforge
-    (e.g. a top-of-module import of ``html_content_parser``), this
-    sentinel catches it at the package boundary instead of deferring
-    the regression to the parent project's regression suite.
-    """
-
-    import subprocess
-    import sys
-
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import sys\n"
-                "import ed4all_chunker  # noqa: F401\n"
-                "loaded = [m for m in sys.modules if m.startswith('Trainforge')]\n"
-                "print(';'.join(sorted(loaded)))\n"
-            ),
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    loaded = [m for m in completed.stdout.strip().split(";") if m]
-    assert loaded == [], (
-        "Pure ``import ed4all_chunker`` MUST NOT load Trainforge "
-        f"modules; subprocess found: {loaded}"
-    )
+# Note: the Phase 7a sibling-isolation sentinel test
+# (``test_pure_import_does_not_load_trainforge_modules``) was deleted
+# with the post-Phase-8 chunker re-merge. The chunker now imports
+# Trainforge parsers directly at module top — sibling-package
+# isolation no longer applies by design.

@@ -1,9 +1,8 @@
-"""HTML + resource helpers used by the Ed4All chunker.
+"""HTML + resource helpers used by the Trainforge chunker.
 
-Phase 7a Subtask 3 lifts five small helpers out of
-``Trainforge/process_course.py``::CourseProcessor as standalone module
-functions so Subtask 4 (the chunker proper) can call them without a
-``CourseProcessor`` instance.
+Lifted from ``Trainforge/process_course.py``::CourseProcessor as
+standalone module functions so the chunker proper can call them
+without a ``CourseProcessor`` instance.
 
 Lifted helpers:
     - :func:`extract_plain_text` (was ``CourseProcessor._extract_plain_text``)
@@ -13,23 +12,22 @@ Lifted helpers:
     - :func:`type_from_resource` (was ``CourseProcessor._type_from_resource``)
 
 All five were ``@staticmethod`` on the class — none touched ``self`` —
-so the lift is a straight rename + indent shift. The ``CourseProcessor``
-``_``-prefixed methods continue to exist as thin wrappers that delegate
-here, keeping every existing call site (``self._extract_plain_text(...)``
-or ``CourseProcessor._extract_section_html(...)`` from the regression
-suite) working without modification.
+so the lift is a straight rename + indent shift.
 
-``HTMLTextExtractor`` is imported lazily inside :func:`extract_plain_text`
-to avoid a module-load circular import: ``Trainforge.parsers.html_content_parser``
-itself transitively depends on Trainforge code paths that pull in
-``Trainforge.process_course`` in the wider import graph; lazy import
-defers the resolution to call time.
+``HTMLTextExtractor`` import: was lazy when the chunker lived in the
+sibling ``ed4all-chunker`` package (Phase 7a) to dodge a hypothetical
+module-load cycle. Now that the chunker lives inside Trainforge the
+import-cycle risk is gone — ``Trainforge.parsers.html_content_parser``
+imports stdlib + bs4 + ``lib.ontology`` only (no
+``Trainforge.process_course`` reach-through).
 """
 
 from __future__ import annotations
 
 import re
 from typing import List, Tuple
+
+from Trainforge.parsers.html_content_parser import HTMLTextExtractor
 
 __all__ = [
     "extract_plain_text",
@@ -73,13 +71,8 @@ def extract_plain_text(html: str) -> str:
 
     Wraps :class:`Trainforge.parsers.html_content_parser.HTMLTextExtractor`,
     which already implements the Worker-Q template-chrome skip and the
-    canonical ``<script>`` / ``<style>`` subtree drop. The lazy import
-    avoids a module-load circular-import risk (the parser module pulls
-    in ``lib.ontology.bloom`` and other Trainforge-adjacent modules).
+    canonical ``<script>`` / ``<style>`` subtree drop.
     """
-
-    # Local import keeps ``ed4all_chunker.helpers`` import-cycle-free.
-    from Trainforge.parsers.html_content_parser import HTMLTextExtractor
 
     extractor = HTMLTextExtractor()
     extractor.feed(html)

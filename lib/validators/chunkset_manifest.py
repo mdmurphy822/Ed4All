@@ -84,10 +84,19 @@ logger = logging.getLogger(__name__)
 # (when jsonschema isn't installed) still validates the SHA fields.
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
-# semver + optional +local / -prerelease — mirrors the schema regex
-# on chunker_version. Same fallback rationale as _SHA256_RE.
+# Chunker-version regex — mirrors the schema regex on
+# chunker_version. Same fallback rationale as _SHA256_RE.
+#
+# Migration drift (post-Phase-8 review): the field used to carry the
+# Python-package release version of the standalone ``ed4all-chunker``
+# workspace (e.g. ``"0.1.0"``); it now carries the chunker-schema-
+# contract version emitted by ``Trainforge.chunker.
+# CHUNKER_SCHEMA_VERSION`` (e.g. ``"v4"``). The alternation accepts
+# BOTH shapes so any pre-migration manifest still on disk — including
+# the legacy ``"0.0.0+missing"`` fallback sentinel — continues to
+# validate.
 _CHUNKER_VERSION_RE = re.compile(
-    r"^\d+\.\d+\.\d+(?:[+-][A-Za-z0-9.+-]+)?$"
+    r"^(?:v\d+|\d+\.\d+\.\d+(?:[+-][A-Za-z0-9.+-]+)?)$"
 )
 
 # Required top-level fields per the schema (excluding the conditional
@@ -548,9 +557,10 @@ class ChunksetManifestValidator:
                     severity="critical",
                     code="CHUNKSET_MANIFEST_SCHEMA_VIOLATION",
                     message=(
-                        f"chunker_version must match semver pattern "
-                        f"(e.g. '0.1.0', '0.0.0+missing'); got: "
-                        f"{chunker_ver!r}"
+                        f"chunker_version must match either the chunker-"
+                        f"schema-contract pattern (e.g. 'v4') or the "
+                        f"legacy semver pattern (e.g. '0.1.0', "
+                        f"'0.0.0+missing'); got: {chunker_ver!r}"
                     ),
                     location=str(manifest_path),
                 )

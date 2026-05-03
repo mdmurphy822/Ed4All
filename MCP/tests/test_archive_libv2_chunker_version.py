@@ -1,20 +1,24 @@
-"""Phase 7a Subtask 8 — archive_to_libv2 emits ``chunker_version``.
+"""archive_to_libv2 emits ``chunker_version``.
 
 Contract: when ``MCP/tools/pipeline_tools.py::archive_to_libv2`` writes
-the LibV2 manifest, it MUST include a ``chunker_version`` top-level field
-sourced from the installed ``ed4all-chunker`` package via
-``importlib.metadata.version``. The value is a semver string (or the
-sentinel ``"0.0.0+missing"`` when the package isn't installed —
-documented at ``schemas/library/course_manifest.schema.json::
-chunker_version``). Phase 7c will promote the field from optional to
-required at the validator boundary; Phase 7a only enforces emit.
+the LibV2 manifest, it MUST include a ``chunker_version`` top-level
+field. Originally (Phase 7a) sourced from
+``importlib.metadata.version("ed4all-chunker")`` returning a semver-
+shaped string. Post-Phase-8 chunker re-merge: the field is sourced
+from ``Trainforge.chunker.CHUNKER_SCHEMA_VERSION = "v4"`` — a
+chunker-schema-contract version, decoupled from any Python package
+release. The schema regex was widened to accept either shape:
+``^(?:v\\d+|\\d+\\.\\d+\\.\\d+(?:[+-][A-Za-z0-9.+-]+)?)$``.
 
 Surfaces tested:
-    - ``_resolve_chunker_version`` returns the installed semver and the
-      ``"0.0.0+missing"`` sentinel on PackageNotFoundError.
+    - ``_resolve_chunker_version`` returns the schema-contract version.
+    - Pre-existing PackageNotFoundError fallback is now unreachable
+      (the helper no longer reads from ``importlib.metadata``); the
+      legacy sentinel ``"0.0.0+missing"`` would still validate against
+      the widened regex if any pre-migration manifest carries it.
     - The emitted manifest carries ``chunker_version`` matching the
-      schema regex ``^\\d+\\.\\d+\\.\\d+(?:[+-][A-Za-z0-9.+-]+)?$``.
-    - The ``LibV2ManifestValidator`` accepts a manifest carrying the new
+      widened regex.
+    - The ``LibV2ManifestValidator`` accepts a manifest carrying the
       field (no SCHEMA_VIOLATION GateIssue).
 """
 
@@ -43,8 +47,13 @@ from MCP.tools.pipeline_tools import (  # noqa: E402
 
 # Mirror the pattern shipped in
 # schemas/library/course_manifest.schema.json::chunker_version so the
-# test fails loudly if the regex drifts on either side.
-_CHUNKER_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[+-][A-Za-z0-9.+-]+)?$")
+# test fails loudly if the regex drifts on either side. The widened
+# alternation accepts both the post-Phase-8 chunker-schema-contract
+# shape (``v4``) and the legacy package-version shape (``0.1.0``,
+# ``0.0.0+missing``) so pre-migration manifests still validate.
+_CHUNKER_VERSION_RE = re.compile(
+    r"^(?:v\d+|\d+\.\d+\.\d+(?:[+-][A-Za-z0-9.+-]+)?)$"
+)
 
 
 class _CapturingMCP:
@@ -77,39 +86,37 @@ def archive_tool(monkeypatch, tmp_path):
 # --------------------------------------------------------------------- #
 
 
-def test_resolve_chunker_version_returns_installed_semver():
-    """When ed4all-chunker is installed, returns its semver string."""
-    version = _resolve_chunker_version()
-    assert _CHUNKER_VERSION_RE.match(version), (
-        f"chunker_version {version!r} does not match the schema's semver regex"
-    )
-    # The Phase 7a Subtask 1 package skeleton ships with version 0.1.0.
-    # Sentinel form is only emitted when the package isn't importable,
-    # which is NOT the expected dev-env state.
-    assert version != "0.0.0+missing", (
-        "Expected the real installed semver, not the missing-package "
-        "sentinel — confirm `pip install -e ed4all-chunker` ran."
-    )
+def test_resolve_chunker_version_returns_schema_contract_version():
+    """``_resolve_chunker_version`` returns ``Trainforge.chunker.CHUNKER_SCHEMA_VERSION``.
 
-
-def test_resolve_chunker_version_falls_back_when_package_missing(monkeypatch):
-    """PackageNotFoundError → returns the schema-valid sentinel."""
-
-    def _raise_not_found(_name):
-        raise PackageNotFoundError("ed4all-chunker")
-
-    # Patch the import inside the helper. The helper imports at call time
-    # via a local import, so monkeypatching importlib.metadata.version
-    # before the call site reaches it is the cleanest hook.
-    import importlib.metadata as _md
-    monkeypatch.setattr(_md, "version", _raise_not_found)
+    Post-Phase-8 chunker re-merge: the helper no longer resolves a
+    Python-package version via ``importlib.metadata.version``. It
+    returns the in-tree ``Trainforge.chunker.CHUNKER_SCHEMA_VERSION``
+    constant — the chunker-schema-contract version that's decoupled
+    from any package release.
+    """
+    from Trainforge.chunker import CHUNKER_SCHEMA_VERSION
 
     version = _resolve_chunker_version()
-    assert version == "0.0.0+missing"
     assert _CHUNKER_VERSION_RE.match(version), (
-        "Sentinel must satisfy the schema regex — otherwise emit will "
-        "fail closed at the Phase 7c validator gate."
+        f"chunker_version {version!r} does not match the widened schema regex"
     )
+    assert version == CHUNKER_SCHEMA_VERSION, (
+        "_resolve_chunker_version must return the in-tree chunker-schema "
+        "constant, not a Python-package version lookup."
+    )
+
+
+def test_legacy_semver_sentinel_still_satisfies_widened_regex():
+    """Pre-Phase-8 sentinel ``"0.0.0+missing"`` is still schema-valid.
+
+    The chunker re-merge widened the regex (``^v\\d+|\\d+\\.\\d+\\.\\d+...$``)
+    so the legacy sentinel emitted by pre-migration archives stays
+    valid. Without this guard, pre-migration LibV2 archives would
+    fail closed at the manifest gate after the regex change.
+    """
+    assert _CHUNKER_VERSION_RE.match("0.0.0+missing")
+    assert _CHUNKER_VERSION_RE.match("0.1.0")  # legacy package version
 
 
 # --------------------------------------------------------------------- #

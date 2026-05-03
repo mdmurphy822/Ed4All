@@ -28,19 +28,18 @@ Every chunk carries its Bloom's level, content type, key terms, misconceptions, 
 
 ## Quick start
 
-Requires Python 3.9+ and **pip ≥ 24.x** (older pip versions ship on some Debian / Ubuntu LTS images and reject the relative `file:./ed4all-chunker` direct-reference URL used to declare the workspace member; if `pip install` fails on that line, run `pip install --upgrade pip` first). Optional system tools (`tesseract-ocr`, `poppler-utils`) improve extraction on scanned or image-heavy PDFs.
+Requires Python 3.9+. Optional system tools (`tesseract-ocr`, `poppler-utils`) improve extraction on scanned or image-heavy PDFs.
 
 ```bash
 git clone https://github.com/mdmurphy822/Ed4All.git
 cd Ed4All
-pip install --upgrade pip   # ensure pip ≥ 24.x for direct-reference workspace members
 pip install -e ".[full]"
 
 # Convert a textbook PDF into a full course package
 ed4all run textbook-to-course --corpus my_textbook.pdf --course-name MY_COURSE_101
 ```
 
-The `pip install -e ".[full]"` step also pulls in **`ed4all-chunker`**, an in-repo workspace member at [`./ed4all-chunker`](ed4all-chunker/) that holds the canonical chunker (used by Trainforge today, and by the upcoming DART + IMSCC dual-chunkset pipeline). It is declared as a relative `file:` direct-reference dependency in `pyproject.toml`, so a single editable install of the parent project resolves it automatically. If you want to iterate on the chunker package itself, also run `pip install -e ed4all-chunker` so changes under `ed4all-chunker/ed4all_chunker/` are picked up live.
+The canonical chunker lives in-tree at [`Trainforge/chunker/`](Trainforge/chunker/) and is shared across the DART, IMSCC, and Trainforge synthesis paths.
 
 By default Ed4All runs in **local mode** — no API key required. To route through the Anthropic API instead, set `ANTHROPIC_API_KEY` and add `--mode api`.
 

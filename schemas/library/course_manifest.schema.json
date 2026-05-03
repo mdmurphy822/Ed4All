@@ -13,8 +13,8 @@
     },
     "chunker_version": {
       "type": "string",
-      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[+-][A-Za-z0-9.+-]+)?$",
-      "description": "Phase 7a Subtask 8: version of the ed4all-chunker package that produced the archived chunks. Read at archive time via importlib.metadata.version('ed4all-chunker'). Optional in Phase 7a (Wave 7); promoted to required by the Phase 7c validator wiring once both the DART chunkset (Phase 7b) and IMSCC chunkset (Phase 7c) emitters are settled. Pattern accepts standard semver plus optional +local / -prerelease suffixes (e.g. '0.1.0', '0.1.0+missing', '1.0.0-rc1') so a fallback marker can be emitted when the package isn't installed without breaking schema validation."
+      "pattern": "^(?:v\\d+|\\d+\\.\\d+\\.\\d+(?:[+-][A-Za-z0-9.+-]+)?)$",
+      "description": "Phase 7a Subtask 8: version of the chunker that produced the archived chunks. MIGRATION DRIFT (post-Phase-8 review): this field's semantics shifted from 'Python-package release version of ed4all-chunker' (resolved via importlib.metadata.version('ed4all-chunker'), e.g. '0.1.0') to 'chunker-schema-contract version' (resolved via Trainforge.chunker.CHUNKER_SCHEMA_VERSION, e.g. 'v4') after the ed4all-chunker workspace package was folded back into Trainforge/chunker/. The contract version is bumped only when the emit shape or semantics change, decoupled from any Python-package release cadence. Optional in Phase 7a (Wave 7); promoted to required by the Phase 7c validator wiring once both the DART chunkset (Phase 7b) and IMSCC chunkset (Phase 7c) emitters are settled. Pattern alternation accepts BOTH the new ^v\\d+$ schema-version form ('v4') AND the legacy ^\\d+\\.\\d+\\.\\d+(?:[+-]...)?$ semver form ('0.1.0', '0.1.0+missing', '1.0.0-rc1') so any pre-migration manifest on disk continues to validate."
     },
     "concept_graph_sha256": {
       "type": "string",

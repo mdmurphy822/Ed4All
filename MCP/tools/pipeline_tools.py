@@ -23,6 +23,7 @@ if str(_PROJECT_ROOT) not in sys.path:
 
 from lib.paths import PROJECT_ROOT  # noqa: E402
 from lib.secure_paths import validate_path_within_root  # noqa: E402
+from Trainforge.chunker import CHUNKER_SCHEMA_VERSION  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -415,35 +416,29 @@ def _resolve_libv2_root(explicit: Optional[str] = None) -> Path:
 
 
 def _resolve_chunker_version() -> str:
-    """Phase 7a Subtask 8: resolve installed ed4all-chunker package version.
+    """Resolve the chunker-schema-contract version stamped on chunkset
+    sidecar manifests + ``course_manifest.json``.
 
-    Read at archive time so the LibV2 manifest records exactly which
-    chunker produced the archived chunks. Uses ``importlib.metadata``
-    (the stdlib, install-time-stable surface) rather than reaching into
-    ``ed4all_chunker.__version__`` because the chunker package today
-    (Phase 7a Subtask 4) does not export ``__version__`` from its
-    ``__init__.py`` — and Subtasks 2-4 are settled per the plan's
-    Wave-7 boundary, so this worker does not edit the chunker package.
+    Migration drift (post-Phase-8 review): the ``ed4all-chunker``
+    workspace package was folded back into ``Trainforge/chunker/``;
+    ``importlib.metadata.version("ed4all-chunker")`` is no longer the
+    source of truth. The field's semantics also shifted: it used to
+    carry the Python-package release version (e.g. ``"0.1.0"``); it
+    now carries the chunker-schema-contract version
+    (``Trainforge.chunker.CHUNKER_SCHEMA_VERSION``, currently
+    ``"v4"``) — bumped only when the emit shape or semantics change,
+    decoupled from any Python-package release cadence.
 
-    Returns a semver string (e.g. ``"0.1.0"``) when the package is
-    installed, or ``"0.0.0+missing"`` (a schema-valid sentinel — the
-    pattern in ``schemas/library/course_manifest.schema.json::
-    chunker_version`` accepts ``+local`` suffixes) when the package
-    isn't importable. The fallback exists because Wave 7A and 7B run
-    concurrently — if Subtask 7's editable-install hasn't landed yet,
-    archive emit must not crash.
+    Returns the in-repo constant directly: the chunker now lives
+    inside Trainforge so the import is a hot-path-cheap module
+    attribute lookup. Both the chunkset sidecar schema (`schemas/
+    library/chunkset_manifest.schema.json::chunker_version`) and the
+    course manifest schema (`schemas/library/course_manifest.schema
+    .json::chunker_version`) accept BOTH the old ``^\\d+\\.\\d+\\.\\d+``
+    semver shape and the new ``^v\\d+$`` schema-version shape, so any
+    pre-migration manifest on disk continues to validate.
     """
-    try:
-        from importlib.metadata import (  # noqa: PLC0415
-            PackageNotFoundError,
-            version as _pkg_version,
-        )
-    except ImportError:  # pragma: no cover — Python <3.8, unreachable on >=3.11
-        return "0.0.0+missing"
-    try:
-        return _pkg_version("ed4all-chunker")
-    except PackageNotFoundError:
-        return "0.0.0+missing"
+    return CHUNKER_SCHEMA_VERSION
 
 
 def _detect_source_provenance(course_dir: Path) -> bool:
@@ -6797,10 +6792,10 @@ def _build_tool_registry() -> dict:
         chunks: List[Dict[str, Any]] = []
         chunker_version = _resolve_chunker_version()
         try:
-            from ed4all_chunker import ChunkerContext, chunk_content
+            from Trainforge.chunker import ChunkerContext, chunk_content
         except Exception as exc:  # noqa: BLE001 — import failures shouldn't crash phase
             logger.warning(
-                "Phase 7b ST 11: ed4all_chunker import failed (%s); "
+                "Phase 7b ST 11: Trainforge.chunker import failed (%s); "
                 "emitting empty chunks shell.",
                 exc,
             )
@@ -7128,10 +7123,10 @@ def _build_tool_registry() -> dict:
         chunks: List[Dict[str, Any]] = []
         chunker_version = _resolve_chunker_version()
         try:
-            from ed4all_chunker import ChunkerContext, chunk_content
+            from Trainforge.chunker import ChunkerContext, chunk_content
         except Exception as exc:  # noqa: BLE001 — import failures shouldn't crash phase
             logger.warning(
-                "Phase 7c ST 16: ed4all_chunker import failed (%s); "
+                "Phase 7c ST 16: Trainforge.chunker import failed (%s); "
                 "emitting empty chunks shell.",
                 exc,
             )

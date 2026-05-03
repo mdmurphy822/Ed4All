@@ -13,8 +13,8 @@
     },
     "chunker_version": {
       "type": "string",
-      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[+-][A-Za-z0-9.+-]+)?$",
-      "description": "Version of the ed4all-chunker package that produced the chunks. Resolved via importlib.metadata.version('ed4all-chunker') at emit time. Pattern accepts standard semver plus optional +local / -prerelease suffixes (e.g. '0.1.0', '0.1.0+missing', '1.0.0-rc1') so the '0.0.0+missing' fallback sentinel from MCP/tools/pipeline_tools.py::_resolve_chunker_version is schema-valid when the package isn't importable. Mirrors the chunker_version pattern in course_manifest.schema.json."
+      "pattern": "^(?:v\\d+|\\d+\\.\\d+\\.\\d+(?:[+-][A-Za-z0-9.+-]+)?)$",
+      "description": "Version of the chunker-schema contract that produced the chunks. MIGRATION DRIFT (post-Phase-8 review): this field's semantics shifted from 'Python-package release version of ed4all-chunker' (resolved via importlib.metadata.version('ed4all-chunker'), e.g. '0.1.0') to 'chunker-schema-contract version' (resolved via Trainforge.chunker.CHUNKER_SCHEMA_VERSION, e.g. 'v4') after the ed4all-chunker workspace package was folded back into Trainforge/chunker/. The contract version is bumped only when the emit shape or semantics change, decoupled from any Python-package release cadence. Pattern alternation accepts BOTH shapes: the new ^v\\d+$ schema-version form ('v4') AND the legacy ^\\d+\\.\\d+\\.\\d+(?:[+-]...)?$ semver form ('0.1.0', '0.1.0+missing', '1.0.0-rc1') so any pre-migration manifest on disk — including the '0.0.0+missing' fallback sentinel emitted before Phase 7's editable-install landed — continues to validate. Mirrors the chunker_version pattern in course_manifest.schema.json."
     },
     "chunkset_kind": {
       "type": "string",

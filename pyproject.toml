@@ -31,18 +31,13 @@ dependencies = [
     # install. Pair with pytest.ini::asyncio_mode = auto so decoration
     # triggers without per-test fixture wiring.
     "pytest-asyncio>=0.21.0,<1.0.0",
-    # Phase 7a Subtask 7: in-repo workspace member at
-    # ``./ed4all-chunker``. Declared as a PEP 508 direct-reference
-    # dependency with a relative ``file:`` URL so ``pip install -e
-    # /home/user/Ed4All`` automatically pulls the chunker package in
-    # without a separate install step. The chunker carries the lifted
-    # ``_chunk_content`` / ``_chunk_text_block`` surface from
-    # ``Trainforge/process_course.py`` (Subtasks 4 + 6) and is the
-    # canonical chunker for the future DART + IMSCC dual-chunkset
-    # pipeline (Phase 7b + 7c). PyPI promotion deferred to when an
-    # external consumer surfaces (per roadmap §6.2 recommendation).
-    "ed4all-chunker @ file:./ed4all-chunker",
 ]
+# Note: the canonical chunker lives at ``Trainforge/chunker/`` (post-
+# Phase-8 re-merge). It used to be a sibling workspace package
+# (``ed4all-chunker @ file:./ed4all-chunker``), declared as a PEP 508
+# direct-reference dependency. The re-merge removes the workspace-
+# member machinery; no separate install step is needed. See
+# ``plans/post-phase8-review-2026-05.md`` for the rationale.
 
 [project.optional-dependencies]
 dart = [
