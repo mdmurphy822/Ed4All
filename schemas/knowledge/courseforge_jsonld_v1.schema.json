@@ -197,6 +197,49 @@
           "type": "string",
           "pattern": "^[A-Z]{2,}-\\d{2,}$",
           "description": "Wave 59: Parent LO ID — the terminal objective a chapter LO rolls up to. Absent on terminal LOs (they are KG roots). Optional on chapter LOs — emitted when upstream supplies the mapping via the LO dict's 'parent_objective_id'/'parentObjectiveId' field (e.g., from synthesized_objectives.json); elided when no parent is known. Heuristic inference from key-concept overlap is deferred to a later wave."
+        },
+        "abcd": {
+          "$ref": "#/$defs/AbcdObjective",
+          "description": "Phase 6: ABCD framework discrete fields (Audience, Behavior, Condition, Degree). Optional for legacy LOs that pre-date Phase 6 (preserves backward compatibility with existing synthesized_objectives.json fixtures); required emit-side for newly authored LOs once the course-outliner agent rolls forward to ABCD-aware output. Phase 7+ will promote this field to LearningObjective.required once corpus calibration confirms safe."
+        }
+      }
+    },
+    "AbcdObjective": {
+      "type": "object",
+      "description": "Phase 6: discrete ABCD-framework fields for a learning objective. ABCD = Audience (who), Behavior (observable action: verb + action_object), Condition (under what circumstances), Degree (level of mastery / accuracy). Composed back into prose by lib.ontology.learning_objectives.compose_abcd_prose. The split lets the course-outliner agent emit constrained-decoding-validated structured output and lets AbcdObjectiveValidator gate that the behavior.verb is consistent with the LO's bloomLevel via BLOOMS_VERBS lookup.",
+      "required": ["audience", "behavior", "condition", "degree"],
+      "additionalProperties": false,
+      "properties": {
+        "audience": {
+          "type": "string",
+          "minLength": 1,
+          "description": "ABCD 'A': who the learner is (e.g., 'Students', 'First-year nursing students')."
+        },
+        "behavior": {
+          "type": "object",
+          "description": "ABCD 'B': the observable action the learner will perform. Split into a Bloom-aligned verb and the noun-phrase object the verb acts on so AbcdObjectiveValidator can check verb-Bloom alignment without re-parsing prose.",
+          "required": ["verb", "action_object"],
+          "additionalProperties": false,
+          "properties": {
+            "verb": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Bloom-aligned action verb (e.g., 'identify', 'analyze', 'evaluate'). Validated against BLOOMS_VERBS[lo.bloomLevel] by lib.validators.abcd_objective.AbcdObjectiveValidator."
+            },
+            "action_object": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Noun phrase the verb acts on (e.g., 'the parts of a cell', 'differential equations of order n')."
+            }
+          }
+        },
+        "condition": {
+          "type": "string",
+          "description": "ABCD 'C': circumstances under which the behavior is performed (e.g., 'from a labeled diagram', 'given a closed-book exam'). May be empty when the LO carries no specific condition."
+        },
+        "degree": {
+          "type": "string",
+          "description": "ABCD 'D': level of mastery / accuracy (e.g., 'with 90% accuracy', 'within 5 minutes'). May be empty when the LO carries no specific degree."
         }
       }
     },
