@@ -10,7 +10,7 @@ the fallback path was silently dropped, and any workflow run where
 ``chunking`` phase was skipped fed ``build_pedagogy_graph`` an
 effectively empty chunk set. Phase 7b ST 14.5 reconciled the FORWARD
 path (upstream JSONL load now provides canonical ``id``-keyed chunks
-via the ed4all-chunker package) but did NOT migrate the inline-
+via the ``Trainforge.chunker`` package) but did NOT migrate the inline-
 projection's emit shape. Phase 8 ST 6 closes that residual gap.
 
 Test contract (mirrors `TestRunConceptExtractionConsumesUpstreamChunks`

@@ -26,7 +26,7 @@ from LibV2.tools.libv2.scripts import backfill_dart_chunks  # noqa: E402
 
 # Minimal HTML payload that ``HTMLContentParser`` will happily parse
 # into a ContentSection. Keeping it small but non-empty so the
-# ed4all_chunker has at least one section to chunk.
+# Trainforge.chunker has at least one section to chunk.
 _SAMPLE_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head><title>Sample Page</title></head>

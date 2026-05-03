@@ -88,8 +88,9 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 # chunker_version. Same fallback rationale as _SHA256_RE.
 #
 # Migration drift (post-Phase-8 review): the field used to carry the
-# Python-package release version of the standalone ``ed4all-chunker``
-# workspace (e.g. ``"0.1.0"``); it now carries the chunker-schema-
+# Python-package release version of the standalone chunker workspace
+# (formerly ``ed4all-chunker``, now folded back into ``Trainforge.chunker``;
+# e.g. ``"0.1.0"``); it now carries the chunker-schema-
 # contract version emitted by ``Trainforge.chunker.
 # CHUNKER_SCHEMA_VERSION`` (e.g. ``"v4"``). The alternation accepts
 # BOTH shapes so any pre-migration manifest still on disk — including

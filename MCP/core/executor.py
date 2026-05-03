@@ -169,7 +169,7 @@ AGENT_TOOL_MAPPING = {
     # ``run_dart_chunking`` (registered in
     # ``MCP/tools/pipeline_tools.py::_build_tool_registry`` by ST 11) is
     # the in-process tool that emits ``LibV2/courses/<slug>/dart_chunks/
-    # chunks.jsonl`` + ``manifest.json`` via ``ed4all_chunker.chunk_content``.
+    # chunks.jsonl`` + ``manifest.json`` via ``Trainforge.chunker.chunk_content``.
     "dart-chunker": "run_dart_chunking",
 
     # -------------------------------------------------------------------------

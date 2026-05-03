@@ -90,9 +90,11 @@ def test_full_dart_manifest_with_optionals_validates():
 
 @pytest.mark.unit
 def test_chunker_version_fallback_sentinel_validates():
-    """The '0.0.0+missing' sentinel emitted by
-    MCP/tools/pipeline_tools.py::_resolve_chunker_version when
-    ed4all-chunker isn't importable must be schema-valid."""
+    """The '0.0.0+missing' sentinel — formerly emitted by
+    MCP/tools/pipeline_tools.py::_resolve_chunker_version when the
+    standalone chunker workspace package wasn't importable, and
+    still present on pre-migration manifests on disk — must remain
+    schema-valid for back-compat."""
     jsonschema = pytest.importorskip("jsonschema")
     schema = _load_schema()
     doc = _minimal_dart_doc()
