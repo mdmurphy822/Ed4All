@@ -425,6 +425,33 @@ def test_rewrite_escalated_prompt_also_enumerates_required_attrs(monkeypatch):
     assert 'data-cf-block-id="page2#concept_x_0"' in request_body
 
 
+def test_rewrite_system_prompt_carries_html_escape_directive(monkeypatch):
+    """Regression: system prompt must instruct the model to escape
+    literal angle brackets in placeholder text. Closes the Qwen-7B-Q4
+    failure mode where the rewrite tier emitted bare `<subject>` /
+    `<predicate>` / `<object>` placeholders that the parser saw as
+    unclosed HTML elements (REWRITE_HTML_PARSE_FAIL critical at the
+    post-rewrite shape gate)."""
+    block = Block(
+        block_id="page3#concept_y_0",
+        block_type="concept",
+        page_id="page3",
+        sequence=0,
+        content={"key_claims": ["Y"], "curies": []},
+    )
+    request_body = _capture_rewrite_request(monkeypatch, block=block)
+
+    # The directive must be in the system prompt — assert on the
+    # canonical phrases (not on the sample placeholder tokens) so a
+    # rewording that preserves intent still passes.
+    assert "&lt;" in request_body
+    assert "&gt;" in request_body
+    assert "<code>" in request_body
+    # The directive references the gate by name so the model has the
+    # cause-and-effect pinned.
+    assert "post-rewrite shape gate" in request_body
+
+
 # ---------------------------------------------------------------------------
 # Touch chain
 # ---------------------------------------------------------------------------
