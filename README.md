@@ -28,11 +28,12 @@ Every chunk carries its Bloom's level, content type, key terms, misconceptions, 
 
 ## Quick start
 
-Requires Python 3.9+. Optional system tools (`tesseract-ocr`, `poppler-utils`) improve extraction on scanned or image-heavy PDFs.
+Requires Python 3.9+ and **pip ≥ 24.x** (older pip versions ship on some Debian / Ubuntu LTS images and reject the relative `file:./ed4all-chunker` direct-reference URL used to declare the workspace member; if `pip install` fails on that line, run `pip install --upgrade pip` first). Optional system tools (`tesseract-ocr`, `poppler-utils`) improve extraction on scanned or image-heavy PDFs.
 
 ```bash
 git clone https://github.com/mdmurphy822/Ed4All.git
 cd Ed4All
+pip install --upgrade pip   # ensure pip ≥ 24.x for direct-reference workspace members
 pip install -e ".[full]"
 
 # Convert a textbook PDF into a full course package
