@@ -338,7 +338,7 @@ def test_empty_filter_returns_all_219_chunks(live_archive_present):
 def test_unknown_slug_raises_clear_error(tmp_path: Path):
     courses_root = tmp_path / "courses"
     courses_root.mkdir()
-    runner = CliRunner(mix_stderr=True)
+    runner = CliRunner()
     result = runner.invoke(
         query_command,
         [
@@ -352,7 +352,8 @@ def test_unknown_slug_raises_clear_error(tmp_path: Path):
     )
     assert result.exit_code != 0
     # Slug name must appear in the error so users know what failed.
-    assert "no-such-course" in result.output
+    # Click 8.3 split stderr from stdout; UsageError messages now land on stderr.
+    assert "no-such-course" in result.stderr
 
 
 def test_invalid_chunk_type_value_rejected(tmp_path: Path):
