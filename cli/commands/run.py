@@ -52,7 +52,32 @@ SUPPORTED_WORKFLOWS = {
     # creates the workflow state via create_workflow_impl, then the
     # ``training`` phase dispatches Trainforge/train_course.py.
     "trainforge_train",
+    # Phase 5 — Courseforge stage-by-stage subcommands. Each entry is
+    # a thin alias over the underlying ``textbook_to_course`` workflow
+    # state machine; the new ``courseforge-*`` subcommands re-execute
+    # only their target Phase 3 tier(s) by pre-populating the upstream
+    # phase_outputs (synthesised via ``_synthesize_outline_output`` —
+    # Worker WB territory in ``MCP/core/workflow_runner.py``).
+    "courseforge",
+    "courseforge-outline",
+    "courseforge-validate",
+    "courseforge-rewrite",
 }
+
+
+# Phase 5 ST 3 — Courseforge stage-by-stage subcommands. These are
+# thin aliases over the ``textbook_to_course`` workflow that re-execute
+# only one or more Phase 3 tiers; the workflow runner pre-populates
+# upstream phase_outputs so the legacy / completed phases skip and
+# only the target tier executes.
+COURSEFORGE_STAGE_SUBCOMMANDS = frozenset(
+    {
+        "courseforge",
+        "courseforge_outline",
+        "courseforge_validate",
+        "courseforge_rewrite",
+    }
+)
 
 
 def _normalize_workflow(name: str) -> str:
@@ -60,6 +85,72 @@ def _normalize_workflow(name: str) -> str:
 
 
 DEFAULT_DART_OUTPUT_DIR = "DART/output"
+
+# Phase 5 ST 1 — canonical 16-value Block-type enum from
+# ``Courseforge/scripts/blocks.py:77``. Held here as a flat tuple so
+# the CLI can validate ``--blocks`` tokens without importing the
+# Courseforge module at parse time (avoids pulling the renderer
+# dependency tree into ``ed4all run --help``). Re-validated against
+# the canonical enum by the regression test in
+# ``cli/tests/test_run_command.py``.
+VALID_BLOCK_TYPES = (
+    "objective",
+    "concept",
+    "example",
+    "assessment_item",
+    "explanation",
+    "prereq_set",
+    "activity",
+    "misconception",
+    "callout",
+    "flip_card_grid",
+    "self_check_question",
+    "summary_takeaway",
+    "reflection_prompt",
+    "discussion_prompt",
+    "chrome",
+    "recap",
+)
+
+
+def _parse_blocks_filter(raw: Optional[str]) -> Optional[List[str]]:
+    """Parse the ``--blocks`` flag into a list of block-type tokens.
+
+    Phase 5 ST 1: accepts a comma-separated string of canonical
+    ``Block.block_type`` values (NOT block IDs — block types from the
+    16-singular ``BLOCK_TYPES`` enum at
+    ``Courseforge/scripts/blocks.py:77``). Returns ``None`` when ``raw``
+    is empty/None (caller treats that as "no filter — every block").
+
+    Validation: each token MUST be in ``VALID_BLOCK_TYPES``; invalid
+    tokens raise ``click.BadParameter`` with a friendly error listing
+    valid tokens (Click formats it as a parse-time error and exits 2).
+
+    Whitespace is stripped per token; empty tokens (e.g. trailing
+    comma) are ignored. Duplicates are de-duplicated while preserving
+    first-seen order so downstream consumers see a stable list.
+    """
+    if raw is None:
+        return None
+    parts = [tok.strip() for tok in raw.split(",")]
+    parts = [tok for tok in parts if tok]
+    if not parts:
+        return None
+    invalid = [tok for tok in parts if tok not in VALID_BLOCK_TYPES]
+    if invalid:
+        raise click.BadParameter(
+            f"--blocks contains unknown block type(s): {invalid}. "
+            f"Valid block types: {list(VALID_BLOCK_TYPES)}",
+            param_hint="--blocks",
+        )
+    # De-duplicate while preserving order
+    seen: set = set()
+    out: List[str] = []
+    for tok in parts:
+        if tok not in seen:
+            seen.add(tok)
+            out.append(tok)
+    return out
 
 
 def _build_workflow_params(
@@ -76,6 +167,9 @@ def _build_workflow_params(
     skip_dart: bool = False,
     dart_output_dir: Optional[str] = None,
     reuse_objectives: Optional[str] = None,
+    target_block_ids: Optional[List[str]] = None,
+    force_rerun: bool = False,
+    courseforge_stage: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the params dict for a workflow from CLI inputs.
 
@@ -125,6 +219,31 @@ def _build_workflow_params(
     # course_planning phase output directly (Wave 74 --skip-dart pattern).
     if reuse_objectives:
         params["reuse_objectives_path"] = reuse_objectives
+
+    # Phase 5 ST 1: --blocks plumbing. The CLI parses the comma-separated
+    # block-type tokens via _parse_blocks_filter and threads them into
+    # workflow params under ``target_block_ids``. The
+    # ``content_generation_rewrite`` (and friends) phase reads this list
+    # and re-rolls only blocks whose ``block_type`` is in the filter;
+    # untouched blocks are byte-identical to the input.
+    if target_block_ids:
+        params["target_block_ids"] = list(target_block_ids)
+
+    # Phase 5 ST 5: --force plumbing. When set, the workflow runner
+    # ignores existing per-phase ``_completed`` checkpoints and
+    # re-executes every phase that would otherwise short-circuit. Worker
+    # WB on ``MCP/core/workflow_runner.py:860`` honours
+    # ``force_rerun`` by stripping the ``_completed`` flag before the
+    # phase loop's skip check fires.
+    if force_rerun:
+        params["force_rerun"] = True
+
+    # Phase 5 ST 3: propagate the requested Courseforge stage subcommand
+    # so the runner can pre-populate upstream phase_outputs and skip
+    # everything but the target Phase 3 tier(s). Untyped here — the
+    # runner-side validator (Worker WB) is the authoritative gatekeeper.
+    if courseforge_stage:
+        params["courseforge_stage"] = courseforge_stage
 
     return params
 
@@ -464,6 +583,35 @@ def _build_orchestrator(
     ),
 )
 @click.option(
+    "--blocks",
+    "blocks_filter",
+    default=None,
+    help=(
+        "Phase 5 — comma-separated list of canonical Block types to "
+        "filter on (per-block re-execution scope). Tokens must be from "
+        "the 16-singular ``BLOCK_TYPES`` enum at "
+        "``Courseforge/scripts/blocks.py`` (e.g. "
+        "``--blocks assessment_item,example``). When set, Phase 5 "
+        "rewrite-tier handlers re-roll only blocks whose ``block_type`` "
+        "is in the filter; every other block is byte-identical to the "
+        "input. Unknown tokens fail fast with a list of valid types."
+    ),
+)
+@click.option(
+    "--force",
+    "force_rerun",
+    is_flag=True,
+    default=False,
+    help=(
+        "Phase 5 — re-run every phase even if a per-phase ``_completed`` "
+        "checkpoint exists. Useful for the Phase 5 stage subcommands "
+        "(``courseforge-outline`` / ``-validate`` / ``-rewrite``) when "
+        "the operator wants to overwrite a prior completion. The "
+        "workflow runner strips the ``_completed`` flag before its "
+        "phase-skip check fires."
+    ),
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Show the planned pipeline without executing",
@@ -494,6 +642,8 @@ def run_command(
     skip_dart: bool,
     dart_output_dir: Optional[str],
     reuse_objectives: Optional[str],
+    blocks_filter: Optional[str],
+    force_rerun: bool,
     dry_run: bool,
     watch: bool,
     output_json: bool,
@@ -524,6 +674,17 @@ def run_command(
             fg="red",
         )
         sys.exit(2)
+
+    # Phase 5 ST 3: track which Courseforge stage subcommand the user
+    # requested (if any) before we alias the workflow back to
+    # ``textbook_to_course``. The runner reads ``courseforge_stage``
+    # from workflow params to know which Phase 3 tier to re-execute
+    # while skipping the others via ``_synthesize_outline_output``
+    # (Worker WB territory in MCP/core/workflow_runner.py).
+    courseforge_stage: Optional[str] = None
+    if workflow in COURSEFORGE_STAGE_SUBCOMMANDS:
+        courseforge_stage = workflow
+        workflow = "textbook_to_course"
 
     mode = _resolve_mode(mode)
     provider = _resolve_provider(api_provider)
@@ -567,6 +728,10 @@ def run_command(
             click.secho(err, fg="red")
             sys.exit(2)
 
+    # Phase 5 ST 1: parse and validate the --blocks filter. Invalid
+    # tokens raise click.BadParameter (Click prints + exits 2 itself).
+    target_block_ids = _parse_blocks_filter(blocks_filter)
+
     params = _build_workflow_params(
         workflow,
         corpus=corpus,
@@ -580,6 +745,9 @@ def run_command(
         skip_dart=skip_dart,
         dart_output_dir=effective_dart_output_dir,
         reuse_objectives=reuse_objectives,
+        target_block_ids=target_block_ids,
+        force_rerun=force_rerun,
+        courseforge_stage=courseforge_stage,
     )
 
     # -------- dry-run: plan only, no side effects ------------------------
@@ -671,6 +839,18 @@ def _dry_run_plan(
         skip_trainforge = not params.get("generate_assessments", True)
         skip_dart_flag = bool(params.get("skip_dart", False))
         reuse_objectives_path = params.get("reuse_objectives_path")
+        # Phase 5 ST 6: --blocks filter annotation. Only the rewrite-tier
+        # phase consumes ``target_block_ids`` per Phase 5 §3 selection
+        # algorithm ("rewrite tier only; validate ignores --blocks"). When
+        # the filter is set, the rewrite phase is annotated with
+        # ``<FILTERED:type1,type2>`` mirroring the existing ``<REUSED>``
+        # annotation precedent at ``_dry_run_plan`` for --reuse-objectives.
+        target_block_ids = params.get("target_block_ids")
+        force_rerun_flag = bool(params.get("force_rerun", False))
+        # Phases that consume target_block_ids (single-source-of-truth list
+        # for the dry-run annotation). Kept narrow because plan §3
+        # explicitly scopes selection to the rewrite tier.
+        block_filtered_phases = {"content_generation_rewrite"}
         phases = []
         for idx, phase in enumerate(sorted_phases):
             if skip_trainforge and phase.name == "trainforge_assessment":
@@ -706,15 +886,34 @@ def _dry_run_plan(
                     f"--reuse-objectives set; reusing LOs from "
                     f"{reuse_objectives_path!r}"
                 )
+            # Phase 5 ST 6: --blocks filter annotation. Mark phases that
+            # consume ``target_block_ids`` with ``<FILTERED:...>`` so the
+            # operator sees which phases will run on a per-block scope.
+            # Mirrors the ``<REUSED>`` precedent above.
+            if target_block_ids and phase.name in block_filtered_phases:
+                phase_entry["status"] = "FILTERED"
+                phase_entry["blocks_filter"] = list(target_block_ids)
+                phase_entry["filter_reason"] = (
+                    f"--blocks set; re-rolling only block_type(s) "
+                    f"{list(target_block_ids)!r}"
+                )
             phases.append(phase_entry)
 
-        return {
+        plan_dict: Dict[str, Any] = {
             "workflow": workflow,
             "mode": mode,
             "provider": provider,
             "params": params,
             "phases": phases,
         }
+        # Phase 5 ST 6: top-level summary fields for --blocks /
+        # --force so JSON consumers see the run-wide flags without
+        # re-reading params.
+        if target_block_ids:
+            plan_dict["blocks_filter"] = list(target_block_ids)
+        if force_rerun_flag:
+            plan_dict["force_rerun"] = True
+        return plan_dict
     except Exception as exc:  # noqa: BLE001 — dry-run shouldn't explode
         return {
             "workflow": workflow,
@@ -738,12 +937,26 @@ def _print_dry_run_plan(plan: Dict[str, Any]) -> None:
         click.echo(f"  Course:    {plan['params']['course_name']}")
     if plan.get("params", {}).get("corpus"):
         click.echo(f"  Corpus:    {plan['params']['corpus']}")
+    # Phase 5 ST 6: surface --blocks / --force at the top level so
+    # operators see the run-wide flags without scanning every phase.
+    if plan.get("blocks_filter"):
+        click.echo(f"  Blocks:    {plan['blocks_filter']}")
+    if plan.get("force_rerun"):
+        click.echo(f"  Force:     re-run completed phases (--force)")
     click.echo()
     click.secho("Phases:", fg="cyan")
     for phase in plan.get("phases", []):
         agents = ", ".join(phase["agents"])
         status = phase.get("status")
-        status_suffix = f"  <{status}>" if status else ""
+        # Phase 5 ST 6: status suffix carries the FILTERED block list
+        # inline so a quick eyeball of the dry-run output shows which
+        # phase will run scoped to which block types.
+        if status == "FILTERED" and phase.get("blocks_filter"):
+            status_suffix = f"  <FILTERED:{','.join(phase['blocks_filter'])}>"
+        elif status:
+            status_suffix = f"  <{status}>"
+        else:
+            status_suffix = ""
         click.echo(
             f"  {phase['order']}. {phase['name']}"
             f"  [agents={agents}, max_concurrent={phase['max_concurrent']}]"
@@ -755,6 +968,9 @@ def _print_dry_run_plan(plan: Dict[str, Any]) -> None:
         reuse_reason = phase.get("reuse_reason")
         if reuse_reason:
             click.echo(f"      reason: {reuse_reason}")
+        filter_reason = phase.get("filter_reason")
+        if filter_reason:
+            click.echo(f"      reason: {filter_reason}")
 
 
 def _any_gate_failed(result) -> bool:
