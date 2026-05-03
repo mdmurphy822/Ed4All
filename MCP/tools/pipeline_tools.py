@@ -3894,15 +3894,44 @@ def _build_tool_registry() -> dict:
             generated_from = str(structure_path) if structure_path.exists() else ""
 
             # Canonical on-disk shape.
+            #
+            # Phase 6 ST 7: pass through the optional ``abcd`` sub-object
+            # when the source LO carries one. Both the synthesizer
+            # (``_cgh.synthesize_objectives_from_topics`` after Phase 6
+            # ST 8 — emits ABCD for every LO with a Bloom level) and a
+            # user-supplied ``--reuse-objectives`` payload (preserved by
+            # ``_cgh._normalize_objective_entry`` after the Phase 6 ST 7
+            # widening) attach ``abcd`` per LO. The ABCD dict is
+            # deep-copied so downstream mutation of ``lo_entries`` doesn't
+            # leak back into the in-memory terminal/chapter lists that
+            # the ``terminal_objectives`` / ``chapter_objectives`` blocks
+            # below also serialize. Cross-link: ``$defs.AbcdObjective``
+            # in ``schemas/knowledge/courseforge_jsonld_v1.schema.json``;
+            # validated downstream by ``AbcdObjectiveValidator``
+            # (Phase 6 ST 4) wired as the ``abcd_verb_alignment`` gate
+            # on the ``course_planning`` phase (Phase 6 ST 4.5).
+            def _clone_lo(src: Dict[str, Any], hierarchy: str) -> Dict[str, Any]:
+                cloned = dict(src)
+                abcd_payload = src.get("abcd")
+                if isinstance(abcd_payload, dict):
+                    # Deep-copy the ABCD sub-object so the per-LO entry
+                    # in ``lo_entries`` is independent of the
+                    # ``terminal_objectives`` / ``chapter_objectives``
+                    # serialised view below. Behavior is a nested dict,
+                    # so a one-level deep copy is sufficient.
+                    behavior = abcd_payload.get("behavior")
+                    cloned_abcd: Dict[str, Any] = dict(abcd_payload)
+                    if isinstance(behavior, dict):
+                        cloned_abcd["behavior"] = dict(behavior)
+                    cloned["abcd"] = cloned_abcd
+                cloned["hierarchy_level"] = hierarchy
+                return cloned
+
             lo_entries: List[Dict[str, Any]] = []
             for to in terminal:
-                entry = dict(to)
-                entry["hierarchy_level"] = "terminal"
-                lo_entries.append(entry)
+                lo_entries.append(_clone_lo(to, "terminal"))
             for co in chapter:
-                entry = dict(co)
-                entry["hierarchy_level"] = "chapter"
-                lo_entries.append(entry)
+                lo_entries.append(_clone_lo(co, "chapter"))
 
             synthesized = {
                 "course_name": course_name,

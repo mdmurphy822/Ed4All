@@ -28,7 +28,7 @@ from lib.ontology.bloom import (
     bloom_to_cognitive_domain,  # Wave 48: schema-sourced cognitive domain
     detect_bloom_level,
 )
-from lib.ontology.learning_objectives import mint_lo_id
+from lib.ontology.learning_objectives import BLOOMS_VERBS, mint_lo_id
 from lib.ontology.slugs import canonical_slug
 
 logger = logging.getLogger(__name__)
@@ -1123,6 +1123,137 @@ def collect_staged_html(
 # ---------------------------------------------------------------------------
 
 
+# Default ABCD audience used by every newly-emitted LO. The downstream
+# course-outliner / rewrite tier may rewrite this in place once the
+# course's actual learner persona is established (e.g. "First-year
+# nursing students"); this default is the safe baseline that keeps the
+# emitted LO ABCD-shape valid against ``$defs.AbcdObjective`` (Phase 6
+# Subtask 1) on every corpus.
+_DEFAULT_ABCD_AUDIENCE: str = "Students"
+
+
+def _resolve_abcd_verb(
+    bloom_level: Optional[str],
+    bloom_verb: Optional[str],
+) -> Optional[str]:
+    """Return a canonical Bloom-aligned verb for the ABCD ``behavior.verb`` slot.
+
+    Phase 6 Subtask 8 contract: the verb in ``abcd.behavior.verb`` MUST
+    be a member of ``BLOOMS_VERBS[bloom_level]``. This helper picks:
+
+      1. ``bloom_verb`` when it's already a member of the canonical
+         set for that level (preferred — preserves the verb the
+         heuristic detector picked from the LO statement).
+      2. The first verb in alphabetical order from the canonical set
+         when (1) doesn't apply (deterministic — keeps round-trip
+         tests stable across runs since a frozenset has no canonical
+         order).
+      3. ``None`` when no Bloom level was detected — callers MUST skip
+         emitting the ABCD sub-object in that case (the
+         ``$defs.AbcdObjective`` schema requires a non-empty verb).
+    """
+    if not bloom_level:
+        return None
+    canonical = BLOOMS_VERBS.get(bloom_level.strip().lower())
+    if not canonical:
+        return None
+    if bloom_verb:
+        bv = str(bloom_verb).strip().lower()
+        if bv in canonical:
+            return bv
+    # Deterministic fallback: pick the alphabetically-first canonical
+    # verb. Keeps test round-trips stable + ABCD shape valid even when
+    # the heuristic verb detector emits an out-of-set verb.
+    return sorted(canonical)[0]
+
+
+def _resolve_abcd_action_object(
+    statement: str,
+    verb: str,
+    key_terms: Optional[List[str]] = None,
+) -> str:
+    """Derive the ABCD ``behavior.action_object`` noun phrase.
+
+    Strategy:
+
+      1. If the LO ``statement`` starts with the chosen verb (case-
+         insensitive), strip the leading verb + whitespace and use the
+         remainder verbatim — this mirrors the way the synthesizer
+         already harvests heading text into LO statements (e.g.
+         "Identify the parts of a cell" → "the parts of a cell").
+      2. Otherwise fall back to the LO statement minus its trailing
+         period — preserves the source text so the ABCD prose
+         re-composition (via ``compose_abcd_prose``) still reads
+         coherently even when the verb isn't the leading token.
+      3. As a final defensive floor, fall back to the first non-empty
+         key_term — ensures the ``$defs.AbcdObjective`` ``minLength: 1``
+         constraint always holds even on degenerate empty statements.
+    """
+    s = (statement or "").strip().rstrip(".").strip()
+    v = (verb or "").strip().lower()
+    if s and v:
+        lower_s = s.lower()
+        # Match the verb at the start of the statement (whole word).
+        if lower_s.startswith(v + " "):
+            tail = s[len(v):].strip()
+            if tail:
+                return tail
+    if s:
+        return s
+    if key_terms:
+        for kt in key_terms:
+            kt_clean = (kt or "").strip()
+            if kt_clean:
+                return kt_clean
+    # Last-resort floor — keeps the schema's minLength=1 constraint
+    # alive. Should be unreachable in practice because the upstream
+    # synthesizer drops topics with empty statements.
+    return "the topic"
+
+
+def _build_abcd_for_objective(
+    statement: str,
+    bloom_level: Optional[str],
+    bloom_verb: Optional[str],
+    *,
+    key_terms: Optional[List[str]] = None,
+    audience: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Build the ABCD sub-object for a newly synthesized LO.
+
+    Returns ``None`` when the LO has no usable Bloom level — the
+    ``$defs.AbcdObjective`` schema requires a non-empty
+    ``behavior.verb``, which we can only honour when we know which
+    canonical verb-set to draw from. The synthesizer already populates
+    ``bloom_level`` for every emitted LO via ``detect_bloom_level``,
+    so this null-return path only fires for degenerate inputs.
+
+    Audience defaults to ``_DEFAULT_ABCD_AUDIENCE`` ("Students"); the
+    downstream course-outliner / rewrite tier MAY overwrite it with a
+    course-specific persona once one is known. ``condition`` and
+    ``degree`` are emitted as empty strings per Subtask 8 contract —
+    they're filled in by the LLM-driven outliner downstream
+    (``$defs.AbcdObjective`` permits them as empty strings since their
+    schema has no ``minLength`` constraint).
+    """
+    verb = _resolve_abcd_verb(bloom_level, bloom_verb)
+    if not verb:
+        return None
+    action_object = _resolve_abcd_action_object(statement, verb, key_terms)
+    audience_clean = (audience or _DEFAULT_ABCD_AUDIENCE).strip()
+    if not audience_clean:
+        audience_clean = _DEFAULT_ABCD_AUDIENCE
+    return {
+        "audience": audience_clean,
+        "behavior": {
+            "verb": verb,
+            "action_object": action_object,
+        },
+        "condition": "",
+        "degree": "",
+    }
+
+
 def _normalize_objective_entry(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Coerce an objective dict (either camelCase or snake_case) to the
     shape ``generate_course.generate_week`` consumes.
@@ -1164,6 +1295,13 @@ def _normalize_objective_entry(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     key_concepts = raw.get("key_concepts") or raw.get("keyConcepts")
     if key_concepts:
         entry["key_concepts"] = list(key_concepts)
+    # Phase 6 ST 7-8: preserve ABCD when supplied verbatim by the user
+    # (e.g. via ``--reuse-objectives``). Both ``abcd`` and the canonical
+    # JSON-LD ``$defs.AbcdObjective`` shape are tolerated so corpora
+    # round-trip through ``synthesized_objectives.json`` cleanly.
+    abcd = raw.get("abcd")
+    if isinstance(abcd, dict):
+        entry["abcd"] = dict(abcd)
     return entry
 
 
@@ -1273,14 +1411,26 @@ def synthesize_objectives_from_topics(
             primary_term_slug = canonical_slug(heading) or ""
             for statement in statements:
                 level, verb = detect_bloom_level(statement)
+                key_concepts = [primary_term_slug] if primary_term_slug else []
                 entry: Dict[str, Any] = {
                     "statement": statement,
-                    "key_concepts": [primary_term_slug] if primary_term_slug else [],
+                    "key_concepts": list(key_concepts),
                 }
                 if level:
                     entry["bloom_level"] = level
                 if verb:
                     entry["bloom_verb"] = verb
+                # Phase 6 ST 8: emit ABCD discrete fields alongside the
+                # legacy bloom_level / bloom_verb / statement so the
+                # downstream AbcdObjectiveValidator can audit verb-Bloom
+                # alignment without re-parsing prose. Skip when no
+                # Bloom level was detected — the schema requires a
+                # non-empty behavior.verb.
+                abcd = _build_abcd_for_objective(
+                    statement, level, verb, key_terms=key_concepts,
+                )
+                if abcd is not None:
+                    entry["abcd"] = abcd
                 # First ``max_terminal`` go to terminal; the rest are COs.
                 if to_counter <= max_terminal:
                     entry["id"] = mint_lo_id("terminal", to_counter)
@@ -1304,31 +1454,44 @@ def synthesize_objectives_from_topics(
         primary_heading = primary["heading"]
         primary_terms = primary.get("key_terms") or [primary_heading]
         level, verb = detect_bloom_level(primary_heading)
+        primary_key_concepts = [
+            canonical_slug(t) for t in primary_terms[:3] if canonical_slug(t)
+        ]
         # Terminals capped at max_terminal; overflow primaries become COs.
         if to_counter <= max_terminal:
             terminal_entry: Dict[str, Any] = {
                 "id": mint_lo_id("terminal", to_counter),
                 "statement": primary_heading,
-                "key_concepts": [canonical_slug(t) for t in primary_terms[:3]
-                                 if canonical_slug(t)],
+                "key_concepts": list(primary_key_concepts),
             }
             if level:
                 terminal_entry["bloom_level"] = level
             if verb:
                 terminal_entry["bloom_verb"] = verb
+            # Phase 6 ST 8: ABCD discrete fields.
+            abcd = _build_abcd_for_objective(
+                primary_heading, level, verb, key_terms=primary_terms,
+            )
+            if abcd is not None:
+                terminal_entry["abcd"] = abcd
             terminal.append(terminal_entry)
             to_counter += 1
         else:
             primary_entry: Dict[str, Any] = {
                 "id": mint_lo_id("chapter", co_counter),
                 "statement": primary_heading,
-                "key_concepts": [canonical_slug(t) for t in primary_terms[:3]
-                                 if canonical_slug(t)],
+                "key_concepts": list(primary_key_concepts),
             }
             if level:
                 primary_entry["bloom_level"] = level
             if verb:
                 primary_entry["bloom_verb"] = verb
+            # Phase 6 ST 8: ABCD discrete fields.
+            abcd = _build_abcd_for_objective(
+                primary_heading, level, verb, key_terms=primary_terms,
+            )
+            if abcd is not None:
+                primary_entry["abcd"] = abcd
             chapter.append(primary_entry)
             co_counter += 1
 
@@ -1338,16 +1501,24 @@ def synthesize_objectives_from_topics(
             sec_heading = secondary["heading"]
             sec_terms = secondary.get("key_terms") or [sec_heading]
             sec_level, sec_verb = detect_bloom_level(sec_heading)
+            sec_key_concepts = [
+                canonical_slug(t) for t in sec_terms[:3] if canonical_slug(t)
+            ]
             chapter_entry: Dict[str, Any] = {
                 "id": mint_lo_id("chapter", co_counter),
                 "statement": sec_heading,
-                "key_concepts": [canonical_slug(t) for t in sec_terms[:3]
-                                 if canonical_slug(t)],
+                "key_concepts": list(sec_key_concepts),
             }
             if sec_level:
                 chapter_entry["bloom_level"] = sec_level
             if sec_verb:
                 chapter_entry["bloom_verb"] = sec_verb
+            # Phase 6 ST 8: ABCD discrete fields.
+            sec_abcd = _build_abcd_for_objective(
+                sec_heading, sec_level, sec_verb, key_terms=sec_terms,
+            )
+            if sec_abcd is not None:
+                chapter_entry["abcd"] = sec_abcd
             chapter.append(chapter_entry)
             co_counter += 1
 
