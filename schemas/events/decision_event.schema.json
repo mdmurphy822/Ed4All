@@ -50,7 +50,7 @@
     },
     "phase": {
       "type": ["string", "null"],
-      "enum": ["input-research", "exam-research", "course-outliner", "content-generator", "brightspace-packager", "dart-conversion", "dart-validation", "trainforge-assessment", "trainforge-training", "synthesize-training", "validation", "content-analysis", "question-generation", "assessment-assembly", "courseforge-input-research", "courseforge-exam-research", "courseforge-course-outliner", "courseforge-content-generator", "courseforge-content-generator-outline", "courseforge-content-generator-rewrite", "courseforge-brightspace-packager", "trainforge-content-analysis", "trainforge-question-generation", "trainforge-assessment-assembly", "trainforge-validation", "curriculum-alignment", "libv2-retrieval", "libv2-indexing", "libv2-fusion", null],
+      "enum": ["input-research", "exam-research", "course-outliner", "content-generator", "brightspace-packager", "dart-conversion", "dart-validation", "trainforge-assessment", "trainforge-training", "synthesize-training", "validation", "content-analysis", "question-generation", "assessment-assembly", "courseforge-input-research", "courseforge-exam-research", "courseforge-course-outliner", "courseforge-content-generator", "courseforge-content-generator-outline", "courseforge-content-generator-rewrite", "courseforge-brightspace-packager", "courseforge-statistical-validation", "courseforge-bert-ensemble", "trainforge-content-analysis", "trainforge-question-generation", "trainforge-assessment-assembly", "trainforge-validation", "curriculum-alignment", "libv2-retrieval", "libv2-indexing", "libv2-fusion", null],
       "description": "Processing phase within the tool pipeline"
     },
     "tool": {
@@ -70,6 +70,9 @@
         "assessment_generation",
         "assessment_planning",
         "base_model_selection",
+        "bert_ensemble_disagreement",
+        "bert_ensemble_dispersion_high",
+        "bert_ensemble_member_loaded",
         "block_escalation",
         "block_outline_call",
         "block_rewrite_call",
@@ -129,6 +132,8 @@
         "source_interpretation",
         "source_selection",
         "source_usage",
+        "statistical_validation_fail",
+        "statistical_validation_pass",
         "strategy_decision",
         "structure_detection",
         "synthesis_provider_call",
@@ -139,7 +144,7 @@
         "validation_result",
         "violation_generation"
       ],
-      "description": "Category of decision from decision taxonomy (alphabetised; Wave 22 adds: assessment_generation, assessment_planning, boilerplate_strip, content_selection, pipeline_run_attribution, question_type_selection; Phase 3 two-pass router adds: block_escalation, block_outline_call, block_rewrite_call, block_validation_action)"
+      "description": "Category of decision from decision taxonomy (alphabetised; Wave 22 adds: assessment_generation, assessment_planning, boilerplate_strip, content_selection, pipeline_run_attribution, question_type_selection; Phase 3 two-pass router adds: block_escalation, block_outline_call, block_rewrite_call, block_validation_action; Phase 4 statistical tier adds: bert_ensemble_disagreement, bert_ensemble_dispersion_high, bert_ensemble_member_loaded, statistical_validation_fail, statistical_validation_pass)"
     },
     "decision": {
       "type": "string",
