@@ -27,6 +27,20 @@ ed4all run textbook-to-course --resume WF-20260420-abc12345               # resu
 # downstream phases consume it.
 ed4all run textbook-to-course --corpus pdfs/ --course-name PHYS_101 \
   --reuse-objectives Courseforge/exports/PROJ-PHYS_101-.../01_learning_objectives/synthesized_objectives.json
+
+# Phase 5: stage-by-stage Courseforge two-pass subcommands. Re-run a
+# single tier of the Courseforge two-pass pipeline against an existing
+# project export. Pre-Courseforge phases (DART -> staging -> chunking
+# -> objective_extraction -> source_mapping -> concept_extraction ->
+# course_planning) pre-populate from disk via the synthesizer; non-
+# whitelisted two-pass + post-Courseforge phases skip. See
+# Courseforge/CLAUDE.md "Phase 5: operator CLI subcommands" for details.
+export COURSEFORGE_TWO_PASS=true
+ed4all run courseforge-outline --course-name PHYS_101              # outline tier only
+ed4all run courseforge-validate --course-name PHYS_101             # validators only
+ed4all run courseforge-rewrite --course-name PHYS_101 \
+  --blocks assessment_item,objective                                # per-block-type rewrite
+ed4all run courseforge --course-name PHYS_101 --force               # full two-pass slice
 ```
 
 Modes:
@@ -61,6 +75,10 @@ python server.py
 | `batch_dart` | Batch PDF to HTML conversion | 4 |
 | `rag_training` | Trainforge assessment generation | 5 |
 | `trainforge_train` | Train a course-pinned SLM adapter (Wave 90; post-import LibV2 stage) | 1 |
+| `courseforge-outline` | Phase 5 stage subcommand — re-run only the outline tier (`content_generation_outline`) against an existing project export. Pre-Courseforge phases pre-populate from disk via `_synthesize_outline_output`; non-whitelisted two-pass + post-Courseforge phases skip via `courseforge_stage` whitelist. | 10 |
+| `courseforge-validate` | Phase 5 stage subcommand — re-run only the inter-tier + post-rewrite validators against an existing project export (no LLM dispatch). Emits `02_validation_report/report.json` aggregating per-block pass/fail/escalated counts. | 1 |
+| `courseforge-rewrite` | Phase 5 stage subcommand — re-run only the rewrite tier (`content_generation_rewrite` + `post_rewrite_validation`). Pairs with `--blocks <type1,type2>` for per-block-type re-execution scope; untouched blocks are byte-identical to the input. | 10 |
+| `courseforge` | Phase 5 stage subcommand — re-run the full four-phase Courseforge two-pass slice (outline → inter-tier-validate → rewrite → post-rewrite-validate); skips post-Courseforge phases (packaging, libv2_archival, etc.). | 10 |
 
 ---
 

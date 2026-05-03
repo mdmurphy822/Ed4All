@@ -1497,6 +1497,196 @@ sidecar manifest the operator can inspect; promotion to critical is
 scheduled for a future calibration wave once the thresholds are
 confirmed against a clean rebuild on a real corpus.
 
+### Phase 5: operator CLI subcommands (stage-by-stage two-pass)
+
+Phase 5 layers four operator-facing subcommands on top of the
+Phase 3 / 3.5 / 4 two-pass pipeline so a textbook-to-course run can
+be re-driven one tier at a time without re-executing the upstream
+DART → staging → chunking → objective_extraction →
+source_mapping → concept_extraction → course_planning chain. Use
+case: a previous full run produced an OUTLINE_DIR; the operator
+wants to re-run only the rewrite tier under a different teacher
+model, or re-run validation after tweaking a gate threshold, or
+A/B-test outline-tier model swaps without paying for the upstream
+phases each time.
+
+The four subcommands route through the existing
+`textbook_to_course` workflow with `courseforge_stage` workflow
+param set; the workflow runner pre-populates upstream phase outputs
+via `_synthesize_outline_output` (commit `b8bc348`) and skips
+non-whitelisted phases via `_should_skip_phase` (commit `d9aac78`):
+
+| Subcommand | Active phases (executed) | Skipped via whitelist |
+|---|---|---|
+| `courseforge-outline` | `content_generation_outline` | inter_tier_validation, content_generation_rewrite, post_rewrite_validation |
+| `courseforge-validate` | `inter_tier_validation`, `post_rewrite_validation` | content_generation_outline, content_generation_rewrite |
+| `courseforge-rewrite` | `content_generation_rewrite`, `post_rewrite_validation` | content_generation_outline, inter_tier_validation |
+| `courseforge` | all four | (none — full two-pass slice) |
+
+Pre-Courseforge phases (dart_conversion through course_planning)
+pre-populate from the project export root via
+`_synthesize_outline_output`; their `_completed=True` markers fire
+the runner's already-completed skip path (`run_workflow:897`).
+Post-Courseforge phases (packaging, imscc_chunking,
+trainforge_assessment, training_synthesis, libv2_archival,
+finalization) skip via the courseforge_stage whitelist regardless
+of which subcommand fired — Phase 5 is intentionally scoped to the
+Courseforge two-pass surface only. Operators who want to re-run a
+post-Courseforge phase use the canonical `ed4all run
+textbook-to-course` entry point.
+
+#### CLI flags
+
+Two new flags at `cli/commands/run.py` (commit `96e1bde`):
+
+- `--blocks <comma-separated>` — Phase 5 §3 per-block re-execution
+  scope. Tokens must come from the canonical 16-singular
+  `BLOCK_TYPES` enum (`Courseforge/scripts/blocks.py:77`); unknown
+  tokens fail fast at parse time. The rewrite tier reads the list
+  via `target_block_ids` workflow param and re-rolls only blocks
+  whose `block_type` matches; every other block is byte-identical
+  to the input. Validate-tier subcommands ignore `--blocks` per
+  plan §3 selection algorithm. Dry-run plan annotates the rewrite
+  phase with `<FILTERED:assessment_item,...>` per `_dry_run_plan`.
+- `--force` — Re-run phases despite a pre-existing `_completed`
+  checkpoint. The synthesizer pre-populates upstream phases with
+  `_completed=True`; `--force` flips that to `False` so the phase
+  loop re-executes them (Worker WB's contract at
+  `_synthesize_outline_output` — commit `9576113`).
+
+#### `02_validation_report/report.json` writer
+
+The `_run_inter_tier_validation` and `_run_post_rewrite_validation`
+phase helpers emit JSONL only — `blocks_validated.jsonl` +
+`blocks_failed.jsonl` next to the consumed Block file. The
+operator-facing structured per-block summary is a Phase 5
+deliverable that lives at:
+
+- `<project_root>/02_validation_report/report.json` for the outline
+  tier's `inter_tier_validation` phase emit.
+- `<project_root>/04_rewrite/02_validation_report/report.json` for
+  the rewrite tier's `post_rewrite_validation` phase emit (per plan
+  §6 — rewrite tier owns its own validation report).
+
+The writer fires automatically after each validation phase
+completes inside `WorkflowRunner.run_workflow` (best-effort —
+filesystem failures are warning-logged and don't abort the run).
+Schema (Phase 5 §6, `_VALIDATION_REPORT_SCHEMA_VERSION = "v1"`):
+
+```json
+{
+  "run_id": "WF-...",
+  "phase": "inter_tier_validation",
+  "schema_version": "v1",
+  "total_blocks": 247,
+  "passed": 210,
+  "failed": 30,
+  "escalated": 7,
+  "per_block": [
+    {
+      "block_id": "...",
+      "block_type": "assessment_item",
+      "page": "...",
+      "week": 4,
+      "status": "passed|failed|escalated",
+      "gate_results": [
+        {"gate_id": "...", "action": "...", "passed": false, "issue_count": 2}
+      ],
+      "escalation_marker": "outline_budget_exhausted | null"
+    }
+  ]
+}
+```
+
+Blocks with non-null `escalation_marker` count as `escalated`
+rather than `failed`, matching the plan §3 escalated-only
+classifier so `courseforge-rewrite --escalated-only` (planned for a
+followup) can read the report without reparsing the JSONL.
+
+### Operator smoke runbook (Phase 5 stage subcommands)
+
+End-to-end procedures for the four new subcommands. Assumes a
+prior `ed4all run textbook-to-course` produced a project export
+at `Courseforge/exports/PROJ-<COURSE_NAME>-<TIMESTAMP>/` with the
+full upstream chain populated (DART HTML → staging manifest →
+synthesized objectives → outline blocks). Each invocation
+auto-resolves the most-recent matching project under
+`Courseforge/exports/` via `WorkflowRunner._resolve_outline_dir`
+when only `--course-name` is passed; pass an explicit project path
+via the upcoming `--outline` flag (Worker WA followup) for
+defence-in-depth.
+
+```bash
+# Prereq: COURSEFORGE_TWO_PASS=true so the two-pass phases are
+# eligible to run (the Phase 5 subcommands depend on the same
+# enabled_when_env predicate as the canonical Phase 3 phases).
+export COURSEFORGE_TWO_PASS=true
+
+# 1. Re-author the outline tier only. Skips the inter-tier
+#    validators, the rewrite tier, and post-rewrite validation.
+#    Useful for testing outline-tier provider/model swaps without
+#    paying for the rewrite tier's longer wall-clock.
+ed4all run courseforge-outline --course-name PHYS_101
+
+# 2. Re-validate without re-authoring. Runs inter_tier_validation
+#    + post_rewrite_validation against the existing on-disk Block
+#    files; emits 02_validation_report/report.json so the operator
+#    can introspect failures by block_id without re-reading the
+#    raw JSONL.
+ed4all run courseforge-validate --course-name PHYS_101
+
+# 3. Re-run the rewrite tier with a per-block-type scope. Reads
+#    the existing inter_tier_validation output, re-rolls only
+#    blocks whose block_type is in the --blocks filter, and writes
+#    the post-rewrite report under 04_rewrite/02_validation_report/.
+ed4all run courseforge-rewrite \
+  --course-name PHYS_101 \
+  --blocks assessment_item,objective
+
+# 4. Full Courseforge two-pass slice (all four phases). Equivalent
+#    to running the four subcommands in sequence; useful when an
+#    upstream phase output (e.g. the synthesized_objectives.json)
+#    was hand-edited and the operator wants to re-run the entire
+#    Courseforge surface without re-running DART / staging /
+#    chunking.
+ed4all run courseforge --course-name PHYS_101 \
+  --force content_generation_rewrite
+
+# 5. Plan-only inspection of any of the above. The dry-run annotator
+#    marks pre-Courseforge phases <REUSED> (synthesized from disk)
+#    and post-Courseforge phases as skipped via the courseforge_stage
+#    whitelist; non-whitelisted two-pass phases skip via the
+#    same whitelist.
+ed4all run courseforge-rewrite --course-name PHYS_101 \
+  --blocks assessment_item --dry-run
+
+# 6. Verify the validation reports landed where expected.
+PROJECT=$(ls -td Courseforge/exports/PROJ-PHYS_101-* | head -1)
+test -f "${PROJECT}/02_validation_report/report.json"           # inter_tier
+test -f "${PROJECT}/04_rewrite/02_validation_report/report.json"  # post_rewrite
+jq -r '.run_id, .phase, .total_blocks, .passed, .failed, .escalated' \
+  "${PROJECT}/02_validation_report/report.json"
+# Expected: workflow_id + "inter_tier_validation" + four integers
+# summarising the per-block aggregation.
+
+# 7. Run the Phase 5 dispatch test surface to verify the wiring
+#    end-to-end without consuming a real corpus.
+python -m pytest \
+  MCP/tests/test_courseforge_subcommand_dispatch.py \
+  MCP/tests/test_synthesize_outline_output.py \
+  -v
+# Expected: 41 passed (20 dispatch + 21 synthesizer).
+```
+
+The Phase 5 contract is **read-only against upstream outputs** —
+the synthesizer never re-writes pre-Courseforge artifacts; it only
+reads them off disk to populate the in-memory `phase_outputs` dict.
+A failed stage subcommand can be retried as many times as needed
+without contaminating the upstream chain. Operators who want to
+re-run an upstream phase use `--force` (planned: scoped to a
+specific phase name) or the canonical `ed4all run
+textbook-to-course` end-to-end entry point.
+
 ---
 
 ## Template Components
