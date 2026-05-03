@@ -171,6 +171,20 @@ agents:
       - confidence_scoring
     max_instances: 1
 
+  dart-chunker:
+    # Phase 7b ST 9: emits LibV2/courses/<slug>/dart_chunks/chunks.jsonl
+    # from staged DART HTML output via ed4all_chunker.chunk_content.
+    # Deterministic chunker transformation with no LLM dispatch — no
+    # standalone .md spec, in-code dispatcher per textbook-stager
+    # precedent. Backed by `_run_dart_chunking` (ST 11) registered in
+    # MCP/tools/pipeline_tools.py::_build_tool_registry.
+    type: utility
+    capabilities:
+      - dart_html_chunking
+      - chunkset_manifest_emission
+      - deterministic_transformation
+    max_instances: 1
+
   # =============================================================================
   # TRAINFORGE AGENTS
   # =============================================================================

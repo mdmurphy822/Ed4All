@@ -164,6 +164,13 @@ AGENT_TOOL_MAPPING = {
     # ``MCP/tools/pipeline_tools.py::_build_tool_registry``) is the
     # in-process tool that produces the concept graph + manifest.
     "pedagogy-graph-builder": "run_concept_extraction",
+    # Phase 7b ST 9/11: dart-chunker is the agent backing the new
+    # ``chunking`` workflow phase. Utility-style agent (no LLM dispatch);
+    # ``run_dart_chunking`` (registered in
+    # ``MCP/tools/pipeline_tools.py::_build_tool_registry`` by ST 11) is
+    # the in-process tool that emits ``LibV2/courses/<slug>/dart_chunks/
+    # chunks.jsonl`` + ``manifest.json`` via ``ed4all_chunker.chunk_content``.
+    "dart-chunker": "run_dart_chunking",
 
     # -------------------------------------------------------------------------
     # DART/REMEDIATION AGENTS (Multi-Source Synthesis)
