@@ -17,6 +17,16 @@ Re-exports below let callers ``from ed4all_chunker import strip_boilerplate``
 without reaching into the submodule.
 """
 
+try:
+    from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+    try:
+        __version__ = _pkg_version("ed4all-chunker")
+    except PackageNotFoundError:  # pragma: no cover — uninstalled source-tree fallback
+        __version__ = "0.1.0"
+except ImportError:  # pragma: no cover — Python <3.8 not supported (requires-python >=3.11)
+    __version__ = "0.1.0"
+
 from ed4all_chunker.boilerplate import (
     DEFAULT_MIN_DOC_FRAC,
     DEFAULT_NGRAM_TOKENS,
@@ -49,6 +59,7 @@ from ed4all_chunker.helpers import (
 )
 
 __all__ = [
+    "__version__",
     "BoilerplateConfig",
     "CANONICAL_CHUNK_TYPES",
     "ChunkContentResult",
