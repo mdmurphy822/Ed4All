@@ -397,6 +397,16 @@ Net result: DART, Courseforge, and Trainforge share one chunker. Phase 7a Subtas
 
 ---
 
+## Concept-graph consumption (Phase 6 decoupling)
+
+Phase 6 Subtask 13 (commit `2122a63`) refactored `Trainforge/process_course.py::CourseProcessor._generate_pedagogy_graph` (`:3307`) to consume an upstream `concept_graph_path` when the orchestrator threads one in, rather than unconditionally rebuilding the graph from chunks at every `libv2_archival` invocation. The motivation is the new `concept_extraction` workflow phase (`config/workflows.yaml::textbook_to_course`, between `source_mapping` and `course_planning`), which dispatches `MCP/tools/pipeline_tools.py::_run_concept_extraction` (commit `e0ea640`, Phase 6 Subtask 12) to invoke `Trainforge.pedagogy_graph_builder.build_pedagogy_graph` once at phase boundary; the synthesizer then reads the emitted `concept_graph_semantic.json` to populate `LearningObjective.keyConcepts[]` via `lib/ontology/concept_objective_linker.py::link_concepts_to_objectives`. Skipping the rebuild at `libv2_archival` means the graph the synthesizer saw is the SAME graph that ships in the LibV2 archive — no drift between course-planning input and archive output.
+
+The fallback path is preserved for legacy corpora: when `self.concept_graph_path` is `None` (Phase 6 was not enabled when the run started, or the upstream phase was skipped), `_generate_pedagogy_graph` falls through to the in-process `build_pedagogy_graph(chunks=..., course_id=...)` call exactly as before. A failure to load a supplied `concept_graph_path` (corruption, missing file, schema-incompatible JSON) logs a warning and falls back to the in-process rebuild — the upstream-consumption path is best-effort, not fail-closed, in Phase 6.
+
+Phase 6 Subtask 18 (commit `c3a9f72`) additionally threads a `concept_graph_sha256` field through `_archive_to_libv2` into the `course_manifest.json` top-level. The hash is computed by `_run_concept_extraction` over the canonicalised graph JSON, routed via `phase_outputs.concept_extraction.concept_graph_sha256`, and validated by `lib/validators/libv2_manifest.py::LibV2ManifestValidator._check_concept_graph_sha256` (warning severity in Phase 6 — Phase 7c promotion to critical). Three GateIssue codes surface from the manifest gate: `MANIFEST_CONCEPT_GRAPH_SHA256_MISSING` (no field at all), `MANIFEST_CONCEPT_GRAPH_SHA256_MALFORMED` (not a 64-char lowercase hex string), and `MANIFEST_CONCEPT_GRAPH_SHA256_MISMATCH` (hash disagrees with the on-disk `concept_graph_semantic.json`). Cross-link: `schemas/library/course_manifest.schema.json::properties.concept_graph_sha256` (commit `4c0ce9d`, Phase 6 Subtask 17), shape pinned as `^[a-f0-9]{64}$`. `Courseforge/CLAUDE.md` § "Phase 6: ABCD authorship + concept extraction" carries the full Phase 6 architecture overview and operator smoke runbook.
+
+---
+
 ## Metadata Extraction
 
 Trainforge extracts structured metadata from Courseforge HTML output using a priority chain:
