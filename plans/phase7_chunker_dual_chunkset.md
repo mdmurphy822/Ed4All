@@ -107,6 +107,19 @@ Estimated total LOC: ~3,600 (800 chunker package extraction + 600 Trainforge ref
 - **Estimated LOC:** ~25
 - **Change:** Add manifest field `chunker_version: {type: "string"}`. Archive helper reads `ed4all_chunker.__version__` and writes it. Validator (Phase 7c) requires this field present.
 
+### A.1. Phase 4 followups (Phase 7a, 1 subtask)
+
+#### Subtask 8.5: Resolve BERT ensemble revision SHAs (Phase 4 followup)
+- **Files:** `/home/user/Ed4All/lib/classifiers/bloom_bert_ensemble.py:63-76` (`_DEFAULT_ENSEMBLE_MEMBERS`)
+- **Depends on:** none (independent of chunker work; bundled into Phase 7a so it doesn't get lost across the Phase 6 / Phase 7b/c boundary)
+- **Estimated LOC:** ~10 (3 SHA strings + 1 capture-emit hook in `_emit_member_loaded`)
+- **Background:** Phase 4 Subtask 24 shipped the `BloomBertEnsemble` with placeholder `revision="main"` for all three members. Per the canonical `bloom_bert_ensemble.py` module docstring (lines 24-32) and root `CLAUDE.md` § "BERT ensemble members" (which already documents this as "**Phase 4 followup** is to resolve concrete commit SHAs"), the placeholder must be replaced with concrete pinned SHAs so each classification's reproducibility chain is closed end-to-end. The Phase 4 review worker flagged this as HIGH severity but it currently lives only as a docs-only "not closed" item in `Courseforge/CLAUDE.md` § "Phase 4: statistical-tier validators + BERT ensemble" → "Phase 4 follow-ups intentionally not closed in this batch".
+- **Change:**
+  1. For each of the three members in `_DEFAULT_ENSEMBLE_MEMBERS` — `kabir5297/bloom_taxonomy_classifier`, `distilbert-base-uncased-finetuned-sst-2-english`, `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` — resolve the current `main` revision via `huggingface_hub.HfApi().model_info(repo_id).sha`. Pin the resolved 40-char hex SHA into the `revision` field of the corresponding registry entry (replacing the literal `"main"`).
+  2. Verify that `_emit_member_loaded` (`bloom_bert_ensemble.py:389-425`) already captures `member_revision` in the `bert_ensemble_member_loaded` decision event metadata — it does (line 417). No code change needed there; the audit trail already records exactly which revision produced each classification once the registry carries the resolved SHA. (If a future cleanup wants to also surface the SHA in the rationale string for grep-ability, that's a one-line interpolation tweak in the `rationale=` block at line 408.)
+  3. Add a regression test under `lib/classifiers/tests/` (or extend `lib/validators/tests/test_bloom_classifier_disagreement.py`) asserting that every entry in `_DEFAULT_ENSEMBLE_MEMBERS` has a `revision` field matching the regex `^[0-9a-f]{40}$` — guards against a future regression that re-introduces the `"main"` placeholder.
+- **Verification:** `python -c "import re; from lib.classifiers.bloom_bert_ensemble import _DEFAULT_ENSEMBLE_MEMBERS; assert all(re.match(r'^[0-9a-f]{40}$', m['revision']) for m in _DEFAULT_ENSEMBLE_MEMBERS), 'revision must be a resolved 40-char SHA, not main'"` exits 0. Integration: run the Phase 4 statistical-tier smoke (per `Courseforge/CLAUDE.md` § "Operator smoke runbook (Phase 4 statistical tier)") and confirm `bert_ensemble_member_loaded` events in the resulting JSONL carry the resolved SHA in `metadata.member_revision`.
+
 ### B. DART chunkset (Phase 7b, 6 subtasks)
 
 #### Subtask 9: Create `dart-chunker` agent spec
@@ -196,7 +209,7 @@ Estimated total LOC: ~3,600 (800 chunker package extraction + 600 Trainforge ref
 
 ## Execution sequencing
 
-- 7-N1 (Phase 7a): A (1-8) — sequentially.
+- 7-N1 (Phase 7a): A (1-8) — sequentially. Subtask 8.5 (A.1, BERT SHA-pinning) lands in parallel with A; independent of chunker work.
 - 7-N2 (Phase 7b): B (9-14) — after 7a.
 - 7-N3 (Phase 7c): C (15-21) — after 7b. NOTE: order respects roadmap-cited "Phase 6 lands between 7a and 7b/c".
 
