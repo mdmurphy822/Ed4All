@@ -1123,6 +1123,97 @@ input it saw. The Phase 6 followup is to promote both the
 once a real-corpus calibration pass confirms the thresholds don't
 trip on healthy textbooks.
 
+### Operator smoke runbook (Phase 6 ABCD + concept extraction)
+
+End-to-end walkthrough for verifying a clean Phase 6 run on a real
+corpus. Independent of `COURSEFORGE_TWO_PASS` — Phase 6 surfaces fire
+at the `course_planning` and `concept_extraction` phases, both of
+which run in single-pass mode, so this runbook is valid regardless of
+the Phase 4 master gate. Setting `COURSEFORGE_TWO_PASS=true` here is
+optional and just exercises the full Phase 4 statistical-tier surface
+alongside the Phase 6 gates.
+
+```bash
+# 1. (Optional) Set Phase 4 master gate so the full statistical-tier
+#    surface fires alongside the Phase 6 gates. Phase 6 gates fire
+#    independent of this — they're wired at course_planning and
+#    concept_extraction, both of which run in single-pass mode.
+export COURSEFORGE_TWO_PASS=true
+
+# 2. Run textbook-to-course end-to-end. The new concept_extraction
+#    phase fires between source_mapping and course_planning; the
+#    course_planning phase reads the emitted concept_graph_path and
+#    invokes link_concepts_to_objectives before persisting
+#    synthesized_objectives.json.
+ed4all run textbook-to-course \
+  --corpus tests/fixtures/textbooks/demo_303.pdf \
+  --course-name DEMO_303
+
+# 3. Verify ABCD-shaped LOs in the synthesized objectives. Each LO
+#    should carry the four required ABCD fields when the outliner
+#    populated them.
+jq -r '.learning_outcomes[] | select(.abcd != null) |
+  "\(.id): \(.abcd.behavior.verb) (\(.bloom_level)) — audience=\(.abcd.audience)"' \
+  Courseforge/exports/PROJ-DEMO_303-*/01_learning_objectives/synthesized_objectives.json
+# Expected: one line per ABCD-tagged LO; the verb shown should match
+# BLOOMS_VERBS[bloom_level] (mismatches surface as ABCD_VERB_BLOOM_MISMATCH
+# GateIssues — see step 5).
+
+# 4. Verify the concept_extraction phase emitted a graph + the LibV2
+#    archive carries the SHA-256.
+ls LibV2/courses/demo-303/concept_graph/concept_graph_semantic.json
+jq -r '.concept_graph_sha256' LibV2/courses/demo-303/manifest.json
+# Expected: graph file exists; manifest field is a 64-char lowercase
+# hex string. Verify the hash agrees with the on-disk graph:
+sha256sum LibV2/courses/demo-303/concept_graph/concept_graph_semantic.json
+# Expected: hex prefix matches the manifest's concept_graph_sha256.
+
+# 5. Confirm the ABCD verb-alignment gate fired at course_planning.
+#    Phase 6 emits two decision_event types: abcd_authored on every
+#    LO that passes the verb check, and abcd_verb_bloom_mismatch on
+#    every LO that fails (paired with an action="regenerate"
+#    GateIssue carrying code="ABCD_VERB_BLOOM_MISMATCH").
+grep -lE '"decision_type":\s*"(abcd_authored|abcd_verb_bloom_mismatch)"' \
+  training-captures/courseforge/DEMO_303/phase_courseforge-course-outliner/*.jsonl
+# Expected: at least one match; abcd_authored should fire for every
+# LO that passes (so on a healthy run, this is the default). Mismatches
+# are rare on a calibrated outliner.
+
+# 6. Confirm the concept_graph gate ran at concept_extraction. The
+#    validator emits warnings (severity warning in Phase 6) on
+#    missing edge types or thin graphs; on a healthy corpus, those
+#    warnings should be absent.
+grep -lE '"gate_id":\s*"concept_graph"' \
+  training-captures/courseforge/DEMO_303/phase_*concept_extraction*/*.jsonl 2>/dev/null
+# Expected: ≥1 match. Inspect with `jq` to confirm
+# passed=true, action=null.
+
+# 7. Run the Phase 6 test surface end-to-end (no corpus required).
+python -m pytest \
+  lib/validators/tests/test_abcd_objective.py \
+  lib/validators/tests/test_concept_graph.py \
+  lib/ontology/tests/test_compose_abcd_prose.py \
+  lib/ontology/tests/test_concept_objective_linker.py \
+  lib/validators/tests/test_libv2_manifest_concept_graph.py \
+  -v
+# Expected: all PASSED. The five test files cover the validator
+# contracts (≥6 tests each on AbcdObjectiveValidator and
+# ConceptGraphValidator), the prose round-trip (47 tests across 6
+# Bloom levels × 3 fixture verbs), the linker (12 tests covering
+# both substring + verbatim-statement match paths), and the LibV2
+# manifest hash verification (7 tests).
+```
+
+The Phase 6 contract is **fail-soft**: every new gate is warning-
+severity in Phase 6 so partial-coverage corpora (legacy LOs without
+ABCD, thin concept graphs from sparse textbooks) don't block the
+course build. The decision-event JSONL captures the full audit trail
+regardless of severity, so operators can grep for `ABCD_VERB_BLOOM_MISMATCH`
+or `MANIFEST_CONCEPT_GRAPH_SHA256_*` codes after the run to
+prioritise outliner / extractor calibration work without disrupting
+the build itself. Phase 7+ promotes both gates to critical once a
+real-corpus calibration pass confirms the thresholds.
+
 ---
 
 ## Template Components
