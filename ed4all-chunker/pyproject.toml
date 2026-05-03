@@ -11,12 +11,13 @@ license = {text = "MIT"}
 requires-python = ">=3.11"
 keywords = ["education", "chunking", "rag", "ed4all"]
 
-# Phase 7a Subtask 1: package skeleton only — runtime dependencies
-# (beautifulsoup4, lxml) are introduced by Subtasks 2-4 when the
-# boilerplate detector + chunker functions land. Keeping the
-# dependency list empty here makes the scaffolding install a pure
-# no-op import surface and avoids prematurely committing to specific
-# pins that the actual chunker code will validate against.
+# Phase 7a Subtask 2: the lifted ``boilerplate.py`` is pure stdlib
+# (re, collections, dataclasses, typing) so no runtime deps are
+# required at this stage. Subtasks 3 (HTML helpers — section
+# extraction, plain-text strip) and 4 (the chunker proper) introduce
+# ``beautifulsoup4`` and ``lxml`` when those surfaces land; the pins
+# in the parent ``pyproject.toml`` (``beautifulsoup4>=4.12.0,<5.0.0``)
+# are the source of truth to mirror at that point.
 dependencies = []
 
 [project.optional-dependencies]
