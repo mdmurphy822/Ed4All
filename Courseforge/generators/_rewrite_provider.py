@@ -83,6 +83,12 @@ from Courseforge.router.remediation import (  # noqa: E402
     _append_preserve_remediation,
     _missing_preserve_tokens,
 )
+# Single source of truth for the rewrite-tier required-attribute table.
+# The same table the post-rewrite gate enforces (`rewrite_html_shape`)
+# is enumerated in the prompt so the model sees the contract instead of
+# inferring it from prose. Drift between the prompt and the gate is the
+# regression class this fixes — sharing the constant prevents it.
+from lib.validators.rewrite_html_shape import REQUIRED_ATTRS  # noqa: E402
 
 # Phase 2 Subtask 35: ``blocks.py`` lives at
 # ``Courseforge/scripts/blocks.py``; mirror the import bridge from
@@ -157,6 +163,12 @@ _REWRITE_SYSTEM_PROMPT = (
     "refs, source refs. REWRITE: for pedagogical depth, scaffolding, "
     "examples, voice. DO NOT add facts not in the outline's key_claims "
     "or in the source chunks."
+    "\n\n"
+    "Every block MUST carry the per-block-type ``data-cf-*`` "
+    "attributes enumerated in the user prompt's `Required attributes` "
+    "line (the post-rewrite gate fails closed when any are missing). "
+    "Use the supplied `Block id` value verbatim as the "
+    "`data-cf-block-id` attribute — do not invent or reformat it."
 )
 
 
@@ -272,6 +284,34 @@ def _block_type_output_contract(block_type: str) -> str:
             f"{block_type!r}. Carry `data-cf-source-ids` on the top "
             f"wrapper to attribute the source chunks."
         ),
+    )
+
+
+def _required_attrs_directive(block_type: str, block_id: str) -> str:
+    """Return the gate-enforced required-attribute directive line.
+
+    Reads the canonical ``REQUIRED_ATTRS`` table from
+    :mod:`lib.validators.rewrite_html_shape` so the prompt enumerates
+    the same attributes the post-rewrite gate enforces. The block_id
+    is interpolated as the ``data-cf-block-id`` value the model must
+    use verbatim — the gate doesn't validate the value, but the
+    downstream Trainforge consumer cross-references the JSON-LD
+    ``blocks[]`` projection by block_id, so an invented id silently
+    breaks chunk extraction.
+
+    Empty REQUIRED_ATTRS entry (block_type not in the table) returns an
+    empty string — defensive only; every BLOCK_TYPES value has an entry.
+    """
+    required = REQUIRED_ATTRS.get(block_type, ())
+    if not required:
+        return ""
+    attr_list = ", ".join(f"`{a}`" for a in required)
+    return (
+        "Required attributes (gate-enforced; block fails post-rewrite "
+        "validation when any are missing): "
+        f"{attr_list}. "
+        f"Use `data-cf-block-id=\"{block_id}\"` verbatim — do not "
+        "invent or reformat the block_id."
     )
 
 
@@ -883,6 +923,9 @@ class RewriteProvider(_BaseLLMProvider):
         source_block = _format_source_chunks(source_chunks or [])
         objectives_block = _format_objectives(objectives or [])
         output_contract = _block_type_output_contract(block.block_type)
+        required_attrs_line = _required_attrs_directive(
+            block.block_type, block.block_id
+        )
 
         return (
             f"ESCALATED REWRITE — marker={marker}\n"
@@ -911,6 +954,7 @@ class RewriteProvider(_BaseLLMProvider):
             "\n"
             "Output contract (HTML attributes for this block_type):\n"
             f"{output_contract}\n"
+            f"{required_attrs_line}\n"
             "\n"
             "Author the rendered HTML body for this block now. Emit "
             "ONLY the HTML — no preamble, no markdown, no commentary."
@@ -955,6 +999,9 @@ class RewriteProvider(_BaseLLMProvider):
         source_block = _format_source_chunks(source_chunks or [])
         objectives_block = _format_objectives(objectives or [])
         output_contract = _block_type_output_contract(block.block_type)
+        required_attrs_line = _required_attrs_directive(
+            block.block_type, block.block_id
+        )
 
         return (
             f"Block type: {block.block_type}\n"
@@ -972,6 +1019,7 @@ class RewriteProvider(_BaseLLMProvider):
             "\n"
             "Output contract (HTML attributes for this block_type):\n"
             f"{output_contract}\n"
+            f"{required_attrs_line}\n"
             "\n"
             "Author the rendered HTML body for this block now. Emit "
             "ONLY the HTML — no preamble, no markdown, no commentary."

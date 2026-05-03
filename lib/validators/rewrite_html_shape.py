@@ -104,7 +104,12 @@ _VOID_TAGS: frozenset = frozenset(
 # consumability) are still required to carry the universal
 # ``data-cf-block-id`` so the post-rewrite report can cross-reference
 # the JSON-LD blocks[] projection.
-_REQUIRED_ATTRS: Dict[str, Tuple[str, ...]] = {
+#
+# Public surface: imported by
+# ``Courseforge/generators/_rewrite_provider.py`` so the rewrite
+# prompt enumerates the same attributes the gate enforces. Single
+# source of truth; do NOT duplicate the table.
+REQUIRED_ATTRS: Dict[str, Tuple[str, ...]] = {
     # Objective list items carry the canonical TO-NN / CO-NN reference
     # plus Bloom metadata.
     "objective": ("data-cf-block-id", "data-cf-objective-id", "data-cf-bloom-level"),
@@ -580,7 +585,7 @@ class RewriteHtmlShapeValidator:
 
             # 3. Required data-cf-* attributes per block_type. Missing
             # ANY required attr fails the gate.
-            required = _REQUIRED_ATTRS.get(block.block_type, ())
+            required = REQUIRED_ATTRS.get(block.block_type, ())
             missing: List[str] = [
                 attr for attr in required if attr not in parser.found_attrs
             ]
