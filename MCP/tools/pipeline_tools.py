@@ -6319,6 +6319,327 @@ def _build_tool_registry() -> dict:
 
     registry["run_concept_extraction"] = _run_concept_extraction
 
+    # ============================================================================
+    # Phase 7b Subtask 11: _run_dart_chunking — DART chunkset emit
+    #
+    # New ``chunking`` workflow phase (between ``staging`` and
+    # ``objective_extraction`` per Phase 7b ST 10). The phase invokes
+    # ``ed4all_chunker.chunk_content`` over staged DART HTML files,
+    # persists the resulting chunks to
+    # ``LibV2/courses/<slug>/dart_chunks/chunks.jsonl`` plus a sibling
+    # ``manifest.json`` (matching the canonical
+    # ``schemas/library/chunkset_manifest.schema.json`` shape), computes
+    # the SHA-256 of the chunks file, and surfaces both the path and
+    # hash through phase outputs.
+    #
+    # Mirrors the ``_run_concept_extraction`` template above (Phase 6
+    # ST 12 commit ``e0ea640``): async helper, ``**kwargs`` resolved via
+    # the workflow YAML's ``inputs_from``, registered in
+    # ``_build_tool_registry`` as ``registry["run_dart_chunking"]``,
+    # returns a JSON envelope with ``dart_chunks_path`` +
+    # ``dart_chunks_sha256`` keys for downstream phase consumption.
+    #
+    # Unlike ``_run_concept_extraction`` (which inline-projects v4 chunks
+    # for ``build_pedagogy_graph`` because no IMSCC exists at that
+    # phase), this helper goes through the canonical
+    # ``ed4all_chunker.chunk_content`` path. DART HTML is parsed via
+    # ``Trainforge/parsers/html_content_parser.HTMLContentParser`` into
+    # ``ContentSection`` objects (the same shape Trainforge's IMSCC path
+    # consumes), wrapped into a parsed-item dict, and threaded into the
+    # chunker with a thin ``ChunkerContext`` whose ``create_chunk``
+    # callback emits a minimal-but-canonical v4 chunk dict (no
+    # CourseProcessor instance state — concept_tags / objective_refs are
+    # empty here; downstream alignment / tagging is the synthesis
+    # surface's responsibility).
+    #
+    # Per the Phase 7b ST 14.5 reconciliation plan, the upstream
+    # ``concept_extraction`` phase will refactor to consume this
+    # chunkset (eliminating the inline projection above). For now both
+    # surfaces coexist — Phase 7b lands the producer; ST 14.5 lands the
+    # consumer-side refactor.
+    # ============================================================================
+    async def _run_dart_chunking(**kwargs):
+        """Run the canonical chunker over staged DART HTML.
+
+        Required kwargs (resolved via ``inputs_from`` in workflows.yaml's
+        ``chunking`` phase):
+            course_name: Canonical course name (used for course slug + chunk-ID prefix).
+            staging_dir: DART staging directory (sibling to objective_extraction).
+
+        Outputs (returned as JSON envelope + persisted):
+            dart_chunks_path: ``LibV2/courses/<slug>/dart_chunks/chunks.jsonl``
+            dart_chunks_sha256: SHA-256 hex digest of the chunks file bytes
+
+        Sibling ``manifest.json`` is also emitted at the same directory,
+        carrying the canonical ``chunkset_manifest`` schema shape (per
+        Phase 7b ST 12) so the ``ChunksetManifestValidator`` (ST 13)
+        gate has something to validate against.
+        """
+        import hashlib as _hashlib
+
+        course_name = kwargs.get("course_name") or ""
+        staging_dir_kw = kwargs.get("staging_dir") or ""
+
+        course_name = course_name or "UNKNOWN"
+        course_slug = course_name.lower().replace("_", "-").replace(" ", "-")
+        course_code = course_name.upper().replace("-", "_")
+
+        # Resolve staging dir. Honor explicit kwarg first; fall back to
+        # COURSEFORGE_INPUTS so a degraded path (legacy fixtures that
+        # bypass the staging phase) still emits a chunkset shell.
+        staging_dir: Optional[Path] = None
+        if staging_dir_kw:
+            cand = Path(staging_dir_kw)
+            if cand.exists():
+                staging_dir = cand
+        if staging_dir is None and COURSEFORGE_INPUTS.exists():
+            staging_dir = COURSEFORGE_INPUTS
+
+        # Walk staging_dir for DART HTML files. Filter out
+        # ``*_synthesized.json`` neighbours (those are sidecars, not the
+        # canonical HTML the chunker consumes).
+        html_files: List[Path] = []
+        if staging_dir is not None and staging_dir.exists():
+            html_files = sorted(staging_dir.rglob("*.html"))
+
+        # Compute aggregated source SHA-256 over the DART HTML inputs.
+        # Per the schema's ``source_dart_html_sha256`` description, we
+        # emit a deterministic merkle-ish digest: sort by filename,
+        # concatenate per-file SHA-256 bytes, then SHA-256 the
+        # concatenation. Stable across re-runs as long as the input
+        # filename + content tuple is stable.
+        def _file_sha256(p: Path) -> bytes:
+            h = _hashlib.sha256()
+            try:
+                with p.open("rb") as fh:
+                    for blk in iter(lambda: fh.read(65536), b""):
+                        h.update(blk)
+            except OSError:
+                # Unreadable file — record a zero-bytes sentinel so the
+                # aggregate still computes deterministically rather than
+                # crashing the phase.
+                return b"\x00" * 32
+            return h.digest()
+
+        if html_files:
+            agg = _hashlib.sha256()
+            for f in html_files:
+                agg.update(_file_sha256(f))
+            source_dart_html_sha256 = agg.hexdigest()
+        else:
+            # Empty-input shell: SHA of empty bytes. Schema-valid
+            # (64-char lowercase hex) and deterministic. Lets a
+            # pre-staging dry-run still emit a manifest.
+            source_dart_html_sha256 = _hashlib.sha256(b"").hexdigest()
+
+        # Parse DART HTML into ContentSection-bearing parsed_items.
+        # Trainforge's HTMLContentParser produces the duck-typed
+        # ContentSection objects ``ed4all_chunker.chunk_content`` walks
+        # via the ``merge_small_sections`` path. Lazy import keeps this
+        # helper's import-time cost low.
+        parsed_items: List[Dict[str, Any]] = []
+        try:
+            from Trainforge.parsers.html_content_parser import HTMLContentParser
+        except Exception as exc:  # noqa: BLE001 — import failures shouldn't crash phase
+            logger.warning(
+                "Phase 7b ST 11: HTMLContentParser import failed (%s); "
+                "emitting empty chunks shell.",
+                exc,
+            )
+            html_parser = None
+        else:
+            html_parser = HTMLContentParser()
+
+        if html_parser is not None:
+            for idx, html_path in enumerate(html_files):
+                try:
+                    html_text = html_path.read_text(encoding="utf-8")
+                except OSError as exc:
+                    logger.warning(
+                        "Phase 7b ST 11: failed to read %s (%s); skipping.",
+                        html_path, exc,
+                    )
+                    continue
+                try:
+                    parsed = html_parser.parse(html_text)
+                except Exception as exc:  # noqa: BLE001 — parser errors fail soft
+                    logger.warning(
+                        "Phase 7b ST 11: HTML parse failed for %s (%s); "
+                        "skipping.",
+                        html_path, exc,
+                    )
+                    continue
+                slug = html_path.stem.lower().replace(" ", "-")
+                # The chunker reads ``module_id``, ``item_id``,
+                # ``raw_html``, ``resource_type``, ``sections``,
+                # ``title``, ``misconceptions`` off each item. Other
+                # keys are read defensively via ``.get(...)`` so a
+                # minimal payload works.
+                parsed_items.append({
+                    "item_id": slug,
+                    "item_path": str(html_path.relative_to(staging_dir))
+                    if staging_dir and html_path.is_relative_to(staging_dir)
+                    else html_path.name,
+                    "title": parsed.title or slug,
+                    "resource_type": "page",
+                    "module_id": slug,
+                    "module_title": parsed.title or slug,
+                    "week_num": 0,
+                    "word_count": parsed.word_count,
+                    "sections": parsed.sections,
+                    "learning_objectives": parsed.learning_objectives,
+                    "key_concepts": parsed.key_concepts,
+                    "interactive_components": parsed.interactive_components,
+                    "raw_html": html_text,
+                    "page_id": parsed.page_id,
+                    "misconceptions": parsed.misconceptions,
+                    "suggested_assessment_types": parsed.suggested_assessment_types,
+                    "courseforge_metadata": parsed.metadata.get("courseforge"),
+                    "objective_refs": parsed.objective_refs,
+                    "source_references": parsed.source_references,
+                })
+
+        # Minimal create_chunk callback — emits a v4-shaped chunk dict
+        # without CourseProcessor's deep instance state. The chunker
+        # delegates per-chunk materialisation here so the surface
+        # parameters (chunk_id, text, html, item, section_heading,
+        # chunk_type, follows_chunk_id, position_in_module, html_xpath,
+        # char_span, section_source_ids, merged_headings) are all that
+        # we have to thread through. Concept-tag / objective-ref /
+        # bloom-level enrichment is the synthesis surface's
+        # responsibility downstream.
+        def _create_chunk(
+            *,
+            chunk_id: str,
+            text: str,
+            html: str,
+            item: Dict[str, Any],
+            section_heading: str,
+            chunk_type: str,
+            follows_chunk_id: Optional[str] = None,
+            position_in_module: int = 0,
+            html_xpath: Optional[str] = None,
+            char_span: Optional[List[int]] = None,
+            section_source_ids: Optional[List[str]] = None,
+            merged_headings: Optional[List[str]] = None,
+        ) -> Dict[str, Any]:
+            words = text.split()
+            word_count = len(words)
+            tokens_estimate = int(word_count * 1.3)
+            source: Dict[str, Any] = {
+                "course_id": course_code,
+                "module_id": item.get("module_id") or "",
+                "module_title": item.get("module_title") or "",
+                "lesson_id": item.get("item_id") or "",
+                "lesson_title": item.get("title") or "",
+                "resource_type": item.get("resource_type") or "page",
+                "section_heading": section_heading,
+                "position_in_module": position_in_module,
+            }
+            if html_xpath:
+                source["html_xpath"] = html_xpath
+            if char_span is not None:
+                source["char_span"] = list(char_span)
+            if item.get("item_path"):
+                source["item_path"] = item["item_path"]
+            return {
+                "id": chunk_id,
+                "schema_version": "v4",
+                "chunk_type": chunk_type,
+                "text": text,
+                "html": html,
+                "follows_chunk": follows_chunk_id,
+                "source": source,
+                "concept_tags": [],
+                "learning_outcome_refs": [],
+                "difficulty": "intermediate",
+                "tokens_estimate": tokens_estimate,
+                "word_count": word_count,
+            }
+
+        # Dispatch to the canonical chunker. ``chunk_content`` is
+        # fail-soft on empty input (returns empty result, no ctx
+        # required); for non-empty input it requires ``ctx`` per the
+        # ChunkerContextRequired contract.
+        chunks: List[Dict[str, Any]] = []
+        chunker_version = _resolve_chunker_version()
+        try:
+            from ed4all_chunker import ChunkerContext, chunk_content
+        except Exception as exc:  # noqa: BLE001 — import failures shouldn't crash phase
+            logger.warning(
+                "Phase 7b ST 11: ed4all_chunker import failed (%s); "
+                "emitting empty chunks shell.",
+                exc,
+            )
+        else:
+            try:
+                ctx = ChunkerContext(create_chunk=_create_chunk) if parsed_items else None
+                result = chunk_content(
+                    parsed_items,
+                    course_code,
+                    boilerplate_spans=None,
+                    ctx=ctx,
+                )
+                chunks = list(result.chunks)
+            except Exception as exc:  # noqa: BLE001 — fail-soft on chunker error
+                logger.warning(
+                    "Phase 7b ST 11: chunk_content raised (%s); emitting "
+                    "empty chunks shell.",
+                    exc,
+                )
+                chunks = []
+
+        # Persist chunks + manifest to LibV2/courses/<slug>/dart_chunks/.
+        course_dir = _PROJECT_ROOT / "LibV2" / "courses" / course_slug
+        chunks_dir = course_dir / "dart_chunks"
+        chunks_dir.mkdir(parents=True, exist_ok=True)
+        chunks_path = chunks_dir / "chunks.jsonl"
+
+        # Stream chunks as JSONL (one chunk per line). Use a hashing
+        # writer pattern so the SHA-256 reflects exactly the bytes on
+        # disk (no double-read).
+        chunks_sha = _hashlib.sha256()
+        with chunks_path.open("wb") as fh:
+            for chunk in chunks:
+                line = (json.dumps(chunk, ensure_ascii=False) + "\n").encode(
+                    "utf-8"
+                )
+                fh.write(line)
+                chunks_sha.update(line)
+        chunks_sha256 = chunks_sha.hexdigest()
+
+        # Sibling manifest.json — must validate against
+        # ``schemas/library/chunkset_manifest.schema.json`` per ST 12.
+        # Required: chunks_sha256, chunker_version, chunkset_kind,
+        # source_dart_html_sha256 (conditional on chunkset_kind=dart).
+        # Optional: chunks_count, generated_at.
+        manifest = {
+            "chunks_sha256": chunks_sha256,
+            "chunker_version": chunker_version,
+            "chunkset_kind": "dart",
+            "source_dart_html_sha256": source_dart_html_sha256,
+            "chunks_count": len(chunks),
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+        }
+        manifest_path = chunks_dir / "manifest.json"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        return json.dumps({
+            "success": True,
+            "dart_chunks_path": str(chunks_path),
+            "dart_chunks_sha256": chunks_sha256,
+            "manifest_path": str(manifest_path),
+            "course_slug": course_slug,
+            "chunks_count": len(chunks),
+            "source_html_count": len(html_files),
+            "chunker_version": chunker_version,
+        })
+
+    registry["run_dart_chunking"] = _run_dart_chunking
+
     # ================================================================= #
     # Runtime registry stubs for the 7 tools that AGENT_TOOL_MAPPING     #
     # routes but _build_tool_registry previously skipped (MCP audit      #
