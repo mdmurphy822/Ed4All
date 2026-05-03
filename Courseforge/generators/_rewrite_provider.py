@@ -66,9 +66,10 @@ import dataclasses
 import datetime as _dt
 import json
 import logging
+import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from Courseforge.generators._base import _BaseLLMProvider
 # Phase 3.5 Subtask 3: the generalized preserve-token helpers live in
@@ -396,38 +397,240 @@ def _extract_outline_curies(content: Any) -> List[str]:
 # string-content branch of the generalised signature.
 
 
+# ---------------------------------------------------------------------------
+# Plan §3.5: contextual CURIE-preservation gate.
+# ---------------------------------------------------------------------------
+#
+# Pre-§3.5 the gate did a bare substring match: any verbatim
+# occurrence of a CURIE token in the HTML body counted as preserved.
+# That contract is structurally satisfied by token-stuffing — the
+# rewrite tier learned to splice ``<span vocab="rdf:RDF">`` mid-
+# sentence or invent fake-triple examples that the substring matcher
+# accepts but a learner would never read as pedagogically natural.
+#
+# §3.5 replaces the substring match with a positional check. A CURIE
+# counts as "preserved in pedagogical context" when:
+#
+# 1. It appears as text content inside a ``<code>`` / ``<kbd>`` /
+#    ``<samp>`` element (definitional / sample-code voice).
+# 2. It is the value of a ``<span data-cf-term="<local>">`` whose
+#    local-name part matches the CURIE (the canonical Courseforge
+#    inline-term pattern).
+# 3. It appears inside a ≥40-char window of prose containing one of
+#    the pedagogical-voice anchors: ``prefix`` / ``vocabulary`` /
+#    ``namespace`` / ``triple`` or any canonical Bloom verb.
+#
+# Token-stuffing patterns rejected: CURIE in an attribute value
+# (``vocab="rdf:RDF"``), spliced into a non-pedagogical sentence,
+# or stuffed into a fabricated triple example without the surrounding
+# pedagogical-voice anchor.
+
+# Tags whose text content counts as a "definitional voice" anchor.
+_PEDAGOGICAL_VOICE_TAGS: Tuple[str, ...] = ("code", "kbd", "samp")
+
+# Sentence-window anchor terms for the pedagogical-prose path.
+_PEDAGOGICAL_VOICE_ANCHORS: Tuple[str, ...] = (
+    "prefix",
+    "vocabulary",
+    "namespace",
+    "triple",
+)
+
+# Minimum prose-window size around a CURIE occurrence for the
+# sentence-context check. Below this floor a stuffed CURIE in a
+# fragment "sentence" doesn't count.
+_PEDAGOGICAL_VOICE_WINDOW_CHARS: int = 40
+
+
+def _curie_in_pedagogical_context(html: str, curie: str) -> bool:
+    """Return True when ``curie`` appears in pedagogical context in ``html``.
+
+    Pedagogical context = the CURIE token appears in at least one of
+    three positional shapes:
+
+    - inside the text content of a ``<code>`` / ``<kbd>`` / ``<samp>``
+      element (definitional / sample-code voice);
+    - as the (local-name part of a) ``<span data-cf-term="...">``
+      attribute pair (the canonical Courseforge inline-term pattern);
+    - in a ≥40-char prose window containing one of the pedagogical-
+      voice anchor terms (prefix / vocabulary / namespace / triple)
+      OR any canonical Bloom verb.
+
+    Returns False when the only occurrences are token-stuffed in tag
+    attributes, fabricated triple examples without surrounding
+    pedagogical voice, or absent entirely. Plan §3.5 contract.
+    """
+    if not html or not curie:
+        return False
+
+    # Case 1: text content inside a definitional-voice tag. We
+    # substring-match the open / close pair around the CURIE; this
+    # accepts both ``<code>rdf:type</code>`` and ``<code class="x">
+    # rdf:type ...</code>``.
+    for tag in _PEDAGOGICAL_VOICE_TAGS:
+        pattern = re.compile(
+            rf"<{tag}\b[^>]*>([^<]*?){re.escape(curie)}([^<]*?)</{tag}>",
+            re.IGNORECASE,
+        )
+        if pattern.search(html):
+            return True
+
+    # Case 2: ``<span data-cf-term="...">`` whose local part matches.
+    # The canonical Courseforge pattern stamps `data-cf-term=<local>`
+    # where <local> is the CURIE's right-of-colon part (lowercase
+    # slugged), so the CURIE token itself usually appears as the
+    # span's text content — we accept either the local-match attr
+    # form OR the verbatim CURIE text inside the span.
+    local = curie.split(":", 1)[1] if ":" in curie else curie
+    span_pattern = re.compile(
+        rf'<span\b[^>]*data-cf-term=(?:"|\')(?:{re.escape(local)}|'
+        rf'{re.escape(curie)})(?:"|\')[^>]*>([^<]*?)</span>',
+        re.IGNORECASE,
+    )
+    if span_pattern.search(html):
+        return True
+
+    # Case 3: prose-window anchor. Walk every CURIE occurrence and
+    # check the surrounding window for an anchor term or Bloom verb.
+    # Skip occurrences inside attribute values: a ``"<curie>"`` shape
+    # adjacent to ``=`` indicates an attribute value, not prose.
+    blooms_verbs = _flat_bloom_verbs()
+    anchor_set = set(_PEDAGOGICAL_VOICE_ANCHORS) | blooms_verbs
+
+    start = 0
+    while True:
+        idx = html.find(curie, start)
+        if idx == -1:
+            break
+        start = idx + len(curie)
+        # Skip attribute-value occurrences. An attribute value sits
+        # inside quotes adjacent to an ``=``; we walk backwards to
+        # the most recent quote / angle bracket and reject when the
+        # immediate preceding non-space character is ``=``.
+        if _looks_like_attribute_value(html, idx):
+            continue
+        window_start = max(0, idx - _PEDAGOGICAL_VOICE_WINDOW_CHARS)
+        window_end = min(
+            len(html), idx + len(curie) + _PEDAGOGICAL_VOICE_WINDOW_CHARS
+        )
+        window = html[window_start:window_end].lower()
+        if any(anchor in window for anchor in anchor_set):
+            return True
+    return False
+
+
+def _flat_bloom_verbs() -> set[str]:
+    """Return the union of canonical Bloom verbs across every level.
+
+    Lazy-loaded once per process via the canonical helper at
+    :func:`lib.ontology.learning_objectives.BLOOMS_VERBS`. Cached on
+    the module-level frozenset so the helper stays fast in the
+    rewrite-tier hot path.
+    """
+    cached = getattr(_flat_bloom_verbs, "_cache", None)
+    if cached is not None:
+        return cached
+    try:
+        from lib.ontology.learning_objectives import BLOOMS_VERBS
+
+        flat: set[str] = set()
+        for verbs in BLOOMS_VERBS.values():
+            flat.update(verbs)
+    except Exception:  # pragma: no cover — defensive
+        flat = set()
+    _flat_bloom_verbs._cache = flat  # type: ignore[attr-defined]
+    return flat
+
+
+def _looks_like_attribute_value(html: str, idx: int) -> bool:
+    """Return True when ``html[idx:]`` looks like an HTML attribute value.
+
+    Heuristic: walk backward from ``idx`` to find the most recent
+    ``"`` or ``'`` quote character; if the character just before that
+    quote is ``=``, the substring is inside an attribute value.
+    """
+    # Walk back at most 200 chars (generous bound for any single
+    # attribute value).
+    bound = max(0, idx - 200)
+    region = html[bound:idx]
+    quote_pos = max(region.rfind('"'), region.rfind("'"))
+    if quote_pos == -1:
+        return False
+    # Walk back from the quote to skip any whitespace then check for ``=``.
+    j = bound + quote_pos - 1
+    while j >= 0 and html[j].isspace():
+        j -= 1
+    return j >= 0 and html[j] == "="
+
+
 def _missing_preserve_curies(
     html_response: str, outline_curies: Sequence[str]
 ) -> List[str]:
-    """Re-export shim — delegates to
-    :func:`Courseforge.router.remediation._missing_preserve_tokens`
-    with the rewrite-tier defaults.
+    """Return CURIEs that don't appear in pedagogical context in the HTML.
 
-    Substring match — the rewrite tier emits HTML, so a CURIE
-    preserved in any tag (a ``<code>sh:NodeShape</code>`` block, a
-    ``data-cf-key-terms`` attribute value, or inline prose) all count
-    as preserved. Empty input returns an empty list.
+    Plan §3.5: the pre-§3.5 substring-only contract permitted token-
+    stuffing patterns that satisfied the gate structurally but
+    flouted pedagogical voice. This helper now wraps
+    :func:`_curie_in_pedagogical_context` so the gate accepts only
+    the three positional contexts the new contract recognises (code-
+    voice text content / data-cf-term span / prose-window anchor).
+
+    Empty input returns an empty list. Empty CURIE list returns the
+    empty list (nothing to enforce).
     """
-    return _missing_preserve_tokens(html_response or "", list(outline_curies or []))
+    if not outline_curies:
+        return []
+    html = html_response or ""
+    missing: List[str] = []
+    for curie in outline_curies:
+        if not curie:
+            continue
+        if not _curie_in_pedagogical_context(html, curie):
+            missing.append(curie)
+    return missing
+
+
+# Plan §3.5 rephrased remediation directive. Pre-§3.5 wording was
+# "Rewrite the response so each of those tokens appears VERBATIM",
+# which the model satisfied by token-stuffing. The new directive
+# explicitly names the three permitted positional contexts AND
+# forbids the two stuffing patterns the introspection run exposed.
+_CURIE_PEDAGOGICAL_DIRECTIVE: str = (
+    "Each preserved CURIE must appear in pedagogical voice — inside "
+    "<code>, as a definitional <span data-cf-term=...>, or in a "
+    "sentence introducing the prefix/vocabulary/namespace. Do NOT "
+    "stuff CURIEs into attribute values or invented triple examples."
+)
 
 
 def _append_curie_remediation(
     user_prompt: str, missing_curies: Sequence[str]
 ) -> str:
-    """Re-export shim — delegates to
-    :func:`Courseforge.router.remediation._append_preserve_remediation`
-    with the rewrite-tier defaults (``in_keys=("the HTML body",)``).
+    """Append a contextual-CURIE remediation directive to ``user_prompt``.
 
-    The remediation reuses the canonical Trainforge wording (the
-    ``"did not include the required"`` phrase the rewrite-tier
-    regression suite substring-matches) so the move is byte-stable
-    across the test surface.
+    Plan §3.5: the legacy implementation re-used the Trainforge
+    "did not include the required" phrase, which was structurally
+    correct but didn't tell the model HOW to include the tokens —
+    encouraging the token-stuffing failure mode the audit surfaced.
+    The new directive names the three pedagogical-context shapes the
+    gate accepts and explicitly forbids attribute-value / fake-triple
+    stuffing.
+
+    The base "did not include the required" phrase from the
+    Trainforge precedent is preserved as the opener so the existing
+    rewrite-provider regression suite's substring-matchers continue
+    to detect a remediation turn fired (back-compat for the
+    ``"did not include the required"`` assertion in
+    ``test_curie_preservation_gate_fires_remediation_on_drop``).
     """
-    return _append_preserve_remediation(
+    if not missing_curies:
+        return user_prompt
+    base = _append_preserve_remediation(
         user_prompt,
         list(missing_curies or []),
         in_keys=("the HTML body",),
     )
+    return base + "\n\n" + _CURIE_PEDAGOGICAL_DIRECTIVE
 
 
 def _apply_rewrite_touch(

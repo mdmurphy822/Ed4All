@@ -84,8 +84,11 @@ _REMEDIATION_DIRECTIVES_BY_GATE_ID: Dict[str, str] = {
     ),
     # Rewrite-tier gates (consume Block.content as an HTML string).
     "rewrite_curie_anchoring": (
-        "Preserve every CURIE verbatim in the rendered HTML body "
-        "(exact characters, colon and case intact)."
+        "Each preserved CURIE must appear in pedagogical voice — "
+        "inside <code>, as a definitional <span data-cf-term=...>, "
+        "or in a sentence introducing the prefix/vocabulary/namespace. "
+        "Do NOT stuff CURIEs into attribute values or invented "
+        "triple examples."
     ),
     "rewrite_content_type": (
         "Stamp data-cf-content-type on the section/heading wrapper "
