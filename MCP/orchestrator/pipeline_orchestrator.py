@@ -288,8 +288,8 @@ class PipelineOrchestrator:
 
                 capture = DecisionCapture(
                     course_code=cc,
-                    phase="orchestrator",
-                    tool="pipeline",
+                    phase=None,
+                    tool="orchestrator",
                     streaming=True,
                 )
             except Exception as exc:  # noqa: BLE001 — capture is best-effort

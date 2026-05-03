@@ -243,19 +243,26 @@ class LibV2Storage:
 
     # ===== Training Capture Management =====
 
-    def get_training_capture_path(self, tool: str, phase: str) -> Path:
+    def get_training_capture_path(self, tool: str, phase: Optional[str]) -> Path:
         """
         Get path for decision capture files.
 
         Args:
             tool: Tool name (courseforge, trainforge, dart)
-            phase: Phase name (e.g., "content-generator", "question-generation")
+            phase: Phase name (e.g., "content-generator", "question-generation").
+                ``None`` is permitted by the canonical decision-event schema for
+                tool-level captures that aren't scoped to a single phase (e.g.
+                the orchestrator's phase_start emits before any phase has been
+                selected); routes to ``phase_unknown/`` so the directory shape
+                stays consistent.
 
         Returns:
             Path to the phase directory (created if needed)
         """
-        # Normalize phase name (ensure hyphen-separated)
-        normalized_phase = phase.replace("_", "-")
+        # Normalize phase name (ensure hyphen-separated). ``phase=None`` is a
+        # valid schema value — route to ``phase_unknown`` rather than crashing
+        # on the ``.replace`` call.
+        normalized_phase = phase.replace("_", "-") if phase else "unknown"
 
         phase_dir = self.training_path / tool / f"phase_{normalized_phase}"
         phase_dir.mkdir(parents=True, exist_ok=True)

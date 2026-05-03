@@ -270,8 +270,11 @@ class DecisionCapture:
         self._storage = LibV2Storage(course_code, auto_create=True)
         self.output_dir = self._storage.get_training_capture_path(tool, phase)
 
-        # Legacy training-captures directory (secondary location per CLAUDE.md spec)
-        normalized_phase = phase.replace("_", "-")
+        # Legacy training-captures directory (secondary location per CLAUDE.md spec).
+        # ``phase=None`` is permitted by the canonical decision-event schema —
+        # route to ``phase_unknown`` so tool-level captures (e.g. orchestrator
+        # phase_start emits before a phase has been selected) don't crash.
+        normalized_phase = phase.replace("_", "-") if phase else "unknown"
         self.legacy_output_dir = LEGACY_TRAINING_DIR / tool / course_code / f"phase_{normalized_phase}"
         self.legacy_output_dir.mkdir(parents=True, exist_ok=True)
 
