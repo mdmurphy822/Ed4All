@@ -379,6 +379,38 @@ def _check_chunks_freshness(
     }
 
 
+def _resolve_chunker_version() -> str:
+    """Phase 7a Subtask 8: resolve installed ed4all-chunker package version.
+
+    Read at archive time so the LibV2 manifest records exactly which
+    chunker produced the archived chunks. Uses ``importlib.metadata``
+    (the stdlib, install-time-stable surface) rather than reaching into
+    ``ed4all_chunker.__version__`` because the chunker package today
+    (Phase 7a Subtask 4) does not export ``__version__`` from its
+    ``__init__.py`` — and Subtasks 2-4 are settled per the plan's
+    Wave-7 boundary, so this worker does not edit the chunker package.
+
+    Returns a semver string (e.g. ``"0.1.0"``) when the package is
+    installed, or ``"0.0.0+missing"`` (a schema-valid sentinel — the
+    pattern in ``schemas/library/course_manifest.schema.json::
+    chunker_version`` accepts ``+local`` suffixes) when the package
+    isn't importable. The fallback exists because Wave 7A and 7B run
+    concurrently — if Subtask 7's editable-install hasn't landed yet,
+    archive emit must not crash.
+    """
+    try:
+        from importlib.metadata import (  # noqa: PLC0415
+            PackageNotFoundError,
+            version as _pkg_version,
+        )
+    except ImportError:  # pragma: no cover — Python <3.8, unreachable on >=3.11
+        return "0.0.0+missing"
+    try:
+        return _pkg_version("ed4all-chunker")
+    except PackageNotFoundError:
+        return "0.0.0+missing"
+
+
 def _detect_source_provenance(course_dir: Path) -> bool:
     """Wave 10: scan archived chunks.jsonl for chunks with source_references[].
 
@@ -1406,6 +1438,7 @@ def register_pipeline_tools(mcp):
 
             manifest = {
                 "libv2_version": "1.2.0",
+                "chunker_version": _resolve_chunker_version(),
                 "slug": slug,
                 "import_timestamp": datetime.now().isoformat(),
                 "classification": {
@@ -5494,6 +5527,7 @@ def _build_tool_registry() -> dict:
 
         manifest = {
             "libv2_version": "1.2.0",
+            "chunker_version": _resolve_chunker_version(),
             "slug": slug,
             "import_timestamp": datetime.now().isoformat(),
             "classification": {
