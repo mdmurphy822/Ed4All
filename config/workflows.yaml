@@ -173,6 +173,35 @@ workflows:
               on_fail: warn
               on_error: warn
 
+          # Followup §3.2: HTML-shape sentinel mirrored from
+          # textbook_to_course::post_rewrite_validation. Closes the
+          # JSON-wrapped-emit regression class.
+          - gate_id: rewrite_html_shape
+            validator: lib.validators.rewrite_html_shape.RewriteHtmlShapeValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: fail_closed
+            description: Followup §3.2 — verify rewrite-tier emit is a bare HTML body fragment with required data-cf-* attributes per block_type.
+
+          # Followup §3.3: sentence-level source-grounding sentinel
+          # mirrored from textbook_to_course::post_rewrite_validation.
+          - gate_id: rewrite_source_grounding
+            validator: lib.validators.rewrite_source_grounding.RewriteSourceGroundingValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: fail_closed
+            config:
+              thresholds:
+                min_grounding_cosine: 0.45
+                min_grounded_sentence_rate: 0.60
+            description: Followup §3.3 — sentence-level paraphrase-of-source check.
+
       - name: packaging
         agents: [brightspace-packager]
         parallel: true
@@ -1275,6 +1304,48 @@ workflows:
               on_fail: warn
               on_error: warn
             description: Phase 3.5 post-rewrite — verify rewrite-tier source_ids resolve against the DART staging manifest
+
+          # Followup §3.2 (plans/qwen7b-courseforge-fixes-2026-05-followup.md):
+          # HTML-shape sentinel that closes the JSON-wrapped-emit
+          # regression class observed on Qwen-2.5-7B-Q4. Critical
+          # severity with on_fail: warn so the gate's per-block
+          # action="regenerate" drives the rewrite-tier remediation
+          # loop (the workflow-level fail-closed posture comes from
+          # the router exhausting COURSEFORGE_REWRITE_REGEN_BUDGET,
+          # which currently defaults to 10).
+          - gate_id: rewrite_html_shape
+            validator: lib.validators.rewrite_html_shape.RewriteHtmlShapeValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: fail_closed
+            description: Followup §3.2 — verify rewrite-tier emit is a bare HTML body fragment (not JSON-wrapped, markdown-fenced, or unbalanced) with all required data-cf-* attributes per block_type.
+
+          # Followup §3.3: sentence-level source-grounding sentinel
+          # complementing the Wave 31 ContentGroundingValidator
+          # (which walks ancestor chain for data-cf-source-ids
+          # presence). This gate asserts the paragraph TEXT itself
+          # paraphrases (cosine >= 0.45) at least one source chunk
+          # substring; >=60% of non-trivial sentences must trace.
+          # Embedding-deps fallback per Phase 4 contract: missing
+          # extras -> warning EMBEDDING_DEPS_MISSING with passed=True;
+          # strict mode via TRAINFORGE_REQUIRE_EMBEDDINGS=true flips
+          # to critical.
+          - gate_id: rewrite_source_grounding
+            validator: lib.validators.rewrite_source_grounding.RewriteSourceGroundingValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: fail_closed
+            config:
+              thresholds:
+                min_grounding_cosine: 0.45
+                min_grounded_sentence_rate: 0.60
+            description: Followup §3.3 — sentence-level paraphrase-of-source check. Complements ContentGroundingValidator's attribute-walk gate by asserting text-trace-to-source.
 
           # Phase 4 Wave N1 Subtask 12: SHACL parallel of the four
           # rewrite-tier Block validators above. Distinct gate_id
