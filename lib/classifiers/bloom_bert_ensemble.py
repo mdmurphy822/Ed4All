@@ -43,6 +43,7 @@ embedding-tier graceful-degrade pattern in
 from __future__ import annotations
 
 import logging
+import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -415,18 +416,66 @@ class BloomBertEnsemble:
             )
 
     # ------------------------------------------------------------------ #
-    # Aggregation — implemented in Subtask 26
+    # Aggregation — Subtask 26
     # ------------------------------------------------------------------ #
 
     def _aggregate(
         self, per_member: List[Tuple[str, float]]
     ) -> Tuple[str, float, float]:
-        """Subtask 24 stub — returns sentinel ``("unknown", 0.0, 0.0)``.
+        """Aggregate per-member votes into ``(winner_level, winner_score, dispersion)``.
 
-        Real aggregation (per-level confidence sum + entropy dispersion)
-        lands in Subtask 26.
+        Score per Bloom level = sum of confidence values across every
+        member that voted that level. Winner = ``argmax`` over the
+        per-level scores. Dispersion = Shannon entropy of the
+        normalised per-level scores (base ``e``, normalised by
+        ``ln(num_levels_with_votes)`` so a uniform vote returns
+        ``1.0`` regardless of how many distinct levels were voted).
+
+        Returns ``("unknown", 0.0, 0.0)`` on an empty input list so
+        the caller's contract stays single-shape regardless of member
+        availability.
+
+        Tie-breaking: when two levels accumulate identical scores, the
+        winner is the lexicographically-first level (e.g. ``analyze``
+        beats ``apply``). Deterministic so the validator's regression
+        suite stays stable across re-runs.
         """
-        return ("unknown", 0.0, 0.0)
+        if not per_member:
+            return ("unknown", 0.0, 0.0)
+
+        # Sum confidences per level.
+        level_scores: Dict[str, float] = {}
+        for level, conf in per_member:
+            level_scores[level] = level_scores.get(level, 0.0) + float(conf)
+
+        # Winner = argmax level. Sort by (-score, level) so ties resolve
+        # lexicographically rather than by Python dict insertion order.
+        sorted_items = sorted(
+            level_scores.items(), key=lambda kv: (-kv[1], kv[0])
+        )
+        winner_level, winner_raw = sorted_items[0]
+        total_score = sum(level_scores.values())
+        winner_score = (
+            round(winner_raw / total_score, 4) if total_score > 0 else 0.0
+        )
+
+        # Dispersion = normalised Shannon entropy of the per-level
+        # score distribution. ``num_levels = len(level_scores)`` so a
+        # 2-way uniform split returns 1.0 just like a 6-way uniform
+        # split. Single-level votes have entropy 0 (perfect consensus).
+        num_levels = len(level_scores)
+        if num_levels <= 1 or total_score <= 0:
+            dispersion = 0.0
+        else:
+            entropy = 0.0
+            for score in level_scores.values():
+                p = score / total_score
+                if p > 0:
+                    entropy -= p * math.log(p)
+            # Normalise so uniform => 1.0 (max entropy = ln(num_levels)).
+            dispersion = round(entropy / math.log(num_levels), 4)
+
+        return (winner_level, winner_score, dispersion)
 
     # ------------------------------------------------------------------ #
     # Decision capture — wired by the validator (Subtask 27)
