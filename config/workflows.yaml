@@ -758,6 +758,14 @@ workflows:
             source: phase_outputs
             phase: source_mapping
             output: source_module_map_path
+          # Phase 6 ST 16: route the concept-graph path emitted by the
+          # concept_extraction phase so the planner's two-stage linker
+          # populates LearningObjective.keyConcepts[] from
+          # concept_graph_semantic.json before persistence.
+          - param: concept_graph_path
+            source: phase_outputs
+            phase: concept_extraction
+            output: concept_graph_path
 
         outputs:
           - project_id
@@ -1591,6 +1599,14 @@ workflows:
             source: phase_outputs
             phase: packaging
             output: package_path
+          # Phase 6 ST 18: thread the concept-graph SHA-256 (computed by
+          # the ``concept_extraction`` phase) through to ``_archive_to_libv2``
+          # so the LibV2 manifest carries the hash and downstream
+          # ``LibV2ManifestValidator`` (ST 19) can cross-check.
+          - param: concept_graph_sha256
+            source: phase_outputs
+            phase: concept_extraction
+            output: concept_graph_sha256
 
         outputs:
           - course_slug
