@@ -674,11 +674,60 @@ workflows:
           - source_module_map_path
           - source_chunk_ids
 
+      # Phase 6 ST 11: concept_extraction phase — runs the
+      # pedagogy-graph-builder over staged DART output before objectives
+      # are synthesized. The emitted concept graph is later consumed by
+      # the concept_objective_linker (Phase 6 ST 15/16) to populate
+      # ``LearningObjective.keyConcepts[]`` during course_planning.
+      # Inserted between ``source_mapping`` and ``course_planning`` per
+      # the plan amendment (Phase 7a did NOT add a ``chunking`` workflow
+      # phase, so depends_on: [source_mapping] is the only valid path).
+      - name: concept_extraction
+        agents: [pedagogy-graph-builder]
+        parallel: false
+        max_concurrent: 1
+        depends_on: [source_mapping]
+        timeout_minutes: 30
+        description: Build pedagogy/concept graph from staged DART output (Phase 6 ST 11/12)
+
+        inputs_from:
+          - param: project_id
+            source: phase_outputs
+            phase: objective_extraction
+            output: project_id
+          - param: course_name
+            source: workflow_params
+            key: course_name
+          - param: staging_dir
+            source: phase_outputs
+            phase: staging
+            output: staging_dir
+
+        outputs:
+          - concept_graph_path
+          - concept_graph_sha256
+
+        # Phase 6 ST 14 (Worker K): ConceptGraphValidator wires here.
+        # Forward-reference — validator class lands in parallel; the
+        # runner resolves the import at execution time so missing-class
+        # only surfaces when the gate actually runs. Severity warning
+        # initially per plan; promotion to critical follows once Worker
+        # K calibrates against a clean corpus rebuild.
+        validation_gates:
+          - gate_id: concept_graph
+            validator: lib.validators.concept_graph.ConceptGraphValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+
       - name: course_planning
         agents: [course-outliner]
         parallel: false
         max_concurrent: 1
-        depends_on: [source_mapping]
+        depends_on: [concept_extraction]
         timeout_minutes: 60
         description: Synthesize real TO/CO objectives + persist synthesized_objectives.json (Wave 24)
 

@@ -5963,6 +5963,278 @@ def _build_tool_registry() -> dict:
 
     registry["build_source_module_map"] = _build_source_module_map
 
+    # ============================================================================
+    # Phase 6 Subtask 12: _run_concept_extraction — concept-graph builder
+    #
+    # New ``concept_extraction`` workflow phase (between ``source_mapping``
+    # and ``course_planning`` per plan ST 11). The phase runs the
+    # ``Trainforge.pedagogy_graph_builder.build_pedagogy_graph`` over a
+    # minimal v4 chunk projection of the staged DART HTML's
+    # ``*_synthesized.json`` sidecars, persists the resulting graph to
+    # ``LibV2/courses/<slug>/concept_graph/concept_graph_semantic.json``
+    # plus a sibling ``manifest.json``, computes the SHA-256 of the graph
+    # bytes, and surfaces both the path and hash through phase outputs.
+    #
+    # Phase 7a lifted ``_chunk_content`` into the ``ed4all-chunker``
+    # package, but the chunker's ``chunk_content`` requires parsed IMSCC
+    # items + a ``ChunkerContext`` that materialises chunks. At this point
+    # in the workflow chain the IMSCC has not yet been packaged — only
+    # DART staging output exists. So this helper builds a minimal v4
+    # chunk projection inline (one chunk per DART section) sufficient for
+    # ``build_pedagogy_graph`` to populate concept_tags / chunk_type /
+    # source.module_id and emit a non-trivial pedagogy graph.
+    # ============================================================================
+    async def _run_concept_extraction(**kwargs):
+        """Run the pedagogy-graph builder over staged DART output.
+
+        Required kwargs (resolved via inputs_from in workflows.yaml):
+            project_id: Courseforge project (used only for course_name lookup)
+            course_name: Canonical course name (defaults to project config)
+            staging_dir: DART staging directory (sibling to objective_extraction)
+
+        Outputs (returned + persisted):
+            concept_graph_path: ``LibV2/courses/<slug>/concept_graph/concept_graph_semantic.json``
+            concept_graph_sha256: SHA-256 hex digest of the graph file bytes
+        """
+        import hashlib as _hashlib
+
+        project_id = kwargs.get("project_id") or ""
+        course_name = kwargs.get("course_name") or ""
+        staging_dir_kw = kwargs.get("staging_dir") or ""
+
+        # Resolve project + course_name from project_config when present.
+        config_data: Dict[str, Any] = {}
+        project_path: Optional[Path] = None
+        if project_id:
+            cand = _PROJECT_ROOT / "Courseforge" / "exports" / project_id
+            if cand.exists():
+                project_path = cand
+                cfg_path = cand / "project_config.json"
+                if cfg_path.exists():
+                    try:
+                        config_data = json.loads(
+                            cfg_path.read_text(encoding="utf-8")
+                        )
+                    except (OSError, ValueError):
+                        config_data = {}
+        course_name = (
+            course_name
+            or config_data.get("course_name")
+            or project_id
+            or "UNKNOWN"
+        )
+
+        # Resolve staging dir. Honor explicit kwarg first; fall back to
+        # any project-config-recorded staging dir; finally walk
+        # COURSEFORGE_INPUTS for any *_synthesized.json sidecars (degraded
+        # path for legacy fixtures that bypass the staging phase).
+        staging_dir: Optional[Path] = None
+        if staging_dir_kw:
+            cand = Path(staging_dir_kw)
+            if cand.exists():
+                staging_dir = cand
+        if staging_dir is None:
+            cfg_staging = config_data.get("staging_dir")
+            if cfg_staging:
+                cand = Path(cfg_staging)
+                if cand.exists():
+                    staging_dir = cand
+        if staging_dir is None and COURSEFORGE_INPUTS.exists():
+            staging_dir = COURSEFORGE_INPUTS
+
+        # Build a minimal v4 chunk projection from each
+        # *_synthesized.json sidecar so ``build_pedagogy_graph`` has
+        # populated ``concept_tags`` + ``source.module_id`` / ``item_path``
+        # to walk. One chunk per DART section keeps wall-time deterministic
+        # and avoids importing the IMSCC-only ``ed4all_chunker.chunk_content``
+        # path (which would require a packaged IMSCC + ChunkerContext at a
+        # phase where neither exists).
+        course_slug = course_name.lower().replace("_", "-").replace(" ", "-")
+        course_code_lower = course_name.lower().replace("-", "_")
+        chunks: List[Dict[str, Any]] = []
+        chunk_counter = 1
+
+        def _tokenize_concepts(text: str, limit: int = 8) -> List[str]:
+            """Lift bare-word concept slugs from a section's text bits."""
+            if not text:
+                return []
+            import re as _re_inner
+            cleaned = _re_inner.sub(r"[^a-z0-9\s]", " ", text.lower())
+            stop = {
+                "the", "and", "for", "with", "from", "that", "this", "are",
+                "was", "were", "has", "have", "had", "but", "not", "all",
+                "any", "may", "can", "one", "two", "its", "their", "they",
+                "will", "been", "you", "your", "our", "into", "over", "such",
+                "more", "most", "some", "about", "these", "those", "than",
+                "also", "only", "used", "use", "see", "via", "per",
+            }
+            seen: set = set()
+            out: List[str] = []
+            for tok in cleaned.split():
+                if len(tok) <= 4 or tok in stop or tok in seen:
+                    continue
+                seen.add(tok)
+                out.append(tok)
+                if len(out) >= limit:
+                    break
+            return out
+
+        if staging_dir is not None and staging_dir.exists():
+            for sidecar in sorted(staging_dir.rglob("*_synthesized.json")):
+                try:
+                    doc = json.loads(sidecar.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                slug = (
+                    sidecar.stem.replace("_synthesized", "")
+                    .lower()
+                    .replace(" ", "-")
+                )
+                sections = doc.get("sections") or []
+                if not isinstance(sections, list):
+                    continue
+                for section in sections:
+                    if not isinstance(section, dict):
+                        continue
+                    section_id = str(section.get("section_id") or "").strip()
+                    if not section_id:
+                        continue
+                    title = str(section.get("section_title") or "").strip()
+                    section_type = (
+                        str(section.get("section_type") or "").strip().lower()
+                    )
+                    text_bits: List[str] = [title, section_type]
+                    data = section.get("data")
+                    if isinstance(data, dict):
+                        for k, v in data.items():
+                            text_bits.append(str(k))
+                            if isinstance(v, str):
+                                text_bits.append(v)
+                            elif isinstance(v, list):
+                                for item in v[:20]:
+                                    if isinstance(item, str):
+                                        text_bits.append(item)
+                    chunk_text = " ".join(t for t in text_bits if t).strip()
+                    concept_tags = _tokenize_concepts(chunk_text)
+                    chunk_id = (
+                        f"{course_code_lower}_chunk_{chunk_counter:05d}"
+                    )
+                    chunks.append({
+                        "chunk_id": chunk_id,
+                        "text": chunk_text,
+                        "concept_tags": concept_tags,
+                        "learning_outcome_refs": [],
+                        "chunk_type": (
+                            "assessment_item"
+                            if section_type in ("assessment", "self_check")
+                            else "content"
+                        ),
+                        "bloom_level": "understand",
+                        "difficulty": "intermediate",
+                        "source": {
+                            "module_id": slug,
+                            "item_path": f"{slug}#{section_id}",
+                        },
+                    })
+                    chunk_counter += 1
+
+        # Dispatch the builder. ``build_pedagogy_graph`` is fail-soft on
+        # empty input — it still emits the BloomLevel + DifficultyLevel
+        # typed nodes — so a pre-staging dry-run still returns a graph
+        # shell rather than crashing.
+        try:
+            from Trainforge.pedagogy_graph_builder import build_pedagogy_graph
+        except Exception as exc:  # noqa: BLE001 — import failures shouldn't crash phase
+            logger.warning(
+                "Phase 6 ST 12: pedagogy_graph_builder import failed (%s); "
+                "emitting empty graph shell.",
+                exc,
+            )
+            graph: Dict[str, Any] = {
+                "kind": "pedagogy",
+                "course_id": course_name.upper(),
+                "nodes": [],
+                "edges": [],
+                "generated_at": datetime.now().isoformat(),
+                "stats": {
+                    "node_count": 0,
+                    "edge_count": 0,
+                    "nodes_by_class": {},
+                    "edges_by_relation": {},
+                },
+            }
+        else:
+            try:
+                graph = build_pedagogy_graph(
+                    chunks=chunks,
+                    objectives={},
+                    course_id=course_name.upper() or None,
+                    modules=[],
+                    concept_classes=None,
+                )
+            except Exception as exc:  # noqa: BLE001 — fail-soft on builder error
+                logger.warning(
+                    "Phase 6 ST 12: build_pedagogy_graph raised (%s); "
+                    "emitting empty graph shell.",
+                    exc,
+                )
+                graph = {
+                    "kind": "pedagogy",
+                    "course_id": course_name.upper(),
+                    "nodes": [],
+                    "edges": [],
+                    "generated_at": datetime.now().isoformat(),
+                    "stats": {
+                        "node_count": 0,
+                        "edge_count": 0,
+                        "nodes_by_class": {},
+                        "edges_by_relation": {},
+                    },
+                }
+
+        # Persist graph to LibV2/courses/<slug>/concept_graph/.
+        course_dir = _PROJECT_ROOT / "LibV2" / "courses" / course_slug
+        graph_dir = course_dir / "concept_graph"
+        graph_dir.mkdir(parents=True, exist_ok=True)
+        graph_path = graph_dir / "concept_graph_semantic.json"
+        graph_bytes = json.dumps(graph, indent=2, ensure_ascii=False).encode(
+            "utf-8"
+        )
+        graph_path.write_bytes(graph_bytes)
+        sha256 = _hashlib.sha256(graph_bytes).hexdigest()
+
+        # Sibling manifest.json with provenance fields the LibV2 manifest
+        # validator can later cross-check (Phase 6 ST 17 wires the field
+        # into the canonical course manifest schema; ST 12 emits it here
+        # eagerly so the per-phase output is self-describing).
+        manifest = {
+            "course_id": course_name.upper(),
+            "course_slug": course_slug,
+            "concept_graph_path": str(graph_path),
+            "concept_graph_sha256": sha256,
+            "generated_at": datetime.now().isoformat(),
+            "source_chunks": len(chunks),
+            "phase": "concept_extraction",
+        }
+        manifest_path = graph_dir / "manifest.json"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        return json.dumps({
+            "success": True,
+            "concept_graph_path": str(graph_path),
+            "concept_graph_sha256": sha256,
+            "manifest_path": str(manifest_path),
+            "course_slug": course_slug,
+            "chunk_count": len(chunks),
+            "node_count": len(graph.get("nodes") or []),
+            "edge_count": len(graph.get("edges") or []),
+        })
+
+    registry["run_concept_extraction"] = _run_concept_extraction
+
     # ================================================================= #
     # Runtime registry stubs for the 7 tools that AGENT_TOOL_MAPPING     #
     # routes but _build_tool_registry previously skipped (MCP audit      #
@@ -6132,6 +6404,10 @@ def _get_phase_status(workflow: dict, phase_name: str) -> dict:
         "dart_conversion": ["dart-converter"],
         "staging": ["textbook-stager"],
         "objective_extraction": ["textbook-ingestor"],
+        "source_mapping": ["source-router"],
+        # Phase 6 ST 11: concept_extraction phase backed by
+        # pedagogy-graph-builder agent.
+        "concept_extraction": ["pedagogy-graph-builder"],
         "course_planning": ["course-outliner"],
         "content_generation": ["content-generator"],
         "packaging": ["brightspace-packager"],

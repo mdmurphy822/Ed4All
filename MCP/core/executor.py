@@ -157,6 +157,13 @@ AGENT_TOOL_MAPPING = {
     "textbook-stager": "stage_dart_outputs",
     "textbook-ingestor": "extract_textbook_structure",
     "source-router": "build_source_module_map",
+    # Phase 6 ST 11/12: pedagogy-graph-builder is the agent backing the
+    # new ``concept_extraction`` workflow phase. The phase entry in
+    # ``config/workflows.yaml::textbook_to_course`` lists this agent;
+    # ``_run_concept_extraction`` (registered in
+    # ``MCP/tools/pipeline_tools.py::_build_tool_registry``) is the
+    # in-process tool that produces the concept graph + manifest.
+    "pedagogy-graph-builder": "run_concept_extraction",
 
     # -------------------------------------------------------------------------
     # DART/REMEDIATION AGENTS (Multi-Source Synthesis)
