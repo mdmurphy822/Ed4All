@@ -472,6 +472,103 @@ The template-enhanced course structure output now includes textbook integration 
 }
 ```
 
+### **ABCD-tagged emit format (Phase 6)**
+
+Phase 6 amends the objective-synthesis output contract: every newly authored learning objective MUST carry an `abcd` sub-object alongside the legacy `id` / `statement` / `bloom_level` / `bloom_verb` / `cognitive_domain` / `key_concepts[]` fields. The `abcd` sub-object captures the ABCD instructional-design framework (**A**udience, **B**ehavior, **C**ondition, **D**egree) as discrete machine-readable fields rather than re-parsing prose downstream.
+
+#### **Schema reference**
+
+The canonical shape is `$defs.AbcdObjective` in `schemas/knowledge/courseforge_jsonld_v1.schema.json`, referenced from `$defs.LearningObjective.properties.abcd`:
+
+```json
+{
+  "abcd": {
+    "audience": "string (non-empty, e.g. 'Students')",
+    "behavior": {
+      "verb": "string (Bloom-aligned action verb)",
+      "action_object": "string (noun phrase the verb acts on)"
+    },
+    "condition": "string (may be empty)",
+    "degree": "string (may be empty)"
+  }
+}
+```
+
+All four top-level fields (`audience`, `behavior`, `condition`, `degree`) are required when `abcd` is present. `behavior.verb` and `behavior.action_object` are required within the nested `behavior` object. `additionalProperties: false` is enforced — emit only the canonical fields.
+
+#### **Authorship rules**
+
+1. **Verb-Bloom alignment is gated.** The `AbcdObjectiveValidator` (`lib/validators/abcd_objective.py`) runs as a `course_planning` phase validation gate (`abcd_verb_alignment`, severity `warning` in Phase 6, promoted to `critical` in Phase 7+). The validator asserts `abcd.behavior.verb.lower() ∈ BLOOMS_VERBS[lo.bloom_level]`. On miss, the validator emits `action="regenerate"` with code `ABCD_VERB_BLOOM_MISMATCH` — the course-outliner agent is then re-dispatched to author a verb that DOES align with the declared Bloom level. **Author `behavior.verb` from the bloom-level's valid verb set or face regeneration.**
+2. **`BLOOMS_VERBS` is the single source of truth.** Look up the valid verb set at `lib/ontology/learning_objectives.py::BLOOMS_VERBS: Dict[str, FrozenSet[str]]`. Keys are the canonical Bloom levels: `remember`, `understand`, `apply`, `analyze`, `evaluate`, `create`. The frozenset values are projected from `schemas/taxonomies/bloom_verbs.json` at import.
+3. **Prose composition is deterministic.** Downstream consumers (page-level JSON-LD `learningObjectives[].statement`, IMSCC manifest, OSCQR evaluator) read prose via `lib.ontology.learning_objectives.compose_abcd_prose(abcd)`, which composes the four ABCD fields into the canonical sentence shape `"{Audience} will {verb} {action_object} {condition}, {degree}."` Author the four discrete fields; do NOT pre-compose prose into the `abcd` sub-object — the helper handles capitalization, spacing, and terminal punctuation mechanically.
+4. **`statement` and `abcd` co-exist.** The legacy `statement` field stays populated (often == `compose_abcd_prose(abcd)`) so legacy consumers that have not yet rolled forward to ABCD-aware extraction continue to read the prose form. The `abcd` sub-object is the structured authority; `statement` is the rendered projection.
+5. **Constrained-decoding-validated output.** When invoked via the LLM-driven path (`COURSEFORGE_OUTLINE_PROVIDER` / `COURSEFORGE_PROVIDER`), emit the LO list as a JSON object that conforms to the `$defs.AbcdObjective` schema. The `plan_course_structure` MCP tool re-validates the schema before persisting `synthesized_objectives.json`.
+
+#### **Worked examples**
+
+**Example 1 — Bloom level `remember`** (verb `identify` is in `BLOOMS_VERBS["remember"]`):
+
+```json
+{
+  "id": "TO-01",
+  "statement": "Students will identify the parts of a cell from a labeled diagram, with 90% accuracy.",
+  "bloom_level": "remember",
+  "bloom_verb": "identify",
+  "cognitive_domain": "factual",
+  "key_concepts": ["cell-parts", "organelles", "cell-membrane"],
+  "abcd": {
+    "audience": "Students",
+    "behavior": {
+      "verb": "identify",
+      "action_object": "the parts of a cell"
+    },
+    "condition": "from a labeled diagram",
+    "degree": "with 90% accuracy"
+  }
+}
+```
+
+**Example 2 — Bloom level `apply`** (verb `solve` is in `BLOOMS_VERBS["apply"]`):
+
+```json
+{
+  "id": "CO-03",
+  "statement": "Students will solve second-order differential equations using the method of undetermined coefficients, on a closed-book exam, within 30 minutes.",
+  "bloom_level": "apply",
+  "bloom_verb": "solve",
+  "cognitive_domain": "procedural",
+  "key_concepts": ["differential-equations", "undetermined-coefficients"],
+  "abcd": {
+    "audience": "Students",
+    "behavior": {
+      "verb": "solve",
+      "action_object": "second-order differential equations using the method of undetermined coefficients"
+    },
+    "condition": "on a closed-book exam",
+    "degree": "within 30 minutes"
+  }
+}
+```
+
+**Anti-pattern — verb-Bloom mismatch (will fail `AbcdObjectiveValidator`):**
+
+```json
+{
+  "id": "TO-04",
+  "bloom_level": "remember",
+  "abcd": {
+    "behavior": { "verb": "evaluate", "action_object": "..." },
+    "...": "..."
+  }
+}
+```
+
+Here `evaluate` belongs to `BLOOMS_VERBS["evaluate"]`, not `BLOOMS_VERBS["remember"]` — the validator emits `ABCD_VERB_BLOOM_MISMATCH` and triggers regeneration. Either lower the verb to a `remember`-level match (e.g. `recall`, `list`, `identify`) or raise `bloom_level` to `evaluate`.
+
+#### **Backward compatibility**
+
+Legacy LOs in pre-Phase-6 corpora (`synthesized_objectives.json` fixtures predating this contract) MAY omit `abcd`; `LearningObjective.properties.abcd` is optional in the schema. The validator emits a warning-severity `ABCD_MISSING` GateIssue in this case but does NOT regenerate — it only regenerates on verb-Bloom mismatch within an explicitly-supplied `abcd` block. New authoring runs (Phase 6+) MUST emit `abcd` per the contract above.
+
 ## Validation and Quality Gates
 
 ### **Template Compliance Validation**
