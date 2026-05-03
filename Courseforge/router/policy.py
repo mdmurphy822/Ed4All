@@ -38,7 +38,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import yaml
 
@@ -124,6 +124,28 @@ class BlockRoutingPolicy:
     regen_budget_rewrite_by_block_type: Dict[str, int] = field(
         default_factory=dict
     )
+    # Operator-supplied capability-tier table. Keys are operator-chosen
+    # labels (e.g. ``"small"`` / ``"medium"`` / ``"large"``); values are
+    # raw spec dicts (NOT projected ``BlockProviderSpec`` instances)
+    # because the projector restamps each lookup with the caller's
+    # ``block_type`` + ``tier`` at resolution time. Empty dict when the
+    # YAML carries no ``capability_tiers`` block (legacy mode).
+    capability_tiers: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    # Per-(block_type, tier) capability-tier chains: the resolved list
+    # of tier-name strings for blocks that carry a ``capability_tier``
+    # reference. Empty when the YAML carries no chains. Used by the
+    # router's :meth:`CourseforgeRouter._resolve_capability_tier_chain`
+    # to walk a cascading-regen chain. Keys: ``(block_type, tier)``;
+    # values: ordered list of tier-name strings (length ≥ 1).
+    capability_tier_chain_by_block_type: Dict[
+        tuple, List[str]
+    ] = field(default_factory=dict)
+    # Same shape for the tier-default chains under ``defaults[tier]``.
+    # Keys: ``"outline"`` / ``"rewrite"``; values: ordered list of
+    # tier-name strings.
+    capability_tier_chain_by_default_tier: Dict[
+        str, List[str]
+    ] = field(default_factory=dict)
 
     def is_empty(self) -> bool:
         """Return True when the policy carries no defaults / blocks /
@@ -133,6 +155,7 @@ class BlockRoutingPolicy:
             not self.defaults
             and not self.blocks
             and not self.overrides
+            and not self.capability_tiers
         )
 
     def resolve(
@@ -286,6 +309,26 @@ def _validate_against_schema(payload: Dict[str, Any], *, source_path: Path) -> N
 def _policy_from_dict(raw: Dict[str, Any]) -> BlockRoutingPolicy:
     """Project a validated YAML payload into a frozen
     :class:`BlockRoutingPolicy`."""
+    # Operator-supplied capability-tier table (top-level
+    # ``capability_tiers`` block). Stored as raw dicts because the
+    # projector restamps each lookup with the caller's block_type +
+    # tier at resolution time. Empty dict when the YAML carries no
+    # ``capability_tiers`` block.
+    capability_tiers: Dict[str, Dict[str, Any]] = {}
+    raw_capability_tiers = raw.get("capability_tiers") or {}
+    if isinstance(raw_capability_tiers, dict):
+        for tier_name, tier_spec in raw_capability_tiers.items():
+            if not isinstance(tier_spec, dict):
+                continue
+            capability_tiers[tier_name] = dict(tier_spec)
+
+    # Per-tier-default capability_tier chain map, populated below as
+    # we walk ``defaults``.
+    capability_tier_chain_by_default_tier: Dict[str, List[str]] = {}
+    # Per-block-type capability_tier chain map, populated below as
+    # we walk ``blocks``.
+    capability_tier_chain_by_block_type: Dict[tuple, List[str]] = {}
+
     defaults: Dict[str, BlockProviderSpec] = {}
     for tier, spec_dict in (raw.get("defaults") or {}).items():
         if not isinstance(spec_dict, dict):
@@ -301,9 +344,23 @@ def _policy_from_dict(raw: Dict[str, Any]) -> BlockRoutingPolicy:
         # ``BlockRoutingPolicy.resolve`` layer because per-block_type
         # entries are resolved before tier defaults.
         spec_dict = _maybe_apply_env_model_override(spec_dict, tier=tier)
+        # Capture the capability-tier chain for the default tier when
+        # present. The projector below honours both single-string and
+        # list forms; we record the list form here so the router can
+        # reconstruct the cascading chain.
+        chain = _normalise_capability_tier_chain(
+            spec_dict.get("capability_tier")
+        )
+        if chain:
+            capability_tier_chain_by_default_tier[tier] = chain
         # block_type left empty here; resolve() restamps with the
         # caller's block_type before handing the spec back.
-        defaults[tier] = _spec_from_dict(spec_dict, block_type="", tier=tier)
+        defaults[tier] = _project_capability_aware_spec(
+            spec_dict,
+            block_type="",
+            tier=tier,
+            capability_tiers=capability_tiers,
+        )
 
     blocks: Dict[str, Dict[str, BlockProviderSpec]] = {}
     escalate_map: Dict[str, bool] = {}
@@ -318,8 +375,18 @@ def _policy_from_dict(raw: Dict[str, Any]) -> BlockRoutingPolicy:
         for tier in ("outline", "rewrite"):
             spec_dict = entry.get(tier)
             if isinstance(spec_dict, dict):
-                per_tier[tier] = _spec_from_dict(
-                    spec_dict, block_type=block_type, tier=tier
+                chain = _normalise_capability_tier_chain(
+                    spec_dict.get("capability_tier")
+                )
+                if chain:
+                    capability_tier_chain_by_block_type[
+                        (block_type, tier)
+                    ] = chain
+                per_tier[tier] = _project_capability_aware_spec(
+                    spec_dict,
+                    block_type=block_type,
+                    tier=tier,
+                    capability_tiers=capability_tiers,
                 )
         if per_tier:
             blocks[block_type] = per_tier
@@ -346,7 +413,91 @@ def _policy_from_dict(raw: Dict[str, Any]) -> BlockRoutingPolicy:
         n_candidates_by_block_type=n_candidates_map,
         regen_budget_by_block_type=regen_budget_map,
         regen_budget_rewrite_by_block_type=regen_budget_rewrite_map,
+        capability_tiers=capability_tiers,
+        capability_tier_chain_by_block_type=capability_tier_chain_by_block_type,
+        capability_tier_chain_by_default_tier=capability_tier_chain_by_default_tier,
     )
+
+
+def _normalise_capability_tier_chain(value: Any) -> List[str]:
+    """Normalise a ``capability_tier`` value into an ordered chain list.
+
+    Accepts the schema's ``oneOf`` (string OR non-empty list of
+    strings). Returns ``[name]`` for the string form, the list itself
+    for the list form, and ``[]`` when the value is absent or
+    malformed (the projector falls back to the legacy spec path).
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        out: List[str] = []
+        for entry in value:
+            if isinstance(entry, str) and entry:
+                out.append(entry)
+        return out
+    return []
+
+
+def _project_capability_aware_spec(
+    spec_dict: Dict[str, Any],
+    *,
+    block_type: str,
+    tier: str,
+    capability_tiers: Dict[str, Dict[str, Any]],
+) -> BlockProviderSpec:
+    """Project a YAML spec dict into a :class:`BlockProviderSpec` honouring
+    the optional ``capability_tier`` reference.
+
+    When ``spec_dict["capability_tier"]`` is set:
+
+    1. Resolve the FIRST tier name in the chain via
+       ``capability_tiers[<name>]``. The first tier is the
+       starting-point spec the dispatch path uses; the router walks
+       the rest of the chain via
+       :meth:`CourseforgeRouter._resolve_capability_tier_chain` when
+       cascading-regen escalates.
+    2. Fail-loud (``ValueError``) when the named tier is absent — an
+       operator misconfig should not silently fall through to the
+       hardcoded defaults table.
+    3. Project the resolved tier dict into a :class:`BlockProviderSpec`.
+    4. Merge sibling fields in the original spec_dict (everything
+       except ``capability_tier``) over the resolved spec —
+       sibling-explicit wins over tier-default within the same YAML
+       entry.
+    5. Stamp ``capability_tier_name`` with the resolved tier name so
+       the audit trail records WHICH tier the dispatch fired against.
+
+    When ``capability_tier`` is absent, falls through to the legacy
+    :func:`_spec_from_dict` projector (back-compat).
+    """
+    chain = _normalise_capability_tier_chain(spec_dict.get("capability_tier"))
+    if not chain:
+        return _spec_from_dict(spec_dict, block_type=block_type, tier=tier)
+
+    first_tier_name = chain[0]
+    tier_spec = capability_tiers.get(first_tier_name)
+    if tier_spec is None:
+        raise ValueError(
+            f"capability_tier {first_tier_name!r} referenced by "
+            f"(block_type={block_type or '<default>'}, tier={tier!r}) "
+            f"is not declared under top-level capability_tiers; "
+            f"available={sorted(capability_tiers.keys())}"
+        )
+    # Build the resolved spec from the tier dict, then overlay any
+    # sibling fields the operator authored on the same YAML entry
+    # (sibling-explicit > tier-default within the same Spec). Drop
+    # ``capability_tier`` itself so it doesn't leak into the kwargs.
+    merged: Dict[str, Any] = dict(tier_spec)
+    for key, value in spec_dict.items():
+        if key == "capability_tier":
+            continue
+        merged[key] = value
+    spec = _spec_from_dict(merged, block_type=block_type, tier=tier)
+    # Stamp the operator-chosen label so the audit trail can introspect
+    # which tier the dispatch path resolved.
+    return dataclasses.replace(spec, capability_tier_name=first_tier_name)
 
 
 # ---------------------------------------------------------------------------
@@ -466,6 +617,14 @@ def _spec_from_dict(
     max_tokens = spec_dict.get(
         "max_tokens", 1200 if tier == "outline" else 2400
     )
+    # Optional per-tier-spec regen budget (consumed by the router's
+    # cascading-regen helper). ``None`` when the operator didn't
+    # specify one — the router falls back to
+    # ``resolved_budget // len(tier_chain)``.
+    regen_budget_value = spec_dict.get("regen_budget")
+    regen_budget_int: Optional[int] = None
+    if isinstance(regen_budget_value, int) and regen_budget_value > 0:
+        regen_budget_int = int(regen_budget_value)
     return BlockProviderSpec(
         block_type=block_type or "_default",
         tier=tier,
@@ -475,6 +634,7 @@ def _spec_from_dict(
         api_key_env=spec_dict.get("api_key_env"),
         temperature=float(temperature),
         max_tokens=int(max_tokens),
+        regen_budget=regen_budget_int,
     )
 
 

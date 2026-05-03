@@ -76,6 +76,7 @@
         "bert_ensemble_dispersion_high",
         "bert_ensemble_member_loaded",
         "bert_ensemble_replacement_selection",
+        "block_capability_escalation",
         "block_escalation",
         "block_outline_call",
         "block_rewrite_call",

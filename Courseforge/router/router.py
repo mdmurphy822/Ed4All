@@ -293,6 +293,22 @@ class BlockProviderSpec:
     max_tokens: int = 2400
     extra_payload: Dict[str, Any] = field(default_factory=dict)
     escalate_immediately: bool = False
+    # Operator-chosen capability-tier label that resolved to this spec
+    # (e.g. ``"small"`` / ``"medium"`` / ``"large"``). Set by the policy
+    # projector when a YAML entry references `capability_tier: <name>`;
+    # ``None`` when the spec was authored as a fully-explicit
+    # provider/model dict, or built from the env-var / hardcoded
+    # fallback layers. The router consumes this for decision-capture
+    # introspection (``block_capability_escalation`` events) so a
+    # postmortem reader can reconstruct WHICH tier the dispatch fired
+    # against without re-walking the YAML.
+    capability_tier_name: Optional[str] = None
+    # Optional per-tier-spec regen budget consumed by
+    # ``CourseforgeRouter._tier_sub_budget`` when this spec is part of
+    # a capability_tier chain. ``None`` means "use the default
+    # ``resolved_budget // len(tier_chain)``"; when set, this value
+    # wins for the matching tier entry only.
+    regen_budget: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.tier not in _ALLOWED_TIERS:
@@ -1110,6 +1126,30 @@ class CourseforgeRouter:
                 **overrides,
             )
 
+        # 2a. Resolve the capability-tier chain. When the policy
+        # carries a list-form ``capability_tier`` for this (block_type,
+        # tier), the chain has length ≥ 2 and the loop walks it on
+        # per-tier sub-budget exhaustion. Otherwise the chain is the
+        # single-element fallback (legacy behaviour, no escalation).
+        # Per-call overrides collapse the chain to length 1
+        # (operator-explicit > tier escalation).
+        tier_chain: List[BlockProviderSpec] = (
+            self._resolve_capability_tier_chain(
+                block, "outline", **overrides
+            )
+        )
+        # When the policy supplied a chain, prefer the projected first
+        # element as the dispatch spec (it carries the operator-chosen
+        # ``capability_tier_name`` for the audit trail). The
+        # ``escalate_immediately`` short-circuit above already ran
+        # against the spec resolved from the legacy path; the chain's
+        # first spec is functionally equivalent for dispatch but
+        # carries the tier-name label.
+        if tier_chain and getattr(
+            tier_chain[0], "capability_tier_name", None
+        ):
+            spec = tier_chain[0]
+
         # 3a. Resolve the regen_budget per the precedence chain (Subtask 41).
         # When the budget is exhausted mid-loop the candidate is stamped
         # with ``escalation_marker="outline_budget_exhausted"`` and the
@@ -1156,14 +1196,52 @@ class CourseforgeRouter:
         # went wrong on the previous attempt and the directive to fix it.
         remediation_suffix: Optional[str] = None
 
+        # Capability-tier chain bookkeeping. ``tier_index`` walks the
+        # chain on per-tier sub-budget exhaustion; ``tier_attempts``
+        # accumulates against the current tier's sub-budget only (it
+        # resets to 0 after each successful escalation so the higher
+        # tier gets its own sub-budget allowance).
+        tier_index = 0
+        tier_attempts = 0
+        # Per-tier sub-budget; recomputed after each successful
+        # escalation. ``len(tier_chain) == 1`` collapses this back to
+        # the resolved total budget, preserving legacy behaviour.
+        tier_sub_budget = self._tier_sub_budget(
+            tier_chain, tier_index, resolved_budget=resolved_budget
+        )
+
         for i in range(resolved_n):
+            # Build the per-iteration overrides dict so a mid-loop tier
+            # flip points the next dispatch at the higher-capability
+            # spec without touching the operator's per-call kwargs.
+            # When ``len(tier_chain) == 1`` this dict is functionally
+            # a no-op (the route() resolver returns the same spec).
+            iteration_overrides: Dict[str, Any] = dict(overrides)
+            if 0 <= tier_index < len(tier_chain):
+                current_tier_spec = tier_chain[tier_index]
+                iteration_overrides.setdefault(
+                    "provider", current_tier_spec.provider
+                )
+                iteration_overrides.setdefault(
+                    "model", current_tier_spec.model
+                )
+                if current_tier_spec.base_url is not None:
+                    iteration_overrides.setdefault(
+                        "base_url", current_tier_spec.base_url
+                    )
+                iteration_overrides.setdefault(
+                    "temperature", current_tier_spec.temperature
+                )
+                iteration_overrides.setdefault(
+                    "max_tokens", current_tier_spec.max_tokens
+                )
             candidate = self.route(
                 block,
                 tier="outline",
                 source_chunks=source_chunks,
                 objectives=objectives,
                 remediation_suffix=remediation_suffix,
-                **overrides,
+                **iteration_overrides,
             )
             last_candidate = candidate
 
@@ -1322,16 +1400,70 @@ class CourseforgeRouter:
             # ``derive_default_action`` collapse is a back-compat
             # bridge, not a structural-failure signal.
             cumulative_attempts += 1
+            tier_attempts += 1
             last_candidate = dataclasses.replace(
                 last_candidate,
                 validation_attempts=cumulative_attempts,
             )
 
+            # Capability-tier escalation: when the per-tier sub-budget
+            # exhausts and the chain carries another tier, swap to the
+            # next-higher-capability spec instead of stamping the
+            # terminal escalation marker. Emits one
+            # ``block_capability_escalation`` decision-capture event
+            # per transition so the audit trail records WHICH tier
+            # produced WHICH compute spend.
+            if (
+                tier_attempts >= tier_sub_budget
+                and tier_index + 1 < len(tier_chain)
+            ):
+                from_tier_name = getattr(
+                    tier_chain[tier_index], "capability_tier_name", None
+                )
+                tier_index += 1
+                to_tier_name = getattr(
+                    tier_chain[tier_index], "capability_tier_name", None
+                )
+                self._emit_block_capability_escalation(
+                    last_candidate,
+                    from_tier=from_tier_name,
+                    to_tier=to_tier_name,
+                    attempts=tier_attempts,
+                    last_validator_error=(
+                        self._last_validator_error_text(gate_results)
+                    ),
+                )
+                # Reset tier_attempts so the higher tier gets its own
+                # sub-budget allowance. Recompute tier_sub_budget
+                # against the new tier index (operators can dial up the
+                # large-tier budget via the per-tier-spec
+                # ``regen_budget`` field).
+                tier_attempts = 0
+                tier_sub_budget = self._tier_sub_budget(
+                    tier_chain,
+                    tier_index,
+                    resolved_budget=resolved_budget,
+                )
+                # Build the remediation suffix for the next iteration —
+                # done below via the same _append_remediation_for_gates
+                # path the legacy single-tier loop uses.
+                from Courseforge.router.remediation import (  # noqa: PLC0415
+                    _append_remediation_for_gates,
+                )
+                built_suffix = _append_remediation_for_gates("", gate_results)
+                remediation_suffix = (
+                    built_suffix.lstrip("\n") if built_suffix else None
+                )
+                continue
+
             # Subtask 41: regen-budget check. When the bumped count meets
             # or exceeds the resolved budget, stamp the canonical
             # ``outline_budget_exhausted`` marker and break early.
             # ``Block.__post_init__`` validates the marker against the
-            # canonical ``_ESCALATION_MARKERS`` set.
+            # canonical ``_ESCALATION_MARKERS`` set. The capability
+            # chain is exhausted at this point (either the chain has
+            # length 1, or the highest-capability tier still couldn't
+            # converge).
             if cumulative_attempts >= resolved_budget:
                 escalated = dataclasses.replace(
                     last_candidate,
@@ -1473,6 +1605,20 @@ class CourseforgeRouter:
         # short-circuit — that's an outline-tier-only flag).
         spec = self._resolve_spec(block, "rewrite", **overrides)
 
+        # 2a. Resolve the rewrite-tier capability chain. List-form
+        # ``capability_tier`` enables cascading-regen at higher
+        # capability symmetric with the outline-tier seam. Single-element
+        # chain preserves legacy behaviour.
+        tier_chain: List[BlockProviderSpec] = (
+            self._resolve_capability_tier_chain(
+                block, "rewrite", **overrides
+            )
+        )
+        if tier_chain and getattr(
+            tier_chain[0], "capability_tier_name", None
+        ):
+            spec = tier_chain[0]
+
         # 3. Resolve the rewrite-tier regen budget per the Subtask 20
         # precedence chain.
         resolved_budget = self._resolve_rewrite_regen_budget(block, regen_budget)
@@ -1486,14 +1632,41 @@ class CourseforgeRouter:
         cumulative_attempts = block.validation_attempts
         remediation_suffix: Optional[str] = None
 
+        # Capability-tier chain bookkeeping (mirrors the outline-tier
+        # loop in :meth:`route_with_self_consistency`).
+        tier_index = 0
+        tier_attempts = 0
+        tier_sub_budget = self._tier_sub_budget(
+            tier_chain, tier_index, resolved_budget=resolved_budget
+        )
+
         for i in range(resolved_n):
+            iteration_overrides: Dict[str, Any] = dict(overrides)
+            if 0 <= tier_index < len(tier_chain):
+                current_tier_spec = tier_chain[tier_index]
+                iteration_overrides.setdefault(
+                    "provider", current_tier_spec.provider
+                )
+                iteration_overrides.setdefault(
+                    "model", current_tier_spec.model
+                )
+                if current_tier_spec.base_url is not None:
+                    iteration_overrides.setdefault(
+                        "base_url", current_tier_spec.base_url
+                    )
+                iteration_overrides.setdefault(
+                    "temperature", current_tier_spec.temperature
+                )
+                iteration_overrides.setdefault(
+                    "max_tokens", current_tier_spec.max_tokens
+                )
             candidate = self.route(
                 block,
                 tier="rewrite",
                 source_chunks=source_chunks,
                 objectives=objectives,
                 remediation_suffix=remediation_suffix,
-                **overrides,
+                **iteration_overrides,
             )
             last_candidate = candidate
 
@@ -1590,13 +1763,55 @@ class CourseforgeRouter:
             # bump the cumulative validation_attempts accumulator and
             # build the remediation suffix for the next iteration.
             cumulative_attempts += 1
+            tier_attempts += 1
             last_candidate = dataclasses.replace(
                 last_candidate,
                 validation_attempts=cumulative_attempts,
             )
 
+            # Capability-tier escalation: same pattern as the outline-
+            # tier loop. When the per-tier sub-budget exhausts and the
+            # rewrite-tier chain carries another tier, swap to the
+            # higher-capability spec rather than stamping the terminal
+            # consensus-fail marker.
+            if (
+                tier_attempts >= tier_sub_budget
+                and tier_index + 1 < len(tier_chain)
+            ):
+                from_tier_name = getattr(
+                    tier_chain[tier_index], "capability_tier_name", None
+                )
+                tier_index += 1
+                to_tier_name = getattr(
+                    tier_chain[tier_index], "capability_tier_name", None
+                )
+                self._emit_block_capability_escalation(
+                    last_candidate,
+                    from_tier=from_tier_name,
+                    to_tier=to_tier_name,
+                    attempts=tier_attempts,
+                    last_validator_error=(
+                        self._last_validator_error_text(gate_results)
+                    ),
+                )
+                tier_attempts = 0
+                tier_sub_budget = self._tier_sub_budget(
+                    tier_chain,
+                    tier_index,
+                    resolved_budget=resolved_budget,
+                )
+                from Courseforge.router.remediation import (  # noqa: PLC0415
+                    _append_remediation_for_gates,
+                )
+                built_suffix = _append_remediation_for_gates("", gate_results)
+                remediation_suffix = (
+                    built_suffix.lstrip("\n") if built_suffix else None
+                )
+                continue
+
             # Budget check — when exhausted, stamp the rewrite-side
             # symmetric ``validator_consensus_fail`` marker and break.
+            # The capability chain is exhausted at this point.
             if cumulative_attempts >= resolved_budget:
                 escalated = dataclasses.replace(
                     last_candidate,
@@ -1899,6 +2114,237 @@ class CourseforgeRouter:
 
         # 4. Hardcoded default.
         return _DEFAULT_REWRITE_REGEN_BUDGET
+
+    # ------------------------------------------------------------------
+    # Capability-tier chain resolution (cascading-regen at higher capability)
+    # ------------------------------------------------------------------
+
+    def _resolve_capability_tier_chain(
+        self,
+        block: Block,
+        tier: str,
+        **overrides: Any,
+    ) -> List[BlockProviderSpec]:
+        """Resolve a per-block ``(block_type, tier)`` capability chain.
+
+        Returns an ordered list of :class:`BlockProviderSpec` instances;
+        length is always ≥ 1. The first element is the dispatch path's
+        starting-point spec (identical to what :meth:`_resolve_spec`
+        returns); subsequent elements (when present) are the
+        higher-capability tiers the cascading-regen loop escalates to
+        on per-tier sub-budget exhaustion.
+
+        Resolution priority (mirrors :meth:`_resolve_spec`):
+
+        1. Per-call ``**overrides`` — when set, the chain collapses to
+           a single-element list (operator-explicit > tier escalation).
+        2. ``self._policy.capability_tier_chain_by_block_type[(block_type, tier)]``
+           — operator-supplied per-block-type chain. Tier names resolve
+           through ``self._policy.capability_tiers`` to full spec dicts;
+           each is projected into a :class:`BlockProviderSpec`.
+        3. ``self._policy.capability_tier_chain_by_default_tier[tier]``
+           — operator-supplied tier-default chain.
+        4. ``[self._resolve_spec(block, tier)]`` — single-element
+           fallback chain (legacy behaviour, no escalation).
+
+        Per-call kwargs win outright (length-1 chain) so a test or
+        operator that pinned a specific provider/model on the route call
+        never sees mid-loop tier flips.
+        """
+        if overrides:
+            return [self._resolve_spec(block, tier, **overrides)]
+
+        policy = self._policy
+        if policy is not None:
+            # 2. Per-block-type chain.
+            chain_map = getattr(
+                policy, "capability_tier_chain_by_block_type", None
+            )
+            if isinstance(chain_map, dict):
+                chain = chain_map.get((block.block_type, tier))
+                if chain:
+                    return self._project_chain_to_specs(
+                        chain, block=block, tier=tier
+                    )
+
+            # 3. Tier-default chain.
+            default_chain_map = getattr(
+                policy, "capability_tier_chain_by_default_tier", None
+            )
+            if isinstance(default_chain_map, dict):
+                chain = default_chain_map.get(tier)
+                if chain:
+                    return self._project_chain_to_specs(
+                        chain, block=block, tier=tier
+                    )
+
+        # 4. Single-element fallback (legacy behaviour).
+        return [self._resolve_spec(block, tier)]
+
+    def _project_chain_to_specs(
+        self,
+        chain: List[str],
+        *,
+        block: Block,
+        tier: str,
+    ) -> List[BlockProviderSpec]:
+        """Project an ordered list of capability-tier names into specs.
+
+        Reads ``self._policy.capability_tiers[<name>]`` for each entry,
+        applies the env-var-first override on the model field where
+        appropriate, and projects the merged dict into a
+        :class:`BlockProviderSpec` with ``capability_tier_name`` stamped.
+        Fail-loud on a missing tier name (mirrors the policy projector).
+        """
+        policy = self._policy
+        capability_tiers: Dict[str, Dict[str, Any]] = (
+            getattr(policy, "capability_tiers", {}) or {}
+        )
+        # Lazy-import to avoid a circular import at module load time.
+        from Courseforge.router.policy import _spec_from_dict  # noqa: PLC0415
+
+        out: List[BlockProviderSpec] = []
+        for tier_name in chain:
+            tier_spec = capability_tiers.get(tier_name)
+            if tier_spec is None:
+                raise ValueError(
+                    f"capability_tier {tier_name!r} referenced for "
+                    f"(block_type={block.block_type!r}, tier={tier!r}) "
+                    f"is not declared under policy.capability_tiers; "
+                    f"available={sorted(capability_tiers.keys())}"
+                )
+            spec = _spec_from_dict(
+                dict(tier_spec), block_type=block.block_type, tier=tier
+            )
+            # Stamp the operator-chosen label so the dispatch path's
+            # decision-capture rationale records WHICH tier produced
+            # the emit.
+            out.append(
+                dataclasses.replace(spec, capability_tier_name=tier_name)
+            )
+        return out
+
+    @staticmethod
+    def _tier_sub_budget(
+        tier_chain: List[BlockProviderSpec],
+        tier_index: int,
+        *,
+        resolved_budget: int,
+    ) -> int:
+        """Compute the per-tier sub-budget for the chain at ``tier_index``.
+
+        Default policy: distribute the resolved total budget evenly
+        across the chain (``resolved_budget // len(tier_chain)``, floor
+        1). When a tier spec carries an explicit ``regen_budget`` field,
+        that value wins for the matching tier — operators can dial up
+        the small-tier budget and dial down the large-tier budget (or
+        vice-versa) per their corpus's calibration.
+        """
+        if not tier_chain:
+            return max(1, int(resolved_budget))
+        length = max(1, len(tier_chain))
+        spec = (
+            tier_chain[tier_index]
+            if 0 <= tier_index < length
+            else tier_chain[-1]
+        )
+        explicit = getattr(spec, "regen_budget", None)
+        if isinstance(explicit, int) and explicit > 0:
+            return explicit
+        default_budget = resolved_budget // length
+        return max(1, default_budget)
+
+    def _emit_block_capability_escalation(
+        self,
+        block: Block,
+        *,
+        from_tier: Optional[str],
+        to_tier: Optional[str],
+        attempts: int,
+        last_validator_error: Optional[str] = None,
+    ) -> None:
+        """Emit one ``block_capability_escalation`` decision-capture event.
+
+        Fires from :meth:`route_with_self_consistency` /
+        :meth:`route_rewrite_with_remediation` when a per-tier
+        sub-budget exhausts and the loop escalates to the next tier in
+        the operator-supplied capability chain. Distinct from
+        :meth:`_emit_block_escalation` (terminal escalation; whole
+        chain exhausted) — the capability event records mid-loop
+        tier transitions so a postmortem can reconstruct the per-tier
+        compute-spend distribution.
+
+        Per the project's LLM call-site instrumentation contract
+        (root ``CLAUDE.md`` § "LLM call-site instrumentation"), the
+        rationale interpolates the dynamic signals (``block_id``,
+        ``from_tier``, ``to_tier``, ``attempts``, ``last_validator_error``)
+        and is ≥20 chars without boilerplate. Capture errors are
+        swallowed so a flaky capture handle never breaks the dispatch.
+        """
+        if self._capture is None:
+            return
+        rationale_parts = [
+            f"Block {block.block_id} (block_type={block.block_type}) "
+            f"escalated capability tier from {from_tier!r} to "
+            f"{to_tier!r} after {attempts} validator-rejected "
+            f"attempts at the lower tier"
+        ]
+        if last_validator_error:
+            rationale_parts.append(
+                f"; last_validator_error={str(last_validator_error)[:120]}"
+            )
+        rationale_parts.append(
+            ". The lower-tier sub-budget exhausted; the next tier in "
+            "the operator-supplied capability chain takes over for "
+            "the remaining iterations of the regen loop."
+        )
+        ml_features: Dict[str, Any] = {
+            "block_id": block.block_id,
+            "block_type": block.block_type,
+            "from_tier": from_tier,
+            "to_tier": to_tier,
+            "attempts": attempts,
+            "last_validator_error": last_validator_error,
+        }
+        try:
+            self._capture.log_decision(
+                decision_type="block_capability_escalation",
+                decision=(
+                    f"capability_escalation:{block.block_type}:"
+                    f"{block.block_id}:{from_tier}->{to_tier}"
+                ),
+                rationale="".join(rationale_parts),
+                ml_features=ml_features,
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning(
+                "router block_capability_escalation decision-capture "
+                "emit failed: %s", exc
+            )
+
+    @staticmethod
+    def _last_validator_error_text(gate_results: List[Any]) -> Optional[str]:
+        """Pull a short human-readable error string from the most-recent
+        non-passing gate result. ``None`` when no failures or no
+        messages.
+        """
+        for gate_result in reversed(gate_results):
+            passed = getattr(gate_result, "passed", True)
+            if passed:
+                continue
+            issues = getattr(gate_result, "issues", None) or []
+            for issue in issues:
+                message = (
+                    getattr(issue, "message", None)
+                    if not isinstance(issue, dict)
+                    else issue.get("message")
+                )
+                if message:
+                    return str(message)[:200]
+            gate_id = getattr(gate_result, "gate_id", None)
+            if gate_id:
+                return f"gate_failed:{gate_id}"
+        return None
 
     def _run_validator_chain(
         self,
@@ -2474,6 +2920,8 @@ class CourseforgeRouter:
             "max_tokens",
             "extra_payload",
             "escalate_immediately",
+            "capability_tier_name",
+            "regen_budget",
         }
         clean: Dict[str, Any] = {
             k: v for k, v in overrides.items() if k in allowed and v is not None
