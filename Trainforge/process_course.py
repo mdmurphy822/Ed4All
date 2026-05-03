@@ -47,18 +47,39 @@ from lib.decision_capture import DecisionCapture
 from lib.ontology.slugs import canonical_slug
 from Trainforge.generators import summary_factory
 from Trainforge.parsers.html_content_parser import HTMLContentParser, HTMLTextExtractor
-from Trainforge.parsers.xpath_walker import (
-    find_body_xpath,
-    find_section_container_xpath,
-    resolve_xpath,
-)
+# Phase 7a Subtask 6: xpath helpers (find_body_xpath, find_section_container_xpath,
+# resolve_xpath) moved into ``ed4all_chunker.chunker.chunk_text_block`` (lazy
+# import inside the package — see the package module docstring's "Lazy imports"
+# section). Removed from this module's import block since the in-process
+# ``_chunk_text_block`` body no longer references them directly.
 from Trainforge.rag.boilerplate_detector import (
     BoilerplateConfig,
     contamination_rate,
     detect_repeated_ngrams,
-    strip_boilerplate,
 )
 from Trainforge.rag.wcag_canonical_names import canonicalize_sc_references
+
+# Phase 7a Subtask 6: chunker logic (chunk_content, chunk_text_block,
+# merge_small_sections, merge_section_source_ids) lives in the
+# ed4all-chunker package. The CourseProcessor methods below are thin
+# delegation wrappers that bind self-state into the package's
+# ``ChunkerContext`` callback. Constants (MIN_CHUNK_SIZE / MAX_CHUNK_SIZE /
+# TARGET_CHUNK_SIZE / CANONICAL_CHUNK_TYPES) are sourced from the package
+# so the package + Trainforge can never drift; the module-level + class-
+# attribute aliases are preserved for back-compat with external imports
+# (e.g. scripts/wave81_reclassify_chunks.py imports CANONICAL_CHUNK_TYPES
+# from this module).
+from ed4all_chunker import (
+    CANONICAL_CHUNK_TYPES as _PKG_CANONICAL_CHUNK_TYPES,
+    MAX_CHUNK_SIZE as _PKG_MAX_CHUNK_SIZE,
+    MIN_CHUNK_SIZE as _PKG_MIN_CHUNK_SIZE,
+    TARGET_CHUNK_SIZE as _PKG_TARGET_CHUNK_SIZE,
+    ChunkerContext as _ChunkerContext,
+    chunk_content as _pkg_chunk_content,
+    chunk_text_block as _pkg_chunk_text_block,
+    merge_section_source_ids as _pkg_merge_section_source_ids,
+    merge_small_sections as _pkg_merge_small_sections,
+)
 
 # Bumped whenever the semantics of quality_report.json metrics change.
 # v1: field-presence metrics (legacy).
@@ -100,18 +121,12 @@ CHUNK_SCHEMA_VERSION = "v4"
 # heuristic so off-spec corpora can't break downstream consumers that key off
 # chunk_type. Source of truth:
 # ``schemas/taxonomies/content_type.json::ChunkType``.
-CANONICAL_CHUNK_TYPES = frozenset({
-    "assessment_item",
-    "overview",
-    "summary",
-    "exercise",
-    "explanation",
-    "example",
-    "procedure",
-    "real_world_scenario",
-    "common_pitfall",
-    "problem_solution",
-})
+#
+# Phase 7a Subtask 6: lifted into the ed4all-chunker package
+# (``ed4all_chunker.chunker.CANONICAL_CHUNK_TYPES``). Re-exported here so
+# external importers (``scripts/wave81_reclassify_chunks.py``) keep
+# working without modification.
+CANONICAL_CHUNK_TYPES = _PKG_CANONICAL_CHUNK_TYPES
 
 
 # Worker N (REC-ID-01): opt-in content-hash chunk IDs. When
@@ -982,9 +997,14 @@ def _route_misconception_to_tag(
 class CourseProcessor:
     """Generic processor that turns a Courseforge IMSCC into a Trainforge corpus."""
 
-    TARGET_CHUNK_SIZE = 500
-    MIN_CHUNK_SIZE = 100  # Courseforge pages can be short (overviews, summaries)
-    MAX_CHUNK_SIZE = 800
+    # Phase 7a Subtask 6: chunk-size constants are sourced from the
+    # ed4all-chunker package so the package + Trainforge can never drift.
+    # The class-attribute aliases stay so existing call sites that read
+    # ``self.MIN_CHUNK_SIZE`` / ``self.MAX_CHUNK_SIZE`` /
+    # ``self.TARGET_CHUNK_SIZE`` keep working unchanged.
+    TARGET_CHUNK_SIZE = _PKG_TARGET_CHUNK_SIZE
+    MIN_CHUNK_SIZE = _PKG_MIN_CHUNK_SIZE  # Courseforge pages can be short (overviews, summaries)
+    MAX_CHUNK_SIZE = _PKG_MAX_CHUNK_SIZE
 
     def __init__(
         self,
@@ -1460,109 +1480,37 @@ class CourseProcessor:
     # ------------------------------------------------------------------
 
     def _chunk_content(self, parsed_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        chunks: List[Dict[str, Any]] = []
-        chunk_counter = 1
-        prefix = f"{self.course_code.lower()}_chunk_"
-        prev_chunk_id: Optional[str] = None
-        current_module_id: Optional[str] = None
-        current_lesson_id: Optional[str] = None
-        position_in_module = 0
+        """Chunk parsed IMSCC items into a list of chunk dicts.
 
-        # Record which pages (by lesson_id = item["item_id"]) carried at least
-        # one misconception in their parsed JSON-LD. This is the proper
-        # denominator for misconceptions_present_rate: without it, pages that
-        # never declared misconceptions in the first place dilute the
-        # "silently dropped" signal we want to surface in quality_report.
-        self._pages_with_misconceptions = {
-            item["item_id"]
-            for item in parsed_items
-            if item.get("misconceptions")
-        }
+        Phase 7a Subtask 6: canonical chunker logic lives in
+        ``ed4all_chunker.chunker.chunk_content``. This wrapper:
 
-        for item in parsed_items:
-            # Reset position counter when module changes
-            if item["module_id"] != current_module_id:
-                current_module_id = item["module_id"]
-                position_in_module = 0
+        - Binds ``self._create_chunk`` as the package's per-chunk
+          materialisation callback (the dependency boundary documented
+          in the package module docstring — ``_create_chunk`` reads
+          ``self.capture``, ``self._lo_parent_map``, ``self.OBJECTIVE_CODE_RE``,
+          etc., so it stays on this class).
+        - Restores the side channels the package returns:
+          ``self._pages_with_misconceptions`` (denominator for
+          ``misconceptions_present_rate`` in ``quality_report.json``)
+          and ``self.stats["total_chunks"]``.
+        - Preserves the legacy ``"  Generated N chunks"`` console line
+          for parity with operator-visible logs.
+        """
 
-            # Break the follows_chunk chain at every lesson/module boundary so
-            # downstream consumers can treat each lesson as its own pedagogical
-            # sequence (see VERSIONING.md §3, defect #3).
-            if item["item_id"] != current_lesson_id:
-                current_lesson_id = item["item_id"]
-                prev_chunk_id = None
-
-            # Strip assessment feedback from quiz/self-check content
-            raw_html = item["raw_html"]
-            if item["resource_type"] == "quiz":
-                raw_html = self._strip_assessment_feedback(raw_html)
-
-            # Defensive boilerplate strip: even if Courseforge emits the footer
-            # inside template-chrome, legacy packages may still embed it in body.
-            if self._boilerplate_spans:
-                raw_html, _ = strip_boilerplate(raw_html, self._boilerplate_spans)
-
-            if not item["sections"]:
-                # No sections — chunk the whole item as one piece
-                text = self._extract_plain_text(raw_html)
-                if item["resource_type"] == "quiz":
-                    text = self._strip_feedback_from_text(text)
-                if text.strip():
-                    item_chunks = self._chunk_text_block(
-                        text=text,
-                        html=raw_html,
-                        item=item,
-                        heading=item["title"],
-                        chunk_type=self._type_from_resource(item["resource_type"]),
-                        prefix=prefix,
-                        start_id=chunk_counter,
-                        follows_chunk_id=prev_chunk_id,
-                        position_in_module=position_in_module,
-                    )
-                    chunks.extend(item_chunks)
-                    chunk_counter += len(item_chunks)
-                    if item_chunks:
-                        prev_chunk_id = item_chunks[-1]["id"]
-                        position_in_module += len(item_chunks)
-                continue
-
-            # Merge adjacent small sections into larger pedagogical units
-            merged = self._merge_small_sections(item["sections"])
-
-            for heading, text, chunk_type, section_source_ids, merged_headings in merged:
-                if not text.strip():
-                    continue
-                # Strip feedback from quiz section text (sections were parsed before HTML stripping)
-                if item["resource_type"] == "quiz":
-                    text = self._strip_feedback_from_text(text)
-                # Sections were parsed before boilerplate detection, so strip here too.
-                if self._boilerplate_spans:
-                    text, _ = strip_boilerplate(text, self._boilerplate_spans)
-                if not text.strip():
-                    continue
-                html_block = self._extract_section_html(raw_html, heading)
-                item_chunks = self._chunk_text_block(
-                    text=text,
-                    html=html_block,
-                    item=item,
-                    heading=heading,
-                    chunk_type=chunk_type,
-                    prefix=prefix,
-                    start_id=chunk_counter,
-                    follows_chunk_id=prev_chunk_id,
-                    position_in_module=position_in_module,
-                    section_source_ids=section_source_ids,
-                    merged_headings=merged_headings,
-                )
-                chunks.extend(item_chunks)
-                chunk_counter += len(item_chunks)
-                if item_chunks:
-                    prev_chunk_id = item_chunks[-1]["id"]
-                    position_in_module += len(item_chunks)
-
-        self.stats["total_chunks"] = len(chunks)
-        print(f"  Generated {len(chunks)} chunks")
-        return chunks
+        result = _pkg_chunk_content(
+            parsed_items,
+            self.course_code,
+            self._boilerplate_spans,
+            min_chunk_size=self.MIN_CHUNK_SIZE,
+            max_chunk_size=self.MAX_CHUNK_SIZE,
+            target_chunk_size=self.TARGET_CHUNK_SIZE,
+            ctx=_ChunkerContext(create_chunk=self._create_chunk),
+        )
+        self._pages_with_misconceptions = result.pages_with_misconceptions
+        self.stats["total_chunks"] = len(result.chunks)
+        print(f"  Generated {len(result.chunks)} chunks")
+        return result.chunks
 
     # Wave 10: role-precedence ranking for merging source_references across
     # multiple sections that collapse into one chunk. Lower integer = stronger
@@ -1574,127 +1522,42 @@ class CourseProcessor:
     ) -> List[str]:
         """Union two sourceId-string lists, dedupe, preserve insertion order.
 
-        Used while collapsing multiple sections into one chunk. The chunk's
-        aggregate source_references[] must contain every distinct sourceId
-        from every merged section; role-precedence is enforced downstream in
-        ``_resolve_chunk_source_references`` when the strings are paired
-        with their full SourceReference dicts.
+        Phase 7a Subtask 6: canonical implementation lives in
+        ``ed4all_chunker.chunker.merge_section_source_ids``. Wrapper
+        preserves the bound-method surface for any external callers
+        (the package function is pure — no ``self`` reference).
         """
-        seen = {sid for sid in accumulated}
-        for sid in section_source_ids:
-            if sid and sid not in seen:
-                seen.add(sid)
-                accumulated.append(sid)
-        return accumulated
+
+        return _pkg_merge_section_source_ids(accumulated, section_source_ids)
 
     def _merge_small_sections(
         self, sections
     ) -> List[Tuple[str, str, str, List[str]]]:
-        """
-        Merge adjacent sections that are below MIN_CHUNK_SIZE into combined blocks.
+        """Merge adjacent sections that are below MIN_CHUNK_SIZE into combined blocks.
+
+        Phase 7a Subtask 6: canonical implementation lives in
+        ``ed4all_chunker.chunker.merge_small_sections``. Wrapper
+        preserves the bound-method surface for direct test callers
+        (``Trainforge/tests/test_merge_small_sections_zero_word.py`` invokes
+        ``proc._merge_small_sections(sections)``). The package function
+        is duck-typed on ``section.heading`` / ``.content`` /
+        ``.word_count`` / ``.source_references`` / ``.template_type`` so
+        it works against ``ContentSection`` (Trainforge) or any future
+        section-like model. The package's default heading-classifier is
+        byte-identical to ``CourseProcessor._type_from_heading`` so we
+        let it use its own (no need to thread ``self._type_from_heading``).
 
         Returns list of (heading, combined_text, chunk_type,
-        merged_source_ids, merged_headings) tuples. ``merged_source_ids``
-        is the union of every section's ``data-cf-source-ids`` attribute
-        (stringified) across all sections that collapsed into the same
-        chunk (Wave 10); dedupe + insertion-order preserved so downstream
-        role-precedence resolution stays deterministic.
-
-        Wave 84 (Bug 1 fix): ``merged_headings`` is the ordered list of
-        every section heading that collapsed into the buffer. Threaded
-        through so JSON-LD section-metadata lookup (``_extract_section_metadata``,
-        ``_resolve_chunk_source_references``) can match against ANY of
-        the merged headings, not just the buffer's anchor heading. The
-        merger picks the FIRST section as the buffer's heading, so post-
-        merge chunks whose JSON-LD entry is keyed off a sub-heading
-        previously fell through to ``none_heading_mismatch`` — 109/295
-        chunks (37%) on rdf-shacl-551-2 lost content_type_label and
-        key_terms because of this single mismatch.
-
-        Wave 81 (Worker A): when any section in a merge group carries
-        ``data-cf-template-type`` (propagated via
-        ``ContentSection.template_type``), the resulting chunk_type is taken
-        from that attribute (constrained to the canonical ChunkType enum)
-        instead of the heading-keyword heuristic. The first section's
-        template_type wins because Courseforge emits exactly one
-        ``<section data-cf-template-type=...>`` per page; merge groups
-        therefore inherit a single template label deterministically. Falls
-        back to the legacy ``_type_from_heading`` heuristic when no section
-        in the group carries a template label.
+        merged_source_ids, merged_headings) tuples. See the lifted
+        function's docstring for the full Wave-81 / Wave-83 / Wave-84
+        commentary on template-type / zero-word / merged-headings
+        propagation.
         """
-        merged: List[Tuple[str, str, str, List[str], List[str]]] = []
-        buffer_heading = ""
-        buffer_text = ""
-        buffer_wc = 0
-        buffer_type = "explanation"
-        buffer_template_type: Optional[str] = None
-        buffer_source_ids: List[str] = []
-        # Wave 84 (Bug 1 fix): track every heading that collapsed into the
-        # buffer so downstream metadata extraction can match against any.
-        buffer_headings: List[str] = []
-        # Wave 83 (Bug 1 fix): track buffer initialization explicitly rather
-        # than via ``buffer_wc == 0``. The legacy entry condition broke when
-        # a zero-word section (typically a Courseforge page-title ``<h1>``
-        # with no body before the first ``<h2>``) was first in the input —
-        # buffer_wc stayed 0 after assignment, so the next iteration
-        # re-entered the entry branch and silently REPLACED the buffer
-        # instead of merging into it. This dropped the h1 section, shifted
-        # all downstream merge anchors by one, and was the upstream cause
-        # of the rdf-shacl-551 audit's 203/295 unbalanced-section chunks.
-        buffer_started = False
 
-        def _resolve_buffer_type() -> str:
-            # Wave 81: prefer template_type when present and canonical.
-            if buffer_template_type and buffer_template_type in CANONICAL_CHUNK_TYPES:
-                return buffer_template_type
-            return buffer_type
-
-        for section in sections:
-            section_type = self._type_from_heading(section.heading)
-            section_src = list(getattr(section, "source_references", []) or [])
-            section_template = getattr(section, "template_type", None)
-
-            if not buffer_started:
-                # Start a new buffer (first iteration only, regardless of
-                # this section's word_count — fixes Wave 83 Bug 1).
-                buffer_heading = section.heading
-                buffer_text = section.content
-                buffer_wc = section.word_count
-                buffer_type = section_type
-                buffer_template_type = section_template
-                buffer_source_ids = list(section_src)
-                buffer_headings = [section.heading]
-                buffer_started = True
-            elif buffer_wc + section.word_count <= self.MAX_CHUNK_SIZE:
-                # Merge into buffer
-                buffer_text += "\n\n" + section.content
-                buffer_wc += section.word_count
-                # Keep the first heading but prefer non-trivial types
-                if buffer_type == "explanation" and section_type != "explanation":
-                    buffer_type = section_type
-                # Wave 81: first non-empty template_type wins; we don't
-                # overwrite once set so the merge group stays anchored to a
-                # single canonical template label.
-                if not buffer_template_type and section_template:
-                    buffer_template_type = section_template
-                self._merge_section_source_ids(buffer_source_ids, section_src)
-                buffer_headings.append(section.heading)
-            else:
-                # Flush buffer and start new
-                merged.append((buffer_heading, buffer_text, _resolve_buffer_type(), buffer_source_ids, list(buffer_headings)))
-                buffer_heading = section.heading
-                buffer_text = section.content
-                buffer_wc = section.word_count
-                buffer_type = section_type
-                buffer_template_type = section_template
-                buffer_source_ids = list(section_src)
-                buffer_headings = [section.heading]
-
-        # Flush remaining
-        if buffer_text.strip():
-            merged.append((buffer_heading, buffer_text, _resolve_buffer_type(), buffer_source_ids, list(buffer_headings)))
-
-        return merged
+        return _pkg_merge_small_sections(
+            sections,
+            max_chunk_size=self.MAX_CHUNK_SIZE,
+        )
 
     def _chunk_text_block(
         self, text: str, html: str, item: Dict[str, Any],
@@ -1704,121 +1567,39 @@ class CourseProcessor:
         section_source_ids: Optional[List[str]] = None,
         merged_headings: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
-        """Split a text block into chunks of appropriate size.
+        """Split a text block into one or more chunks (xpath/char-span provenance preserved).
 
-        Each chunk carries provenance:
-          - ``source.html_xpath``: absolute xpath to the container element
-            whose descendant plain-text includes this chunk's text. For
-            sectioned items this is the heading's parent (typically
-            ``<main>``, ``<article>``, ``<section>``, or ``<body>``); for
-            no-section items it is ``<body>`` itself.
-          - ``source.char_span: [start, end]``: character offsets into the
-            container's plain-text (the result of ``resolve_xpath``) where
-            ``chunk.text`` begins and ends. Offsets are computed by
-            ``str.find`` into the container text — the same path an
-            auditor walks during round-trip recovery. For sentence-split
-            blocks, sibling spans are disjoint and (modulo the single-
-            space sentence joiner) contiguous, so the section is
-            recoverable by concatenating slices in chunk-id order.
+        Phase 7a Subtask 6: canonical implementation lives in
+        ``ed4all_chunker.chunker.chunk_text_block``. Wrapper preserves
+        the bound-method surface so direct test callers
+        (``Trainforge/tests/test_provenance.py`` invokes
+        ``proc._chunk_text_block(...)`` to drive the splitter) keep
+        working unchanged. The package function dispatches each emit to
+        ``ctx.create_chunk`` which we bind to ``self._create_chunk`` so
+        the materialised chunks carry the full Trainforge metadata
+        surface (concept_tags, objective_refs, bloom_level, etc.) the
+        callback resolves from ``self``-state.
 
-        See docs/compliance/audit-trail.md for the round-trip contract.
+        See docs/compliance/audit-trail.md for the round-trip contract
+        on ``source.html_xpath`` / ``source.char_span``.
         """
-        word_count = len(text.split())
-        chunks: List[Dict[str, Any]] = []
 
-        # Resolve the container xpath once per call. Heading's parent for
-        # sectioned items (so descendant text includes the section body);
-        # <body> for whole-page items.
-        raw_html_for_xpath = item.get("raw_html", "") or html
-        container_xpath: Optional[str] = None
-        if heading and heading != item.get("title"):
-            container_xpath = find_section_container_xpath(raw_html_for_xpath, heading)
-        if not container_xpath:
-            container_xpath = find_body_xpath(raw_html_for_xpath)
-
-        # Resolve the container's plaintext once so we can compute char_span
-        # by string search (the auditor's round-trip path).
-        container_text = resolve_xpath(raw_html_for_xpath, container_xpath) or ""
-
-        def _locate(needle: str, search_from: int = 0) -> List[int]:
-            """Return [start, end] of ``needle`` in the container text.
-
-            Falls back to a whitespace-normalised prefix search when the
-            exact find fails (typical drift: SC canonicalisation, feedback
-            strip). Never silently drops the provenance — if no anchor can
-            be located at all, emit ``[search_from, search_from + len]``
-            relative to the container text so sibling spans stay
-            non-decreasing.
-            """
-            if container_text and needle:
-                idx = container_text.find(needle, search_from)
-                if idx >= 0:
-                    return [idx, idx + len(needle)]
-                # Whitespace-normalised prefix fallback: find the first
-                # 8-word window of the needle in the collapsed container.
-                collapsed_container = " ".join(container_text.split())
-                collapsed_needle = " ".join(needle.split())
-                prefix = " ".join(collapsed_needle.split()[:8])
-                if prefix:
-                    idx = collapsed_container.find(prefix, search_from)
-                    if idx >= 0:
-                        return [idx, idx + len(collapsed_needle)]
-            return [search_from, search_from + len(needle)]
-
-        # Worker N (REC-ID-01): resolve a stable per-source locator for
-        # content-hash IDs. ``item_path`` is the IMSCC-relative HTML file
-        # path and is stable across re-runs; fall back to module/lesson
-        # composite if a parser variant ever omits it.
-        source_locator = item.get("item_path") or f"{item['module_id']}/{item['item_id']}"
-
-        if word_count <= self.MAX_CHUNK_SIZE:
-            # Fits in one chunk.
-            char_span = _locate(text, search_from=0)
-            chunks.append(self._create_chunk(
-                chunk_id=_generate_chunk_id(prefix, start_id, text, source_locator),
-                text=text, html=html, item=item,
-                section_heading=heading, chunk_type=chunk_type,
-                follows_chunk_id=follows_chunk_id,
-                position_in_module=position_in_module,
-                html_xpath=container_xpath,
-                char_span=char_span,
-                section_source_ids=section_source_ids,
-                merged_headings=merged_headings,
-            ))
-        else:
-            # Split by sentences. Locate each sub_text independently,
-            # anchored after the previous sibling's end so spans stay
-            # disjoint and contiguous.
-            sub_texts = self._split_by_sentences(text, self.TARGET_CHUNK_SIZE)
-            prev_end = 0
-            # Worker N (REC-ID-01): track the last emitted chunk id directly
-            # rather than re-deriving it from position — under content-hash
-            # mode the previous chunk's ID is only knowable once generated.
-            last_chunk_id = follows_chunk_id
-            for i, sub_text in enumerate(sub_texts):
-                part_heading = f"{heading} (part {i + 1})" if len(sub_texts) > 1 else heading
-                prev_id = last_chunk_id
-                this_chunk_id = _generate_chunk_id(prefix, start_id + i, sub_text, source_locator)
-                char_span = _locate(sub_text, search_from=prev_end)
-                # Keep spans non-decreasing even if the locator fallback
-                # collided with an earlier part's text.
-                if char_span[0] < prev_end:
-                    char_span = [prev_end, prev_end + (char_span[1] - char_span[0])]
-                prev_end = char_span[1]
-                chunks.append(self._create_chunk(
-                    chunk_id=this_chunk_id,
-                    text=sub_text, html="" if i > 0 else html, item=item,
-                    section_heading=part_heading, chunk_type=chunk_type,
-                    follows_chunk_id=prev_id,
-                    position_in_module=position_in_module + i,
-                    html_xpath=container_xpath,
-                    char_span=char_span,
-                    section_source_ids=section_source_ids,
-                    merged_headings=merged_headings,
-                ))
-                last_chunk_id = this_chunk_id
-
-        return chunks
+        return _pkg_chunk_text_block(
+            text=text,
+            html=html,
+            item=item,
+            heading=heading,
+            chunk_type=chunk_type,
+            prefix=prefix,
+            start_id=start_id,
+            ctx=_ChunkerContext(create_chunk=self._create_chunk),
+            follows_chunk_id=follows_chunk_id,
+            position_in_module=position_in_module,
+            section_source_ids=section_source_ids,
+            merged_headings=merged_headings,
+            max_chunk_size=self.MAX_CHUNK_SIZE,
+            target_chunk_size=self.TARGET_CHUNK_SIZE,
+        )
 
     def _create_chunk(
         self, chunk_id: str, text: str, html: str, item: Dict[str, Any],
