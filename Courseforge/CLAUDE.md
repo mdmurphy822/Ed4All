@@ -997,6 +997,132 @@ run, just without the statistical-tier signal. Production deployments
 that depend on the signal MUST set `TRAINFORGE_REQUIRE_EMBEDDINGS=true`
 so missing extras fail loudly instead of silently bypassing the gates.
 
+### Phase 6: ABCD authorship + concept extraction
+
+Phase 6 layers two orthogonal upgrades on top of the Phase 4
+statistical-tier surface: (1) **ABCD-framework authorship** for every
+synthesized learning objective — discrete `audience` / `behavior` /
+`condition` / `degree` fields per LO, with verb-Bloom alignment gated
+by a new validator at `course_planning`; and (2) a **standalone
+`concept_extraction` workflow phase** between `source_mapping` and
+`course_planning`, decoupling the pedagogy / concept-graph build from
+its legacy `libv2_archival`-bundled call site so the synthesizer can
+read the graph and the linker can populate `LearningObjective.keyConcepts[]`
+deterministically before content generation. Neither change requires
+`COURSEFORGE_TWO_PASS`; the new gates fire on every `textbook_to_course`
+run regardless of the two-pass master gate. Legacy LOs without the
+`abcd` field skip the verb-alignment check (warning-severity
+`ABCD_MISSING` GateIssue, `passed=True, action=None`), preserving
+backward compatibility for pre-Phase-6 corpora.
+
+Cross-links:
+
+- `schemas/knowledge/courseforge_jsonld_v1.schema.json::$defs.AbcdObjective`
+  (commit `98e27c0`, Phase 6 Subtask 1) — the canonical ABCD shape.
+  `{audience: str, behavior: {verb: str, action_object: str}, condition: str, degree: str}`,
+  all four required when `abcd` is present, `additionalProperties: false`.
+  Referenced from `$defs.LearningObjective.properties.abcd` as an
+  optional pointer so legacy LOs without the field validate unchanged.
+- `lib/ontology/learning_objectives.py::BLOOMS_VERBS`
+  (commit `b46e433`, Phase 6 Subtask 2) — `Dict[str, FrozenSet[str]]`
+  keyed on the canonical six Bloom levels (`remember`, `understand`,
+  `apply`, `analyze`, `evaluate`, `create`); values are frozensets of
+  verbs lifted from `schemas/taxonomies/bloom_verbs.json` at import
+  time and `lru_cache`'d. Single source of truth for the verb-Bloom
+  alignment check.
+- `lib/ontology/learning_objectives.py::compose_abcd_prose`
+  (commit `b46e433`, Phase 6 Subtask 3) — deterministic prose
+  composer. Format: `"{Audience} will {verb} {action_object} {condition}, {degree}."`
+  Strips trailing periods on inputs to avoid double-periods,
+  capitalises the first letter, and emits a terminal period.
+  Round-trip tested across 6 Bloom levels × 3 verbs each in
+  `lib/ontology/tests/test_compose_abcd_prose.py` (commit `986de36`,
+  47 tests).
+- `lib/validators/abcd_objective.py::AbcdObjectiveValidator`
+  (commit `99e880b`, Phase 6 Subtasks 4-5) — wired as the
+  `abcd_verb_alignment` gate at the `course_planning` phase
+  (`config/workflows.yaml::textbook_to_course::course_planning::validation_gates`,
+  warning severity in Phase 6 — promotion to critical follows once
+  corpus calibration confirms safe). For each LO with `abcd` present:
+  asserts `abcd.behavior.verb.lower() in BLOOMS_VERBS[lo.bloom_level]`.
+  On miss, emits a `GateIssue` with `code="ABCD_VERB_BLOOM_MISMATCH"`
+  + `action="regenerate"` and a `decision_event` of type
+  `abcd_verb_bloom_mismatch`. On pass, emits `decision_type="abcd_authored"`.
+  Both decision-type values were added to
+  `schemas/events/decision_event.schema.json::decision_type.enum` in
+  alphabetical position so `DECISION_VALIDATION_STRICT=true` runs
+  don't fail closed on the first emit.
+- `Courseforge/agents/course-outliner.md` (commit `e8e59fe`, Phase 6
+  Subtask 6) — agent prompt amendment. The course-outliner now emits
+  ABCD as a discrete sub-object per LO + 2 worked examples covering
+  `remember` and `apply` Bloom levels. The downstream
+  `_plan_course_structure` widening (commits `3d662ca` Subtasks 7-8)
+  threads the ABCD payload through `_cgh.synthesize_objectives_from_topics`
+  and persists per LO in `synthesized_objectives.json`.
+- `lib/validators/concept_graph.py::ConceptGraphValidator`
+  (commit `c10f19d`, Phase 6 Subtask 14) — wired as the
+  `concept_graph` gate at the new `concept_extraction` phase, warning
+  severity initially. Gates the emitted graph on (a) ≥10 concept
+  nodes, (b) ≥5 edge types present (taxonomic + pedagogical mix),
+  (c) every node carries a `class` field, (d) every edge carries a
+  `relation_type` field, plus optional per-edge provenance when
+  `TRAINFORGE_CONCEPT_GRAPH_EDGE_PROVENANCE=true`.
+  18 tests in `lib/validators/tests/test_concept_graph.py`.
+- `MCP/tools/pipeline_tools.py::_run_concept_extraction`
+  (commit `e0ea640`, Phase 6 Subtasks 11-12) — the new
+  `concept_extraction` phase handler. Reads staged DART chunks via
+  `ed4all_chunker.chunk_content(...)` (Phase 7a chunker package),
+  invokes `Trainforge.pedagogy_graph_builder.build_pedagogy_graph`,
+  persists the graph to
+  `LibV2/courses/<slug>/concept_graph/concept_graph_semantic.json`,
+  computes `concept_graph_sha256` (SHA-256 of canonicalised graph
+  JSON), and routes the hash through
+  `phase_outputs.concept_extraction.concept_graph_sha256` so
+  downstream phases (`course_planning`, `libv2_archival`) can consume
+  it. 6 smoke tests pin the emit shape.
+- `lib/ontology/concept_objective_linker.py::link_concepts_to_objectives`
+  (commit `763aa7c`, Phase 6 Subtasks 15-16) — deterministic linker
+  invoked from `_plan_course_structure` after objective synthesis but
+  before `synthesized_objectives.json` is persisted. Two-stage match
+  per roadmap §6.6: (1) substring match between concept-graph node
+  slugs and the LO's existing `keyConcepts[]`; (2) for unmatched
+  nodes, scan the LO statement for verbatim concept-slug occurrence.
+  Returns the enriched objectives list with populated `keyConcepts[]`.
+  12 tests.
+- `pedagogy-graph-builder` agent spec
+  (`Trainforge/agents/pedagogy-graph-builder.md`, commit `95e9dda`,
+  Phase 6 Subtask 10) — the standalone graph-builder agent dispatched
+  by the new `concept_extraction` phase. Inputs: `dart_chunks_path`.
+  Output: `concept_graph_path` + `concept_graph_sha256`. Wraps
+  `Trainforge.pedagogy_graph_builder.build_pedagogy_graph` directly;
+  the agent registry routes `concept_extraction` here via the
+  `_PHASE_TOOL_MAPPING` entry that points
+  `concept_extraction → run_concept_extraction`.
+- `concept_graph_sha256` field in `course_manifest.json`
+  (commit `4c0ce9d` schema add + commit `c3a9f72` validator,
+  Phase 6 Subtasks 17-20) — top-level optional 64-char lowercase
+  hex hash. Emitted by `archive_to_libv2` from the
+  `phase_outputs.concept_extraction.concept_graph_sha256` route.
+  Read back by `LibV2ManifestValidator._check_concept_graph_sha256`
+  with warning severity in Phase 6: missing field emits
+  `MANIFEST_CONCEPT_GRAPH_SHA256_MISSING`, malformed shape emits
+  `MANIFEST_CONCEPT_GRAPH_SHA256_MALFORMED`, hash-vs-on-disk-graph
+  disagreement emits `MANIFEST_CONCEPT_GRAPH_SHA256_MISMATCH`.
+  Phase 7c promotes all three to critical severity. 7 tests in
+  `lib/validators/tests/test_libv2_manifest_concept_graph.py`.
+
+When the new `concept_extraction` phase runs but the upstream DART
+output yields a degenerate graph (zero edges, single node-class), the
+`ConceptGraphValidator` warning surfaces in the workflow log and the
+graph is still persisted — the warning posture is deliberate so
+small-corpus textbooks don't block the course build, but the
+manifest's `concept_graph_sha256` field captures what was actually
+emitted so downstream Trainforge consumption is honest about the
+input it saw. The Phase 6 followup is to promote both the
+`concept_graph` gate and the `abcd_verb_alignment` gate to critical
+once a real-corpus calibration pass confirms the thresholds don't
+trip on healthy textbooks.
+
 ---
 
 ## Template Components
