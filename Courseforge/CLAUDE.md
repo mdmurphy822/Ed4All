@@ -1322,6 +1322,181 @@ and `imscc_chunks_sha256` in the top-level course manifest alongside
 the Phase 6 `concept_graph_sha256` (also promoted to critical at the
 same boundary).
 
+### Phase 7c: IMSCC chunkset + manifest gate promotion
+
+Phase 7c lands the symmetric IMSCC chunkset alongside the Phase 7b
+DART chunkset, renames the legacy `corpus/` directory, and promotes
+the three-hash triangle (DART chunks ↔ IMSCC chunks ↔ concept graph)
+to critical-severity manifest enforcement at the `libv2_archival`
+phase. Together with Phase 7b, the result is a per-course set of two
+provenance-anchored chunk surfaces (one rooted in the textbook PDF
+via `source_dart_html_sha256`, one rooted in the packaged IMSCC via
+`source_imscc_sha256`) plus a course-manifest hash triangle that
+fail-closes when any of the three required artifacts goes missing,
+malforms, or drifts from disk.
+
+Cross-links:
+
+- Phase 7c ST 15 (commit `090d286`) renamed `LibV2/courses/<slug>/corpus/`
+  → `imscc_chunks/`. Back-compat read shim:
+  `lib/libv2_storage.py::resolve_imscc_chunks_path` (aliased
+  `resolve_imscc_chunks_dir`). Legacy archives keep resolving with a
+  deprecation warning until the Phase 8 drop.
+- Phase 7c ST 16 (commit `0e4f2fb`) added the `imscc_chunking`
+  workflow phase between `packaging` and `training_synthesis` plus
+  the `_run_imscc_chunking` helper at
+  `MCP/tools/pipeline_tools.py:6771`. Mirrors `_run_dart_chunking`'s
+  template; reads HTML entries in-memory from the packaged `.imscc`
+  zip via `zipfile.ZipFile`, emits `chunkset_kind="imscc"` plus
+  `source_imscc_sha256` (SHA-256 of the archive bytes).
+- Phase 7c ST 17 (commit `c61e608`) extended
+  `lib/validators/libv2_manifest.py::LibV2ManifestValidator` with
+  three new check methods (`_check_dart_chunks_sha256`,
+  `_check_imscc_chunks_sha256`) plus promoted the existing
+  `_check_concept_graph_sha256` from warning to critical. Each fires
+  a `MISSING_*` / `INVALID_*` / `*_HASH_MISMATCH` GateIssue triplet
+  against the matching course-manifest field. Fail-closed: zero
+  critical issues required at the `libv2_archival` gate.
+- Phase 7c ST 18 (commit `d3d23f0`) added
+  `LibV2/tools/libv2/scripts/backfill_dart_chunks.py` for migrating
+  legacy archives that lack `dart_chunks/`. Operator-driven; idempotent
+  by default with `--force` for re-emit and `--dry-run` for plan-only.
+
+### Operator smoke runbook (Phase 7b + 7c chunkset chain)
+
+End-to-end walkthrough for verifying a clean Phase 7b/c run on a real
+corpus and migrating a legacy archive that pre-dates the chunkset
+work. Phase 7b/c introduce no new env vars beyond the Phase 7a chunker
+prereq (`pip install -e ./ed4all-chunker` so `ed4all_chunker.chunk_content`
+is importable); the new workflow phases fire automatically on every
+`textbook_to_course` run.
+
+```bash
+# 1. Phase 7a prereq — make the canonical chunker package importable.
+#    Phase 7b/c assume ``ed4all_chunker.chunk_content`` resolves; the
+#    helpers fail-soft with a warning + empty chunks shell otherwise.
+pip install -e ./ed4all-chunker
+
+# 2. Run textbook-to-course end-to-end. The chunking phase fires
+#    between staging and objective_extraction (Phase 7b ST 10); the
+#    imscc_chunking phase fires between packaging and
+#    training_synthesis (Phase 7c ST 16). Both run automatically
+#    regardless of COURSEFORGE_TWO_PASS or any other env flag.
+ed4all run textbook-to-course \
+  --corpus tests/fixtures/textbooks/demo_303.pdf \
+  --course-name DEMO_303
+
+# 3. Verify the DART chunkset landed under the new
+#    LibV2/courses/<slug>/dart_chunks/ directory.
+ls LibV2/courses/demo-303/dart_chunks/{chunks.jsonl,manifest.json}
+# Expected: both files exist. The manifest is the canonical
+# chunkset_manifest schema shape (chunkset_kind="dart" +
+# source_dart_html_sha256 anchoring the chunkset to the staged DART
+# HTML inputs).
+jq -r '.chunkset_kind, .chunks_sha256, .chunker_version' \
+  LibV2/courses/demo-303/dart_chunks/manifest.json
+# Expected: "dart" + 64-char lowercase hex + the installed
+# ed4all_chunker.__version__.
+
+# 4. Verify the IMSCC chunkset landed at imscc_chunks/ (Phase 7c
+#    rename of corpus/).
+ls LibV2/courses/demo-303/imscc_chunks/{chunks.jsonl,manifest.json}
+jq -r '.chunkset_kind, .chunks_sha256, .source_imscc_sha256' \
+  LibV2/courses/demo-303/imscc_chunks/manifest.json
+# Expected: "imscc" + two 64-char lowercase hex digests; the
+# source_imscc_sha256 hashes the packaged .imscc archive bytes.
+
+# 5. Verify the LibV2 course manifest carries the three Phase 7c
+#    required hashes (the triangle: DART ↔ IMSCC ↔ concept graph).
+#    Phase 7c ST 17 promoted all three fields to required + critical;
+#    a missing, malformed, or divergent value fails the
+#    libv2_archival gate.
+jq -r '.dart_chunks_sha256, .imscc_chunks_sha256, .concept_graph_sha256' \
+  LibV2/courses/demo-303/manifest.json
+# Expected: three 64-char lowercase hex strings, each agreeing with
+# the on-disk artifact bytes (chunks.jsonl files + concept_graph_semantic.json).
+
+# 6. Round-trip the on-disk hash to confirm no drift between the
+#    manifest record and the persisted artifact.
+sha256sum LibV2/courses/demo-303/dart_chunks/chunks.jsonl
+sha256sum LibV2/courses/demo-303/imscc_chunks/chunks.jsonl
+sha256sum LibV2/courses/demo-303/concept_graph/concept_graph_semantic.json
+# Expected: each hex prefix agrees with the matching manifest field.
+# Any divergence fires the corresponding *_HASH_MISMATCH critical at
+# the next libv2_archival gate run.
+
+# 7. Confirm the chunkset_manifest gate fired at both chunking phases
+#    (warning severity in Phase 7b/c — promotion to critical follows
+#    in a future calibration wave).
+grep -lE '"gate_id":\s*"chunkset_manifest"' \
+  training-captures/*/DEMO_303/phase_*chunking*/*.jsonl 2>/dev/null
+# Expected: ≥2 matches (one per chunking phase). Inspect with `jq`
+# to confirm passed=true on a healthy corpus.
+
+# 8. Run the Phase 7b/c integration test surface end-to-end (no
+#    real corpus required — the test ships its own synthetic DART
+#    HTML + IMSCC zip fixtures).
+python -m pytest \
+  lib/validators/tests/test_libv2_manifest_dual_chunkset.py \
+  lib/validators/tests/test_libv2_manifest_concept_graph.py \
+  lib/validators/tests/test_chunkset_manifest.py \
+  LibV2/tests/test_backfill_dart_chunks.py \
+  -v
+# Expected: all PASSED. Coverage spans the integration chain (10
+# tests), the concept-graph leg of the triangle (Phase 6 ST 19 +
+# Phase 7c ST 17 promotion), the chunkset sidecar schema gate
+# (Phase 7b ST 13), and the operator backfill script (Phase 7c ST 18).
+```
+
+#### Backfilling a legacy archive (operator workflow)
+
+Pre-Phase-7b archives have no `dart_chunks/` directory and no
+`dart_chunks_sha256` in the course manifest. Running the
+`libv2_archival` gate against such an archive fires
+`MISSING_DART_CHUNKS_SHA256` at critical severity, blocking every
+subsequent run. Operator migration:
+
+```bash
+# Plan-only: enumerate every course under LibV2/courses/ and report
+# which need backfill (no writes).
+python -m LibV2.tools.libv2.scripts.backfill_dart_chunks \
+  --libv2-root LibV2/courses --dry-run
+
+# Backfill a single course by slug. Idempotent — skips when
+# LibV2/courses/<slug>/dart_chunks/manifest.json already exists.
+python -m LibV2.tools.libv2.scripts.backfill_dart_chunks \
+  --libv2-root LibV2/courses --course-slug rdf-shacl-551-2
+
+# Force re-emit when the existing dart_chunks/ is stale (e.g. the
+# chunker package was updated and chunker_version no longer matches).
+python -m LibV2.tools.libv2.scripts.backfill_dart_chunks \
+  --libv2-root LibV2/courses --course-slug rdf-shacl-551-2 --force
+
+# Re-run the libv2_archival gate against the backfilled archive to
+# confirm the MISSING_DART_CHUNKS_SHA256 critical no longer fires.
+python -c "
+from lib.validators.libv2_manifest import LibV2ManifestValidator
+result = LibV2ManifestValidator().validate({
+    'manifest_path': 'LibV2/courses/rdf-shacl-551-2/manifest.json',
+})
+critical = [i for i in result.issues if i.severity == 'critical']
+print(f'critical issues: {[i.code for i in critical]}')
+print(f'passed: {result.passed}')
+"
+# Expected: no MISSING_DART_CHUNKS_SHA256 in the critical list. The
+# script also updates the course-level manifest.json::dart_chunks_sha256
+# field so the round-trip hash check passes on the next gate run.
+```
+
+The Phase 7c contract is **fail-closed** at the `libv2_archival`
+phase: any of the three required hashes missing, malformed, or
+divergent from the on-disk artifact blocks archival. The
+`chunkset_manifest` gate at the two chunking phases stays
+warning-severity in Phase 7c so a thin-corpus run still emits a
+sidecar manifest the operator can inspect; promotion to critical is
+scheduled for a future calibration wave once the thresholds are
+confirmed against a clean rebuild on a real corpus.
+
 ---
 
 ## Template Components
