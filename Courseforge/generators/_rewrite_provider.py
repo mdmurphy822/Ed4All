@@ -331,6 +331,62 @@ def _required_attrs_directive(block_type: str, block_id: str) -> str:
     )
 
 
+# HTML5 void elements (WHATWG HTML Living Standard § 12.1.2) — never
+# carry a closing tag. Used by ``_escape_orphan_placeholder_tags`` to
+# skip elements that legitimately appear without a closer.
+_HTML5_VOID_ELEMENTS: frozenset = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "source", "track", "wbr",
+})
+
+# Bare-opener pattern: ``<word>`` with no attributes, where ``word`` is
+# alphanumeric (with optional ``:`` for CURIE-shaped placeholders and
+# ``-`` / ``_`` for typical tag names). The "no attributes" constraint
+# keeps the sanitizer conservative — real attribute-bearing elements
+# like ``<section data-cf-block-id="...">`` don't match and pass
+# through untouched.
+_BARE_OPENER_RE = re.compile(r"<([A-Za-z][A-Za-z0-9_:-]*)>")
+
+
+def _escape_orphan_placeholder_tags(html: str) -> str:
+    """Escape orphan-opener placeholder tags as HTML entities.
+
+    Walks the input for bare opener patterns ``<word>`` (no
+    attributes). For each match, looks for a corresponding ``</word>``
+    closer in the rest of the string; when no closer exists AND the
+    tag isn't an HTML5 void element, the opener is rewritten as
+    ``&lt;word&gt;``. Real HTML element pairs
+    (``<section>...</section>``) pass through unchanged because the
+    closer is found.
+
+    Closes the Qwen-7B-Q4 failure mode where the rewrite tier emits
+    RDF triples as bare ``<subject> <predicate> <object>`` placeholders
+    that ``html.parser`` sees as unclosed elements (firing
+    ``REWRITE_HTML_PARSE_FAIL`` critical at the post-rewrite shape
+    gate). The conservative regex shape (no attrs) means the
+    sanitizer cannot mis-escape a real attribute-bearing element.
+    """
+    out: List[str] = []
+    last_end = 0
+    for m in _BARE_OPENER_RE.finditer(html):
+        out.append(html[last_end : m.start()])
+        tag = m.group(1)
+        if tag.lower() in _HTML5_VOID_ELEMENTS:
+            out.append(m.group(0))
+        else:
+            closer_re = re.compile(
+                r"</" + re.escape(tag) + r"\s*>",
+                re.IGNORECASE,
+            )
+            if closer_re.search(html, m.end()):
+                out.append(m.group(0))
+            else:
+                out.append(f"&lt;{tag}&gt;")
+        last_end = m.end()
+    out.append(html[last_end:])
+    return "".join(out)
+
+
 def _safe_json_dumps(content: Any) -> str:
     """Serialize ``Block.content`` to a JSON string for the prompt.
 
@@ -1123,6 +1179,12 @@ class RewriteProvider(_BaseLLMProvider):
         # ``_local_provider._call_with_parse``.
         for attempt in range(MAX_PARSE_RETRIES + 1):
             html_response, retry_count = self._dispatch_call(user_prompt)
+            # Post-emit sanitizer: escape orphan-opener placeholder tags
+            # before any downstream gate or consumer sees the response.
+            # Conservative — only ``<word>`` openers with no attributes
+            # AND no matching closer are rewritten as ``&lt;word&gt;``.
+            # Real attribute-bearing elements pass through untouched.
+            html_response = _escape_orphan_placeholder_tags(html_response)
             total_retries += retry_count
             last_text = html_response
 
