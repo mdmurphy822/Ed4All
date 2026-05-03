@@ -199,6 +199,69 @@ def test_member_failure_falls_through_silently_with_warning(
     ), "Expected a warning log for the failed member"
 
 
+def test_temperature_scaling_can_flip_winner() -> None:
+    """Subtask 33 — per-member temperature scaling.
+
+    Single-class temperature scaling (raising a confidence in (0, 1]
+    to power 1/T) sharpens (T<1) or softens (T>1) the ranking
+    relative to other members. We use a scenario where the
+    ``apply``-side has two moderate votes vs ``remember``'s single
+    high-conf vote, then crank the ``remember`` member's T up to
+    soften it enough to flip the winner.
+
+    Setup: votes = [(remember, 0.95), (apply, 0.55), (apply, 0.55)].
+    Baseline T=1.0: remember=0.95, apply=0.55+0.55=1.10. apply wins.
+    To FLIP back to remember-winner we'd need to *sharpen* apply's
+    side (T<1) which would shrink the apply confidences. But T<1
+    *raises* the gap (0.55^2=0.3025 each → 0.605 total < 0.95).
+    Verify both directions:
+
+    1. Baseline (T=None / 1.0): apply wins (1.10 > 0.95).
+    2. Sharpened apply (T=[1.0, 0.5, 0.5]): apply confidences
+       become 0.55^2=0.3025 each → sum 0.605, remember stays 0.95
+       → remember wins. Temperature actually flipped the outcome.
+    3. Per-member-list shorter than members: pad with 1.0 (no-op
+       for the missing entries; should match baseline).
+    """
+    ensemble = _ScriptedEnsemble(
+        votes_per_member=[
+            ("remember", 0.95),
+            ("apply", 0.55),
+            ("apply", 0.55),
+        ]
+    )
+    # Baseline: no temperature → apply wins (1.10 > 0.95).
+    baseline = ensemble.classify("Some text.")
+    assert baseline["winner_level"] == "apply"
+
+    # Sharpened apply members → 0.55^2 = 0.3025 each, sum 0.605
+    # < remember's 0.95 → remember wins. Confirms per-member T flips.
+    ensemble2 = _ScriptedEnsemble(
+        votes_per_member=[
+            ("remember", 0.95),
+            ("apply", 0.55),
+            ("apply", 0.55),
+        ]
+    )
+    ensemble2.set_temperature([1.0, 0.5, 0.5])
+    flipped = ensemble2.classify("Some text.")
+    assert flipped["winner_level"] == "remember"
+
+    # Per-member-list shorter than members → pad with 1.0; result
+    # equals baseline.
+    ensemble3 = _ScriptedEnsemble(
+        votes_per_member=[
+            ("remember", 0.95),
+            ("apply", 0.55),
+            ("apply", 0.55),
+        ]
+    )
+    ensemble3.set_temperature([1.0])  # only first member; rest padded
+    short = ensemble3.classify("Some text.")
+    assert short["winner_level"] == baseline["winner_level"]
+    assert short["winner_score"] == pytest.approx(baseline["winner_score"], abs=1e-4)
+
+
 def test_sha_pinning_recorded_in_decision_event() -> None:
     """The :meth:`_emit_member_loaded` capture call carries name + revision."""
     captured_events: List[Dict[str, Any]] = []

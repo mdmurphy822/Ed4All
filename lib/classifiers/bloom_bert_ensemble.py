@@ -190,6 +190,13 @@ class BloomBertEnsemble:
         self.cache_dir = Path(cache_dir) if cache_dir else _DEFAULT_CACHE_DIR
         self._loaded: Optional[List[BertClassifier]] = None
         self._capture: Any = None  # optional DecisionCapture wired by caller
+        # Subtask 33: per-member softmax-temperature override. Default
+        # ``None`` reproduces the pre-Subtask-33 behaviour exactly
+        # (no temperature applied). When set to a scalar, the same
+        # temperature applies to every member; when set to a list,
+        # the i-th value applies to the i-th per-member vote (in
+        # registry order).
+        self._temperature: Optional[Any] = None
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -235,7 +242,9 @@ class BloomBertEnsemble:
                 "per_member": [],
             }
 
-        winner_level, winner_score, dispersion = self._aggregate(per_member)
+        winner_level, winner_score, dispersion = self._aggregate(
+            per_member, temperature=self._temperature
+        )
         return {
             "winner_level": winner_level,
             "winner_score": winner_score,
@@ -420,7 +429,9 @@ class BloomBertEnsemble:
     # ------------------------------------------------------------------ #
 
     def _aggregate(
-        self, per_member: List[Tuple[str, float]]
+        self,
+        per_member: List[Tuple[str, float]],
+        temperature: Optional[Any] = None,
     ) -> Tuple[str, float, float]:
         """Aggregate per-member votes into ``(winner_level, winner_score, dispersion)``.
 
@@ -439,14 +450,75 @@ class BloomBertEnsemble:
         winner is the lexicographically-first level (e.g. ``analyze``
         beats ``apply``). Deterministic so the validator's regression
         suite stays stable across re-runs.
+
+        **Subtask 33 — temperature scaling**: ``temperature`` accepts:
+
+        - ``None`` (default): no temperature applied; pre-Subtask-33
+          behaviour reproduced byte-identically.
+        - ``float`` (scalar): every per-member confidence is sharpened
+          (``T < 1``) or softened (``T > 1``) by raising it to power
+          ``1 / T`` before summation.
+        - ``List[float]`` (per-member): the i-th value applies to the
+          i-th per-member vote, in the order ``per_member`` was passed
+          (which mirrors registry order). Lists shorter than
+          ``len(per_member)`` are padded with ``1.0`` (no-op);
+          longer lists are truncated.
+
+        Temperature scaling sharpens or softens confident votes
+        relative to less confident ones. The calibration script tunes
+        per-member ``T`` to minimise expected calibration error (ECE)
+        on the holdout corpus, so a poorly-calibrated member (e.g.
+        SST-2 over-confidently mapping POSITIVE → ``evaluate``) has
+        its votes softened before they sway the winner.
         """
         if not per_member:
             return ("unknown", 0.0, 0.0)
 
-        # Sum confidences per level.
+        # Resolve per-member temperatures into a list of floats. We
+        # apply temperature scaling on a single-class confidence by
+        # raising the scalar confidence to the power ``1 / T``: T < 1
+        # sharpens (raises high-conf, depresses low-conf), T > 1
+        # softens. T == 1 (or None) leaves the confidence untouched.
+        temps: List[float] = []
+        if temperature is None:
+            temps = [1.0] * len(per_member)
+        elif isinstance(temperature, (int, float)):
+            t = float(temperature)
+            temps = [t if t > 0 else 1.0] * len(per_member)
+        elif isinstance(temperature, (list, tuple)):
+            for i in range(len(per_member)):
+                if i < len(temperature):
+                    raw = temperature[i]
+                    try:
+                        t = float(raw)
+                    except (TypeError, ValueError):
+                        t = 1.0
+                    temps.append(t if t > 0 else 1.0)
+                else:
+                    temps.append(1.0)
+        else:
+            temps = [1.0] * len(per_member)
+
+        # Sum (temperature-adjusted) confidences per level.
         level_scores: Dict[str, float] = {}
-        for level, conf in per_member:
-            level_scores[level] = level_scores.get(level, 0.0) + float(conf)
+        for (level, conf), t in zip(per_member, temps):
+            try:
+                base = float(conf)
+            except (TypeError, ValueError):
+                base = 0.0
+            if base <= 0.0:
+                adjusted = 0.0
+            elif t == 1.0:
+                adjusted = base
+            else:
+                # ``base`` lives in (0, 1]; raising to ``1/T`` keeps
+                # the result in (0, 1]. Guard against numerical issues
+                # by clamping.
+                try:
+                    adjusted = base ** (1.0 / t)
+                except (OverflowError, ValueError):
+                    adjusted = base
+            level_scores[level] = level_scores.get(level, 0.0) + adjusted
 
         # Winner = argmax level. Sort by (-score, level) so ties resolve
         # lexicographically rather than by Python dict insertion order.
@@ -484,6 +556,26 @@ class BloomBertEnsemble:
     def attach_capture(self, capture: Any) -> None:
         """Wire a :class:`lib.decision_capture.DecisionCapture` instance."""
         self._capture = capture
+
+    # ------------------------------------------------------------------ #
+    # Temperature scaling — Subtask 33
+    # ------------------------------------------------------------------ #
+
+    def set_temperature(self, temperature: Optional[Any]) -> None:
+        """Set the per-member softmax-temperature override.
+
+        Accepts ``None`` (no temperature), a scalar ``float`` (same
+        ``T`` for every member), or a ``List[float]`` (per-member
+        ``T`` in registry order). See :meth:`_aggregate` for the
+        scaling semantics.
+
+        The setter is idempotent and side-effect-free outside this
+        instance — it only mutates ``self._temperature``. Calibration
+        scripts and tests can flip the temperature, re-run
+        :meth:`classify`, and observe the new aggregation outcome
+        without rebuilding the ensemble.
+        """
+        self._temperature = temperature
 
 
 __all__ = [

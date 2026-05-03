@@ -689,23 +689,220 @@ def main(argv: Optional[List[str]] = None) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _expected_calibration_error(
+    confidences: List[float],
+    correct: List[bool],
+    n_bins: int = 10,
+) -> float:
+    """Expected Calibration Error (ECE) for a binary classifier.
+
+    Bins the per-prediction confidences into ``n_bins`` equal-width
+    intervals on ``[0, 1]``, then computes the absolute difference
+    between mean confidence and accuracy in each bin, weighted by
+    bin population. Mirrors Guo et al. (2017) "On Calibration of
+    Modern Neural Networks". Lower is better; 0.0 is perfectly
+    calibrated.
+    """
+    if not confidences:
+        return 0.0
+    n = len(confidences)
+    bin_lo = [i / n_bins for i in range(n_bins)]
+    bin_hi = [(i + 1) / n_bins for i in range(n_bins)]
+    ece = 0.0
+    for lo, hi in zip(bin_lo, bin_hi):
+        if hi == 1.0:
+            members = [
+                (c, k) for c, k in zip(confidences, correct) if lo <= c <= hi
+            ]
+        else:
+            members = [
+                (c, k) for c, k in zip(confidences, correct) if lo <= c < hi
+            ]
+        if not members:
+            continue
+        bin_conf = sum(m[0] for m in members) / len(members)
+        bin_acc = sum(1 for m in members if m[1]) / len(members)
+        ece += (len(members) / n) * abs(bin_conf - bin_acc)
+    return round(ece, 4)
+
+
+def _classify_with_per_member_temperature(
+    rows: List[HoldoutRow],
+    member_idx: int,
+    temperature: float,
+    base_ensemble_factory: Callable[[], Any],
+) -> Tuple[List[float], List[bool]]:
+    """Classify every holdout row with one member's temperature
+    overridden, returning ``(winner_scores, correctness_flags)``.
+
+    Used by the per-member ECE sweep: we vary one member's T at a
+    time while leaving every other member at T=1.0, classify the
+    holdout corpus, and observe how the resulting per-row winner
+    confidence + correctness shifts.
+    """
+    confidences: List[float] = []
+    correct: List[bool] = []
+    for row in rows:
+        ensemble = base_ensemble_factory()
+        # Build a per-member temperature list with `temperature` at
+        # `member_idx` and 1.0 everywhere else. Length = number of
+        # ensemble members (we conservatively use 3 — the canonical
+        # registry — falling back gracefully if the ensemble has
+        # fewer loaded members).
+        n_members = max(3, member_idx + 1)
+        temps = [1.0] * n_members
+        temps[member_idx] = temperature
+        ensemble.set_temperature(temps)
+        block = _make_block(row)
+        text = _extract_text_for_holdout(row, block)
+        if not text:
+            continue
+        try:
+            result = ensemble.classify(text)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("ensemble.classify failed for row %s: %s", row.block_id, exc)
+            continue
+        winner = result.get("winner_level", "unknown")
+        winner_score = float(result.get("winner_score", 0.0))
+        expected = row.expected_bloom_level or row.bloom_level
+        if expected is None:
+            continue
+        confidences.append(winner_score)
+        correct.append(winner == expected)
+    return confidences, correct
+
+
+def _extract_text_for_holdout(row: HoldoutRow, block: Any) -> Optional[str]:
+    """Reuse the validator's text extraction for ECE classification."""
+    from lib.validators.bloom_classifier_disagreement import (
+        _extract_text_for_classification,
+    )
+
+    return _extract_text_for_classification(block)
+
+
 def calibrate_ensemble_temperatures(
     rows: List[HoldoutRow],
     sweep_from: float,
     sweep_to: float,
     steps: int,
+    base_ensemble_factory: Optional[Callable[[], Any]] = None,
 ) -> Dict[str, Any]:
-    """Subtask 33: per-member softmax-temperature calibration.
+    """Per-member softmax-temperature calibration (Subtask 33).
 
-    Stub for Subtask 32. The Subtask 33 commit replaces the body with
-    the real ECE-minimising sweep over each ensemble member.
+    For each of the three canonical ensemble members, sweeps
+    temperature ``T`` across ``[sweep_from, sweep_to]`` in
+    ``steps`` linear-spaced points; for each ``T`` reclassifies the
+    holdout corpus, computes ECE on the (winner_score, correctness)
+    pairs, and picks the per-member ``T`` that minimises ECE.
+
+    When ``transformers`` isn't installed (or the ensemble loads
+    zero members), the function still emits a calibration record
+    but flags ``calibrated=False`` with the reason — calibration
+    needs real per-member confidence variation, which the stubbed
+    in-memory members can't provide.
+
+    Returns a dict shaped::
+
+        {
+            "calibrated": bool,
+            "per_member": [
+                {"member_index": 0, "best_temperature": 1.0, "best_ece": 0.0,
+                 "sweep": [{"temperature": ..., "ece": ...}, ...]},
+                ...
+            ],
+            "n_holdout_rows": int,
+            "n_calibratable_rows": int,  # rows with expected_bloom_level
+            "reason": str (only when calibrated=False),
+        }
     """
-    return {
-        "calibrated": False,
-        "reason": "calibrate_ensemble_temperatures landed in Subtask 33",
+    from lib.classifiers.bloom_bert_ensemble import BloomBertEnsemble
+
+    factory = base_ensemble_factory or (lambda: BloomBertEnsemble())
+
+    # Count rows that have a ground-truth bloom level we can score against.
+    calibratable = [
+        r for r in rows if (r.expected_bloom_level or r.bloom_level)
+    ]
+    if not calibratable:
+        return {
+            "calibrated": False,
+            "reason": "no holdout rows carry expected_bloom_level / bloom_level",
+            "n_holdout_rows": len(rows),
+            "n_calibratable_rows": 0,
+            "sweep_range": [sweep_from, sweep_to],
+            "steps": steps,
+        }
+
+    if steps < 2:
+        temperatures = [sweep_from]
+    else:
+        step_size = (sweep_to - sweep_from) / (steps - 1)
+        temperatures = [
+            round(sweep_from + i * step_size, 4) for i in range(steps)
+        ]
+
+    per_member_results: List[Dict[str, Any]] = []
+    any_calibrated = False
+    for member_idx in range(3):  # canonical 3-member registry
+        sweep_records: List[Dict[str, Any]] = []
+        for t in temperatures:
+            confidences, correct = _classify_with_per_member_temperature(
+                rows=calibratable,
+                member_idx=member_idx,
+                temperature=t,
+                base_ensemble_factory=factory,
+            )
+            if not confidences:
+                # Member not loaded / ensemble couldn't classify; record
+                # the empty point so the YAML reflects what was tried.
+                sweep_records.append(
+                    {"temperature": t, "ece": None, "n_classified": 0}
+                )
+                continue
+            ece = _expected_calibration_error(confidences, correct)
+            sweep_records.append(
+                {"temperature": t, "ece": ece, "n_classified": len(confidences)}
+            )
+            any_calibrated = True
+
+        # Pick best (lowest ECE) — skipping points where ECE is None.
+        scored = [s for s in sweep_records if s["ece"] is not None]
+        if scored:
+            best = sorted(scored, key=lambda s: (s["ece"], s["temperature"]))[0]
+            per_member_results.append(
+                {
+                    "member_index": member_idx,
+                    "best_temperature": best["temperature"],
+                    "best_ece": best["ece"],
+                    "sweep": sweep_records,
+                }
+            )
+        else:
+            per_member_results.append(
+                {
+                    "member_index": member_idx,
+                    "best_temperature": 1.0,
+                    "best_ece": None,
+                    "sweep": sweep_records,
+                }
+            )
+
+    payload: Dict[str, Any] = {
+        "calibrated": any_calibrated,
+        "per_member": per_member_results,
+        "n_holdout_rows": len(rows),
+        "n_calibratable_rows": len(calibratable),
         "sweep_range": [sweep_from, sweep_to],
         "steps": steps,
     }
+    if not any_calibrated:
+        payload["reason"] = (
+            "ensemble produced no per-row classifications; "
+            "transformers extras likely missing — install via "
+            "`pip install -e .[bert]` to enable ECE calibration"
+        )
+    return payload
 
 
 def sweep_dispersion_threshold(
