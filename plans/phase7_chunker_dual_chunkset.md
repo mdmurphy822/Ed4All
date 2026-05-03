@@ -124,12 +124,19 @@ Estimated total LOC: ~3,600 (800 chunker package extraction + 600 Trainforge ref
 ### B. DART chunkset (Phase 7b, 6 subtasks)
 
 #### Subtask 9: Create `dart-chunker` agent spec
-- **Files:** create `/home/user/Ed4All/Courseforge/agents/dart-chunker.md`
+*(Phase 6 precedent established Trainforge-side placement for chunker-adjacent agents; investigation refresh suggests utility-agent in-code dispatcher per textbook-stager.)*
+- **Files:**
+  - Following the `textbook-stager` precedent (`config/agents.yaml:142-150`, type=utility, in-code dispatcher with no `.md` spec), the `dart-chunker` is a deterministic chunker transformation with no LLM dispatch. **Plan: SKIP the .md spec; register only as a utility agent in `config/agents.yaml`.** Mirror `textbook-stager`'s entry style.
+  - If the `.md` spec is wanted instead (subagent-style), place at `/home/user/Ed4All/Trainforge/agents/dart-chunker.md` (NOT `Courseforge/agents/`) following the Phase 6 precedent set by `pedagogy-graph-builder.md` (commit `95e9dda`).
+- **Registration (regardless of `.md` choice):**
+  - Add a `config/agents.yaml` registration entry for `dart-chunker` (mirror `textbook-stager` at `:142-150` if utility-style, or `source-router` at `:161-169` if subagent-style).
+  - Add a `MCP/core/executor.py::AGENT_TOOL_MAPPING` entry `"dart-chunker": "run_dart_chunking"` mirroring the Phase 6 entry `"pedagogy-graph-builder": "run_concept_extraction"` at `:160-167`.
 - **Depends on:** Subtask 8
-- **Estimated LOC:** ~80
+- **Estimated LOC:** ~80 (or ~20 if utility-agent-only path is taken)
 
 #### Subtask 10: Add `chunking` workflow phase (DART chunkset emit)
-- **Files:** `/home/user/Ed4All/config/workflows.yaml:537-562` (between `staging` and `objective_extraction`)
+*(Citations refreshed Phase 7b-prep against HEAD `4f1372a`; coordinated with Phase 6's concept_extraction insertion at workflows.yaml:685-720.)*
+- **Files:** `/home/user/Ed4All/config/workflows.yaml:591-650` (the staging-to-objective_extraction window at HEAD `4f1372a`)
 - **Depends on:** Subtask 9
 - **Estimated LOC:** ~50
 - **Change:** Insert phase:
@@ -140,19 +147,26 @@ Estimated total LOC: ~3,600 (800 chunker package extraction + 600 Trainforge ref
   - `outputs: [dart_chunks_path, dart_chunks_sha256]`
   - `timeout_minutes: 15`
 - Update `objective_extraction.depends_on: [staging]` → `[chunking]`. (Phase 6 concept_extraction will consume `dart_chunks_path` directly.)
+- **Phase ordering reconciliation with Phase 6:** Phase 6 inserted `concept_extraction` between `source_mapping` and `course_planning` at `config/workflows.yaml:685-720` (commit `e0ea640`). With this subtask, the dependency chain becomes: `staging → chunking → objective_extraction → source_mapping → concept_extraction → course_planning` (insert `chunking` between `staging` and `objective_extraction`).
+- **Widen `concept_extraction.depends_on`:** Phase 6's `concept_extraction.depends_on` (currently `[source_mapping]`) should be widened to `[source_mapping, chunking]` so the `chunking` phase output is consumable by `concept_extraction` once both phases are live.
+- **Remove the Phase 6 placeholder comment:** the YAML comment at `config/workflows.yaml:683-684` (the *"Phase 7a did NOT add a chunking workflow phase, so depends_on: [source_mapping] is the only valid path"* note) can be REMOVED as part of ST 10 since the assumption no longer holds once `chunking` is wired in.
 
-#### Subtask 11: Add `MCP/tools/pipeline_tools.py::_run_dart_chunking` helper
-- **Files:** `/home/user/Ed4All/MCP/tools/pipeline_tools.py`
-- **Depends on:** Subtask 10
-- **Estimated LOC:** ~120
-- **Change:** Async helper invoking `ed4all_chunker.chunk_content` against DART HTML files; persists output to `LibV2/courses/<slug>/dart_chunks/chunks.jsonl` + `manifest.json` (carrying `chunks_sha256`, `chunker_version`, `source_dart_html_sha256`); routes `dart_chunks_sha256` through `phase_outputs`.
-- **Verification:** `pytest MCP/tests/test_pipeline_tools.py::test_run_dart_chunking_emits_chunks_jsonl -v` PASSES.
+*(Subtask order: 9 → 10 → 12 → 11 → 13 → 14. ST 12's manifest schema must land before ST 11's helper writes against it.)*
 
 #### Subtask 12: Add `LibV2/courses/<slug>/dart_chunks/manifest.json` schema
 - **Files:** create `/home/user/Ed4All/schemas/library/chunkset_manifest.schema.json`
-- **Depends on:** Subtask 11
+- **Depends on:** Subtask 10
 - **Estimated LOC:** ~80
 - **Change:** Manifest schema: `{required: [chunks_sha256, chunker_version, chunkset_kind, source_*_sha256], properties: {chunks_sha256, chunker_version, chunkset_kind: {enum: ["dart","imscc"]}, source_dart_html_sha256, source_imscc_sha256, chunks_count, generated_at}}`.
+
+#### Subtask 11: Add `MCP/tools/pipeline_tools.py::_run_dart_chunking` helper
+- **Files:** `/home/user/Ed4All/MCP/tools/pipeline_tools.py`
+- **Depends on:** ST 10 + ST 12 (schema must exist before helper writes against it)
+- **Estimated LOC:** ~120
+- **Change:**
+  - **Mirror the `_run_concept_extraction` template** at `MCP/tools/pipeline_tools.py:6051-6320` (Phase 6 commit `e0ea640`): async helper, `**kwargs` resolved via the workflow YAML's `inputs_from`, registered in `_build_tool_registry` as `registry["run_dart_chunking"]`, returns a dict with `dart_chunks_path` + `dart_chunks_sha256` keys for downstream phase consumption.
+  - Async helper invoking `ed4all_chunker.chunk_content` against DART HTML files; persists output to `LibV2/courses/<slug>/dart_chunks/chunks.jsonl` + `manifest.json` (carrying `chunks_sha256`, `chunker_version`, `source_dart_html_sha256`); routes `dart_chunks_sha256` through `phase_outputs`.
+- **Verification:** `pytest MCP/tests/test_pipeline_tools.py::test_run_dart_chunking_emits_chunks_jsonl -v` PASSES.
 
 #### Subtask 13: Add `lib/validators/chunkset_manifest.py::ChunksetManifestValidator`
 - **Files:** create `/home/user/Ed4All/lib/validators/chunkset_manifest.py`
@@ -162,13 +176,74 @@ Estimated total LOC: ~3,600 (800 chunker package extraction + 600 Trainforge ref
 
 #### Subtask 14: Add `Courseforge/CLAUDE.md` + `Trainforge/CLAUDE.md` updates for DART chunkset
 
+#### Subtask 14.5: **Architectural decision — post-chunking reconciliation of `_run_concept_extraction`**
+
+**Problem:** Phase 6's `_run_concept_extraction` (`MCP/tools/pipeline_tools.py:6051-6320`, commit `e0ea640`) uses an **inline v4-chunk-projection** rather than calling `ed4all_chunker.chunk_content`, because at the `concept_extraction` phase point neither a packaged IMSCC nor a `ChunkerContext` exists yet. Phase 7b's new `chunking` phase WILL produce DART chunks earlier in the pipeline. This subtask reconciles the two surfaces so we don't carry duplicated chunk-shaping logic across the codebase.
+
+**Two options considered:**
+- **(a) Refactor `_run_concept_extraction` to consume `dart_chunks_path` from upstream `chunking` phase** — cleaner; eliminates two-surface drift; single canonical chunker.
+- **(b) Keep inline-projection for back-compat; have `chunking` produce a redundant copy** — simpler; tolerates two-surface coexistence; leaves duplicate logic in place.
+
+**Recommendation: Option (a) — refactor** (per the Phase 7b-prep investigation worker's preference for cleanliness over coexistence; eliminates a divergence-risk surface).
+
+**Change:**
+- Phase 7b ST 11 produces v4 chunks at `LibV2/courses/<slug>/dart_chunks/chunks.jsonl`.
+- Phase 7b ST 14.5 (this new subtask) refactors `MCP/tools/pipeline_tools.py:6051-6320::_run_concept_extraction` to consume `dart_chunks_path` from upstream `chunking` phase output.
+- Removes the inline projection block at `MCP/tools/pipeline_tools.py:6129-6135`.
+- Updates `concept_extraction.depends_on` from `[source_mapping]` → `[source_mapping, chunking]` (mirrors ST 10's widening note).
+- Updates `concept_extraction.inputs_from` to include `dart_chunks_path` from `chunking` phase outputs.
+
+**Depends on:** ST 11, ST 12, ST 13 (helper + schema + validator must be live before the consumer-side refactor).
+**Estimated LOC:** ~30 (delete projection block at `:6129-6135` + add input wiring through `inputs_from`).
+**Verification:** the `concept_graph_semantic.json` output is **byte-stable across the refactor** (no inline-projection vs shared-chunker semantic drift). Pin via a regression test that runs `_run_concept_extraction` against a fixed corpus before and after the refactor and asserts byte equality on the emitted graph JSON.
+
 ### C. IMSCC chunkset rename + manifest gate (Phase 7c, 7 subtasks)
 
 #### Subtask 15: Rename `LibV2/courses/<slug>/corpus/` → `imscc_chunks/` (path migration code only)
-- **Files:** `/home/user/Ed4All/LibV2/tools/libv2/cli.py` (search for `corpus/chunks.jsonl`); `/home/user/Ed4All/Trainforge/synthesize_training.py` (reads chunks)
+*(Blast radius expanded Phase 7b-prep based on investigation refresh against HEAD `4f1372a`; original plan listed ~5 files but tree-wide grep found 50+ load-bearing references plus 20+ documentation/schema refs.)*
+- **Files:** the rename touches 50+ load-bearing code paths plus 20+ documentation / schema-comment references. Organized below:
+
+  **Code paths needing rename:**
+  - `LibV2/tools/chunk_query.py:129,132`
+  - `LibV2/tools/study_pack_renderer.py:11,149-185`
+  - `LibV2/tools/libv2/validator.py:105,133,179,323,496,549`
+  - `LibV2/tools/libv2/cli.py:1815`
+  - `MCP/tools/pipeline_tools.py:417,462,1116-1122,4694,4791,5106,5150-5158,5279-5286,5469`
+  - `MCP/tools/tutoring_tools.py`
+  - `MCP/tools/quiz_generator.py`
+  - `MCP/tools/trainforge_tools.py`
+  - `MCP/hardening/gate_input_routing.py`
+  - `MCP/core/tool_schemas.py`
+  - `Trainforge/process_course.py:1112` (`self.corpus_dir = self.output_dir / "corpus"`)
+  - `Trainforge/synthesize_training.py:5,215,819-820,2343,2432,2438`
+  - `Trainforge/training/runner.py`
+  - `Trainforge/eval/slm_eval_harness.py`
+  - `Trainforge/eval/chunk_labels.py`
+  - `Trainforge/instruction_pair_extractor.py`
+  - `Trainforge/pedagogy_graph_builder.py`
+  - `Trainforge/scripts/audit_pairs.py`
+  - `Trainforge/scripts/discover_curies.py`
+  - `Trainforge/scripts/backfill_form_data.py`
+  - `Trainforge/rag/retrieval_benchmark.py`
+  - `Trainforge/generators/instruction_factory.py`
+
+  **Docs needing update:**
+  - `Trainforge/CLAUDE.md`
+  - `LibV2/CLAUDE.md:55,194`
+  - `ARCHITECTURE.md`
+  - `VERSIONING.md`
+
+  **Schema comment refs:**
+  - `schemas/models/model_card.schema.json`
+  - `schemas/knowledge/chunk_v4.schema.json`
+  - `schemas/training/instruction_pair.schema.json`
+
+  **Test fixtures:** any `tests/` path or fixture JSON / YAML referencing `corpus/chunks.jsonl` should be swept.
+
 - **Depends on:** none
-- **Estimated LOC:** ~80
+- **Estimated LOC:** ~300-500 LOC
 - **Change:** Update all consumer code paths reading `corpus/chunks.jsonl` to read `imscc_chunks/chunks.jsonl`. Add back-compat fallback: try `imscc_chunks/` first, fall back to `corpus/` for one wave with a deprecation warning.
+- **Back-compat read-fallback shim:** when reading chunks for downstream operations, attempt `imscc_chunks/chunks.jsonl` first; if absent, fall back to `corpus/chunks.jsonl` and log a deprecation warning. Land the shim WITH the rename so unprovisioned LibV2 archives keep working through one migration cycle. Drop the shim in Phase 8.
 
 #### Subtask 16: Add `imscc_chunking` workflow phase (post-packaging IMSCC chunkset emit)
 - **Files:** `/home/user/Ed4All/config/workflows.yaml`
@@ -182,10 +257,15 @@ Estimated total LOC: ~3,600 (800 chunker package extraction + 600 Trainforge ref
 - Update `training_synthesis.depends_on: [packaging]` → `[imscc_chunking]`.
 
 #### Subtask 17: Extend `LibV2ManifestValidator` to require both chunkset hashes (HARD)
+*(Citations refreshed Phase 7b-prep against HEAD `4f1372a`; concept_graph_sha256 promotion folded in per Phase 6 ST 19 forward-reference.)*
 - **Files:** `/home/user/Ed4All/lib/validators/libv2_manifest.py:38-46` (the `_EXPECTED_SUBDIRS`); plus `validate(...)` method
 - **Depends on:** Subtask 16
 - **Estimated LOC:** ~80
-- **Change:** Add `dart_chunks_sha256` and `imscc_chunks_sha256` to required manifest keys. When either is missing, emit `severity="critical"` issue. Update `_EXPECTED_SUBDIRS` to include `dart_chunks` + `imscc_chunks` (corpus removed).
+- **Change:**
+  - **Promote `concept_graph_sha256` from warning to critical:** change the three issue codes (`MISSING_CONCEPT_GRAPH_SHA256`, `INVALID_CONCEPT_GRAPH_SHA256`, `CONCEPT_GRAPH_HASH_MISMATCH`) from `severity='warning'` to `severity='critical'`. Phase 6 commit `c3a9f72` left these as warnings explicitly noting Phase 7c promotion.
+  - Add `dart_chunks_sha256` and `imscc_chunks_sha256` to required manifest keys. When either is missing, emit `severity="critical"` issue. Update `_EXPECTED_SUBDIRS` to include `dart_chunks` + `imscc_chunks` (corpus removed).
+  - **Update schema `required` array:** update `schemas/library/course_manifest.schema.json::required` to include `dart_chunks_sha256`, `imscc_chunks_sha256`, AND `concept_graph_sha256` (Phase 7a's `chunker_version` may also be promoted; assess based on whether all in-flight LibV2 archives carry it). Currently `required: ["libv2_version", "slug", "import_timestamp", "sourceforge_manifest", "classification", "content_profile"]` per `:9-13`.
+  - **Mirror the `_check_concept_graph_sha256` method shape** from `lib/validators/libv2_manifest.py:417-521` for both new check methods (`_check_dart_chunks_sha256` + `_check_imscc_chunks_sha256`): each emits MISSING / INVALID / MISMATCH GateIssue codes, accepts `inputs` + `course_dir`, defends against missing/unreadable files.
 
 #### Subtask 18: Create `LibV2/tools/libv2/scripts/backfill_dart_chunks.py`
 - **Files:** create `/home/user/Ed4All/LibV2/tools/libv2/scripts/backfill_dart_chunks.py`
