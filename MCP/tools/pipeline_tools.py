@@ -5345,6 +5345,17 @@ def _build_tool_registry() -> dict:
         # Phase 6 (Wave 6-D); the manifest validator is permissive (warning
         # severity) until Phase 7c promotes to critical.
         concept_graph_sha256_kw = kwargs.get("concept_graph_sha256") or ""
+        # Phase 7c.5 SHIPPING BLOCKER: chunkset hashes threaded from the
+        # ``chunking`` (DART) and ``imscc_chunking`` phase outputs via
+        # the workflow runner's ``inputs_from`` chain. Phase 7c ST 17
+        # promoted both fields to required at the validator boundary;
+        # without this kwarg plumbing, every end-to-end ``ed4all run``
+        # would fail validation at the ``libv2_archival`` gate. Mirrors
+        # the ``concept_graph_sha256`` pattern above (Phase 6 ST 18).
+        # Optional in legacy callers (no chunking phase wired) — None
+        # falls through to the validator's ``MISSING_*`` critical.
+        dart_chunks_sha256_kw = kwargs.get("dart_chunks_sha256") or ""
+        imscc_chunks_sha256_kw = kwargs.get("imscc_chunks_sha256") or ""
 
         if not course_name:
             return json.dumps({"error": "archive_to_libv2 requires course_name"})
@@ -5697,6 +5708,23 @@ def _build_tool_registry() -> dict:
         }
         if concept_graph_sha256_resolved is not None:
             manifest["concept_graph_sha256"] = concept_graph_sha256_resolved
+
+        # Phase 7c.5 SHIPPING BLOCKER: persist the chunkset hashes routed
+        # via the workflow runner's ``inputs_from`` chain (chunking →
+        # dart_chunks_sha256, imscc_chunking → imscc_chunks_sha256). Same
+        # 64-hex regex shape as ``concept_graph_sha256``; only emit when
+        # the kwarg is well-formed so a malformed upstream value falls
+        # through to the validator's ``MISSING_*`` critical (the
+        # validator owns ``INVALID_*`` shape diagnostics) rather than
+        # being silently propagated.
+        if dart_chunks_sha256_kw and _re_cg.match(
+            r"^[0-9a-f]{64}$", dart_chunks_sha256_kw,
+        ):
+            manifest["dart_chunks_sha256"] = dart_chunks_sha256_kw
+        if imscc_chunks_sha256_kw and _re_cg.match(
+            r"^[0-9a-f]{64}$", imscc_chunks_sha256_kw,
+        ):
+            manifest["imscc_chunks_sha256"] = imscc_chunks_sha256_kw
 
         manifest_path = course_dir / "manifest.json"
         with open(manifest_path, "w") as f:

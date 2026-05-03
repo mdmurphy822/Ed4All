@@ -1730,6 +1730,22 @@ workflows:
             source: phase_outputs
             phase: concept_extraction
             output: concept_graph_sha256
+          # Phase 7c.5 SHIPPING BLOCKER: thread the DART chunkset SHA-256
+          # (computed by the ``chunking`` phase, Phase 7b ST 11) and the
+          # IMSCC chunkset SHA-256 (computed by the ``imscc_chunking``
+          # phase, Phase 7c ST 16) through to ``_archive_to_libv2`` so
+          # the LibV2 manifest carries both hashes. Phase 7c ST 17
+          # promoted both manifest fields to required; without this
+          # routing the libv2_manifest gate fails closed at every
+          # end-to-end run. Mirrors the concept_graph_sha256 entry above.
+          - param: dart_chunks_sha256
+            source: phase_outputs
+            phase: chunking
+            output: dart_chunks_sha256
+          - param: imscc_chunks_sha256
+            source: phase_outputs
+            phase: imscc_chunking
+            output: imscc_chunks_sha256
 
         outputs:
           - course_slug

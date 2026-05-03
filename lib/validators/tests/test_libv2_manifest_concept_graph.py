@@ -395,3 +395,169 @@ def test_archive_to_libv2_persists_concept_graph_sha256_to_manifest(tmp_path):
         assert re.match(r"^[0-9a-f]{64}$", manifest["concept_graph_sha256"])
     finally:
         pt.PROJECT_ROOT = orig_root
+
+
+def test_archive_to_libv2_persists_all_three_chunkset_hashes(tmp_path):
+    """Phase 7c.5 SHIPPING BLOCKER end-to-end: ``_archive_to_libv2`` routes
+    all three chunkset hashes (``dart_chunks_sha256`` +
+    ``imscc_chunks_sha256`` + ``concept_graph_sha256``) into manifest.
+
+    Phase 7c ST 17 promoted ``dart_chunks_sha256`` + ``imscc_chunks_sha256``
+    to required manifest fields at the validator boundary. Phase 7c.5
+    closes the producer-side gap: the workflow runner threads both hashes
+    via ``inputs_from`` (``chunking`` → ``dart_chunks_sha256``,
+    ``imscc_chunking`` → ``imscc_chunks_sha256``) into the same kwarg
+    chain that ST 18 wired for ``concept_graph_sha256``.
+
+    This test asserts the producer side: when all three kwargs are
+    supplied, all three land in ``manifest.json`` with the supplied
+    canonical 64-hex shape.
+    """
+    import asyncio
+    import re
+    from MCP.tools import pipeline_tools as pt
+
+    fake_root = tmp_path / "root"
+    fake_root.mkdir()
+    (fake_root / "LibV2" / "courses").mkdir(parents=True)
+
+    orig_root = pt.PROJECT_ROOT
+    pt.PROJECT_ROOT = fake_root
+    try:
+        registry = pt._build_tool_registry()
+        archive = registry["archive_to_libv2"]
+
+        # Three distinct stable canonical hashes so the test catches a
+        # cross-wiring bug (e.g. dart kwarg landing on imscc field).
+        dart_hash = hashlib.sha256(b"fixture dart chunkset").hexdigest()
+        imscc_hash = hashlib.sha256(b"fixture imscc chunkset").hexdigest()
+        cg_hash = hashlib.sha256(b"fixture concept graph").hexdigest()
+        assert dart_hash != imscc_hash != cg_hash
+
+        result = asyncio.run(archive(
+            course_name="PHASE7C5_E2E",
+            domain="general",
+            division="STEM",
+            dart_chunks_sha256=dart_hash,
+            imscc_chunks_sha256=imscc_hash,
+            concept_graph_sha256=cg_hash,
+        ))
+        payload = json.loads(result)
+        assert payload.get("success"), (
+            f"archive_to_libv2 should succeed; got: {payload}"
+        )
+
+        manifest_path = Path(payload["manifest_path"])
+        assert manifest_path.exists()
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        # All three hashes present on the canonical 64-hex shape.
+        assert manifest.get("dart_chunks_sha256") == dart_hash, (
+            f"manifest should carry the threaded dart hash; got "
+            f"{manifest.get('dart_chunks_sha256')!r}"
+        )
+        assert manifest.get("imscc_chunks_sha256") == imscc_hash, (
+            f"manifest should carry the threaded imscc hash; got "
+            f"{manifest.get('imscc_chunks_sha256')!r}"
+        )
+        assert manifest.get("concept_graph_sha256") == cg_hash, (
+            f"manifest should carry the threaded concept_graph hash; got "
+            f"{manifest.get('concept_graph_sha256')!r}"
+        )
+        for field in (
+            "dart_chunks_sha256", "imscc_chunks_sha256", "concept_graph_sha256",
+        ):
+            assert re.match(r"^[0-9a-f]{64}$", manifest[field]), (
+                f"manifest[{field!r}] must satisfy the 64-hex regex"
+            )
+    finally:
+        pt.PROJECT_ROOT = orig_root
+
+
+def test_archive_to_libv2_omits_chunkset_hashes_when_kwargs_absent(tmp_path):
+    """Backward compat: legacy callers that don't supply the new kwargs
+    still produce a valid manifest (just without the new fields).
+
+    The validator's ``MISSING_*`` critical fires downstream — that's the
+    intended behavior for legacy / DART-only runs. The producer must NOT
+    silently emit a placeholder hash that would mask the gap; it must
+    omit the field so the validator's ``MISSING_*`` fires loudly.
+    """
+    import asyncio
+    from MCP.tools import pipeline_tools as pt
+
+    fake_root = tmp_path / "root"
+    fake_root.mkdir()
+    (fake_root / "LibV2" / "courses").mkdir(parents=True)
+
+    orig_root = pt.PROJECT_ROOT
+    pt.PROJECT_ROOT = fake_root
+    try:
+        registry = pt._build_tool_registry()
+        archive = registry["archive_to_libv2"]
+
+        result = asyncio.run(archive(
+            course_name="PHASE7C5_LEGACY",
+            domain="general",
+            division="STEM",
+        ))
+        payload = json.loads(result)
+        assert payload.get("success"), (
+            f"archive_to_libv2 should succeed without new kwargs; got: {payload}"
+        )
+
+        manifest_path = Path(payload["manifest_path"])
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        # New fields absent — caller didn't supply them, helper must
+        # not invent values.
+        assert "dart_chunks_sha256" not in manifest, (
+            "Legacy caller without dart_chunks_sha256 kwarg must NOT see "
+            "the field in manifest (would mask MISSING_* critical)."
+        )
+        assert "imscc_chunks_sha256" not in manifest, (
+            "Legacy caller without imscc_chunks_sha256 kwarg must NOT see "
+            "the field in manifest (would mask MISSING_* critical)."
+        )
+    finally:
+        pt.PROJECT_ROOT = orig_root
+
+
+def test_archive_to_libv2_rejects_malformed_chunkset_hashes(tmp_path):
+    """Malformed hashes fall through to MISSING_* (not silently emitted).
+
+    The helper validates against ``^[0-9a-f]{64}$`` and only writes the
+    field when the kwarg matches. A malformed value (wrong length /
+    uppercase / non-hex) is dropped on the producer side so the
+    validator emits the same ``MISSING_*`` critical it would for a
+    legacy archive — operators see the gap, not a downstream
+    ``INVALID_*`` arising from corrupted producer-side data.
+    """
+    import asyncio
+    from MCP.tools import pipeline_tools as pt
+
+    fake_root = tmp_path / "root"
+    fake_root.mkdir()
+    (fake_root / "LibV2" / "courses").mkdir(parents=True)
+
+    orig_root = pt.PROJECT_ROOT
+    pt.PROJECT_ROOT = fake_root
+    try:
+        registry = pt._build_tool_registry()
+        archive = registry["archive_to_libv2"]
+
+        result = asyncio.run(archive(
+            course_name="PHASE7C5_MALFORMED",
+            domain="general",
+            division="STEM",
+            dart_chunks_sha256="not-a-valid-sha256",
+            imscc_chunks_sha256="A" * 64,  # uppercase rejected by 64-hex regex
+        ))
+        payload = json.loads(result)
+        assert payload.get("success"), payload
+
+        manifest_path = Path(payload["manifest_path"])
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert "dart_chunks_sha256" not in manifest
+        assert "imscc_chunks_sha256" not in manifest
+    finally:
+        pt.PROJECT_ROOT = orig_root
