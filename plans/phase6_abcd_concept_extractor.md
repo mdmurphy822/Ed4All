@@ -17,7 +17,7 @@ Refines `plans/courseforge_architecture_roadmap.md` §3.1 (ABCD), §3.4 (concept
 - **No `lib/ontology/concept_objective_linker.py` exists** — verified. Per roadmap §6.6 recommendation, Phase 6 creates a two-stage linker as an explicit pass between concept extraction and content generation.
 - **DART hardcoded models at 4 files**: `claude_processor.py:228`, `alt_text_generator.py:42`, `cli.py:99-100`, `converter.py:69`. **`MCP/orchestrator/llm_backend.py:48`** has `DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-7"`; the file claims env-var override but `:791` shows it falls back hardcoded with `or DEFAULT_ANTHROPIC_MODEL` — env-var-first chain is intact only when the call site sets `model` explicitly.
 - **Pedagogy graph builder consumes chunks of shape v4**: `chunks` is `List[Dict]` with `concept_tags`, `learning_outcome_refs`, `source.module_id`, etc. Phase 7a's chunker package emits the same v4 shape (verified via `Trainforge/process_course.py:1432-1748`).
-- **`schemas/taxonomies/`** carries `bloom_verbs.schema.json` per roadmap citation. Phase 6's `BLOOMS_VERBS` lookup table mirrors this.
+- **`schemas/taxonomies/`** carries `bloom_verbs.json` per roadmap citation. Phase 6's `BLOOMS_VERBS` lookup table mirrors this.
 
 ---
 
@@ -26,7 +26,7 @@ Refines `plans/courseforge_architecture_roadmap.md` §3.1 (ABCD), §3.4 (concept
 1. **ABCD schema location (per roadmap §6.4 recommendation).** Co-locate as `$defs.AbcdObjective` inside `courseforge_jsonld_v1.schema.json`; `$defs.LearningObjective.properties.abcd` references it.
 2. **ABCD shape.** `{audience: str, behavior: {verb: str, action_object: str}, condition: str, degree: str}`. All four fields required when `abcd` is present.
 3. **`compose_abcd_prose` deterministic format.** `"{audience} will {verb} {action_object} {condition}, {degree}."` Examples: `"Students will identify the parts of a cell from a labeled diagram, with 90% accuracy."` Spaces, capitalization, terminal period are mechanical.
-4. **`BLOOMS_VERBS` lookup table source-of-truth.** `lib/ontology/learning_objectives.py::BLOOMS_VERBS: Dict[str, FrozenSet[str]]` keyed on canonical Bloom levels (`remember`, `understand`, `apply`, `analyze`, `evaluate`, `create`). Values are FrozenSet of verbs from `schemas/taxonomies/bloom_verbs.schema.json` (the existing taxonomy file). Phase 6 adds the in-Python projection; verbs themselves stay sourced from the JSON.
+4. **`BLOOMS_VERBS` lookup table source-of-truth.** `lib/ontology/learning_objectives.py::BLOOMS_VERBS: Dict[str, FrozenSet[str]]` keyed on canonical Bloom levels (`remember`, `understand`, `apply`, `analyze`, `evaluate`, `create`). Values are FrozenSet of verbs from `schemas/taxonomies/bloom_verbs.json` (the existing taxonomy file). Phase 6 adds the in-Python projection; verbs themselves stay sourced from the JSON.
 5. **`AbcdObjectiveValidator` location and contract.** New `lib/validators/abcd_objective.py::AbcdObjectiveValidator`. For each LO with `abcd` field present: assert `abcd.behavior.verb in BLOOMS_VERBS[lo.bloom_level]`. On miss emit `action="regenerate"` (per Phase 4 contract). Replaces a hypothetical `bloom_verb_mismatch` validator that would have lived in Phase 4 — fold-in per roadmap meta-pattern §3.12.
 6. **Concept-extraction phase placement.** Between `chunking` (Phase 7a `dart_chunking`) and `course_planning`. Phase definition has `agents: [pedagogy-graph-builder]` (NEW agent spec); inputs are `dart_chunks_path` (from `chunking` phase) + `objectives_path` (NOT YET — it doesn't exist yet at this point in the chain). The phase reads ONLY `dart_chunks_path` per roadmap §6.6 recommendation (DART chunks only, not objectives).
 7. **Concept-extractor → objective-synthesizer linkage (per §6.6 two-stage).** Concept extraction emits `concept_graph/concept_graph_semantic.json`. Objective synthesizer (`plan_course_structure`) reads it via `concept_graph_path` input. Then `concept_objective_linker.py` runs as a deterministic pass between objective synthesis and content generation, populating `LearningObjective.keyConcepts[]` from concept-graph slugs that match.
@@ -54,7 +54,7 @@ Estimated total LOC: ~3,200 (200 ABCD schema + 250 BLOOMS_VERBS + 200 compose_ab
 - **Files:** `/home/user/Ed4All/lib/ontology/learning_objectives.py`
 - **Depends on:** none
 - **Estimated LOC:** ~60
-- **Change:** Add module-level `BLOOMS_VERBS: Dict[str, FrozenSet[str]]` constructed from `schemas/taxonomies/bloom_verbs.schema.json` at import (lru_cache'd). Keys: `remember`, `understand`, `apply`, `analyze`, `evaluate`, `create`. Values: frozenset of verbs from the schema's `BloomLevel` defs.
+- **Change:** Add module-level `BLOOMS_VERBS: Dict[str, FrozenSet[str]]` constructed from `schemas/taxonomies/bloom_verbs.json` at import (lru_cache'd). Keys: `remember`, `understand`, `apply`, `analyze`, `evaluate`, `create`. Values: frozenset of verbs from the schema's `BloomLevel` defs.
 - **Verification:** `python -c "from lib.ontology.learning_objectives import BLOOMS_VERBS; assert 'remember' in BLOOMS_VERBS and 'identify' in BLOOMS_VERBS['remember']"` exits 0.
 
 #### Subtask 3: Add `compose_abcd_prose(abcd) -> str` function
@@ -65,11 +65,32 @@ Estimated total LOC: ~3,200 (200 ABCD schema + 250 BLOOMS_VERBS + 200 compose_ab
 - **Verification:** `python -c "from lib.ontology.learning_objectives import compose_abcd_prose; out=compose_abcd_prose({'audience':'Students','behavior':{'verb':'identify','action_object':'cell parts'},'condition':'from a labeled diagram','degree':'with 90% accuracy'}); assert out=='Students will identify cell parts from a labeled diagram, with 90% accuracy.'"` exits 0.
 
 #### Subtask 4: Create `lib/validators/abcd_objective.py::AbcdObjectiveValidator`
-- **Files:** create `/home/user/Ed4All/lib/validators/abcd_objective.py`
+- **Files:** create `/home/user/Ed4All/lib/validators/abcd_objective.py`; edit `/home/user/Ed4All/schemas/events/decision_event.schema.json::properties.decision_type.enum`
 - **Depends on:** Subtask 3
 - **Estimated LOC:** ~150
 - **Change:** Class with `validate(inputs)`. Reads LOs from `inputs["objectives"]` (or `synthesized_objectives_path`). For each LO: when `abcd` present, assert `abcd.behavior.verb.lower() in BLOOMS_VERBS[lo.bloom_level]`. On miss: `action="regenerate"` + GateIssue with `code="ABCD_VERB_BLOOM_MISMATCH"` and message naming the LO ID + verb + Bloom level + valid verb set. When `abcd` absent on a LO that requires it (Phase 6 contract: every newly-emitted LO has ABCD), emit `code="ABCD_MISSING"` warning.
-- **Verification:** `python -c "from lib.validators.abcd_objective import AbcdObjectiveValidator; v=AbcdObjectiveValidator(); assert hasattr(v, 'validate')"` exits 0.
+  - Add `"abcd_verb_bloom_mismatch"` (and `"abcd_authored"` if the validator emits a positive-path event too) to `schemas/events/decision_event.schema.json::decision_type.enum` in alphabetical position. Phase 4.5 cleanup re-alphabetised this enum (commit `3184f1a`); maintain the alphabetical contract. Without the enum addition, `DECISION_VALIDATION_STRICT=true` fails closed on the first emit.
+- **Verification:** `python -c "from lib.validators.abcd_objective import AbcdObjectiveValidator; v=AbcdObjectiveValidator(); assert hasattr(v, 'validate')"` exits 0. Plus enum-addition smoke: `python -c "import json; e = json.load(open('schemas/events/decision_event.schema.json'))['properties']['decision_type']['enum']; assert 'abcd_verb_bloom_mismatch' in e"` exits 0.
+
+#### Subtask 4.5: Wire `AbcdObjectiveValidator` to `course_planning.validation_gates`
+*(Added Phase 6-prep based on investigation refresh against HEAD `ae7779e`; not present in original plan authoring.)*
+- **Files:** `/home/user/Ed4All/config/workflows.yaml` (edit the `textbook_to_course::course_planning` phase block, around `:677-719`)
+- **Depends on:** Subtask 4 (validator must exist before being wired)
+- **Estimated LOC:** ~10
+- **Change:** Add a new `validation_gates` block under `course_planning` (the phase currently has no gates) with one entry:
+  ```yaml
+  validation_gates:
+    - gate_id: abcd_verb_alignment
+      validator: lib.validators.abcd_objective.AbcdObjectiveValidator
+      severity: warning  # Phase 6 lands as warning; Phase 7+ promotes to critical once corpus calibration confirms safe
+      threshold:
+        max_critical_issues: 0
+      behavior:
+        on_fail: warn
+        on_error: warn
+  ```
+  The validator operates on `synthesized_objectives.json` at the `course_planning` phase output (NOT at the inter-tier or post-rewrite seam — those seams are downstream of objective synthesis).
+- **Verification:** `grep -A 5 "abcd_verb_alignment" config/workflows.yaml` returns the new entry; `python -c "import yaml; w = yaml.safe_load(open('config/workflows.yaml')); cp = next(p for p in w['workflows']['textbook_to_course']['phases'] if p['name'] == 'course_planning'); gates = [g['gate_id'] for g in cp.get('validation_gates', [])]; assert 'abcd_verb_alignment' in gates"` exits 0.
 
 #### Subtask 5: Add `lib/validators/tests/test_abcd_objective.py`
 - **Files:** create `/home/user/Ed4All/lib/validators/tests/test_abcd_objective.py`
@@ -88,7 +109,8 @@ Estimated total LOC: ~3,200 (200 ABCD schema + 250 BLOOMS_VERBS + 200 compose_ab
 - **Verification:** `grep -c "abcd\|AbcdObjective" Courseforge/agents/course-outliner.md` returns ≥3.
 
 #### Subtask 7: Widen `MCP/tools/pipeline_tools.py::_plan_course_structure` to accept ABCD
-- **Files:** `/home/user/Ed4All/MCP/tools/pipeline_tools.py:2625-2649`
+*(Citations refreshed Phase 6-prep against HEAD `ae7779e`; lines drifted as Phase 3.5/4/7a landed.)*
+- **Files:** `/home/user/Ed4All/MCP/tools/pipeline_tools.py:3789-3957` (the `_plan_course_structure` async helper + its registry entry)
 - **Depends on:** Subtask 6
 - **Estimated LOC:** ~50
 - **Change:** When `_cgh.synthesize_objectives_from_topics` returns LOs (or a supplied objectives JSON has them), the synthesized payload now carries `abcd` per LO. Extend the `lo_entries.append(entry)` block to pass through `abcd` when present.
@@ -118,29 +140,31 @@ Estimated total LOC: ~3,200 (200 ABCD schema + 250 BLOOMS_VERBS + 200 compose_ab
 - **Verification:** `grep -c "build_pedagogy_graph\|concept_graph" Trainforge/agents/pedagogy-graph-builder.md` returns ≥3.
 
 #### Subtask 11: Add `concept_extraction` workflow phase entry
-- **Files:** `/home/user/Ed4All/config/workflows.yaml:562-665`
+*(Citations refreshed Phase 6-prep against HEAD `ae7779e`; Phase 7a did NOT add a `chunking`/`dart_chunking` workflow phase — it only lifted the in-process `_chunk_content` helper into the `ed4all-chunker` package + added a `chunker_version` manifest field (commits `64d5e3e`, `874dd1b`). The original two-path branching has been collapsed: only the `depends_on: [source_mapping]` path is valid.)*
+- **Files:** `/home/user/Ed4All/config/workflows.yaml` (the `textbook_to_course::phases` list, around `:651-719` — the `source_mapping` and `course_planning` phase blocks)
 - **Depends on:** Subtask 10
 - **Estimated LOC:** ~60
-- **Change:** Insert phase between `source_mapping` and `course_planning` (or after Phase 7a `chunking` lands — current pre-Phase-7a placement is between `source_mapping` and `course_planning`):
+- **Change:** Insert new `concept_extraction` phase between `source_mapping` and `course_planning`:
   - `name: concept_extraction`
   - `agents: [pedagogy-graph-builder]`
   - `parallel: false`
-  - `depends_on: [source_mapping]` (post-Phase-7a: `[chunking]`)
+  - `depends_on: [source_mapping]`
   - `outputs: [concept_graph_path, concept_graph_sha256]`
   - `timeout_minutes: 30`
   - `validation_gates`: 1 entry — `concept_graph` → `lib.validators.concept_graph.ConceptGraphValidator`, severity warning initially.
 - Update `course_planning.depends_on: [source_mapping]` → `[concept_extraction]`.
-- **Verification:** `python -c "import yaml; d=yaml.safe_load(open('config/workflows.yaml')); ph=next(p for p in d['workflows'][next(i for i,w in enumerate(d['workflows']) if w['name']=='textbook_to_course')]['phases'] if p['name']=='concept_extraction'); assert ph is not None"` exits 0.
+- **Verification:** `python -c "import yaml; d=yaml.safe_load(open('config/workflows.yaml')); ph=next(p for p in d['workflows']['textbook_to_course']['phases'] if p['name']=='concept_extraction'); assert ph is not None and ph['depends_on']==['source_mapping']"` exits 0.
 
 #### Subtask 12: Add `MCP/tools/pipeline_tools.py::_run_concept_extraction` helper
 - **Files:** `/home/user/Ed4All/MCP/tools/pipeline_tools.py`
 - **Depends on:** Subtask 11
 - **Estimated LOC:** ~100
-- **Change:** New async helper invoked when `concept_extraction` phase runs. Loads chunks from `dart_chunks_path` (Phase 7a output) or — pre-Phase-7a — from a temporary chunker invocation; calls `Trainforge.pedagogy_graph_builder.build_pedagogy_graph(chunks=chunks, course_id=course_slug)`; persists graph to `LibV2/courses/<slug>/concept_graph/concept_graph_semantic.json` and `manifest.json`; computes `sha256` and routes it through `phase_outputs.concept_extraction.concept_graph_sha256`.
+- **Change:** New async helper invoked when `concept_extraction` phase runs. Phase 7a lifted `_chunk_content` into the `ed4all-chunker` package (commits `64d5e3e`, `874dd1b`) but did NOT add a workflow phase, so this helper invokes the chunker directly via `ed4all_chunker.chunk_content(...)` to produce v4 chunks from staged DART HTML; then calls `Trainforge.pedagogy_graph_builder.build_pedagogy_graph(chunks=chunks, course_id=course_slug)`; persists graph to `LibV2/courses/<slug>/concept_graph/concept_graph_semantic.json` and `manifest.json`; computes `sha256` and routes it through `phase_outputs.concept_extraction.concept_graph_sha256`.
 - **Verification:** `pytest MCP/tests/test_pipeline_tools.py::test_run_concept_extraction_emits_graph -v` PASSES.
 
-#### Subtask 13: Refactor `Trainforge/process_course.py:3624-3628` to skip pedagogy-graph build when concept_extraction phase ran
-- **Files:** `/home/user/Ed4All/Trainforge/process_course.py:3580-3680`
+#### Subtask 13: Refactor `Trainforge/process_course.py` `build_pedagogy_graph` call site to skip when concept_extraction phase ran
+*(Citations refreshed Phase 6-prep against HEAD `ae7779e`; lines drifted as Phase 3.5/4/7a landed.)*
+- **Files:** `/home/user/Ed4All/Trainforge/process_course.py:~3300-3420` (outer block at `:3302` documents the `build_pedagogy_graph` flow; import at `:3345`; call site at `:3402-3407`; failure-fallback log at `:3410`)
 - **Depends on:** Subtask 12
 - **Estimated LOC:** ~50
 - **Change:** Read `concept_graph_path` from input; if present, load the concept graph from there instead of re-building. Keep the existing build path as a fallback for legacy corpora.
@@ -161,7 +185,8 @@ Estimated total LOC: ~3,200 (200 ABCD schema + 250 BLOOMS_VERBS + 200 compose_ab
 - **Verification:** `pytest lib/ontology/tests/test_concept_objective_linker.py -v` reports ≥5 PASSED.
 
 #### Subtask 16: Wire `concept_objective_linker` invocation into `_plan_course_structure`
-- **Files:** `/home/user/Ed4All/MCP/tools/pipeline_tools.py:2517-2685`
+*(Citations refreshed Phase 6-prep against HEAD `ae7779e`; lines drifted as Phase 3.5/4/7a landed.)*
+- **Files:** `/home/user/Ed4All/MCP/tools/pipeline_tools.py:3789-3957` (the same `_plan_course_structure` async helper widened in Subtask 7)
 - **Depends on:** Subtask 15
 - **Estimated LOC:** ~30
 - **Change:** When `concept_graph_path` is supplied (Phase 6 enabled), call `link_concepts_to_objectives` after objective synthesis but before persisting `synthesized_objectives.json`. The `keyConcepts` field on each LO is populated from the linker.
