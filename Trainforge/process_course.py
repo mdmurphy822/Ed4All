@@ -59,14 +59,13 @@ from Trainforge.rag.boilerplate_detector import (
 )
 from Trainforge.rag.wcag_canonical_names import canonicalize_sc_references
 
-# Chunker logic (chunk_content, chunk_text_block, merge_small_sections,
-# merge_section_source_ids) lives at ``Trainforge/chunker/`` — a sibling
-# module within Trainforge, no longer a separate ``ed4all-chunker``
-# workspace package (re-merged per
-# ``plans/post-phase8-review-2026-05.md``). The CourseProcessor methods
-# below are thin wrappers that bind self-state into the chunker's
+# Chunker logic lives at ``Trainforge/chunker/`` (a sibling module
+# within Trainforge — see ``plans/post-phase8-review-2026-05.md`` for
+# the re-merge rationale). The ``CourseProcessor._chunk_content`` /
+# ``_chunk_text_block`` / ``_merge_small_sections`` methods below are
+# thin wrappers that bind self-state into the chunker's
 # ``ChunkerContext`` callback. Constants (MIN_CHUNK_SIZE / MAX_CHUNK_SIZE
-# / TARGET_CHUNK_SIZE / CANONICAL_CHUNK_TYPES) are sourced from the
+# / TARGET_CHUNK_SIZE / CANONICAL_CHUNK_TYPES) are aliased to the
 # chunker module so the chunker + Trainforge can never drift; the
 # module-level + class-attribute aliases are preserved for back-compat
 # with external imports (e.g. scripts/wave81_reclassify_chunks.py
@@ -79,7 +78,6 @@ from Trainforge.chunker import (
     ChunkerContext as _ChunkerContext,
     chunk_content as _pkg_chunk_content,
     chunk_text_block as _pkg_chunk_text_block,
-    merge_section_source_ids as _pkg_merge_section_source_ids,
     merge_small_sections as _pkg_merge_small_sections,
 )
 
@@ -1644,20 +1642,19 @@ class CourseProcessor:
     def _chunk_content(self, parsed_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Chunk parsed IMSCC items into a list of chunk dicts.
 
-        Phase 7a Subtask 6: canonical chunker logic lives in
-        ``ed4all_chunker.chunker.chunk_content``. This wrapper:
+        Owns three Trainforge-specific concerns that ``Trainforge.chunker.chunk_content``
+        deliberately doesn't:
 
-        - Binds ``self._create_chunk`` as the package's per-chunk
-          materialisation callback (the dependency boundary documented
-          in the package module docstring — ``_create_chunk`` reads
-          ``self.capture``, ``self._lo_parent_map``, ``self.OBJECTIVE_CODE_RE``,
-          etc., so it stays on this class).
-        - Restores the side channels the package returns:
+        - Binds ``self._create_chunk`` as the chunker's per-chunk
+          materialisation callback. ``_create_chunk`` reads
+          ``self.capture``, ``self._lo_parent_map``,
+          ``self.OBJECTIVE_CODE_RE``, etc., so it stays on this class.
+        - Surfaces the chunker's side-channel return: stamps
           ``self._pages_with_misconceptions`` (denominator for
           ``misconceptions_present_rate`` in ``quality_report.json``)
           and ``self.stats["total_chunks"]``.
         - Preserves the legacy ``"  Generated N chunks"`` console line
-          for parity with operator-visible logs.
+          for operator-visible parity.
         """
 
         result = _pkg_chunk_content(
@@ -1679,41 +1676,21 @@ class CourseProcessor:
     # (primary overrides contributing, contributing overrides corroborating).
     _SOURCE_ROLE_PRECEDENCE = {"primary": 0, "contributing": 1, "corroborating": 2}
 
-    def _merge_section_source_ids(
-        self, accumulated: List[str], section_source_ids: List[str]
-    ) -> List[str]:
-        """Union two sourceId-string lists, dedupe, preserve insertion order.
-
-        Phase 7a Subtask 6: canonical implementation lives in
-        ``ed4all_chunker.chunker.merge_section_source_ids``. Wrapper
-        preserves the bound-method surface for any external callers
-        (the package function is pure — no ``self`` reference).
-        """
-
-        return _pkg_merge_section_source_ids(accumulated, section_source_ids)
-
     def _merge_small_sections(
         self, sections
     ) -> List[Tuple[str, str, str, List[str]]]:
-        """Merge adjacent sections that are below MIN_CHUNK_SIZE into combined blocks.
+        """Merge adjacent sections below ``MIN_CHUNK_SIZE`` into combined blocks.
 
-        Phase 7a Subtask 6: canonical implementation lives in
-        ``ed4all_chunker.chunker.merge_small_sections``. Wrapper
-        preserves the bound-method surface for direct test callers
-        (``Trainforge/tests/test_merge_small_sections_zero_word.py`` invokes
-        ``proc._merge_small_sections(sections)``). The package function
-        is duck-typed on ``section.heading`` / ``.content`` /
-        ``.word_count`` / ``.source_references`` / ``.template_type`` so
-        it works against ``ContentSection`` (Trainforge) or any future
-        section-like model. The package's default heading-classifier is
-        byte-identical to ``CourseProcessor._type_from_heading`` so we
-        let it use its own (no need to thread ``self._type_from_heading``).
+        Thin wrapper over ``Trainforge.chunker.merge_small_sections`` that
+        threads ``self.MAX_CHUNK_SIZE`` (the chunker function is duck-typed
+        on the section objects so no other state binding is needed). Kept
+        for direct test callers
+        (``Trainforge/tests/test_merge_small_sections_zero_word.py`` and
+        ``test_html_content_parser_template_type.py`` invoke
+        ``proc._merge_small_sections(sections)``).
 
         Returns list of (heading, combined_text, chunk_type,
-        merged_source_ids, merged_headings) tuples. See the lifted
-        function's docstring for the full Wave-81 / Wave-83 / Wave-84
-        commentary on template-type / zero-word / merged-headings
-        propagation.
+        merged_source_ids, merged_headings) tuples.
         """
 
         return _pkg_merge_small_sections(
@@ -1731,16 +1708,13 @@ class CourseProcessor:
     ) -> List[Dict[str, Any]]:
         """Split a text block into one or more chunks (xpath/char-span provenance preserved).
 
-        Phase 7a Subtask 6: canonical implementation lives in
-        ``ed4all_chunker.chunker.chunk_text_block``. Wrapper preserves
-        the bound-method surface so direct test callers
-        (``Trainforge/tests/test_provenance.py`` invokes
-        ``proc._chunk_text_block(...)`` to drive the splitter) keep
-        working unchanged. The package function dispatches each emit to
-        ``ctx.create_chunk`` which we bind to ``self._create_chunk`` so
-        the materialised chunks carry the full Trainforge metadata
-        surface (concept_tags, objective_refs, bloom_level, etc.) the
-        callback resolves from ``self``-state.
+        Thin wrapper over ``Trainforge.chunker.chunk_text_block`` that
+        binds ``self._create_chunk`` (so the materialised chunks carry
+        the full Trainforge metadata surface — concept_tags,
+        objective_refs, bloom_level — that the callback resolves from
+        ``self``-state) and threads ``self.MAX_CHUNK_SIZE`` /
+        ``self.TARGET_CHUNK_SIZE``. Kept for the direct test caller at
+        ``Trainforge/tests/test_provenance.py``.
 
         See docs/compliance/audit-trail.md for the round-trip contract
         on ``source.html_xpath`` / ``source.char_span``.
