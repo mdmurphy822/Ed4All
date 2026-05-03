@@ -24,6 +24,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -44,6 +45,13 @@ _EXPECTED_SUBDIRS = (
     "source/html",
     "source/imscc",
 )
+
+# Phase 6 ST 19: shape regex for concept_graph_sha256. Mirrors the
+# schema pattern in schemas/library/course_manifest.schema.json so a
+# manifest violating the regex here would also fail jsonschema; the
+# duplicated regex is intentional — when jsonschema isn't installed
+# the validator's structural-fallback path still validates the field.
+_CONCEPT_GRAPH_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class LibV2ManifestValidator:
@@ -132,6 +140,9 @@ class LibV2ManifestValidator:
 
         # -- 7. features.source_provenance advisory flag.
         issues.extend(self._check_source_provenance_flag(manifest))
+
+        # -- 8. Phase 6 ST 19: concept_graph_sha256 advisory check.
+        issues.extend(self._check_concept_graph_sha256(manifest, course_dir))
 
         critical_count = sum(1 for i in issues if i.severity == "critical")
         passed = critical_count == 0
@@ -399,6 +410,113 @@ class LibV2ManifestValidator:
                     "LibV2 catalog indexes can surface the course."
                 ),
             ))
+
+        return issues
+
+    @staticmethod
+    def _check_concept_graph_sha256(
+        manifest: Dict[str, Any], course_dir: Path,
+    ) -> List[GateIssue]:
+        """Phase 6 ST 19: warning-severity gate on ``concept_graph_sha256``.
+
+        Per plan: in Phase 6, this validator surfaces the field's
+        absence / shape errors / on-disk hash divergence as warnings;
+        Phase 7c promotes to critical once Worker C-J's
+        ``_run_concept_extraction`` is in the canonical run.
+
+        Three checks (each warning):
+          1. ``MISSING_CONCEPT_GRAPH_SHA256`` — manifest has no
+             ``concept_graph_sha256`` field at all.
+          2. ``INVALID_CONCEPT_GRAPH_SHA256`` — value is not a 64-char
+             lowercase hex string (matches the schema regex).
+          3. ``CONCEPT_GRAPH_HASH_MISMATCH`` — manifest carries a hash
+             AND ``concept_graph/concept_graph_semantic.json`` exists
+             on disk, but the recomputed hash diverges. This is the
+             load-bearing signal: schema validation alone (regex)
+             can't catch a stale-or-tampered hash.
+
+        Schema source-of-truth: ``schemas/library/course_manifest.schema.json``
+        ``concept_graph_sha256`` is optional in Phase 6 (Wave 6-D);
+        will be required by the Phase 7c validator promotion.
+        """
+        issues: List[GateIssue] = []
+        graph_file = (
+            course_dir / "concept_graph" / "concept_graph_semantic.json"
+        )
+
+        cg_hash = manifest.get("concept_graph_sha256")
+        if cg_hash is None:
+            # Only warn when a graph file actually exists — pre-Phase-6
+            # archives that lack any concept graph at all should not
+            # surface a noise warning.
+            if graph_file.exists():
+                issues.append(GateIssue(
+                    severity="warning",
+                    code="MISSING_CONCEPT_GRAPH_SHA256",
+                    message=(
+                        "concept_graph_semantic.json exists on disk but "
+                        "manifest has no concept_graph_sha256 field. "
+                        "Phase 6 ST 18 should populate this field."
+                    ),
+                    location=str(graph_file),
+                    suggestion=(
+                        "Ensure archive_to_libv2 receives the hash from "
+                        "the concept_extraction phase output (workflow "
+                        "runner threads concept_graph_sha256 via "
+                        "inputs_from), or recomputes from the on-disk "
+                        "graph file. Phase 7c promotes this to critical."
+                    ),
+                ))
+            return issues
+
+        # Field present — validate shape (mirror schema regex).
+        if not isinstance(cg_hash, str) or not _CONCEPT_GRAPH_SHA256_RE.match(
+            cg_hash
+        ):
+            issues.append(GateIssue(
+                severity="warning",
+                code="INVALID_CONCEPT_GRAPH_SHA256",
+                message=(
+                    f"concept_graph_sha256 must be a 64-char lowercase "
+                    f"hex string; got: {cg_hash!r}"
+                ),
+                suggestion=(
+                    "See schemas/library/course_manifest.schema.json "
+                    "concept_graph_sha256 pattern."
+                ),
+            ))
+            return issues
+
+        # Hash present + well-shaped — verify it matches the on-disk
+        # graph file when one exists. This is the load-bearing check
+        # that catches stale / tampered values.
+        if graph_file.exists() and graph_file.is_file():
+            try:
+                actual = hashlib.sha256(graph_file.read_bytes()).hexdigest()
+            except OSError as exc:
+                issues.append(GateIssue(
+                    severity="warning",
+                    code="CONCEPT_GRAPH_READ_ERROR",
+                    message=(
+                        f"Failed to recompute hash for {graph_file}: {exc}"
+                    ),
+                    location=str(graph_file),
+                ))
+                return issues
+            if actual != cg_hash:
+                issues.append(GateIssue(
+                    severity="warning",
+                    code="CONCEPT_GRAPH_HASH_MISMATCH",
+                    message=(
+                        f"concept_graph_sha256 in manifest ({cg_hash[:16]}...) "
+                        f"does not match disk ({actual[:16]}...)."
+                    ),
+                    location=str(graph_file),
+                    suggestion=(
+                        "Re-run the concept_extraction phase or update "
+                        "the manifest's concept_graph_sha256."
+                    ),
+                ))
 
         return issues
 
