@@ -314,6 +314,118 @@ def test_escalated_block_uses_richer_prompt(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Required-attribute directive (post-Phase-3.5 prompt tightening)
+# ---------------------------------------------------------------------------
+
+
+def _capture_rewrite_request(
+    monkeypatch, *, block: Block,
+) -> str:
+    """Drive a single rewrite call against a stubbed httpx transport and
+    return the concatenated message text from the wire body. The wire
+    body is JSON-encoded (so `"` in the prompt becomes `\\"`); decoding
+    it back to the message content lets prompt-shape assertions match
+    on the literal prompt text the model sees.
+
+    The handler returns CURIE-preserving HTML so the rewrite-tier gate
+    accepts on first try — the assertion is on what was SENT, not on
+    what came back.
+    """
+    import json as _json
+
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    monkeypatch.setenv("LOCAL_SYNTHESIS_BASE_URL", "http://localhost:11434/v1")
+
+    seen: List[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        body = "<section><p>Stub HTML — prompt content is what the test inspects.</p></section>"
+        return httpx.Response(200, json=_success_body(body))
+
+    provider = RewriteProvider(provider="local", client=_make_client(handler))
+    provider.generate_rewrite(block)
+    assert len(seen) == 1
+    payload = _json.loads(seen[0].read().decode("utf-8"))
+    return "\n".join(m.get("content", "") for m in payload.get("messages", []))
+
+
+def test_rewrite_prompt_enumerates_required_attrs_for_concept(monkeypatch):
+    """The standard rewrite prompt must enumerate the post-rewrite gate's
+    REQUIRED_ATTRS for the block_type AND interpolate the literal
+    block_id as the data-cf-block-id value. The two together close the
+    Qwen-7B-Q4 regression where the rewrite tier omitted data-cf-* attrs
+    because the prompt described them in prose only."""
+    block = Block(
+        block_id="page1#concept_rdf_basics_0",
+        block_type="concept",
+        page_id="page1",
+        sequence=0,
+        content={"key_claims": ["RDF is a graph data model."], "curies": []},
+    )
+    request_body = _capture_rewrite_request(monkeypatch, block=block)
+
+    assert "Required attributes" in request_body, (
+        "rewrite prompt missing the gate-enforced attribute directive"
+    )
+    # concept REQUIRED_ATTRS = (data-cf-block-id, data-cf-content-type,
+    # data-cf-key-terms). Each must appear literally in the prompt.
+    assert "data-cf-block-id" in request_body
+    assert "data-cf-content-type" in request_body
+    assert "data-cf-key-terms" in request_body
+    # The block_id literal must be quoted for the model to copy verbatim.
+    assert 'data-cf-block-id="page1#concept_rdf_basics_0"' in request_body
+
+
+def test_rewrite_prompt_enumerates_required_attrs_for_assessment_item(monkeypatch):
+    """assessment_item REQUIRED_ATTRS adds data-cf-objective-ref and
+    data-cf-bloom-level on top of data-cf-block-id; the prompt must list
+    all three. This is the regression class observed on Qwen-7B-Q4 where
+    the assessment_item rewrite dropped objective_ref + bloom_level even
+    though the outline contained them."""
+    block = Block(
+        block_id="page1#assessment_item_q1_0",
+        block_type="assessment_item",
+        page_id="page1",
+        sequence=0,
+        content={
+            "key_claims": ["Question stem"],
+            "curies": [],
+            "objective_refs": ["TO-01"],
+            "bloom_level": "remember",
+        },
+    )
+    request_body = _capture_rewrite_request(monkeypatch, block=block)
+
+    assert "Required attributes" in request_body
+    assert "data-cf-block-id" in request_body
+    assert "data-cf-objective-ref" in request_body
+    assert "data-cf-bloom-level" in request_body
+    assert 'data-cf-block-id="page1#assessment_item_q1_0"' in request_body
+
+
+def test_rewrite_escalated_prompt_also_enumerates_required_attrs(monkeypatch):
+    """The escalated prompt branch (escalation_marker != None) carries
+    the same required-attribute directive as the standard branch — the
+    contract is invariant across the escalation seam."""
+    block = Block(
+        block_id="page2#concept_x_0",
+        block_type="concept",
+        page_id="page2",
+        sequence=0,
+        content={"key_claims": ["X"], "curies": []},
+        escalation_marker="outline_budget_exhausted",
+    )
+    request_body = _capture_rewrite_request(monkeypatch, block=block)
+
+    assert "ESCALATED REWRITE" in request_body
+    assert "Required attributes" in request_body
+    assert "data-cf-content-type" in request_body
+    assert 'data-cf-block-id="page2#concept_x_0"' in request_body
+
+
+# ---------------------------------------------------------------------------
 # Touch chain
 # ---------------------------------------------------------------------------
 
