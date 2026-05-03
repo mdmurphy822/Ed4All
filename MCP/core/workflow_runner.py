@@ -840,6 +840,39 @@ class WorkflowRunner:
             if synthesized is not None:
                 phase_outputs["dart_conversion"] = synthesized
 
+        # Phase 5 Subtask 2: honour --outline (courseforge-rewrite /
+        # courseforge-validate / courseforge-* stage subcommands) by
+        # synthesising every upstream phase's phase_output from the
+        # on-disk artifacts under the project export + LibV2 course dir.
+        # The phase loop's _completed skip check then short-circuits
+        # every upstream phase, so the downstream target phase
+        # (typically content_generation_rewrite) runs without
+        # re-dispatching the upstream chain. Honours --force by
+        # flipping _completed to False on phases the operator
+        # explicitly wants re-run.
+        outline_dir_param = workflow_params.get("outline_dir")
+        if outline_dir_param:
+            try:
+                outline_synth = self._synthesize_outline_output(
+                    Path(outline_dir_param)
+                )
+            except Exception as e:  # noqa: BLE001 — defensive
+                logger.error(
+                    "outline reuse: synthesis raised %s; falling through",
+                    e,
+                )
+                outline_synth = {}
+            force_phases = workflow_params.get("force_phases") or []
+            if isinstance(force_phases, str):
+                force_phases = [
+                    p.strip() for p in force_phases.split(",") if p.strip()
+                ]
+            for phase_name, phase_out in outline_synth.items():
+                if phase_name in phase_outputs:
+                    continue
+                if phase_name in force_phases:
+                    phase_out = {**phase_out, "_completed": False}
+                phase_outputs[phase_name] = phase_out
 
         # Update workflow status
         workflow_state["status"] = "RUNNING"
@@ -1639,6 +1672,501 @@ class WorkflowRunner:
                 "objectives JSON"
             ),
         }
+
+    def _synthesize_outline_output(
+        self,
+        outline_dir: Path,
+        target_phases: Optional[List[str]] = None,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Reconstruct phase_outputs for upstream phases from disk.
+
+        Phase 5 Subtask 2. When an operator runs ``ed4all run
+        courseforge-rewrite`` (or any of the new courseforge-* stage
+        subcommands), the upstream phases — dart_conversion, staging,
+        chunking, objective_extraction, source_mapping,
+        concept_extraction, course_planning,
+        content_generation_outline, inter_tier_validation — must already
+        have run; their output artifacts live under the project export
+        directory + the course's LibV2 directory. This synthesizer walks
+        those locations and reconstructs the per-phase ``phase_outputs``
+        dicts (matching the keys ``inputs_from`` references in
+        ``config/workflows.yaml``) so the workflow runner's ``_completed``
+        skip check at line 860 fires for every upstream phase. The
+        rewrite tier (or any single-tier phase that depends on these
+        upstream outputs) then runs without re-dispatching the upstream
+        phases.
+
+        ``outline_dir`` accepts either:
+
+        * The Courseforge project export root, e.g.
+          ``Courseforge/exports/PROJ-PHYS_101-20260502/``.
+        * The ``01_outline/`` subdirectory inside that project, e.g.
+          ``Courseforge/exports/PROJ-PHYS_101-20260502/01_outline``.
+
+        In either case we resolve to the project_path. ``project_config.json``
+        at the project root supplies course_name + staging_dir.
+
+        Returns a dict keyed by phase_name; each value is a phase_outputs
+        dict carrying ``_completed: True`` plus the canonical output
+        keys that ``inputs_from`` for downstream phases pulls. When an
+        upstream artifact is absent / unreadable, that phase is omitted
+        from the returned dict (warning-logged) so the workflow runner's
+        ``_dependencies_met`` check at line 1643 surfaces the gap as a
+        normal dependency failure rather than a silent inconsistency.
+
+        Recognized phase names (plan §5):
+
+        * ``dart_conversion`` — synthesises ``output_paths`` from the
+          staging manifest's HTML inputs (each staged ``*_accessible.html``
+          maps back to a DART output).
+        * ``staging`` — ``staging_dir`` from project_config.json.
+        * ``chunking`` — reads ``LibV2/courses/<slug>/dart_chunks/
+          manifest.json`` for ``dart_chunks_sha256`` + ``chunks.jsonl``
+          path.
+        * ``objective_extraction`` — reads
+          ``<project>/01_learning_objectives/textbook_structure.json``.
+        * ``source_mapping`` — reads ``<project>/source_module_map.json``.
+        * ``concept_extraction`` — reads
+          ``LibV2/courses/<slug>/concept_graph/manifest.json``.
+        * ``course_planning`` — reads
+          ``<project>/01_learning_objectives/synthesized_objectives.json``.
+        * ``content_generation_outline`` — reads
+          ``<project>/01_outline/blocks_outline.jsonl``.
+        * ``inter_tier_validation`` — reads
+          ``<project>/01_outline/blocks_validated.jsonl`` (+
+          ``blocks_failed.jsonl``).
+
+        ``target_phases`` filters which upstream phases to reconstruct;
+        defaults to the full canonical list above. Unknown names are
+        silently dropped (not an error).
+        """
+        from pathlib import Path as _Path
+
+        canonical_phases = [
+            "dart_conversion",
+            "staging",
+            "chunking",
+            "objective_extraction",
+            "source_mapping",
+            "concept_extraction",
+            "course_planning",
+            "content_generation_outline",
+            "inter_tier_validation",
+        ]
+        if target_phases is None:
+            phases = list(canonical_phases)
+        else:
+            phases = [p for p in target_phases if p in canonical_phases]
+
+        outline_dir = _Path(outline_dir)
+        if outline_dir.name == "01_outline":
+            project_path = outline_dir.parent
+        else:
+            project_path = outline_dir
+
+        if not project_path.is_dir():
+            logger.error(
+                "outline reuse: project_path is not a directory: %s",
+                project_path,
+            )
+            return {}
+
+        # Load project_config.json — supplies course_name +
+        # staging_dir + project_id.
+        config_path = project_path / "project_config.json"
+        config_data: Dict[str, Any] = {}
+        if config_path.exists():
+            try:
+                config_data = json.loads(
+                    config_path.read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError) as e:
+                logger.warning(
+                    "outline reuse: project_config.json unreadable at %s: %s",
+                    config_path, e,
+                )
+
+        course_name = (
+            config_data.get("course_name")
+            or project_path.name.split("-")[1] if "-" in project_path.name else ""
+        )
+        project_id = config_data.get("project_id") or project_path.name
+        course_slug = (
+            (course_name or "").lower().replace("_", "-").replace(" ", "-")
+        )
+        libv2_course_dir = (
+            PROJECT_ROOT / "LibV2" / "courses" / course_slug
+            if course_slug else None
+        )
+
+        synthesized: Dict[str, Dict[str, Any]] = {}
+
+        # ----- staging -----------------------------------------------
+        if "staging" in phases:
+            staging_dir_str = config_data.get("staging_dir")
+            staging_dir: Optional[Path] = None
+            if staging_dir_str:
+                cand = _Path(staging_dir_str)
+                if cand.is_dir():
+                    staging_dir = cand
+            # Fall back: walk Courseforge/inputs/textbooks/ for the
+            # most-recent staging dir whose manifest carries
+            # course_name == course_name.
+            if staging_dir is None:
+                inputs_root = (
+                    PROJECT_ROOT / "Courseforge" / "inputs" / "textbooks"
+                )
+                if inputs_root.is_dir() and course_name:
+                    candidates = []
+                    for cand in inputs_root.iterdir():
+                        if not cand.is_dir():
+                            continue
+                        manifest = cand / "staging_manifest.json"
+                        if not manifest.exists():
+                            continue
+                        try:
+                            mdata = json.loads(
+                                manifest.read_text(encoding="utf-8")
+                            )
+                        except (OSError, ValueError):
+                            continue
+                        if mdata.get("course_name") == course_name:
+                            candidates.append((manifest.stat().st_mtime, cand))
+                    if candidates:
+                        candidates.sort(reverse=True)
+                        staging_dir = candidates[0][1]
+
+            if staging_dir is not None and staging_dir.is_dir():
+                staged_files = sorted(
+                    str(p) for p in staging_dir.glob("*.html")
+                )
+                synthesized["staging"] = {
+                    "staging_dir": str(staging_dir),
+                    "staged_files": staged_files,
+                    "file_count": len(staged_files),
+                    "_completed": True,
+                    "_skipped": True,
+                    "_gates_passed": True,
+                    "_skip_reason": "outline reuse: staging_dir from project_config",
+                }
+            else:
+                logger.warning(
+                    "outline reuse: staging_dir not found for project %s "
+                    "(config_data.staging_dir=%r); skipping staging "
+                    "phase pre-population",
+                    project_id, staging_dir_str,
+                )
+
+        # Resolve dart_html_paths from staging if available.
+        # ----- dart_conversion ---------------------------------------
+        if "dart_conversion" in phases and "staging" in synthesized:
+            staged_files = synthesized["staging"].get("staged_files") or []
+            if staged_files:
+                synthesized["dart_conversion"] = {
+                    "output_path": staged_files[0],
+                    "output_paths": ",".join(staged_files),
+                    "html_path": staged_files[0],
+                    "html_paths": ",".join(staged_files),
+                    "success": True,
+                    "_completed": True,
+                    "_skipped": True,
+                    "_gates_passed": True,
+                    "_skip_reason": (
+                        "outline reuse: derived from staging manifest"
+                    ),
+                }
+
+        # ----- chunking ----------------------------------------------
+        if "chunking" in phases and libv2_course_dir is not None:
+            chunks_dir = libv2_course_dir / "dart_chunks"
+            chunks_path = chunks_dir / "chunks.jsonl"
+            manifest_path = chunks_dir / "manifest.json"
+            if chunks_path.exists() and manifest_path.exists():
+                try:
+                    cmanifest = json.loads(
+                        manifest_path.read_text(encoding="utf-8")
+                    )
+                    sha256 = cmanifest.get("chunks_sha256") or ""
+                    synthesized["chunking"] = {
+                        "dart_chunks_path": str(chunks_path),
+                        "dart_chunks_sha256": sha256,
+                        "manifest_path": str(manifest_path),
+                        "course_slug": course_slug,
+                        "chunks_count": cmanifest.get("chunks_count", 0),
+                        "_completed": True,
+                        "_skipped": True,
+                        "_gates_passed": True,
+                        "_skip_reason": (
+                            "outline reuse: read dart_chunks/manifest.json"
+                        ),
+                    }
+                except (OSError, ValueError) as e:
+                    logger.warning(
+                        "outline reuse: chunking manifest unreadable at "
+                        "%s: %s",
+                        manifest_path, e,
+                    )
+            else:
+                logger.warning(
+                    "outline reuse: chunking artifacts missing under "
+                    "%s; skipping chunking phase pre-population",
+                    chunks_dir,
+                )
+
+        # ----- objective_extraction ----------------------------------
+        if "objective_extraction" in phases:
+            structure_path = (
+                project_path / "01_learning_objectives"
+                / "textbook_structure.json"
+            )
+            if structure_path.exists():
+                chapter_count = 0
+                duration_weeks = config_data.get("duration_weeks")
+                try:
+                    structure_data = json.loads(
+                        structure_path.read_text(encoding="utf-8")
+                    )
+                    chapter_count = len(
+                        structure_data.get("chapters") or []
+                    )
+                    if duration_weeks is None:
+                        duration_weeks = structure_data.get("duration_weeks")
+                except (OSError, ValueError) as e:
+                    logger.warning(
+                        "outline reuse: textbook_structure.json "
+                        "unreadable: %s",
+                        e,
+                    )
+                synthesized["objective_extraction"] = {
+                    "project_id": project_id,
+                    "project_path": str(project_path),
+                    "textbook_structure_path": str(structure_path),
+                    "chapter_count": chapter_count,
+                    "duration_weeks": duration_weeks,
+                    "_completed": True,
+                    "_skipped": True,
+                    "_gates_passed": True,
+                    "_skip_reason": (
+                        "outline reuse: read textbook_structure.json"
+                    ),
+                }
+            else:
+                logger.warning(
+                    "outline reuse: textbook_structure.json missing at "
+                    "%s; skipping objective_extraction pre-population",
+                    structure_path,
+                )
+
+        # ----- source_mapping ----------------------------------------
+        if "source_mapping" in phases:
+            map_path = project_path / "source_module_map.json"
+            if map_path.exists():
+                source_chunk_ids: List[str] = []
+                try:
+                    map_data = json.loads(
+                        map_path.read_text(encoding="utf-8")
+                    )
+                    if isinstance(map_data, dict):
+                        for week_entries in map_data.values():
+                            if not isinstance(week_entries, list):
+                                continue
+                            for entry in week_entries:
+                                if isinstance(entry, dict):
+                                    cid = entry.get("chunk_id")
+                                    if cid:
+                                        source_chunk_ids.append(str(cid))
+                except (OSError, ValueError) as e:
+                    logger.warning(
+                        "outline reuse: source_module_map.json "
+                        "unreadable: %s",
+                        e,
+                    )
+                staging_dir_str = (
+                    synthesized.get("staging", {}).get("staging_dir") or ""
+                )
+                synthesized["source_mapping"] = {
+                    "source_module_map_path": str(map_path),
+                    "source_chunk_ids": sorted(set(source_chunk_ids)),
+                    "staging_dir": staging_dir_str,
+                    "_completed": True,
+                    "_skipped": True,
+                    "_gates_passed": True,
+                    "_skip_reason": (
+                        "outline reuse: read source_module_map.json"
+                    ),
+                }
+            else:
+                logger.warning(
+                    "outline reuse: source_module_map.json missing at "
+                    "%s; skipping source_mapping pre-population",
+                    map_path,
+                )
+
+        # ----- concept_extraction ------------------------------------
+        if "concept_extraction" in phases and libv2_course_dir is not None:
+            graph_dir = libv2_course_dir / "concept_graph"
+            graph_path = graph_dir / "concept_graph_semantic.json"
+            cmanifest_path = graph_dir / "manifest.json"
+            if graph_path.exists():
+                sha256 = ""
+                if cmanifest_path.exists():
+                    try:
+                        cmanifest = json.loads(
+                            cmanifest_path.read_text(encoding="utf-8")
+                        )
+                        sha256 = cmanifest.get("concept_graph_sha256") or ""
+                    except (OSError, ValueError):
+                        sha256 = ""
+                synthesized["concept_extraction"] = {
+                    "concept_graph_path": str(graph_path),
+                    "concept_graph_sha256": sha256,
+                    "course_slug": course_slug,
+                    "_completed": True,
+                    "_skipped": True,
+                    "_gates_passed": True,
+                    "_skip_reason": (
+                        "outline reuse: read concept_graph_semantic.json"
+                    ),
+                }
+            else:
+                logger.warning(
+                    "outline reuse: concept_graph_semantic.json missing "
+                    "at %s; skipping concept_extraction pre-population",
+                    graph_path,
+                )
+
+        # ----- course_planning ---------------------------------------
+        if "course_planning" in phases:
+            objectives_path = (
+                project_path / "01_learning_objectives"
+                / "synthesized_objectives.json"
+            )
+            if objectives_path.exists():
+                terminal_count = 0
+                chapter_count = 0
+                objective_ids: List[str] = []
+                try:
+                    odata = json.loads(
+                        objectives_path.read_text(encoding="utf-8")
+                    )
+                    terminal = odata.get("terminal_objectives") or []
+                    chapter_groups = odata.get("chapter_objectives") or []
+                    terminal_count = len(terminal)
+                    for to in terminal:
+                        if isinstance(to, dict) and to.get("id"):
+                            objective_ids.append(str(to["id"]))
+                    for group in chapter_groups:
+                        if not isinstance(group, dict):
+                            continue
+                        inner = group.get("objectives") or []
+                        for co in inner:
+                            if isinstance(co, dict) and co.get("id"):
+                                objective_ids.append(str(co["id"]))
+                                chapter_count += 1
+                except (OSError, ValueError) as e:
+                    logger.warning(
+                        "outline reuse: synthesized_objectives.json "
+                        "unreadable: %s",
+                        e,
+                    )
+                synthesized["course_planning"] = {
+                    "project_id": project_id,
+                    "synthesized_objectives_path": str(objectives_path),
+                    "objective_ids": ",".join(objective_ids),
+                    "terminal_count": terminal_count,
+                    "chapter_count": chapter_count,
+                    "_completed": True,
+                    "_skipped": True,
+                    "_gates_passed": True,
+                    "_skip_reason": (
+                        "outline reuse: read synthesized_objectives.json"
+                    ),
+                }
+            else:
+                logger.warning(
+                    "outline reuse: synthesized_objectives.json missing "
+                    "at %s; skipping course_planning pre-population",
+                    objectives_path,
+                )
+
+        # ----- content_generation_outline ----------------------------
+        outline_subdir = project_path / "01_outline"
+        if "content_generation_outline" in phases:
+            blocks_outline_path = outline_subdir / "blocks_outline.jsonl"
+            if blocks_outline_path.exists():
+                # Count weeks via a one-pass scan of the JSONL.
+                weeks_seen: set = set()
+                block_count = 0
+                try:
+                    with blocks_outline_path.open(
+                        "r", encoding="utf-8"
+                    ) as fh:
+                        for line in fh:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            block_count += 1
+                            try:
+                                entry = json.loads(line)
+                            except ValueError:
+                                continue
+                            wk = entry.get("week")
+                            if wk is not None:
+                                weeks_seen.add(wk)
+                except OSError as e:
+                    logger.warning(
+                        "outline reuse: blocks_outline.jsonl unreadable: %s",
+                        e,
+                    )
+                synthesized["content_generation_outline"] = {
+                    "blocks_outline_path": str(blocks_outline_path),
+                    "project_id": project_id,
+                    "weeks_prepared": len(weeks_seen),
+                    "block_count": block_count,
+                    "_completed": True,
+                    "_skipped": True,
+                    "_gates_passed": True,
+                    "_skip_reason": (
+                        "outline reuse: read blocks_outline.jsonl"
+                    ),
+                }
+            else:
+                logger.warning(
+                    "outline reuse: blocks_outline.jsonl missing at %s; "
+                    "skipping content_generation_outline pre-population",
+                    blocks_outline_path,
+                )
+
+        # ----- inter_tier_validation ---------------------------------
+        if "inter_tier_validation" in phases:
+            validated_path = outline_subdir / "blocks_validated.jsonl"
+            failed_path = outline_subdir / "blocks_failed.jsonl"
+            if validated_path.exists():
+                synthesized["inter_tier_validation"] = {
+                    "blocks_validated_path": str(validated_path),
+                    "blocks_failed_path": str(failed_path)
+                    if failed_path.exists()
+                    else "",
+                    "_completed": True,
+                    "_skipped": True,
+                    "_gates_passed": True,
+                    "_skip_reason": (
+                        "outline reuse: read blocks_validated.jsonl"
+                    ),
+                }
+            else:
+                logger.warning(
+                    "outline reuse: blocks_validated.jsonl missing at "
+                    "%s; skipping inter_tier_validation pre-population",
+                    validated_path,
+                )
+
+        logger.info(
+            "outline reuse: synthesised phase_outputs for %d phase(s) "
+            "from %s: %s",
+            len(synthesized), project_path, sorted(synthesized.keys()),
+        )
+        return synthesized
 
     def _dependencies_met(
         self, phase: WorkflowPhase, phase_outputs: Dict[str, Dict]
