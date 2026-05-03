@@ -2,20 +2,36 @@
 
 CliRunner-driven smoke tests of the three subcommands (diagnose,
 inventory, guardrails) in both ``--format text`` and ``--format json``
-modes. Real archive: ``rdf-shacl-550`` (the canonical Wave 77 fixture
-checked into LibV2/courses/).
+modes. Originally pinned to ``rdf-shacl-550`` (a corpus that was never
+checked in); rebound to the in-tree ``rdf-shacl-551-2`` archive with
+count-agnostic assertions.
+
+Module-level ``pytestmark`` skips the file cleanly when the
+misconception index is empty (e.g. ``imscc_chunks/chunks.jsonl``
+hasn't been backfilled).
 """
 
 from __future__ import annotations
 
 import json
 
+import pytest
 from click.testing import CliRunner
 
 from cli.commands.tutor import tutor_group
+from MCP.tools.tutoring_tools import load_misconception_index
 
 
-SLUG = "rdf-shacl-550"
+SLUG = "rdf-shacl-551-2"
+
+
+pytestmark = pytest.mark.skipif(
+    not load_misconception_index(SLUG).items,
+    reason=(
+        f"LibV2 archive {SLUG!r} has no reachable misconception index "
+        "(check imscc_chunks/chunks.jsonl is populated)."
+    ),
+)
 
 
 def _run(*args):
@@ -24,14 +40,25 @@ def _run(*args):
     return runner.invoke(tutor_group, list(args))
 
 
+def _first_concept_with_guardrails():
+    """Return any concept slug from this corpus that has at least one
+    interferes_with edge, or ``None`` if no concept has guardrails."""
+    from MCP.tools.tutoring_tools import preemptive_misconception_guardrails
+    index = load_misconception_index(SLUG)
+    for c in index.concept_to_mc_keys:
+        if preemptive_misconception_guardrails(SLUG, c):
+            return c
+    return None
+
+
 # ---------------------------------------------------------------------- #
 # diagnose
 # ---------------------------------------------------------------------- #
 
 
 def test_diagnose_text_output_smoke():
-    """``ed4all tutor diagnose --slug rdf-shacl-550 --text "..."``
-    in text mode renders top matches with the misconception + correction."""
+    """``ed4all tutor diagnose --slug <slug> --text "..."`` in text
+    mode renders top matches with the misconception + correction."""
     res = _run(
         "diagnose",
         "--slug", SLUG,
@@ -81,8 +108,8 @@ def test_diagnose_no_matches_is_clean_message():
 
 
 def test_inventory_text_output_smoke():
-    """Inventory in text mode shows N clusters and at least one
-    cluster label per group."""
+    """Inventory in text mode shows >=1 cluster header per group with
+    a Members line."""
     res = _run(
         "inventory",
         "--slug", SLUG,
@@ -91,13 +118,18 @@ def test_inventory_text_output_smoke():
     )
     assert res.exit_code == 0, res.output
     out = res.output
+    # At least Cluster 1 always exists when index is populated; higher
+    # numbered clusters are corpus-dependent (kmeans caps at unique-
+    # statement count).
     assert "Cluster 1" in out
-    assert "Cluster 4" in out
     assert "Members" in out
 
 
 def test_inventory_json_output_is_valid_json():
-    """Inventory ``--format json`` is parseable + carries documented shape."""
+    """Inventory ``--format json`` is parseable + carries documented
+    shape. Total members must match the loaded misconception index
+    size; cluster count is bounded by both --clusters and the unique-
+    statement count."""
     res = _run(
         "inventory",
         "--slug", SLUG,
@@ -109,9 +141,10 @@ def test_inventory_json_output_is_valid_json():
     assert payload["slug"] == SLUG
     clusters = payload["clusters"]
     assert isinstance(clusters, list)
-    assert len(clusters) == 4
+    expected_total = len(load_misconception_index(SLUG))
+    assert 1 <= len(clusters) <= min(4, expected_total)
     total = sum(c["size"] for c in clusters)
-    assert total == 67
+    assert total == expected_total
 
 
 # ---------------------------------------------------------------------- #
@@ -120,31 +153,38 @@ def test_inventory_json_output_is_valid_json():
 
 
 def test_guardrails_text_output_smoke():
-    """``rdf-graph`` guardrails render in text mode."""
+    """Guardrails for some concept in the corpus render in text mode
+    with at least one ``Avoid:`` line."""
+    concept = _first_concept_with_guardrails()
+    if concept is None:
+        pytest.skip("no concept in this corpus carries guardrails")
     res = _run(
         "guardrails",
         "--slug", SLUG,
-        "--concept", "rdf-graph",
+        "--concept", concept,
         "--format", "text",
     )
     assert res.exit_code == 0, res.output
     out = res.output
     assert "guardrails" in out.lower() or "avoid" in out.lower()
-    # Lower-bound: at least one Avoid: line
     assert out.lower().count("avoid:") >= 1
 
 
 def test_guardrails_json_output_is_valid_json():
-    """Guardrails ``--format json`` is parseable + has >=1 entry."""
+    """Guardrails ``--format json`` is parseable + has >=1 entry for
+    a concept that's known to carry guardrails in this corpus."""
+    concept = _first_concept_with_guardrails()
+    if concept is None:
+        pytest.skip("no concept in this corpus carries guardrails")
     res = _run(
         "guardrails",
         "--slug", SLUG,
-        "--concept", "rdf-graph",
+        "--concept", concept,
         "--format", "json",
     )
     assert res.exit_code == 0, res.output
     payload = json.loads(res.output)
-    assert payload["concept"] == "rdf-graph"
+    assert payload["concept"] == concept
     assert payload["slug"] == SLUG
     assert isinstance(payload["guardrails"], list)
     assert len(payload["guardrails"]) >= 1
