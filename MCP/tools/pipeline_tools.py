@@ -6324,8 +6324,17 @@ def _build_tool_registry() -> dict:
                     chunk_id = (
                         f"{course_code_lower}_chunk_{chunk_counter:05d}"
                     )
+                    # Phase 8 ST 6: emit canonical 'id' key
+                    # (build_pedagogy_graph at
+                    # Trainforge/pedagogy_graph_builder.py:593 reads
+                    # c.get('id'); pre-Phase-8 chunk_id-keyed emit was
+                    # silently dropped). Forward path (upstream
+                    # dart_chunks_path JSONL load at :6231-6243) already
+                    # emits canonical id via the chunker package; this
+                    # fixes the fallback path that runs when
+                    # dart_chunks_path is absent or unreadable.
                     chunks.append({
-                        "chunk_id": chunk_id,
+                        "id": chunk_id,
                         "text": chunk_text,
                         "concept_tags": concept_tags,
                         "learning_outcome_refs": [],
