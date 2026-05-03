@@ -1007,6 +1007,31 @@ class WorkflowRunner:
             extracted["_gates_passed"] = gates_passed
             phase_outputs[phase_name] = extracted
 
+            # Phase 5 Subtask 4: write the operator-facing
+            # ``02_validation_report/report.json`` aggregation after
+            # the ``inter_tier_validation`` and
+            # ``post_rewrite_validation`` phases complete. The shipped
+            # ``_run_inter_tier_validation`` helper writes JSONL only
+            # (``blocks_validated_path`` + ``blocks_failed_path``); the
+            # operator-facing structured per-block summary is a Phase 5
+            # deliverable. Best-effort — failure to write the report
+            # does NOT abort the workflow (it's an aggregation; the
+            # raw JSONL is the source of truth).
+            if phase_name in ("inter_tier_validation", "post_rewrite_validation"):
+                try:
+                    self._write_validation_report(
+                        workflow_id=workflow_id,
+                        phase_name=phase_name,
+                        phase_output=extracted,
+                        gate_results_list=gate_results,
+                    )
+                except Exception as exc:  # noqa: BLE001 — defensive
+                    logger.warning(
+                        "Phase 5 validation_report writer failed for "
+                        "%s (non-fatal): %s",
+                        phase_name, exc,
+                    )
+
             # Persist phase outputs
             workflow_state["phase_outputs"] = phase_outputs
             self._save_workflow_state(workflow_path, workflow_state)
@@ -1293,11 +1318,55 @@ class WorkflowRunner:
         ``content_generation`` phase carries
         ``enabled_when_env: "COURSEFORGE_TWO_PASS!=true"`` to disable
         itself when the new two-pass router is engaged).
+
+        Phase 5 Subtask 4: when ``workflow_params['courseforge_stage']``
+        is set (CLI plumbed by ``cli/commands/run.py`` for the four
+        Phase 5 ``courseforge-*`` subcommands), phases NOT in the
+        active-phase whitelist for that stage are skipped. Whitelist
+        per stage:
+
+        * ``courseforge_outline``: ``[content_generation_outline]``.
+          Validate + rewrite + post_rewrite_validation skip.
+        * ``courseforge_validate``: ``[inter_tier_validation,
+          post_rewrite_validation]``. The two read-only validator
+          phases run; outline + rewrite skip.
+        * ``courseforge_rewrite``: ``[content_generation_rewrite,
+          post_rewrite_validation]``. Outline + inter_tier_validation
+          skip (the rewrite tier consumes the synthesizer-reconstructed
+          ``inter_tier_validation`` output from disk via
+          ``_synthesize_outline_output``).
+        * ``courseforge`` / ``full`` (or absent — falls through to
+          existing behaviour): all four two-pass phases run; nothing
+          skipped from the courseforge whitelist.
+
+        Upstream phases (dart_conversion, staging, chunking,
+        objective_extraction, source_mapping, concept_extraction,
+        course_planning) are also skipped because the runner
+        pre-populates them via ``_synthesize_outline_output`` before
+        the phase loop runs (their ``_completed=True`` guard at
+        ``run_workflow:897`` already short-circuits them; this gate
+        catches the case where the synthesizer didn't fire — e.g.
+        operator passed only ``--course-name`` without setting up a
+        prior project export). Downstream phases (packaging,
+        imscc_chunking, trainforge_assessment, training_synthesis,
+        libv2_archival, finalization) skip because the Phase 5 stage
+        subcommands are scoped to the Courseforge two-pass surface
+        only — operators who want post-rewrite phases should run the
+        full ``ed4all run textbook-to-course`` pipeline.
         """
         predicate = getattr(phase, "enabled_when_env", None)
         if predicate:
             if not self._eval_enabled_when_env(predicate):
                 return True
+
+        # Phase 5 Subtask 4: courseforge_stage whitelist gate. Runs
+        # BEFORE the optional-phase early-return below so non-optional
+        # phases (e.g. dart_conversion, packaging) can still be
+        # skipped when the operator scoped a stage subcommand to a
+        # subset of the Courseforge surface.
+        stage = workflow_params.get("courseforge_stage")
+        if stage and self._should_skip_for_courseforge_stage(phase.name, stage):
+            return True
 
         if not getattr(phase, "optional", False):
             return False
@@ -1307,6 +1376,74 @@ class WorkflowRunner:
             return not workflow_params.get("generate_assessments", True)
 
         return False
+
+    # Phase 5 Subtask 4: per-stage active-phase whitelist. Source of
+    # truth for the four ``courseforge-*`` subcommand handlers in
+    # ``cli/commands/run.py``. Stage names accept both hyphenated
+    # (``courseforge-rewrite``) and underscored (``courseforge_rewrite``)
+    # spellings — ``run.py::_normalize_workflow`` already collapses
+    # hyphens to underscores before passing the stage through, but
+    # we accept both here for defence-in-depth.
+    _COURSEFORGE_STAGE_ACTIVE_PHASES: Dict[str, frozenset] = {
+        "courseforge_outline": frozenset({"content_generation_outline"}),
+        "courseforge_validate": frozenset({
+            "inter_tier_validation",
+            "post_rewrite_validation",
+        }),
+        "courseforge_rewrite": frozenset({
+            "content_generation_rewrite",
+            "post_rewrite_validation",
+        }),
+        "courseforge": frozenset({
+            "content_generation_outline",
+            "inter_tier_validation",
+            "content_generation_rewrite",
+            "post_rewrite_validation",
+        }),
+    }
+
+    @classmethod
+    def _resolve_courseforge_stage_active_phases(
+        cls, stage: str
+    ) -> Optional[frozenset]:
+        """Resolve a courseforge_stage name to its active-phase whitelist.
+
+        Returns ``None`` when ``stage`` is unrecognised so the caller
+        treats that as "no whitelist applied" and falls through to
+        normal phase-loop semantics.
+        """
+        if not stage:
+            return None
+        normalized = stage.replace("-", "_").strip().lower()
+        return cls._COURSEFORGE_STAGE_ACTIVE_PHASES.get(normalized)
+
+    def _should_skip_for_courseforge_stage(
+        self, phase_name: str, stage: str
+    ) -> bool:
+        """Return True if ``phase_name`` is NOT in the stage whitelist.
+
+        Phase 5 Subtask 4: phases outside the four-phase Courseforge
+        two-pass surface (``content_generation_outline``,
+        ``inter_tier_validation``, ``content_generation_rewrite``,
+        ``post_rewrite_validation``) are ALSO skipped when a stage is
+        active because Phase 5 stage subcommands are scoped to the
+        Courseforge surface only — pre-Courseforge phases pre-populate
+        via ``_synthesize_outline_output``, post-Courseforge phases
+        belong to the full ``textbook_to_course`` workflow.
+        """
+        active = self._resolve_courseforge_stage_active_phases(stage)
+        if active is None:
+            # Unknown stage — don't skip on behalf of a typo.
+            return False
+        # Phases inside the two-pass surface but outside the stage's
+        # whitelist => skip.
+        two_pass_surface = self._COURSEFORGE_STAGE_ACTIVE_PHASES["courseforge"]
+        if phase_name in two_pass_surface:
+            return phase_name not in active
+        # Phases outside the two-pass surface entirely — pre-Courseforge
+        # (synthesized via _synthesize_outline_output) and
+        # post-Courseforge (out-of-scope for stage subcommands) — skip.
+        return True
 
     @staticmethod
     def _eval_enabled_when_env(predicate: str) -> bool:
@@ -2242,6 +2379,243 @@ class WorkflowRunner:
             len(synthesized), project_path, sorted(synthesized.keys()),
         )
         return synthesized
+
+    # Phase 5 Subtask 4: validation-report writer schema version. Bumped
+    # alongside any breaking change to the per-block summary shape;
+    # consumers (operator-facing dashboards, dry-run preview tooling,
+    # the Phase 6 ABCD concept-extractor's validator surface) should
+    # gate on this field when reading the report.
+    _VALIDATION_REPORT_SCHEMA_VERSION = "v1"
+
+    def _write_validation_report(
+        self,
+        *,
+        workflow_id: str,
+        phase_name: str,
+        phase_output: Dict[str, Any],
+        gate_results_list: Optional[List[Dict[str, Any]]],
+    ) -> Optional[Path]:
+        """Aggregate inter-tier / post-rewrite gate results into ``report.json``.
+
+        Phase 5 Subtask 4. The shipped phase helpers
+        (``_run_inter_tier_validation``,
+        ``_run_post_rewrite_validation``) emit JSONL only —
+        ``blocks_validated.jsonl`` + ``blocks_failed.jsonl`` next to the
+        consumed blocks file. The operator-facing structured summary
+        (passed / failed / escalated counts plus a ``per_block`` array
+        keyed by ``block_id``) is a Phase 5 deliverable that lives at:
+
+        * ``{project_root}/02_validation_report/report.json`` for
+          ``inter_tier_validation``.
+        * ``{project_root}/04_rewrite/02_validation_report/report.json``
+          for ``post_rewrite_validation``.
+
+        Where ``project_root`` is derived from the
+        ``blocks_validated_path`` extracted output (which lives at
+        ``{project_root}/01_outline/blocks_validated.jsonl`` for the
+        outline-tier inter_tier_validation phase, and at
+        ``{project_root}/04_rewrite/blocks_validated.jsonl`` for the
+        rewrite-tier post_rewrite_validation phase — matching how the
+        rewrite tier writes its blocks JSONL into ``04_rewrite/``).
+
+        Returns the report path on successful write, or ``None`` when
+        the report could not be written (no ``blocks_validated_path``
+        in the phase output, or filesystem error).
+
+        Schema (matches plan §6 ``report.json``):
+
+        ::
+
+            {
+              "run_id": "<workflow_id>",
+              "phase": "<phase_name>",
+              "schema_version": "v1",
+              "total_blocks": <int>,
+              "passed": <int>,
+              "failed": <int>,
+              "escalated": <int>,
+              "per_block": [
+                {
+                  "block_id": "<id>",
+                  "block_type": "<type>",
+                  "page": "<page_id|null>",
+                  "week": <int|null>,
+                  "status": "passed|failed|escalated",
+                  "gate_results": [...],
+                  "escalation_marker": "<marker|null>"
+                },
+                ...
+              ]
+            }
+        """
+        validated_path_raw = (phase_output or {}).get(
+            "blocks_validated_path"
+        )
+        if not validated_path_raw:
+            logger.debug(
+                "Phase 5 validation_report: no blocks_validated_path "
+                "in %s phase_output; nothing to aggregate",
+                phase_name,
+            )
+            return None
+
+        validated_path = Path(validated_path_raw)
+        # Project root is two levels up from blocks_validated.jsonl:
+        # ``<project_root>/<stage_dir>/blocks_validated.jsonl``.
+        if not validated_path.is_absolute():
+            validated_path = Path(validated_path)
+
+        # The blocks JSONL lives in either ``01_outline/`` (outline-tier
+        # inter_tier_validation) or ``04_rewrite/`` (rewrite-tier
+        # post_rewrite_validation). The report dir is sibling to the
+        # blocks file's stage dir for inter_tier_validation, and lives
+        # INSIDE the stage dir for post_rewrite_validation per plan §6
+        # ("rewrite writes its own equivalent under
+        # 04_rewrite/02_validation_report/report.json").
+        stage_dir = validated_path.parent
+        if phase_name == "inter_tier_validation":
+            report_dir = stage_dir.parent / "02_validation_report"
+        else:  # post_rewrite_validation
+            report_dir = stage_dir / "02_validation_report"
+
+        try:
+            report_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            logger.warning(
+                "Phase 5 validation_report: cannot create %s: %s",
+                report_dir, exc,
+            )
+            return None
+
+        # Load the validated + failed blocks JSONL to build per-block
+        # records. Failed blocks set status='failed'; blocks with
+        # ``escalation_marker`` set are reclassified as 'escalated'.
+        validated_blocks: List[Dict[str, Any]] = []
+        failed_blocks: List[Dict[str, Any]] = []
+
+        if validated_path.exists():
+            try:
+                for line in validated_path.read_text(
+                    encoding="utf-8"
+                ).splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        validated_blocks.append(json.loads(line))
+                    except ValueError:
+                        continue
+            except OSError as exc:
+                logger.warning(
+                    "Phase 5 validation_report: blocks_validated.jsonl "
+                    "unreadable at %s: %s",
+                    validated_path, exc,
+                )
+
+        failed_path_raw = (phase_output or {}).get("blocks_failed_path")
+        if failed_path_raw:
+            failed_path = Path(failed_path_raw)
+            if failed_path.exists():
+                try:
+                    for line in failed_path.read_text(
+                        encoding="utf-8"
+                    ).splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            failed_blocks.append(json.loads(line))
+                        except ValueError:
+                            continue
+                except OSError as exc:
+                    logger.warning(
+                        "Phase 5 validation_report: blocks_failed.jsonl "
+                        "unreadable at %s: %s",
+                        failed_path, exc,
+                    )
+
+        # Aggregate counts. Escalated == failed-with-non-null
+        # escalation_marker (plan §3 escalated_only path); plain failed
+        # blocks have ``escalation_marker is None`` or absent.
+        per_block: List[Dict[str, Any]] = []
+        passed_count = 0
+        failed_count = 0
+        escalated_count = 0
+
+        # gate_results_list is the executor's emit; we attach the
+        # full chain to every block's ``gate_results`` in the report so
+        # the operator can introspect each gate's per-block findings
+        # without re-running the validators. Down-shape any
+        # ``GateResult.to_dict()`` payloads to a stable shape per plan
+        # §6 (gate_id / action / passed / issues).
+        gate_chain_summary: List[Dict[str, Any]] = []
+        for gr in gate_results_list or []:
+            if not isinstance(gr, dict):
+                continue
+            gate_chain_summary.append({
+                "gate_id": gr.get("gate_id"),
+                "action": gr.get("action"),
+                "passed": gr.get("passed"),
+                "issue_count": len(gr.get("issues") or []),
+            })
+
+        def _record_block(entry: Dict[str, Any], status: str) -> None:
+            nonlocal passed_count, failed_count, escalated_count
+            esc = entry.get("escalation_marker")
+            if status == "failed" and esc:
+                status = "escalated"
+            if status == "passed":
+                passed_count += 1
+            elif status == "escalated":
+                escalated_count += 1
+            else:
+                failed_count += 1
+            per_block.append({
+                "block_id": entry.get("block_id"),
+                "block_type": entry.get("block_type"),
+                "page": entry.get("page_id"),
+                "week": entry.get("week"),
+                "status": status,
+                "gate_results": gate_chain_summary,
+                "escalation_marker": esc,
+            })
+
+        for entry in validated_blocks:
+            _record_block(entry, "passed")
+        for entry in failed_blocks:
+            _record_block(entry, "failed")
+
+        report = {
+            "run_id": workflow_id,
+            "phase": phase_name,
+            "schema_version": self._VALIDATION_REPORT_SCHEMA_VERSION,
+            "total_blocks": passed_count + failed_count + escalated_count,
+            "passed": passed_count,
+            "failed": failed_count,
+            "escalated": escalated_count,
+            "per_block": per_block,
+        }
+
+        report_path = report_dir / "report.json"
+        try:
+            report_path.write_text(
+                json.dumps(report, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            logger.warning(
+                "Phase 5 validation_report: cannot write %s: %s",
+                report_path, exc,
+            )
+            return None
+
+        logger.info(
+            "Phase 5 validation_report: wrote %s "
+            "(total=%d passed=%d failed=%d escalated=%d)",
+            report_path, report["total_blocks"], passed_count,
+            failed_count, escalated_count,
+        )
+        return report_path
 
     def _dependencies_met(
         self, phase: WorkflowPhase, phase_outputs: Dict[str, Dict]
