@@ -1130,6 +1130,48 @@ workflows:
               on_error: warn
             description: Phase 4 PoC SHACL parallel of rewrite-tier Block validators. Informational; Python gates remain authoritative.
 
+          # Phase 4 Wave N2 Subtask 18: symmetric mirror of the three
+          # embedding-tier validators added at the inter-tier seam
+          # (Subtask 17). Distinct gate_id prefix (``rewrite_*`` vs the
+          # inter-tier ``outline_*``) so downstream decision-event
+          # filtering can stratify the two validation seams. Each
+          # validator's shape-dispatch handles both outline-tier dict
+          # content and rewrite-tier HTML-string content via the
+          # surface extractors documented in
+          # ``lib/validators/objective_assessment_similarity.py`` etc.
+          # Severity warning per Wave N2 PoC contract — embedding
+          # signals stay informational while the structural Python +
+          # SHACL gates remain authoritative.
+          - gate_id: rewrite_objective_assessment_similarity
+            validator: lib.validators.objective_assessment_similarity.ObjectiveAssessmentSimilarityValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Phase 4 PoC embedding-tier check that rewrite-tier assessment_item Blocks semantically align with their declared objective_ids.
+
+          - gate_id: rewrite_concept_example_similarity
+            validator: lib.validators.concept_example_similarity.ConceptExampleSimilarityValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Phase 4 PoC embedding-tier check that rewrite-tier example Blocks semantically align with their declared concept_refs / curies.
+
+          - gate_id: rewrite_objective_roundtrip_similarity
+            validator: lib.validators.objective_roundtrip_similarity.ObjectiveRoundtripSimilarityValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Phase 4 PoC embedding-tier paraphrase-roundtrip stability check on rewrite-tier objective Blocks. Skipped when no paraphrase_fn / router is wired.
+
       - name: packaging
         agents: [brightspace-packager]
         parallel: false
