@@ -11,6 +11,11 @@
       "pattern": "^\\d+\\.\\d+\\.\\d+$",
       "description": "LibV2 schema version"
     },
+    "chunker_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[+-][A-Za-z0-9.+-]+)?$",
+      "description": "Phase 7a Subtask 8: version of the ed4all-chunker package that produced the archived chunks. Read at archive time via importlib.metadata.version('ed4all-chunker'). Optional in Phase 7a (Wave 7); promoted to required by the Phase 7c validator wiring once both the DART chunkset (Phase 7b) and IMSCC chunkset (Phase 7c) emitters are settled. Pattern accepts standard semver plus optional +local / -prerelease suffixes (e.g. '0.1.0', '0.1.0+missing', '1.0.0-rc1') so a fallback marker can be emitted when the package isn't installed without breaking schema validation."
+    },
     "slug": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9-]*[a-z0-9]$",
