@@ -283,9 +283,11 @@ def test_route_rewrite_with_remediation_threads_suffix_on_retry(monkeypatch):
     second = rewrite.calls[1]["remediation_suffix"]
     assert second is not None
     assert "rewrite_curie_anchoring" in second
-    # Rewrite-tier directive copy (different from outline tier — addresses
-    # the rendered HTML body, not the JSON object).
-    assert "rendered HTML body" in second
+    # Plan §3.5 reworded directive: rewrite-tier remediation now names
+    # the three pedagogical-context shapes the gate accepts and
+    # explicitly forbids attribute-value / fake-triple stuffing.
+    assert "pedagogical voice" in second
+    assert "<code>" in second
 
 
 def test_route_rewrite_with_remediation_budget_exhaustion_stamps_consensus_fail(
