@@ -1019,6 +1019,7 @@ class CourseProcessor:
         objectives_path: Optional[str] = None,
         strict_mode: bool = False,
         typed_edges_llm: bool = False,
+        concept_graph_path: Optional[str] = None,
     ):
         # When strict_mode is True the pipeline refuses to write a final
         # artifact whose quality_report shows any broken_refs, any cross-lesson
@@ -1030,6 +1031,21 @@ class CourseProcessor:
         # default — the default deterministic path is byte-identical across
         # runs (Worker F spec, ADR-001 Contract 3).
         self.typed_edges_llm = typed_edges_llm
+        # Phase 6 ST 13: optional path to a pre-built pedagogy graph emitted
+        # upstream by the ``concept_extraction`` workflow phase
+        # (``MCP/tools/pipeline_tools.py::_run_concept_extraction``). When
+        # provided AND readable, ``_generate_pedagogy_graph`` short-circuits
+        # the in-process ``build_pedagogy_graph`` call and loads the graph
+        # from this path instead. Eliminates redundant graph rebuilds when
+        # the upstream phase already materialised an authoritative graph at
+        # ``LibV2/courses/<slug>/concept_graph/concept_graph_semantic.json``.
+        # When None (legacy / pre-Phase-6 corpora) the existing build path
+        # runs unchanged. The fallback also fires on a missing/unreadable
+        # path so a stale phase-output handoff degrades gracefully rather
+        # than crashing the run.
+        self.concept_graph_path: Optional[Path] = (
+            Path(concept_graph_path) if concept_graph_path else None
+        )
         self.imscc_path = Path(imscc_path)
         self.output_dir = Path(output_dir)
         self.course_code = course_code
@@ -3338,8 +3354,67 @@ class CourseProcessor:
         Fail-soft: any exception inside the builder is logged and the
         method returns an empty graph shell so the rest of metadata
         emit proceeds. Mirrors the ``semantic_graph`` fail-soft pattern.
+
+        Phase 6 ST 13: when ``self.concept_graph_path`` is set (the
+        upstream ``concept_extraction`` workflow phase ran and wrote
+        ``LibV2/courses/<slug>/concept_graph/concept_graph_semantic.json``),
+        load the pre-built pedagogy graph from disk instead of
+        re-invoking ``build_pedagogy_graph``. The upstream phase
+        runs the same builder, so the rebuild here is purely
+        redundant work — and re-running it inside the IMSCC-driven
+        path can produce a slightly different graph because the
+        chunk projection differs (DART staging sections vs. v4
+        IMSCC chunks). Reading the upstream artifact pins both
+        callers to the same graph. Falls through to the in-process
+        build path on (a) ``concept_graph_path is None`` (legacy
+        corpora), (b) the path doesn't exist, or (c) the file is
+        unreadable — so a stale phase-output handoff degrades
+        gracefully rather than crashing the run.
         """
         from datetime import datetime as _dt
+
+        # Phase 6 ST 13: short-circuit on upstream pedagogy graph.
+        upstream_path = getattr(self, "concept_graph_path", None)
+        if upstream_path is not None:
+            upstream_path = Path(upstream_path)
+            if upstream_path.exists() and upstream_path.is_file():
+                try:
+                    upstream_graph = json.loads(
+                        upstream_path.read_text(encoding="utf-8")
+                    )
+                except Exception as exc:  # noqa: BLE001 — fail-soft on parse error
+                    logger.warning(
+                        "Phase 6 ST 13: failed to load upstream pedagogy "
+                        "graph at %s (%s); falling through to in-process "
+                        "build.",
+                        upstream_path,
+                        exc,
+                    )
+                else:
+                    if isinstance(upstream_graph, dict):
+                        logger.info(
+                            "Phase 6 ST 13: consuming upstream pedagogy "
+                            "graph from %s (nodes=%d, edges=%d); skipping "
+                            "in-process build_pedagogy_graph rebuild.",
+                            upstream_path,
+                            len(upstream_graph.get("nodes") or []),
+                            len(upstream_graph.get("edges") or []),
+                        )
+                        return upstream_graph
+                    logger.warning(
+                        "Phase 6 ST 13: upstream pedagogy graph at %s "
+                        "is not a dict (%s); falling through to "
+                        "in-process build.",
+                        upstream_path,
+                        type(upstream_graph).__name__,
+                    )
+            else:
+                logger.warning(
+                    "Phase 6 ST 13: concept_graph_path %s does not exist "
+                    "or is not a file; falling through to in-process "
+                    "build.",
+                    upstream_path,
+                )
 
         try:
             from Trainforge.pedagogy_graph_builder import build_pedagogy_graph
@@ -4947,6 +5022,19 @@ def build_parser() -> argparse.ArgumentParser:
             "quality/retrieval_benchmark.json."
         ),
     )
+    p.add_argument(
+        "--concept-graph-path",
+        default=None,
+        help=(
+            "Phase 6 ST 13: path to a pre-built pedagogy graph emitted "
+            "upstream by the ``concept_extraction`` workflow phase "
+            "(LibV2/courses/<slug>/concept_graph/concept_graph_semantic.json). "
+            "When supplied AND readable, ``_generate_pedagogy_graph`` loads "
+            "this graph instead of re-invoking ``build_pedagogy_graph`` "
+            "in-process. Falls through to the in-process build when "
+            "absent / unreadable (legacy corpora preserved unchanged)."
+        ),
+    )
     return p
 
 
@@ -4984,6 +5072,7 @@ def main():
         topics=args.topic,
         objectives_path=args.objectives,
         typed_edges_llm=getattr(args, "typed_edges_llm", False),
+        concept_graph_path=getattr(args, "concept_graph_path", None),
     )
 
     result = processor.process()
