@@ -120,6 +120,7 @@
         "outcome_signal",
         "paraphrase_used_deterministic_draft",
         "pedagogical_strategy",
+        "phase_completion",
         "phase_start",
         "pipeline_run_attribution",
         "preference_pair_generation",

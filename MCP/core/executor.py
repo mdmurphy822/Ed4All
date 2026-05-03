@@ -1493,7 +1493,12 @@ class TaskExecutor:
             self.capture.log_decision(
                 decision_type="phase_completion",
                 decision=f"Phase {phase_name} completed: {completed} success, {failed} failed",
-                rationale=f"Gates passed: {gates_passed}",
+                rationale=(
+                    f"Phase {phase_name} (index {phase_index}) finished with "
+                    f"{completed}/{len(tasks)} tasks succeeding, {failed} "
+                    f"failed; gates_passed={gates_passed}, "
+                    f"max_concurrent={max_concurrent}"
+                ),
             )
 
         return results, gates_passed, gate_results
