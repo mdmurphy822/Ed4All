@@ -256,15 +256,16 @@ class TestRunConceptExtractionEmitsGraph:
 
 def _legacy_projected_chunks(course_code_lower: str) -> list[dict]:
     """Mirror the inline projection's chunk shape for a fixture-equivalent
-    upstream chunks.jsonl. The inline projection uses ``chunk_id`` (a v3
-    key the builder silently ignores) — to keep the graph emit byte-stable
-    across the path-supplied vs path-absent code paths, the upstream
-    fixture replicates the legacy shape rather than the canonical v4
-    ``id`` shape ``_run_dart_chunking`` actually emits.
+    upstream chunks.jsonl. Phase 8 ST 6 (`_run_concept_extraction`
+    inline-projection ``chunk_id`` -> canonical ``id`` rename) brought
+    the inline projection in line with `build_pedagogy_graph`'s
+    `c.get("id")` contract; this fixture is updated in lockstep so the
+    byte-stability invariant test (path-supplied vs path-absent code
+    paths emit equivalent graphs on equivalent input) keeps holding.
     """
     return [
         {
-            "chunk_id": f"{course_code_lower}_chunk_00001",
+            "id": f"{course_code_lower}_chunk_00001",
             "text": "overview Introduction to Pedagogical Concepts paragraphs Pedagogical concepts include alignment, assessment, scaffolding, learning outcomes, and curriculum design.",
             "concept_tags": [
                 "introduction", "pedagogical", "concepts", "paragraphs",
@@ -280,7 +281,7 @@ def _legacy_projected_chunks(course_code_lower: str) -> list[dict]:
             },
         },
         {
-            "chunk_id": f"{course_code_lower}_chunk_00002",
+            "id": f"{course_code_lower}_chunk_00002",
             "text": "content Scaffolding Strategies paragraphs Scaffolding strategies provide structured support during initial learning, gradually fading as competence develops.",
             "concept_tags": [
                 "content", "scaffolding", "strategies", "paragraphs",
@@ -296,7 +297,7 @@ def _legacy_projected_chunks(course_code_lower: str) -> list[dict]:
             },
         },
         {
-            "chunk_id": f"{course_code_lower}_chunk_00003",
+            "id": f"{course_code_lower}_chunk_00003",
             "text": "self_check Assessment Check paragraphs Formative assessment validates learner understanding before summative evaluation.",
             "concept_tags": [
                 "self", "check", "assessment", "paragraphs", "formative",
