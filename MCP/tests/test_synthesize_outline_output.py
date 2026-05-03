@@ -527,6 +527,69 @@ class TestSynthesizeOutlineOutputEdgeCases:
         assert "dart_conversion" not in synth
         assert "staging" not in synth
 
+    def test_resolve_outline_dir_explicit_param_wins(
+        self, runner_stub, tmp_path
+    ):
+        """Explicit ``outline_dir`` workflow param wins resolution chain."""
+        proj = tmp_path / "PROJ-EXP_101-20260502"
+        proj.mkdir()
+        params = {
+            "outline_dir": str(proj),
+            "courseforge_stage": "courseforge-rewrite",
+            "course_name": "EXP_101",
+        }
+        resolved = runner_stub._resolve_outline_dir(params)
+        assert resolved == proj
+
+    def test_resolve_outline_dir_falls_back_to_courseforge_stage(
+        self, runner_stub, tmp_path, monkeypatch
+    ):
+        """No outline_dir => derive from courseforge_stage + course_name."""
+        exports = tmp_path / "Courseforge" / "exports"
+        exports.mkdir(parents=True)
+        proj_old = exports / "PROJ-FB_101-20260101"
+        proj_new = exports / "PROJ-FB_101-20260502"
+        proj_old.mkdir()
+        proj_new.mkdir()
+        # Ensure mtime ordering is deterministic.
+        import os
+        os.utime(proj_old, (1000, 1000))
+        os.utime(proj_new, (2000, 2000))
+
+        monkeypatch.setattr(
+            "MCP.core.workflow_runner.PROJECT_ROOT", tmp_path,
+        )
+
+        params = {
+            "courseforge_stage": "courseforge-rewrite",
+            "course_name": "FB_101",
+        }
+        resolved = runner_stub._resolve_outline_dir(params)
+        assert resolved == proj_new
+
+    def test_resolve_outline_dir_returns_none_when_no_signal(
+        self, runner_stub, tmp_path
+    ):
+        """No outline_dir + no courseforge_stage => None (not an error)."""
+        params = {"course_name": "ANY"}
+        resolved = runner_stub._resolve_outline_dir(params)
+        assert resolved is None
+
+    def test_resolve_outline_dir_returns_none_when_no_candidates(
+        self, runner_stub, tmp_path, monkeypatch
+    ):
+        """courseforge_stage set but no matching project dir => None."""
+        (tmp_path / "Courseforge" / "exports").mkdir(parents=True)
+        monkeypatch.setattr(
+            "MCP.core.workflow_runner.PROJECT_ROOT", tmp_path,
+        )
+        params = {
+            "courseforge_stage": "courseforge-rewrite",
+            "course_name": "NOT_THERE",
+        }
+        resolved = runner_stub._resolve_outline_dir(params)
+        assert resolved is None
+
     def test_partial_chain_only_reconstructs_present_artifacts(
         self, runner_stub, tmp_path, monkeypatch
     ):
