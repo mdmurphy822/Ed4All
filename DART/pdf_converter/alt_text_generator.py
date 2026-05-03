@@ -12,6 +12,12 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Optional
 
+# Phase 6 Subtask 22 (Phase 3c env-vars): canonical resolver lives in
+# ``DART/pdf_converter/claude_processor.py``; importing here avoids
+# duplicating the helper and keeps a single env var pin
+# (``DART_CLAUDE_MODEL``) in charge of every DART call site.
+from .claude_processor import _resolve_dart_claude_model
+
 if TYPE_CHECKING:
     from MCP.orchestrator.llm_backend import LLMBackend
 
@@ -39,7 +45,7 @@ class AltTextGenerator:
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "claude-sonnet-4-20250514",
+        model: Optional[str] = None,
         use_ai: bool = True,
         use_ocr_fallback: bool = True,
         llm: Optional["LLMBackend"] = None,
@@ -51,7 +57,10 @@ class AltTextGenerator:
         Args:
             api_key: Anthropic API key (or from ANTHROPIC_API_KEY env). Ignored
                 when ``llm`` is provided.
-            model: Claude model to use for vision
+            model: Claude model to use for vision. When ``None``, resolves
+                via env-var-first chain: ``DART_CLAUDE_MODEL`` env var, then
+                the legacy default ``claude-sonnet-4-20250514`` (Phase 6
+                Subtask 22 / Phase 3c env-vars).
             use_ai: Whether to use Claude API for alt text
             use_ocr_fallback: Whether to fall back to OCR
             llm: Optional pre-built LLM backend (e.g., an
@@ -70,7 +79,8 @@ class AltTextGenerator:
                 silently skipped so existing tests keep passing.
         """
         self.api_key = api_key or os.environ.get('ANTHROPIC_API_KEY')
-        self.model = model
+        # Phase 6 Subtask 22: resolve effective model via env-var-first chain.
+        self.model = _resolve_dart_claude_model(model)
         self.use_ocr_fallback = use_ocr_fallback
         self._llm = llm
         self.capture = capture
@@ -87,7 +97,7 @@ class AltTextGenerator:
                     api_key=self.api_key,
                     default_model=self.model,
                 )
-                logger.debug(f"LLM backend initialized with model {model}")
+                logger.debug(f"LLM backend initialized with model {self.model}")
             except ImportError:
                 logger.warning("anthropic package not installed. AI alt text unavailable.")
                 self.use_ai = False

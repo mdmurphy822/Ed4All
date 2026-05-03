@@ -45,7 +45,26 @@ logger = logging.getLogger(__name__)
 
 # Default model identifiers per provider. These map to the models the
 # codebase has standardized on — override via env (LLM_MODEL) or per-call.
-DEFAULT_ANTHROPIC_MODEL = "claude-opus-4-7"
+#
+# Phase 6 Subtask 23 (Phase 3c env-vars): env-var-first resolution chain
+# for the Anthropic default model. ``LLM_MODEL`` (read inside
+# ``build_backend()``) is the canonical workflow-wide override; the new
+# ``MCP_ORCHESTRATOR_LLM_MODEL`` env var pins specifically the Anthropic
+# default at module-import time so callers that bypass ``build_backend``
+# (e.g. ``AnthropicBackend(...)`` constructed directly) still honour an
+# operator pin without code edits. Resolution at module import:
+#   1. ``MCP_ORCHESTRATOR_LLM_MODEL`` env var when set (and non-empty).
+#   2. ``DEFAULT_ANTHROPIC_MODEL_DEFAULT`` (preserves legacy
+#      ``claude-opus-4-7`` behavior).
+# ``build_backend()`` keeps the ``LLM_MODEL`` env var as a higher-priority
+# per-run override (precedence chain: explicit overrides > spec.model >
+# ``LLM_MODEL`` env > ``DEFAULT_ANTHROPIC_MODEL``).
+MCP_ORCHESTRATOR_LLM_MODEL_ENV = "MCP_ORCHESTRATOR_LLM_MODEL"
+DEFAULT_ANTHROPIC_MODEL_DEFAULT = "claude-opus-4-7"
+DEFAULT_ANTHROPIC_MODEL = (
+    os.environ.get(MCP_ORCHESTRATOR_LLM_MODEL_ENV)
+    or DEFAULT_ANTHROPIC_MODEL_DEFAULT
+)
 DEFAULT_OPENAI_MODEL = "gpt-4o"
 
 
