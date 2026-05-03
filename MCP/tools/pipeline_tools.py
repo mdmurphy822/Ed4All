@@ -6733,6 +6733,331 @@ def _build_tool_registry() -> dict:
 
     registry["run_dart_chunking"] = _run_dart_chunking
 
+    # ============================================================================
+    # Phase 7c Subtask 16: _run_imscc_chunking — IMSCC chunkset emit
+    #
+    # New ``imscc_chunking`` workflow phase (between ``packaging`` and
+    # ``training_synthesis`` per Phase 7c ST 16). The phase invokes
+    # ``ed4all_chunker.chunk_content`` over the HTML files extracted from
+    # the packaged IMSCC zip emitted by the upstream ``packaging`` phase,
+    # persists the resulting chunks to
+    # ``LibV2/courses/<slug>/imscc_chunks/chunks.jsonl`` plus a sibling
+    # ``manifest.json`` (matching the canonical
+    # ``schemas/library/chunkset_manifest.schema.json`` shape with
+    # ``chunkset_kind="imscc"``), computes the SHA-256 of the chunks file,
+    # and surfaces both the path and hash through phase outputs.
+    #
+    # Mirrors the ``_run_dart_chunking`` template above (Phase 7b
+    # ST 11 commit ``5ccbf0c``); the structural differences are:
+    #
+    # - Source artifact: a packaged ``.imscc`` zip (``imscc_path`` kwarg
+    #   resolved from ``phase_outputs.packaging.package_path``) rather
+    #   than a staging directory of loose HTML files.
+    # - ``source_imscc_sha256`` (SHA-256 of the .imscc archive bytes)
+    #   replaces ``source_dart_html_sha256`` in the manifest emit.
+    # - ``chunkset_kind="imscc"`` discriminates downstream consumers
+    #   (the schema's conditional source-SHA branch fires accordingly).
+    # - HTML files are read from inside the zip in-memory via
+    #   ``zipfile.ZipFile`` (no on-disk extraction required).
+    #
+    # Per Phase 7c ST 15 (commit ``090d286``), the directory was renamed
+    # from ``corpus/`` to ``imscc_chunks/`` symmetrically with the new
+    # ``dart_chunks/`` directory. Trainforge's in-process chunker
+    # invocation in ``Trainforge/process_course.py`` is preserved for
+    # legacy callers (no churn this subtask) — this phase provides a
+    # workflow-level entry point that downstream orchestrator runs use
+    # in lieu of re-running the in-process chunker.
+    # ============================================================================
+    async def _run_imscc_chunking(**kwargs):
+        """Run the canonical chunker over the packaged IMSCC archive.
+
+        Required kwargs (resolved via ``inputs_from`` in workflows.yaml's
+        ``imscc_chunking`` phase):
+            course_name: Canonical course name (used for course slug).
+            imscc_path: Path to the packaged ``.imscc`` archive emitted by
+                the upstream ``packaging`` phase
+                (``phase_outputs.packaging.package_path``).
+
+        Outputs (returned as JSON envelope + persisted):
+            imscc_chunks_path: ``LibV2/courses/<slug>/imscc_chunks/chunks.jsonl``
+            imscc_chunks_sha256: SHA-256 hex digest of the chunks file bytes
+
+        Sibling ``manifest.json`` is also emitted at the same directory,
+        carrying the canonical ``chunkset_manifest`` schema shape
+        (``chunkset_kind="imscc"``, ``source_imscc_sha256``) so the
+        ``ChunksetManifestValidator`` gate has something to validate
+        against.
+        """
+        import hashlib as _hashlib
+        import zipfile as _zipfile
+
+        course_name = kwargs.get("course_name") or ""
+        imscc_path_kw = kwargs.get("imscc_path") or kwargs.get("package_path") or ""
+
+        course_name = course_name or "UNKNOWN"
+        course_slug = course_name.lower().replace("_", "-").replace(" ", "-")
+        course_code = course_name.upper().replace("-", "_")
+
+        # Resolve IMSCC path. Honor explicit kwarg first; emit an empty
+        # shell + log a warning when the upstream phase didn't surface
+        # a real path so the manifest is still schema-valid (mirroring
+        # ``_run_dart_chunking``'s fail-soft empty-input shell).
+        imscc_path: Optional[Path] = None
+        if imscc_path_kw:
+            cand = Path(imscc_path_kw)
+            if cand.exists() and cand.is_file():
+                imscc_path = cand
+
+        if imscc_path is None:
+            logger.warning(
+                "Phase 7c ST 16: imscc_path %r missing or not a file; "
+                "emitting empty chunks shell.",
+                imscc_path_kw,
+            )
+
+        # Compute source SHA-256 over the .imscc archive bytes. Per
+        # the schema's ``source_imscc_sha256`` description: a single
+        # SHA-256 over the zip bytes (the archive is one file, unlike
+        # the multi-file DART HTML aggregate). Empty input shell uses
+        # SHA of empty bytes for determinism.
+        if imscc_path is not None:
+            agg = _hashlib.sha256()
+            try:
+                with imscc_path.open("rb") as fh:
+                    for blk in iter(lambda: fh.read(65536), b""):
+                        agg.update(blk)
+                source_imscc_sha256 = agg.hexdigest()
+            except OSError as exc:
+                logger.warning(
+                    "Phase 7c ST 16: failed to read imscc %s (%s); "
+                    "using empty-bytes SHA sentinel.",
+                    imscc_path, exc,
+                )
+                source_imscc_sha256 = _hashlib.sha256(b"").hexdigest()
+        else:
+            source_imscc_sha256 = _hashlib.sha256(b"").hexdigest()
+
+        # Extract HTML files from inside the IMSCC zip. We walk the
+        # archive in-memory rather than calling
+        # ``IMSCCParser.extract_to_directory`` so the helper has no
+        # filesystem side effects beyond the ``imscc_chunks/`` write.
+        html_entries: List[Dict[str, str]] = []  # [{"path": ..., "content": ...}, ...]
+        if imscc_path is not None:
+            try:
+                with _zipfile.ZipFile(imscc_path, "r") as zf:
+                    for name in sorted(zf.namelist()):
+                        if name.endswith(".html") or name.endswith(".htm"):
+                            try:
+                                content = zf.read(name).decode(
+                                    "utf-8", errors="ignore"
+                                )
+                            except Exception as exc:  # noqa: BLE001
+                                logger.warning(
+                                    "Phase 7c ST 16: failed to read %s "
+                                    "from imscc (%s); skipping.",
+                                    name, exc,
+                                )
+                                continue
+                            html_entries.append({"path": name, "content": content})
+            except _zipfile.BadZipFile as exc:
+                logger.warning(
+                    "Phase 7c ST 16: %s is not a valid zip (%s); "
+                    "emitting empty chunks shell.",
+                    imscc_path, exc,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Phase 7c ST 16: zip-walk failed on %s (%s); "
+                    "emitting empty chunks shell.",
+                    imscc_path, exc,
+                )
+
+        # Parse each HTML payload via Trainforge's HTMLContentParser
+        # into ContentSection-bearing parsed_items shaped exactly like
+        # the IMSCC consumer in ``Trainforge/process_course.py``.
+        parsed_items: List[Dict[str, Any]] = []
+        try:
+            from Trainforge.parsers.html_content_parser import HTMLContentParser
+        except Exception as exc:  # noqa: BLE001 — import failures shouldn't crash phase
+            logger.warning(
+                "Phase 7c ST 16: HTMLContentParser import failed (%s); "
+                "emitting empty chunks shell.",
+                exc,
+            )
+            html_parser = None
+        else:
+            html_parser = HTMLContentParser()
+
+        if html_parser is not None and html_entries:
+            for entry in html_entries:
+                html_text = entry["content"]
+                inner_path = entry["path"]
+                try:
+                    parsed = html_parser.parse(html_text)
+                except Exception as exc:  # noqa: BLE001 — parser errors fail soft
+                    logger.warning(
+                        "Phase 7c ST 16: HTML parse failed for %s (%s); "
+                        "skipping.",
+                        inner_path, exc,
+                    )
+                    continue
+                slug = Path(inner_path).stem.lower().replace(" ", "-")
+                parsed_items.append({
+                    "item_id": slug,
+                    "item_path": inner_path,
+                    "title": parsed.title or slug,
+                    "resource_type": "page",
+                    "module_id": slug,
+                    "module_title": parsed.title or slug,
+                    "week_num": 0,
+                    "word_count": parsed.word_count,
+                    "sections": parsed.sections,
+                    "learning_objectives": parsed.learning_objectives,
+                    "key_concepts": parsed.key_concepts,
+                    "interactive_components": parsed.interactive_components,
+                    "raw_html": html_text,
+                    "page_id": parsed.page_id,
+                    "misconceptions": parsed.misconceptions,
+                    "suggested_assessment_types": parsed.suggested_assessment_types,
+                    "courseforge_metadata": parsed.metadata.get("courseforge"),
+                    "objective_refs": parsed.objective_refs,
+                    "source_references": parsed.source_references,
+                })
+
+        # Minimal create_chunk callback — emits a v4-shaped chunk dict
+        # without CourseProcessor's deep instance state. Mirrors
+        # ``_run_dart_chunking``'s callback exactly so DART + IMSCC
+        # chunks share a single chunk shape (the same v4 contract).
+        def _create_chunk(
+            *,
+            chunk_id: str,
+            text: str,
+            html: str,
+            item: Dict[str, Any],
+            section_heading: str,
+            chunk_type: str,
+            follows_chunk_id: Optional[str] = None,
+            position_in_module: int = 0,
+            html_xpath: Optional[str] = None,
+            char_span: Optional[List[int]] = None,
+            section_source_ids: Optional[List[str]] = None,
+            merged_headings: Optional[List[str]] = None,
+        ) -> Dict[str, Any]:
+            words = text.split()
+            word_count = len(words)
+            tokens_estimate = int(word_count * 1.3)
+            source: Dict[str, Any] = {
+                "course_id": course_code,
+                "module_id": item.get("module_id") or "",
+                "module_title": item.get("module_title") or "",
+                "lesson_id": item.get("item_id") or "",
+                "lesson_title": item.get("title") or "",
+                "resource_type": item.get("resource_type") or "page",
+                "section_heading": section_heading,
+                "position_in_module": position_in_module,
+            }
+            if html_xpath:
+                source["html_xpath"] = html_xpath
+            if char_span is not None:
+                source["char_span"] = list(char_span)
+            if item.get("item_path"):
+                source["item_path"] = item["item_path"]
+            return {
+                "id": chunk_id,
+                "schema_version": "v4",
+                "chunk_type": chunk_type,
+                "text": text,
+                "html": html,
+                "follows_chunk": follows_chunk_id,
+                "source": source,
+                "concept_tags": [],
+                "learning_outcome_refs": [],
+                "difficulty": "intermediate",
+                "tokens_estimate": tokens_estimate,
+                "word_count": word_count,
+            }
+
+        # Dispatch to the canonical chunker. ``chunk_content`` is
+        # fail-soft on empty input.
+        chunks: List[Dict[str, Any]] = []
+        chunker_version = _resolve_chunker_version()
+        try:
+            from ed4all_chunker import ChunkerContext, chunk_content
+        except Exception as exc:  # noqa: BLE001 — import failures shouldn't crash phase
+            logger.warning(
+                "Phase 7c ST 16: ed4all_chunker import failed (%s); "
+                "emitting empty chunks shell.",
+                exc,
+            )
+        else:
+            try:
+                ctx = ChunkerContext(create_chunk=_create_chunk) if parsed_items else None
+                result = chunk_content(
+                    parsed_items,
+                    course_code,
+                    boilerplate_spans=None,
+                    ctx=ctx,
+                )
+                chunks = list(result.chunks)
+            except Exception as exc:  # noqa: BLE001 — fail-soft on chunker error
+                logger.warning(
+                    "Phase 7c ST 16: chunk_content raised (%s); emitting "
+                    "empty chunks shell.",
+                    exc,
+                )
+                chunks = []
+
+        # Persist chunks + manifest to LibV2/courses/<slug>/imscc_chunks/.
+        course_dir = _PROJECT_ROOT / "LibV2" / "courses" / course_slug
+        chunks_dir = course_dir / "imscc_chunks"
+        chunks_dir.mkdir(parents=True, exist_ok=True)
+        chunks_path = chunks_dir / "chunks.jsonl"
+
+        # Stream chunks as JSONL with hashing writer pattern so the
+        # SHA-256 reflects exactly the bytes on disk.
+        chunks_sha = _hashlib.sha256()
+        with chunks_path.open("wb") as fh:
+            for chunk in chunks:
+                line = (json.dumps(chunk, ensure_ascii=False) + "\n").encode(
+                    "utf-8"
+                )
+                fh.write(line)
+                chunks_sha.update(line)
+        chunks_sha256 = chunks_sha.hexdigest()
+
+        # Sibling manifest.json — must validate against
+        # ``schemas/library/chunkset_manifest.schema.json`` per Phase
+        # 7b ST 12 (symmetric across DART + IMSCC). Required:
+        # chunks_sha256, chunker_version, chunkset_kind,
+        # source_imscc_sha256 (conditional on chunkset_kind=imscc).
+        manifest = {
+            "chunks_sha256": chunks_sha256,
+            "chunker_version": chunker_version,
+            "chunkset_kind": "imscc",
+            "source_imscc_sha256": source_imscc_sha256,
+            "chunks_count": len(chunks),
+            "generated_at": datetime.utcnow().isoformat() + "Z",
+        }
+        manifest_path = chunks_dir / "manifest.json"
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+        return json.dumps({
+            "success": True,
+            "imscc_chunks_path": str(chunks_path),
+            "imscc_chunks_sha256": chunks_sha256,
+            "manifest_path": str(manifest_path),
+            "course_slug": course_slug,
+            "chunks_count": len(chunks),
+            "source_html_count": len(html_entries),
+            "source_imscc_sha256": source_imscc_sha256,
+            "chunker_version": chunker_version,
+        })
+
+    registry["run_imscc_chunking"] = _run_imscc_chunking
+
     # ================================================================= #
     # Runtime registry stubs for the 7 tools that AGENT_TOOL_MAPPING     #
     # routes but _build_tool_registry previously skipped (MCP audit      #

@@ -222,6 +222,17 @@ _PHASE_TOOL_MAPPING: Dict[str, str] = {
     "inter_tier_validation": "run_inter_tier_validation",
     "content_generation_rewrite": "run_content_generation_rewrite",
     "post_rewrite_validation": "run_post_rewrite_validation",
+    # Phase 7c ST 16: imscc_chunking phase routes to its own tool
+    # regardless of agent. Phase reuses the ``dart-chunker`` agent
+    # (utility / content-agnostic chunker, no LLM dispatch) per the
+    # plan's "same agent spec — chunker is symmetric" call, but the
+    # IMSCC-side tool emits to ``imscc_chunks/`` with
+    # ``chunkset_kind="imscc"`` + ``source_imscc_sha256`` while the
+    # DART-side tool (mapped via AGENT_TOOL_MAPPING fallback) emits to
+    # ``dart_chunks/`` with ``chunkset_kind="dart"`` +
+    # ``source_dart_html_sha256``. The phase-name dispatch override
+    # selects the right helper without forking the agent registry.
+    "imscc_chunking": "run_imscc_chunking",
 }
 
 

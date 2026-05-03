@@ -678,3 +678,257 @@ class TestRunDartChunkingEmitsChunksJsonl:
         registry = _build_tool_registry()
         assert "run_dart_chunking" in registry
         assert callable(registry["run_dart_chunking"])
+
+
+# ---------------------------------------------------------------------------
+# Phase 7c Subtask 16 — _run_imscc_chunking smoke tests
+# ---------------------------------------------------------------------------
+
+
+def _build_imscc_zip(zip_path: Path, html_files: list[tuple[str, str]]) -> None:
+    """Build a minimal IMSCC zip at ``zip_path`` containing the given
+    (inner_path, html_content) tuples plus a stub imsmanifest.xml.
+
+    Mirrors the structural shape of a real IMSCC archive (zip with
+    ``imsmanifest.xml`` + HTML resources), without requiring the full
+    IMS-cc spec scaffolding — ``_run_imscc_chunking`` walks the zip's
+    HTML entries directly via ``zipfile.ZipFile`` and ignores the
+    manifest. The fixture is sufficient for the chunker smoke; full
+    manifest parsing is `IMSCCParser`'s domain, not this helper's.
+    """
+    import zipfile
+
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(
+            "imsmanifest.xml",
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<manifest xmlns="http://www.imsglobal.org/xsd/imsccv1p3/imscp_v1p1">'
+            '</manifest>\n',
+        )
+        for inner_path, html in html_files:
+            zf.writestr(inner_path, html)
+
+
+def _imscc_html_payload(title: str) -> str:
+    """Emit a DART-shaped HTML payload large enough to clear the
+    chunker's minimum-size threshold."""
+    return (
+        f"<!DOCTYPE html>\n"
+        f"<html lang=\"en\">\n"
+        f"<head><meta charset=\"utf-8\"><title>{title}</title></head>\n"
+        f"<body>\n"
+        f"  <main>\n"
+        f"    <section>\n"
+        f"      <h1>{title}</h1>\n"
+        f"      <p>This IMSCC HTML file is a fixture for the Phase 7c "
+        f"chunking smoke test. {' '.join(['Chunk content padding sentence.'] * 60)}</p>\n"
+        f"      <h2>Sub-section about pedagogy</h2>\n"
+        f"      <p>Pedagogy describes the methods and practice of teaching. "
+        f"{' '.join(['Additional padding text to clear the chunker minimum-size threshold.'] * 60)}</p>\n"
+        f"    </section>\n"
+        f"  </main>\n"
+        f"</body>\n"
+        f"</html>\n"
+    )
+
+
+@pytest.fixture
+def imscc_chunking_fixture(tmp_path, monkeypatch):
+    """Build a minimal packaged IMSCC + fake LibV2 root so
+    ``_run_imscc_chunking`` writes under the temp tree."""
+    fake_root = tmp_path / "root"
+    fake_root.mkdir()
+
+    monkeypatch.setattr(pipeline_tools, "_PROJECT_ROOT", fake_root)
+    monkeypatch.setattr(
+        pipeline_tools,
+        "COURSEFORGE_INPUTS",
+        fake_root / "Courseforge" / "inputs" / "textbooks",
+    )
+    (fake_root / "Courseforge" / "inputs" / "textbooks").mkdir(parents=True)
+
+    imscc_path = tmp_path / "course.imscc"
+    _build_imscc_zip(
+        imscc_path,
+        [
+            ("html/page_01.html", _imscc_html_payload("Page One")),
+            ("html/page_02.html", _imscc_html_payload("Page Two")),
+        ],
+    )
+
+    return {
+        "fake_root": fake_root,
+        "imscc_path": imscc_path,
+        "course_name": "DEMO_888",
+        "course_slug": "demo-888",
+    }
+
+
+def _invoke_imscc_chunking(course_name: str, imscc_path: Path) -> dict:
+    registry = _build_tool_registry()
+    tool = registry["run_imscc_chunking"]
+    result = asyncio.run(
+        tool(
+            course_name=course_name,
+            imscc_path=str(imscc_path),
+        )
+    )
+    return json.loads(result)
+
+
+class TestRunImsccChunkingEmitsChunksJsonl:
+    def test_run_imscc_chunking_emits_chunks_jsonl(self, imscc_chunking_fixture):
+        """ST 16 plan-cited verification — helper writes chunks.jsonl
+        and a sibling manifest.json under
+        ``LibV2/courses/<slug>/imscc_chunks/``."""
+        fx = imscc_chunking_fixture
+        payload = _invoke_imscc_chunking(fx["course_name"], fx["imscc_path"])
+
+        assert payload["success"] is True
+        assert "imscc_chunks_path" in payload
+        assert "imscc_chunks_sha256" in payload
+
+        chunks_path = Path(payload["imscc_chunks_path"])
+        assert chunks_path.exists(), (
+            f"chunks.jsonl not written at {chunks_path}"
+        )
+        assert chunks_path.name == "chunks.jsonl"
+
+        # Path lands under LibV2/courses/<slug>/imscc_chunks/.
+        rel = chunks_path.relative_to(fx["fake_root"])
+        parts = rel.parts
+        assert parts[0] == "LibV2"
+        assert parts[1] == "courses"
+        assert parts[2] == fx["course_slug"]
+        assert parts[3] == "imscc_chunks"
+        assert parts[4] == "chunks.jsonl"
+
+    def test_imscc_chunks_sha256_matches_file_bytes(self, imscc_chunking_fixture):
+        fx = imscc_chunking_fixture
+        payload = _invoke_imscc_chunking(fx["course_name"], fx["imscc_path"])
+
+        assert _SHA256_RE.match(payload["imscc_chunks_sha256"]), (
+            f"sha256 not in canonical hex shape: {payload['imscc_chunks_sha256']!r}"
+        )
+
+        chunks_path = Path(payload["imscc_chunks_path"])
+        on_disk_hash = hashlib.sha256(chunks_path.read_bytes()).hexdigest()
+        assert on_disk_hash == payload["imscc_chunks_sha256"], (
+            "Returned sha256 must match on-disk chunks.jsonl bytes."
+        )
+
+    def test_manifest_emitted_and_validates(self, imscc_chunking_fixture):
+        """Manifest.json is emitted with the canonical chunkset shape
+        (chunkset_kind=imscc, source_imscc_sha256) and passes the
+        ChunksetManifestValidator gate."""
+        fx = imscc_chunking_fixture
+        payload = _invoke_imscc_chunking(fx["course_name"], fx["imscc_path"])
+
+        manifest_path = Path(payload["manifest_path"])
+        assert manifest_path.exists()
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+        # Required schema fields for the imscc branch.
+        assert manifest["chunks_sha256"] == payload["imscc_chunks_sha256"]
+        assert manifest["chunkset_kind"] == "imscc"
+        assert _SHA256_RE.match(manifest["source_imscc_sha256"])
+        assert isinstance(manifest["chunker_version"], str)
+        assert manifest["chunks_count"] == payload["chunks_count"]
+        # additionalProperties: false — only the canonical keys.
+        assert set(manifest.keys()).issubset({
+            "chunks_sha256",
+            "chunker_version",
+            "chunkset_kind",
+            "source_dart_html_sha256",
+            "source_imscc_sha256",
+            "chunks_count",
+            "generated_at",
+        })
+        # ``source_dart_html_sha256`` MUST be absent on imscc-branch manifests
+        # (the schema's allOf branch only requires source_imscc_sha256 when
+        # chunkset_kind=imscc, and additionalProperties=false admits both
+        # source-SHA fields, but our emit must keep the kind-specific field
+        # only).
+        assert "source_dart_html_sha256" not in manifest
+
+        # Validator round-trip: the emitted manifest must pass the
+        # ChunksetManifestValidator gate.
+        from lib.validators.chunkset_manifest import ChunksetManifestValidator
+
+        validator = ChunksetManifestValidator()
+        result = validator.validate({"chunkset_manifest_path": str(manifest_path)})
+        assert result.passed is True, (
+            f"Validator failed on emitted manifest: "
+            f"{[i.code for i in result.issues]}"
+        )
+
+    def test_source_imscc_sha256_matches_archive_bytes(self, imscc_chunking_fixture):
+        """``source_imscc_sha256`` returned + written to manifest must
+        equal the SHA-256 of the .imscc archive bytes the helper read."""
+        fx = imscc_chunking_fixture
+        payload = _invoke_imscc_chunking(fx["course_name"], fx["imscc_path"])
+
+        archive_hash = hashlib.sha256(fx["imscc_path"].read_bytes()).hexdigest()
+        assert payload["source_imscc_sha256"] == archive_hash, (
+            "source_imscc_sha256 must match the on-disk imscc archive bytes."
+        )
+
+        manifest_path = Path(payload["manifest_path"])
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert manifest["source_imscc_sha256"] == archive_hash
+
+    def test_chunks_jsonl_lines_match_count(self, imscc_chunking_fixture):
+        """``chunks_count`` in manifest matches actual JSONL line count."""
+        fx = imscc_chunking_fixture
+        payload = _invoke_imscc_chunking(fx["course_name"], fx["imscc_path"])
+
+        chunks_path = Path(payload["imscc_chunks_path"])
+        actual_lines = sum(
+            1
+            for line in chunks_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        )
+        assert actual_lines == payload["chunks_count"]
+
+    def test_missing_imscc_emits_chunks_shell(self, tmp_path, monkeypatch):
+        """Missing imscc_path -> empty chunks.jsonl shell + valid manifest."""
+        fake_root = tmp_path / "root"
+        fake_root.mkdir()
+        monkeypatch.setattr(pipeline_tools, "_PROJECT_ROOT", fake_root)
+        monkeypatch.setattr(
+            pipeline_tools,
+            "COURSEFORGE_INPUTS",
+            fake_root / "Courseforge" / "inputs" / "textbooks",
+        )
+        (fake_root / "Courseforge" / "inputs" / "textbooks").mkdir(parents=True)
+
+        registry = _build_tool_registry()
+        tool = registry["run_imscc_chunking"]
+        result = asyncio.run(
+            tool(
+                course_name="EMPTY_888",
+                imscc_path=str(tmp_path / "does_not_exist.imscc"),
+            )
+        )
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["chunks_count"] == 0
+        # Empty file but still emitted, valid SHA-256 shape.
+        assert _SHA256_RE.match(payload["imscc_chunks_sha256"])
+        chunks_path = Path(payload["imscc_chunks_path"])
+        assert chunks_path.exists()
+        assert chunks_path.read_bytes() == b""
+
+        # Manifest still valid with empty-bytes-SHA sentinel.
+        manifest_path = Path(payload["manifest_path"])
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert manifest["chunkset_kind"] == "imscc"
+        assert _SHA256_RE.match(manifest["source_imscc_sha256"])
+        assert manifest["chunks_count"] == 0
+
+    def test_run_imscc_chunking_registered_in_registry(self):
+        """The tool must be registered for phase-name dispatch from
+        ``MCP/core/executor.py::_PHASE_TOOL_MAPPING``."""
+        registry = _build_tool_registry()
+        assert "run_imscc_chunking" in registry
+        assert callable(registry["run_imscc_chunking"])
