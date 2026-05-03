@@ -380,6 +380,40 @@ def _check_chunks_freshness(
     }
 
 
+def _resolve_libv2_root(explicit: Optional[str] = None) -> Path:
+    """Phase 8 ST 3: resolve the LibV2 root directory used by Phase 6/7
+    helpers (`_run_concept_extraction`, `_run_dart_chunking`,
+    `_run_imscc_chunking`) when persisting per-course artifacts under
+    ``<libv2_root>/courses/<course_slug>/``.
+
+    Resolution chain (high → low priority):
+        1. Explicit ``libv2_root`` kwarg (typically threaded by the
+           workflow runner via ``inputs_from`` from
+           ``workflow_params.libv2_root`` — see
+           ``config/workflows.yaml::textbook_to_course`` and
+           ``MCP/core/workflow_runner.py::_LEGACY_PHASE_PARAM_ROUTING``).
+        2. ``ED4ALL_LIBV2_ROOT`` env var (deployment-level override —
+           useful for ops topologies that mount LibV2 at a non-default
+           location, e.g. Docker volume / NFS / ConfigMap).
+        3. ``_PROJECT_ROOT / "LibV2"`` legacy default (unchanged from
+           pre-Phase-8 behaviour — every existing run continues to write
+           to the in-tree ``LibV2/`` directory).
+
+    Returns a ``Path`` (existence is NOT enforced — callers create the
+    target ``courses/<slug>/...`` subdir as needed). Empty / whitespace-
+    only ``explicit`` argument falls through as if unset, mirroring the
+    ``or ""`` → falsy treatment in the call sites.
+    """
+    if explicit:
+        cand = explicit.strip() if isinstance(explicit, str) else ""
+        if cand:
+            return Path(cand)
+    env_val = os.environ.get("ED4ALL_LIBV2_ROOT", "").strip()
+    if env_val:
+        return Path(env_val)
+    return _PROJECT_ROOT / "LibV2"
+
+
 def _resolve_chunker_version() -> str:
     """Phase 7a Subtask 8: resolve installed ed4all-chunker package version.
 
@@ -6467,7 +6501,15 @@ def _build_tool_registry() -> dict:
                 }
 
         # Persist graph to LibV2/courses/<slug>/concept_graph/.
-        course_dir = _PROJECT_ROOT / "LibV2" / "courses" / course_slug
+        # Phase 8 ST 3: route through `_resolve_libv2_root` so ops
+        # topologies that mount LibV2 at a non-default location can
+        # override via `ED4ALL_LIBV2_ROOT` env var or per-call
+        # `libv2_root` kwarg threaded by the workflow runner.
+        course_dir = (
+            _resolve_libv2_root(kwargs.get("libv2_root"))
+            / "courses"
+            / course_slug
+        )
         graph_dir = course_dir / "concept_graph"
         graph_dir.mkdir(parents=True, exist_ok=True)
         graph_path = graph_dir / "concept_graph_semantic.json"
@@ -6780,7 +6822,13 @@ def _build_tool_registry() -> dict:
                 chunks = []
 
         # Persist chunks + manifest to LibV2/courses/<slug>/dart_chunks/.
-        course_dir = _PROJECT_ROOT / "LibV2" / "courses" / course_slug
+        # Phase 8 ST 3: route through `_resolve_libv2_root` (see helper
+        # docstring for resolution chain). Default behaviour unchanged.
+        course_dir = (
+            _resolve_libv2_root(kwargs.get("libv2_root"))
+            / "courses"
+            / course_slug
+        )
         chunks_dir = course_dir / "dart_chunks"
         chunks_dir.mkdir(parents=True, exist_ok=True)
         chunks_path = chunks_dir / "chunks.jsonl"
@@ -7105,7 +7153,13 @@ def _build_tool_registry() -> dict:
                 chunks = []
 
         # Persist chunks + manifest to LibV2/courses/<slug>/imscc_chunks/.
-        course_dir = _PROJECT_ROOT / "LibV2" / "courses" / course_slug
+        # Phase 8 ST 3: route through `_resolve_libv2_root` (see helper
+        # docstring for resolution chain). Default behaviour unchanged.
+        course_dir = (
+            _resolve_libv2_root(kwargs.get("libv2_root"))
+            / "courses"
+            / course_slug
+        )
         chunks_dir = course_dir / "imscc_chunks"
         chunks_dir.mkdir(parents=True, exist_ok=True)
         chunks_path = chunks_dir / "chunks.jsonl"

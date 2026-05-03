@@ -80,6 +80,29 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
             "phase_outputs", "objective_extraction", "textbook_structure_path",
         ),
     },
+    # Phase 7b ST 11: chunking phase — DART chunkset emit. Mirrors the
+    # YAML routing at config/workflows.yaml::chunking. Phase 8 ST 3
+    # adds the optional ``libv2_root`` workflow param so ops topologies
+    # that mount LibV2 at a non-default location can override the
+    # in-tree default via ``--libv2-root`` / ``ED4ALL_LIBV2_ROOT``.
+    "chunking": {
+        "course_name": ("workflow_params", "course_name"),
+        "staging_dir": ("phase_outputs", "staging", "staging_dir"),
+        "libv2_root": ("workflow_params", "libv2_root"),
+    },
+    # Phase 6 ST 11: concept_extraction phase — pedagogy-graph builder.
+    # Mirrors the YAML routing at config/workflows.yaml::concept_extraction.
+    # Phase 7b ST 14.5 added the upstream dart_chunks_path consumption;
+    # Phase 8 ST 3 adds the optional ``libv2_root`` workflow param.
+    "concept_extraction": {
+        "project_id": ("phase_outputs", "objective_extraction", "project_id"),
+        "course_name": ("workflow_params", "course_name"),
+        "staging_dir": ("phase_outputs", "staging", "staging_dir"),
+        "dart_chunks_path": (
+            "phase_outputs", "chunking", "dart_chunks_path",
+        ),
+        "libv2_root": ("workflow_params", "libv2_root"),
+    },
     "course_planning": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),
         "course_name": ("workflow_params", "course_name"),
@@ -143,6 +166,17 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
     },
     "packaging": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),
+    },
+    # Phase 7c ST 16: imscc_chunking phase — IMSCC chunkset emit
+    # post-packaging. Mirrors the YAML routing at
+    # config/workflows.yaml::imscc_chunking. Phase 8 ST 3 adds the
+    # optional ``libv2_root`` workflow param so ops topologies that
+    # mount LibV2 at a non-default location can override the in-tree
+    # default via ``--libv2-root`` / ``ED4ALL_LIBV2_ROOT``.
+    "imscc_chunking": {
+        "course_name": ("workflow_params", "course_name"),
+        "imscc_path": ("phase_outputs", "packaging", "package_path"),
+        "libv2_root": ("workflow_params", "libv2_root"),
     },
     "trainforge_assessment": {
         "course_id": ("workflow_params", "course_name"),

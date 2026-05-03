@@ -636,6 +636,14 @@ workflows:
             source: phase_outputs
             phase: staging
             output: staging_dir
+          # Phase 8 ST 3: route the optional ``libv2_root`` workflow
+          # param into ``_run_dart_chunking`` so ops topologies that
+          # mount LibV2 at a non-default location can override the
+          # in-tree default. Default unset → the helper falls through
+          # to ``ED4ALL_LIBV2_ROOT`` env var > in-tree ``LibV2/``.
+          - param: libv2_root
+            source: workflow_params
+            key: libv2_root
 
         outputs:
           - dart_chunks_path
@@ -757,6 +765,14 @@ workflows:
             source: phase_outputs
             phase: chunking
             output: dart_chunks_path
+          # Phase 8 ST 3: route the optional ``libv2_root`` workflow
+          # param into ``_run_concept_extraction`` so ops topologies
+          # that mount LibV2 at a non-default location can override the
+          # in-tree default. Default unset → the helper falls through
+          # to ``ED4ALL_LIBV2_ROOT`` env var > in-tree ``LibV2/``.
+          - param: libv2_root
+            source: workflow_params
+            key: libv2_root
 
         outputs:
           - concept_graph_path
@@ -1435,6 +1451,14 @@ workflows:
             source: phase_outputs
             phase: packaging
             output: package_path
+          # Phase 8 ST 3: route the optional ``libv2_root`` workflow
+          # param into ``_run_imscc_chunking`` so ops topologies that
+          # mount LibV2 at a non-default location can override the
+          # in-tree default. Default unset → the helper falls through
+          # to ``ED4ALL_LIBV2_ROOT`` env var > in-tree ``LibV2/``.
+          - param: libv2_root
+            source: workflow_params
+            key: libv2_root
 
         outputs:
           - imscc_chunks_path

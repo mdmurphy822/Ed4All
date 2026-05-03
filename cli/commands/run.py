@@ -170,6 +170,7 @@ def _build_workflow_params(
     target_block_ids: Optional[List[str]] = None,
     force_rerun: bool = False,
     courseforge_stage: Optional[str] = None,
+    libv2_root: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the params dict for a workflow from CLI inputs.
 
@@ -244,6 +245,15 @@ def _build_workflow_params(
     # runner-side validator (Worker WB) is the authoritative gatekeeper.
     if courseforge_stage:
         params["courseforge_stage"] = courseforge_stage
+
+    # Phase 8 ST 3: surface the optional ``--libv2-root`` flag as a
+    # workflow parameter so the runner's ``inputs_from`` chain can route
+    # it into ``concept_extraction`` / ``chunking`` / ``imscc_chunking``
+    # phases. Default unset → those helpers fall through to the env-var
+    # / in-tree-default resolution chain in
+    # ``MCP/tools/pipeline_tools.py::_resolve_libv2_root``.
+    if libv2_root:
+        params["libv2_root"] = libv2_root
 
     return params
 
@@ -612,6 +622,21 @@ def _build_orchestrator(
     ),
 )
 @click.option(
+    "--libv2-root",
+    "libv2_root",
+    type=click.Path(),
+    default=None,
+    help=(
+        "Phase 8 ST 3 — override the LibV2 root directory used by the "
+        "Phase 6/7 chunkset + concept-graph helpers (concept_extraction, "
+        "chunking, imscc_chunking) when persisting per-course artifacts "
+        "under ``<libv2_root>/courses/<course_slug>/``. Resolution chain: "
+        "this flag > ``ED4ALL_LIBV2_ROOT`` env var > the default in-tree "
+        "``LibV2/`` directory. Useful for ops topologies that mount LibV2 "
+        "at a non-default location (Docker volume / NFS / ConfigMap)."
+    ),
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Show the planned pipeline without executing",
@@ -644,6 +669,7 @@ def run_command(
     reuse_objectives: Optional[str],
     blocks_filter: Optional[str],
     force_rerun: bool,
+    libv2_root: Optional[str],
     dry_run: bool,
     watch: bool,
     output_json: bool,
@@ -748,6 +774,7 @@ def run_command(
         target_block_ids=target_block_ids,
         force_rerun=force_rerun,
         courseforge_stage=courseforge_stage,
+        libv2_root=libv2_root,
     )
 
     # -------- dry-run: plan only, no side effects ------------------------
