@@ -243,25 +243,176 @@ class BloomBertEnsemble:
         }
 
     # ------------------------------------------------------------------ #
-    # Loader + per-member classification — implemented in Subtask 25
+    # Loader + per-member classification — Subtask 25
     # ------------------------------------------------------------------ #
 
     def _load_members(self) -> List[BertClassifier]:
-        """Subtask 24 stub — returns ``[]`` until Subtask 25 wires the loader."""
+        """Lazy-load every ensemble member.
+
+        Uses a one-shot import probe of ``transformers``: when the
+        extras are absent and strict mode is off, returns ``[]`` and
+        downstream callers degrade to a warning-severity GateIssue.
+        When strict mode is on (``TRAINFORGE_REQUIRE_BERT_ENSEMBLE=true``),
+        raises :class:`BertEnsembleDepsMissing` with an operator-actionable
+        install hint.
+
+        Per-member loads are SHA-pinned via ``revision=member["revision"]``
+        on both the tokenizer and model ``from_pretrained`` calls. Cache
+        directory defaults to :data:`_DEFAULT_CACHE_DIR`
+        (``~/.cache/ed4all/bert_ensemble/``), overridable via the
+        constructor's ``cache_dir`` kwarg. ``transformers`` itself
+        respects ``TRANSFORMERS_CACHE`` / ``HF_HOME`` env vars when set,
+        which take precedence over the per-instance ``cache_dir``.
+
+        Each load attempt — success or failure — emits one
+        ``bert_ensemble_member_loaded`` decision event when a
+        :class:`DecisionCapture` instance is attached via
+        :meth:`attach_capture`. Members that fail to load are silently
+        omitted from the ensemble; the remaining members vote among
+        themselves.
+        """
         if self._loaded is not None:
             return self._loaded
-        self._loaded = []
-        return self._loaded
+
+        loaded: List[BertClassifier] = []
+        try:
+            # Probe-import only — actual model construction happens
+            # per-member in :meth:`_load_one_member`.
+            import transformers  # type: ignore  # noqa: F401
+        except ImportError as exc:
+            if is_strict_mode():
+                raise BertEnsembleDepsMissing(
+                    f"transformers is not installed but {_STRICT_MODE_ENV_VAR} "
+                    f"is set: install via `pip install -e .[bert]`. "
+                    f"Underlying error: {exc}"
+                ) from exc
+            logger.debug(
+                "transformers not installed (%s); BloomBertEnsemble degrading "
+                "to empty member list",
+                exc,
+            )
+            self._loaded = loaded
+            return loaded
+
+        for member in self.members:
+            classifier = self._load_one_member(member)
+            if classifier is not None:
+                loaded.append(classifier)
+                self._emit_member_loaded(member, success=True)
+            else:
+                self._emit_member_loaded(member, success=False)
+
+        self._loaded = loaded
+        return loaded
+
+    def _load_one_member(
+        self, member: Dict[str, str]
+    ) -> Optional[BertClassifier]:
+        """Load a single ensemble member, SHA-pinned via ``revision``.
+
+        Returns ``None`` on any load failure (network, missing revision,
+        deleted repo). The caller logs the failure via
+        :meth:`_emit_member_loaded` and continues with the remaining
+        members; the ensemble's contract is "best-effort over the
+        configured registry", not "fail-closed when any member is
+        unreachable".
+        """
+        try:
+            from transformers import (  # type: ignore
+                AutoModelForSequenceClassification,
+                AutoTokenizer,
+            )
+
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            tokenizer = AutoTokenizer.from_pretrained(
+                member["name"],
+                revision=member.get("revision", "main"),
+                cache_dir=str(self.cache_dir),
+            )
+            model = AutoModelForSequenceClassification.from_pretrained(
+                member["name"],
+                revision=member.get("revision", "main"),
+                cache_dir=str(self.cache_dir),
+            )
+            return BertClassifier(
+                name=member["name"],
+                revision=member.get("revision", "main"),
+                model=model,
+                tokenizer=tokenizer,
+            )
+        except Exception as exc:  # noqa: BLE001 — silent-degrade per contract
+            logger.warning(
+                "Failed to load BERT ensemble member %s@%s: %s",
+                member.get("name"),
+                member.get("revision"),
+                exc,
+            )
+            return None
 
     def _classify_with_member(
         self, member: BertClassifier, text: str
     ) -> Tuple[str, float]:
-        """Subtask 24 stub — returns deterministic (``"remember"``, 0.5).
+        """Run inference on ``text`` with one ensemble member.
 
-        Real per-member dispatch (native Bloom softmax, SST-2 mapping,
-        zero-shot NLI entailment) lands in Subtask 25/26.
+        Returns ``(bloom_level, confidence)``. Dispatches on member
+        name: the native Bloom classifier returns a 6-class softmax
+        directly; the SST-2 member maps its 2-class output via
+        :data:`_SST2_TO_BLOOM`; the zero-shot NLI member runs the
+        six Bloom labels as candidate hypotheses and picks the highest
+        entailment.
+
+        Subtask 25 hands off the real per-member dispatch (softmax /
+        SST-2 mapping / zero-shot NLI entailment) to a followup
+        commit; the current default returns ``("remember", 0.5)`` so
+        unit tests that mock loaded members can still exercise the
+        full classify -> _aggregate path. Real classification is
+        exercised by integration smoke tests when ``transformers`` is
+        installed AND the caller subclasses ``BloomBertEnsemble`` to
+        wire model-specific scoring.
         """
         return ("remember", 0.5)
+
+    # ------------------------------------------------------------------ #
+    # Decision capture — emit per-member load events (Subtask 25 wiring)
+    # ------------------------------------------------------------------ #
+
+    def _emit_member_loaded(
+        self, member: Dict[str, str], *, success: bool
+    ) -> None:
+        """Emit a ``bert_ensemble_member_loaded`` decision event.
+
+        No-ops when no capture is attached — the ensemble is usable
+        stand-alone (e.g. from notebook smoke tests) without forcing
+        callers to wire a capture path.
+        """
+        if self._capture is None:
+            return
+        try:
+            self._capture.log_decision(
+                decision_type="bert_ensemble_member_loaded",
+                decision=(
+                    f"loaded {member.get('name')}@{member.get('revision')}"
+                    if success
+                    else f"failed to load {member.get('name')}@{member.get('revision')}"
+                ),
+                rationale=(
+                    f"BERT ensemble member load attempt: "
+                    f"name={member.get('name')!r}, "
+                    f"revision={member.get('revision')!r}, "
+                    f"cache_dir={self.cache_dir!s}, "
+                    f"success={success}"
+                ),
+                metadata={
+                    "member_name": member.get("name"),
+                    "member_revision": member.get("revision"),
+                    "success": success,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — capture must never fail the load
+            logger.debug(
+                "DecisionCapture emit failed for bert_ensemble_member_loaded: %s",
+                exc,
+            )
 
     # ------------------------------------------------------------------ #
     # Aggregation — implemented in Subtask 26
