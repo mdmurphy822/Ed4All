@@ -1460,7 +1460,16 @@ workflows:
         agents: [assessment-generator]
         parallel: true
         max_concurrent: 5
-        depends_on: [packaging]
+        # Phase 8 ST 2: depend on ``imscc_chunking`` in addition to
+        # ``packaging`` so the upstream IMSCC chunkset is on disk
+        # before ``CourseProcessor.process`` short-circuits its
+        # in-process ``_chunk_content`` call to consume it. The
+        # imscc_chunking phase also depends on packaging, so the
+        # ordering chain is unchanged in shape (packaging ->
+        # imscc_chunking -> trainforge_assessment); the explicit
+        # dep edge here pins the routing precondition in the
+        # workflow graph rather than relying on incidental ordering.
+        depends_on: [packaging, imscc_chunking]
         timeout_minutes: 90
         batch_timeout_minutes: 30
         description: Generate assessments from IMSCC course package
@@ -1487,6 +1496,17 @@ workflows:
             source: phase_outputs
             phase: course_planning
             output: objective_ids
+          # Phase 8 ST 2: consume the upstream IMSCC chunkset
+          # written by ``imscc_chunking`` (Phase 7c ST 16 emit at
+          # ``LibV2/courses/<slug>/imscc_chunks/chunks.jsonl``) so
+          # ``CourseProcessor.process`` short-circuits the in-
+          # process ``_chunk_content`` call. Falls through to the
+          # legacy in-process build path on absent / unreadable
+          # upstream chunks.
+          - param: imscc_chunks_path
+            source: phase_outputs
+            phase: imscc_chunking
+            output: imscc_chunks_path
 
         outputs:
           - output_path
