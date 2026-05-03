@@ -837,6 +837,25 @@ Each member's `revision` field carries a HuggingFace git SHA so classification i
 
 ---
 
+## Phase 8 cleanup (closing the Courseforge two-pass rewrite)
+
+The Courseforge two-pass architecture rewrite (Phases 1 → 7c.5 + 5) closed with a Phase 8 cleanup pass covering eight deferred followups carried forward from the closing review of those phases, plus one user-decision item (BERT ensemble replacement model) resolved as `cip29/bert-blooms-taxonomy-classifier`. Plan: `plans/phase8_cleanup.md`. No new architectural surface — closure work only.
+
+Per-subtask landings (details in commit messages):
+
+- **ST 1**: `@mcp.tool() archive_to_libv2` 3-SHA parity with the registry variant
+- **ST 2**: Trainforge `_chunk_content` consumes upstream `imscc_chunks_path` from the `imscc_chunking` phase
+- **ST 3**: `_resolve_libv2_root` helper + `--libv2-root` CLI flag for portability
+- **ST 4**: BERT ensemble revisions pinned to concrete SHAs; `kabir5297` replaced by `cip29/bert-blooms-taxonomy-classifier` + `_CIP29_TO_BLOOM` translation table
+- **ST 5**: 2 stale Phase 6 transition tests refreshed; `_LEGACY_PHASE_PARAM_ROUTING` mirrored to current YAML
+- **ST 6**: `_run_concept_extraction` inline-projection fallback emits canonical `id` key (resolves silent-drop bug)
+- **ST 7**: cosmetic commit-message disagreement (no on-disk change)
+- **ST 8**: `pytest-asyncio` promoted to default dep + `asyncio_mode = auto` + marker registration
+- **ST 9**: decision-capture artifact recording the cip29 selection + alternatives_considered
+- **ST 10** (this entry): documentation closure
+
+---
+
 ## Training Pipeline (Waves 89–93)
 
 SLM training is a **post-import LibV2 stage**, not a step in `Trainforge/process_course.py`. The trainer reads `training_specs/*.jsonl` from an already-imported LibV2 course and writes `LibV2/courses/<slug>/models/<model_id>/`. End-state: courses carry trained QLoRA adapters with model card + eval report + decision log; Hugging Face is the upload target.
