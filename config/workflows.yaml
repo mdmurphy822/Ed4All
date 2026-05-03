@@ -1405,6 +1405,57 @@ workflows:
               on_error: warn
             description: "Phase 4 PoC SHACL parallel of page_objectives. Informational; Python gate remains authoritative."
 
+      # Phase 7c ST 16: post-packaging IMSCC chunkset emit. Runs the
+      # canonical ``ed4all_chunker.chunk_content`` over the HTML files
+      # extracted from the packaged ``.imscc`` zip and persists the
+      # chunkset to ``LibV2/courses/<slug>/imscc_chunks/``. Mirror of
+      # the Phase 7b ``chunking`` phase but on the IMSCC side: agent
+      # is the same content-agnostic ``dart-chunker`` utility (chunker
+      # is symmetric across DART + IMSCC), but the
+      # ``_PHASE_TOOL_MAPPING`` override in ``MCP/core/executor.py``
+      # routes this phase to ``run_imscc_chunking`` (emits
+      # ``chunkset_kind="imscc"`` + ``source_imscc_sha256``).
+      # Replaces the in-process chunker invocation that
+      # ``trainforge_assessment`` previously triggered — the workflow
+      # ordering now ensures the IMSCC chunkset is on disk before any
+      # downstream synthesis / training phase reads it.
+      - name: imscc_chunking
+        agents: [dart-chunker]
+        parallel: false
+        max_concurrent: 1
+        depends_on: [packaging]
+        timeout_minutes: 30
+        description: Emit IMSCC chunkset post-packaging (Phase 7c ST 16)
+
+        inputs_from:
+          - param: course_name
+            source: workflow_params
+            key: course_name
+          - param: imscc_path
+            source: phase_outputs
+            phase: packaging
+            output: package_path
+
+        outputs:
+          - imscc_chunks_path
+          - imscc_chunks_sha256
+
+        # Phase 7b ST 13 ChunksetManifestValidator wires here
+        # symmetrically with the DART chunkset phase. Severity warning
+        # in Phase 7c initially, mirroring the DART side; promotion to
+        # critical follows once a clean corpus rebuild calibrates the
+        # thresholds. The validator's symmetric schema check (Phase 7b
+        # ST 12) handles the ``chunkset_kind="imscc"`` branch.
+        validation_gates:
+          - gate_id: chunkset_manifest
+            validator: lib.validators.chunkset_manifest.ChunksetManifestValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+
       - name: trainforge_assessment
         agents: [assessment-generator]
         parallel: true
@@ -1497,7 +1548,16 @@ workflows:
         agents: [training-synthesizer]
         parallel: false
         max_concurrent: 1
-        depends_on: [trainforge_assessment]
+        # Phase 7c ST 16: training_synthesis now depends on the
+        # ``imscc_chunking`` chunkset emit phase in addition to the
+        # legacy ``trainforge_assessment`` dep, ensuring the IMSCC
+        # chunkset (chunks.jsonl + manifest.json) is on disk before
+        # the synthesizer runs. Per the plan-cited dep update, the
+        # post-packaging IMSCC chunkset is the canonical chunks
+        # source; trainforge_assessment is preserved as a sibling
+        # input until the in-process chunker invocation in
+        # ``Trainforge/process_course.py`` is fully retired.
+        depends_on: [trainforge_assessment, imscc_chunking]
         timeout_minutes: 30
         description: Synthesize SFT + DPO training pairs from Trainforge chunks
         optional: true
@@ -1514,6 +1574,14 @@ workflows:
             source: phase_outputs
             phase: trainforge_assessment
             output: chunks_path
+          # Phase 7c ST 16: surface the imscc_chunkset path as a
+          # supplementary input. Downstream consumers can prefer this
+          # over the trainforge_assessment-derived chunks_path once
+          # the in-process chunker invocation is retired.
+          - param: imscc_chunks_path
+            source: phase_outputs
+            phase: imscc_chunking
+            output: imscc_chunks_path
 
         outputs:
           - instruction_pairs_path
