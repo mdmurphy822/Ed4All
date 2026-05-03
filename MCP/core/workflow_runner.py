@@ -2703,32 +2703,48 @@ class WorkflowRunner:
         the legacy ``content_generation`` to the rewrite tier
         ``content_generation_rewrite`` when ``COURSEFORGE_TWO_PASS=true``.
         """
-        alt_pred = getattr(phase, "depends_on_when_env", None)
-        alt_value = getattr(phase, "depends_on_when_env_value", None)
-        if alt_pred and alt_value and self._eval_enabled_when_env(alt_pred):
-            deps = list(alt_value)
-        else:
-            deps = list(phase.depends_on or [])
-
+        deps = self._effective_depends_on(phase)
         for dep in deps:
             dep_output = phase_outputs.get(dep, {})
             if not dep_output.get("_completed"):
                 return False
         return True
 
+    def _effective_depends_on(self, phase: WorkflowPhase) -> List[str]:
+        """Resolve a phase's effective ``depends_on`` for the current env.
+
+        Mirrors the env-aware switch in ``_dependencies_met``: when a
+        phase declares ``depends_on_when_env`` paired with
+        ``depends_on_when_env_value`` and the predicate is satisfied
+        against the live environment, the alt list replaces the static
+        ``depends_on``. Used by ``_topological_sort`` so the dispatch
+        order matches the dependency check (Phase 3.5: packaging
+        switches from depending on the legacy ``content_generation`` to
+        the rewrite-tier ``post_rewrite_validation`` when
+        ``COURSEFORGE_TWO_PASS=true``).
+        """
+        alt_pred = getattr(phase, "depends_on_when_env", None)
+        alt_value = getattr(phase, "depends_on_when_env_value", None)
+        if alt_pred and alt_value and self._eval_enabled_when_env(alt_pred):
+            return list(alt_value)
+        return list(phase.depends_on or [])
+
     def _topological_sort(self, phases: List[WorkflowPhase]) -> List[WorkflowPhase]:
         """
         Sort phases respecting depends_on ordering.
 
-        Uses Kahn's algorithm for topological sort.
+        Uses Kahn's algorithm for topological sort. Honors the same
+        env-aware ``depends_on_when_env`` switch as ``_dependencies_met``
+        so the queue order matches the dependency check at runtime.
         """
         phase_map = {p.name: p for p in phases}
+        effective_deps = {p.name: self._effective_depends_on(p) for p in phases}
         in_degree = {p.name: 0 for p in phases}
 
-        for phase in phases:
-            for dep in (phase.depends_on or []):
+        for name, deps in effective_deps.items():
+            for dep in deps:
                 if dep in in_degree:
-                    in_degree[phase.name] += 1
+                    in_degree[name] += 1
 
         queue = [name for name, deg in in_degree.items() if deg == 0]
         sorted_names = []
@@ -2738,11 +2754,11 @@ class WorkflowRunner:
             name = queue.pop(0)
             sorted_names.append(name)
 
-            for phase in phases:
-                if name in (phase.depends_on or []):
-                    in_degree[phase.name] -= 1
-                    if in_degree[phase.name] == 0:
-                        queue.append(phase.name)
+            for other_name, deps in effective_deps.items():
+                if name in deps:
+                    in_degree[other_name] -= 1
+                    if in_degree[other_name] == 0:
+                        queue.append(other_name)
 
         # Detect circular dependencies
         if len(sorted_names) < len(phases):
