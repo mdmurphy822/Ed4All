@@ -32,20 +32,39 @@ def good_archive(tmp_path: Path):
 
     Includes every required scaffold dir + course.json + a valid
     manifest with one PDF source artifact whose checksum + size match.
+
+    Phase 7c ST 17: scaffold dirs updated (``corpus`` → ``imscc_chunks``,
+    ``dart_chunks`` added). The manifest now carries the three
+    required SHA-256 fields (``concept_graph_sha256``,
+    ``dart_chunks_sha256``, ``imscc_chunks_sha256``) backed by
+    on-disk fixture bytes so the integrity recompute passes.
     """
     slug = "test-course"
     course_dir = tmp_path / "courses" / slug
     course_dir.mkdir(parents=True)
 
-    # Scaffold dirs
-    for sub in ("corpus", "graph", "training_specs", "quality",
-                "source/pdf", "source/html", "source/imscc", "pedagogy"):
+    # Scaffold dirs (Phase 7c ST 17 layout: dart_chunks + imscc_chunks
+    # replace corpus).
+    for sub in ("dart_chunks", "imscc_chunks", "graph", "training_specs",
+                "quality", "source/pdf", "source/html", "source/imscc",
+                "pedagogy", "concept_graph"):
         (course_dir / sub).mkdir(parents=True)
 
     # Seed pedagogy/ + graph/ with a marker file so the "empty" warnings
     # don't fire on a healthy archive.
     (course_dir / "pedagogy" / "model.json").write_text("{}", encoding="utf-8")
     (course_dir / "graph" / "nodes.json").write_text("[]", encoding="utf-8")
+
+    # Phase 7c ST 17: emit the three chunkset/graph artefacts so the
+    # validator's hash-mismatch checks have something to recompute.
+    dart_chunks_bytes = b'{"id":"dart-1","chunk_type":"section_paragraph","text":"x"}\n'
+    (course_dir / "dart_chunks" / "chunks.jsonl").write_bytes(dart_chunks_bytes)
+    imscc_chunks_bytes = b'{"id":"imscc-1","chunk_type":"section_paragraph","text":"y"}\n'
+    (course_dir / "imscc_chunks" / "chunks.jsonl").write_bytes(imscc_chunks_bytes)
+    concept_graph_bytes = b'{"kind":"pedagogy","nodes":[],"edges":[]}'
+    (course_dir / "concept_graph" / "concept_graph_semantic.json").write_bytes(
+        concept_graph_bytes,
+    )
 
     # A single PDF source artifact
     pdf_bytes = b"%PDF-1.4 synthetic test pdf bytes" * 10
@@ -82,6 +101,9 @@ def good_archive(tmp_path: Path):
             "source_provenance": True,
             "evidence_source_provenance": True,
         },
+        "concept_graph_sha256": _sha256(concept_graph_bytes),
+        "dart_chunks_sha256": _sha256(dart_chunks_bytes),
+        "imscc_chunks_sha256": _sha256(imscc_chunks_bytes),
     }
     manifest_path = course_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -263,15 +285,25 @@ def test_missing_course_json_warns_never_blocks(good_archive):
 
 def test_concept_graph_drift_warns(good_archive):
     manifest_path, course_dir = good_archive
-    # Create concept_graph/ empty (graph/ already populated in fixture)
-    (course_dir / "concept_graph").mkdir()
+    # Phase 7c ST 17: fixture seeds concept_graph_semantic.json so the
+    # critical concept_graph_sha256 gate passes. To exercise the
+    # CONCEPT_GRAPH_DRIFT signal we have to drop the graph file (so
+    # concept_graph/ is empty) AND drop the manifest's hash field
+    # (so the now-critical MISSING_CONCEPT_GRAPH_SHA256 doesn't drown
+    # out the drift warning we're checking for).
+    (course_dir / "concept_graph" / "concept_graph_semantic.json").unlink()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("concept_graph_sha256", None)
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     result = LibV2ManifestValidator().validate({
         "manifest_path": str(manifest_path),
         "course_dir": str(course_dir),
     })
-    assert result.passed
+    # Drift signal fires regardless of whether the gate passes overall.
     assert any(i.code == "CONCEPT_GRAPH_DRIFT" for i in result.issues)
+    drift = [i for i in result.issues if i.code == "CONCEPT_GRAPH_DRIFT"]
+    assert drift[0].severity == "warning", "DRIFT signal stays warning."
 
 
 def test_course_dir_derived_from_manifest_path(good_archive):

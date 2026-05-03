@@ -1,24 +1,29 @@
-"""Phase 6 ST 20 — concept_graph_sha256 manifest extension tests.
+"""Phase 6 ST 20 / Phase 7c ST 17 — concept_graph_sha256 manifest extension tests.
 
 Covers the Phase 6 ST 19 extension to ``LibV2ManifestValidator`` that
 recognizes the new ``concept_graph_sha256`` manifest field. Phase 6
-lands the gate at warning severity (advisory only); Phase 7c
-promotes it to critical.
+landed the gate at warning severity (advisory only); **Phase 7c ST 17
+promoted it to critical** alongside the new ``dart_chunks_sha256`` +
+``imscc_chunks_sha256`` checks.
 
-Tests:
+Tests (post Phase 7c promotion):
   - Manifest with a valid hash + matching on-disk graph passes
-    (no concept_graph warnings).
-  - Manifest missing the hash AND graph file absent — no warning
-    (legacy / DART-only run).
-  - Manifest missing the hash but graph file present — warning fires
-    (``MISSING_CONCEPT_GRAPH_SHA256``); never critical.
+    (no concept_graph issues fire).
+  - Manifest missing the hash AND graph file absent — no concept_graph
+    issue (legacy / DART-only run).
+  - Manifest missing the hash but graph file present — critical fires
+    (``MISSING_CONCEPT_GRAPH_SHA256``); blocks.
   - Manifest with a malformed hash (non-hex / wrong length) —
-    warning fires (``INVALID_CONCEPT_GRAPH_SHA256``); never critical.
-  - Manifest hash divergent from on-disk graph — warning fires
-    (``CONCEPT_GRAPH_HASH_MISMATCH``); never critical.
+    critical fires (``INVALID_CONCEPT_GRAPH_SHA256``); blocks.
+  - Manifest hash divergent from on-disk graph — critical fires
+    (``CONCEPT_GRAPH_HASH_MISMATCH``); blocks.
   - Schema regex round-trip: the validator's regex matches the
     canonical 64-hex pattern declared in
     ``schemas/library/course_manifest.schema.json``.
+
+Fixtures include stub ``dart_chunks_sha256`` + ``imscc_chunks_sha256``
+fields (now required by Phase 7c ST 17) so the new ``MISSING_*`` checks
+don't fire spuriously and pollute the concept_graph-scoped assertions.
 """
 
 from __future__ import annotations
@@ -106,6 +111,11 @@ def archive_with_graph(tmp_path: Path):
             "evidence_source_provenance": True,
         },
         "concept_graph_sha256": graph_hash,
+        # Phase 7c ST 17: dart/imscc chunkset hashes are now required;
+        # stub with synthetic 64-hex values so the new MISSING_*
+        # checks don't fire and pollute the concept_graph assertions.
+        "dart_chunks_sha256": "d" * 64,
+        "imscc_chunks_sha256": "1" * 64,
     }
     manifest_path = course_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -158,6 +168,11 @@ def archive_without_graph(tmp_path: Path):
             "evidence_source_provenance": True,
         },
         # No concept_graph_sha256 + no concept_graph/ subdir at all.
+        # Phase 7c ST 17: dart/imscc chunkset hashes are now required;
+        # stub with synthetic 64-hex values so the new MISSING_*
+        # checks don't pollute legacy-archive assertions below.
+        "dart_chunks_sha256": "d" * 64,
+        "imscc_chunks_sha256": "1" * 64,
     }
     manifest_path = course_dir / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -199,41 +214,54 @@ def test_valid_concept_graph_hash_passes_no_warning(archive_with_graph):
         f"Valid concept_graph_sha256 must not fire any concept warnings; "
         f"got: {fired}"
     )
-    # Whole gate still passes overall (no critical issues from the new
-    # extension).
-    critical = [i for i in result.issues if i.severity == "critical"]
-    assert not critical, (
-        f"Concept-graph extension must not introduce critical issues "
-        f"in Phase 6; got: {[i.code for i in critical]}"
-    )
-
-
-def test_legacy_archive_without_concept_graph_no_warning(archive_without_graph):
-    """No graph file + no manifest field → no concept-graph warnings.
-
-    Legacy / DART-only archives must not surface noise warnings just
-    because they predate Phase 6.
-    """
-    manifest_path, course_dir = archive_without_graph
-    result = LibV2ManifestValidator().validate({
-        "manifest_path": str(manifest_path),
-        "course_dir": str(course_dir),
-    })
+    # Concept-graph extension must not fire critical issues against a
+    # well-formed concept_graph_sha256 + matching graph file. (Other
+    # critical issues — e.g. from the new dart/imscc chunkset checks —
+    # are out of scope for this concept-graph-focused test.)
     cg_codes = {
         "MISSING_CONCEPT_GRAPH_SHA256",
         "INVALID_CONCEPT_GRAPH_SHA256",
         "CONCEPT_GRAPH_HASH_MISMATCH",
         "CONCEPT_GRAPH_READ_ERROR",
     }
-    fired = [i.code for i in result.issues if i.code in cg_codes]
-    assert not fired, (
-        f"Legacy archive without concept graph must not fire warnings; "
-        f"got: {fired}"
+    cg_critical = [
+        i for i in result.issues
+        if i.severity == "critical" and i.code in cg_codes
+    ]
+    assert not cg_critical, (
+        f"Concept-graph extension must not fire critical issues against "
+        f"a valid hash + matching graph file; got: {[i.code for i in cg_critical]}"
     )
 
 
-def test_missing_hash_with_graph_present_warns_never_blocks(archive_with_graph):
-    """Graph file exists but manifest lacks the hash → warning, not block."""
+def test_legacy_archive_without_concept_graph_blocks_critical(archive_without_graph):
+    """Legacy archive missing concept_graph_sha256 → critical fires (Phase 7c ST 17).
+
+    Phase 6 left the gate at warning severity so legacy / DART-only archives
+    didn't surface noise. Phase 7c ST 17 promoted the field to a required
+    manifest key; legacy archives MUST now be backfilled (via
+    ``LibV2/tools/libv2/scripts/backfill_dart_chunks.py``) to be valid.
+    """
+    manifest_path, course_dir = archive_without_graph
+    result = LibV2ManifestValidator().validate({
+        "manifest_path": str(manifest_path),
+        "course_dir": str(course_dir),
+    })
+    missing = [
+        i for i in result.issues
+        if i.code == "MISSING_CONCEPT_GRAPH_SHA256"
+    ]
+    assert missing, (
+        "Phase 7c ST 17: legacy archive without concept_graph_sha256 "
+        "must fire MISSING_CONCEPT_GRAPH_SHA256 (now required)."
+    )
+    assert missing[0].severity == "critical", (
+        "Phase 7c ST 17: MISSING_CONCEPT_GRAPH_SHA256 is critical-severity."
+    )
+
+
+def test_missing_hash_with_graph_present_blocks_critical(archive_with_graph):
+    """Graph file exists but manifest lacks the hash → critical, blocks (Phase 7c ST 17)."""
     manifest_path, course_dir, _graph_hash, _graph_file = archive_with_graph
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest.pop("concept_graph_sha256", None)
@@ -252,17 +280,18 @@ def test_missing_hash_with_graph_present_warns_never_blocks(archive_with_graph):
         "MISSING_CONCEPT_GRAPH_SHA256 must fire when graph exists but "
         "hash is absent."
     )
-    assert missing[0].severity == "warning", (
-        "Phase 6 contract: MISSING_CONCEPT_GRAPH_SHA256 is warning-severity."
+    assert missing[0].severity == "critical", (
+        "Phase 7c ST 17 contract: MISSING_CONCEPT_GRAPH_SHA256 is critical-severity "
+        "(promoted from Phase 6 warning)."
     )
-    # Phase 6 contract: warning never blocks.
-    assert result.passed, (
-        "Phase 6 ST 19: missing concept_graph_sha256 must NOT block."
+    # Phase 7c contract: critical blocks.
+    assert not result.passed, (
+        "Phase 7c ST 17: missing concept_graph_sha256 MUST block (critical)."
     )
 
 
-def test_invalid_hash_format_warns_never_blocks(archive_with_graph):
-    """Malformed hash (wrong length / non-hex) → warning."""
+def test_invalid_hash_format_blocks_critical(archive_with_graph):
+    """Malformed hash (wrong length / non-hex) → critical (Phase 7c ST 17)."""
     manifest_path, course_dir, _graph_hash, _ = archive_with_graph
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["concept_graph_sha256"] = "not-a-valid-sha256"
@@ -279,24 +308,17 @@ def test_invalid_hash_format_warns_never_blocks(archive_with_graph):
     assert invalid, (
         "INVALID_CONCEPT_GRAPH_SHA256 must fire on malformed hash."
     )
-    assert invalid[0].severity == "warning"
-    # Phase 6 contract: warning never blocks.
-    cg_critical = [
-        i for i in result.issues
-        if i.severity == "critical"
-        and i.code in {
-            "INVALID_CONCEPT_GRAPH_SHA256",
-            "MISSING_CONCEPT_GRAPH_SHA256",
-            "CONCEPT_GRAPH_HASH_MISMATCH",
-        }
-    ]
-    assert not cg_critical, (
-        "Phase 6: concept-graph extension never emits critical issues."
+    assert invalid[0].severity == "critical", (
+        "Phase 7c ST 17: INVALID_CONCEPT_GRAPH_SHA256 is critical."
+    )
+    # Phase 7c contract: critical blocks.
+    assert not result.passed, (
+        "Phase 7c ST 17: malformed concept_graph_sha256 MUST block."
     )
 
 
-def test_hash_mismatch_warns_never_blocks(archive_with_graph):
-    """Manifest hash diverges from on-disk graph bytes → warning."""
+def test_hash_mismatch_blocks_critical(archive_with_graph):
+    """Manifest hash diverges from on-disk graph bytes → critical (Phase 7c ST 17)."""
     manifest_path, course_dir, _graph_hash, graph_file = archive_with_graph
 
     # Tamper with the graph file AFTER manifest records the hash.
@@ -314,14 +336,13 @@ def test_hash_mismatch_warns_never_blocks(archive_with_graph):
     assert mismatch, (
         "CONCEPT_GRAPH_HASH_MISMATCH must fire when on-disk bytes diverge."
     )
-    assert mismatch[0].severity == "warning"
-    # Phase 6: warning, not critical.
-    cg_critical = [
-        i for i in result.issues
-        if i.severity == "critical"
-        and i.code == "CONCEPT_GRAPH_HASH_MISMATCH"
-    ]
-    assert not cg_critical
+    assert mismatch[0].severity == "critical", (
+        "Phase 7c ST 17: CONCEPT_GRAPH_HASH_MISMATCH is critical."
+    )
+    # Phase 7c contract: critical blocks.
+    assert not result.passed, (
+        "Phase 7c ST 17: hash-mismatch MUST block."
+    )
 
 
 def test_archive_to_libv2_persists_concept_graph_sha256_to_manifest(tmp_path):

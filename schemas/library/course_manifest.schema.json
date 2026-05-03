@@ -4,7 +4,7 @@
   "title": "Course Manifest",
   "description": "Extended metadata for a course in the LibV2 repository",
   "type": "object",
-  "required": ["libv2_version", "slug", "import_timestamp", "sourceforge_manifest", "classification", "content_profile"],
+  "required": ["libv2_version", "slug", "import_timestamp", "sourceforge_manifest", "classification", "content_profile", "dart_chunks_sha256", "imscc_chunks_sha256", "concept_graph_sha256"],
   "properties": {
     "libv2_version": {
       "type": "string",
@@ -19,7 +19,17 @@
     "concept_graph_sha256": {
       "type": "string",
       "pattern": "^[0-9a-f]{64}$",
-      "description": "Phase 6 Subtask 17: SHA-256 of concept_graph_semantic.json produced by the concept_extraction workflow phase. Optional in Phase 6 (Wave 6-D will gate it as required by the libv2_manifest validator); ties the persisted concept graph to the LibV2 archive's manifest."
+      "description": "Phase 6 Subtask 17: SHA-256 of concept_graph_semantic.json produced by the concept_extraction workflow phase. Promoted to required by Phase 7c Subtask 17 alongside dart_chunks_sha256 + imscc_chunks_sha256 — the LibV2ManifestValidator now fail-closes when any of the three chunkset/graph hashes is absent."
+    },
+    "dart_chunks_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Phase 7b/7c: SHA-256 of LibV2/courses/<slug>/dart_chunks/chunks.jsonl produced by the chunking workflow phase (Phase 7b ST 11). Required by Phase 7c Subtask 17; ties the archived DART chunkset to the course manifest. Validator: lib.validators.libv2_manifest.LibV2ManifestValidator._check_dart_chunks_sha256."
+    },
+    "imscc_chunks_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Phase 7c: SHA-256 of LibV2/courses/<slug>/imscc_chunks/chunks.jsonl produced by the imscc_chunking workflow phase (Phase 7c ST 16). Required by Phase 7c Subtask 17; ties the archived IMSCC chunkset to the course manifest. Validator: lib.validators.libv2_manifest.LibV2ManifestValidator._check_imscc_chunks_sha256."
     },
     "slug": {
       "type": "string",
