@@ -7,6 +7,12 @@ Five tests covering:
 - :func:`test_member_failure_falls_through_silently_with_warning`
 - :func:`test_sha_pinning_recorded_in_decision_event`
 
+Phase 8 Subtask 4 extends with SHA-pin + label-map regression tests:
+- :func:`test_default_ensemble_revisions_are_concrete_commit_shas`
+- :func:`test_default_ensemble_first_member_is_cip29_replacement`
+- :func:`test_cip29_to_bloom_covers_all_canonical_levels`
+- :func:`test_cip29_to_bloom_keys_are_label_n_form`
+
 The ensemble's :meth:`_load_members` is mocked in every test so the
 suite never touches the real ``transformers`` extras (the CI worker
 doesn't have them installed). Real model inference is exercised by
@@ -15,12 +21,16 @@ available.
 """
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Tuple
 from unittest.mock import MagicMock
 
 import pytest
 
 from lib.classifiers.bloom_bert_ensemble import (
+    _BLOOM_LEVELS,
+    _CIP29_TO_BLOOM,
+    _DEFAULT_ENSEMBLE_MEMBERS,
     BertClassifier,
     BloomBertEnsemble,
 )
@@ -331,3 +341,113 @@ def test_sha_pinning_recorded_in_decision_event() -> None:
         assert event["metadata"]["member_name"] == member["name"]
         assert event["metadata"]["member_revision"] == member["revision"]
         assert event["metadata"]["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 Subtask 4 — SHA-pin + cip29 swap + label-map regression tests
+# ---------------------------------------------------------------------------
+
+#: Regex shape of a HuggingFace git commit SHA: 40 lowercase hex chars.
+_HF_COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+
+def test_default_ensemble_revisions_are_concrete_commit_shas() -> None:
+    """Every default ensemble member's ``revision`` is a 40-hex-char SHA.
+
+    Phase 8 ST 4 replaced the placeholder ``"main"`` revisions with
+    concrete SHAs resolved via
+    ``huggingface_hub.HfApi().model_info(repo_id).sha``. This test
+    locks the contract: any future drift back to a tag-style ref
+    (e.g. ``"main"``, ``"v1.0"``) trips the regex assertion. SHAs
+    pinned at land time:
+
+    - cip29/bert-blooms-taxonomy-classifier: ae343e4f...
+    - distilbert-base-uncased-finetuned-sst-2-english: 714eb0fa...
+    - MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli: 6f5cf0a2...
+    """
+    assert len(_DEFAULT_ENSEMBLE_MEMBERS) == 3, (
+        "Default ensemble must have exactly 3 members; "
+        f"got {len(_DEFAULT_ENSEMBLE_MEMBERS)}"
+    )
+    for entry in _DEFAULT_ENSEMBLE_MEMBERS:
+        assert "revision" in entry, f"Missing 'revision' field on entry {entry}"
+        rev = entry["revision"]
+        assert _HF_COMMIT_SHA_RE.match(rev), (
+            f"Member {entry.get('name')!r} has revision {rev!r} which is "
+            f"not a 40-hex-char HuggingFace commit SHA. Phase 8 ST 4 "
+            f"contract: every revision MUST be a concrete commit SHA."
+        )
+
+
+def test_default_ensemble_first_member_is_cip29_replacement() -> None:
+    """The first ensemble member is the cip29 Bloom classifier.
+
+    Phase 8 ST 4 replaced the deleted ``kabir5297/bloom_taxonomy_classifier``
+    with ``cip29/bert-blooms-taxonomy-classifier`` per operator
+    decision logged 2026-05-03. This test guards against accidental
+    rollback to the deleted upstream repo.
+    """
+    first = _DEFAULT_ENSEMBLE_MEMBERS[0]
+    assert first["name"] == "cip29/bert-blooms-taxonomy-classifier", (
+        f"First member should be cip29/bert-blooms-taxonomy-classifier; "
+        f"got {first['name']!r}. The legacy kabir5297 repo was deleted "
+        f"upstream — do not roll back to it."
+    )
+    # The kabir5297 reference must NOT appear anywhere in the registry.
+    for entry in _DEFAULT_ENSEMBLE_MEMBERS:
+        assert "kabir5297" not in entry.get("name", ""), (
+            f"kabir5297 reference resurfaced in {entry!r}; the upstream "
+            f"repo was deleted — Phase 8 ST 4 swapped to cip29."
+        )
+
+
+def test_cip29_to_bloom_covers_all_canonical_levels() -> None:
+    """Every value in :data:`_CIP29_TO_BLOOM` is a canonical Bloom level.
+
+    The cip29 model emits 6 generic ``LABEL_0`` ... ``LABEL_5`` labels
+    that the table translates to canonical Bloom levels. The full
+    canonical 6-level enum (``remember``, ``understand``, ``apply``,
+    ``analyze``, ``evaluate``, ``create``) MUST appear among the table
+    values so the validator's downstream regression suite stays stable.
+    """
+    bloom_levels_set = set(_BLOOM_LEVELS)
+    table_values = set(_CIP29_TO_BLOOM.values())
+    # Every value in the table must be a canonical level.
+    for v in table_values:
+        assert v in bloom_levels_set, (
+            f"_CIP29_TO_BLOOM value {v!r} is not in canonical _BLOOM_LEVELS "
+            f"({bloom_levels_set}). Translation table values MUST be "
+            f"canonical Bloom levels."
+        )
+    # Every canonical level appears in the table values (full coverage).
+    for level in bloom_levels_set:
+        assert level in table_values, (
+            f"Canonical Bloom level {level!r} missing from _CIP29_TO_BLOOM "
+            f"values {table_values}. Per Phase 8 ST 4 contract, the table "
+            f"MUST cover all six canonical levels."
+        )
+
+
+def test_cip29_to_bloom_keys_are_label_n_form() -> None:
+    """Every key in :data:`_CIP29_TO_BLOOM` matches the ``LABEL_N`` form.
+
+    The cip29 model's ``id2label`` config emits generic ``LABEL_0``
+    ... ``LABEL_5`` strings (verified at SHA-pin time via
+    ``huggingface_hub.hf_hub_download`` against ``config.json``). The
+    translation table's keys MUST mirror this generic form so that
+    :meth:`_classify_with_member` can look them up directly off the
+    model's argmax output without further string munging.
+    """
+    label_n_re = re.compile(r"^LABEL_[0-5]$")
+    for key in _CIP29_TO_BLOOM.keys():
+        assert label_n_re.match(key), (
+            f"_CIP29_TO_BLOOM key {key!r} does not match expected "
+            f"LABEL_N form (N in [0,5]). Verified at SHA-pin time: "
+            f"cip29/bert-blooms-taxonomy-classifier emits LABEL_0 ... "
+            f"LABEL_5 generic labels."
+        )
+    # Exactly six keys, one per canonical Bloom level.
+    assert len(_CIP29_TO_BLOOM) == 6, (
+        f"_CIP29_TO_BLOOM must have exactly 6 entries (one per "
+        f"canonical Bloom level); got {len(_CIP29_TO_BLOOM)}."
+    )

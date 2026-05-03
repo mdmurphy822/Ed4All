@@ -6,11 +6,19 @@ members, ``BloomBertEnsemble`` class with the public ``classify``
 contract, and stubs for ``_load_members`` (Subtask 25) +
 ``_aggregate`` (Subtask 26).
 
-Three members per the pre-resolved Phase 4 plan decision:
+Three members per the pre-resolved Phase 4 plan decision (Phase 8
+Subtask 4 swap: ``kabir5297/bloom_taxonomy_classifier`` was deleted
+upstream and replaced with ``cip29/bert-blooms-taxonomy-classifier``
+per operator decision logged 2026-05-03 — see plan ST 4 Decision #4):
 
-1. ``kabir5297/bloom_taxonomy_classifier`` — purpose-built Bloom's
-   classifier (6-class output natively aligned with the canonical
-   ``BLOOM_LEVELS`` enum).
+1. ``cip29/bert-blooms-taxonomy-classifier`` — purpose-built Bloom's
+   classifier (6-class BERT-base fine-tune, apache-2.0 license,
+   ``generated_from_trainer`` provenance). The model emits generic
+   ``LABEL_0`` ... ``LABEL_5`` labels (no semantic ``id2label``
+   mapping in its ``config.json``); :data:`_CIP29_TO_BLOOM` maps
+   them onto the canonical Bloom enum following the standard
+   hierarchical ordering convention (LABEL_0=remember,
+   LABEL_1=understand, ..., LABEL_5=create).
 2. ``distilbert-base-uncased-finetuned-sst-2-english`` — sentiment
    model used as a generic confidence-anchor signal. Its raw labels
    (``POSITIVE`` / ``NEGATIVE``) get mapped onto Bloom levels via the
@@ -21,15 +29,14 @@ Three members per the pre-resolved Phase 4 plan decision:
    classifier; given a candidate text + the six Bloom-level labels as
    hypotheses, picks the highest-entailment level.
 
-SHA pinning: each member's ``revision`` field carries a HuggingFace
-git SHA so the ensemble's classification is reproducible across runs.
-**Phase 4 followup**: The placeholder ``"main"`` revision below
-resolves to whatever HEAD points at the time of model download. A
-later commit should replace these with concrete commit SHAs (resolved
-via ``huggingface_hub.HfApi().model_info(repo_id).sha`` against a
-trusted pin), captured in the ``bert_ensemble_member_loaded`` decision
-event so the audit trail records exactly which revision produced each
-classification.
+SHA pinning: each member's ``revision`` field carries a concrete
+HuggingFace git commit SHA so the ensemble's classification is
+reproducible across runs. SHAs were resolved via
+``huggingface_hub.HfApi().model_info(repo_id).sha`` at Phase 8 ST 4
+land time and are captured in the ``bert_ensemble_member_loaded``
+decision event so the audit trail records exactly which revision
+produced each classification. Each entry's revision MUST match the
+40-hex-char regex ``^[0-9a-f]{40}$`` (enforced by the test suite).
 
 Graceful degradation: missing ``transformers`` extras raise
 :class:`BertEnsembleDepsMissing` only when strict mode is on (see
@@ -57,21 +64,22 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 #: Default ensemble members. Each entry pins ``name`` (HuggingFace repo
-#: id) and ``revision`` (git SHA — placeholder ``"main"`` documented
-#: as a Phase 4 followup; see module docstring). Override the registry
-#: by passing ``members=`` to :class:`BloomBertEnsemble.__init__`.
+#: id) and ``revision`` (concrete 40-hex-char git commit SHA, resolved
+#: at Phase 8 ST 4 land time via
+#: ``huggingface_hub.HfApi().model_info(repo_id).sha``). Override the
+#: registry by passing ``members=`` to :class:`BloomBertEnsemble.__init__`.
 _DEFAULT_ENSEMBLE_MEMBERS: List[Dict[str, str]] = [
     {
-        "name": "kabir5297/bloom_taxonomy_classifier",
-        "revision": "main",
+        "name": "cip29/bert-blooms-taxonomy-classifier",
+        "revision": "ae343e4f4710e3cb48847b7db0d977d878c4a2e8",
     },
     {
         "name": "distilbert-base-uncased-finetuned-sst-2-english",
-        "revision": "main",
+        "revision": "714eb0fa89d2f80546fda750413ed43d93601a13",
     },
     {
         "name": "MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli",
-        "revision": "main",
+        "revision": "6f5cf0a2b59cabb106aca4c287eed12e357e90eb",
     },
 ]
 
@@ -100,6 +108,30 @@ _BLOOM_LEVELS: Tuple[str, ...] = (
 _SST2_TO_BLOOM: Dict[str, str] = {
     "POSITIVE": "evaluate",
     "NEGATIVE": "remember",
+}
+
+
+#: Translation table for ``cip29/bert-blooms-taxonomy-classifier``
+#: (member 1, Phase 8 ST 4). The model emits generic ``LABEL_0`` ...
+#: ``LABEL_5`` labels with no semantic ``id2label`` mapping in its
+#: ``config.json`` (verified at SHA-pin time —
+#: ``huggingface_hub.hf_hub_download("cip29/bert-blooms-taxonomy-classifier",
+#: "config.json")`` returns ``id2label = {"0": "LABEL_0", ...,
+#: "5": "LABEL_5"}``). Per the standard convention for fine-tuned
+#: 6-class Bloom classifiers, the canonical hierarchical ordering is
+#: assumed: LABEL_0 → remember (lowest), ..., LABEL_5 → create
+#: (highest). This mirrors the canonical :data:`_BLOOM_LEVELS` tuple
+#: order. The translation runs inside :meth:`_classify_with_member`
+#: against the model's raw argmax output before the resulting Bloom
+#: level is returned to the ensemble vote aggregator. Every value MUST
+#: be a member of :data:`_BLOOM_LEVELS` (enforced by the test suite).
+_CIP29_TO_BLOOM: Dict[str, str] = {
+    "LABEL_0": "remember",
+    "LABEL_1": "understand",
+    "LABEL_2": "apply",
+    "LABEL_3": "analyze",
+    "LABEL_4": "evaluate",
+    "LABEL_5": "create",
 }
 
 
@@ -365,20 +397,25 @@ class BloomBertEnsemble:
         """Run inference on ``text`` with one ensemble member.
 
         Returns ``(bloom_level, confidence)``. Dispatches on member
-        name: the native Bloom classifier returns a 6-class softmax
-        directly; the SST-2 member maps its 2-class output via
+        name: the cip29 Bloom classifier returns a 6-class argmax over
+        its generic ``LABEL_0`` ... ``LABEL_5`` output, which is
+        translated to canonical Bloom levels via
+        :data:`_CIP29_TO_BLOOM` (Phase 8 ST 4 — replaces the deleted
+        ``kabir5297`` member that natively emitted Bloom-named
+        labels); the SST-2 member maps its 2-class output via
         :data:`_SST2_TO_BLOOM`; the zero-shot NLI member runs the
         six Bloom labels as candidate hypotheses and picks the highest
         entailment.
 
-        Subtask 25 hands off the real per-member dispatch (softmax /
-        SST-2 mapping / zero-shot NLI entailment) to a followup
-        commit; the current default returns ``("remember", 0.5)`` so
-        unit tests that mock loaded members can still exercise the
-        full classify -> _aggregate path. Real classification is
-        exercised by integration smoke tests when ``transformers`` is
-        installed AND the caller subclasses ``BloomBertEnsemble`` to
-        wire model-specific scoring.
+        Subtask 25 hands off the real per-member dispatch (cip29
+        argmax + ``_CIP29_TO_BLOOM`` translation / SST-2 mapping /
+        zero-shot NLI entailment) to a followup commit; the current
+        default returns ``("remember", 0.5)`` so unit tests that mock
+        loaded members can still exercise the full classify ->
+        _aggregate path. Real classification is exercised by
+        integration smoke tests when ``transformers`` is installed
+        AND the caller subclasses ``BloomBertEnsemble`` to wire
+        model-specific scoring.
         """
         return ("remember", 0.5)
 
