@@ -134,6 +134,8 @@
         "result_fusion",
         "retrieval_ranking",
         "revision_decision",
+        "rewrite_html_shape_check",
+        "rewrite_source_grounding_check",
         "schema_translation_generation",
         "source_interpretation",
         "source_selection",
