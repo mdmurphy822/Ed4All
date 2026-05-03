@@ -30,6 +30,34 @@ if TYPE_CHECKING:
     from MCP.orchestrator.llm_backend import LLMBackend
 
 
+# Phase 6 Subtask 22 (Phase 3c env-vars): env-var-first model resolution
+# for the legacy Claude-driven structure-detection path. Default preserves
+# the previous hardcoded ``claude-sonnet-4-20250514`` behavior; operators
+# retraining DART against a different teacher model set
+# ``DART_CLAUDE_MODEL``. This module owns the canonical resolver helper —
+# ``DART/pdf_converter/converter.py`` and
+# ``DART/pdf_converter/alt_text_generator.py`` import it from here so a
+# single env var pin propagates to every DART call site.
+DART_CLAUDE_MODEL_ENV = "DART_CLAUDE_MODEL"
+DART_CLAUDE_MODEL_DEFAULT = "claude-sonnet-4-20250514"
+
+
+def _resolve_dart_claude_model(explicit: Optional[str] = None) -> str:
+    """Pick the effective Claude model for DART call sites.
+
+    Priority order:
+      1. ``explicit`` argument (constructor kwarg) when truthy.
+      2. ``DART_CLAUDE_MODEL`` env var when set (and non-empty).
+      3. ``DART_CLAUDE_MODEL_DEFAULT`` (preserves legacy behavior).
+
+    Mirrors the precedent in
+    ``Trainforge/align_chunks.py::_resolve_align_model`` (Phase 4 Subtask 35).
+    """
+    if explicit:
+        return explicit
+    return os.environ.get(DART_CLAUDE_MODEL_ENV) or DART_CLAUDE_MODEL_DEFAULT
+
+
 class BlockType(str, Enum):
     """Types of content blocks in a document."""
     TITLE = "title"
@@ -225,7 +253,7 @@ Return ONLY the JSON object, no other text.'''
     def __init__(
         self,
         api_key: Optional[str] = None,
-        model: str = "claude-sonnet-4-20250514",
+        model: Optional[str] = None,
         max_tokens: int = 16384,
         cache_dir: Optional[str] = None,
         enable_cache: bool = True,
@@ -237,7 +265,10 @@ Return ONLY the JSON object, no other text.'''
         Args:
             api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY env var).
                 Ignored when ``llm`` is provided.
-            model: Claude model to use
+            model: Claude model to use. When ``None``, resolves via
+                env-var-first chain: ``DART_CLAUDE_MODEL`` env var, then the
+                legacy default ``claude-sonnet-4-20250514`` (Phase 6 Subtask
+                22 / Phase 3c env-vars).
             max_tokens: Maximum tokens in response
             cache_dir: Directory for caching responses
             enable_cache: Whether to use caching
@@ -248,7 +279,8 @@ Return ONLY the JSON object, no other text.'''
                 callers that pass ``api_key`` working unchanged.
         """
         self.api_key = api_key or os.environ.get('ANTHROPIC_API_KEY')
-        self.model = model
+        # Phase 6 Subtask 22: resolve effective model via env-var-first chain.
+        self.model = _resolve_dart_claude_model(model)
         self.max_tokens = max_tokens
         self.cache = ResponseCache(cache_dir) if enable_cache else None
         self._client = None

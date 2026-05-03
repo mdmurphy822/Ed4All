@@ -15,6 +15,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
+# Phase 6 Subtask 22 (Phase 3c env-vars): single canonical resolver for the
+# DART Claude model — see ``DART/pdf_converter/claude_processor.py`` for
+# the resolution chain (constructor kwarg > ``DART_CLAUDE_MODEL`` env var
+# > ``DART_CLAUDE_MODEL_DEFAULT``). Reused by every constructor in
+# ``DART/pdf_converter/`` so a single env var pin propagates to every
+# call site.
+from .claude_processor import _resolve_dart_claude_model
+
 if TYPE_CHECKING:
     from .claude_processor import ClaudeProcessor, DocumentStructure
 
@@ -66,7 +74,7 @@ class PDFToAccessibleHTML:
         lang: str = 'eng',
         min_confidence: float = 30.0,
         claude_api_key: Optional[str] = None,
-        claude_model: str = "claude-sonnet-4-20250514",
+        claude_model: Optional[str] = None,
         enable_cache: bool = True,
         # Math options
         enable_math: bool = True,
@@ -92,7 +100,10 @@ class PDFToAccessibleHTML:
             lang: Tesseract language code for OCR fallback
             min_confidence: Minimum OCR confidence (for fallback)
             claude_api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY env var)
-            claude_model: Claude model to use
+            claude_model: Claude model to use. When ``None``, resolves via
+                env-var-first chain: ``DART_CLAUDE_MODEL`` env var, then the
+                legacy default ``claude-sonnet-4-20250514`` (Phase 6 Subtask
+                22 / Phase 3c env-vars).
             enable_cache: Whether to enable response caching
             enable_math: Whether to convert math to MathML
             extract_images: Whether to extract and embed images from PDF
@@ -121,10 +132,14 @@ class PDFToAccessibleHTML:
         self.validate_wcag = validate_wcag
         self.wcag_strict = wcag_strict
 
+        # Phase 6 Subtask 22: resolve the effective Claude model via the
+        # env-var-first chain. Operators retraining DART against a different
+        # teacher model set ``DART_CLAUDE_MODEL`` once; explicit constructor
+        # kwarg still wins for callers that need a per-instance override.
         self._claude = None
         self._claude_config = {
             'api_key': claude_api_key,
-            'model': claude_model,
+            'model': _resolve_dart_claude_model(claude_model),
             'enable_cache': enable_cache,
         }
 

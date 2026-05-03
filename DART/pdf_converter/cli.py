@@ -11,10 +11,36 @@ Usage:
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
 from . import PDFToAccessibleHTML, __version__
+
+# Phase 6 Subtask 21 (Phase 3c env-vars): env-var-first model resolution
+# for DART's Claude calls. Operators retraining DART against a different
+# teacher model (or pinning a specific Claude release for reproducibility)
+# set ``DART_CLAUDE_MODEL`` instead of editing call sites or passing
+# ``--claude-model`` everywhere. Default preserves the previous hardcoded
+# ``claude-sonnet-4-20250514`` behavior. Resolution chain:
+#   1. explicit ``--claude-model`` CLI flag (highest precedence).
+#   2. ``DART_CLAUDE_MODEL`` env var when set.
+#   3. ``DART_CLAUDE_MODEL_DEFAULT`` (legacy default).
+DART_CLAUDE_MODEL_ENV = "DART_CLAUDE_MODEL"
+DART_CLAUDE_MODEL_DEFAULT = "claude-sonnet-4-20250514"
+
+
+def _resolve_default_model() -> str:
+    """Pick the effective default Claude model for the CLI.
+
+    Priority order:
+      1. ``DART_CLAUDE_MODEL`` env var when set (and non-empty).
+      2. ``DART_CLAUDE_MODEL_DEFAULT`` (preserves legacy behavior).
+
+    Mirrors the precedent in
+    ``Trainforge/align_chunks.py::_resolve_align_model`` (Phase 4 Subtask 35).
+    """
+    return os.environ.get(DART_CLAUDE_MODEL_ENV) or DART_CLAUDE_MODEL_DEFAULT
 
 
 def setup_logging(verbose: bool = False) -> None:
@@ -93,11 +119,15 @@ def parse_args(args: list = None) -> argparse.Namespace:
     )
 
     # Claude integration options
+    _default_model = _resolve_default_model()
     parser.add_argument(
         '--claude-model',
         type=str,
-        default='claude-sonnet-4-20250514',
-        help='Claude model to use (default: claude-sonnet-4-20250514)'
+        default=_default_model,
+        help=(
+            f'Claude model to use (default: {_default_model}; '
+            f'override via {DART_CLAUDE_MODEL_ENV} env var or this flag)'
+        ),
     )
 
     parser.add_argument(
