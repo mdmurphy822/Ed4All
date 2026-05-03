@@ -748,6 +748,15 @@ workflows:
             source: phase_outputs
             phase: staging
             output: staging_dir
+          # Phase 7b ST 14.5: consume the upstream DART chunkset from
+          # the chunking phase. _run_concept_extraction loads chunks
+          # from this path when present and skips the legacy inline
+          # projection of *_synthesized.json sidecars. Absent / unreadable
+          # falls through to the legacy projection (back-compat).
+          - param: dart_chunks_path
+            source: phase_outputs
+            phase: chunking
+            output: dart_chunks_path
 
         outputs:
           - concept_graph_path
