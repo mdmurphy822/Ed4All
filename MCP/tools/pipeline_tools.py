@@ -3933,6 +3933,47 @@ def _build_tool_registry() -> dict:
             for co in chapter:
                 lo_entries.append(_clone_lo(co, "chapter"))
 
+            # Phase 6 ST 16: link concept-graph nodes to LOs when the
+            # concept_extraction phase has emitted a graph. Phase 6 ST 11
+            # inserts ``concept_extraction`` between ``source_mapping`` and
+            # ``course_planning`` and emits ``concept_graph_path`` as a
+            # phase output; the linker is the deterministic
+            # post-synthesis pass per roadmap §6.6 two-stage. When the
+            # path is missing (legacy / pre-Phase-6 / dry-run paths
+            # where concept_extraction was skipped), this is a no-op
+            # and ``lo_entries`` is unchanged. Cross-link:
+            # ``lib/ontology/concept_objective_linker.py``.
+            concept_graph_path = (
+                kwargs.get("concept_graph_path")
+                or config_data.get("concept_graph_path")
+            )
+            if concept_graph_path:
+                concept_graph_file = Path(concept_graph_path)
+                if concept_graph_file.exists():
+                    try:
+                        concept_graph_data = json.loads(
+                            concept_graph_file.read_text(encoding="utf-8")
+                        )
+                    except (OSError, ValueError) as exc:
+                        logger.warning(
+                            "plan_course_structure: failed to load "
+                            "concept_graph at %s (%s); skipping linker",
+                            concept_graph_path, exc,
+                        )
+                    else:
+                        from lib.ontology.concept_objective_linker import (
+                            link_concepts_to_objectives,
+                        )
+                        lo_entries = link_concepts_to_objectives(
+                            lo_entries, concept_graph_data,
+                        )
+                else:
+                    logger.warning(
+                        "plan_course_structure: concept_graph_path "
+                        "%s does not exist; skipping concept-objective "
+                        "linker pass", concept_graph_path,
+                    )
+
             synthesized = {
                 "course_name": course_name,
                 "generated_from": generated_from,
@@ -5280,6 +5321,16 @@ def _build_tool_registry() -> dict:
         subdomains_str = kwargs.get("subdomains", "") or ""
         project_workspace_kw = kwargs.get("project_workspace") or ""
         project_id_kw = kwargs.get("project_id") or ""
+        # Phase 6 ST 18: concept-graph hash threaded from the
+        # ``concept_extraction`` phase output via the workflow runner's
+        # ``inputs_from`` chain. Optional — when absent we fall back to
+        # recomputing from ``concept_graph/concept_graph_semantic.json``
+        # on disk under the LibV2 course dir (Worker C-J's helper writes
+        # the file there at ST 12), and finally to ``None`` when no graph
+        # exists (legacy / DART-only runs). Schema field is optional in
+        # Phase 6 (Wave 6-D); the manifest validator is permissive (warning
+        # severity) until Phase 7c promotes to critical.
+        concept_graph_sha256_kw = kwargs.get("concept_graph_sha256") or ""
 
         if not course_name:
             return json.dumps({"error": "archive_to_libv2 requires course_name"})
@@ -5554,6 +5605,37 @@ def _build_tool_registry() -> dict:
         source_provenance_flag = _detect_source_provenance(course_dir)
         evidence_source_provenance_flag = _detect_evidence_source_provenance(course_dir)
 
+        # Phase 6 ST 18: resolve concept_graph_sha256 (per plan §D).
+        # Resolution order:
+        #   1. Explicit kwarg (workflow runner threads via inputs_from).
+        #   2. Recompute from on-disk concept_graph_semantic.json under the
+        #      LibV2 course's concept_graph/ subdir (Worker C-J's
+        #      _run_concept_extraction writes here at ST 12).
+        #   3. None — legacy archive without a concept graph (warning gate
+        #      handles this in libv2_manifest validator).
+        import re as _re_cg
+        concept_graph_sha256_resolved: Optional[str] = None
+        if concept_graph_sha256_kw and _re_cg.match(
+            r"^[0-9a-f]{64}$", concept_graph_sha256_kw,
+        ):
+            concept_graph_sha256_resolved = concept_graph_sha256_kw
+        else:
+            cg_path = (
+                course_dir / "concept_graph" / "concept_graph_semantic.json"
+            )
+            if cg_path.exists() and cg_path.is_file():
+                try:
+                    concept_graph_sha256_resolved = hashlib.sha256(
+                        cg_path.read_bytes()
+                    ).hexdigest()
+                except OSError as exc:
+                    logger.warning(
+                        "archive_to_libv2: failed to hash concept graph "
+                        "at %s: %s",
+                        cg_path,
+                        exc,
+                    )
+
         manifest = {
             "libv2_version": "1.2.0",
             "chunker_version": _resolve_chunker_version(),
@@ -5575,6 +5657,8 @@ def _build_tool_registry() -> dict:
                 "evidence_source_provenance": evidence_source_provenance_flag,
             },
         }
+        if concept_graph_sha256_resolved is not None:
+            manifest["concept_graph_sha256"] = concept_graph_sha256_resolved
 
         manifest_path = course_dir / "manifest.json"
         with open(manifest_path, "w") as f:
