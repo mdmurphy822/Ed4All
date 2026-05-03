@@ -613,11 +613,56 @@ workflows:
           - staged_files
           - file_count
 
+      # Phase 7b ST 10: chunking phase — emits the DART chunkset
+      # (LibV2/courses/<slug>/dart_chunks/chunks.jsonl + manifest.json)
+      # by running ed4all_chunker.chunk_content over staged DART HTML
+      # before objectives are extracted. Downstream concept_extraction
+      # (Phase 6 ST 11/12) consumes dart_chunks_path directly per the
+      # ST 14.5 reconciliation, eliminating the inline v4-chunk
+      # projection that previously lived inside _run_concept_extraction.
+      - name: chunking
+        agents: [dart-chunker]
+        parallel: false
+        max_concurrent: 1
+        depends_on: [staging]
+        timeout_minutes: 15
+        description: Emit DART chunkset (Phase 7b ST 10/11)
+
+        inputs_from:
+          - param: course_name
+            source: workflow_params
+            key: course_name
+          - param: staging_dir
+            source: phase_outputs
+            phase: staging
+            output: staging_dir
+
+        outputs:
+          - dart_chunks_path
+          - dart_chunks_sha256
+
+        # Phase 7b ST 13 (Worker W13): ChunksetManifestValidator wires
+        # here. Forward-reference — validator class lands in parallel
+        # with this phase block; the runner resolves the import at
+        # execution time so a missing class only surfaces when the gate
+        # actually runs. Severity warning initially per plan; promotion
+        # to critical follows once Worker W13 calibrates against a
+        # clean corpus rebuild.
+        validation_gates:
+          - gate_id: chunkset_manifest
+            validator: lib.validators.chunkset_manifest.ChunksetManifestValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+
       - name: objective_extraction
         agents: [textbook-ingestor]
         parallel: false
         max_concurrent: 1
-        depends_on: [staging]
+        depends_on: [chunking]
         timeout_minutes: 60
         description: Extract structure from staged DART HTML into textbook_structure.json (Wave 24)
 
@@ -679,14 +724,15 @@ workflows:
       # are synthesized. The emitted concept graph is later consumed by
       # the concept_objective_linker (Phase 6 ST 15/16) to populate
       # ``LearningObjective.keyConcepts[]`` during course_planning.
-      # Inserted between ``source_mapping`` and ``course_planning`` per
-      # the plan amendment (Phase 7a did NOT add a ``chunking`` workflow
-      # phase, so depends_on: [source_mapping] is the only valid path).
+      # Inserted between ``source_mapping`` and ``course_planning``.
+      # Phase 7b ST 10 widens depends_on to [source_mapping, chunking]
+      # so the upstream DART chunkset is consumable here once the
+      # ST 14.5 reconciliation refactor lands.
       - name: concept_extraction
         agents: [pedagogy-graph-builder]
         parallel: false
         max_concurrent: 1
-        depends_on: [source_mapping]
+        depends_on: [source_mapping, chunking]
         timeout_minutes: 30
         description: Build pedagogy/concept graph from staged DART output (Phase 6 ST 11/12)
 
