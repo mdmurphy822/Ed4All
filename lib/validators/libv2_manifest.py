@@ -36,8 +36,16 @@ logger = logging.getLogger(__name__)
 # Scaffold subdirectories LibV2 expects on a well-formed archive.
 # Missing → warning (never critical). Source of truth for the layout
 # convention: ``LibV2/CLAUDE.md`` § "Directory Reference".
+#
+# Phase 7c ST 17: ``corpus`` removed in favour of ``imscc_chunks`` (the
+# Phase 7c ST 15 rename); ``dart_chunks`` added for the Phase 7b
+# chunkset. The back-compat read shim in ``lib/libv2_storage.py`` lets
+# legacy archives that still carry ``corpus/`` resolve at consumer
+# call sites — but new archives are expected to land under the new
+# layout, so the scaffold-completeness warning surfaces drift.
 _EXPECTED_SUBDIRS = (
-    "corpus",
+    "dart_chunks",
+    "imscc_chunks",
     "graph",
     "training_specs",
     "quality",
@@ -51,7 +59,10 @@ _EXPECTED_SUBDIRS = (
 # manifest violating the regex here would also fail jsonschema; the
 # duplicated regex is intentional — when jsonschema isn't installed
 # the validator's structural-fallback path still validates the field.
+# Phase 7c ST 17 reuses the same pattern for the dart_chunks_sha256 +
+# imscc_chunks_sha256 critical-severity checks.
 _CONCEPT_GRAPH_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_CHUNKS_SHA256_RE = _CONCEPT_GRAPH_SHA256_RE
 
 
 class LibV2ManifestValidator:
@@ -141,8 +152,15 @@ class LibV2ManifestValidator:
         # -- 7. features.source_provenance advisory flag.
         issues.extend(self._check_source_provenance_flag(manifest))
 
-        # -- 8. Phase 6 ST 19: concept_graph_sha256 advisory check.
+        # -- 8. Phase 6 ST 19 / Phase 7c ST 17: concept_graph_sha256
+        #    check (promoted to critical in Phase 7c).
         issues.extend(self._check_concept_graph_sha256(manifest, course_dir))
+
+        # -- 9. Phase 7c ST 17: dart_chunks_sha256 check (critical).
+        issues.extend(self._check_dart_chunks_sha256(manifest, course_dir))
+
+        # -- 10. Phase 7c ST 17: imscc_chunks_sha256 check (critical).
+        issues.extend(self._check_imscc_chunks_sha256(manifest, course_dir))
 
         critical_count = sum(1 for i in issues if i.severity == "critical")
         passed = critical_count == 0
@@ -417,14 +435,17 @@ class LibV2ManifestValidator:
     def _check_concept_graph_sha256(
         manifest: Dict[str, Any], course_dir: Path,
     ) -> List[GateIssue]:
-        """Phase 6 ST 19: warning-severity gate on ``concept_graph_sha256``.
+        """Phase 6 ST 19 / Phase 7c ST 17: critical-severity gate on
+        ``concept_graph_sha256``.
 
-        Per plan: in Phase 6, this validator surfaces the field's
-        absence / shape errors / on-disk hash divergence as warnings;
-        Phase 7c promotes to critical once Worker C-J's
-        ``_run_concept_extraction`` is in the canonical run.
+        Promoted from warning → critical in Phase 7c per plan amendment 3.
+        Phase 6 commit ``c3a9f72`` left these issues at warning severity
+        explicitly noting the Phase 7c promotion; the schema's
+        ``required`` array now includes ``concept_graph_sha256`` so any
+        manifest lacking the field also fails the structural-fallback
+        check upstream.
 
-        Three checks (each warning):
+        Three checks (each now critical):
           1. ``MISSING_CONCEPT_GRAPH_SHA256`` — manifest has no
              ``concept_graph_sha256`` field at all.
           2. ``INVALID_CONCEPT_GRAPH_SHA256`` — value is not a 64-char
@@ -435,9 +456,7 @@ class LibV2ManifestValidator:
              load-bearing signal: schema validation alone (regex)
              can't catch a stale-or-tampered hash.
 
-        Schema source-of-truth: ``schemas/library/course_manifest.schema.json``
-        ``concept_graph_sha256`` is optional in Phase 6 (Wave 6-D);
-        will be required by the Phase 7c validator promotion.
+        Schema source-of-truth: ``schemas/library/course_manifest.schema.json``.
         """
         issues: List[GateIssue] = []
         graph_file = (
@@ -446,27 +465,31 @@ class LibV2ManifestValidator:
 
         cg_hash = manifest.get("concept_graph_sha256")
         if cg_hash is None:
-            # Only warn when a graph file actually exists — pre-Phase-6
-            # archives that lack any concept graph at all should not
-            # surface a noise warning.
-            if graph_file.exists():
-                issues.append(GateIssue(
-                    severity="warning",
-                    code="MISSING_CONCEPT_GRAPH_SHA256",
-                    message=(
-                        "concept_graph_semantic.json exists on disk but "
-                        "manifest has no concept_graph_sha256 field. "
-                        "Phase 6 ST 18 should populate this field."
-                    ),
-                    location=str(graph_file),
-                    suggestion=(
-                        "Ensure archive_to_libv2 receives the hash from "
-                        "the concept_extraction phase output (workflow "
-                        "runner threads concept_graph_sha256 via "
-                        "inputs_from), or recomputes from the on-disk "
-                        "graph file. Phase 7c promotes this to critical."
-                    ),
-                ))
+            # Phase 7c ST 17: the manifest schema's required[] now
+            # carries concept_graph_sha256, so a missing field is a
+            # critical issue regardless of whether a graph file exists.
+            # Without an on-disk graph the message is more informative
+            # (legacy archive that pre-dates Phase 6); with a graph
+            # file present the operator has both pieces but failed to
+            # thread the hash through.
+            location = str(graph_file) if graph_file.exists() else None
+            issues.append(GateIssue(
+                severity="critical",
+                code="MISSING_CONCEPT_GRAPH_SHA256",
+                message=(
+                    "manifest has no concept_graph_sha256 field. "
+                    "Phase 7c ST 17 promoted this to a required field; "
+                    "ensure the concept_extraction phase output is "
+                    "threaded into archive_to_libv2."
+                ),
+                location=location,
+                suggestion=(
+                    "Run the concept_extraction phase, or for legacy "
+                    "archives use the operator backfill path (mirror "
+                    "of LibV2/tools/libv2/scripts/backfill_dart_chunks.py "
+                    "for the concept graph)."
+                ),
+            ))
             return issues
 
         # Field present — validate shape (mirror schema regex).
@@ -474,7 +497,7 @@ class LibV2ManifestValidator:
             cg_hash
         ):
             issues.append(GateIssue(
-                severity="warning",
+                severity="critical",
                 code="INVALID_CONCEPT_GRAPH_SHA256",
                 message=(
                     f"concept_graph_sha256 must be a 64-char lowercase "
@@ -505,7 +528,7 @@ class LibV2ManifestValidator:
                 return issues
             if actual != cg_hash:
                 issues.append(GateIssue(
-                    severity="warning",
+                    severity="critical",
                     code="CONCEPT_GRAPH_HASH_MISMATCH",
                     message=(
                         f"concept_graph_sha256 in manifest ({cg_hash[:16]}...) "
@@ -515,6 +538,184 @@ class LibV2ManifestValidator:
                     suggestion=(
                         "Re-run the concept_extraction phase or update "
                         "the manifest's concept_graph_sha256."
+                    ),
+                ))
+
+        return issues
+
+    @staticmethod
+    def _check_dart_chunks_sha256(
+        manifest: Dict[str, Any], course_dir: Path,
+    ) -> List[GateIssue]:
+        """Phase 7c ST 17: critical-severity gate on ``dart_chunks_sha256``.
+
+        Mirrors ``_check_concept_graph_sha256`` (same MISSING / INVALID /
+        MISMATCH issue triplet, same shape regex, same on-disk hash
+        recomputation). The chunkset file location is
+        ``LibV2/courses/<slug>/dart_chunks/chunks.jsonl`` per the Phase 7b
+        emit at ``MCP/tools/pipeline_tools.py::_run_dart_chunking``.
+
+        Three checks (each critical):
+          1. ``MISSING_DART_CHUNKS_SHA256`` — manifest lacks the field.
+          2. ``INVALID_DART_CHUNKS_SHA256`` — value isn't a 64-char
+             lowercase hex string.
+          3. ``DART_CHUNKS_HASH_MISMATCH`` — recomputed digest of the
+             on-disk ``chunks.jsonl`` diverges from the manifest value.
+        """
+        issues: List[GateIssue] = []
+        chunks_file = course_dir / "dart_chunks" / "chunks.jsonl"
+
+        dh = manifest.get("dart_chunks_sha256")
+        if dh is None:
+            location = str(chunks_file) if chunks_file.exists() else None
+            issues.append(GateIssue(
+                severity="critical",
+                code="MISSING_DART_CHUNKS_SHA256",
+                message=(
+                    "manifest has no dart_chunks_sha256 field. Phase 7c "
+                    "ST 17 promoted this to a required manifest key; "
+                    "ensure the chunking workflow phase output is "
+                    "threaded into archive_to_libv2 or use the operator "
+                    "backfill at LibV2/tools/libv2/scripts/backfill_dart_chunks.py."
+                ),
+                location=location,
+                suggestion=(
+                    "See MCP/tools/pipeline_tools.py::_run_dart_chunking "
+                    "(Phase 7b ST 11) for the canonical emit path."
+                ),
+            ))
+            return issues
+
+        if not isinstance(dh, str) or not _CHUNKS_SHA256_RE.match(dh):
+            issues.append(GateIssue(
+                severity="critical",
+                code="INVALID_DART_CHUNKS_SHA256",
+                message=(
+                    f"dart_chunks_sha256 must be a 64-char lowercase "
+                    f"hex string; got: {dh!r}"
+                ),
+                suggestion=(
+                    "See schemas/library/course_manifest.schema.json "
+                    "dart_chunks_sha256 pattern."
+                ),
+            ))
+            return issues
+
+        if chunks_file.exists() and chunks_file.is_file():
+            try:
+                actual = hashlib.sha256(chunks_file.read_bytes()).hexdigest()
+            except OSError as exc:
+                issues.append(GateIssue(
+                    severity="warning",
+                    code="DART_CHUNKS_READ_ERROR",
+                    message=(
+                        f"Failed to recompute hash for {chunks_file}: {exc}"
+                    ),
+                    location=str(chunks_file),
+                ))
+                return issues
+            if actual != dh:
+                issues.append(GateIssue(
+                    severity="critical",
+                    code="DART_CHUNKS_HASH_MISMATCH",
+                    message=(
+                        f"dart_chunks_sha256 in manifest ({dh[:16]}...) "
+                        f"does not match disk ({actual[:16]}...)."
+                    ),
+                    location=str(chunks_file),
+                    suggestion=(
+                        "Re-run the chunking workflow phase or invoke "
+                        "the operator backfill script to regenerate "
+                        "dart_chunks/chunks.jsonl + update the manifest."
+                    ),
+                ))
+
+        return issues
+
+    @staticmethod
+    def _check_imscc_chunks_sha256(
+        manifest: Dict[str, Any], course_dir: Path,
+    ) -> List[GateIssue]:
+        """Phase 7c ST 17: critical-severity gate on ``imscc_chunks_sha256``.
+
+        Mirrors ``_check_concept_graph_sha256`` and
+        ``_check_dart_chunks_sha256``. The chunkset file location is
+        ``LibV2/courses/<slug>/imscc_chunks/chunks.jsonl`` per the Phase 7c
+        ST 15 corpus → imscc_chunks rename + the ST 16 imscc_chunking
+        workflow phase emit.
+
+        Three checks (each critical):
+          1. ``MISSING_IMSCC_CHUNKS_SHA256`` — manifest lacks the field.
+          2. ``INVALID_IMSCC_CHUNKS_SHA256`` — value isn't a 64-char
+             lowercase hex string.
+          3. ``IMSCC_CHUNKS_HASH_MISMATCH`` — recomputed digest of the
+             on-disk ``chunks.jsonl`` diverges from the manifest value.
+        """
+        issues: List[GateIssue] = []
+        chunks_file = course_dir / "imscc_chunks" / "chunks.jsonl"
+
+        ih = manifest.get("imscc_chunks_sha256")
+        if ih is None:
+            location = str(chunks_file) if chunks_file.exists() else None
+            issues.append(GateIssue(
+                severity="critical",
+                code="MISSING_IMSCC_CHUNKS_SHA256",
+                message=(
+                    "manifest has no imscc_chunks_sha256 field. Phase 7c "
+                    "ST 17 promoted this to a required manifest key; "
+                    "ensure the imscc_chunking workflow phase output is "
+                    "threaded into archive_to_libv2."
+                ),
+                location=location,
+                suggestion=(
+                    "See MCP/tools/pipeline_tools.py imscc_chunking "
+                    "phase emit (Phase 7c ST 16) for the canonical "
+                    "path; corpus/ → imscc_chunks/ rename per ST 15."
+                ),
+            ))
+            return issues
+
+        if not isinstance(ih, str) or not _CHUNKS_SHA256_RE.match(ih):
+            issues.append(GateIssue(
+                severity="critical",
+                code="INVALID_IMSCC_CHUNKS_SHA256",
+                message=(
+                    f"imscc_chunks_sha256 must be a 64-char lowercase "
+                    f"hex string; got: {ih!r}"
+                ),
+                suggestion=(
+                    "See schemas/library/course_manifest.schema.json "
+                    "imscc_chunks_sha256 pattern."
+                ),
+            ))
+            return issues
+
+        if chunks_file.exists() and chunks_file.is_file():
+            try:
+                actual = hashlib.sha256(chunks_file.read_bytes()).hexdigest()
+            except OSError as exc:
+                issues.append(GateIssue(
+                    severity="warning",
+                    code="IMSCC_CHUNKS_READ_ERROR",
+                    message=(
+                        f"Failed to recompute hash for {chunks_file}: {exc}"
+                    ),
+                    location=str(chunks_file),
+                ))
+                return issues
+            if actual != ih:
+                issues.append(GateIssue(
+                    severity="critical",
+                    code="IMSCC_CHUNKS_HASH_MISMATCH",
+                    message=(
+                        f"imscc_chunks_sha256 in manifest ({ih[:16]}...) "
+                        f"does not match disk ({actual[:16]}...)."
+                    ),
+                    location=str(chunks_file),
+                    suggestion=(
+                        "Re-run the imscc_chunking workflow phase to "
+                        "regenerate imscc_chunks/chunks.jsonl + update "
+                        "the manifest."
                     ),
                 ))
 
