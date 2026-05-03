@@ -940,6 +940,53 @@ workflows:
               on_error: warn
             description: Phase 4 PoC SHACL parallel of outline-tier Block validators. Informational; Python gates remain authoritative.
 
+          # Phase 4 Wave N2 Subtask 17: three embedding-tier
+          # validators wired in alongside the structural Python +
+          # SHACL gates above. Each validator embeds a per-block
+          # textual surface and computes pair-wise cosine similarity
+          # against a related surface (objective statements / concept
+          # definitions / paraphrase roundtrip), emitting
+          # action="regenerate" when the cosine drops below the
+          # validator's threshold. Severity is intentionally `warning`
+          # so the structural gates stay authoritative during the PoC
+          # window — the embedding signals are *additive*: they catch
+          # semantic drift the structural validators can't detect (an
+          # objective_id that resolves but the assessment doesn't
+          # actually probe; a CURIE that anchors textually but the
+          # example doesn't illustrate; an objective statement that
+          # parses cleanly but is unstable under paraphrase). All
+          # three degrade gracefully when sentence-transformers extras
+          # are not installed (single warning issue, passed=True).
+          - gate_id: outline_objective_assessment_similarity
+            validator: lib.validators.objective_assessment_similarity.ObjectiveAssessmentSimilarityValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Phase 4 PoC embedding-tier check that assessment_item Blocks semantically align with their declared objective_ids.
+
+          - gate_id: outline_concept_example_similarity
+            validator: lib.validators.concept_example_similarity.ConceptExampleSimilarityValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Phase 4 PoC embedding-tier check that example Blocks semantically align with their declared concept_refs / curies.
+
+          - gate_id: outline_objective_roundtrip_similarity
+            validator: lib.validators.objective_roundtrip_similarity.ObjectiveRoundtripSimilarityValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Phase 4 PoC embedding-tier paraphrase-roundtrip stability check on objective Blocks. Skipped when no paraphrase_fn / router is wired.
+
       - name: content_generation_rewrite
         agents: [content-generator]
         parallel: true
