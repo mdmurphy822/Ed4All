@@ -22,6 +22,17 @@ dependencies = [
     "rdflib>=7.0.0,<8.0.0",
     "pyld>=2.0.0,<4.0.0",
     "pyshacl>=0.25.0,<1.0.0",
+    # Phase 7a Subtask 7: in-repo workspace member at
+    # ``./ed4all-chunker``. Declared as a PEP 508 direct-reference
+    # dependency with a relative ``file:`` URL so ``pip install -e
+    # /home/user/Ed4All`` automatically pulls the chunker package in
+    # without a separate install step. The chunker carries the lifted
+    # ``_chunk_content`` / ``_chunk_text_block`` surface from
+    # ``Trainforge/process_course.py`` (Subtasks 4 + 6) and is the
+    # canonical chunker for the future DART + IMSCC dual-chunkset
+    # pipeline (Phase 7b + 7c). PyPI promotion deferred to when an
+    # external consumer surfaces (per roadmap §6.2 recommendation).
+    "ed4all-chunker @ file:./ed4all-chunker",
 ]
 
 [project.optional-dependencies]
