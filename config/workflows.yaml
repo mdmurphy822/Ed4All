@@ -717,6 +717,20 @@ workflows:
           - terminal_count
           - chapter_count
 
+        # Phase 6 ST 4.5: gate the synthesized LO set on ABCD verb-Bloom
+        # alignment. Phase 6 lands as warning so legacy corpora without
+        # ABCD don't fail closed; Phase 7+ promotes to critical once
+        # corpus calibration confirms safe.
+        validation_gates:
+          - gate_id: abcd_verb_alignment
+            validator: lib.validators.abcd_objective.AbcdObjectiveValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+
       - name: content_generation
         agents: [content-generator]
         parallel: true

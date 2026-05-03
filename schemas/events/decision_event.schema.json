@@ -61,6 +61,8 @@
     "decision_type": {
       "type": "string",
       "enum": [
+        "abcd_authored",
+        "abcd_verb_bloom_mismatch",
         "abstention_generation",
         "accessibility_measures",
         "alignment_check",
