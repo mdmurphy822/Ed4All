@@ -387,6 +387,16 @@ Questions MUST target specific Bloom's levels:
 
 ---
 
+## Chunking (Phase 7a delegation)
+
+`Trainforge/process_course.py::CourseProcessor` no longer owns the chunking implementation. Phase 7a Subtask 6 (commit `64d5e3e`) lifted the four chunking helpers — `_chunk_content`, `_chunk_text_block`, `_merge_small_sections`, `_merge_section_source_ids` — out of `process_course.py` into the standalone `ed4all-chunker` workspace package, where they live as `ed4all_chunker.chunker.{chunk_content, chunk_text_block, merge_small_sections, merge_section_source_ids}`.
+
+The four methods on `CourseProcessor` remain as thin delegating wrappers so the existing Trainforge call sites (and any external consumer that imports `CourseProcessor`) keep working unchanged. Internally, each wrapper builds a `ChunkerContext` (defined in `ed4all_chunker.chunker`) that threads `_create_chunk` — the only chunker helper that stays on `CourseProcessor`, because of its deep coupling to instance state (`run_id`, decision-capture handle, source-reference accumulator) — back into the lifted code via callback. `chunk_content` returns a `ChunkContentResult` dataclass `(chunks, pages_with_misconceptions)` so the Trainforge wrapper can apply the `pages_with_misconceptions` side effect on `self` after the lifted call returns.
+
+Net result: DART, Courseforge, and Trainforge share one chunker. Phase 7a Subtask 8 added a top-level `chunker_version` field to `course_manifest.json` (resolved via `importlib.metadata.version("ed4all-chunker")`) so LibV2 audits can pin which chunker shipped each corpus. See root `CLAUDE.md` § "Project Structure" and the `ed4all-chunker/` package for the canonical chunker surface.
+
+---
+
 ## Metadata Extraction
 
 Trainforge extracts structured metadata from Courseforge HTML output using a priority chain:
