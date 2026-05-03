@@ -116,6 +116,16 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         "source_module_map_path": (
             "phase_outputs", "source_mapping", "source_module_map_path",
         ),
+        # Phase 6 ST 16 / Phase 8 ST 5: route the concept-graph path
+        # emitted by ``concept_extraction`` so the planner's two-stage
+        # linker populates ``LearningObjective.keyConcepts[]`` from
+        # ``concept_graph_semantic.json`` before persistence. Mirrors
+        # the YAML routing at config/workflows.yaml::course_planning;
+        # the legacy dict is consulted as a fallback when YAML lookup
+        # misses (see ``_get_phase_param_routing``).
+        "concept_graph_path": (
+            "phase_outputs", "concept_extraction", "concept_graph_path",
+        ),
     },
     "content_generation": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),
@@ -205,6 +215,24 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         "pdf_paths": ("workflow_params", "pdf_paths"),
         "html_paths": ("phase_outputs", "dart_conversion", "output_paths"),
         "imscc_path": ("phase_outputs", "packaging", "package_path"),
+        # Phase 6 ST 18 / Phase 7c.5 / Phase 8 ST 5: thread the three
+        # chunkset SHA-256s (concept graph from ``concept_extraction``,
+        # DART chunkset from ``chunking``, IMSCC chunkset from
+        # ``imscc_chunking``) so the LibV2 manifest carries each hash
+        # and the ``libv2_manifest`` gate can cross-check on-disk
+        # artifacts. Mirrors the YAML routing at
+        # config/workflows.yaml::libv2_archival; the legacy dict is
+        # consulted as a fallback when YAML lookup misses (see
+        # ``_get_phase_param_routing``).
+        "concept_graph_sha256": (
+            "phase_outputs", "concept_extraction", "concept_graph_sha256",
+        ),
+        "dart_chunks_sha256": (
+            "phase_outputs", "chunking", "dart_chunks_sha256",
+        ),
+        "imscc_chunks_sha256": (
+            "phase_outputs", "imscc_chunking", "imscc_chunks_sha256",
+        ),
     },
     "finalization": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),

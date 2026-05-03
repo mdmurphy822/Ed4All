@@ -84,9 +84,12 @@ class TestCoursePlanningUpdated:
         params = {entry["param"] for entry in phase["inputs_from"]}
         assert "source_module_map_path" in params
 
-    def test_course_planning_depends_on_source_mapping(self, textbook_phases):
+    def test_course_planning_depends_on_concept_extraction(self, textbook_phases):
+        """Phase 6 inserted ``concept_extraction`` between ``source_mapping`` and
+        ``course_planning``; ``source_mapping`` is now a transitive predecessor
+        via ``concept_extraction.depends_on: [source_mapping, chunking]``."""
         phase = textbook_phases["course_planning"]
-        assert "source_mapping" in phase["depends_on"]
+        assert "concept_extraction" in phase["depends_on"]
 
     def test_course_planning_routes_duration_weeks_explicit(self, textbook_phases):
         """Wave 40: the flag gates ``_plan_course_structure``'s
