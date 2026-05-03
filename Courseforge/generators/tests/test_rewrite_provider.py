@@ -45,6 +45,7 @@ from Courseforge.generators._rewrite_provider import (  # noqa: E402
     RewriteProvider,
     RewriteProviderError,
     SUPPORTED_PROVIDERS,
+    _escape_orphan_placeholder_tags,
 )
 from blocks import Block, Touch  # noqa: E402  (Phase 2 intermediate format)
 
@@ -450,6 +451,111 @@ def test_rewrite_system_prompt_carries_html_escape_directive(monkeypatch):
     # The directive references the gate by name so the model has the
     # cause-and-effect pinned.
     assert "post-rewrite shape gate" in request_body
+
+
+# ---------------------------------------------------------------------------
+# Orphan-tag sanitizer (post-emit)
+# ---------------------------------------------------------------------------
+
+
+def test_sanitizer_escapes_rdf_triple_placeholder():
+    """The canonical Qwen-7B-Q4 failure case: bare <subject> <predicate>
+    <object> with no closers. All three openers must be escaped."""
+    html = (
+        "<section><p>An RDF statement is a "
+        "<subject> <predicate> <object> triple.</p></section>"
+    )
+    out = _escape_orphan_placeholder_tags(html)
+    assert "&lt;subject&gt;" in out
+    assert "&lt;predicate&gt;" in out
+    assert "&lt;object&gt;" in out
+    assert "<subject>" not in out
+    assert "<predicate>" not in out
+    assert "<object>" not in out
+    # Real elements (with closers) are untouched.
+    assert "<section>" in out
+    assert "</section>" in out
+    assert "<p>" in out
+    assert "</p>" in out
+
+
+def test_sanitizer_leaves_real_elements_with_closers_untouched():
+    """``<section>...</section>`` is a balanced real element. No escape."""
+    html = "<section><p>Hello</p></section>"
+    out = _escape_orphan_placeholder_tags(html)
+    assert out == html
+
+
+def test_sanitizer_leaves_attribute_bearing_elements_untouched():
+    """Real attribute-bearing elements never match the bare-opener regex."""
+    html = (
+        '<section data-cf-block-id="x#concept_0" '
+        'data-cf-content-type="definition">'
+        "<p>Body</p></section>"
+    )
+    out = _escape_orphan_placeholder_tags(html)
+    assert out == html
+
+
+def test_sanitizer_leaves_void_elements_untouched():
+    """``<br>`` / ``<hr>`` / ``<img>`` are HTML5 void elements; they
+    legitimately appear without a closer and must NOT be escaped."""
+    html = "<p>Line one<br>Line two<hr><img></p>"
+    out = _escape_orphan_placeholder_tags(html)
+    assert out == html
+
+
+def test_sanitizer_escapes_orphan_object_even_though_object_is_real_html_element():
+    """``<object>`` IS a real HTML5 element, but in an RDF triple it's
+    a placeholder with no closer. The sanitizer escapes orphan-openers
+    regardless of whether the tag name appears in the HTML5 element
+    set — the closer-presence check is the discriminator."""
+    html = "<p>The triple has a subject, predicate, and <object> slot.</p>"
+    out = _escape_orphan_placeholder_tags(html)
+    assert "&lt;object&gt;" in out
+
+
+def test_sanitizer_escapes_curie_in_brackets():
+    """Placeholder CURIEs like ``<rdf:type>`` need the same escape — the
+    colon is allowed in the bare-opener regex."""
+    html = "<p>The <rdf:type> predicate types the focus node.</p>"
+    out = _escape_orphan_placeholder_tags(html)
+    assert "&lt;rdf:type&gt;" in out
+    assert "<rdf:type>" not in out
+
+
+def test_sanitizer_preserves_balanced_object_when_real_element():
+    """If the model legitimately uses ``<object>...</object>`` (e.g. for
+    embedded content), the closer is found and the sanitizer leaves it."""
+    html = '<object data="x.svg">fallback</object>'
+    out = _escape_orphan_placeholder_tags(html)
+    assert out == html
+
+
+def test_sanitizer_handles_mixed_orphan_and_real_in_same_string():
+    """A single string containing BOTH an orphan placeholder AND a
+    real paired element: only the orphan is escaped."""
+    html = (
+        "<section><p>Triple: <subject> <predicate> <object>.</p>"
+        "<p>Closing: <code>rdf:type</code>.</p></section>"
+    )
+    out = _escape_orphan_placeholder_tags(html)
+    assert "&lt;subject&gt;" in out
+    assert "&lt;predicate&gt;" in out
+    assert "&lt;object&gt;" in out
+    # <code>...</code> is balanced; left alone.
+    assert "<code>rdf:type</code>" in out
+
+
+def test_sanitizer_idempotent():
+    """Running the sanitizer twice must not double-escape — the first
+    pass replaces ``<x>`` with ``&lt;x&gt;``, and the second pass sees
+    no bare openers to match."""
+    html = "<p>An <orphan> placeholder.</p>"
+    once = _escape_orphan_placeholder_tags(html)
+    twice = _escape_orphan_placeholder_tags(once)
+    assert once == twice
+    assert "&lt;orphan&gt;" in twice
 
 
 # ---------------------------------------------------------------------------
