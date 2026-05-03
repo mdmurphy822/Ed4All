@@ -248,8 +248,8 @@ async def test_libv2_archival_succeeds_when_chunks_fresh(isolated_archive):
     # Manifest landed.
     manifest_path = course_dir / "manifest.json"
     assert manifest_path.exists(), result
-    # Chunks landed at the destination.
-    archived_chunks = course_dir / "corpus" / "chunks.jsonl"
+    # Chunks landed at the destination (Phase 7c canonical path).
+    archived_chunks = course_dir / "imscc_chunks" / "chunks.jsonl"
     assert archived_chunks.exists()
     # Chunk IDs match the current course code, confirming we copied the
     # *fresh* file rather than preserving anything stale.

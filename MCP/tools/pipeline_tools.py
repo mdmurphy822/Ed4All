@@ -5671,6 +5671,7 @@ def _build_tool_registry() -> dict:
             for src, dest, label in copy_map:
                 if src is not None and src.exists() and src.is_file():
                     try:
+                        dest.parent.mkdir(parents=True, exist_ok=True)
                         shutil.copy2(src, dest)
                         archived["trainforge"][label] = str(dest)
                     except OSError as exc:
