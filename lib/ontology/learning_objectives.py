@@ -29,7 +29,7 @@ import json
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Dict, List, Literal, Tuple
+from typing import Any, Dict, FrozenSet, List, Literal, Mapping, Tuple
 
 # ---------------------------------------------------------------------------
 # Canonical regex + constants
@@ -234,10 +234,172 @@ def assign_lo_ids(
     return out
 
 
+# ---------------------------------------------------------------------------
+# Phase 6: ABCD framework helpers
+# ---------------------------------------------------------------------------
+#
+# The ABCD framework structures every learning objective into four discrete
+# fields:
+#
+#   * Audience  — who is the learner ("Students", "Nursing students").
+#   * Behavior  — what observable action they perform, broken into a Bloom
+#                 verb and an action object ("identify cell parts").
+#   * Condition — under what constraints / context ("from a labeled
+#                 diagram").
+#   * Degree    — to what standard of performance ("with 90% accuracy").
+#
+# Phase 6 lifts this from prose-only LOs into a typed structure. The two
+# helpers below — ``BLOOMS_VERBS`` and ``compose_abcd_prose`` — are the
+# Python-side counterparts to the JSON-LD ``$defs.AbcdObjective`` schema in
+# ``schemas/knowledge/courseforge_jsonld_v1.schema.json``. The verb-set is
+# sourced from ``schemas/taxonomies/bloom_verbs.json`` (the single source of
+# truth shared with ``lib.ontology.bloom``).
+
+
+@lru_cache(maxsize=1)
+def _load_blooms_verbs() -> Dict[str, FrozenSet[str]]:
+    """Build the canonical Bloom-level → frozen verb-set map.
+
+    Sources from ``schemas/taxonomies/bloom_verbs.json`` via the existing
+    canonical loader in :mod:`lib.ontology.bloom` so this module and that
+    one cannot drift apart. Cached so the JSON read + frozenset
+    construction happens once per process.
+
+    Returns:
+        ``{"remember": frozenset({"define", "list", ...}), ...}`` keyed on
+        the six canonical Bloom levels. Values are immutable frozensets;
+        verb strings are lowercase.
+    """
+    # Local import to avoid pulling the heavier ``lib.ontology.bloom``
+    # module (with its dataclass + detection-order machinery) on every
+    # ``learning_objectives`` import. Validators that only need LO ID
+    # helpers should not pay that cost.
+    from lib.ontology.bloom import BLOOM_LEVELS, get_verbs
+
+    raw = get_verbs()  # Dict[str, Set[str]]
+    return {level: frozenset(raw[level]) for level in BLOOM_LEVELS}
+
+
+#: Canonical Bloom-level → frozen verb-set lookup table (Phase 6 ST 2).
+#:
+#: Keys are the six canonical Bloom levels (``remember``, ``understand``,
+#: ``apply``, ``analyze``, ``evaluate``, ``create``). Values are frozensets
+#: of lowercase action verbs. Sourced from
+#: ``schemas/taxonomies/bloom_verbs.json``; the in-Python projection here
+#: is what ABCD-aware consumers (the upcoming
+#: ``lib.validators.abcd_objective.AbcdObjectiveValidator`` from Phase 6
+#: Subtask 4 + the ``compose_abcd_prose`` helper below) read.
+#:
+#: Cross-reference: :func:`lib.ontology.bloom.get_verbs` returns the same
+#: data as a ``Dict[str, Set[str]]``; this constant is the immutable
+#: frozenset projection used by ABCD-aware code paths.
+BLOOMS_VERBS: Dict[str, FrozenSet[str]] = _load_blooms_verbs()
+
+
+def _strip_trailing_punct(s: str) -> str:
+    """Strip trailing punctuation + whitespace so prose composition does
+    not produce double-period / dangling-comma artefacts."""
+    return s.rstrip(" \t\n.,;:")
+
+
+def compose_abcd_prose(abcd: Mapping[str, Any]) -> str:
+    """Compose a single-sentence English description from an ABCD dict.
+
+    Deterministic format (Phase 6 ST 3):
+
+        ``"<Audience> will <verb> <action_object> <condition>, <degree>."``
+
+    All four ABCD fields are required at the function boundary. The
+    behavior sub-dict must carry both ``verb`` and ``action_object``.
+    Trailing punctuation on each field is stripped so the composed
+    sentence has exactly one terminal period and one comma before the
+    degree clause. The audience is capitalised so the sentence starts
+    with a capital letter regardless of input casing.
+
+    Args:
+        abcd: Mapping with keys ``audience`` (str), ``behavior`` (mapping
+              carrying ``verb`` + ``action_object`` strings),
+              ``condition`` (str), ``degree`` (str).
+
+    Returns:
+        Composed sentence with the audience capitalised and a terminal
+        period.
+
+    Raises:
+        TypeError: if ``abcd`` is not a mapping.
+        ValueError: if any required field is missing or the audience /
+                    behavior fields are empty after stripping.
+
+    Example:
+        >>> compose_abcd_prose({
+        ...     "audience": "Students",
+        ...     "behavior": {"verb": "identify", "action_object": "cell parts"},
+        ...     "condition": "from a labeled diagram",
+        ...     "degree": "with 90% accuracy",
+        ... })
+        'Students will identify cell parts from a labeled diagram, with 90% accuracy.'
+    """
+    if not isinstance(abcd, Mapping):
+        raise TypeError(
+            f"compose_abcd_prose expected a mapping, got {type(abcd).__name__}"
+        )
+
+    for field in ("audience", "behavior", "condition", "degree"):
+        if field not in abcd:
+            raise ValueError(
+                f"compose_abcd_prose: missing required ABCD field {field!r}"
+            )
+
+    behavior = abcd["behavior"]
+    if not isinstance(behavior, Mapping):
+        raise ValueError(
+            f"compose_abcd_prose: 'behavior' must be a mapping with "
+            f"'verb' + 'action_object' keys, got {type(behavior).__name__}"
+        )
+    for sub in ("verb", "action_object"):
+        if sub not in behavior:
+            raise ValueError(
+                f"compose_abcd_prose: behavior is missing required "
+                f"sub-field {sub!r}"
+            )
+
+    audience = _strip_trailing_punct(str(abcd["audience"]).strip())
+    verb = _strip_trailing_punct(str(behavior["verb"]).strip())
+    action_object = _strip_trailing_punct(str(behavior["action_object"]).strip())
+    condition = _strip_trailing_punct(str(abcd["condition"]).strip())
+    degree = _strip_trailing_punct(str(abcd["degree"]).strip())
+
+    if not audience:
+        raise ValueError("compose_abcd_prose: 'audience' must be non-empty")
+    if not verb:
+        raise ValueError("compose_abcd_prose: behavior.verb must be non-empty")
+    if not action_object:
+        raise ValueError(
+            "compose_abcd_prose: behavior.action_object must be non-empty"
+        )
+
+    audience_cap = audience[0].upper() + audience[1:]
+
+    # Build the sentence. Condition + degree are tolerated as empty
+    # strings (they may be filled in by later passes — e.g. the
+    # course-outliner agent in ST 6 leaves blanks for the rewrite tier
+    # to populate); when empty, omit them gracefully so we don't emit
+    # dangling spaces or stranded commas.
+    parts: List[str] = [f"{audience_cap} will {verb} {action_object}"]
+    if condition:
+        parts.append(f" {condition}")
+    if degree:
+        parts.append(f", {degree}")
+    parts.append(".")
+    return "".join(parts)
+
+
 __all__ = [
+    "BLOOMS_VERBS",
     "LO_ID_PATTERN",
     "Hierarchy",
     "assign_lo_ids",
+    "compose_abcd_prose",
     "hierarchy_from_id",
     "mint_lo_id",
     "split_terminal_chapter",
