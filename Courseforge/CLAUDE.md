@@ -721,6 +721,192 @@ Cross-link: the canonical Phase 3.5 plan (`plans/phase3_5_post_rewrite_validatio
 includes a parallel "Final smoke test" section keyed to subtask
 verification; the runbook above is its operator-facing companion.
 
+### Phase 4: statistical-tier validators + BERT ensemble
+
+Phase 4 layers a statistical-tier validation seam on top of the Phase 3
+two-pass router and the Phase 3.5 symmetric validation surface. Where
+Phase 3.5 caught structural / shape drift (CURIE / `content_type` /
+`page_objectives` / `sourceId`), Phase 4 catches **semantic** drift —
+the rewrite-tier output that parses cleanly but says the wrong thing.
+Five new gates fire at the same two seams (`inter_tier_validation` and
+`post_rewrite_validation`), keeping the symmetric-validation contract
+that Phase 3.5 established. None of these changes alter behavior when
+`COURSEFORGE_TWO_PASS` is unset.
+
+Cross-links:
+
+- `lib/embedding/` — sentence-embedding wrapper around
+  `sentence-transformers` (default model `all-MiniLM-L6-v2`, 384-dim,
+  ~80 MB on disk). Behind a thin abstraction so callers degrade
+  gracefully when the optional `[embedding]` extras are absent: missing
+  deps surface as a warning-severity `EMBEDDING_DEPS_MISSING` GateIssue
+  with `passed=True, action=None`. Strict-mode opt-in via
+  `TRAINFORGE_REQUIRE_EMBEDDINGS=true` flips that fallback to critical
+  (raises `EmbedderDepsMissing`) so production runs that *expect*
+  semantic gating fail loudly when the deps are missing.
+- `lib/validators/objective_assessment_similarity.py` —
+  `ObjectiveAssessmentSimilarityValidator`. Cosine-similarity floor
+  between every assessment-item block's stem and its referenced
+  learning-objective text. Default threshold `0.55` (calibrated against
+  `all-MiniLM-L6-v2`'s intrinsic similarity floor; topically-related
+  but not semantically-aligned pairs cluster below ~0.40, so the 0.55
+  default leaves a buffer above the noise floor). Below threshold emits
+  `action="regenerate"` so the rewrite-tier router re-rolls with the
+  remediation suffix.
+- `lib/validators/concept_example_similarity.py` —
+  `ConceptExampleSimilarityValidator`. Cosine-similarity floor between
+  every concept-block definition and its illustrating example. Default
+  threshold `0.50` — strictly looser than the objective↔assessment
+  gate's 0.55 because examples are intentionally more concrete than
+  the abstract concept they illustrate, and the embedding model treats
+  the surface-form gap as moderate semantic distance.
+- `lib/validators/objective_roundtrip_similarity.py` —
+  `ObjectiveRoundtripSimilarityValidator`. Cosine-similarity floor
+  between the rewrite-tier learning-objective paraphrase and the
+  source objective text. Default threshold `0.70` — strictly tighter
+  than the previous two gates because a paraphrase MUST preserve
+  meaning; below 0.70 indicates semantic drift, not just surface-form
+  variation.
+- `lib/validators/courseforge_outline_shacl.py` —
+  `CourseforgeOutlineShaclValidator`. Statistical-tier wrapper around
+  `schemas/context/courseforge_v1.shacl-rules.ttl` shape constraints,
+  applied to the outline-tier Block emit before the rewrite tier sees
+  it. Catches structural drift the per-Block shape adapters miss (e.g.
+  cross-block constraints).
+- `lib/classifiers/bloom_bert_ensemble.py` — `BloomBertEnsemble`. Three
+  SHA-pinned HuggingFace classifiers vote on the Bloom's-taxonomy
+  level of every assessment-item block: (1)
+  `kabir5297/bloom_taxonomy_classifier` (purpose-built 6-class Bloom
+  classifier — natively aligned with the canonical `BLOOM_LEVELS`
+  enum), (2) `distilbert-base-uncased-finetuned-sst-2-english`
+  (sentiment model, contributes to dispersion via the low-resolution
+  `_SST2_TO_BLOOM` mapping), (3)
+  `MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli` (zero-shot NLI
+  against the six Bloom-level labels as hypotheses). Aggregates per-
+  member votes via temperature-scaled majority + entropy-based
+  dispersion. Member SHAs default to `"main"`; replacing those with
+  concrete `huggingface_hub.HfApi().model_info(repo_id).sha` pins is a
+  Phase 4 followup so the audit trail records exactly which revision
+  produced each classification (captured in the
+  `bert_ensemble_member_loaded` decision event).
+- `lib/validators/bloom_classifier_disagreement.py` —
+  `BloomClassifierDisagreementValidator`. Wraps the BERT ensemble and
+  fires `action="regenerate"` on two signals: (a) the ensemble's
+  majority-vote Bloom level disagrees with the block's declared
+  `bloomLevel` attribute (mid-tier signal — emits
+  `bert_ensemble_disagreement`); (b) ensemble dispersion exceeds
+  `_DISPERSION_THRESHOLD = 0.7` (independent signal — emits
+  `bert_ensemble_dispersion_high`; high entropy across members signals
+  an unstable consensus that's worth re-rolling regardless of whether
+  the majority happens to agree with the block-declared level).
+  **Symmetric wiring** per the Phase 3.5 contract: gate ID
+  `outline_bloom_classifier_disagreement` fires at
+  `inter_tier_validation` and `rewrite_bloom_classifier_disagreement`
+  fires at `post_rewrite_validation`, both routed through the same
+  validator class with the same threshold.
+- Phase 4 Wave N0 phase-handler dispatch fix (Subtasks 1-4): the
+  Phase 3.5 `_PHASE_TOOL_MAPPING` shim was extended so the new
+  Phase 4 phases route through dedicated handlers end-to-end. Closes
+  the executor-side gap that would otherwise have run the legacy
+  single-pass content-generator tool against the Phase 4 phase names
+  and silently bypassed every statistical-tier gate.
+- `scripts/calibrate_phase4_thresholds.py` — per-course threshold
+  calibration with temperature scaling (BERT) + dispersion-threshold
+  sweep (Subtasks 32-34). Emits
+  `LibV2/courses/<slug>/eval/calibrated_thresholds.yaml` so the per-
+  course thresholds can be loaded back into the gate `config.thresholds`
+  dict at workflow time without rebuilding the gate registry.
+
+Phase 4 follow-ups intentionally not closed in this batch:
+
+- Concrete HuggingFace model SHAs for the three BERT ensemble members
+  (placeholder `"main"` revision today). Resolution path:
+  `huggingface_hub.HfApi().model_info(repo_id).sha` against a trusted
+  pin set, captured in the `bert_ensemble_member_loaded` decision
+  event so the audit trail records exactly which revision produced
+  each classification.
+- The calibrated thresholds emitted to `eval/calibrated_thresholds.yaml`
+  are not yet auto-loaded back into the gate registry at workflow
+  time — operators apply them manually by editing
+  `config/workflows.yaml::validation_gates[].config.thresholds`. A
+  future cleanup should make `WorkflowRunner` resolve a per-course
+  YAML overlay before instantiating each validator.
+
+When `COURSEFORGE_TWO_PASS=false` (default), none of the Phase 4 gates
+fire either: the legacy `content_generation` phase doesn't carry the
+new `inter_tier_validation` / `post_rewrite_validation` phase names,
+the `_PHASE_TOOL_MAPPING` shim's Phase 4 entries never match, and the
+embedding / BERT extras stay unloaded.
+
+### Operator smoke runbook (Phase 4 statistical tier)
+
+Extends the Phase 3.5 runbook above. The sequence below verifies the
+Phase 4 statistical-tier wiring end-to-end on a clean checkout with
+the optional extras installed. Run after the Phase 3.5 smoke
+verifies clean.
+
+```bash
+# 1. Install the optional embedding extras (sentence-transformers +
+#    transformers + torch). Without these, Phase 4 gates degrade to
+#    EMBEDDING_DEPS_MISSING / BERT_ENSEMBLE_DEPS_MISSING warning
+#    GateIssues (passed=True, action=None) — the workflow still runs,
+#    just without the statistical-tier signal.
+pip install -e '.[embedding]'
+
+# 2. Set the Phase 3 master gate + Phase 4 strict mode (optional —
+#    omit TRAINFORGE_REQUIRE_EMBEDDINGS to keep the graceful-degrade
+#    fallback for CPU-only dev boxes).
+export COURSEFORGE_TWO_PASS=true
+export TRAINFORGE_REQUIRE_EMBEDDINGS=true
+
+# 3. Run the textbook_to_course workflow with the Phase 4 gates wired.
+ed4all run textbook-to-course \
+  --corpus tests/fixtures/textbooks/demo_303.pdf \
+  --course-name DEMO_303
+
+# 4. Verify the Phase 4 BERT ensemble gates fired at both seams.
+#    The four new decision_event types are emitted by the BERT
+#    ensemble validator (bert_ensemble_disagreement /
+#    bert_ensemble_dispersion_high) and by every Phase 4 validator
+#    that runs to completion (statistical_validation_pass /
+#    statistical_validation_fail).
+grep -lE '"decision_type":\s*"(bert_ensemble_disagreement|bert_ensemble_dispersion_high|statistical_validation_pass|statistical_validation_fail)"' \
+  training-captures/courseforge/DEMO_303/phase_courseforge-content-generator-outline/*.jsonl \
+  training-captures/courseforge/DEMO_303/phase_courseforge-post-rewrite-validation/*.jsonl
+# Expected: at least one match per phase directory; statistical_validation_pass
+# / _fail emit on every block, the bert_* events emit only when the
+# ensemble actually disagrees / disperses.
+
+# 5. Run the calibration script against the holdout corpus to refresh
+#    per-course thresholds. Writes
+#    LibV2/courses/<slug>/eval/calibrated_thresholds.yaml.
+python scripts/calibrate_phase4_thresholds.py \
+  --course-slug demo-303 \
+  --gate objective_assessment \
+  --sweep-from 0.30 --sweep-to 0.80 --steps 11
+ls LibV2/courses/demo-303/eval/calibrated_thresholds.yaml
+# Expected: file exists; YAML carries per-gate calibrated thresholds.
+
+# 6. Verify the graceful-degrade fallback when the [embedding] extras
+#    are absent. Uninstall, re-run, confirm the warning-severity
+#    GateIssue surfaces but the workflow does NOT fail closed
+#    (because TRAINFORGE_REQUIRE_EMBEDDINGS is now unset).
+pip uninstall -y sentence-transformers
+unset TRAINFORGE_REQUIRE_EMBEDDINGS
+ed4all run textbook-to-course \
+  --corpus tests/fixtures/textbooks/demo_303.pdf \
+  --course-name DEMO_303_DEGRADED
+grep -lE '"code":\s*"EMBEDDING_DEPS_MISSING"' \
+  training-captures/courseforge/DEMO_303_DEGRADED/phase_courseforge-content-generator-outline/*.jsonl
+# Expected: at least one match; workflow exits 0 because the gate
+# emitted passed=True, action=None.
+```
+
+Cross-link: the canonical Phase 4 plan
+(`plans/phase4_statistical_tier_detailed.md`) includes a parallel
+verification matrix keyed to subtask numbers; the runbook above is
+its operator-facing companion.
+
 ---
 
 ## Template Components

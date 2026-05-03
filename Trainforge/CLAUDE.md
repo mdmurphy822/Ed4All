@@ -495,10 +495,11 @@ Alongside per-gate validation, `CourseProcessor._write_metadata` folds an `asses
 
 ## Environment variables (Trainforge surfaces)
 
-Per-flag rationale lives in root `CLAUDE.md` § "Opt-In Behavior Flags". The Trainforge-owned subset (Phase 4 Subtask 35-37):
+Per-flag rationale lives in root `CLAUDE.md` § "Opt-In Behavior Flags". The Trainforge-owned subset (Phase 4 Subtask 35-37 + Phase 4 statistical-tier surfaces consumed by the Phase 3.5 validators):
 
 - `TRAINFORGE_ALIGN_CHUNKS_MODEL` (default `claude-haiku-4-5-20251001`) — overrides the LLM model used by the legacy direct-classification path in `Trainforge/align_chunks.py::classify_teaching_roles`. Resolved via `_resolve_align_model()` with priority: explicit `--llm-model` flag > env var > default. Same env var also resolves the model passed by `Trainforge/process_course.py` when it dispatches the `--align` stage as a Namespace. Recommended: leave unset for legacy parity; set to a different teacher slug only when retraining the curriculum-alignment surface against a non-default model.
 - `TRAINFORGE_TARGET_MODELS` (default `claude-opus-4-6,claude-sonnet-4-6` CSV) — overrides `training_specs/dataset_config.json::target_models`, the operator-readable list of teacher models the corpus was synthesized against. Comma-separated; whitespace per token is trimmed. Read once at corpus emit time inside `Trainforge/process_course.py::_resolve_target_models`.
+- `TRAINFORGE_REQUIRE_EMBEDDINGS` (default `false`) — strict-mode toggle for the `lib/embedding/` package consumed by the Phase 4 Courseforge statistical-tier validators (`objective_assessment_similarity`, `concept_example_similarity`, `objective_roundtrip_similarity`). When unset / falsy, missing `[embedding]` extras (`sentence-transformers` etc.) degrade to a warning-severity `EMBEDDING_DEPS_MISSING` GateIssue with `passed=True, action=None` so CPU-only dev boxes don't fail closed. Set to `true` in production runs that depend on the statistical-tier signal so missing deps raise `EmbedderDepsMissing` instead. Lives in the Trainforge namespace because the embedding library was originally introduced for Trainforge chunk-similarity pre-checks; the Courseforge validators reuse the same helper + the same flag for symmetry.
 
 ---
 
