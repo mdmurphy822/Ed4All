@@ -910,16 +910,99 @@ def sweep_dispersion_threshold(
     sweep_from: float,
     sweep_to: float,
     steps: int,
+    base_ensemble_factory: Optional[Callable[[], Any]] = None,
 ) -> Dict[str, Any]:
-    """Subtask 34: dispersion-threshold F1 sweep against holdout labels.
+    """Subtask 34 — dispersion-threshold F1 sweep.
 
-    Stub for Subtask 32. The Subtask 34 commit replaces the body with
-    the real per-threshold confusion-matrix sweep that picks the
-    dispersion threshold maximising F1 on the holdout corpus.
+    Sweeps dispersion threshold across ``[sweep_from, sweep_to]``
+    (default 0.30 → 1.00 in 15 steps); for each threshold runs the
+    BERT-ensemble disagreement validator with that dispersion
+    threshold, builds a confusion matrix against holdout
+    ``expected_action`` labels, and picks the threshold that
+    maximises F1.
+
+    Pairs with Subtask 32's main threshold sweep — Subtask 32 sweeps
+    the *outer* gate threshold (which doubles as the dispersion
+    threshold for the bert_ensemble gate), Subtask 34 explicitly
+    tunes the dispersion-only signal so an operator can tell whether
+    the disagreement signal vs the dispersion signal is doing the
+    F1 work.
     """
+    from lib.classifiers.bloom_bert_ensemble import BloomBertEnsemble
+    from lib.validators.bloom_classifier_disagreement import (
+        BloomClassifierDisagreementValidator,
+    )
+
+    factory = base_ensemble_factory or (lambda: BloomBertEnsemble())
+
+    if not rows:
+        return {
+            "calibrated": False,
+            "reason": "no holdout rows supplied",
+            "sweep_range": [sweep_from, sweep_to],
+            "steps": steps,
+        }
+
+    if steps < 2:
+        thresholds = [sweep_from]
+    else:
+        step_size = (sweep_to - sweep_from) / (steps - 1)
+        thresholds = [
+            round(sweep_from + i * step_size, 4) for i in range(steps)
+        ]
+
+    expected = [r.expected_action for r in rows]
+    blocks = [_make_block(r) for r in rows]
+
+    sweep_records: List[Dict[str, Any]] = []
+    for t in thresholds:
+        validator = BloomClassifierDisagreementValidator(
+            ensemble=factory(),
+            dispersion_threshold=t,
+        )
+        per_row_actions: List[str] = []
+        for block in blocks:
+            try:
+                result = validator.validate({"blocks": [block]})
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "dispersion-sweep validate failed for block %s at T=%.4f: %s",
+                    getattr(block, "block_id", "<unknown>"),
+                    t,
+                    exc,
+                )
+                per_row_actions.append("pass")
+                continue
+            per_row_actions.append(result.action or "pass")
+        tp, fp, fn, tn = _confusion(per_row_actions, expected)
+        precision, recall, f1 = _f1(tp, fp, fn)
+        sweep_records.append(
+            {
+                "dispersion_threshold": t,
+                "tp": tp,
+                "fp": fp,
+                "fn": fn,
+                "tn": tn,
+                "precision": precision,
+                "recall": recall,
+                "f1": f1,
+            }
+        )
+
+    # Pick best F1; ties broken by higher precision then lower threshold.
+    best = sorted(
+        sweep_records,
+        key=lambda s: (-s["f1"], -s["precision"], s["dispersion_threshold"]),
+    )[0]
+
     return {
-        "calibrated": False,
-        "reason": "sweep_dispersion_threshold landed in Subtask 34",
+        "calibrated": True,
+        "best_dispersion_threshold": best["dispersion_threshold"],
+        "best_f1": best["f1"],
+        "best_precision": best["precision"],
+        "best_recall": best["recall"],
+        "sweep": sweep_records,
+        "n_holdout_rows": len(rows),
         "sweep_range": [sweep_from, sweep_to],
         "steps": steps,
     }
