@@ -1,0 +1,66 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://libv2.local/schema/chunkset_manifest.schema.json",
+  "title": "Chunkset Manifest",
+  "description": "Phase 7b Subtask 12: per-chunkset sidecar manifest emitted alongside the chunks.jsonl file at LibV2/courses/<slug>/dart_chunks/manifest.json (Phase 7b) and LibV2/courses/<slug>/imscc_chunks/manifest.json (Phase 7c). The schema is symmetric across both chunkset kinds (decision #6 from the Phase 7b-prep investigation): a single `chunkset_kind` discriminator plus a conditional source-SHA requirement keeps the dart and imscc sidecars on a single contract. Validated by lib/validators/chunkset_manifest.py::ChunksetManifestValidator (Phase 7b ST 13). Forward-references the Triangle-invariant chain (decision #8) — full chain validation across PDF -> DART HTML -> chunks lands as a Phase 7c followup against the `source_*_sha256` fields below.",
+  "type": "object",
+  "required": ["chunks_sha256", "chunker_version", "chunkset_kind"],
+  "properties": {
+    "chunks_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 (hex, lowercase) of the sibling chunks.jsonl file. The validator (ST 13) recomputes the on-disk SHA and fail-closes on mismatch so a tampered or partially-written chunks.jsonl is detected at archive time."
+    },
+    "chunker_version": {
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:[+-][A-Za-z0-9.+-]+)?$",
+      "description": "Version of the ed4all-chunker package that produced the chunks. Resolved via importlib.metadata.version('ed4all-chunker') at emit time. Pattern accepts standard semver plus optional +local / -prerelease suffixes (e.g. '0.1.0', '0.1.0+missing', '1.0.0-rc1') so the '0.0.0+missing' fallback sentinel from MCP/tools/pipeline_tools.py::_resolve_chunker_version is schema-valid when the package isn't importable. Mirrors the chunker_version pattern in course_manifest.schema.json."
+    },
+    "chunkset_kind": {
+      "type": "string",
+      "enum": ["dart", "imscc"],
+      "description": "Which chunkset this manifest describes. 'dart' is the Phase 7b chunkset emitted from staged DART HTML during the `chunking` workflow phase (sibling files at `LibV2/courses/<slug>/dart_chunks/`). 'imscc' is the Phase 7c chunkset emitted from a packaged IMSCC at `LibV2/courses/<slug>/imscc_chunks/` (renamed from the legacy `corpus/` directory per ST 15). The discriminator drives the conditional source-SHA requirement below."
+    },
+    "source_dart_html_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 (hex, lowercase) of the staged DART HTML inputs that produced this chunkset. For multi-file inputs, the SHA is computed over the deterministic concatenation of input files (filename-sorted then content-concatenated) so the value is stable across re-runs. Required when chunkset_kind == 'dart'; absent when chunkset_kind == 'imscc'. Forward-link to Triangle-invariant chain validation (decision #8): the source_pdf_sha256 → source_dart_html_sha256 → chunks_sha256 chain is validated end-to-end as a Phase 7c followup."
+    },
+    "source_imscc_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 (hex, lowercase) of the packaged IMSCC zip that produced this chunkset. Required when chunkset_kind == 'imscc'; absent when chunkset_kind == 'dart'. Forward-link to Triangle-invariant chain validation (decision #8): pairs with the upstream packaging phase output to anchor the chunks → IMSCC provenance edge."
+    },
+    "chunks_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Number of chunks (lines) in the sibling chunks.jsonl file. Optional but recommended — the validator (ST 13) cross-checks this against the actual line count when present."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp (UTC) recording when the chunkset was emitted. Optional. Mirrors the import_timestamp / export_timestamp shape used elsewhere in the LibV2 manifest family."
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {"chunkset_kind": {"const": "dart"}},
+        "required": ["chunkset_kind"]
+      },
+      "then": {
+        "required": ["source_dart_html_sha256"]
+      }
+    },
+    {
+      "if": {
+        "properties": {"chunkset_kind": {"const": "imscc"}},
+        "required": ["chunkset_kind"]
+      },
+      "then": {
+        "required": ["source_imscc_sha256"]
+      }
+    }
+  ]
+}
