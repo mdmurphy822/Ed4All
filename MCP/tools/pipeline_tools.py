@@ -4774,6 +4774,19 @@ def _build_tool_registry() -> dict:
             project_id_kw = kwargs.get("project_id", "")
             domain = kwargs.get("domain") or "general"
             division = kwargs.get("division") or "STEM"
+            # Phase 8 ST 2: pre-built IMSCC chunkset path threaded
+            # through from the upstream ``imscc_chunking`` workflow
+            # phase (Phase 7c ST 16,
+            # ``MCP/tools/pipeline_tools.py::_run_imscc_chunking``).
+            # When supplied + readable, ``CourseProcessor.process``
+            # short-circuits its in-process ``_chunk_content`` call
+            # and consumes the canonical chunks emitted upstream at
+            # ``LibV2/courses/<slug>/imscc_chunks/chunks.jsonl``.
+            # Falls through to the legacy in-process build path on
+            # absent / unreadable upstream chunks. Routed via
+            # ``config/workflows.yaml::trainforge_assessment.inputs_from``
+            # + ``MCP/core/workflow_runner.py::_LEGACY_PHASE_PARAM_ROUTING``.
+            imscc_chunks_path_kw = kwargs.get("imscc_chunks_path") or ""
 
             # Normalize list-ish params.
             if isinstance(bloom_levels_str, list):
@@ -4890,6 +4903,15 @@ def _build_tool_registry() -> dict:
                     str(project_dir_objectives) if project_dir_objectives else None
                 ),
                 strict_mode=False,
+                # Phase 8 ST 2: pass through the upstream IMSCC
+                # chunkset path so ``process()`` consumes it instead
+                # of re-running the chunker in-process. Empty string
+                # resolves to None inside the constructor (preserves
+                # backward compat with callers that don't thread the
+                # path).
+                imscc_chunks_path=(
+                    imscc_chunks_path_kw if imscc_chunks_path_kw else None
+                ),
             )
 
             # Wave 22 DC2: the historical strict-mode override here was a

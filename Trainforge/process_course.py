@@ -1020,6 +1020,7 @@ class CourseProcessor:
         strict_mode: bool = False,
         typed_edges_llm: bool = False,
         concept_graph_path: Optional[str] = None,
+        imscc_chunks_path: Optional[str] = None,
     ):
         # When strict_mode is True the pipeline refuses to write a final
         # artifact whose quality_report shows any broken_refs, any cross-lesson
@@ -1045,6 +1046,26 @@ class CourseProcessor:
         # than crashing the run.
         self.concept_graph_path: Optional[Path] = (
             Path(concept_graph_path) if concept_graph_path else None
+        )
+        # Phase 8 ST 2: optional path to a pre-built IMSCC chunkset emitted
+        # upstream by the ``imscc_chunking`` workflow phase
+        # (``MCP/tools/pipeline_tools.py::_run_imscc_chunking``). When
+        # provided AND readable, ``process()`` short-circuits the in-process
+        # ``self._chunk_content(parsed_items)`` call and loads the
+        # canonical chunks from this JSONL instead. Mirrors the Phase 6
+        # ST 13 + Phase 7b ST 14.5 upstream-consumption pattern: the
+        # ``imscc_chunking`` phase already runs the canonical chunker
+        # against the packaged IMSCC zip and writes
+        # ``LibV2/courses/<slug>/imscc_chunks/chunks.jsonl`` BEFORE
+        # ``trainforge_assessment`` dispatches the CourseProcessor — so
+        # re-running the chunker here is purely redundant work. When
+        # None (legacy / pre-Phase-8 callers, e.g. ``python -m
+        # Trainforge.process_course`` standalone) the existing
+        # in-process build path runs unchanged. The fallback also fires
+        # on a missing/unreadable path so a stale phase-output handoff
+        # degrades gracefully rather than crashing the run.
+        self.imscc_chunks_path: Optional[Path] = (
+            Path(imscc_chunks_path) if imscc_chunks_path else None
         )
         self.imscc_path = Path(imscc_path)
         self.output_dir = Path(output_dir)
@@ -1300,7 +1321,20 @@ class CourseProcessor:
 
         # Stage 3
         print("[3/6] Chunking content into pedagogical units...")
-        chunks = self._chunk_content(parsed_items)
+        # Phase 8 ST 2: short-circuit on upstream IMSCC chunkset.
+        # When the ``imscc_chunking`` workflow phase has already
+        # materialised a canonical chunkset at the supplied path,
+        # consume it instead of re-running the chunker in-process.
+        # Falls through to the in-process build on missing /
+        # unreadable / corrupted upstream chunks (preserves
+        # backward compat for legacy callers that don't thread the
+        # path).
+        chunks: Optional[List[Dict[str, Any]]] = None
+        upstream_chunks_path = getattr(self, "imscc_chunks_path", None)
+        if upstream_chunks_path is not None:
+            chunks = self._load_chunks_from_jsonl(upstream_chunks_path)
+        if chunks is None:
+            chunks = self._chunk_content(parsed_items)
 
         # Stage 4
         print("[4/6] Writing chunks...")
@@ -1498,6 +1532,112 @@ class CourseProcessor:
     # ------------------------------------------------------------------
     # Stage 3: Chunk content
     # ------------------------------------------------------------------
+
+    def _load_chunks_from_jsonl(
+        self, chunks_path: Path
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Stream an upstream JSONL chunkset into a list of chunk dicts.
+
+        Phase 8 ST 2: companion to the ``process()`` short-circuit on
+        ``self.imscc_chunks_path``. The ``imscc_chunking`` workflow
+        phase (``MCP/tools/pipeline_tools.py::_run_imscc_chunking``,
+        Phase 7c ST 16) writes the canonical chunks file at
+        ``LibV2/courses/<slug>/imscc_chunks/chunks.jsonl`` BEFORE
+        ``trainforge_assessment`` dispatches the CourseProcessor. This
+        helper reads it, restores the side channels the in-process
+        ``_chunk_content`` wrapper sets (``self.stats["total_chunks"]``
+        and the operator-visible "Generated N chunks" log), and
+        returns the chunks list shaped exactly like the in-process
+        path.
+
+        Returns ``None`` (signal to fall through to the in-process
+        ``_chunk_content`` build) on:
+        - path missing / not a file
+        - any read error or JSONL parse failure
+        - empty chunks list (defensive; an empty upstream emit is
+          almost always a bug worth re-running the in-process chunker
+          for, rather than silently emitting an empty corpus)
+
+        Returns the chunks list on success. Mirrors the Phase 6 ST 13
+        ``_generate_pedagogy_graph`` upstream-load best-effort
+        contract — fallback path is fail-soft, not fail-closed.
+        """
+        chunks_path = Path(chunks_path)
+        if not chunks_path.exists() or not chunks_path.is_file():
+            logger.warning(
+                "Phase 8 ST 2: imscc_chunks_path %s does not exist or "
+                "is not a file; falling through to in-process "
+                "_chunk_content build.",
+                chunks_path,
+            )
+            return None
+        try:
+            loaded: List[Dict[str, Any]] = []
+            with chunks_path.open("r", encoding="utf-8") as fh:
+                for line_num, raw_line in enumerate(fh, start=1):
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError as parse_exc:
+                        logger.warning(
+                            "Phase 8 ST 2: malformed JSONL at %s "
+                            "line %d (%s); falling through to in-"
+                            "process _chunk_content build.",
+                            chunks_path, line_num, parse_exc,
+                        )
+                        return None
+                    if not isinstance(chunk, dict):
+                        logger.warning(
+                            "Phase 8 ST 2: non-dict chunk at %s "
+                            "line %d (got %s); falling through to "
+                            "in-process _chunk_content build.",
+                            chunks_path, line_num,
+                            type(chunk).__name__,
+                        )
+                        return None
+                    loaded.append(chunk)
+        except OSError as read_exc:
+            logger.warning(
+                "Phase 8 ST 2: failed to read imscc chunks at %s "
+                "(%s); falling through to in-process _chunk_content "
+                "build.",
+                chunks_path, read_exc,
+            )
+            return None
+        if not loaded:
+            logger.warning(
+                "Phase 8 ST 2: imscc chunks JSONL at %s parsed but "
+                "is empty; falling through to in-process "
+                "_chunk_content build (defensive — an empty upstream "
+                "chunkset is almost always a bug).",
+                chunks_path,
+            )
+            return None
+        # Restore the side channels the in-process ``_chunk_content``
+        # wrapper sets so downstream code (``_generate_quality_report``,
+        # the CLI summary print) sees a consistent view regardless of
+        # which path produced ``chunks``.
+        self.stats["total_chunks"] = len(loaded)
+        # ``_pages_with_misconceptions`` is the denominator for
+        # ``misconceptions_present_rate`` in ``quality_report.json``.
+        # The upstream chunker callback at
+        # ``MCP/tools/pipeline_tools.py::_run_imscc_chunking`` doesn't
+        # surface the per-page misconception accumulator (it's a
+        # concept private to ``CourseProcessor._chunk_content``), so we
+        # default to an empty set here. ``_generate_quality_report``
+        # tolerates an empty set (the rate falls to 0 / total pages
+        # rather than raising).
+        if not hasattr(self, "_pages_with_misconceptions"):
+            self._pages_with_misconceptions = set()
+        logger.info(
+            "Phase 8 ST 2: consuming upstream imscc chunkset from %s "
+            "(chunks=%d); skipping in-process _chunk_content rebuild.",
+            chunks_path, len(loaded),
+        )
+        print(f"  Loaded {len(loaded)} chunks from upstream IMSCC chunkset")
+        return loaded
 
     def _chunk_content(self, parsed_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Chunk parsed IMSCC items into a list of chunk dicts.
@@ -5039,6 +5179,20 @@ def build_parser() -> argparse.ArgumentParser:
             "absent / unreadable (legacy corpora preserved unchanged)."
         ),
     )
+    p.add_argument(
+        "--imscc-chunks-path",
+        default=None,
+        help=(
+            "Phase 8 ST 2: path to a pre-built IMSCC chunkset emitted "
+            "upstream by the ``imscc_chunking`` workflow phase "
+            "(LibV2/courses/<slug>/imscc_chunks/chunks.jsonl). When "
+            "supplied AND readable, ``process()`` short-circuits the "
+            "in-process ``_chunk_content`` call and consumes this "
+            "chunkset directly. Falls through to the in-process build "
+            "when absent / unreadable (legacy callers preserved "
+            "unchanged)."
+        ),
+    )
     return p
 
 
@@ -5077,6 +5231,7 @@ def main():
         objectives_path=args.objectives,
         typed_edges_llm=getattr(args, "typed_edges_llm", False),
         concept_graph_path=getattr(args, "concept_graph_path", None),
+        imscc_chunks_path=getattr(args, "imscc_chunks_path", None),
     )
 
     result = processor.process()

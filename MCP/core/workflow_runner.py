@@ -152,6 +152,17 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         # Wave 24: real TO/CO objective_ids come from course_planning
         # (was objective_extraction with phantom {COURSE}_OBJ_N IDs).
         "objective_ids": ("phase_outputs", "course_planning", "objective_ids"),
+        # Phase 8 ST 2: route the upstream IMSCC chunkset path
+        # written by ``imscc_chunking`` (Phase 7c ST 16) so
+        # ``_run_trainforge_assessment`` can pass it to
+        # ``CourseProcessor`` and short-circuit the in-process
+        # ``_chunk_content`` rebuild. Mirrors the equivalent YAML
+        # routing at ``config/workflows.yaml::trainforge_assessment``;
+        # the legacy dict is consulted as a fallback when YAML
+        # lookup misses (see ``_get_phase_param_routing``).
+        "imscc_chunks_path": (
+            "phase_outputs", "imscc_chunking", "imscc_chunks_path",
+        ),
     },
     "libv2_archival": {
         "course_name": ("workflow_params", "course_name"),
