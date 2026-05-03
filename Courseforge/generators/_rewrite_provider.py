@@ -169,6 +169,22 @@ _REWRITE_SYSTEM_PROMPT = (
     "line (the post-rewrite gate fails closed when any are missing). "
     "Use the supplied `Block id` value verbatim as the "
     "`data-cf-block-id` attribute — do not invent or reformat it."
+    "\n\n"
+    "Every `<` and `>` you write outside a real HTML tag MUST be "
+    "escaped as `&lt;` and `&gt;`. This applies to schematic / "
+    "placeholder text — RDF triples, URI patterns, generic "
+    "`<thing>` slots, BNF-style productions, anything where the "
+    "angle brackets are illustrative, not structural. PROHIBITED — "
+    "the parser treats these as unclosed elements and fails the "
+    "post-rewrite shape gate: bare `<subject>`, bare `<predicate>`, "
+    "bare `<object>`, bare `<URI>`, bare `<value>`, bare `<term>`, "
+    "bare `<placeholder>`. REQUIRED instead — write either "
+    "`<code>subject</code> <code>predicate</code> <code>object</code>` "
+    "or `&lt;subject&gt; &lt;predicate&gt; &lt;object&gt;`. The same "
+    "rule applies to URI brackets in RDF / SPARQL / Turtle examples: "
+    "write `&lt;http://example.org/x&gt;` or "
+    "`<code>&lt;http://example.org/x&gt;</code>`, never bare "
+    "`<http://example.org/x>`."
 )
 
 
