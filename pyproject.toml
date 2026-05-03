@@ -22,6 +22,15 @@ dependencies = [
     "rdflib>=7.0.0,<8.0.0",
     "pyld>=2.0.0,<4.0.0",
     "pyshacl>=0.25.0,<1.0.0",
+    # Phase 8 Subtask 8: pytest-asyncio is a default dependency (not a
+    # [dev] extra) because the project's CI exercises async-test paths
+    # even on default installs (sample: MCP/tests/test_executor_dispatch_routing.py
+    # is collected by pytest.ini::testpaths = MCP/tests). Leaving the
+    # dep in [dev] silently routed @pytest.mark.asyncio decorations
+    # through pytest's missing-plugin path on a bare ``pip install -e .``
+    # install. Pair with pytest.ini::asyncio_mode = auto so decoration
+    # triggers without per-test fixture wiring.
+    "pytest-asyncio>=0.21.0,<1.0.0",
     # Phase 7a Subtask 7: in-repo workspace member at
     # ``./ed4all-chunker``. Declared as a PEP 508 direct-reference
     # dependency with a relative ``file:`` URL so ``pip install -e
@@ -50,7 +59,9 @@ server = [
 dev = [
     "pytest>=7.0.0,<9.0.0",
     "pytest-cov>=4.0.0,<6.0.0",
-    "pytest-asyncio>=0.21.0,<1.0.0",
+    # Phase 8 Subtask 8: ``pytest-asyncio`` was promoted to a default
+    # ``[project].dependencies`` entry above; the [dev] mention here is
+    # intentionally removed to avoid a duplicate-pin conflict.
     "black>=23.0.0,<25.0.0",
     "ruff>=0.1.0,<1.0.0",
     "pyld>=2.0.0,<4.0.0",
