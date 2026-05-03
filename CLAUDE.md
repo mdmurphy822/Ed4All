@@ -71,6 +71,7 @@ Ed4All/
 ├── DART/                    # PDF to accessible HTML conversion
 ├── Courseforge/             # Course content generation & packaging
 ├── Trainforge/              # Assessment-based RAG training
+├── ed4all-chunker/          # Lifted chunker package (Phase 7a; canonical chunker for DART + IMSCC)
 ├── LibV2/                   # Course content repository
 │   ├── courses/             # Educational content storage
 │   ├── catalog/             # Derived indexes
@@ -301,7 +302,7 @@ Priority extraction chain (extends the Courseforge chain above): JSON-LD > `data
 | `stage_dart_outputs` | Stage DART outputs for Courseforge |
 | `get_pipeline_status` | Check pipeline progress |
 | `validate_dart_markers` | Validate DART output markers |
-| `archive_to_libv2` | Archive course artifacts to LibV2 |
+| `archive_to_libv2` | Archive course artifacts to LibV2. Phase 7a Subtask 8: emits a top-level `chunker_version` field in `course_manifest.json` (resolved via `importlib.metadata.version("ed4all-chunker")`) so LibV2 audits know which chunker shipped the corpus. |
 
 **Pipeline-internal registry-only tools** (wired into `MCP/tools/pipeline_tools.py::_build_tool_registry` for workflow-phase dispatch; intentionally **not** decorated with `@mcp.tool()` — not reachable from external MCP clients):
 
@@ -810,6 +811,7 @@ Each member's `revision` field carries a HuggingFace git SHA so classification i
 - **Courseforge**: `Courseforge/CLAUDE.md`
 - **Trainforge**: `Trainforge/CLAUDE.md`
 - **LibV2**: `LibV2/CLAUDE.md`
+- **ed4all-chunker**: `ed4all-chunker/README.md` — Phase 7a lifted the chunking surface (`_chunk_content`, `_chunk_text_block`, `_merge_small_sections`, `_merge_section_source_ids`) out of `Trainforge/process_course.py` into a standalone workspace package. `Trainforge/process_course.py::CourseProcessor` now delegates to `ed4all_chunker.chunker.chunk_content` via a `ChunkerContext` callback pattern that threads `_create_chunk` (which stays on the processor because of its deep coupling to instance state). See `Trainforge/CLAUDE.md` for delegation details.
 - **Ontology map + v0.2.0 changes**: `schemas/ONTOLOGY.md`
 - **KG-quality review (source of v0.2.0 work)**: `plans/kg-quality-review-2026-04/review.md`
 
