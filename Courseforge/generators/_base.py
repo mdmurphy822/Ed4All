@@ -225,6 +225,13 @@ class _BaseLLMProvider(ABC):
             self._base_url = (
                 base_url or TOGETHER_DEFAULT_BASE_URL
             ).rstrip("/")
+            # Plan §3.2 companion: opt into ``json_mode=True`` so the
+            # OpenAICompatibleClient injects both the OpenAI-spec
+            # ``response_format: {"type": "json_object"}`` and the
+            # Ollama-style ``format: "json"`` literal. Servers that
+            # don't recognise either field ignore it; servers that do
+            # see the JSON-only constraint at sample time. Mirrors the
+            # Trainforge `_local_provider.py` default.
             self._oa_client = OpenAICompatibleClient(
                 base_url=self._base_url,
                 model=self._model,
@@ -232,6 +239,7 @@ class _BaseLLMProvider(ABC):
                 capture=None,
                 provider_label="together",
                 client=client,
+                json_mode=True,
             )
             self._anthropic_client = None
 
@@ -251,6 +259,12 @@ class _BaseLLMProvider(ABC):
             self._base_url = (
                 base_url or env_base_url or local_base_url_baseline
             ).rstrip("/")
+            # Plan §3.2 companion: same ``json_mode=True`` opt-in for
+            # the local backend (Ollama / vLLM / llama.cpp / LM Studio).
+            # Without this, Ollama doesn't even see ``format: "json"``,
+            # let alone the schema-aware ``format: <schema_dict>`` the
+            # outline-tier grammar payload now emits in the autodetect
+            # path.
             self._oa_client = OpenAICompatibleClient(
                 base_url=self._base_url,
                 model=self._model,
@@ -258,6 +272,7 @@ class _BaseLLMProvider(ABC):
                 capture=None,
                 provider_label="local",
                 client=client,
+                json_mode=True,
             )
             self._anthropic_client = None
 

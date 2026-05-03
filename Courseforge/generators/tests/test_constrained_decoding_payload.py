@@ -428,5 +428,16 @@ def test_grammar_mode_env_var_overrides_autodetect(monkeypatch):
         f"{list(body.keys())}"
     )
     assert body["grammar"] == _BLOCK_TYPE_GBNF["concept"]
-    # And the autodetect path's ``response_format`` MUST NOT appear.
-    assert "response_format" not in body
+    # And the autodetect path's strict ``response_format`` json_schema
+    # nesting MUST NOT appear (the GBNF override won the build path).
+    # Plan §3.2 companion: the Wave-113 ``json_mode=True`` opt-in on
+    # the OpenAICompatibleClient does inject a generic
+    # ``response_format: {"type": "json_object"}`` default — that's
+    # the JSON-only constraint, not the schema-nested form. Assert the
+    # field is either absent OR carries the generic shape (NOT the
+    # autodetect's strict json_schema form).
+    rf = body.get("response_format")
+    if rf is not None:
+        assert rf == {"type": "json_object"}, (
+            f"unexpected response_format shape under gbnf override: {rf!r}"
+        )

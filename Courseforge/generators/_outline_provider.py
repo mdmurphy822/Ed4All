@@ -45,6 +45,7 @@ import dataclasses
 import json
 import logging
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -171,8 +172,15 @@ _OUTLINE_KIND_BOUNDS: Dict[str, Dict[str, Tuple[int, int]]] = {
         "summary_chars": (60, 300),
     },
     # Assessment items — stem + answer key + optional rationale section.
+    # Plan §3.4 / §1.4: bumped key_claims from (1, 2) to (1, 4). The
+    # canonical RDF-triple shape (subject, predicate, object) is a
+    # three-tuple; the previous (1, 2) cap forced a 7B-class model to
+    # synthesise a single compressed claim it demonstrably can't
+    # produce on its own, so the model emitted ["subject", "predicate",
+    # "object"] and tripped the maxItems gate. (1, 4) admits the
+    # natural three-tuple and matches the concept-block bound.
     "assessment_item": {
-        "key_claims": (1, 2),
+        "key_claims": (1, 4),  # plan §3.4: bumped from (1, 2)
         "section_skeleton": (1, 2),
         "summary_chars": (60, 300),
     },
@@ -264,7 +272,22 @@ _OUTLINE_SYSTEM_PROMPT: str = (
     "PRESERVE every CURIE and source_id verbatim from the input. Do "
     "NOT add facts not in the supplied source_chunks. Do NOT generate "
     "prose — generate the structural skeleton only. Output ONLY the "
-    "JSON object — no preamble, no markdown, no commentary."
+    "JSON object — no preamble, no markdown, no commentary. "
+    # Plan §3.1: bloom_level enum directive — closes the "bloom_level: 2"
+    # numeric-tier drift the 7B-class default model emits when it
+    # infers Bloom Level 2 = "Understand" from the canonical six-level
+    # taxonomy and writes the tier number rather than the string label.
+    "bloom_level MUST be one of: remember, understand, apply, analyze, "
+    "evaluate, create. Use the lowercase string label, not a numeric "
+    "tier. "
+    # Plan §3.3: empty-CURIE permission directive — closes the
+    # "invented CURIE prefix" / "full IRI as CURIE" failure modes the
+    # model emits when faced with an empty source-side CURIE list and
+    # a pattern-bearing required array.
+    "curies MUST be either the empty list [] when no CURIE tokens are "
+    "in the source chunks, or a list of strict prefix:local CURIE "
+    "strings (e.g. rdf:type, sh:NodeShape). NEVER emit a full IRI as "
+    "a CURIE value. NEVER invent a CURIE prefix from a chunk slug."
 )
 # Per-block-type GBNF grammar strings for llama.cpp / vLLM constrained
 # decoding. Each grammar accepts a JSON object with at least the
@@ -428,6 +451,82 @@ for _bt in BLOCK_TYPES:
         )
     else:
         _BLOCK_TYPE_JSON_SCHEMAS[_bt] = _build_block_outline_schema(_bt)
+
+
+# ---------------------------------------------------------------------------
+# Per-error-pattern retry-directive table (plan §3.6).
+# ---------------------------------------------------------------------------
+#
+# When the lenient JSON parse + Draft 2020-12 validator rejects a
+# candidate, the schema-fix retry message echoes the validator's
+# terse error string. Pre-§3.6 the message was bare; §3.6 layers a
+# small per-pattern directive table on top so the model sees the
+# canonical fix-it instruction next to the validator output instead
+# of having to infer the remediation from the message alone. Keys
+# are compiled regexes matched against the validator's
+# ``ValidationError.message``; values are imperative directives
+# (~120 chars) the user prompt appends after the schema dump on
+# the retry attempt.
+#
+# Patterns covered (mirrors plan §1 failure classes):
+#   - bloom_level enum drift (numeric tier vs string label)
+#   - CURIE pattern violation (full IRI / invented prefix / missing colon)
+#   - key_claims maxItems exceeded (model emitted a list shape the
+#     bound rejects)
+#   - generic enum-vs-int (any "is not of type 'string'" error)
+#
+# Adding a new pattern: append a tuple ``(re.compile(...), directive)``
+# below; the retry helper picks the FIRST matching pattern (highest-
+# precedence rule first). Keep the directive ≤200 chars to bound
+# the suffix size.
+
+_RETRY_DIRECTIVE_PATTERNS: List[Tuple["re.Pattern[str]", str]] = [
+    (
+        re.compile(r"is not one of \['remember'"),
+        "bloom_level MUST be the lowercase string label, not a numeric "
+        "tier or capitalised form. Use exactly one of: remember, "
+        "understand, apply, analyze, evaluate, create.",
+    ),
+    (
+        re.compile(r"does not match '\^\[a-z\]"),
+        "CURIE pattern requires strict prefix:local form (e.g. "
+        "rdf:type, sh:NodeShape). If no CURIEs are present in the "
+        "source chunks, emit 'curies': []. NEVER emit a full IRI "
+        "(no slashes, no '#' characters) and NEVER invent a CURIE "
+        "prefix from a chunk slug.",
+    ),
+    (
+        re.compile(r" is too long$"),
+        "key_claims is a flat array of short prose statements "
+        "(≤30 words each). Compress list-shaped data (e.g. "
+        "['subject', 'predicate', 'object']) into a single claim "
+        "string ('An RDF triple has three components: subject, "
+        "predicate, object.') rather than emitting one claim per "
+        "list element.",
+    ),
+    (
+        re.compile(r"is not of type 'string'"),
+        "Every enum-typed field MUST be a JSON string (quoted), "
+        "not a number or bare token. Wrap numeric tier or boolean "
+        "values in their canonical string label.",
+    ),
+]
+
+
+def _match_retry_directive(last_error: str) -> Optional[str]:
+    """Return the directive matching ``last_error``'s validator pattern.
+
+    Walks :data:`_RETRY_DIRECTIVE_PATTERNS` in declaration order and
+    returns the first matching directive. Returns ``None`` when no
+    pattern matches — the caller falls back to the bare validator
+    error echo.
+    """
+    if not last_error:
+        return None
+    for pattern, directive in _RETRY_DIRECTIVE_PATTERNS:
+        if pattern.search(last_error):
+            return directive
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -626,10 +725,19 @@ class OutlineProvider(_BaseLLMProvider):
                 schema_hint = (
                     json.dumps(schema, sort_keys=True) if schema else "{}"
                 )
+                # Plan §3.6: pull the per-pattern directive matching the
+                # validator's last_error message and append it after the
+                # schema dump so the model sees the canonical fix-it
+                # instruction, not just the terse validator string.
+                directive = _match_retry_directive(last_error)
+                directive_block = (
+                    f"\nFix-it directive: {directive}" if directive else ""
+                )
                 user_prompt = (
                     f"{base_user_prompt}\n\n"
                     "Your previous output failed JSON Schema validation: "
-                    f"{last_error}\n"
+                    f"{last_error}"
+                    f"{directive_block}\n"
                     "Return ONLY a JSON object matching this schema:\n"
                     f"{schema_hint}"
                 )
@@ -764,6 +872,15 @@ class OutlineProvider(_BaseLLMProvider):
         bounds_lines: List[str] = []
         for field_name, (lo, hi) in bounds.items():
             bounds_lines.append(f"  - {field_name}: ({lo}, {hi})")
+        # Plan §3.1: emit the canonical bloom_level allowed-set on
+        # every bounds block so the user prompt enumerates the same
+        # enum the JSON Schema enforces. Recency-bias of the 7B-class
+        # default model means a bottom-of-bounds reminder noticeably
+        # lifts attempt-1 pass rate.
+        bounds_lines.append(
+            "  - bloom_level allowed values: remember | understand | "
+            "apply | analyze | evaluate | create"
+        )
         bounds_block = (
             "\n".join(bounds_lines) if bounds_lines else "  (no per-type bounds)"
         )
@@ -891,13 +1008,19 @@ class OutlineProvider(_BaseLLMProvider):
                 if schema is not None:
                     return {"extra_body": {"guided_json": schema}}
                 return {}
-            # Default for ``local`` (Ollama) — fall back to the
-            # GBNF grammar payload. Ollama's older flag is
-            # ``format: "json"`` (Wave-113 default on the OA client),
-            # so the ``grammar`` field is silently ignored on
-            # legacy Ollama and consumed by llama.cpp-compatible
-            # servers; either way the JSON-mode-only path remains
-            # the wire-level fallback.
+            # Plan §3.2: default for ``local`` (Ollama) flipped to
+            # the Ollama 0.5+ JSON-Schema engagement path. Most
+            # current local deployments are Ollama 0.5+, which
+            # honours ``format: <schema_dict>`` for full schema-
+            # constrained decoding. Operators on older Ollama or
+            # llama.cpp / LM Studio override by setting
+            # ``COURSEFORGE_OUTLINE_GRAMMAR_MODE=gbnf`` or by adding
+            # ``lmstudio`` to the base_url. The pre-§3.2 default
+            # was ``{"grammar": <gbnf>}``, which Ollama silently
+            # ignored — leaving the per-block-type schema enforcement
+            # purely post-hoc against the lenient JSON parser.
+            if schema is not None:
+                return {"format": schema}
             if gbnf:
                 return {"grammar": gbnf}
             return {}
@@ -979,4 +1102,6 @@ __all__ = [
     "_OUTLINE_SYSTEM_PROMPT",
     "_BLOCK_TYPE_GBNF",
     "_BLOCK_TYPE_JSON_SCHEMAS",
+    "_RETRY_DIRECTIVE_PATTERNS",
+    "_match_retry_directive",
 ]
