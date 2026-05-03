@@ -1256,6 +1256,9 @@ def register_pipeline_tools(mcp):
         imscc_path: Optional[str] = None,
         assessment_path: Optional[str] = None,
         subdomains: Optional[str] = None,
+        concept_graph_sha256: Optional[str] = None,
+        dart_chunks_sha256: Optional[str] = None,
+        imscc_chunks_sha256: Optional[str] = None,
     ) -> str:
         """
         Archive all pipeline artifacts to LibV2 unified repository.
@@ -1272,6 +1275,18 @@ def register_pipeline_tools(mcp):
             imscc_path: Path to Courseforge IMSCC package
             assessment_path: Path to Trainforge assessment JSON
             subdomains: Comma-separated subdomains (e.g., "mechanics,thermodynamics")
+            concept_graph_sha256: Phase 8 ST 1 — optional 64-hex SHA256 of the
+                ``concept_graph_semantic.json`` produced by ``concept_extraction``.
+                When well-formed, persisted to ``manifest.concept_graph_sha256``;
+                malformed values silently dropped (mirrors registry variant's
+                ``INVALID_*`` fall-through). Default ``None`` for back-compat
+                with legacy MCP clients.
+            dart_chunks_sha256: Phase 8 ST 1 — optional 64-hex SHA256 of the
+                DART chunkset (``dart_chunks/chunks.jsonl``) produced by the
+                ``chunking`` phase. Same emit + drop semantics as above.
+            imscc_chunks_sha256: Phase 8 ST 1 — optional 64-hex SHA256 of the
+                IMSCC chunkset (``imscc_chunks/chunks.jsonl``) produced by the
+                ``imscc_chunking`` phase. Same emit + drop semantics as above.
 
         Returns:
             JSON with course_slug, storage paths, and archival status
@@ -1465,6 +1480,29 @@ def register_pipeline_tools(mcp):
                     "evidence_source_provenance": evidence_source_provenance_flag,
                 },
             }
+
+            # Phase 8 ST 1: persist the three SHA256 fields when callers thread
+            # them via kwargs. Same ``^[0-9a-f]{64}$`` regex shape as the
+            # registry variant at ``:5667-5687, :5720-5727`` — only emit when
+            # the kwarg is well-formed so a malformed value falls through to
+            # the validator's ``MISSING_*`` critical (the validator owns
+            # ``INVALID_*`` shape diagnostics).
+            #
+            # Intentional asymmetry vs registry variant: this @mcp.tool()
+            # surface is kwarg-only — no on-disk recompute fallback for
+            # ``concept_graph_sha256``. The recompute path lives only in the
+            # registry variant because that surface is workflow-runner-driven
+            # and can resolve the on-disk artifact path; external MCP clients
+            # call this @mcp.tool() variant directly and pass paths
+            # explicitly. See plans/phase8_cleanup.md pre-resolved decision #1.
+            import re as _re_sha
+            _SHA_RE = r"^[0-9a-f]{64}$"
+            if concept_graph_sha256 and _re_sha.match(_SHA_RE, concept_graph_sha256):
+                manifest["concept_graph_sha256"] = concept_graph_sha256
+            if dart_chunks_sha256 and _re_sha.match(_SHA_RE, dart_chunks_sha256):
+                manifest["dart_chunks_sha256"] = dart_chunks_sha256
+            if imscc_chunks_sha256 and _re_sha.match(_SHA_RE, imscc_chunks_sha256):
+                manifest["imscc_chunks_sha256"] = imscc_chunks_sha256
 
             manifest_path = course_dir / "manifest.json"
             with open(manifest_path, "w") as f:
