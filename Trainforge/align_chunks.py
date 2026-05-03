@@ -140,9 +140,22 @@ class SimpleTFIDF:
 # I/O helpers
 # ---------------------------------------------------------------------------
 
+def _resolve_imscc_chunkset_dir(corpus_dir: Path) -> Path:
+    """Phase 7c shim: prefer ``imscc_chunks/``, fall back to ``corpus/``.
+
+    align_chunks reads + writes to the same directory in one pass, so we
+    resolve once and use the same path for both legs (avoids splitting
+    data across imscc_chunks/ and corpus/ on legacy archives).
+    """
+    from lib.libv2_storage import resolve_imscc_chunks_dir
+
+    return resolve_imscc_chunks_dir(corpus_dir)
+
+
 def load_corpus(corpus_dir: Path) -> Tuple[List[Dict], Dict]:
     """Load chunks.jsonl and concept_graph.json from a Trainforge output dir."""
-    chunks_path = corpus_dir / "corpus" / "chunks.jsonl"
+    chunkset_dir = _resolve_imscc_chunkset_dir(corpus_dir)
+    chunks_path = chunkset_dir / "chunks.jsonl"
     graph_path = corpus_dir / "graph" / "concept_graph.json"
 
     if not chunks_path.exists():
@@ -164,9 +177,14 @@ def load_corpus(corpus_dir: Path) -> Tuple[List[Dict], Dict]:
 
 
 def write_corpus(corpus_dir: Path, chunks: List[Dict]) -> None:
-    """Write enriched chunks back to chunks.jsonl and chunks.json."""
-    jsonl_path = corpus_dir / "corpus" / "chunks.jsonl"
-    json_path = corpus_dir / "corpus" / "chunks.json"
+    """Write enriched chunks back to chunks.jsonl and chunks.json.
+
+    Phase 7c: writes go to whichever directory load_corpus read from
+    (imscc_chunks/ for new archives, corpus/ for legacy until migrated).
+    """
+    chunkset_dir = _resolve_imscc_chunkset_dir(corpus_dir)
+    jsonl_path = chunkset_dir / "chunks.jsonl"
+    json_path = chunkset_dir / "chunks.json"
 
     with open(jsonl_path, "w") as f:
         for chunk in chunks:
@@ -1418,8 +1436,10 @@ def main(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
         # crashes can resume without re-paying for already-classified
         # chunks. Only the curriculum-provider path consults this — the
         # deterministic + heuristic + mock paths run in milliseconds.
+        # Phase 7c: write next to the resolved chunkset dir
+        # (imscc_chunks/ on new archives, corpus/ on legacy).
         teaching_role_checkpoint = (
-            corpus_dir / "corpus" / ".teaching_role_checkpoint.jsonl"
+            _resolve_imscc_chunkset_dir(corpus_dir) / ".teaching_role_checkpoint.jsonl"
         )
         # Wave 138b: emit a `teaching_role_heuristic_extended` decision
         # event each time the new content_type_label-aware heuristic
@@ -1500,11 +1520,12 @@ def main(args: Optional[argparse.Namespace] = None) -> Dict[str, Any]:
         # progress for the next attempt.
         if "teaching_role" in fields:
             checkpoint = (
-                corpus_dir / "corpus" / ".teaching_role_checkpoint.jsonl"
+                _resolve_imscc_chunkset_dir(corpus_dir)
+                / ".teaching_role_checkpoint.jsonl"
             )
             if checkpoint.exists():
                 checkpoint.unlink()
-        print(f"\n  Written to {corpus_dir / 'corpus'}")
+        print(f"\n  Written to {_resolve_imscc_chunkset_dir(corpus_dir)}")
     else:
         print("\n  [DRY RUN] No files written")
         # Still clean up _position

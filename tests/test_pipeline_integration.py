@@ -164,7 +164,8 @@ def test_full_pipeline(tmp_path):
     assert summary["stats"]["total_chunks"] > 0, "No chunks generated"
 
     # Step 5: Verify chunk output
-    chunks_file = tf_output / "corpus" / "chunks.jsonl"
+    # Phase 7c: process_course.py writes to imscc_chunks/.
+    chunks_file = tf_output / "imscc_chunks" / "chunks.jsonl"
     assert chunks_file.exists(), "chunks.jsonl not created"
     chunks = [
         json.loads(line)

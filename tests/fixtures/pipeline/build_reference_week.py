@@ -518,7 +518,8 @@ def build_libv2_misconceptions() -> dict:
 
 def main() -> None:
     REFERENCE_WEEK_DIR.mkdir(parents=True, exist_ok=True)
-    (REFERENCE_LIBV2_DIR / "corpus").mkdir(parents=True, exist_ok=True)
+    # Phase 7c: write to imscc_chunks/ (canonical).
+    (REFERENCE_LIBV2_DIR / "imscc_chunks").mkdir(parents=True, exist_ok=True)
     (REFERENCE_LIBV2_DIR / "graph").mkdir(parents=True, exist_ok=True)
 
     for builder in (
@@ -529,7 +530,7 @@ def main() -> None:
         (REFERENCE_WEEK_DIR / name).write_text(html, encoding="utf-8")
         print(f"Wrote {REFERENCE_WEEK_DIR / name}")
 
-    chunks_path = REFERENCE_LIBV2_DIR / "corpus" / "chunks.jsonl"
+    chunks_path = REFERENCE_LIBV2_DIR / "imscc_chunks" / "chunks.jsonl"
     with open(chunks_path, "w", encoding="utf-8") as f:
         for chunk in build_libv2_chunks():
             f.write(json.dumps(chunk, ensure_ascii=False) + "\n")

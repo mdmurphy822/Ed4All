@@ -464,18 +464,24 @@ def _build_assessment_objective_alignment(
 
     inputs: Dict[str, Any] = {"assessments_path": assessments}
 
-    # Chunks live at ``{trainforge_dir}/corpus/chunks.jsonl``. If the
+    # Chunks live at ``{trainforge_dir}/imscc_chunks/chunks.jsonl``
+    # (Phase 7c rename of the legacy ``corpus/`` directory). If the
     # phase output surfaces chunks_path explicitly, prefer that.
     chunks = _locate(phase_outputs, "chunks_path")
     if not chunks:
-        # Derive from assessments path: walk up to find a 'corpus'
-        # sibling with chunks.jsonl, or fallback to the same directory.
+        # Derive from assessments path: walk up to find an
+        # imscc_chunks/ (or legacy corpus/) sibling with chunks.jsonl,
+        # or fallback to the same directory.
         try:
             ap = Path(assessments)
             for parent in [ap.parent, *ap.parents]:
-                candidate = parent / "corpus" / "chunks.jsonl"
-                if candidate.exists():
-                    chunks = str(candidate)
+                # Phase 7c: prefer imscc_chunks/, fall back to corpus/.
+                for subdir in ("imscc_chunks", "corpus"):
+                    candidate = parent / subdir / "chunks.jsonl"
+                    if candidate.exists():
+                        chunks = str(candidate)
+                        break
+                if chunks:
                     break
                 # Also check a sibling chunks.jsonl.
                 sib = parent / "chunks.jsonl"
@@ -491,15 +497,19 @@ def _build_assessment_objective_alignment(
         # libv2_archival phase emits ``course_dir`` (and sometimes
         # ``course_slug``) for the archived course root; the
         # canonical location is
-        # ``LibV2/courses/{slug}/corpus/chunks.jsonl`` per
+        # ``LibV2/courses/{slug}/imscc_chunks/chunks.jsonl`` post-Phase
+        # 7c (or the legacy ``corpus/chunks.jsonl``) per
         # ``lib/libv2_storage.py``.
         archive_dir = _locate(phase_outputs, "course_dir")
         if archive_dir:
             try:
-                candidate = Path(archive_dir) / "corpus" / "chunks.jsonl"
+                from lib.libv2_storage import resolve_imscc_chunks_path
+                candidate = resolve_imscc_chunks_path(
+                    Path(archive_dir), "chunks.jsonl"
+                )
                 if candidate.exists():
                     chunks = str(candidate)
-            except (OSError, ValueError, TypeError):
+            except (OSError, ValueError, TypeError, ImportError):
                 pass
 
     if chunks:

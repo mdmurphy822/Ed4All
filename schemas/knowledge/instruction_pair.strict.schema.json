@@ -31,7 +31,7 @@
     "chunk_id": {
       "type": "string",
       "minLength": 1,
-      "description": "Source chunk id from corpus/chunks.jsonl (e.g. sample_course_chunk_00042)."
+      "description": "Source chunk id from imscc_chunks/chunks.jsonl (Phase 7c rename of corpus/chunks.jsonl, e.g. sample_course_chunk_00042)."
     },
     "lo_refs": {
       "type": "array",

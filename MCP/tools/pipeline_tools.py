@@ -236,7 +236,8 @@ def _check_chunks_freshness(
 
     Args:
         chunks_path: Where chunks.jsonl lives in the LibV2 archive
-            (``course_dir / "corpus" / "chunks.jsonl"``).
+            (``course_dir / "imscc_chunks" / "chunks.jsonl"`` post-Phase
+            7c, or legacy ``course_dir / "corpus" / "chunks.jsonl"``).
         course_name: The current run's course code / name. Used to
             derive the expected ``{prefix}_chunk_`` ID pattern.
         run_start_ts: ``time.time()`` captured at archival entry. Files
@@ -421,7 +422,9 @@ def _detect_source_provenance(course_dir: Path) -> bool:
     ``features.source_provenance: false`` so LibV2 retrieval callers can
     fast-skip source-grounded queries.
     """
-    chunks_path = course_dir / "corpus" / "chunks.jsonl"
+    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/ via shim.
+    from lib.libv2_storage import resolve_imscc_chunks_path
+    chunks_path = resolve_imscc_chunks_path(course_dir, "chunks.jsonl")
     if not chunks_path.exists() or not chunks_path.is_file():
         return False
     try:
@@ -458,13 +461,15 @@ def _detect_evidence_source_provenance(course_dir: Path) -> bool:
     callers can distinguish chunk-level (Wave 10) from evidence-level (Wave 11)
     provenance.
 
-    The scan looks in three candidate locations under ``<course_dir>``:
-    ``graph/concept_graph_semantic.json``, ``corpus/concept_graph_semantic.json``,
-    or any ``*.json`` file shaped like a semantic graph (``kind ==
-    "concept_semantic"``) sitting inside the corpus dir. First match wins.
+    The scan looks in candidate locations under ``<course_dir>``:
+    ``graph/concept_graph_semantic.json``, ``imscc_chunks/concept_graph_semantic.json``,
+    or legacy ``corpus/concept_graph_semantic.json``, or any ``*.json``
+    file shaped like a semantic graph (``kind == "concept_semantic"``)
+    sitting inside the chunkset dir. First match wins.
     """
     candidates = [
         course_dir / "graph" / "concept_graph_semantic.json",
+        course_dir / "imscc_chunks" / "concept_graph_semantic.json",
         course_dir / "corpus" / "concept_graph_semantic.json",
     ]
     for path in candidates:
@@ -1186,7 +1191,9 @@ def register_pipeline_tools(mcp):
             })
 
         corpus_dir_path = Path(corpus_dir)
-        chunks_path = corpus_dir_path / "corpus" / "chunks.jsonl"
+        # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+        from lib.libv2_storage import resolve_imscc_chunks_path
+        chunks_path = resolve_imscc_chunks_path(corpus_dir_path, "chunks.jsonl")
         if not chunks_path.exists():
             logger.warning(
                 "synthesize_training: chunks.jsonl missing at %s; skipping",
@@ -1333,10 +1340,12 @@ def register_pipeline_tools(mcp):
                     archived["imscc"] = str(dest)
 
             # Archive assessment / RAG corpus output
+            # Phase 7c: write to imscc_chunks/ (canonical).
             if assessment_path:
                 assess = Path(assessment_path)
                 if assess.exists():
-                    dest = course_dir / "corpus" / assess.name
+                    dest = course_dir / "imscc_chunks" / assess.name
+                    dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(assess, dest)
                     archived["assessment"] = str(dest)
                     # Wave 30 Gap 3: when the caller points us at an
@@ -4864,7 +4873,9 @@ def _build_tool_registry() -> dict:
                     "output_dir": str(trainforge_dir),
                 })
 
-            chunks_path = trainforge_dir / "corpus" / "chunks.jsonl"
+            # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+            from lib.libv2_storage import resolve_imscc_chunks_path
+            chunks_path = resolve_imscc_chunks_path(trainforge_dir, "chunks.jsonl")
             semantic_graph_path = trainforge_dir / "graph" / "concept_graph_semantic.json"
 
             if not chunks_path.exists():
@@ -5155,12 +5166,15 @@ def _build_tool_registry() -> dict:
                 "error": (
                     "synthesize_training requires corpus_dir / "
                     "trainforge_dir / assessments_path / chunks_path to "
-                    "locate corpus/chunks.jsonl"
+                    "locate imscc_chunks/chunks.jsonl (or legacy "
+                    "corpus/chunks.jsonl)"
                 ),
             })
 
         corpus_dir_path = Path(corpus_dir)
-        chunks_path = corpus_dir_path / "corpus" / "chunks.jsonl"
+        # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+        from lib.libv2_storage import resolve_imscc_chunks_path
+        chunks_path = resolve_imscc_chunks_path(corpus_dir_path, "chunks.jsonl")
         if not chunks_path.exists():
             # Skip-with-warning: downstream archival can still run, we
             # just won't have new training pairs. This is the safe
@@ -5429,11 +5443,14 @@ def _build_tool_registry() -> dict:
                     if trainforge_dir is None:
                         trainforge_dir = ap
                 else:
-                    dest = course_dir / "corpus" / ap.name
+                    # Phase 7c: write to imscc_chunks/ (canonical).
+                    dest = course_dir / "imscc_chunks" / ap.name
+                    dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(ap, dest)
                     archived["assessment"] = str(dest)
 
         # Heuristic fallback: scan well-known locations for chunks.jsonl.
+        # Phase 7c: imscc_chunks/ is canonical; corpus/ retained for back-compat.
         if trainforge_dir is None:
             candidates: list[Path] = []
             exports_root = PROJECT_ROOT / "Courseforge" / "exports"
@@ -5442,7 +5459,11 @@ def _build_tool_registry() -> dict:
                     if not project_dir.is_dir():
                         continue
                     tf = project_dir / "trainforge"
-                    if (tf / "chunks.jsonl").exists() or (tf / "corpus" / "chunks.jsonl").exists():
+                    if (
+                        (tf / "chunks.jsonl").exists()
+                        or (tf / "imscc_chunks" / "chunks.jsonl").exists()
+                        or (tf / "corpus" / "chunks.jsonl").exists()
+                    ):
                         candidates.append(tf)
             runs_root = PROJECT_ROOT / "state" / "runs"
             if runs_root.exists():
@@ -5450,15 +5471,22 @@ def _build_tool_registry() -> dict:
                     if not run_dir.is_dir():
                         continue
                     tf = run_dir / "trainforge"
-                    if (tf / "chunks.jsonl").exists() or (tf / "corpus" / "chunks.jsonl").exists():
+                    if (
+                        (tf / "chunks.jsonl").exists()
+                        or (tf / "imscc_chunks" / "chunks.jsonl").exists()
+                        or (tf / "corpus" / "chunks.jsonl").exists()
+                    ):
                         candidates.append(tf)
             if candidates:
                 def _chunks_mtime(p):
-                    # Support both flat and nested (CourseProcessor-native) layouts.
-                    nested = p / "corpus" / "chunks.jsonl"
+                    # Support flat, new (imscc_chunks/) and legacy (corpus/) layouts.
+                    new_nested = p / "imscc_chunks" / "chunks.jsonl"
+                    legacy_nested = p / "corpus" / "chunks.jsonl"
                     flat = p / "chunks.jsonl"
-                    if nested.exists():
-                        return nested.stat().st_mtime
+                    if new_nested.exists():
+                        return new_nested.stat().st_mtime
+                    if legacy_nested.exists():
+                        return legacy_nested.stat().st_mtime
                     if flat.exists():
                         return flat.stat().st_mtime
                     return 0.0
@@ -5466,9 +5494,10 @@ def _build_tool_registry() -> dict:
 
         # --- Copy Trainforge outputs --------------------------------------
         # Worker β writes in CourseProcessor's native nested layout
-        # (trainforge/corpus/chunks.jsonl, trainforge/graph/*.json). We
-        # also check the flat layout for backward-compat with any caller
-        # that mirrors the older stub's expected paths.
+        # (trainforge/imscc_chunks/chunks.jsonl post-Phase-7c, or legacy
+        # trainforge/corpus/chunks.jsonl, plus trainforge/graph/*.json).
+        # We also check the flat layout for backward-compat with any
+        # caller that mirrors the older stub's expected paths.
         def _pick(*candidates):
             for c in candidates:
                 if c.exists() and c.is_file():
@@ -5480,24 +5509,33 @@ def _build_tool_registry() -> dict:
         # exists, drop it before the copy block so we either install
         # fresh chunks below or end up with no chunks file (which is
         # the correct state for DART-only / Trainforge-skipped runs).
-        _dest_chunks_path = course_dir / "corpus" / "chunks.jsonl"
-        _had_prior_chunks = _dest_chunks_path.exists()
-        if _had_prior_chunks:
-            try:
-                _dest_chunks_path.unlink()
-            except OSError as _exc:
-                logger.warning(
-                    "archive_to_libv2: failed to remove prior-run "
-                    "chunks.jsonl at %s: %s",
-                    _dest_chunks_path,
-                    _exc,
-                )
+        # Phase 7c: clean BOTH the new imscc_chunks/ path AND the legacy
+        # corpus/ path so a re-run on a partially-migrated archive
+        # doesn't leave stale chunks behind in either location.
+        _dest_chunks_path = course_dir / "imscc_chunks" / "chunks.jsonl"
+        _legacy_dest_chunks_path = course_dir / "corpus" / "chunks.jsonl"
+        _had_prior_chunks = (
+            _dest_chunks_path.exists() or _legacy_dest_chunks_path.exists()
+        )
+        for _stale in (_dest_chunks_path, _legacy_dest_chunks_path):
+            if _stale.exists():
+                try:
+                    _stale.unlink()
+                except OSError as _exc:
+                    logger.warning(
+                        "archive_to_libv2: failed to remove prior-run "
+                        "chunks.jsonl at %s: %s",
+                        _stale,
+                        _exc,
+                    )
 
         if trainforge_dir is not None and trainforge_dir.exists():
             copy_map = [
-                (_pick(trainforge_dir / "corpus" / "chunks.jsonl",
+                # Phase 7c: prefer imscc_chunks/ in source AND destination.
+                (_pick(trainforge_dir / "imscc_chunks" / "chunks.jsonl",
+                       trainforge_dir / "corpus" / "chunks.jsonl",
                        trainforge_dir / "chunks.jsonl"),
-                 course_dir / "corpus" / "chunks.jsonl", "chunks"),
+                 course_dir / "imscc_chunks" / "chunks.jsonl", "chunks"),
                 (_pick(trainforge_dir / "graph" / "concept_graph_semantic.json",
                        trainforge_dir / "concept_graph_semantic.json"),
                  course_dir / "graph" / "concept_graph_semantic.json", "graph"),

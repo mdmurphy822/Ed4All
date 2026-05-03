@@ -239,12 +239,17 @@ def _assert_worker_beta(export_dir: Path) -> None:
     for run_dir in (PROJECT_ROOT / "state" / "runs").glob("*/trainforge"):
         candidates.append(run_dir)
 
-    # Accept both the flat layout (trainforge/chunks.jsonl) and the
-    # CourseProcessor-native nested layout (trainforge/corpus/chunks.jsonl)
-    # that Worker β actually emits.
+    # Accept the flat layout (trainforge/chunks.jsonl), the new
+    # Phase 7c nested layout (trainforge/imscc_chunks/chunks.jsonl)
+    # that Worker β emits, OR the legacy nested layout
+    # (trainforge/corpus/chunks.jsonl) for unprovisioned archives.
     chunks_file: Path | None = None
     for candidate in candidates:
-        for candidate_chunks in (candidate / "chunks.jsonl", candidate / "corpus" / "chunks.jsonl"):
+        for candidate_chunks in (
+            candidate / "chunks.jsonl",
+            candidate / "imscc_chunks" / "chunks.jsonl",
+            candidate / "corpus" / "chunks.jsonl",
+        ):
             if candidate_chunks.exists():
                 chunks_file = candidate_chunks
                 break
@@ -335,17 +340,20 @@ def _assert_worker_beta(export_dir: Path) -> None:
 
 
 def _assert_worker_gamma() -> None:
-    """LibV2 archival populated corpus/ + graph/ and wrote a proper manifest."""
+    """LibV2 archival populated imscc_chunks/ + graph/ and wrote a proper manifest."""
     course_dir = PROJECT_ROOT / "LibV2" / "courses" / COURSE_SLUG
     assert course_dir.exists(), (
         f"Worker γ: LibV2 course dir missing at {course_dir}."
     )
 
-    # Corpus must have chunks.jsonl (copied byte-for-byte from Trainforge output).
-    corpus_chunks = course_dir / "corpus" / "chunks.jsonl"
+    # Chunks must have chunks.jsonl (copied byte-for-byte from Trainforge output).
+    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+    corpus_chunks = course_dir / "imscc_chunks" / "chunks.jsonl"
+    if not corpus_chunks.exists():
+        corpus_chunks = course_dir / "corpus" / "chunks.jsonl"
     assert corpus_chunks.exists(), (
         f"Worker γ: {corpus_chunks} missing. archival should copy "
-        "trainforge/chunks.jsonl into corpus/."
+        "trainforge/chunks.jsonl into imscc_chunks/ (or legacy corpus/)."
     )
     assert corpus_chunks.stat().st_size > 0, (
         f"Worker γ: {corpus_chunks} is empty."
@@ -376,7 +384,13 @@ def _assert_worker_gamma() -> None:
 
     # No empty archival dirs. (``pedagogy/`` may be empty — that's
     # expected; contracts.md calls it out as a gap. Tolerate it.)
-    for subdir_name in ("corpus", "graph"):
+    # Phase 7c: chunkset dir is imscc_chunks/ (or legacy corpus/).
+    chunkset_subdirs = (
+        ("imscc_chunks",)
+        if (course_dir / "imscc_chunks").exists()
+        else ("corpus",)
+    )
+    for subdir_name in (*chunkset_subdirs, "graph"):
         subdir = course_dir / subdir_name
         assert subdir.exists() and any(subdir.iterdir()), (
             f"Worker γ: {subdir} exists but is empty."

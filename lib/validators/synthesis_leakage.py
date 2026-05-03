@@ -103,7 +103,9 @@ class SynthesisLeakageValidator:
             )
         course_dir = Path(course_dir_raw)
         inst_path = course_dir / "training_specs" / "instruction_pairs.jsonl"
-        chunks_path = course_dir / "corpus" / "chunks.jsonl"
+        # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+        from lib.libv2_storage import resolve_imscc_chunks_path
+        chunks_path = resolve_imscc_chunks_path(course_dir, "chunks.jsonl")
         if not inst_path.exists():
             return GateResult(
                 gate_id=gate_id,

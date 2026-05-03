@@ -2,7 +2,7 @@
 
 Reads the LibV2 course at ``LibV2/courses/<course_slug>/``:
 
-    corpus/chunks.jsonl
+    imscc_chunks/chunks.jsonl  (Phase 7c rename of corpus/chunks.jsonl)
     pedagogy/pedagogy_graph.json (or graph/pedagogy_graph.json)
     training_specs/instruction_pairs.jsonl
     training_specs/preference_pairs.jsonl
@@ -70,7 +70,8 @@ logger = logging.getLogger(__name__)
 _VOCABULARY_TTL_CANONICAL = SCHEMAS_PATH / "context" / "courseforge_v1.vocabulary.ttl"
 
 _PROVENANCE_SOURCES = (
-    ("chunks_hash", ["corpus/chunks.jsonl"]),
+    # Phase 7c: imscc_chunks/ is canonical; corpus/ retained for back-compat.
+    ("chunks_hash", ["imscc_chunks/chunks.jsonl", "corpus/chunks.jsonl"]),
     ("pedagogy_graph_hash", [
         "graph/pedagogy_graph.json",
         "pedagogy/pedagogy_graph.json",

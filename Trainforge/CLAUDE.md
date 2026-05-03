@@ -826,7 +826,7 @@ Three validators gate the `training_synthesis` phase under `textbook_to_course`.
 
 | Hash field | Source path |
 |------------|-------------|
-| `chunks_hash` | `LibV2/courses/<slug>/corpus/chunks.jsonl` |
+| `chunks_hash` | `LibV2/courses/<slug>/imscc_chunks/chunks.jsonl` (Phase 7c rename of `corpus/chunks.jsonl`) |
 | `pedagogy_graph_hash` | `LibV2/courses/<slug>/graph/pedagogy_graph.json` |
 | `instruction_pairs_hash` | `LibV2/courses/<slug>/training_specs/instruction_pairs.jsonl` |
 | `preference_pairs_hash` | `LibV2/courses/<slug>/training_specs/preference_pairs.jsonl` |

@@ -43,7 +43,7 @@ Public entry point::
 Inputs:
 
 * ``chunks``       -- iterable of v4 chunk dicts (the same shape that
-                       lands in ``corpus/chunks.jsonl``).
+                       lands in ``imscc_chunks/chunks.jsonl``).
 * ``objectives``   -- canonical objectives dict. Accepts both shapes:
                        (a) Worker A's planned ``objectives.json``
                        (terminal_objectives / chapter_objectives), or

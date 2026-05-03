@@ -443,8 +443,12 @@ def _course_dir(slug: str, courses_root: Optional[Path] = None) -> Path:
 
         courses_root = LIBV2_COURSES
     candidates = [courses_root / slug, courses_root / f"{slug}-{slug}"]
+    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
     for c in candidates:
-        if c.is_dir() and (c / "corpus" / "chunks.jsonl").is_file():
+        if c.is_dir() and (
+            (c / "imscc_chunks" / "chunks.jsonl").is_file()
+            or (c / "corpus" / "chunks.jsonl").is_file()
+        ):
             return c
     for c in candidates:
         if c.is_dir():

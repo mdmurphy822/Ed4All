@@ -1812,9 +1812,9 @@ def models_group():
     """Manage trained adapters attached to a course.
 
     Wave 93 — adapters trained by Trainforge land under
-    ``courses/<slug>/models/<model_id>/`` alongside ``corpus/``,
-    ``graph/``, etc. ``_pointers.json`` records which model_id is
-    currently promoted.
+    ``courses/<slug>/models/<model_id>/`` alongside ``imscc_chunks/``
+    (Phase 7c rename of ``corpus/``), ``graph/``, etc.
+    ``_pointers.json`` records which model_id is currently promoted.
     """
     pass
 

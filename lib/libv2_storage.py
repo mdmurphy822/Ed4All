@@ -13,9 +13,10 @@ import fcntl
 import json
 import logging
 import os
+import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 # Import paths from centralized module
 from .paths import (
@@ -35,6 +36,66 @@ LIBV2_ROOT = LIBV2_PATH
 class LibV2StorageError(Exception):
     """Raised when LibV2 storage operations fail."""
     pass
+
+
+# ===== Phase 7c back-compat shim =====
+#
+# Phase 7c renamed ``LibV2/courses/<slug>/corpus/`` to
+# ``LibV2/courses/<slug>/imscc_chunks/`` so the directory name reflects the
+# IMSCC-derived chunkset (symmetric to the new ``dart_chunks/`` directory
+# emitted by the Phase 7b chunker). All NEW writes target ``imscc_chunks/``
+# (canonical path); reads attempt ``imscc_chunks/`` first and fall back to
+# ``corpus/`` with a deprecation warning so unprovisioned LibV2 archives
+# keep working through one migration cycle. The shim is dropped in Phase 8
+# once ``backfill_dart_chunks.py`` (Worker W18) has migrated all archives.
+
+IMSCC_CHUNKS_DIRNAME = "imscc_chunks"
+LEGACY_CORPUS_DIRNAME = "corpus"
+
+
+def resolve_imscc_chunks_dir(course_dir: Union[str, Path]) -> Path:
+    """Return the IMSCC chunkset directory for a LibV2 course.
+
+    Returns ``<course_dir>/imscc_chunks`` when present; falls back to
+    ``<course_dir>/corpus`` (legacy) with a deprecation warning. When
+    neither path exists, returns the canonical (new) path so callers
+    receive a clean ``FileNotFoundError`` on subsequent reads.
+
+    Use this for any read operation that targets the IMSCC-chunkset
+    directory itself (e.g. ``chunks.jsonl``, ``chunks.json``,
+    ``corpus_stats.json``, ``.teaching_role_checkpoint.jsonl``).
+
+    Phase 7c shim — drop in Phase 8.
+    """
+    course_dir = Path(course_dir)
+    new_path = course_dir / IMSCC_CHUNKS_DIRNAME
+    if new_path.exists():
+        return new_path
+    legacy_path = course_dir / LEGACY_CORPUS_DIRNAME
+    if legacy_path.exists():
+        warnings.warn(
+            f"Phase 7c deprecation: {course_dir.name} still uses "
+            f"{LEGACY_CORPUS_DIRNAME}/; run "
+            f"LibV2/tools/libv2/scripts/backfill_dart_chunks.py to migrate.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return legacy_path
+    return new_path
+
+
+def resolve_imscc_chunks_path(
+    course_dir: Union[str, Path],
+    filename: str = "chunks.jsonl",
+) -> Path:
+    """Return the canonical path to a file inside the IMSCC chunkset dir.
+
+    Convenience wrapper over :func:`resolve_imscc_chunks_dir` for the
+    common case of reading ``chunks.jsonl`` (or ``chunks.json``).
+
+    Phase 7c shim — drop in Phase 8.
+    """
+    return resolve_imscc_chunks_dir(course_dir) / filename
 
 
 class LibV2Storage:
@@ -82,15 +143,29 @@ class LibV2Storage:
         self.assessments_path = self.catalog_path / "assessments"
         self.metadata_path = self.catalog_path / "metadata.json"
 
-        # Course content paths (corpus, sources)
+        # Course content paths (imscc_chunks, sources)
+        # Phase 7c rename: corpus/ -> imscc_chunks/. New writes target
+        # ``imscc_chunks_path``. Reads via the ``corpus_path`` legacy
+        # attribute resolve dynamically (see the property below) so a
+        # legacy archive with only ``corpus/`` still resolves correctly.
         self.course_path = LIBV2_COURSES / self.course_slug
-        self.corpus_path = self.course_path / "corpus"
+        self.imscc_chunks_path = self.course_path / IMSCC_CHUNKS_DIRNAME
         self.sources_path = self.course_path / "sources"
         self.concept_graph_path = self.course_path / "concept_graph"
         self.manifest_path = self.course_path / "manifest.json"
 
         if auto_create:
             self.ensure_directories()
+
+    @property
+    def corpus_path(self) -> Path:
+        """Phase 7c back-compat alias. Resolves dynamically.
+
+        Returns ``imscc_chunks/`` when present (canonical post-Phase 7c),
+        or legacy ``corpus/`` (with deprecation warning) for unprovisioned
+        archives, or the new path when neither exists.
+        """
+        return resolve_imscc_chunks_dir(self.course_path)
 
     @staticmethod
     def _generate_slug(course_id: str) -> str:
@@ -107,7 +182,7 @@ class LibV2Storage:
             self.training_path / "dart",
             self.assessments_path,
             # Course content structure
-            self.corpus_path,
+            self.imscc_chunks_path,
             self.sources_path / "textbooks",
             self.sources_path / "objectives",
             self.sources_path / "supplements",
@@ -236,8 +311,13 @@ class LibV2Storage:
     # ===== RAG Corpus Management =====
 
     def get_chunks_path(self) -> Path:
-        """Get path for RAG corpus chunks."""
-        return self.corpus_path / "chunks.jsonl"
+        """Get path to ``chunks.jsonl`` for the IMSCC chunkset.
+
+        Reads via the Phase 7c shim — returns the legacy ``corpus/``
+        location with a deprecation warning if the archive hasn't been
+        migrated yet, otherwise returns the new ``imscc_chunks/`` path.
+        """
+        return resolve_imscc_chunks_path(self.course_path)
 
     def get_corpus_stats(self) -> Dict[str, Any]:
         """Get statistics about the corpus."""
@@ -259,12 +339,16 @@ class LibV2Storage:
 
     def append_chunk(self, chunk: Dict[str, Any]) -> None:
         """
-        Append a chunk to the corpus.
+        Append a chunk to the IMSCC chunkset.
+
+        Writes to the canonical ``imscc_chunks/chunks.jsonl`` path.
 
         Args:
             chunk: Chunk data with id, chunk_type, text, source, etc.
         """
-        chunks_path = self.get_chunks_path()
+        # Always write to the canonical (new) location even if the legacy
+        # corpus/ directory exists alongside — back-compat is read-only.
+        chunks_path = self.imscc_chunks_path / "chunks.jsonl"
         chunks_path.parent.mkdir(parents=True, exist_ok=True)
 
         with open(chunks_path, 'a', encoding='utf-8') as f:

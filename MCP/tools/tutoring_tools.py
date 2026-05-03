@@ -170,8 +170,12 @@ def _course_dir(slug: str) -> Path:
         LIBV2_COURSES / f"{slug}-{slug}",
     ]
     # Prefer any candidate that has a populated chunks.jsonl
+    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
     for c in candidates:
-        if c.is_dir() and (c / "corpus" / "chunks.jsonl").is_file():
+        if c.is_dir() and (
+            (c / "imscc_chunks" / "chunks.jsonl").is_file()
+            or (c / "corpus" / "chunks.jsonl").is_file()
+        ):
             return c
     # Fall back to the first existing dir (preserves error visibility).
     for c in candidates:
@@ -198,7 +202,9 @@ def load_misconception_index(slug: str) -> MisconceptionIndex:
     "no misconceptions found" as a clear empty-result envelope.)
     """
     course = _course_dir(slug)
-    chunks_path = course / "corpus" / "chunks.jsonl"
+    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+    from lib.libv2_storage import resolve_imscc_chunks_path
+    chunks_path = resolve_imscc_chunks_path(course, "chunks.jsonl")
     graph_path = course / "graph" / "pedagogy_graph.json"
 
     mtime = 0.0

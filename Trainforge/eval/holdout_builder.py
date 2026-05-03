@@ -423,7 +423,9 @@ class HoldoutBuilder:
         except (FileNotFoundError, ImportError):
             return []
 
-        chunks_path = self.course_path / "corpus" / "chunks.jsonl"
+        # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+        from lib.libv2_storage import resolve_imscc_chunks_path
+        chunks_path = resolve_imscc_chunks_path(self.course_path, "chunks.jsonl")
         if not chunks_path.exists():
             return []
 

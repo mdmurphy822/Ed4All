@@ -593,8 +593,14 @@ class PacketIntegrityValidator:
 
     @staticmethod
     def _load_chunks(archive_root: Path, result: ValidationResult) -> List[Dict[str, Any]]:
-        """Load ``corpus/chunks.jsonl`` (one JSON object per line)."""
-        chunks_path = archive_root / "corpus" / "chunks.jsonl"
+        """Load ``imscc_chunks/chunks.jsonl`` (one JSON object per line).
+
+        Phase 7c: prefers ``imscc_chunks/`` and falls back to legacy
+        ``corpus/`` via the shim for unprovisioned archives.
+        """
+        from lib.libv2_storage import resolve_imscc_chunks_path
+
+        chunks_path = resolve_imscc_chunks_path(archive_root, "chunks.jsonl")
         if not chunks_path.exists():
             result.issues.append(
                 ValidationIssue(

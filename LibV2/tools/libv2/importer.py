@@ -29,8 +29,14 @@ logger = logging.getLogger(__name__)
 # means trained adapters land alongside corpus / graph / training_specs as
 # first-class artifacts. Keep the order stable; tests pin both membership
 # and presence of ``"models"`` (Wave 93).
+#
+# Phase 7c: ``imscc_chunks`` replaces the legacy ``corpus`` directory. Both
+# names appear in the list so the importer copies whichever the build emits
+# (back-compat for unprovisioned Trainforge runs that still write to
+# ``corpus/``). Phase 8 drops ``corpus``.
 _COPIED_SUBDIRS: list[str] = [
-    "corpus",
+    "imscc_chunks",
+    "corpus",  # Phase 7c back-compat — drop in Phase 8.
     "graph",
     "pedagogy",
     "training_specs",
@@ -228,7 +234,10 @@ def extract_content_profile(source_dir: Path, sf_manifest: dict) -> ContentProfi
     stats = sf_manifest.get("statistics", {})
 
     # Try to read corpus stats for more detail
-    corpus_stats_path = source_dir / "corpus" / "corpus_stats.json"
+    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+    corpus_stats_path = source_dir / "imscc_chunks" / "corpus_stats.json"
+    if not corpus_stats_path.exists():
+        corpus_stats_path = source_dir / "corpus" / "corpus_stats.json"
     chunk_type_dist = {}
     difficulty_dist = {}
 

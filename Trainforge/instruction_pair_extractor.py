@@ -1196,10 +1196,16 @@ def _write_jsonl(path: Path, records: Iterable[Dict[str, Any]]) -> int:
 
 
 def _resolve_corpus_path(slug: str, libv2_root: Optional[Path] = None) -> Path:
-    """Locate ``corpus/chunks.jsonl`` for ``slug`` under LibV2."""
+    """Locate ``imscc_chunks/chunks.jsonl`` for ``slug`` under LibV2.
+
+    Phase 7c: prefers ``imscc_chunks/`` and falls back to legacy
+    ``corpus/`` via the shim for unprovisioned archives.
+    """
+    from lib.libv2_storage import resolve_imscc_chunks_path
+
     root = libv2_root or (PROJECT_ROOT / "LibV2" / "courses")
     for candidate in (root / slug, root / f"{slug}-{slug}"):
-        p = candidate / "corpus" / "chunks.jsonl"
+        p = resolve_imscc_chunks_path(candidate, "chunks.jsonl")
         if p.exists():
             return p
     raise FileNotFoundError(

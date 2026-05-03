@@ -112,26 +112,32 @@ class _ParsedQuestion:
 
 
 def _load_chunks(archive_root: Path) -> list[dict]:
-    """Read all chunks from ``corpus/chunks.json`` or ``chunks.jsonl``.
+    """Read all chunks from ``imscc_chunks/chunks.json`` or ``chunks.jsonl``.
 
     JSON is preferred (matches the canonical post-Wave-76 archive
     layout). JSONL is supported as a fallback so legacy / test
     fixtures that only emit ``chunks.jsonl`` still work.
+
+    Phase 7c: prefers ``imscc_chunks/`` and falls back to legacy
+    ``corpus/`` via the shim for unprovisioned archives.
     """
-    corpus = archive_root / "corpus"
-    json_path = corpus / "chunks.json"
-    jsonl_path = corpus / "chunks.jsonl"
+    from lib.libv2_storage import resolve_imscc_chunks_dir
+
+    chunkset_dir = resolve_imscc_chunks_dir(archive_root)
+    dirname = chunkset_dir.name
+    json_path = chunkset_dir / "chunks.json"
+    jsonl_path = chunkset_dir / "chunks.jsonl"
 
     if json_path.exists():
         try:
             data = json.loads(json_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:  # pragma: no cover
             raise ValueError(
-                f"corpus/chunks.json is not valid JSON: {exc}"
+                f"{dirname}/chunks.json is not valid JSON: {exc}"
             ) from exc
         if not isinstance(data, list):
             raise ValueError(
-                "corpus/chunks.json must be a JSON array of chunk objects"
+                f"{dirname}/chunks.json must be a JSON array of chunk objects"
             )
         return data
 
@@ -145,7 +151,7 @@ def _load_chunks(archive_root: Path) -> list[dict]:
         return out
 
     raise ArchiveNotFoundError(
-        f"No corpus/chunks.json[l] under {archive_root}"
+        f"No imscc_chunks/chunks.json[l] (or legacy corpus/) under {archive_root}"
     )
 
 

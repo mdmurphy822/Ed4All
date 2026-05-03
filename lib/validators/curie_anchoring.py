@@ -125,7 +125,9 @@ def _resolve_paths(
         if inst is None:
             inst = cd / "training_specs" / "instruction_pairs.jsonl"
         if chunks is None:
-            chunks = cd / "corpus" / "chunks.jsonl"
+            # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+            from lib.libv2_storage import resolve_imscc_chunks_path
+            chunks = resolve_imscc_chunks_path(cd, "chunks.jsonl")
 
     training_specs_dir_raw = inputs.get("training_specs_dir")
     if training_specs_dir_raw and inst is None:
