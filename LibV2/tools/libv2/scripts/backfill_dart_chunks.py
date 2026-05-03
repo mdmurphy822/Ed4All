@@ -27,7 +27,7 @@ Design decisions:
   ``MCP/tools/pipeline_tools.py::_run_dart_chunking`` (Phase 7b
   Subtask 11, commit ``5ccbf0c``) via the tool registry. That helper
   is the single source of truth for DART chunkset emit; reimplementing
-  its parsing + ``ed4all_chunker.chunk_content`` dispatch loop here
+  its parsing + ``Trainforge.chunker.chunk_content`` dispatch loop here
   would create a drift surface where two backends could disagree on
   the canonical chunkset shape. The helper is async, so we wrap the
   call site in ``asyncio.run`` (sync CLI, no event loop required).
@@ -376,7 +376,7 @@ def _emit_decision_capture(
     rationale = (
         f"Backfilled DART chunkset for course '{course_slug}' on {timestamp} "
         f"by operator '{operator}'. Emitted {chunks_count} chunks via "
-        f"ed4all-chunker {chunker_version}; chunks_sha256={chunks_sha256!s}. "
+        f"Trainforge.chunker {chunker_version}; chunks_sha256={chunks_sha256!s}. "
         "Run scope: legacy / partially-migrated archive missing the Phase 7b "
         "dart_chunks/ chunkset (Subtask 18 operator script)."
     )
@@ -499,7 +499,7 @@ def _backfill_one_course(
     chunks_count = response.get("chunks_count", "?")
     chunker_version = response.get("chunker_version", "?")
     logger.info(
-        "[ok]   %s — emitted %s chunks via ed4all-chunker %s",
+        "[ok]   %s — emitted %s chunks via Trainforge.chunker %s",
         course_slug,
         chunks_count,
         chunker_version,

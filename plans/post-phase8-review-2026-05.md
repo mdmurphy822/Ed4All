@@ -171,21 +171,45 @@ COURSEFORGE_REWRITE_MODEL=Qwen/Qwen2.5-72B-Instruct
 COURSEFORGE_REWRITE_API_KEY=...
 ```
 
-Landed: **partial drift from plan**. Current env-var surface is unified
-under a single `COURSEFORGE_PROVIDER` (`anthropic` / `together` / `local`
-/ `claude_session`) rather than per-tier env vars. The plan called for
-distinct outline / rewrite tier configuration, which the implementation
-collapsed into one provider. This is workable — both tiers share the
-provider — but loses the plan's intent that the outline tier could run
-local while the rewrite tier hits an API.
+Landed: **✅ implemented** at the router layer
+(`Courseforge/router/router.py:154-160`, consumed at `:556-560`):
 
-**Recommendation**: extend the provider surface to per-tier:
-- `COURSEFORGE_OUTLINE_PROVIDER` / `COURSEFORGE_OUTLINE_MODEL`
-- `COURSEFORGE_REWRITE_PROVIDER` / `COURSEFORGE_REWRITE_MODEL`
-- Falls back to `COURSEFORGE_PROVIDER` / `COURSEFORGE_MODEL` when
-  per-tier values are unset.
+```python
+_ENV_OUTLINE_PROVIDER = "COURSEFORGE_OUTLINE_PROVIDER"
+_ENV_OUTLINE_MODEL = "COURSEFORGE_OUTLINE_MODEL"
+_ENV_REWRITE_PROVIDER = "COURSEFORGE_REWRITE_PROVIDER"
+_ENV_REWRITE_MODEL = "COURSEFORGE_REWRITE_MODEL"
+_ENV_LEGACY_PROVIDER = "COURSEFORGE_PROVIDER"
+```
 
-Low complexity; preserves the v0.3.0 architectural intent.
+Resolution chain (`Courseforge/router/router.py` module docstring,
+lines 12-23):
+
+1. Per-call `**overrides` (operator / test override).
+2. Loaded `block_routing.yaml` policy entry (Subtask 34 — schema at
+   `schemas/courseforge/block_routing.schema.json`; not yet wired,
+   router falls through when policy is absent).
+3. **Tier-default env vars** (`COURSEFORGE_OUTLINE_PROVIDER` /
+   `COURSEFORGE_OUTLINE_MODEL` / `COURSEFORGE_REWRITE_PROVIDER` /
+   `COURSEFORGE_REWRITE_MODEL`).
+4. Module-level `_HARDCODED_DEFAULTS` table (one entry per
+   `(block_type, tier)` pair).
+5. Legacy `COURSEFORGE_PROVIDER` fallback.
+
+So the user's intent (outline tier local + rewrite tier API; or
+different rewrite models for different block types) is supported. The
+pipeline orchestration layer (`MCP/tools/pipeline_tools.py:4221-4226`,
+`MCP/core/executor.py:893-945`) only reads `COURSEFORGE_PROVIDER` —
+that's the **legacy fallback path**, not a collapse. When operator-set
+per-tier env vars resolve, the router uses them per the chain above.
+
+The original review claimed the per-tier vars were collapsed; that was
+wrong. Documenting here for the audit trail.
+
+**Outstanding gap (the actual one)**: the resolution chain's step 2
+(`block_routing.yaml` policy) is **not yet wired**. Schema exists
+(`schemas/courseforge/block_routing.schema.json`); per-block-type model
+selection is the v0.4.0 feature. See §1.9.
 
 ### 1.9 Block-level model routing (`block_routing.yaml`)
 
@@ -223,18 +247,21 @@ map sourced from `block_routing.yaml`.
 | BERT disagreement detector | ✅ Phase 4 + Phase 8 cip29 swap | |
 | Block-level provenance | ✅ Phase 2 | |
 | Independent stage subcommands | ✅ Phase 5 | classify rolled into validate |
-| Per-tier env vars | ⚠️ collapsed to single COURSEFORGE_PROVIDER | Easy split |
+| Per-tier env vars | ✅ wired in router (`COURSEFORGE_OUTLINE_*` / `COURSEFORGE_REWRITE_*`) | Resolution chain in `Courseforge/router/router.py:154-160` |
 | Block-routing policy file | ❌ deferred | v0.4.0 feature |
 
-**Net**: Phase 1-8 delivered the architectural intent. Three concrete
+**Net**: Phase 1-8 delivered the architectural intent. Two concrete
 gaps to address before declaring v0.3.0 complete:
 1. Provenance hashes for objectives / blocks / IMSCC in
    `course_manifest.json`.
-2. Per-tier env vars (`COURSEFORGE_OUTLINE_*` / `COURSEFORGE_REWRITE_*`).
-3. Decision: ship Layer 1 as prompt-payload only (current state) or
+2. Decision: ship Layer 1 as prompt-payload only (current state) or
    wire concrete constrained-decoding for at least the local provider
    (`format: "json"` is already wired in `_local_provider.py` per
    Wave 113; could be promoted to a Layer 1 contract).
+
+The block-routing policy file (§1.9) is the v0.4.0 stretch goal that
+unlocks per-block-type model selection on top of the already-wired
+per-tier env vars.
 
 ---
 
@@ -474,16 +501,7 @@ Per §1.3 above — three small `course_manifest.json` field additions:
 
 Closes the v2 plan's reproducibility chain.
 
-### 3.4 Per-tier provider env vars
-
-Per §1.8 — extend `Courseforge/generators/_provider.py` to read:
-- `COURSEFORGE_OUTLINE_PROVIDER` / `COURSEFORGE_OUTLINE_MODEL`
-- `COURSEFORGE_REWRITE_PROVIDER` / `COURSEFORGE_REWRITE_MODEL`
-- Fall back to `COURSEFORGE_PROVIDER` / `COURSEFORGE_MODEL` when unset.
-
-Restores the v2 plan's "outline tier local, rewrite tier API" intent.
-
-### 3.5 Layer 1 constrained decoding promotion
+### 3.4 Layer 1 constrained decoding promotion
 
 For the local provider, `format: "json"` is already wired (Wave 113).
 Promote it to a documented Layer 1 contract: emit a

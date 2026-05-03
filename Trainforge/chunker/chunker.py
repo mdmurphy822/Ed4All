@@ -67,15 +67,15 @@ non-empty input requires a non-None ``ctx``; mismatch raises
 ``ChunkerContextRequired`` so silent no-op output can't mask a
 mis-wiring.
 
-Lazy imports
-============
+Imports
+=======
 
-``Trainforge.parsers.xpath_walker`` is imported lazily inside
-``chunk_text_block`` to keep the package's import graph minimal —
-Trainforge code paths transitively pull in ``Trainforge.process_course``,
-which would create an import cycle if loaded at module-import time.
-This mirrors the pattern Subtask 3 established in
-``ed4all_chunker.helpers.extract_plain_text``.
+``Trainforge.parsers.xpath_walker`` is imported at module top now that
+the chunker lives inside ``Trainforge``. Pre-Phase-7a-revert this was
+a lazy import (the chunker was a sibling package and the lazy form
+dodged a hypothetical module-load cycle); the import-cycle risk no
+longer applies because ``xpath_walker`` is stdlib-only and never
+reaches ``Trainforge.process_course``.
 """
 
 from __future__ import annotations
@@ -84,13 +84,18 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from ed4all_chunker.boilerplate import strip_boilerplate
-from ed4all_chunker.helpers import (
+from Trainforge.chunker.boilerplate import strip_boilerplate
+from Trainforge.chunker.helpers import (
     extract_plain_text,
     extract_section_html,
     strip_assessment_feedback,
     strip_feedback_from_text,
     type_from_resource,
+)
+from Trainforge.parsers.xpath_walker import (
+    find_body_xpath,
+    find_section_container_xpath,
+    resolve_xpath,
 )
 
 __all__ = [
@@ -405,13 +410,6 @@ def chunk_text_block(
     objective refs, bloom level, etc.) — see the module docstring for
     the architectural rationale.
     """
-
-    # Lazy import — see module docstring for the import-cycle rationale.
-    from Trainforge.parsers.xpath_walker import (
-        find_body_xpath,
-        find_section_container_xpath,
-        resolve_xpath,
-    )
 
     word_count = len(text.split())
     chunks: List[Dict[str, Any]] = []

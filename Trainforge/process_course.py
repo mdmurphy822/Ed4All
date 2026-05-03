@@ -59,17 +59,19 @@ from Trainforge.rag.boilerplate_detector import (
 )
 from Trainforge.rag.wcag_canonical_names import canonicalize_sc_references
 
-# Phase 7a Subtask 6: chunker logic (chunk_content, chunk_text_block,
-# merge_small_sections, merge_section_source_ids) lives in the
-# ed4all-chunker package. The CourseProcessor methods below are thin
-# delegation wrappers that bind self-state into the package's
-# ``ChunkerContext`` callback. Constants (MIN_CHUNK_SIZE / MAX_CHUNK_SIZE /
-# TARGET_CHUNK_SIZE / CANONICAL_CHUNK_TYPES) are sourced from the package
-# so the package + Trainforge can never drift; the module-level + class-
-# attribute aliases are preserved for back-compat with external imports
-# (e.g. scripts/wave81_reclassify_chunks.py imports CANONICAL_CHUNK_TYPES
-# from this module).
-from ed4all_chunker import (
+# Chunker logic (chunk_content, chunk_text_block, merge_small_sections,
+# merge_section_source_ids) lives at ``Trainforge/chunker/`` — a sibling
+# module within Trainforge, no longer a separate ``ed4all-chunker``
+# workspace package (re-merged per
+# ``plans/post-phase8-review-2026-05.md``). The CourseProcessor methods
+# below are thin wrappers that bind self-state into the chunker's
+# ``ChunkerContext`` callback. Constants (MIN_CHUNK_SIZE / MAX_CHUNK_SIZE
+# / TARGET_CHUNK_SIZE / CANONICAL_CHUNK_TYPES) are sourced from the
+# chunker module so the chunker + Trainforge can never drift; the
+# module-level + class-attribute aliases are preserved for back-compat
+# with external imports (e.g. scripts/wave81_reclassify_chunks.py
+# imports CANONICAL_CHUNK_TYPES from this module).
+from Trainforge.chunker import (
     CANONICAL_CHUNK_TYPES as _PKG_CANONICAL_CHUNK_TYPES,
     MAX_CHUNK_SIZE as _PKG_MAX_CHUNK_SIZE,
     MIN_CHUNK_SIZE as _PKG_MIN_CHUNK_SIZE,
@@ -2524,7 +2526,7 @@ class CourseProcessor:
         # preserves the staticmethod surface so existing call sites
         # (``self._type_from_resource(...)`` and
         # ``CourseProcessor._type_from_resource(...)``) keep working.
-        from ed4all_chunker.helpers import type_from_resource
+        from Trainforge.chunker.helpers import type_from_resource
 
         return type_from_resource(resource_type)
 
@@ -2873,7 +2875,7 @@ class CourseProcessor:
         # delegates so DART / Courseforge / Trainforge can converge on
         # one HTML-text extraction surface in Subtask 4 without breaking
         # any existing call site here.
-        from ed4all_chunker.helpers import extract_plain_text
+        from Trainforge.chunker.helpers import extract_plain_text
 
         return extract_plain_text(html)
 
@@ -2891,7 +2893,7 @@ class CourseProcessor:
         via the class — keeps working without modification.
         """
 
-        from ed4all_chunker.helpers import extract_section_html
+        from Trainforge.chunker.helpers import extract_section_html
 
         return extract_section_html(html, heading)
 
@@ -2904,7 +2906,7 @@ class CourseProcessor:
         preserves the staticmethod surface for existing call sites.
         """
 
-        from ed4all_chunker.helpers import strip_assessment_feedback
+        from Trainforge.chunker.helpers import strip_assessment_feedback
 
         return strip_assessment_feedback(html)
 
@@ -2917,7 +2919,7 @@ class CourseProcessor:
         preserves the staticmethod surface for existing call sites.
         """
 
-        from ed4all_chunker.helpers import strip_feedback_from_text
+        from Trainforge.chunker.helpers import strip_feedback_from_text
 
         return strip_feedback_from_text(text)
 

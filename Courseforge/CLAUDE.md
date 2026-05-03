@@ -1071,7 +1071,7 @@ Cross-links:
 - `MCP/tools/pipeline_tools.py::_run_concept_extraction`
   (commit `e0ea640`, Phase 6 Subtasks 11-12) — the new
   `concept_extraction` phase handler. Reads staged DART chunks via
-  `ed4all_chunker.chunk_content(...)` (Phase 7a chunker package),
+  `Trainforge.chunker.chunk_content(...)` (canonical chunker at `Trainforge/chunker/`),
   invokes `Trainforge.pedagogy_graph_builder.build_pedagogy_graph`,
   persists the graph to
   `LibV2/courses/<slug>/concept_graph/concept_graph_semantic.json`,
@@ -1219,10 +1219,12 @@ real-corpus calibration pass confirms the thresholds.
 Phase 7b lifts the chunker invocation out of every downstream consumer
 and into a standalone `chunking` workflow phase that emits the DART
 chunkset once, deterministically, before any objective extraction or
-concept-graph work runs. Two motivations: (1) the Phase 7a chunker
-package (`ed4all-chunker`) is now the single canonical chunker shared
-by DART, Courseforge, and Trainforge — Phase 7b promotes that
-delegation surface to a first-class phase boundary so the chunkset is
+concept-graph work runs. Two motivations: (1) the canonical chunker
+at `Trainforge/chunker/` (originally lifted out as the standalone
+`ed4all-chunker` package in Phase 7a, then folded back into Trainforge
+in the post-Phase-8 review — see `plans/post-phase8-review-2026-05.md`)
+is the single chunker shared by DART, Courseforge, and Trainforge —
+Phase 7b promotes that surface to a first-class phase boundary so the chunkset is
 addressable, hashable, and validatable as its own artifact rather than
 an in-process side-effect of the synthesizer; (2) the dual-chunkset
 architecture (DART chunkset emitted in Phase 7b, IMSCC chunkset emitted
@@ -1261,7 +1263,7 @@ Cross-links:
   (mirrors the Phase 6 `_run_concept_extraction` template). Inputs
   resolved via the workflow YAML's `inputs_from`: `course_name`
   (workflow params) + `staging_dir` (upstream `staging` phase output).
-  The helper invokes `ed4all_chunker.chunk_content` against the staged
+  The helper invokes `Trainforge.chunker.chunk_content` against the staged
   DART HTML files (parsed via `Trainforge/parsers/html_content_parser.py::HTMLContentParser`
   into `ContentSection` objects, then threaded into the chunker with a
   thin `ChunkerContext` whose `create_chunk` callback emits canonical
@@ -1277,7 +1279,7 @@ Cross-links:
   discriminator (`"dart"` | `"imscc"`) plus a conditional source-SHA
   requirement keeps both sidecars on a single contract. Required
   fields: `chunks_sha256` (64-char lowercase hex), `chunker_version`
-  (resolved from `ed4all_chunker.__version__`), `chunkset_kind`. The
+  (resolved from `Trainforge.chunker.CHUNKER_SCHEMA_VERSION`), `chunkset_kind`. The
   conditional branch requires `source_dart_html_sha256` when
   `chunkset_kind == "dart"` and `source_imscc_sha256` when
   `chunkset_kind == "imscc"`, anchoring the chunkset to its upstream
@@ -1294,7 +1296,7 @@ Cross-links:
   manifest's `chunks_sha256` matches the SHA-256 of the actual
   `chunks.jsonl` file (catches stale-manifest drift); (d) the
   manifest's `chunker_version` matches the installed
-  `ed4all_chunker.__version__` (catches version-skew across rebuilds);
+  `Trainforge.chunker.CHUNKER_SCHEMA_VERSION` (catches version-skew across rebuilds);
   (e) the conditional source-SHA field is present and well-formed for
   the declared `chunkset_kind`. GateIssue codes: `MANIFEST_MISSING`,
   `MANIFEST_PARSE_ERROR`, `MANIFEST_SCHEMA_INVALID`,
@@ -1366,18 +1368,16 @@ Cross-links:
 
 End-to-end walkthrough for verifying a clean Phase 7b/c run on a real
 corpus and migrating a legacy archive that pre-dates the chunkset
-work. Phase 7b/c introduce no new env vars beyond the Phase 7a chunker
-prereq (`pip install -e ./ed4all-chunker` so `ed4all_chunker.chunk_content`
-is importable); the new workflow phases fire automatically on every
-`textbook_to_course` run.
+work. Phase 7b/c introduce no new env vars; the canonical chunker now
+ships in-tree at `Trainforge/chunker/` (originally lifted out as a
+standalone `ed4all-chunker` workspace package in Phase 7a, then folded
+back into Trainforge in the post-Phase-8 review — see
+`plans/post-phase8-review-2026-05.md`), so a single editable install
+of the parent project resolves it. The new workflow phases fire
+automatically on every `textbook_to_course` run.
 
 ```bash
-# 1. Phase 7a prereq — make the canonical chunker package importable.
-#    Phase 7b/c assume ``ed4all_chunker.chunk_content`` resolves; the
-#    helpers fail-soft with a warning + empty chunks shell otherwise.
-pip install -e ./ed4all-chunker
-
-# 2. Run textbook-to-course end-to-end. The chunking phase fires
+# 1. Run textbook-to-course end-to-end. The chunking phase fires
 #    between staging and objective_extraction (Phase 7b ST 10); the
 #    imscc_chunking phase fires between packaging and
 #    training_synthesis (Phase 7c ST 16). Both run automatically
@@ -1386,7 +1386,7 @@ ed4all run textbook-to-course \
   --corpus tests/fixtures/textbooks/demo_303.pdf \
   --course-name DEMO_303
 
-# 3. Verify the DART chunkset landed under the new
+# 2. Verify the DART chunkset landed under the new
 #    LibV2/courses/<slug>/dart_chunks/ directory.
 ls LibV2/courses/demo-303/dart_chunks/{chunks.jsonl,manifest.json}
 # Expected: both files exist. The manifest is the canonical
@@ -1395,10 +1395,10 @@ ls LibV2/courses/demo-303/dart_chunks/{chunks.jsonl,manifest.json}
 # HTML inputs).
 jq -r '.chunkset_kind, .chunks_sha256, .chunker_version' \
   LibV2/courses/demo-303/dart_chunks/manifest.json
-# Expected: "dart" + 64-char lowercase hex + the installed
-# ed4all_chunker.__version__.
+# Expected: "dart" + 64-char lowercase hex + the value of
+# Trainforge.chunker.CHUNKER_SCHEMA_VERSION (currently "v4").
 
-# 4. Verify the IMSCC chunkset landed at imscc_chunks/ (Phase 7c
+# 3. Verify the IMSCC chunkset landed at imscc_chunks/ (Phase 7c
 #    rename of corpus/).
 ls LibV2/courses/demo-303/imscc_chunks/{chunks.jsonl,manifest.json}
 jq -r '.chunkset_kind, .chunks_sha256, .source_imscc_sha256' \
@@ -1406,7 +1406,7 @@ jq -r '.chunkset_kind, .chunks_sha256, .source_imscc_sha256' \
 # Expected: "imscc" + two 64-char lowercase hex digests; the
 # source_imscc_sha256 hashes the packaged .imscc archive bytes.
 
-# 5. Verify the LibV2 course manifest carries the three Phase 7c
+# 4. Verify the LibV2 course manifest carries the three Phase 7c
 #    required hashes (the triangle: DART ↔ IMSCC ↔ concept graph).
 #    Phase 7c ST 17 promoted all three fields to required + critical;
 #    a missing, malformed, or divergent value fails the
@@ -1416,7 +1416,7 @@ jq -r '.dart_chunks_sha256, .imscc_chunks_sha256, .concept_graph_sha256' \
 # Expected: three 64-char lowercase hex strings, each agreeing with
 # the on-disk artifact bytes (chunks.jsonl files + concept_graph_semantic.json).
 
-# 6. Round-trip the on-disk hash to confirm no drift between the
+# 5. Round-trip the on-disk hash to confirm no drift between the
 #    manifest record and the persisted artifact.
 sha256sum LibV2/courses/demo-303/dart_chunks/chunks.jsonl
 sha256sum LibV2/courses/demo-303/imscc_chunks/chunks.jsonl
@@ -1425,7 +1425,7 @@ sha256sum LibV2/courses/demo-303/concept_graph/concept_graph_semantic.json
 # Any divergence fires the corresponding *_HASH_MISMATCH critical at
 # the next libv2_archival gate run.
 
-# 7. Confirm the chunkset_manifest gate fired at both chunking phases
+# 6. Confirm the chunkset_manifest gate fired at both chunking phases
 #    (warning severity in Phase 7b/c — promotion to critical follows
 #    in a future calibration wave).
 grep -lE '"gate_id":\s*"chunkset_manifest"' \
@@ -1433,7 +1433,7 @@ grep -lE '"gate_id":\s*"chunkset_manifest"' \
 # Expected: ≥2 matches (one per chunking phase). Inspect with `jq`
 # to confirm passed=true on a healthy corpus.
 
-# 8. Run the Phase 7b/c integration test surface end-to-end (no
+# 7. Run the Phase 7b/c integration test surface end-to-end (no
 #    real corpus required — the test ships its own synthetic DART
 #    HTML + IMSCC zip fixtures).
 python -m pytest \
