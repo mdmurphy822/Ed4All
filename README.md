@@ -39,6 +39,8 @@ pip install -e ".[full]"
 ed4all run textbook-to-course --corpus my_textbook.pdf --course-name MY_COURSE_101
 ```
 
+The `pip install -e ".[full]"` step also pulls in **`ed4all-chunker`**, an in-repo workspace member at [`./ed4all-chunker`](ed4all-chunker/) that holds the canonical chunker (used by Trainforge today, and by the upcoming DART + IMSCC dual-chunkset pipeline). It is declared as a relative `file:` direct-reference dependency in `pyproject.toml`, so a single editable install of the parent project resolves it automatically. If you want to iterate on the chunker package itself, also run `pip install -e ed4all-chunker` so changes under `ed4all-chunker/ed4all_chunker/` are picked up live.
+
 By default Ed4All runs in **local mode** — no API key required. To route through the Anthropic API instead, set `ANTHROPIC_API_KEY` and add `--mode api`.
 
 That single command runs the full pipeline — accessibility conversion, objective synthesis, course planning, module generation, IMSCC packaging, knowledge-graph building, and archival. The IMSCC file lands in `Courseforge/exports/`, and the searchable archive lands in `LibV2/courses/`.
