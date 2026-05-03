@@ -330,7 +330,9 @@ def link_course_outcomes(
         json.dump(course, f, indent=2)
 
     # Load and link chunks
-    chunks_path = course_dir / "corpus" / "chunks.json"
+    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+    from lib.libv2_storage import resolve_imscc_chunks_path
+    chunks_path = resolve_imscc_chunks_path(course_dir, "chunks.json")
     if not chunks_path.exists():
         logger.error(f"chunks.json not found at {chunks_path}")
         return {"outcomes_loaded": len(outcomes), "chunks_linked": 0}

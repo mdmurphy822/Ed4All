@@ -126,10 +126,14 @@ def _archive_root(slug: str, courses_root: Path) -> Path:
 
 
 def _load_chunks(archive_root: Path) -> List[Dict[str, Any]]:
-    chunks_path = archive_root / "corpus" / "chunks.jsonl"
+    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/ via shim.
+    from lib.libv2_storage import resolve_imscc_chunks_path
+
+    chunks_path = resolve_imscc_chunks_path(archive_root, "chunks.jsonl")
     if not chunks_path.is_file():
         raise MalformedArchiveError(
-            f"Archive {archive_root} is missing corpus/chunks.jsonl"
+            f"Archive {archive_root} is missing imscc_chunks/chunks.jsonl "
+            f"(or legacy corpus/chunks.jsonl)"
         )
     chunks: List[Dict[str, Any]] = []
     with chunks_path.open("r", encoding="utf-8") as fh:

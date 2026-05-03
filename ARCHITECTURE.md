@@ -206,7 +206,7 @@ Course Package -->|     (multi-LMS detect)   |
 **Output Artifacts**:
 - `Trainforge/output/{assessment_id}.json` - Assessment with questions, rationale, RAG metrics
 - `training-captures/trainforge/{COURSE_CODE}/` - Decision capture JSONL
-- `LibV2/courses/{slug}/corpus/chunks.jsonl` - RAG corpus chunks
+- `LibV2/courses/{slug}/imscc_chunks/chunks.jsonl` - IMSCC chunkset (Phase 7c rename of `corpus/chunks.jsonl`)
 
 ---
 
@@ -223,7 +223,7 @@ Pipeline Outputs              LibV2 Storage                     Retrieval
 Raw PDFs ---------> source/pdf/                    
 DART HTML --------> source/html/           libv2 retrieve "query"
 Course IMSCC -----> source/imscc/               --domain physics
-RAG Chunks -------> corpus/chunks.jsonl         --chunk-type example
+IMSCC Chunks -----> imscc_chunks/chunks.jsonl   --chunk-type example
 Knowledge Graph --> graph/concept_graph.json    --limit 10
 Pedagogy Model ---> pedagogy/pedagogy_model.json
 Quality Report ---> quality/quality_report.json

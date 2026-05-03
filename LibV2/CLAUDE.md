@@ -52,7 +52,7 @@ python -m tools.libv2.cli retrieve "query" \
 ### NEVER Do These
 
 1. **NEVER** read `chunks.jsonl` files directly via Read tool
-2. **NEVER** iterate through `courses/*/corpus/` directories
+2. **NEVER** iterate through `courses/*/imscc_chunks/` (or legacy `corpus/`) directories
 3. **NEVER** use the `load_all_chunks()` function from `rag_poc.py`
 4. **NEVER** request "all content" or "entire corpus"
 5. **NEVER** exceed 50 results in any single retrieval
@@ -191,7 +191,8 @@ Division (STEM/ARTS)
 | `../schemas/taxonomies/` | Classification taxonomy + pedagogy framework — unified at project root |
 
 Each course directory (`courses/[slug]/`) contains:
-- `corpus/` — Chunked content (chunks.jsonl) for RAG retrieval
+- `imscc_chunks/` — IMSCC-derived chunked content (chunks.jsonl) for RAG retrieval. Phase 7c renamed this from `corpus/`; the read shim in `lib/libv2_storage.py::resolve_imscc_chunks_dir` accepts the legacy name with a deprecation warning until Phase 8 drops back-compat. Operator migration: `LibV2/tools/libv2/scripts/backfill_dart_chunks.py`.
+- `dart_chunks/` — DART-derived chunkset (Phase 7b). Symmetric sibling to `imscc_chunks/` with its own `chunks.jsonl` + `manifest.json`.
 - `course.json` — Course-level learning outcomes and metadata
 - `graph/` — Concept co-occurrence graph
 - `manifest.json` — Course metadata and classification

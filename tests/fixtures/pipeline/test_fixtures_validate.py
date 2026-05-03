@@ -8,7 +8,7 @@ block assumption breaks.
 Covers:
 - ``reference_week_01/*.html`` → extract each ``<script type="application/ld+json">``
   body, validate against ``courseforge_jsonld_v1.schema.json``.
-- ``reference_libv2/corpus/chunks.jsonl`` → validate each line against
+- ``reference_libv2/imscc_chunks/chunks.jsonl`` (Phase 7c rename of ``corpus/chunks.jsonl``) → validate each line against
   ``chunk_v4.schema.json`` (strict, with ``additionalProperties`` enforced
   on ``source``).
 - ``reference_libv2/graph/concept_graph_semantic.json`` → validate against
@@ -128,7 +128,7 @@ def test_reference_week_page_has_data_cf_markers():
 
 
 # ---------------------------------------------------------------------- #
-# Chunks (reference_libv2/corpus/chunks.jsonl)
+# Chunks (reference_libv2/imscc_chunks/chunks.jsonl — Phase 7c rename)
 # ---------------------------------------------------------------------- #
 
 
@@ -136,7 +136,10 @@ def test_reference_chunks_validate_strict():
     _require_jsonschema()
     from jsonschema import Draft202012Validator
 
-    chunks_path = REFERENCE_LIBV2 / "corpus" / "chunks.jsonl"
+    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+    chunks_path = REFERENCE_LIBV2 / "imscc_chunks" / "chunks.jsonl"
+    if not chunks_path.exists():
+        chunks_path = REFERENCE_LIBV2 / "corpus" / "chunks.jsonl"
     schema = json.loads(CHUNK_SCHEMA.read_text())
     registry = _registry_with(CHUNK_SCHEMA, SOURCE_REFERENCE_SCHEMA)
     validator = Draft202012Validator(schema, registry=registry)

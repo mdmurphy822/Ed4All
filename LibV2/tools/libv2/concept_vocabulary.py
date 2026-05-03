@@ -383,7 +383,9 @@ def analyze_course_concepts(
     taxonomy_path = _resolve_project_schemas_dir(repo_root) / "taxonomies" / "taxonomy.json"
     vocab = ConceptVocabulary(taxonomy_path)
 
-    chunks_path = course_dir / "corpus" / "chunks.json"
+    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+    from lib.libv2_storage import resolve_imscc_chunks_path
+    chunks_path = resolve_imscc_chunks_path(course_dir, "chunks.json")
     if not chunks_path.exists():
         raise FileNotFoundError(f"chunks.json not found at {chunks_path}")
 
@@ -412,7 +414,9 @@ def clean_course_concepts(
     vocab = ConceptVocabulary(taxonomy_path)
 
     # Clean chunks
-    chunks_path = course_dir / "corpus" / "chunks.json"
+    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+    from lib.libv2_storage import resolve_imscc_chunks_path
+    chunks_path = resolve_imscc_chunks_path(course_dir, "chunks.json")
     if not chunks_path.exists():
         raise FileNotFoundError(f"chunks.json not found at {chunks_path}")
 

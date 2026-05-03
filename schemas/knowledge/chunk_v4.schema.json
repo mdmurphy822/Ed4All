@@ -3,7 +3,7 @@
   "$id": "https://ed4all.dev/ns/knowledge/v4/chunk.schema.json",
   "title": "Trainforge Chunk v4",
   "description": "Schematizes the per-chunk record emitted by Trainforge's process_course.py pipeline (chunks.jsonl and chunks.json). Each chunk is a retrieval-layer node in the course knowledge graph, carrying text + HTML + source provenance + Bloom's level + content-type metadata. Per REC-CTR-01 this is the first time chunk_v4 is schematized; validation is opt-in via TRAINFORGE_VALIDATE_CHUNKS=true to preserve backward-compat during rollout.",
-  "$comment": "Shape lifted from Trainforge/process_course.py::_create_chunk at L1038-1240 and _write_chunks at L1667-1682. Verified live against 131 chunks in LibV2/courses/best-practices-in-digital-web-design-for-accessibi/corpus/chunks.jsonl (100% conformant). Root additionalProperties=true preserves Worker M1's _metadata_trace diagnostic (L1219-1228) and leaves room for forward-compat additions. source.additionalProperties=false keeps the structural core strict. Taxonomy $refs target Worker F's schemas (merged in PR #20).",
+  "$comment": "Shape lifted from Trainforge/process_course.py::_create_chunk at L1038-1240 and _write_chunks at L1667-1682. Verified live against 131 chunks in LibV2/courses/best-practices-in-digital-web-design-for-accessibi/imscc_chunks/chunks.jsonl (Phase 7c rename of corpus/chunks.jsonl) (100% conformant). Root additionalProperties=true preserves Worker M1's _metadata_trace diagnostic (L1219-1228) and leaves room for forward-compat additions. source.additionalProperties=false keeps the structural core strict. Taxonomy $refs target Worker F's schemas (merged in PR #20).",
   "type": "object",
   "required": [
     "id",

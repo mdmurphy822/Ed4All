@@ -669,7 +669,9 @@ def stream_chunks_from_course(
 
     Yields chunks one at a time without loading the entire file.
     """
-    chunks_path = course_dir / "corpus" / "chunks.jsonl"
+    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+    from lib.libv2_storage import resolve_imscc_chunks_path
+    chunks_path = resolve_imscc_chunks_path(course_dir, "chunks.jsonl")
     if not chunks_path.exists():
         return
 
@@ -725,9 +727,11 @@ def _collect_filtered_chunks(
     course_counts = {}
 
     # Initialize iterators for each course
+    from lib.libv2_storage import resolve_imscc_chunks_path
     for entry in courses:
         course_dir = repo_root / "courses" / entry.slug
-        chunks_path = course_dir / "corpus" / "chunks.jsonl"
+        # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+        chunks_path = resolve_imscc_chunks_path(course_dir, "chunks.jsonl")
         if chunks_path.exists():
             course_iterators[entry.slug] = {
                 "iterator": stream_chunks_from_course(

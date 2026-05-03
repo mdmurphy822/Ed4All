@@ -351,7 +351,8 @@ class TestGenerateAssessmentsContract:
         # It must live directly under the project dir.
         assert trainforge_dir.parent.name == project_id
         # Corpus + graph subdirs from CourseProcessor.
-        assert (trainforge_dir / "corpus" / "chunks.jsonl").exists()
+        # Phase 7c: process_course.py writes to imscc_chunks/.
+        assert (trainforge_dir / "imscc_chunks" / "chunks.jsonl").exists()
         assert (trainforge_dir / "graph" / "concept_graph_semantic.json").exists()
         assert (trainforge_dir / "graph" / "misconceptions.json").exists()
         assert (trainforge_dir / "assessments.json").exists()

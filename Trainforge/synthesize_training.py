@@ -865,7 +865,9 @@ def run_synthesis(
         )
 
     corpus_dir = Path(corpus_dir)
-    chunks_path = corpus_dir / "corpus" / "chunks.jsonl"
+    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/ via shim.
+    from lib.libv2_storage import resolve_imscc_chunks_path
+    chunks_path = resolve_imscc_chunks_path(corpus_dir, "chunks.jsonl")
     if output_dir is not None:
         training_specs_dir = Path(output_dir)
     else:

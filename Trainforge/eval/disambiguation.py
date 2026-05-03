@@ -90,7 +90,9 @@ class DisambiguationEvaluator:
 
     def _index_corrections(self) -> Dict[str, List[str]]:
         """Map misconception statement fragments -> their corrections."""
-        chunks_path = self.course_path / "corpus" / "chunks.jsonl"
+        # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+        from lib.libv2_storage import resolve_imscc_chunks_path
+        chunks_path = resolve_imscc_chunks_path(self.course_path, "chunks.jsonl")
         out: Dict[str, List[str]] = {}
         if not chunks_path.exists():
             return out

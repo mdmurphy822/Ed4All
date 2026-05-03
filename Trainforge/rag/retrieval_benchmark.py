@@ -342,12 +342,15 @@ def write_benchmark(
     """Run the benchmark and write ``quality/retrieval_benchmark.json``.
 
     Convenience wrapper for the CLI. Paths default to the standard
-    Trainforge output layout (``<output_dir>/corpus/chunks.jsonl`` and
-    ``<output_dir>/course.json``).
+    Trainforge output layout (``<output_dir>/imscc_chunks/chunks.jsonl``
+    or legacy ``<output_dir>/corpus/chunks.jsonl`` via the Phase 7c shim,
+    plus ``<output_dir>/course.json``).
     """
     output_dir = Path(output_dir)
     if chunks_path is None:
-        chunks_path = output_dir / "corpus" / "chunks.jsonl"
+        # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+        from lib.libv2_storage import resolve_imscc_chunks_path
+        chunks_path = resolve_imscc_chunks_path(output_dir, "chunks.jsonl")
     if course_path is None:
         course_path = output_dir / "course.json"
 

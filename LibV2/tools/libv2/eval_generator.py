@@ -120,8 +120,14 @@ def generate_query_from_chunk(chunk: ChunkSample) -> Tuple[str, str]:
 
 
 def load_chunks(course_dir: Path) -> List[ChunkSample]:
-    """Load chunks from a course directory."""
-    chunks_path = course_dir / "corpus" / "chunks.json"
+    """Load chunks from a course directory.
+
+    Phase 7c: prefers ``imscc_chunks/`` and falls back to legacy
+    ``corpus/`` via the shim for unprovisioned archives.
+    """
+    from lib.libv2_storage import resolve_imscc_chunks_path
+
+    chunks_path = resolve_imscc_chunks_path(course_dir, "chunks.json")
 
     if not chunks_path.exists():
         raise FileNotFoundError(f"chunks.json not found at {chunks_path}")

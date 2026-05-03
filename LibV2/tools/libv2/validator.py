@@ -101,8 +101,10 @@ def validate_course_structure(course_dir: Path) -> ValidationResult:
     ]
 
     # Required directories
+    # Phase 7c: corpus/ renamed to imscc_chunks/. Either is accepted as
+    # the IMSCC chunkset directory; legacy archives that still carry
+    # corpus/ keep validating until backfill_dart_chunks.py migrates them.
     required_dirs = [
-        "corpus",
         "graph",
     ]
 
@@ -124,16 +126,29 @@ def validate_course_structure(course_dir: Path) -> ValidationResult:
         elif not (course_dir / dirname).is_dir():
             result.add_error(f"Expected directory but found file: {dirname}")
 
+    # Phase 7c IMSCC chunkset dir — accept either imscc_chunks/ (new) or
+    # corpus/ (legacy). Missing both is the error.
+    imscc_chunks_dir = course_dir / "imscc_chunks"
+    legacy_corpus_dir = course_dir / "corpus"
+    chunkset_dir: Optional[Path] = None
+    if imscc_chunks_dir.exists() and imscc_chunks_dir.is_dir():
+        chunkset_dir = imscc_chunks_dir
+    elif legacy_corpus_dir.exists() and legacy_corpus_dir.is_dir():
+        chunkset_dir = legacy_corpus_dir
+    else:
+        result.add_error("Missing required directory: imscc_chunks (or legacy corpus)")
+
     # Check optional directories
     for dirname in optional_dirs:
         if not (course_dir / dirname).exists():
             result.add_warning(f"Missing optional directory: {dirname}")
 
-    # Check corpus contents
-    corpus_dir = course_dir / "corpus"
-    if corpus_dir.exists():
-        if not (corpus_dir / "chunks.json").exists() and not (corpus_dir / "chunks.jsonl").exists():
-            result.add_error("Missing chunks.json or chunks.jsonl in corpus/")
+    # Check IMSCC chunkset contents
+    if chunkset_dir is not None:
+        if not (chunkset_dir / "chunks.json").exists() and not (chunkset_dir / "chunks.jsonl").exists():
+            result.add_error(
+                f"Missing chunks.json or chunks.jsonl in {chunkset_dir.name}/"
+            )
 
     # Check graph contents
     graph_dir = course_dir / "graph"
@@ -176,7 +191,10 @@ def validate_course_manifest(course_dir: Path, repo_root: Path) -> ValidationRes
     # Validate content profile matches actual content
     if "content_profile" in manifest:
         profile = manifest["content_profile"]
-        chunks_path = course_dir / "corpus" / "chunks.json"
+        # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+        chunks_path = course_dir / "imscc_chunks" / "chunks.json"
+        if not chunks_path.exists():
+            chunks_path = course_dir / "corpus" / "chunks.json"
         if chunks_path.exists():
             try:
                 with open(chunks_path) as f:
@@ -189,7 +207,9 @@ def validate_course_manifest(course_dir: Path, repo_root: Path) -> ValidationRes
                         f"actual is {actual_count}"
                     )
             except json.JSONDecodeError:
-                result.add_error("Invalid JSON in corpus/chunks.json")
+                result.add_error(
+                    f"Invalid JSON in {chunks_path.parent.name}/chunks.json"
+                )
 
     return result
 
@@ -320,14 +340,17 @@ def validate_dataset_config_constraints(course_dir: Path) -> ValidationResult:
     result = ValidationResult(valid=True)
 
     config_path = course_dir / "training_specs" / "dataset_config.json"
-    chunks_path = course_dir / "corpus" / "chunks.json"
+    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+    chunks_path = course_dir / "imscc_chunks" / "chunks.json"
+    if not chunks_path.exists():
+        chunks_path = course_dir / "corpus" / "chunks.json"
 
     if not config_path.exists():
         result.add_warning("No dataset_config.json found, skipping constraint validation")
         return result
 
     if not chunks_path.exists():
-        result.add_error("corpus/chunks.json not found")
+        result.add_error("imscc_chunks/chunks.json (or legacy corpus/chunks.json) not found")
         return result
 
     try:
@@ -493,7 +516,10 @@ def validate_learning_outcomes(course_dir: Path) -> ValidationResult:
     result = ValidationResult(valid=True)
 
     course_json_path = course_dir / "course.json"
-    chunks_path = course_dir / "corpus" / "chunks.json"
+    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+    chunks_path = course_dir / "imscc_chunks" / "chunks.json"
+    if not chunks_path.exists():
+        chunks_path = course_dir / "corpus" / "chunks.json"
 
     # Check course-level outcomes (terminal + component union)
     total = _count_total_learning_outcomes(course_dir)
@@ -546,7 +572,10 @@ def validate_concept_tags(
     """
     result = ValidationResult(valid=True)
 
-    chunks_path = course_dir / "corpus" / "chunks.json"
+    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+    chunks_path = course_dir / "imscc_chunks" / "chunks.json"
+    if not chunks_path.exists():
+        chunks_path = course_dir / "corpus" / "chunks.json"
     if not chunks_path.exists():
         return result
 

@@ -510,7 +510,8 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         # ``chunks_path`` are deliberately NOT mapped — renaming them
         # to ``corpus_dir`` would hand the tool a file path masquerading
         # as a directory (chunks.jsonl vs. its grandparent), breaking
-        # the corpus/chunks.jsonl lookup.
+        # the imscc_chunks/chunks.jsonl lookup (post-Phase 7c rename of
+        # the legacy corpus/ directory).
         "required": ["course_code"],
         "optional": [
             "corpus_dir",
@@ -567,7 +568,8 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
         "description": (
             "Wave 30 Gap 3 (+ Wave 33 Bug A dispatch-shape fix): "
             "synthesize SFT + DPO training pairs from a Trainforge "
-            "corpus (reads corpus/chunks.jsonl, writes "
+            "corpus (reads imscc_chunks/chunks.jsonl post-Phase-7c — "
+            "or legacy corpus/chunks.jsonl — writes "
             "training_specs/instruction_pairs.jsonl + preference_pairs.jsonl)."
         ),
     },

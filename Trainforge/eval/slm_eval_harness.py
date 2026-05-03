@@ -713,14 +713,16 @@ class SLMEvalHarness:
 
         # --- Teaching-role alignment (Wave 138a, Plan1-W2) --------- #
         # Tier-2 corpus-level check; no model dispatch. Reads
-        # corpus/chunks.jsonl, aggregates teaching_role distribution
+        # imscc_chunks/chunks.jsonl (or legacy corpus/chunks.jsonl via
+        # the Phase 7c shim), aggregates teaching_role distribution
         # per content_type_label, flags expected-mode mismatches.
         # Wall-time: <100ms on a 1000-chunk corpus. Output flows
         # through to eval_report.json so EvalGatingValidator can apply
         # the warning-severity content_type_role_alignment threshold.
         content_type_role_alignment: Optional[Dict[str, Any]] = None
         content_type_role_alignment_summary: Optional[Dict[str, Any]] = None
-        chunks_path = self.course_path / "corpus" / "chunks.jsonl"
+        from lib.libv2_storage import resolve_imscc_chunks_path
+        chunks_path = resolve_imscc_chunks_path(self.course_path, "chunks.jsonl")
         if chunks_path.exists():
             try:
                 from Trainforge.eval.teaching_role_alignment import (

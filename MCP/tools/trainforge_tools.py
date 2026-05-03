@@ -949,11 +949,23 @@ def register_trainforge_tools(mcp):
                     # Resume-checkpoint sidecars (existence + size only;
                     # cheap stat). Each sidecar is "in-flight work" only
                     # when the canonical run hasn't unlinked it.
+                    # Phase 7c: teaching_role checkpoint may live under
+                    # imscc_chunks/ (canonical) or legacy corpus/.
+                    teaching_role_imscc = (
+                        course_dir / "imscc_chunks" / ".teaching_role_checkpoint.jsonl"
+                    )
+                    teaching_role_legacy = (
+                        course_dir / "corpus" / ".teaching_role_checkpoint.jsonl"
+                    )
+                    teaching_role_path = (
+                        teaching_role_imscc
+                        if teaching_role_imscc.is_file()
+                        else teaching_role_legacy
+                    )
                     sidecar_specs = [
                         ("synthesis_pairs",
                          course_dir / "training_specs" / ".synthesis_pairs_checkpoint.jsonl"),
-                        ("teaching_role",
-                         course_dir / "corpus" / ".teaching_role_checkpoint.jsonl"),
+                        ("teaching_role", teaching_role_path),
                         ("eval_stage_course",
                          course_dir / "eval" / ".eval_results_checkpoint.jsonl"),
                     ]
@@ -1108,7 +1120,8 @@ def register_trainforge_tools(mcp):
 
         Args:
             chunks_path: Absolute path to a course's ``chunks.jsonl``.
-                Typically ``LibV2/courses/<slug>/corpus/chunks.jsonl``.
+                Typically ``LibV2/courses/<slug>/imscc_chunks/chunks.jsonl``
+                (Phase 7c rename of the legacy ``corpus/`` location).
             min_chunks_for_flag: Skip content_type_label buckets with
                 fewer than this many chunks (statistical noise floor;
                 default 5, matches the evaluator default).

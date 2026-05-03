@@ -615,7 +615,9 @@ def run_audit(
     pref_name = "smoke_preference_pairs.jsonl" if smoke else "preference_pairs.jsonl"
     inst_path = course_dir / "training_specs" / inst_name
     pref_path = course_dir / "training_specs" / pref_name
-    chunks_path = course_dir / "corpus" / "chunks.jsonl"
+    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+    from lib.libv2_storage import resolve_imscc_chunks_path
+    chunks_path = resolve_imscc_chunks_path(course_dir, "chunks.jsonl")
     if not inst_path.exists():
         raise FileNotFoundError(f"{inst_path} not found")
     if not chunks_path.exists():

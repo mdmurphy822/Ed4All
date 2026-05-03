@@ -8,7 +8,7 @@ of a LibV2-archived course, ordering chunks by their editorial role:
     self_check -> summary
 
 No LLM is required: every input is structured metadata read from the
-archive (``corpus/chunks.json`` + ``objectives.json``).
+archive (``imscc_chunks/chunks.json`` + ``objectives.json``).
 
 Output formats: ``md`` (markdown), ``html`` (standalone HTML5 page with
 inline CSS), and ``json`` (structured payload for downstream tools).
@@ -146,26 +146,33 @@ class StudyPack:
 
 
 def _read_chunks(archive_root: Path) -> List[Dict[str, Any]]:
-    """Read corpus/chunks.json (preferred) or chunks.jsonl as a fallback."""
-    corpus_dir = archive_root / "corpus"
-    json_path = corpus_dir / "chunks.json"
+    """Read imscc_chunks/chunks.json (preferred) or chunks.jsonl as fallback.
+
+    Phase 7c: prefers ``imscc_chunks/`` and falls back to legacy
+    ``corpus/`` via the shim for unprovisioned archives.
+    """
+    from lib.libv2_storage import resolve_imscc_chunks_dir
+
+    chunkset_dir = resolve_imscc_chunks_dir(archive_root)
+    dirname = chunkset_dir.name
+    json_path = chunkset_dir / "chunks.json"
     if json_path.exists():
         try:
             payload = json.loads(json_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError as exc:
             raise StudyPackError(
-                f"corpus/chunks.json is not valid JSON: {exc}"
+                f"{dirname}/chunks.json is not valid JSON: {exc}"
             ) from exc
         if isinstance(payload, list):
             return payload
         if isinstance(payload, dict) and isinstance(payload.get("chunks"), list):
             return payload["chunks"]
         raise StudyPackError(
-            "corpus/chunks.json has unexpected shape; expected a list "
+            f"{dirname}/chunks.json has unexpected shape; expected a list "
             "or {'chunks': [...]}."
         )
 
-    jsonl_path = corpus_dir / "chunks.jsonl"
+    jsonl_path = chunkset_dir / "chunks.jsonl"
     if jsonl_path.exists():
         chunks: List[Dict[str, Any]] = []
         with jsonl_path.open("r", encoding="utf-8") as f:
@@ -177,12 +184,12 @@ def _read_chunks(archive_root: Path) -> List[Dict[str, Any]]:
                     chunks.append(json.loads(line))
                 except json.JSONDecodeError as exc:
                     raise StudyPackError(
-                        f"corpus/chunks.jsonl: invalid JSON line: {exc}"
+                        f"{dirname}/chunks.jsonl: invalid JSON line: {exc}"
                     ) from exc
         return chunks
 
     raise StudyPackError(
-        f"No corpus/chunks.json or corpus/chunks.jsonl under {archive_root}."
+        f"No imscc_chunks/chunks.json or chunks.jsonl (legacy corpus/) under {archive_root}."
     )
 
 

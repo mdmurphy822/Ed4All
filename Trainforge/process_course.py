@@ -1109,7 +1109,11 @@ class CourseProcessor:
             logger.info("No classification provided; using defaults (division=STEM)")
 
         # Sub-directories
-        self.corpus_dir = self.output_dir / "corpus"
+        # Phase 7c: corpus/ renamed to imscc_chunks/. ``corpus_dir`` is
+        # preserved as an alias on the class so existing references keep
+        # working without churn; new writes target ``imscc_chunks_dir``.
+        self.imscc_chunks_dir = self.output_dir / "imscc_chunks"
+        self.corpus_dir = self.imscc_chunks_dir  # legacy alias
         self.graph_dir = self.output_dir / "graph"
         self.training_specs_dir = self.output_dir / "training_specs"
         self.pedagogy_dir = self.output_dir / "pedagogy"

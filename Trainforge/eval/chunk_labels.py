@@ -36,7 +36,10 @@ _CHUNK_ID_PATTERN = re.compile(r"\bchunk_\d+\b|\b\w*_chunk_\d+\b")
 _LABEL_MAX_CHARS = 80
 _LABEL_FALLBACK = "an unnamed chunk"
 
+# Phase 7c: imscc_chunks/ is canonical; corpus/ retained for back-compat
+# until Phase 8 drops the shim.
 _CORPUS_CANDIDATES = (
+    "imscc_chunks/chunks.jsonl",
     "corpus/chunks.jsonl",
     "chunks.jsonl",
 )

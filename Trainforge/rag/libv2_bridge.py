@@ -123,9 +123,12 @@ class TrainforgeRAG:
         Args:
             course_slug: Course slug (e.g., "int-101")
         """
+        # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+        from lib.libv2_storage import resolve_imscc_chunks_dir
+
         self.course_slug = course_slug
         self.course_path = LIBV2_COURSES / course_slug
-        self.corpus_path = self.course_path / "corpus"
+        self.corpus_path = resolve_imscc_chunks_dir(self.course_path)
         self.chunks_path = self.corpus_path / "chunks.jsonl"
 
         # Lazy-loaded retrievers

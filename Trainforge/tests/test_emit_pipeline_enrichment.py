@@ -396,8 +396,9 @@ def test_chunks_pick_up_retag_vocabulary_refs(tmp_path):
     when the rest of the enrichment lands.
     """
     out = _run_processor(tmp_path)
-    chunks_path = out / "corpus" / "chunks.jsonl"
-    assert chunks_path.exists(), "corpus/chunks.jsonl must be written"
+    # Phase 7c: process_course.py writes to imscc_chunks/.
+    chunks_path = out / "imscc_chunks" / "chunks.jsonl"
+    assert chunks_path.exists(), "imscc_chunks/chunks.jsonl must be written"
 
     chunks = []
     with chunks_path.open("r", encoding="utf-8") as fh:

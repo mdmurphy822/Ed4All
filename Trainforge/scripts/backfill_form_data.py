@@ -99,8 +99,12 @@ def _resolve_chunks_jsonl(course_code: str) -> Optional[Path]:
 
     Returns None when no chunks.jsonl exists for this course — the loop
     falls back to alphabetical sort with all-zero corpus frequencies.
+
+    Phase 7c: prefers ``imscc_chunks/`` and falls back to legacy
+    ``corpus/`` for unprovisioned archives.
     """
     candidates = [
+        PROJECT_ROOT / "LibV2" / "courses" / course_code / "imscc_chunks" / "chunks.jsonl",
         PROJECT_ROOT / "LibV2" / "courses" / course_code / "corpus" / "chunks.jsonl",
         PROJECT_ROOT / "LibV2" / "courses" / course_code / "chunks.jsonl",
     ]

@@ -17,7 +17,7 @@ Trainforge is the assessment-generation, knowledge-graph synthesis, training-pai
 |  (CPU-only, deterministic)
 +-----------+-----------+
             |
-            +--> corpus/chunks.jsonl
+            +--> imscc_chunks/chunks.jsonl  (Phase 7c rename of corpus/chunks.jsonl)
             +--> graph/concept_graph_semantic.json (+ .trig under TRAINFORGE_EMIT_TRIG)
             +--> graph/pedagogy_graph.json
             +--> graph/vocabulary.ttl
@@ -81,7 +81,7 @@ Phases (logical, executed inside `CourseProcessor`):
 | Phase | Output | Notes |
 |-------|--------|-------|
 | IMSCC unpack + HTML parse | per-page DOM, JSON-LD blocks, `data-cf-*` attrs | Priority chain: JSON-LD > `data-cf-*` > regex heuristics. |
-| Chunking | `corpus/chunks.jsonl` | `CHUNK_SCHEMA_VERSION = "v4"`. Optional content-hash IDs via `TRAINFORGE_CONTENT_HASH_IDS`. Optional shape enforcement via `TRAINFORGE_VALIDATE_CHUNKS`. |
+| Chunking | `imscc_chunks/chunks.jsonl` (Phase 7c rename of `corpus/chunks.jsonl`) | `CHUNK_SCHEMA_VERSION = "v4"`. Optional content-hash IDs via `TRAINFORGE_CONTENT_HASH_IDS`. Optional shape enforcement via `TRAINFORGE_VALIDATE_CHUNKS`. |
 | Boilerplate + WCAG canonicalization | filtered chunks | `Trainforge/rag/boilerplate_detector.py`, `Trainforge/rag/wcag_canonical_names.py`. |
 | Pedagogy-graph build | `graph/pedagogy_graph.json` + `pedagogy/pedagogy_model.json` | `Trainforge/pedagogy_graph_builder.py`. |
 | Concept-graph build (8 edge types) | `graph/concept_graph_semantic.json` | 3 taxonomic + 5 pedagogical edges (`schemas/knowledge/concept_graph_semantic.schema.json`). Optional TriG sibling via `TRAINFORGE_EMIT_TRIG`. |
@@ -269,7 +269,7 @@ Defaults: training-data synthesis prefers `--provider local` for an air-gapped c
 
 | Hash field | Pins |
 |------------|------|
-| `chunks_hash` | `LibV2/courses/<slug>/corpus/chunks.jsonl` |
+| `chunks_hash` | `LibV2/courses/<slug>/imscc_chunks/chunks.jsonl` (Phase 7c rename of `corpus/chunks.jsonl`) |
 | `pedagogy_graph_hash` | `LibV2/courses/<slug>/graph/pedagogy_graph.json` (or `pedagogy/pedagogy_graph.json` legacy) |
 | `instruction_pairs_hash` | `LibV2/courses/<slug>/training_specs/instruction_pairs.jsonl` |
 | `preference_pairs_hash` | `LibV2/courses/<slug>/training_specs/preference_pairs.jsonl` |

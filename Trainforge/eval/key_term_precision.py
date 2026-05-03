@@ -111,7 +111,9 @@ def _extract_required_elements(
 
 
 def _load_chunks_jsonl(course_path: Path) -> List[Dict[str, Any]]:
-    p = course_path / "corpus" / "chunks.jsonl"
+    # Phase 7c: prefer imscc_chunks/, fall back to legacy corpus/.
+    from lib.libv2_storage import resolve_imscc_chunks_path
+    p = resolve_imscc_chunks_path(course_path, "chunks.jsonl")
     if not p.exists():
         raise FileNotFoundError(f"chunks.jsonl not found: {p}")
     out: List[Dict[str, Any]] = []

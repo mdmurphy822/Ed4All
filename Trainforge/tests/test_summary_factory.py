@@ -166,7 +166,8 @@ class TestSchemaVersionStamping:
     def test_schema_version_stamped(self, regenerated_output):
         """Every chunk in the regenerated corpus carries schema_version == v4."""
         out_dir, expected_version = regenerated_output
-        chunks_path = out_dir / "corpus" / "chunks.jsonl"
+        # Phase 7c: process_course.py writes to imscc_chunks/.
+        chunks_path = out_dir / "imscc_chunks" / "chunks.jsonl"
         assert chunks_path.exists(), f"expected chunks.jsonl at {chunks_path}"
 
         count = 0

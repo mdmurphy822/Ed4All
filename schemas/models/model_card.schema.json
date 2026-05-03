@@ -162,7 +162,7 @@
         "chunks_hash": {
           "type": "string",
           "pattern": "^[a-f0-9]{64}$",
-          "description": "SHA-256 of corpus/chunks.jsonl as ingested."
+          "description": "SHA-256 of imscc_chunks/chunks.jsonl (Phase 7c rename of corpus/chunks.jsonl) as ingested."
         },
         "pedagogy_graph_hash": {
           "type": "string",

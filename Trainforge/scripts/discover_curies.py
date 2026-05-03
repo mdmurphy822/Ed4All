@@ -62,8 +62,13 @@ logger = logging.getLogger(__name__)
 
 def _resolve_chunks_jsonl(course_code: str) -> Optional[Path]:
     """Mirror of backfill_form_data._resolve_chunks_jsonl so this CLI
-    doesn't have to import the larger backfill module."""
+    doesn't have to import the larger backfill module.
+
+    Phase 7c: prefers ``imscc_chunks/`` and falls back to legacy
+    ``corpus/`` for unprovisioned archives.
+    """
     candidates = [
+        PROJECT_ROOT / "LibV2" / "courses" / course_code / "imscc_chunks" / "chunks.jsonl",
         PROJECT_ROOT / "LibV2" / "courses" / course_code / "corpus" / "chunks.jsonl",
         PROJECT_ROOT / "LibV2" / "courses" / course_code / "chunks.jsonl",
     ]
