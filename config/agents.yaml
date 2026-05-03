@@ -173,7 +173,7 @@ agents:
 
   dart-chunker:
     # Phase 7b ST 9: emits LibV2/courses/<slug>/dart_chunks/chunks.jsonl
-    # from staged DART HTML output via ed4all_chunker.chunk_content.
+    # from staged DART HTML output via Trainforge.chunker.chunk_content.
     # Deterministic chunker transformation with no LLM dispatch — no
     # standalone .md spec, in-code dispatcher per textbook-stager
     # precedent. Backed by `_run_dart_chunking` (ST 11) registered in

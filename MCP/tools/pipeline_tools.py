@@ -6223,7 +6223,7 @@ def _build_tool_registry() -> dict:
     # this helper consumes that chunkset directly via the ``dart_chunks_path``
     # kwarg threaded through the workflow's ``inputs_from`` wiring. This
     # eliminates the divergence-risk surface of two parallel chunk-shaping
-    # paths (the upstream chunker invokes ``ed4all_chunker.chunk_content``
+    # paths (the upstream chunker invokes ``Trainforge.chunker.chunk_content``
     # — the canonical surface; the legacy inline-projection here was a
     # workaround for the Phase 6 phase ordering, where no IMSCC existed
     # yet). The inline-projection path is preserved as a back-compat
@@ -6306,7 +6306,7 @@ def _build_tool_registry() -> dict:
         # Phase 7b ST 14.5: consume upstream DART chunkset when present.
         # The ``chunking`` phase (Phase 7b ST 11) emits
         # ``LibV2/courses/<slug>/dart_chunks/chunks.jsonl`` via the
-        # canonical ``ed4all_chunker.chunk_content`` path; the workflow
+        # canonical ``Trainforge.chunker.chunk_content`` path; the workflow
         # YAML's ``inputs_from`` block threads that path here. When the
         # path is provided AND readable, load the canonical v4 chunks
         # and skip the legacy inline-projection below. When absent or
@@ -6552,7 +6552,7 @@ def _build_tool_registry() -> dict:
     #
     # New ``chunking`` workflow phase (between ``staging`` and
     # ``objective_extraction`` per Phase 7b ST 10). The phase invokes
-    # ``ed4all_chunker.chunk_content`` over staged DART HTML files,
+    # ``Trainforge.chunker.chunk_content`` over staged DART HTML files,
     # persists the resulting chunks to
     # ``LibV2/courses/<slug>/dart_chunks/chunks.jsonl`` plus a sibling
     # ``manifest.json`` (matching the canonical
@@ -6570,7 +6570,7 @@ def _build_tool_registry() -> dict:
     # Unlike ``_run_concept_extraction`` (which inline-projects v4 chunks
     # for ``build_pedagogy_graph`` because no IMSCC exists at that
     # phase), this helper goes through the canonical
-    # ``ed4all_chunker.chunk_content`` path. DART HTML is parsed via
+    # ``Trainforge.chunker.chunk_content`` path. DART HTML is parsed via
     # ``Trainforge/parsers/html_content_parser.HTMLContentParser`` into
     # ``ContentSection`` objects (the same shape Trainforge's IMSCC path
     # consumes), wrapped into a parsed-item dict, and threaded into the
@@ -6662,7 +6662,7 @@ def _build_tool_registry() -> dict:
 
         # Parse DART HTML into ContentSection-bearing parsed_items.
         # Trainforge's HTMLContentParser produces the duck-typed
-        # ContentSection objects ``ed4all_chunker.chunk_content`` walks
+        # ContentSection objects ``Trainforge.chunker.chunk_content`` walks
         # via the ``merge_small_sections`` path. Lazy import keeps this
         # helper's import-time cost low.
         parsed_items: List[Dict[str, Any]] = []
@@ -6879,7 +6879,7 @@ def _build_tool_registry() -> dict:
     #
     # New ``imscc_chunking`` workflow phase (between ``packaging`` and
     # ``training_synthesis`` per Phase 7c ST 16). The phase invokes
-    # ``ed4all_chunker.chunk_content`` over the HTML files extracted from
+    # ``Trainforge.chunker.chunk_content`` over the HTML files extracted from
     # the packaged IMSCC zip emitted by the upstream ``packaging`` phase,
     # persists the resulting chunks to
     # ``LibV2/courses/<slug>/imscc_chunks/chunks.jsonl`` plus a sibling

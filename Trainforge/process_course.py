@@ -48,7 +48,7 @@ from lib.ontology.slugs import canonical_slug
 from Trainforge.generators import summary_factory
 from Trainforge.parsers.html_content_parser import HTMLContentParser, HTMLTextExtractor
 # Phase 7a Subtask 6: xpath helpers (find_body_xpath, find_section_container_xpath,
-# resolve_xpath) moved into ``ed4all_chunker.chunker.chunk_text_block`` (lazy
+# resolve_xpath) moved into ``Trainforge.chunker.chunker.chunk_text_block`` (lazy
 # import inside the package — see the package module docstring's "Lazy imports"
 # section). Removed from this module's import block since the in-process
 # ``_chunk_text_block`` body no longer references them directly.
@@ -122,8 +122,8 @@ CHUNK_SCHEMA_VERSION = "v4"
 # chunk_type. Source of truth:
 # ``schemas/taxonomies/content_type.json::ChunkType``.
 #
-# Phase 7a Subtask 6: lifted into the ed4all-chunker package
-# (``ed4all_chunker.chunker.CANONICAL_CHUNK_TYPES``). Re-exported here so
+# Phase 7a Subtask 6: lifted into the Trainforge.chunker package
+# (``Trainforge.chunker.chunker.CANONICAL_CHUNK_TYPES``). Re-exported here so
 # external importers (``scripts/wave81_reclassify_chunks.py``) keep
 # working without modification.
 CANONICAL_CHUNK_TYPES = _PKG_CANONICAL_CHUNK_TYPES
@@ -998,7 +998,7 @@ class CourseProcessor:
     """Generic processor that turns a Courseforge IMSCC into a Trainforge corpus."""
 
     # Phase 7a Subtask 6: chunk-size constants are sourced from the
-    # ed4all-chunker package so the package + Trainforge can never drift.
+    # Trainforge.chunker package so the package + Trainforge can never drift.
     # The class-attribute aliases stay so existing call sites that read
     # ``self.MIN_CHUNK_SIZE`` / ``self.MAX_CHUNK_SIZE`` /
     # ``self.TARGET_CHUNK_SIZE`` keep working unchanged.
@@ -2496,7 +2496,7 @@ class CourseProcessor:
     @staticmethod
     def _type_from_resource(resource_type: str) -> str:
         # Phase 7a Subtask 3: canonical implementation lives in
-        # ``ed4all_chunker.helpers.type_from_resource``. This wrapper
+        # ``Trainforge.chunker.helpers.type_from_resource``. This wrapper
         # preserves the staticmethod surface so existing call sites
         # (``self._type_from_resource(...)`` and
         # ``CourseProcessor._type_from_resource(...)``) keep working.
@@ -2845,7 +2845,7 @@ class CourseProcessor:
     @staticmethod
     def _extract_plain_text(html: str) -> str:
         # Phase 7a Subtask 3: canonical implementation lives in
-        # ``ed4all_chunker.helpers.extract_plain_text``. The wrapper
+        # ``Trainforge.chunker.helpers.extract_plain_text``. The wrapper
         # delegates so DART / Courseforge / Trainforge can converge on
         # one HTML-text extraction surface in Subtask 4 without breaking
         # any existing call site here.
@@ -2858,7 +2858,7 @@ class CourseProcessor:
         """Return the HTML fragment for ``heading``, respecting section boundaries.
 
         Phase 7a Subtask 3: canonical implementation lives in
-        ``ed4all_chunker.helpers.extract_section_html`` (full Wave-83
+        ``Trainforge.chunker.helpers.extract_section_html`` (full Wave-83
         section-boundary-aware extractor docstring on the lifted
         function). This wrapper preserves the staticmethod surface so
         every existing call site — including the regression suite at
@@ -2876,7 +2876,7 @@ class CourseProcessor:
         """Remove answer feedback from quiz/self-check HTML before text extraction.
 
         Phase 7a Subtask 3: canonical implementation lives in
-        ``ed4all_chunker.helpers.strip_assessment_feedback``. Wrapper
+        ``Trainforge.chunker.helpers.strip_assessment_feedback``. Wrapper
         preserves the staticmethod surface for existing call sites.
         """
 
@@ -2889,7 +2889,7 @@ class CourseProcessor:
         """Remove residual feedback markers from plain text extraction.
 
         Phase 7a Subtask 3: canonical implementation lives in
-        ``ed4all_chunker.helpers.strip_feedback_from_text``. Wrapper
+        ``Trainforge.chunker.helpers.strip_feedback_from_text``. Wrapper
         preserves the staticmethod surface for existing call sites.
         """
 

@@ -615,7 +615,7 @@ workflows:
 
       # Phase 7b ST 10: chunking phase — emits the DART chunkset
       # (LibV2/courses/<slug>/dart_chunks/chunks.jsonl + manifest.json)
-      # by running ed4all_chunker.chunk_content over staged DART HTML
+      # by running Trainforge.chunker.chunk_content over staged DART HTML
       # before objectives are extracted. Downstream concept_extraction
       # (Phase 6 ST 11/12) consumes dart_chunks_path directly per the
       # ST 14.5 reconciliation, eliminating the inline v4-chunk
@@ -1422,7 +1422,7 @@ workflows:
             description: "Phase 4 PoC SHACL parallel of page_objectives. Informational; Python gate remains authoritative."
 
       # Phase 7c ST 16: post-packaging IMSCC chunkset emit. Runs the
-      # canonical ``ed4all_chunker.chunk_content`` over the HTML files
+      # canonical ``Trainforge.chunker.chunk_content`` over the HTML files
       # extracted from the packaged ``.imscc`` zip and persists the
       # chunkset to ``LibV2/courses/<slug>/imscc_chunks/``. Mirror of
       # the Phase 7b ``chunking`` phase but on the IMSCC side: agent

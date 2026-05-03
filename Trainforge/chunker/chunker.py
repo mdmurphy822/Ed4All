@@ -1,8 +1,13 @@
 """Canonical chunker logic lifted out of ``Trainforge/process_course.py``.
 
-Phase 7a Subtask 4 lifts the chunker proper into the ed4all-chunker
-package so DART, Courseforge, and Trainforge can share one chunker
-implementation. The functions in this module orchestrate:
+Historical context: Phase 7a Subtask 4 originally lifted the chunker
+proper into a standalone ``ed4all-chunker`` workspace package so DART,
+Courseforge, and Trainforge could share one chunker implementation;
+the post-Phase-8 review re-merged that package back into
+``Trainforge.chunker`` (this module's current home) to remove the
+workspace-member friction. Public names and the ``ChunkerContext``
+callback contract are unchanged. The functions in this module
+orchestrate:
 
     1. ``chunk_content`` — top-level loop over parsed IMSCC items;
        handles boilerplate stripping, assessment-feedback stripping,
@@ -560,9 +565,9 @@ def chunk_content(
     Mirrors ``CourseProcessor._chunk_content`` at
     ``process_course.py:1462``. Top-level loop over ``parsed_items``;
     handles boilerplate stripping (via
-    :func:`ed4all_chunker.boilerplate.strip_boilerplate`),
+    :func:`Trainforge.chunker.boilerplate.strip_boilerplate`),
     assessment-feedback stripping (via
-    :func:`ed4all_chunker.helpers.strip_assessment_feedback` /
+    :func:`Trainforge.chunker.helpers.strip_assessment_feedback` /
     :func:`strip_feedback_from_text`), per-item section iteration via
     :func:`merge_small_sections`, and follows-chunk linkage at
     lesson/module boundaries.
@@ -592,7 +597,7 @@ def chunk_content(
             "chunk_content received non-empty parsed_items but no "
             "ChunkerContext; the chunker delegates per-chunk "
             "materialisation back to the caller (see "
-            "ed4all_chunker.chunker module docstring)."
+            "Trainforge.chunker.chunker module docstring)."
         )
 
     boilerplate = boilerplate_spans or []
