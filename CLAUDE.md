@@ -669,6 +669,8 @@ Source of truth: `config/workflows.yaml::validation_gates`. Phase column below s
 | `textbook_to_course` | `content_generation` | `content_structure` | ContentStructureValidator (warning) |
 | `textbook_to_course` | `content_generation` | `source_refs` | PageSourceRefValidator |
 | `textbook_to_course` | `content_generation` | `content_grounding` | ContentGroundingValidator (Wave 31) |
+| `textbook_to_course` | `post_rewrite_validation` | `rewrite_html_shape` | RewriteHtmlShapeValidator (Followup §3.2 — closes the JSON-wrapped-emit regression class) |
+| `textbook_to_course` | `post_rewrite_validation` | `rewrite_source_grounding` | RewriteSourceGroundingValidator (Followup §3.3 — sentence-level paraphrase-of-source check; complements ContentGroundingValidator's attribute-walk gate) |
 | `textbook_to_course` | `packaging` | `imscc_structure` | IMSCCValidator (warning) |
 | `textbook_to_course` | `packaging` | `page_objectives` | PageObjectivesValidator |
 | `textbook_to_course` | `trainforge_assessment` | `imscc_input_valid` | IMSCCValidator (pre-assessment) |
