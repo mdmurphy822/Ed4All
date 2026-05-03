@@ -1214,6 +1214,114 @@ prioritise outliner / extractor calibration work without disrupting
 the build itself. Phase 7+ promotes both gates to critical once a
 real-corpus calibration pass confirms the thresholds.
 
+### Phase 7b: DART chunkset
+
+Phase 7b lifts the chunker invocation out of every downstream consumer
+and into a standalone `chunking` workflow phase that emits the DART
+chunkset once, deterministically, before any objective extraction or
+concept-graph work runs. Two motivations: (1) the Phase 7a chunker
+package (`ed4all-chunker`) is now the single canonical chunker shared
+by DART, Courseforge, and Trainforge — Phase 7b promotes that
+delegation surface to a first-class phase boundary so the chunkset is
+addressable, hashable, and validatable as its own artifact rather than
+an in-process side-effect of the synthesizer; (2) the dual-chunkset
+architecture (DART chunkset emitted in Phase 7b, IMSCC chunkset emitted
+post-packaging in Phase 7c) gives downstream consumers two
+provenance-anchored chunk surfaces — one rooted in the textbook PDF,
+one rooted in the packaged IMSCC — instead of conflating both into a
+single `corpus/` blob whose source provenance was ambiguous.
+
+Cross-links:
+
+- `config/workflows.yaml::textbook_to_course::chunking`
+  (commit `8459ff8`, Phase 7b Subtask 10) — new workflow phase wired
+  between `staging` and `objective_extraction`. `agents: [dart-chunker]`,
+  `depends_on: [staging]`, outputs `dart_chunks_path` +
+  `dart_chunks_sha256`. The downstream `objective_extraction.depends_on`
+  was widened from `[staging]` to `[chunking]` so the phase ordering
+  becomes `staging → chunking → objective_extraction → source_mapping →
+  concept_extraction → course_planning`. Phase 6's
+  `concept_extraction.depends_on` is widened in parallel to
+  `[source_mapping, chunking]` (Worker W14.5) so the consumer-side
+  refactor (ST 14.5) can route the upstream `dart_chunks_path` directly
+  into `_run_concept_extraction` and retire the inline v4-chunk
+  projection it currently carries.
+- `dart-chunker` agent registration
+  (`config/agents.yaml::dart-chunker`, commit `458a5b0`, Phase 7b
+  Subtask 9) — utility-style agent registered with `type: utility`. No
+  standalone `.md` spec because the agent is a deterministic chunker
+  transformation with no LLM dispatch (mirrors the `textbook-stager`
+  precedent). The agent is dispatched in-code via the
+  `MCP/core/executor.py::AGENT_TOOL_MAPPING` entry
+  `"dart-chunker": "run_dart_chunking"` which routes to the
+  `_run_dart_chunking` helper registered below.
+- `MCP/tools/pipeline_tools.py::_run_dart_chunking`
+  (`:6361-6627`, commit `5ccbf0c`, Phase 7b Subtask 11) — async helper
+  registered in `_build_tool_registry` as `registry["run_dart_chunking"]`
+  (mirrors the Phase 6 `_run_concept_extraction` template). Inputs
+  resolved via the workflow YAML's `inputs_from`: `course_name`
+  (workflow params) + `staging_dir` (upstream `staging` phase output).
+  The helper invokes `ed4all_chunker.chunk_content` against the staged
+  DART HTML files (parsed via `Trainforge/parsers/html_content_parser.py::HTMLContentParser`
+  into `ContentSection` objects, then threaded into the chunker with a
+  thin `ChunkerContext` whose `create_chunk` callback emits canonical
+  v4-shape chunk dicts), persists the chunks to
+  `LibV2/courses/<slug>/dart_chunks/chunks.jsonl`, writes the sibling
+  `manifest.json` (next bullet), computes the SHA-256 of the chunks
+  file, and surfaces both `dart_chunks_path` + `dart_chunks_sha256`
+  through `phase_outputs.chunking` for downstream consumption.
+- `schemas/library/chunkset_manifest.schema.json`
+  (commit `626a53b`, Phase 7b Subtask 12) — the canonical sidecar
+  manifest schema for both chunkset kinds. Symmetric across DART
+  (Phase 7b) and IMSCC (Phase 7c): a single `chunkset_kind` enum
+  discriminator (`"dart"` | `"imscc"`) plus a conditional source-SHA
+  requirement keeps both sidecars on a single contract. Required
+  fields: `chunks_sha256` (64-char lowercase hex), `chunker_version`
+  (resolved from `ed4all_chunker.__version__`), `chunkset_kind`. The
+  conditional branch requires `source_dart_html_sha256` when
+  `chunkset_kind == "dart"` and `source_imscc_sha256` when
+  `chunkset_kind == "imscc"`, anchoring the chunkset to its upstream
+  source artifact. Optional: `chunks_count` (non-negative integer),
+  `generated_at` (ISO-8601 timestamp). The manifest forward-references
+  the Triangle-invariant chain validation (PDF → DART HTML → chunks)
+  scheduled for Phase 7c followup.
+- `lib/validators/chunkset_manifest.py::ChunksetManifestValidator`
+  (commit `1f68ffa`, Phase 7b Subtask 13) — wired as the
+  `chunkset_manifest` gate at the new `chunking` phase, warning
+  severity in Phase 7b. Verifies: (a) the on-disk
+  `dart_chunks/manifest.json` exists and parses as JSON; (b) it
+  conforms to `schemas/library/chunkset_manifest.schema.json`; (c) the
+  manifest's `chunks_sha256` matches the SHA-256 of the actual
+  `chunks.jsonl` file (catches stale-manifest drift); (d) the
+  manifest's `chunker_version` matches the installed
+  `ed4all_chunker.__version__` (catches version-skew across rebuilds);
+  (e) the conditional source-SHA field is present and well-formed for
+  the declared `chunkset_kind`. GateIssue codes: `MANIFEST_MISSING`,
+  `MANIFEST_PARSE_ERROR`, `MANIFEST_SCHEMA_INVALID`,
+  `CHUNKS_SHA256_MISMATCH`, `CHUNKER_VERSION_MISMATCH`,
+  `SOURCE_SHA256_MISSING`. Phase 7c promotes the gate from warning to
+  critical once Worker W13 confirms the thresholds don't trip on a
+  clean corpus rebuild.
+
+When the new `chunking` phase runs but the upstream DART staging
+yielded a thin or degenerate HTML output (single section, missing
+headings, etc.), the `ChunksetManifestValidator` warning surfaces in
+the workflow log and the chunks + manifest are still persisted — the
+warning posture mirrors the Phase 6 `concept_graph` gate's fail-soft
+contract so small-corpus textbooks don't block the course build, but
+the manifest's `chunks_sha256` field captures what was actually
+emitted so downstream concept-extraction / synthesis is honest about
+the input it saw. The Phase 7c followup is to (a) promote the
+`chunkset_manifest` gate to critical severity, (b) rename
+`LibV2/courses/<slug>/corpus/` → `imscc_chunks/` and add a
+post-packaging `imscc_chunking` workflow phase that emits the IMSCC
+chunkset using the same `dart-chunker` agent + `_run_dart_chunking`
+helper (the chunker is symmetric across both source kinds), and (c)
+extend `LibV2ManifestValidator` to require both `dart_chunks_sha256`
+and `imscc_chunks_sha256` in the top-level course manifest alongside
+the Phase 6 `concept_graph_sha256` (also promoted to critical at the
+same boundary).
+
 ---
 
 ## Template Components

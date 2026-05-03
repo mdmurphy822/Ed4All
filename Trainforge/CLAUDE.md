@@ -407,6 +407,14 @@ Phase 6 Subtask 18 (commit `c3a9f72`) additionally threads a `concept_graph_sha2
 
 ---
 
+## Chunking-phase consumption (Phase 7b)
+
+Phase 7b promoted the chunker invocation from an in-process side-effect of `process_course.py` to a standalone `chunking` workflow phase wired between `staging` and `objective_extraction` in the `textbook_to_course` pipeline. The phase dispatches `MCP/tools/pipeline_tools.py::_run_dart_chunking` (`:6361-6627`, commit `5ccbf0c`, Phase 7b Subtask 11) to invoke the canonical `ed4all_chunker.chunk_content` over staged DART HTML and persist the result to `LibV2/courses/<slug>/dart_chunks/chunks.jsonl` with a sibling `manifest.json` carrying `chunks_sha256`, `chunker_version`, and `source_dart_html_sha256`. The manifest conforms to `schemas/library/chunkset_manifest.schema.json` (commit `626a53b`, Phase 7b Subtask 12), which is **symmetric across DART (Phase 7b) and IMSCC (Phase 7c) chunksets** via a `chunkset_kind` enum discriminator — both sidecars share a single contract, and the conditional source-SHA branch (requires `source_dart_html_sha256` for `"dart"`, `source_imscc_sha256` for `"imscc"`) anchors each chunkset to its upstream source artifact. The gate `lib/validators/chunkset_manifest.py::ChunksetManifestValidator` (commit `1f68ffa`, Phase 7b Subtask 13) fires at the `chunking` phase boundary with warning severity in Phase 7b; promotion to critical follows in Phase 7c once a clean corpus rebuild calibrates the thresholds.
+
+Trainforge-side, the consumption pattern mirrors the Phase 6 concept-graph decoupling: when the orchestrator threads an upstream `dart_chunks_path` from the `chunking` phase into a downstream consumer, the consumer reads the canonical chunkset rather than re-running the chunker in-process. This is what enables Phase 7b ST 14.5's reconciliation refactor of `MCP/tools/pipeline_tools.py::_run_concept_extraction` (Worker W14.5, parallel to this docs landing) — the new `concept_extraction.depends_on: [source_mapping, chunking]` widening lets the helper consume the upstream chunkset directly and retire its inline v4-chunk projection block. The fallback contract is preserved: best-effort upstream consumption with a warning-severity log on missing / corrupted upstream chunks, falling back to the in-process build path so legacy corpora keep working through the migration. Cross-link: `Courseforge/CLAUDE.md` § "Phase 7b: DART chunkset" carries the full Phase 7b architecture overview, including the forward-reference to Phase 7c's IMSCC chunkset rename + `LibV2ManifestValidator` extension to require both `dart_chunks_sha256` and `imscc_chunks_sha256` alongside the Phase 6 `concept_graph_sha256`.
+
+---
+
 ## Metadata Extraction
 
 Trainforge extracts structured metadata from Courseforge HTML output using a priority chain:
