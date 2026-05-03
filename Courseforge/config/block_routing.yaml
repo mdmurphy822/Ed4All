@@ -1,4 +1,5 @@
-# Courseforge two-pass router block-routing policy (Phase 3).
+# Courseforge two-pass router block-routing policy (Phase 3 + Qwen-7B
+# capability_tier rewrite).
 #
 # Schema: schemas/courseforge/block_routing.schema.json
 # Loader: Courseforge/router/policy.py::load_block_routing_policy
@@ -14,47 +15,117 @@
 # supported "no operator overrides" mode — the loader returns an
 # empty policy and the router walks straight through to env vars +
 # hardcoded defaults.
+#
+# ----------------------------------------------------------------------
+# Capability-tier abstraction (Qwen-7B audit plan §2 / §4)
+# ----------------------------------------------------------------------
+#
+# `capability_tiers` is an OPERATOR-OWNED table mapping symbolic tier
+# names to provider/model/sampling specs. Per-block-type entries below
+# reference these tiers via `capability_tier: <name>` instead of
+# pinning a vendor or model literal in the block-type entry. List form
+# (`capability_tier: [small, medium]`) enables cascading-regen:
+# attempts at the lower tier exhaust the per-tier sub-budget, then the
+# router escalates to the next tier with no code change.
+#
+# Operators swapping deployments (Qwen-only → Llama-only, or local →
+# Together → cloud) edit only this `capability_tiers` table — every
+# per-block-type entry below survives the swap.
 
 version: 1
 
-defaults:
-  outline:
+capability_tiers:
+  # Small tier — fast, cheap, structurally-shaped first-draft work.
+  # The 7B-class local model is the typical fit for outline tiers.
+  small:
     provider: local
     model: qwen2.5:7b-instruct-q4_K_M
     base_url: http://localhost:11434/v1
     temperature: 0.0
     max_tokens: 1200
-  rewrite:
+
+  # Medium tier — pedagogically-rich rewrite of structurally-shaped
+  # outlines. A 14B local model handles most rewrite-tier blocks at
+  # consistently acceptable quality; pedagogy-critical blocks
+  # (assessment_item) prefer the large tier below.
+  medium:
+    provider: local
+    model: qwen2.5:14b-instruct-q4_K_M
+    base_url: http://localhost:11434/v1
+    temperature: 0.4
+    max_tokens: 2400
+
+  # Large tier — multi-step-reasoning workloads where the higher-
+  # capability model noticeably improves emit quality (assessment-item
+  # distractors, prereq-chain reasoning). Operators who want a
+  # license-clean alternative swap this entry to a 32B local model
+  # or a Together OSS model — no code change needed.
+  large:
     provider: anthropic
     model: claude-sonnet-4-6
     temperature: 0.4
     max_tokens: 2400
 
+defaults:
+  outline:
+    capability_tier: small
+  rewrite:
+    capability_tier: medium
+
 blocks:
-  # assessment_item: stem + distractors are pedagogy-critical and the
-  # Anthropic rewrite tier consistently produces tighter misconception-
-  # targeting distractors than the local 14B model. Pin the rewrite tier
-  # explicitly so an operator who flips defaults.rewrite to local doesn't
-  # silently regress assessment quality.
+  # assessment_item: pedagogy-critical. Outline starts at small tier;
+  # rewrite escalates from medium to large on per-tier sub-budget
+  # exhaustion (cascading-regen — plan §4). The list form is the
+  # operator-facing dial: a deployment running only Qwen variants
+  # rewrites the `large` tier above to point at qwen2.5:32b and the
+  # cascade still works.
   assessment_item:
+    outline:
+      capability_tier: small
     rewrite:
-      provider: anthropic
-      model: claude-sonnet-4-6
-      temperature: 0.4
-      max_tokens: 2400
+      capability_tier: [medium, large]
+
+  # concept: starts small for outline, lifts to medium for the
+  # pedagogically-richer rewrite. Plan §2.3 tested-block-type policy.
+  concept:
+    outline:
+      capability_tier: small
+    rewrite:
+      capability_tier: medium
+
+  # example: same shape — concrete illustration is moderate-difficulty
+  # for the rewrite tier.
+  example:
+    outline:
+      capability_tier: small
+    rewrite:
+      capability_tier: medium
+
+  # misconception: the misconception statement + correction structure
+  # benefits from the medium tier for nuanced authorial voice. Plan
+  # §3.5's contextual CURIE gate keeps the rewrite from token-stuffing.
+  misconception:
+    outline:
+      capability_tier: small
+    rewrite:
+      capability_tier: medium
+
+  # summary_takeaway: bullet-list shape; medium tier is sufficient for
+  # the synthesizing prose.
+  summary_takeaway:
+    outline:
+      capability_tier: small
+    rewrite:
+      capability_tier: medium
 
   # flip_card_grid: structurally simple (term/definition pairs); the
   # local 7B model handles outline + rewrite at consistently acceptable
-  # quality. Pinning outline to local here is documentation, not a
-  # functional override — it matches the default — but makes the
-  # operator-facing intent explicit when scanning this file.
+  # quality. Wave NN: provider-agnostic capability-tier (plan §2.3).
   flip_card_grid:
     outline:
-      provider: local
-      model: qwen2.5:7b-instruct-q4_K_M
-      base_url: http://localhost:11434/v1
-      temperature: 0.0
-      max_tokens: 1200
+      capability_tier: small
+    rewrite:
+      capability_tier: small
 
   # prereq_set: the outline tier's structural contract (ordered list of
   # prereq concept refs) is something the 7B local model frequently
