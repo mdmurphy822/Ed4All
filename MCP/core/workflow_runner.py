@@ -840,21 +840,29 @@ class WorkflowRunner:
             if synthesized is not None:
                 phase_outputs["dart_conversion"] = synthesized
 
-        # Phase 5 Subtask 2: honour --outline (courseforge-rewrite /
-        # courseforge-validate / courseforge-* stage subcommands) by
-        # synthesising every upstream phase's phase_output from the
-        # on-disk artifacts under the project export + LibV2 course dir.
-        # The phase loop's _completed skip check then short-circuits
-        # every upstream phase, so the downstream target phase
-        # (typically content_generation_rewrite) runs without
-        # re-dispatching the upstream chain. Honours --force by
-        # flipping _completed to False on phases the operator
-        # explicitly wants re-run.
-        outline_dir_param = workflow_params.get("outline_dir")
-        if outline_dir_param:
+        # Phase 5 Subtask 2: honour --outline / courseforge-* stage
+        # subcommands by synthesising every upstream phase's
+        # phase_output from the on-disk artifacts under the project
+        # export + LibV2 course dir. The phase loop's _completed skip
+        # check then short-circuits every upstream phase, so the
+        # downstream target phase (typically content_generation_rewrite)
+        # runs without re-dispatching the upstream chain.
+        #
+        # Resolution chain for the OUTLINE_DIR:
+        #   1. Explicit ``outline_dir`` workflow param (Worker WA's
+        #      forthcoming --outline CLI flag).
+        #   2. ``courseforge_stage`` set => walk
+        #      Courseforge/exports/PROJ-{COURSE_CODE}-* and pick the
+        #      most-recently-modified project dir.
+        #
+        # Honours --force (Worker WA's ``force_rerun`` workflow param,
+        # commit 96e1bde) by flipping _completed to False on every
+        # synthesised entry so the phase loop re-runs them.
+        outline_dir_resolved = self._resolve_outline_dir(workflow_params)
+        if outline_dir_resolved is not None:
             try:
                 outline_synth = self._synthesize_outline_output(
-                    Path(outline_dir_param)
+                    outline_dir_resolved
                 )
             except Exception as e:  # noqa: BLE001 — defensive
                 logger.error(
@@ -862,15 +870,11 @@ class WorkflowRunner:
                     e,
                 )
                 outline_synth = {}
-            force_phases = workflow_params.get("force_phases") or []
-            if isinstance(force_phases, str):
-                force_phases = [
-                    p.strip() for p in force_phases.split(",") if p.strip()
-                ]
+            force_rerun = bool(workflow_params.get("force_rerun"))
             for phase_name, phase_out in outline_synth.items():
                 if phase_name in phase_outputs:
                     continue
-                if phase_name in force_phases:
+                if force_rerun:
                     phase_out = {**phase_out, "_completed": False}
                 phase_outputs[phase_name] = phase_out
 
@@ -1672,6 +1676,77 @@ class WorkflowRunner:
                 "objectives JSON"
             ),
         }
+
+    def _resolve_outline_dir(
+        self, workflow_params: Dict[str, Any]
+    ) -> Optional[Path]:
+        """Resolve the OUTLINE_DIR for ``_synthesize_outline_output``.
+
+        Phase 5 Subtask 2. Resolution chain:
+
+        * ``workflow_params["outline_dir"]`` — explicit operator-supplied
+          project export path (Worker WA's forthcoming --outline flag).
+        * ``workflow_params["courseforge_stage"]`` set (commit 96e1bde) =>
+          walk ``Courseforge/exports/PROJ-{COURSE_NAME}-*`` and pick
+          the most-recently-modified candidate.
+
+        Returns ``None`` when neither route resolves a directory; the
+        caller treats that as "not a stage subcommand run, fall
+        through to normal full-pipeline execution."
+        """
+        explicit = workflow_params.get("outline_dir")
+        if explicit:
+            cand = Path(explicit)
+            if cand.is_dir():
+                return cand
+            logger.warning(
+                "outline reuse: outline_dir param=%r not a directory; "
+                "falling through to courseforge_stage resolution",
+                explicit,
+            )
+
+        stage = workflow_params.get("courseforge_stage")
+        if not stage:
+            return None
+        course_name = workflow_params.get("course_name") or ""
+        if not course_name:
+            logger.warning(
+                "outline reuse: courseforge_stage=%r set but course_name "
+                "is empty; cannot resolve project dir",
+                stage,
+            )
+            return None
+        exports_root = PROJECT_ROOT / "Courseforge" / "exports"
+        if not exports_root.is_dir():
+            logger.warning(
+                "outline reuse: %s not a directory; no project to "
+                "resume from",
+                exports_root,
+            )
+            return None
+        prefix = f"PROJ-{course_name}-"
+        candidates: List[Tuple[float, Path]] = []
+        for cand in exports_root.iterdir():
+            if not cand.is_dir():
+                continue
+            if not cand.name.startswith(prefix):
+                continue
+            candidates.append((cand.stat().st_mtime, cand))
+        if not candidates:
+            logger.warning(
+                "outline reuse: no project dir under %s matches "
+                "course_name=%r (prefix=%r)",
+                exports_root, course_name, prefix,
+            )
+            return None
+        candidates.sort(reverse=True)
+        resolved = candidates[0][1]
+        logger.info(
+            "outline reuse: resolved courseforge_stage=%r project to %s "
+            "(most recent of %d candidates)",
+            stage, resolved, len(candidates),
+        )
+        return resolved
 
     def _synthesize_outline_output(
         self,
