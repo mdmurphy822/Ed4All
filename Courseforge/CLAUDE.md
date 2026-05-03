@@ -907,6 +907,96 @@ Cross-link: the canonical Phase 4 plan
 verification matrix keyed to subtask numbers; the runbook above is
 its operator-facing companion.
 
+#### Phase 4 end-to-end verification matrix
+
+The matrix below pins the per-gate evidence operators should grep for
+on a clean Phase 4 run. Each row maps a Phase 4 gate to (a) the gate
+ID emitted at both seams, (b) the decision-event types it produces,
+and (c) the artifact path the gate writes its issues to. Use this
+matrix to confirm a full Phase 4 run exercised every statistical-tier
+surface (and not just a subset).
+
+| Gate | Outline-tier gate ID | Rewrite-tier gate ID | Decision events | Default threshold |
+|------|----------------------|----------------------|-----------------|-------------------|
+| Objective↔Assessment cosine | `outline_objective_assessment_similarity` | `rewrite_objective_assessment_similarity` | `statistical_validation_pass` / `statistical_validation_fail` | `min_cosine = 0.55` |
+| Concept↔Example cosine | `outline_concept_example_similarity` | `rewrite_concept_example_similarity` | `statistical_validation_pass` / `statistical_validation_fail` | `min_cosine = 0.50` |
+| Objective roundtrip cosine | `outline_objective_roundtrip_similarity` | `rewrite_objective_roundtrip_similarity` | `statistical_validation_pass` / `statistical_validation_fail` | `min_cosine = 0.70` |
+| SHACL outline shapes | `outline_courseforge_shacl` | `rewrite_courseforge_shacl` | `statistical_validation_pass` / `statistical_validation_fail` | n/a (binary shape conformance) |
+| BERT ensemble disagreement | `outline_bloom_classifier_disagreement` | `rewrite_bloom_classifier_disagreement` | `bert_ensemble_disagreement` / `bert_ensemble_dispersion_high` / `bert_ensemble_member_loaded` / `statistical_validation_pass` / `statistical_validation_fail` | `dispersion_threshold = 0.7` |
+
+End-to-end smoke after a clean run on a holdout corpus:
+
+```bash
+# 1. Seed env (extends the Phase 4 runbook above).
+export COURSEFORGE_TWO_PASS=true
+export TRAINFORGE_REQUIRE_EMBEDDINGS=true
+export COURSEFORGE_OUTLINE_PROVIDER=local      # ToS-clean outline tier
+export COURSEFORGE_REWRITE_PROVIDER=anthropic  # Pedagogy-rich rewrite
+
+# 2. Holdout corpus (small, fast — keeps the smoke tractable).
+ed4all run textbook-to-course \
+  --corpus tests/fixtures/textbooks/holdout_smoke.pdf \
+  --course-name HOLDOUT_SMOKE
+
+# 3. Confirm every Phase 4 gate fired at BOTH the inter-tier and
+#    post-rewrite seams. The five outline-tier gate IDs and five
+#    rewrite-tier gate IDs should each have at least one
+#    statistical_validation_pass OR _fail event in the matching
+#    phase JSONL.
+for gate in \
+  outline_objective_assessment_similarity \
+  outline_concept_example_similarity \
+  outline_objective_roundtrip_similarity \
+  outline_courseforge_shacl \
+  outline_bloom_classifier_disagreement; do
+  count=$(grep -lE "\"gate_id\":\\s*\"$gate\"" \
+    training-captures/courseforge/HOLDOUT_SMOKE/phase_courseforge-content-generator-outline/*.jsonl 2>/dev/null | wc -l)
+  echo "$gate: $count files"
+done
+# Expected: each gate ≥ 1. Repeat for the rewrite-tier IDs against
+# the phase_courseforge-post-rewrite-validation directory.
+
+# 4. Calibrate per-course thresholds against this holdout corpus.
+#    Sweep the BERT dispersion threshold first (independent of the
+#    embedding gates), then the three cosine gates.
+for gate in bert_ensemble objective_assessment concept_example objective_roundtrip; do
+  python scripts/calibrate_phase4_thresholds.py \
+    --course-slug holdout-smoke \
+    --gate "$gate" \
+    --sweep-from 0.30 --sweep-to 0.90 --steps 13
+done
+# Expected: LibV2/courses/holdout-smoke/eval/calibrated_thresholds.yaml
+# carries one top-level key per gate, each with a calibrated_threshold
+# float and a sweep[] table. Apply by hand to
+# config/workflows.yaml::validation_gates[].config.thresholds — the
+# auto-overlay loader is a Phase 4 followup.
+test -s LibV2/courses/holdout-smoke/eval/calibrated_thresholds.yaml \
+  && echo "OK: calibrated_thresholds.yaml emitted"
+
+# 5. Graceful-degrade smoke. Uninstall the [embedding] extras and
+#    rerun WITHOUT TRAINFORGE_REQUIRE_EMBEDDINGS so the warning-
+#    severity fallback path runs end-to-end without failing closed.
+pip uninstall -y sentence-transformers transformers torch
+unset TRAINFORGE_REQUIRE_EMBEDDINGS
+ed4all run textbook-to-course \
+  --corpus tests/fixtures/textbooks/holdout_smoke.pdf \
+  --course-name HOLDOUT_SMOKE_DEGRADED
+# Expected: workflow exits 0; every embedding gate emits an
+# EMBEDDING_DEPS_MISSING GateIssue with passed=True, action=None;
+# the BERT ensemble emits BERT_ENSEMBLE_DEPS_MISSING with the same
+# warning posture; no statistical_validation_fail events fire because
+# the gates short-circuit before evaluation.
+grep -clE "\"code\":\\s*\"(EMBEDDING_DEPS_MISSING|BERT_ENSEMBLE_DEPS_MISSING)\"" \
+  training-captures/courseforge/HOLDOUT_SMOKE_DEGRADED/phase_courseforge-*/*.jsonl
+# Expected: at least one match per phase directory.
+```
+
+The graceful-degrade path is the production-safety contract: a CPU-only
+dev box without GPU/torch wheels still completes a `textbook_to_course`
+run, just without the statistical-tier signal. Production deployments
+that depend on the signal MUST set `TRAINFORGE_REQUIRE_EMBEDDINGS=true`
+so missing extras fail loudly instead of silently bypassing the gates.
+
 ---
 
 ## Template Components
