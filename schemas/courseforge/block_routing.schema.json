@@ -11,6 +11,11 @@
       "const": 1,
       "description": "Schema version. Pinned to 1 for the Phase 3 surface; bumped if the shape ever breaks backward compatibility."
     },
+    "capability_tiers": {
+      "type": "object",
+      "description": "Optional operator-supplied capability-tier table. Keys are operator-chosen labels (small / medium / large recommended; any non-empty string is allowed). Values are full BlockProviderSpec dicts referenced from per-tier `capability_tier` fields elsewhere in the policy. The runtime resolves a `capability_tier: <name>` reference by string lookup against this table. Optional — when absent or empty, every Spec must carry explicit provider/model fields per the legacy contract.",
+      "additionalProperties": {"$ref": "#/$defs/Spec"}
+    },
     "defaults": {
       "type": "object",
       "description": "Tier-level default specs applied when no per-block_type entry matches. Each tier (outline | rewrite) carries an optional Spec.",
@@ -111,6 +116,18 @@
           "type": "integer",
           "minimum": 1,
           "description": "Max output tokens. Outline tier conventionally ~1200; rewrite tier conventionally ~2400."
+        },
+        "capability_tier": {
+          "description": "Optional symbolic capability-tier reference resolved against the top-level `capability_tiers` table. When set as a single string, the resolved tier spec wins over any sibling provider/model fields in this Spec (sibling-explicit fields still overlay the tier resolution). When set as an ordered list, the runtime walks the list as a cascading-regeneration chain — try the first tier; on per-tier sub-budget exhaustion, escalate to the next. The list form is the operator-tunable hook that keeps every provider/model decision out of the codebase. Optional; legacy YAML without this field continues to validate and run unchanged.",
+          "oneOf": [
+            {"type": "string", "minLength": 1},
+            {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1}
+          ]
+        },
+        "regen_budget": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Optional per-tier-spec regen budget. Consumed by `CourseforgeRouter._tier_sub_budget` when this Spec is used as a capability_tiers entry. When unset the runtime falls back to `resolved_budget // len(tier_chain)` (floor 1)."
         }
       }
     }
