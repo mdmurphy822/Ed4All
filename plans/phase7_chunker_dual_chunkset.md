@@ -6,8 +6,8 @@ Refines `plans/courseforge_architecture_roadmap.md` §3.3, §3.5, §5 into atomi
 
 ## Investigation findings (locked)
 
-- **Chunker entry points are at `Trainforge/process_course.py:1432::_chunk_content` (104-LOC method) and `:1669::_chunk_text_block` (~180 LOC)**. Boilerplate detection is `Trainforge/rag/boilerplate_detector.py::strip_boilerplate` at `:98`. Constants `MIN_CHUNK_SIZE = 100`, `MAX_CHUNK_SIZE = 800` at `process_course.py:956-957`.
-- **Helper functions called by chunker**: `_extract_plain_text`, `_strip_assessment_feedback`, `_strip_feedback_from_text`, `_extract_section_html`, `_merge_small_sections`, `_merge_section_source_ids`, `_create_chunk`, `_type_from_resource`. All are `CourseProcessor` methods on `process_course.py`. Lift target: extract these to package functions.
+- **Chunker entry points are at `Trainforge/process_course.py:1462::_chunk_content` (~108-LOC method) and `:1699::_chunk_text_block` (~120 LOC)**. Boilerplate detection is `Trainforge/rag/boilerplate_detector.py::strip_boilerplate` at `:98`. Constants `MIN_CHUNK_SIZE = 100`, `MAX_CHUNK_SIZE = 800` at `process_course.py:986-987`. *(Citations refreshed Phase 7a-prep against HEAD `84decc9`; lines drifted +30 since the original Phase 7 plan authoring as Phase 3.5 + Phase 4 landed.)*
+- **Helper functions called by chunker**: `_extract_plain_text` (`:2929`), `_strip_assessment_feedback` (`:3031`), `_strip_feedback_from_text` (`:3052`), `_extract_section_html` (`:2935`), `_merge_small_sections` (`:1590`), `_merge_section_source_ids` (`:1572`), `_create_chunk` (`:1823`), `_type_from_resource` (`:2580`). All are `CourseProcessor` methods on `process_course.py`. Lift target: extract these to package functions.
 - **`pyproject.toml`** at `/home/user/Ed4All/pyproject.toml` does not have `[tool.uv.workspace]` or workspace member listing — verified. Phase 7a adds workspace-member directives via `[tool.setuptools.packages.find]` or per-package install.
 - **No `ed4all-chunker/` directory exists** — verified. Phase 7a creates it as `/home/user/Ed4All/ed4all-chunker/` (in-repo workspace member per roadmap §6.2 recommendation).
 - **`LibV2/courses/<slug>/corpus/chunks.jsonl`** is the current IMSCC chunkset location (per `LibV2/CLAUDE.md:194`). Phase 7c renames `corpus/` → `imscc_chunks/`.
@@ -78,7 +78,7 @@ Estimated total LOC: ~3,600 (800 chunker package extraction + 600 Trainforge ref
 - **Files:** create `/home/user/Ed4All/ed4all-chunker/ed4all_chunker/chunker.py`
 - **Depends on:** Subtasks 2, 3
 - **Estimated LOC:** ~450
-- **Change:** Port `_chunk_content` (lines 1432-1535) + `_chunk_text_block` (lines 1669-~1750+) + `_merge_small_sections` (line 1564+) + `_merge_section_source_ids` (line 1542+) + `_create_chunk` from `Trainforge/process_course.py`. Make them standalone functions: `chunk_content(parsed_items: List[Dict], course_code: str, boilerplate_spans: Optional[List[str]] = None, *, min_chunk_size: int = 100, max_chunk_size: int = 800) -> List[Dict]`. The Trainforge-specific `pages_with_misconceptions` tracking is moved to a returned-tuple element.
+- **Change:** Port `_chunk_content` (lines 1462-1570) + `_chunk_text_block` (lines 1699-~1820) + `_merge_small_sections` (line 1590) + `_merge_section_source_ids` (line 1572) + `_create_chunk` (line 1823) from `Trainforge/process_course.py`. Make them standalone functions: `chunk_content(parsed_items: List[Dict], course_code: str, boilerplate_spans: Optional[List[str]] = None, *, min_chunk_size: int = 100, max_chunk_size: int = 800) -> List[Dict]`. The Trainforge-specific `pages_with_misconceptions` tracking is moved to a returned-tuple element.
 - **Verification:** `python -c "from ed4all_chunker.chunker import chunk_content; chunks = chunk_content([], 'TEST_101'); assert chunks == []"` exits 0.
 
 #### Subtask 5: Add `ed4all-chunker/tests/test_chunker_smoke.py`
@@ -89,7 +89,7 @@ Estimated total LOC: ~3,600 (800 chunker package extraction + 600 Trainforge ref
 - **Verification:** `pytest ed4all-chunker/tests/test_chunker_smoke.py -v` reports ≥6 PASSED.
 
 #### Subtask 6: Refactor `Trainforge/process_course.py` to delegate to package
-- **Files:** `/home/user/Ed4All/Trainforge/process_course.py:1432-1748`
+- **Files:** `/home/user/Ed4All/Trainforge/process_course.py:1462-~1820`
 - **Depends on:** Subtask 5
 - **Estimated LOC:** ~80 (deletion + thin delegation)
 - **Change:** Replace `_chunk_content` body with `from ed4all_chunker.chunker import chunk_content; return chunk_content(parsed_items, self.course_code, self._boilerplate_spans, min_chunk_size=self.MIN_CHUNK_SIZE, max_chunk_size=self.MAX_CHUNK_SIZE)`. Same for `_chunk_text_block`. Existing tests must stay green.
@@ -119,6 +119,7 @@ Estimated total LOC: ~3,600 (800 chunker package extraction + 600 Trainforge ref
   2. Verify that `_emit_member_loaded` (`bloom_bert_ensemble.py:389-425`) already captures `member_revision` in the `bert_ensemble_member_loaded` decision event metadata — it does (line 417). No code change needed there; the audit trail already records exactly which revision produced each classification once the registry carries the resolved SHA. (If a future cleanup wants to also surface the SHA in the rationale string for grep-ability, that's a one-line interpolation tweak in the `rationale=` block at line 408.)
   3. Add a regression test under `lib/classifiers/tests/` (or extend `lib/validators/tests/test_bloom_classifier_disagreement.py`) asserting that every entry in `_DEFAULT_ENSEMBLE_MEMBERS` has a `revision` field matching the regex `^[0-9a-f]{40}$` — guards against a future regression that re-introduces the `"main"` placeholder.
 - **Verification:** `python -c "import re; from lib.classifiers.bloom_bert_ensemble import _DEFAULT_ENSEMBLE_MEMBERS; assert all(re.match(r'^[0-9a-f]{40}$', m['revision']) for m in _DEFAULT_ENSEMBLE_MEMBERS), 'revision must be a resolved 40-char SHA, not main'"` exits 0. Integration: run the Phase 4 statistical-tier smoke (per `Courseforge/CLAUDE.md` § "Operator smoke runbook (Phase 4 statistical tier)") and confirm `bert_ensemble_member_loaded` events in the resulting JSONL carry the resolved SHA in `metadata.member_revision`.
+- **Prerequisites:** `pip install huggingface_hub` is required before running the SHA-resolution one-off (it is not currently installed in the dev environment per the Phase 7a investigation refresh against HEAD `84decc9`). The package is import-only — no model weights are downloaded by `HfApi().model_info()` (it queries the Hub HTTP API).
 
 ### B. DART chunkset (Phase 7b, 6 subtasks)
 
@@ -242,7 +243,7 @@ python LibV2/tools/libv2/scripts/backfill_dart_chunks.py --course-slug rdf-shacl
 ### Critical Files for Implementation
 - `/home/user/Ed4All/ed4all-chunker/ed4all_chunker/chunker.py` (NEW)
 - `/home/user/Ed4All/ed4all-chunker/ed4all_chunker/boilerplate.py` (NEW)
-- `/home/user/Ed4All/Trainforge/process_course.py:1432-1748` (refactor to delegate)
+- `/home/user/Ed4All/Trainforge/process_course.py:1462-~1820` (refactor to delegate)
 - `/home/user/Ed4All/lib/validators/libv2_manifest.py` (extend for dual chunkset hashes)
 - `/home/user/Ed4All/config/workflows.yaml` (add `chunking` + `imscc_chunking` phases)
 - `/home/user/Ed4All/LibV2/tools/libv2/scripts/backfill_dart_chunks.py` (NEW)
