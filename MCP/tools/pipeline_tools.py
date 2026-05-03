@@ -6053,20 +6053,27 @@ def _build_tool_registry() -> dict:
     # New ``concept_extraction`` workflow phase (between ``source_mapping``
     # and ``course_planning`` per plan ST 11). The phase runs the
     # ``Trainforge.pedagogy_graph_builder.build_pedagogy_graph`` over a
-    # minimal v4 chunk projection of the staged DART HTML's
-    # ``*_synthesized.json`` sidecars, persists the resulting graph to
+    # canonical v4 chunkset (DART chunks emitted by the upstream
+    # ``chunking`` phase, falling back to a minimal inline projection of
+    # ``*_synthesized.json`` sidecars when the upstream chunkset is not
+    # available), persists the resulting graph to
     # ``LibV2/courses/<slug>/concept_graph/concept_graph_semantic.json``
     # plus a sibling ``manifest.json``, computes the SHA-256 of the graph
     # bytes, and surfaces both the path and hash through phase outputs.
     #
-    # Phase 7a lifted ``_chunk_content`` into the ``ed4all-chunker``
-    # package, but the chunker's ``chunk_content`` requires parsed IMSCC
-    # items + a ``ChunkerContext`` that materialises chunks. At this point
-    # in the workflow chain the IMSCC has not yet been packaged — only
-    # DART staging output exists. So this helper builds a minimal v4
-    # chunk projection inline (one chunk per DART section) sufficient for
-    # ``build_pedagogy_graph`` to populate concept_tags / chunk_type /
-    # source.module_id and emit a non-trivial pedagogy graph.
+    # Phase 7b ST 14.5 architectural reconciliation: when the upstream
+    # ``chunking`` phase (Phase 7b ST 11, ``_run_dart_chunking``) has
+    # already emitted ``LibV2/courses/<slug>/dart_chunks/chunks.jsonl``,
+    # this helper consumes that chunkset directly via the ``dart_chunks_path``
+    # kwarg threaded through the workflow's ``inputs_from`` wiring. This
+    # eliminates the divergence-risk surface of two parallel chunk-shaping
+    # paths (the upstream chunker invokes ``ed4all_chunker.chunk_content``
+    # — the canonical surface; the legacy inline-projection here was a
+    # workaround for the Phase 6 phase ordering, where no IMSCC existed
+    # yet). The inline-projection path is preserved as a back-compat
+    # fallback for legacy / pre-Phase-7b runs that bypass the ``chunking``
+    # phase, and for unit tests that exercise ``_run_concept_extraction``
+    # in isolation.
     # ============================================================================
     async def _run_concept_extraction(**kwargs):
         """Run the pedagogy-graph builder over staged DART output.
@@ -6075,6 +6082,14 @@ def _build_tool_registry() -> dict:
             project_id: Courseforge project (used only for course_name lookup)
             course_name: Canonical course name (defaults to project config)
             staging_dir: DART staging directory (sibling to objective_extraction)
+
+        Optional kwargs (Phase 7b ST 14.5 — consume upstream chunkset):
+            dart_chunks_path: Path to ``LibV2/courses/<slug>/dart_chunks/chunks.jsonl``
+                emitted by the upstream ``chunking`` phase. When provided
+                and readable, this helper loads chunks from the JSONL
+                file and skips the legacy inline-projection. When absent
+                or unreadable, the inline-projection path runs as a
+                back-compat fallback.
 
         Outputs (returned + persisted):
             concept_graph_path: ``LibV2/courses/<slug>/concept_graph/concept_graph_semantic.json``
@@ -6085,6 +6100,7 @@ def _build_tool_registry() -> dict:
         project_id = kwargs.get("project_id") or ""
         course_name = kwargs.get("course_name") or ""
         staging_dir_kw = kwargs.get("staging_dir") or ""
+        dart_chunks_path_kw = kwargs.get("dart_chunks_path") or ""
 
         # Resolve project + course_name from project_config when present.
         config_data: Dict[str, Any] = {}
@@ -6126,18 +6142,53 @@ def _build_tool_registry() -> dict:
         if staging_dir is None and COURSEFORGE_INPUTS.exists():
             staging_dir = COURSEFORGE_INPUTS
 
-        # Build a minimal v4 chunk projection from each
-        # *_synthesized.json sidecar so ``build_pedagogy_graph`` has
-        # populated ``concept_tags`` + ``source.module_id`` / ``item_path``
-        # to walk. One chunk per DART section keeps wall-time deterministic
-        # and avoids importing the IMSCC-only ``ed4all_chunker.chunk_content``
-        # path (which would require a packaged IMSCC + ChunkerContext at a
-        # phase where neither exists).
         course_slug = course_name.lower().replace("_", "-").replace(" ", "-")
         course_code_lower = course_name.lower().replace("-", "_")
         chunks: List[Dict[str, Any]] = []
         chunk_counter = 1
 
+        # Phase 7b ST 14.5: consume upstream DART chunkset when present.
+        # The ``chunking`` phase (Phase 7b ST 11) emits
+        # ``LibV2/courses/<slug>/dart_chunks/chunks.jsonl`` via the
+        # canonical ``ed4all_chunker.chunk_content`` path; the workflow
+        # YAML's ``inputs_from`` block threads that path here. When the
+        # path is provided AND readable, load the canonical v4 chunks
+        # and skip the legacy inline-projection below. When absent or
+        # unreadable, fall through to the inline-projection so legacy
+        # / pre-Phase-7b fixtures (and unit tests that exercise this
+        # helper in isolation) keep working.
+        upstream_chunks_loaded = False
+        if dart_chunks_path_kw:
+            cand_chunks_path = Path(dart_chunks_path_kw)
+            if cand_chunks_path.exists() and cand_chunks_path.is_file():
+                try:
+                    with cand_chunks_path.open("r", encoding="utf-8") as fh:
+                        for line in fh:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                chunks.append(json.loads(line))
+                            except ValueError:
+                                # Skip malformed JSONL lines silently —
+                                # the gate validates the chunkset
+                                # manifest, not per-line shape.
+                                continue
+                    upstream_chunks_loaded = True
+                except OSError as exc:
+                    logger.warning(
+                        "Phase 7b ST 14.5: failed to read upstream dart_chunks_path "
+                        "%s (%s); falling back to inline-projection.",
+                        cand_chunks_path, exc,
+                    )
+
+        # Legacy inline-projection fallback. Builds a minimal v4 chunk
+        # projection from each ``*_synthesized.json`` sidecar so
+        # ``build_pedagogy_graph`` has populated ``concept_tags`` +
+        # ``source.module_id`` / ``item_path`` to walk. One chunk per
+        # DART section keeps wall-time deterministic. Preserved for
+        # back-compat with legacy / pre-Phase-7b runs that bypass the
+        # ``chunking`` phase.
         def _tokenize_concepts(text: str, limit: int = 8) -> List[str]:
             """Lift bare-word concept slugs from a section's text bits."""
             if not text:
@@ -6163,7 +6214,11 @@ def _build_tool_registry() -> dict:
                     break
             return out
 
-        if staging_dir is not None and staging_dir.exists():
+        if (
+            not upstream_chunks_loaded
+            and staging_dir is not None
+            and staging_dir.exists()
+        ):
             for sidecar in sorted(staging_dir.rglob("*_synthesized.json")):
                 try:
                     doc = json.loads(sidecar.read_text(encoding="utf-8"))

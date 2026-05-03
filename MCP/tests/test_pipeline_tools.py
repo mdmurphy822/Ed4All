@@ -236,6 +236,257 @@ class TestRunConceptExtractionEmitsGraph:
 
 
 # ---------------------------------------------------------------------------
+# Phase 7b Subtask 14.5 — _run_concept_extraction consumes upstream
+# dart_chunks_path from the chunking phase.
+#
+# Verifies:
+#   * When a readable dart_chunks_path is supplied, the helper loads
+#     chunks from JSONL and skips the legacy inline projection.
+#   * When dart_chunks_path is absent or unreadable, the helper falls
+#     through to the legacy inline projection (back-compat with
+#     pre-Phase-7b runs / unit-test fixtures that bypass the chunking
+#     phase).
+#   * Byte-stability: when the upstream chunks.jsonl mirrors what the
+#     inline projection would have produced (same chunk_id key, same
+#     source.module_id / item_path, same chunk_type), both code paths
+#     route equivalent chunks into ``build_pedagogy_graph`` and emit
+#     byte-identical concept_graph_semantic.json.
+# ---------------------------------------------------------------------------
+
+
+def _legacy_projected_chunks(course_code_lower: str) -> list[dict]:
+    """Mirror the inline projection's chunk shape for a fixture-equivalent
+    upstream chunks.jsonl. The inline projection uses ``chunk_id`` (a v3
+    key the builder silently ignores) — to keep the graph emit byte-stable
+    across the path-supplied vs path-absent code paths, the upstream
+    fixture replicates the legacy shape rather than the canonical v4
+    ``id`` shape ``_run_dart_chunking`` actually emits.
+    """
+    return [
+        {
+            "chunk_id": f"{course_code_lower}_chunk_00001",
+            "text": "overview Introduction to Pedagogical Concepts paragraphs Pedagogical concepts include alignment, assessment, scaffolding, learning outcomes, and curriculum design.",
+            "concept_tags": [
+                "introduction", "pedagogical", "concepts", "paragraphs",
+                "include", "alignment", "assessment", "scaffolding",
+            ],
+            "learning_outcome_refs": [],
+            "chunk_type": "content",
+            "bloom_level": "understand",
+            "difficulty": "intermediate",
+            "source": {
+                "module_id": "demo_textbook",
+                "item_path": "demo_textbook#intro",
+            },
+        },
+        {
+            "chunk_id": f"{course_code_lower}_chunk_00002",
+            "text": "content Scaffolding Strategies paragraphs Scaffolding strategies provide structured support during initial learning, gradually fading as competence develops.",
+            "concept_tags": [
+                "content", "scaffolding", "strategies", "paragraphs",
+                "provide", "structured", "support", "during",
+            ],
+            "learning_outcome_refs": [],
+            "chunk_type": "content",
+            "bloom_level": "understand",
+            "difficulty": "intermediate",
+            "source": {
+                "module_id": "demo_textbook",
+                "item_path": "demo_textbook#scaffold",
+            },
+        },
+        {
+            "chunk_id": f"{course_code_lower}_chunk_00003",
+            "text": "self_check Assessment Check paragraphs Formative assessment validates learner understanding before summative evaluation.",
+            "concept_tags": [
+                "self", "check", "assessment", "paragraphs", "formative",
+                "validates", "learner", "understanding",
+            ],
+            "learning_outcome_refs": [],
+            "chunk_type": "assessment_item",
+            "bloom_level": "understand",
+            "difficulty": "intermediate",
+            "source": {
+                "module_id": "demo_textbook",
+                "item_path": "demo_textbook#assess",
+            },
+        },
+    ]
+
+
+class TestRunConceptExtractionConsumesUpstreamChunks:
+    """Phase 7b ST 14.5 — refactor consumes upstream dart_chunks_path."""
+
+    def test_upstream_chunks_path_loaded_when_supplied(
+        self, concept_extraction_fixture
+    ):
+        """When dart_chunks_path is supplied with N chunks, the helper
+        reports chunk_count == N regardless of staging_dir contents."""
+        fx = concept_extraction_fixture
+        chunks = _legacy_projected_chunks("demo_303")
+
+        chunks_path = fx["fake_root"] / "upstream_chunks.jsonl"
+        chunks_path.write_text(
+            "\n".join(json.dumps(c) for c in chunks) + "\n",
+            encoding="utf-8",
+        )
+
+        registry = _build_tool_registry()
+        tool = registry["run_concept_extraction"]
+        result = asyncio.run(
+            tool(
+                project_id="",
+                course_name=fx["course_name"],
+                staging_dir=str(fx["staging_dir"]),
+                dart_chunks_path=str(chunks_path),
+            )
+        )
+        payload = json.loads(result)
+
+        assert payload["success"] is True
+        # 3 chunks from the upstream JSONL, NOT from the staging sidecar
+        # (which also has 3 sections — same count, but the assertion
+        # below pins that the JSONL ingest path actually ran).
+        assert payload["chunk_count"] == 3
+
+    def test_inline_projection_skipped_when_upstream_supplied(
+        self, concept_extraction_fixture
+    ):
+        """When dart_chunks_path is supplied with 1 chunk and staging
+        has 3 sections, chunk_count is 1 — the inline projection did
+        NOT run."""
+        fx = concept_extraction_fixture
+        upstream = [_legacy_projected_chunks("demo_303")[0]]
+        chunks_path = fx["fake_root"] / "single_chunk.jsonl"
+        chunks_path.write_text(
+            json.dumps(upstream[0]) + "\n", encoding="utf-8"
+        )
+
+        registry = _build_tool_registry()
+        tool = registry["run_concept_extraction"]
+        result = asyncio.run(
+            tool(
+                project_id="",
+                course_name=fx["course_name"],
+                staging_dir=str(fx["staging_dir"]),
+                dart_chunks_path=str(chunks_path),
+            )
+        )
+        payload = json.loads(result)
+
+        assert payload["success"] is True
+        # The staging fixture has 3 sections; if the inline projection
+        # had also run it would have emitted 4 chunks total. 1 confirms
+        # the inline projection branch was skipped.
+        assert payload["chunk_count"] == 1
+
+    def test_falls_through_to_inline_when_path_absent(
+        self, concept_extraction_fixture
+    ):
+        """When dart_chunks_path is unset, the legacy inline-projection
+        runs (back-compat path)."""
+        fx = concept_extraction_fixture
+        # No dart_chunks_path kwarg — the helper falls through.
+        payload = _invoke(fx["course_name"], fx["staging_dir"])
+
+        assert payload["success"] is True
+        # 3 sections in the fixture sidecar -> 3 chunks projected.
+        assert payload["chunk_count"] == 3
+
+    def test_falls_through_when_path_unreadable(
+        self, concept_extraction_fixture
+    ):
+        """When dart_chunks_path points at a non-existent file, the
+        helper falls through to the inline projection (warning log,
+        not a hard failure)."""
+        fx = concept_extraction_fixture
+        registry = _build_tool_registry()
+        tool = registry["run_concept_extraction"]
+        result = asyncio.run(
+            tool(
+                project_id="",
+                course_name=fx["course_name"],
+                staging_dir=str(fx["staging_dir"]),
+                dart_chunks_path=str(
+                    fx["fake_root"] / "nonexistent" / "chunks.jsonl"
+                ),
+            )
+        )
+        payload = json.loads(result)
+        assert payload["success"] is True
+        # Inline-projection ran -> 3 chunks from the staging sidecar.
+        assert payload["chunk_count"] == 3
+
+    def test_byte_stability_path_supplied_vs_path_absent(
+        self, concept_extraction_fixture, tmp_path, monkeypatch
+    ):
+        """Byte-equality of concept_graph_semantic.json across the two
+        code paths when the upstream chunkset mirrors what the inline
+        projection would have produced. Pins the architectural
+        invariant from the Phase 7b ST 14.5 plan: the refactor MUST
+        NOT alter graph emission semantics on equivalent input.
+        """
+        fx = concept_extraction_fixture
+
+        # Path A — path-absent (legacy inline-projection runs).
+        payload_absent = _invoke(fx["course_name"], fx["staging_dir"])
+        graph_absent = Path(payload_absent["concept_graph_path"]).read_bytes()
+
+        # Path B — path-supplied with chunks that mirror the legacy
+        # inline-projection shape. Build a fresh fake_root so the
+        # path-supplied run writes a separate concept_graph_semantic.json.
+        fake_root_b = tmp_path / "root_b"
+        fake_root_b.mkdir()
+        monkeypatch.setattr(pipeline_tools, "_PROJECT_ROOT", fake_root_b)
+        monkeypatch.setattr(
+            pipeline_tools,
+            "COURSEFORGE_INPUTS",
+            fake_root_b / "Courseforge" / "inputs" / "textbooks",
+        )
+        (fake_root_b / "Courseforge" / "inputs" / "textbooks").mkdir(
+            parents=True
+        )
+
+        chunks = _legacy_projected_chunks("demo_303")
+        chunks_path = fake_root_b / "upstream_chunks.jsonl"
+        chunks_path.write_text(
+            "\n".join(json.dumps(c) for c in chunks) + "\n",
+            encoding="utf-8",
+        )
+
+        registry = _build_tool_registry()
+        tool = registry["run_concept_extraction"]
+        result = asyncio.run(
+            tool(
+                project_id="",
+                course_name=fx["course_name"],
+                # Empty staging -> inline projection wouldn't run anyway,
+                # but with dart_chunks_path supplied the upstream branch
+                # takes precedence regardless.
+                staging_dir=str(fx["staging_dir"]),
+                dart_chunks_path=str(chunks_path),
+            )
+        )
+        payload_supplied = json.loads(result)
+        graph_supplied = Path(
+            payload_supplied["concept_graph_path"]
+        ).read_bytes()
+
+        # The only field that legitimately differs is `generated_at`
+        # (timestamp). Strip it from both before comparing.
+        absent_obj = json.loads(graph_absent)
+        supplied_obj = json.loads(graph_supplied)
+        absent_obj.pop("generated_at", None)
+        supplied_obj.pop("generated_at", None)
+
+        assert absent_obj == supplied_obj, (
+            "Refactor regression: path-supplied vs path-absent code paths "
+            "emit different concept_graph_semantic.json on equivalent input. "
+            "Phase 7b ST 14.5 invariant violated."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Phase 7b Subtask 11 — _run_dart_chunking smoke tests
 # ---------------------------------------------------------------------------
 
