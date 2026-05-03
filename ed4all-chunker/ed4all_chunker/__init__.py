@@ -23,6 +23,13 @@ from ed4all_chunker.boilerplate import (
     detect_repeated_ngrams,
     strip_boilerplate,
 )
+from ed4all_chunker.helpers import (
+    extract_plain_text,
+    extract_section_html,
+    strip_assessment_feedback,
+    strip_feedback_from_text,
+    type_from_resource,
+)
 
 __all__ = [
     "BoilerplateConfig",
@@ -30,5 +37,10 @@ __all__ = [
     "DEFAULT_NGRAM_TOKENS",
     "contamination_rate",
     "detect_repeated_ngrams",
+    "extract_plain_text",
+    "extract_section_html",
+    "strip_assessment_feedback",
     "strip_boilerplate",
+    "strip_feedback_from_text",
+    "type_from_resource",
 ]
