@@ -114,6 +114,10 @@ training-captures/textbook-pipeline/*
 !training-captures/textbook-pipeline/.gitkeep
 training-captures/pipeline/*
 !training-captures/pipeline/.gitkeep
+training-captures/orchestrator/*
+!training-captures/orchestrator/.gitkeep
+training-captures/libv2/*
+!training-captures/libv2/.gitkeep
 
 # MCP runtime
 MCP/runtime/
