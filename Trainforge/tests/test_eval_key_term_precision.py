@@ -89,7 +89,10 @@ def test_perfect_response_scores_positive(tmp_path):
         embedder=None,
     )
     out = scorer.evaluate()
-    assert out["scoring_method"] == "jaccard"
+    # scoring_method depends on whether [embedding] extras are installed:
+    # absent -> "jaccard" (deterministic fallback); present -> "embedding"
+    # (real sentence-transformers cosine). Either backend is correct.
+    assert out["scoring_method"] in ("jaccard", "embedding")
     assert out["avg_similarity"] > 0.0
 
 
