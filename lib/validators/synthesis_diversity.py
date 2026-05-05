@@ -36,11 +36,72 @@ import logging
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
 
 logger = logging.getLogger(__name__)
+
+
+def _emit_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    total_pairs: int,
+    n_unique_templates: int,
+    top1_share: float,
+    top3_share: float,
+    max_top3_share: float,
+    max_single_share: float,
+    min_distinct_templates: int,
+    min_total_pairs: int,
+) -> None:
+    """Emit one ``synthesis_diversity_check`` decision per validate() call.
+
+    H3 Wave W4: every threshold-fail / pass / missing-input path emits
+    one event. ml_features payload includes top-1 + top-3 share, the
+    distinct-template count, and the four threshold floors so post-hoc
+    replay can reconstruct the diversity verdict.
+    """
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    rationale = (
+        f"synthesis_diversity gate verdict: total_pairs={total_pairs}, "
+        f"n_unique_templates={n_unique_templates}, "
+        f"top1_share={top1_share:.4f}, top3_share={top3_share:.4f}; "
+        f"thresholds=(max_top3={max_top3_share:.4f}, "
+        f"max_single={max_single_share:.4f}, "
+        f"min_distinct={min_distinct_templates}, "
+        f"min_total={min_total_pairs}); failure_code={code or 'none'}."
+    )
+    metrics: Dict[str, Any] = {
+        "total_pairs": int(total_pairs),
+        "n_unique_templates": int(n_unique_templates),
+        "top1_share": float(top1_share),
+        "top3_share": float(top3_share),
+        "max_top3_share": float(max_top3_share),
+        "max_single_share": float(max_single_share),
+        "min_distinct_templates": int(min_distinct_templates),
+        "min_total_pairs": int(min_total_pairs),
+        "passed": bool(passed),
+        "failure_code": code,
+    }
+    try:
+        capture.log_decision(
+            decision_type="synthesis_diversity_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(metrics),
+            metrics=metrics,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on "
+            "synthesis_diversity_check: %s",
+            exc,
+        )
 
 
 DEFAULT_MAX_TOP3_SHARE = 0.60
@@ -72,12 +133,26 @@ class SynthesisDiversityValidator:
     name = "synthesis_diversity"
     version = "1.0.0"
 
+    def __init__(self, *, decision_capture: Optional[Any] = None) -> None:
+        self._decision_capture = decision_capture
+
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", "synthesis_diversity")
         issues: List[GateIssue] = []
 
+        capture = inputs.get("decision_capture") or self._decision_capture
+
         path_raw = inputs.get("instruction_pairs_path")
         if not path_raw:
+            _emit_decision(
+                capture, passed=False, code="MISSING_INPUTS",
+                total_pairs=0, n_unique_templates=0,
+                top1_share=0.0, top3_share=0.0,
+                max_top3_share=DEFAULT_MAX_TOP3_SHARE,
+                max_single_share=DEFAULT_MAX_SINGLE_SHARE,
+                min_distinct_templates=DEFAULT_MIN_DISTINCT_TEMPLATES,
+                min_total_pairs=DEFAULT_MIN_TOTAL_PAIRS,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -95,6 +170,15 @@ class SynthesisDiversityValidator:
 
         path = Path(path_raw)
         if not path.exists():
+            _emit_decision(
+                capture, passed=False, code="INSTRUCTION_PAIRS_NOT_FOUND",
+                total_pairs=0, n_unique_templates=0,
+                top1_share=0.0, top3_share=0.0,
+                max_top3_share=DEFAULT_MAX_TOP3_SHARE,
+                max_single_share=DEFAULT_MAX_SINGLE_SHARE,
+                min_distinct_templates=DEFAULT_MIN_DISTINCT_TEMPLATES,
+                min_total_pairs=DEFAULT_MIN_TOTAL_PAIRS,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -157,6 +241,15 @@ class SynthesisDiversityValidator:
                     if bigram is not None:
                         prefix_counts[bigram] += 1
         except OSError as exc:
+            _emit_decision(
+                capture, passed=False, code="INSTRUCTION_PAIRS_READ_ERROR",
+                total_pairs=total, n_unique_templates=len(template_counts),
+                top1_share=0.0, top3_share=0.0,
+                max_top3_share=max_top3,
+                max_single_share=max_single,
+                min_distinct_templates=min_distinct,
+                min_total_pairs=min_total,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -276,9 +369,40 @@ class SynthesisDiversityValidator:
         # other Trainforge validators.
         if total == 0:
             score = 0.0
+            top1_share_metric = 0.0
+            top3_share_metric = 0.0
         else:
             top3_pairs = sum(c for _, c in template_counts.most_common(3))
             score = round(max(0.0, 1.0 - (top3_pairs / total)), 4)
+            top3_share_metric = top3_pairs / total
+            top1_count = (
+                template_counts.most_common(1)[0][1] if template_counts else 0
+            )
+            top1_share_metric = top1_count / total if total else 0.0
+
+        # H3 W4: surface the first critical issue's code (if any) so
+        # post-hoc replay can distinguish single-template-dominance from
+        # top-3-dominance from low-distinct-templates without parsing
+        # GateIssue lists.
+        failure_code = None
+        if not passed:
+            for i in issues:
+                if i.severity == "critical":
+                    failure_code = i.code
+                    break
+        _emit_decision(
+            capture,
+            passed=passed,
+            code=failure_code,
+            total_pairs=total,
+            n_unique_templates=len(template_counts),
+            top1_share=top1_share_metric,
+            top3_share=top3_share_metric,
+            max_top3_share=max_top3,
+            max_single_share=max_single,
+            min_distinct_templates=min_distinct,
+            min_total_pairs=min_total,
+        )
 
         return GateResult(
             gate_id=gate_id,

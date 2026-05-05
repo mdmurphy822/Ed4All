@@ -33,6 +33,72 @@ from MCP.hardening.validation_gates import GateIssue, GateResult
 
 logger = logging.getLogger(__name__)
 
+
+def _emit_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    n_pairs_audited: int,
+    verbatim_leak_count: int,
+    assessment_scaffold_count: int,
+    rate_threshold: float,
+    assessment_threshold: float,
+    span_threshold: int,
+) -> None:
+    """Emit one ``synthesis_leakage_check`` decision per validate() call.
+
+    H3 Wave W4: every leakage-fail / scaffold-fail / pass / missing-input
+    path emits one event so post-hoc replay can distinguish the two
+    contamination vectors (verbatim chunk-text leakage vs assessment-
+    outline scaffolding) without re-running the gate.
+    """
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    if n_pairs_audited > 0:
+        verbatim_rate = verbatim_leak_count / n_pairs_audited
+        scaffold_rate = assessment_scaffold_count / n_pairs_audited
+    else:
+        verbatim_rate = 0.0
+        scaffold_rate = 0.0
+    rationale = (
+        f"synthesis_leakage gate verdict: n_pairs_audited="
+        f"{n_pairs_audited}, verbatim_leak_count={verbatim_leak_count} "
+        f"({verbatim_rate:.4f} rate), "
+        f"assessment_scaffold_count={assessment_scaffold_count} "
+        f"({scaffold_rate:.4f} rate); thresholds=("
+        f"verbatim_rate={rate_threshold:.4f}, "
+        f"assessment_rate={assessment_threshold:.4f}, "
+        f"span_chars={span_threshold}); failure_code={code or 'none'}."
+    )
+    metrics: Dict[str, Any] = {
+        "n_pairs_audited": int(n_pairs_audited),
+        "verbatim_leak_count": int(verbatim_leak_count),
+        "assessment_scaffold_count": int(assessment_scaffold_count),
+        "verbatim_leak_rate": float(verbatim_rate),
+        "assessment_scaffold_rate": float(scaffold_rate),
+        "rate_threshold": float(rate_threshold),
+        "assessment_threshold": float(assessment_threshold),
+        "span_threshold": int(span_threshold),
+        "passed": bool(passed),
+        "failure_code": code,
+    }
+    try:
+        capture.log_decision(
+            decision_type="synthesis_leakage_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(metrics),
+            metrics=metrics,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on "
+            "synthesis_leakage_check: %s",
+            exc,
+        )
+
 # Same threshold the factories use. A 50-char span is long enough to
 # represent a genuine quote of source material rather than coincidental
 # n-gram overlap on short phrases like "is the".
@@ -83,10 +149,22 @@ class SynthesisLeakageValidator:
     name = "synthesis_leakage"
     version = "1.0.0"
 
+    def __init__(self, *, decision_capture: Optional[Any] = None) -> None:
+        self._decision_capture = decision_capture
+
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", "synthesis_leakage")
+        capture = inputs.get("decision_capture") or self._decision_capture
         course_dir_raw = inputs.get("course_dir")
         if not course_dir_raw:
+            _emit_decision(
+                capture, passed=False, code="MISSING_INPUTS",
+                n_pairs_audited=0, verbatim_leak_count=0,
+                assessment_scaffold_count=0,
+                rate_threshold=DEFAULT_LEAK_RATE_THRESHOLD,
+                assessment_threshold=DEFAULT_ASSESSMENT_SCAFFOLD_THRESHOLD,
+                span_threshold=DEFAULT_LEAK_SPAN_CHARS,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -107,6 +185,14 @@ class SynthesisLeakageValidator:
         from lib.libv2_storage import resolve_imscc_chunks_path
         chunks_path = resolve_imscc_chunks_path(course_dir, "chunks.jsonl")
         if not inst_path.exists():
+            _emit_decision(
+                capture, passed=False, code="INSTRUCTION_PAIRS_NOT_FOUND",
+                n_pairs_audited=0, verbatim_leak_count=0,
+                assessment_scaffold_count=0,
+                rate_threshold=DEFAULT_LEAK_RATE_THRESHOLD,
+                assessment_threshold=DEFAULT_ASSESSMENT_SCAFFOLD_THRESHOLD,
+                span_threshold=DEFAULT_LEAK_SPAN_CHARS,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -123,6 +209,14 @@ class SynthesisLeakageValidator:
                 )],
             )
         if not chunks_path.exists():
+            _emit_decision(
+                capture, passed=False, code="CHUNKS_NOT_FOUND",
+                n_pairs_audited=0, verbatim_leak_count=0,
+                assessment_scaffold_count=0,
+                rate_threshold=DEFAULT_LEAK_RATE_THRESHOLD,
+                assessment_threshold=DEFAULT_ASSESSMENT_SCAFFOLD_THRESHOLD,
+                span_threshold=DEFAULT_LEAK_SPAN_CHARS,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -273,6 +367,26 @@ class SynthesisLeakageValidator:
                 ))
 
         passed = not [i for i in issues if i.severity == "critical"]
+
+        # H3 W4: surface the first critical issue's code (when any).
+        failure_code = None
+        if not passed:
+            for i in issues:
+                if i.severity == "critical":
+                    failure_code = i.code
+                    break
+        _emit_decision(
+            capture,
+            passed=passed,
+            code=failure_code,
+            n_pairs_audited=total,
+            verbatim_leak_count=len(leaked),
+            assessment_scaffold_count=len(scaffolded),
+            rate_threshold=rate_threshold,
+            assessment_threshold=assessment_threshold,
+            span_threshold=span_threshold,
+        )
+
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,

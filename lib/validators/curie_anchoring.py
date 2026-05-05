@@ -53,6 +53,64 @@ logger = logging.getLogger(__name__)
 DEFAULT_MIN_PAIR_ANCHORING_RATE = 0.95
 UNANCHORED_TOP_N = 20
 
+
+def _emit_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    n_pairs_audited: int,
+    n_anchored_pairs: int,
+    actual_pair_anchoring_rate: float,
+    min_pair_anchoring_rate: float,
+    skipped_deterministic: int = 0,
+    skipped_no_curies: int = 0,
+    mode: str = "pairs",
+) -> None:
+    """Emit one ``curie_anchoring_check`` decision per validate() call.
+
+    H3 Wave W4: legacy synthesis-pairs path AND Phase 3 Block-list path
+    both fire one event per ``validate()`` call. The ``mode`` field
+    distinguishes the two seams in the captured payload.
+    """
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    rationale = (
+        f"curie_anchoring gate verdict ({mode}): n_audited="
+        f"{n_pairs_audited}, n_anchored={n_anchored_pairs}, "
+        f"actual_pair_anchoring_rate={actual_pair_anchoring_rate:.4f}, "
+        f"min_pair_anchoring_rate={min_pair_anchoring_rate:.4f}, "
+        f"skipped_deterministic={skipped_deterministic}, "
+        f"skipped_no_curies={skipped_no_curies}; failure_code="
+        f"{code or 'none'}."
+    )
+    metrics: Dict[str, Any] = {
+        "mode": mode,
+        "n_pairs_audited": int(n_pairs_audited),
+        "n_anchored_pairs": int(n_anchored_pairs),
+        "actual_pair_anchoring_rate": float(actual_pair_anchoring_rate),
+        "min_pair_anchoring_rate": float(min_pair_anchoring_rate),
+        "skipped_deterministic": int(skipped_deterministic),
+        "skipped_no_curies": int(skipped_no_curies),
+        "passed": bool(passed),
+        "failure_code": code,
+    }
+    try:
+        capture.log_decision(
+            decision_type="curie_anchoring_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(metrics),
+            metrics=metrics,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on "
+            "curie_anchoring_check: %s",
+            exc,
+        )
+
 # Phase 3 Subtask 51: cap per-block issue emit count for the
 # Block-list dispatch path. Mirrors the cap in
 # Courseforge.router.inter_tier_gates so a uniformly broken outline
@@ -159,6 +217,9 @@ class CurieAnchoringValidator:
     name = "curie_anchoring"
     version = "1.0.0"
 
+    def __init__(self, *, decision_capture: Optional[Any] = None) -> None:
+        self._decision_capture = decision_capture
+
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         # Phase 3 Subtask 51 dispatch: when the caller passes a Block
         # list (outline-tier inter-tier gate seam), route through the
@@ -169,9 +230,24 @@ class CurieAnchoringValidator:
             return self._validate_blocks(inputs)
 
         gate_id = inputs.get("gate_id", "curie_anchoring")
+        capture = inputs.get("decision_capture") or self._decision_capture
+        thresholds_pre = (
+            inputs.get("thresholds") or inputs.get("threshold") or {}
+        )
+        min_rate_pre = float(
+            thresholds_pre.get(
+                "min_pair_anchoring_rate", DEFAULT_MIN_PAIR_ANCHORING_RATE
+            )
+        )
 
         inst_path, chunks_path, path_err = _resolve_paths(inputs)
         if path_err:
+            _emit_decision(
+                capture, passed=False, code="MISSING_INPUTS",
+                n_pairs_audited=0, n_anchored_pairs=0,
+                actual_pair_anchoring_rate=0.0,
+                min_pair_anchoring_rate=min_rate_pre,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -187,6 +263,12 @@ class CurieAnchoringValidator:
         assert inst_path is not None and chunks_path is not None
 
         if not inst_path.exists():
+            _emit_decision(
+                capture, passed=False, code="INSTRUCTION_PAIRS_NOT_FOUND",
+                n_pairs_audited=0, n_anchored_pairs=0,
+                actual_pair_anchoring_rate=0.0,
+                min_pair_anchoring_rate=min_rate_pre,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -204,6 +286,12 @@ class CurieAnchoringValidator:
                 )],
             )
         if not chunks_path.exists():
+            _emit_decision(
+                capture, passed=False, code="CHUNKS_NOT_FOUND",
+                n_pairs_audited=0, n_anchored_pairs=0,
+                actual_pair_anchoring_rate=0.0,
+                min_pair_anchoring_rate=min_rate_pre,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -289,6 +377,14 @@ class CurieAnchoringValidator:
         if total_eligible == 0:
             # Nothing to audit: every pair was either deterministic or
             # came from a chunk with no CURIEs. Pass with an info note.
+            _emit_decision(
+                capture, passed=True, code=None,
+                n_pairs_audited=0, n_anchored_pairs=0,
+                actual_pair_anchoring_rate=1.0,
+                min_pair_anchoring_rate=min_pair_anchoring_rate,
+                skipped_deterministic=skipped_deterministic,
+                skipped_no_curies=skipped_no_curies,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -373,6 +469,20 @@ class CurieAnchoringValidator:
                 message=details_msg,
                 location=str(inst_path),
             ))
+
+        # H3 W4: emit terminal capture for the legacy synthesis-pairs
+        # path (Block-list path emits inside _validate_blocks).
+        _emit_decision(
+            capture,
+            passed=passed,
+            code=None if passed else "PAIR_ANCHORING_BELOW_THRESHOLD",
+            n_pairs_audited=total_eligible,
+            n_anchored_pairs=anchored_count,
+            actual_pair_anchoring_rate=pair_anchoring_rate,
+            min_pair_anchoring_rate=min_pair_anchoring_rate,
+            skipped_deterministic=skipped_deterministic,
+            skipped_no_curies=skipped_no_curies,
+        )
         return result
 
     def _validate_blocks(self, inputs: Dict[str, Any]) -> GateResult:
@@ -398,8 +508,22 @@ class CurieAnchoringValidator:
         the only consumer in Phase 3 scope.
         """
         gate_id = inputs.get("gate_id", "curie_anchoring")
+        capture = inputs.get("decision_capture") or self._decision_capture
         raw = inputs.get("blocks") or []
+        thresholds = inputs.get("thresholds") or inputs.get("threshold") or {}
+        min_block_anchoring_rate = float(
+            thresholds.get(
+                "min_pair_anchoring_rate", DEFAULT_MIN_PAIR_ANCHORING_RATE
+            )
+        )
         if not isinstance(raw, list):
+            _emit_decision(
+                capture, passed=False, code="INVALID_BLOCKS_INPUT",
+                n_pairs_audited=0, n_anchored_pairs=0,
+                actual_pair_anchoring_rate=0.0,
+                min_pair_anchoring_rate=min_block_anchoring_rate,
+                mode="blocks",
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -415,13 +539,6 @@ class CurieAnchoringValidator:
                 )],
                 action="regenerate",
             )
-
-        thresholds = inputs.get("thresholds") or inputs.get("threshold") or {}
-        min_block_anchoring_rate = float(
-            thresholds.get(
-                "min_pair_anchoring_rate", DEFAULT_MIN_PAIR_ANCHORING_RATE
-            )
-        )
 
         issues: List[GateIssue] = []
         audited = 0
@@ -475,6 +592,13 @@ class CurieAnchoringValidator:
         # the list was empty): pass with an info note. Mirrors the
         # legacy NO_AUDITABLE_PAIRS branch.
         if audited == 0:
+            _emit_decision(
+                capture, passed=True, code=None,
+                n_pairs_audited=0, n_anchored_pairs=0,
+                actual_pair_anchoring_rate=1.0,
+                min_pair_anchoring_rate=min_block_anchoring_rate,
+                mode="blocks",
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -496,6 +620,26 @@ class CurieAnchoringValidator:
         rate = anchored_count / audited
         passed = (rate >= min_block_anchoring_rate) and not issues
         action = None if passed else "regenerate"
+
+        # H3 W4: emit terminal capture for the Block-list path.
+        failure_code = None
+        if not passed:
+            for i in issues:
+                if i.severity == "critical":
+                    failure_code = i.code
+                    break
+            if failure_code is None:
+                failure_code = "PAIR_ANCHORING_BELOW_THRESHOLD"
+        _emit_decision(
+            capture,
+            passed=passed,
+            code=failure_code,
+            n_pairs_audited=audited,
+            n_anchored_pairs=anchored_count,
+            actual_pair_anchoring_rate=rate,
+            min_pair_anchoring_rate=min_block_anchoring_rate,
+            mode="blocks",
+        )
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,

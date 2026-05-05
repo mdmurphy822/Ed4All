@@ -33,7 +33,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
 
@@ -48,19 +48,90 @@ DEFAULT_MIN_EDGE_TYPES = 4
 DEFAULT_MIN_CONCEPT_NODES = 50
 
 
+def _emit_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    edge_count: int,
+    distinct_edge_types: int,
+    concept_node_count: int,
+    min_edges: int,
+    min_edge_types: int,
+    min_concept_nodes: int,
+) -> None:
+    """Emit one ``min_edge_count_check`` decision per validate() call.
+
+    H3 Wave W4 closure: every pass / threshold-fail / missing-input
+    path emits one event so post-hoc replay can distinguish a thin
+    pedagogy graph from a thin concept graph from a missing input.
+    """
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    rationale = (
+        f"min_edge_count gate verdict: edge_count={edge_count} "
+        f"(min_edges={min_edges}), distinct_edge_types="
+        f"{distinct_edge_types} (min_edge_types={min_edge_types}), "
+        f"concept_node_count={concept_node_count} "
+        f"(min_concept_nodes={min_concept_nodes}); failure_code="
+        f"{code or 'none'}."
+    )
+    metrics: Dict[str, Any] = {
+        "edge_count": int(edge_count),
+        "distinct_edge_types": int(distinct_edge_types),
+        "concept_node_count": int(concept_node_count),
+        "min_edges": int(min_edges),
+        "min_edge_types": int(min_edge_types),
+        "min_concept_nodes": int(min_concept_nodes),
+        "passed": bool(passed),
+        "failure_code": code,
+    }
+    try:
+        capture.log_decision(
+            decision_type="min_edge_count_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(metrics),
+            metrics=metrics,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on "
+            "min_edge_count_check: %s",
+            exc,
+        )
+
+
 class MinEdgeCountValidator:
     """Pre-synthesis sparsity gate over the pedagogy + concept graphs."""
 
     name = "min_edge_count"
     version = "1.0.0"
 
+    def __init__(self, *, decision_capture: Optional[Any] = None) -> None:
+        self._decision_capture = decision_capture
+
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", "min_edge_count")
         issues: List[GateIssue] = []
 
+        capture = inputs.get("decision_capture") or self._decision_capture
+
         pedagogy_path_raw = inputs.get("pedagogy_graph_path")
         concept_path_raw = inputs.get("concept_graph_path")
         if not pedagogy_path_raw or not concept_path_raw:
+            _emit_decision(
+                capture,
+                passed=False,
+                code="MISSING_INPUTS",
+                edge_count=0,
+                distinct_edge_types=0,
+                concept_node_count=0,
+                min_edges=DEFAULT_MIN_EDGES,
+                min_edge_types=DEFAULT_MIN_EDGE_TYPES,
+                min_concept_nodes=DEFAULT_MIN_CONCEPT_NODES,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -188,6 +259,27 @@ class MinEdgeCountValidator:
             edge_type_count=edge_type_count,
             min_edge_types=min_edge_types,
             concept_node_count=concept_node_count,
+            min_concept_nodes=min_concept_nodes,
+        )
+
+        # H3 W4: surface the first critical issue's code (when any) so
+        # replay can distinguish PEDAGOGY_EDGES_BELOW_FLOOR from
+        # CONCEPT_NODES_BELOW_FLOOR etc. without parsing GateIssue lists.
+        failure_code = None
+        if not passed:
+            for i in issues:
+                if i.severity == "critical":
+                    failure_code = i.code
+                    break
+        _emit_decision(
+            capture,
+            passed=passed,
+            code=failure_code,
+            edge_count=edge_count,
+            distinct_edge_types=edge_type_count,
+            concept_node_count=concept_node_count,
+            min_edges=min_edges,
+            min_edge_types=min_edge_types,
             min_concept_nodes=min_concept_nodes,
         )
 
