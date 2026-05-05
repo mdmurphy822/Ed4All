@@ -448,12 +448,51 @@ def _build_block_outline_schema(
 _BLOCK_TYPE_JSON_SCHEMAS: Dict[str, Dict[str, Any]] = {}
 for _bt in BLOCK_TYPES:
     if _bt == "assessment_item":
+        # Worker W7: distractors[] (>=2) + correct_answer_index (>=0)
+        # required alongside stem + answer_key. Mirrors
+        # ``schemas/knowledge/courseforge_jsonld_v1.schema.json::$defs.AssessmentItem``;
+        # the canonical shape lives there and ``lib.validators.
+        # assessment_item_payload.BlockAssessmentItemPayloadValidator``
+        # gates the same fields end-to-end. Pre-W7 the outline tier
+        # required only stem + answer_key, so a model could ship a
+        # "valid" assessment_item with one distractor or none and
+        # ship it; the new fields close that regression class. The
+        # per-distractor ``misconception_ref`` is OPTIONAL and is a
+        # forward-compat slot — the chunk -> misconception linkage
+        # that would populate it is deferred to a separate plan
+        # post-W9. When present, the pattern is enforced at the
+        # validator (and at the JSON-LD emit's $defs.AssessmentItem).
         _BLOCK_TYPE_JSON_SCHEMAS[_bt] = _build_block_outline_schema(
             _bt,
-            extra_required=["stem", "answer_key"],
+            extra_required=[
+                "stem",
+                "answer_key",
+                "distractors",
+                "correct_answer_index",
+            ],
             extra_properties={
                 "stem": {"type": "string", "minLength": 1},
                 "answer_key": {"type": "string", "minLength": 1},
+                "distractors": {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 5,
+                    "items": {
+                        "type": "object",
+                        "required": ["text"],
+                        "properties": {
+                            "text": {"type": "string", "minLength": 1},
+                            "misconception_ref": {
+                                "type": "string",
+                                "pattern": r"^[A-Z]{2,}-\d{2,}#m\d+$",
+                            },
+                        },
+                    },
+                },
+                "correct_answer_index": {
+                    "type": "integer",
+                    "minimum": 0,
+                },
             },
         )
     elif _bt == "prereq_set":
@@ -528,6 +567,23 @@ _RETRY_DIRECTIVE_PATTERNS: List[Tuple["re.Pattern[str]", str]] = [
         "Every enum-typed field MUST be a JSON string (quoted), "
         "not a number or bare token. Wrap numeric tier or boolean "
         "values in their canonical string label.",
+    ),
+    # Worker W7: assessment_item Blocks must carry distractors[] +
+    # correct_answer_index alongside stem + answer_key. The validator
+    # surfaces the missing-key / too-few-items errors as
+    # ``'distractors' is a required property`` /
+    # ``[...] is too short`` / ``'correct_answer_index' is a required property``
+    # depending on which constraint trips first. One pattern catches
+    # all three failure modes via a non-greedy alternation match.
+    (
+        re.compile(
+            r"'(distractors|correct_answer_index)' is a required property"
+            r"|distractors.* is too short"
+        ),
+        "Block of type 'assessment_item' must include `distractors` "
+        "(a list of at least 2 items, each with a `text` field) and "
+        "`correct_answer_index` (a 0-based integer pointing at the "
+        "correct distractor).",
     ),
 ]
 

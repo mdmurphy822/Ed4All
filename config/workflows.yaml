@@ -107,6 +107,18 @@ workflows:
             behavior:
               on_error: warn
 
+          # Worker W7: assessment_item payload-shape gate. Filters
+          # blocks[] to block_type == "assessment_item" and asserts
+          # distractors[] (>=2) + correct_answer_index (>=0, <
+          # len(distractors)) + per-distractor text (non-empty) +
+          # optional misconception_ref pattern match. Closes the W7
+          # regression class (one-distractor assessment_item).
+          - gate_id: outline_assessment_item_payload
+            validator: lib.validators.assessment_item_payload.BlockAssessmentItemPayloadValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+
       - name: content_generation_rewrite
         agents: [content-generator]
         parallel: true
@@ -165,6 +177,17 @@ workflows:
               max_critical_issues: 0
             behavior:
               on_error: warn
+
+          # Worker W7: rewrite-tier symmetric mirror of
+          # outline_assessment_item_payload (inter_tier_validation).
+          # Scrapes <li data-cf-distractor-index="N"> siblings out of
+          # the rewrite-tier HTML and asserts >=2 entries with
+          # contiguous 0-based indices.
+          - gate_id: rewrite_assessment_item_payload
+            validator: lib.validators.assessment_item_payload.BlockAssessmentItemPayloadValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
 
           # Followup §3.2: HTML-shape sentinel mirrored from
           # textbook_to_course::post_rewrite_validation. Closes the
@@ -1084,6 +1107,24 @@ workflows:
               on_error: warn
             description: Phase 3 inter-tier — verify outline-tier source_ids resolve against the DART staging manifest
 
+          # Worker W7: assessment_item payload-shape gate. Filters
+          # blocks[] to block_type == "assessment_item" and asserts
+          # distractors[] (>=2) + correct_answer_index (>=0, <
+          # len(distractors)) + per-distractor text (non-empty) +
+          # optional misconception_ref pattern match. Pre-W7 the
+          # outline-tier per-block JSON schema required only stem +
+          # answer_key, so a model could ship a "valid" assessment_item
+          # with one (or zero) distractor(s); this gate closes that
+          # regression class end-to-end. The forward-compat
+          # misconception_ref linkage stays optional (chunk ->
+          # misconception grounding lands in a separate plan post-W9).
+          - gate_id: outline_assessment_item_payload
+            validator: lib.validators.assessment_item_payload.BlockAssessmentItemPayloadValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            description: Worker W7 — verify outline-tier assessment_item Blocks carry distractors[] (>=2) + correct_answer_index pointing at a valid distractor.
+
           # Phase 4 Wave N1 Subtask 11: SHACL parallel of the four
           # outline-tier Block validators above. Validates outline-tier
           # Block JSON-LD against schemas/context/courseforge_v1.shacl.ttl
@@ -1308,6 +1349,20 @@ workflows:
             behavior:
               on_error: warn
             description: Phase 3.5 post-rewrite — verify rewrite-tier source_ids resolve against the DART staging manifest
+
+          # Worker W7: rewrite-tier symmetric mirror of the
+          # outline_assessment_item_payload gate at the inter-tier
+          # seam. Scrapes <li data-cf-distractor-index="N"> siblings
+          # out of the rewrite-tier HTML and asserts >=2 entries with
+          # contiguous 0-based indices and non-empty body text per
+          # <li>. Closes the W7 regression class against rewrite-tier
+          # HTML emit that drops a distractor silently.
+          - gate_id: rewrite_assessment_item_payload
+            validator: lib.validators.assessment_item_payload.BlockAssessmentItemPayloadValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            description: Worker W7 — verify rewrite-tier assessment_item HTML carries >=2 <li data-cf-distractor-index='N'> siblings with contiguous 0-based indices.
 
           # Followup §3.2 (plans/qwen7b-courseforge-fixes-2026-05-followup.md):
           # HTML-shape sentinel that closes the JSON-wrapped-emit

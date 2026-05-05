@@ -584,6 +584,12 @@ _W4_OUTLINE_LIB_VALIDATORS_ALLOWLIST = frozenset({
     "lib.validators.objective_roundtrip_similarity.ObjectiveRoundtripSimilarityValidator",
     "lib.validators.bloom_classifier_disagreement.BloomClassifierDisagreementValidator",
     "lib.validators.courseforge_outline_shacl.CourseforgeOutlineShaclValidator",
+    # Worker W7: Block-input payload validator gating assessment_item
+    # distractors[] / correct_answer_index. Same Block-input shape as
+    # the four Courseforge.router.inter_tier_gates.Block* siblings, but
+    # lives under lib.validators.* because it's a payload-shape gate
+    # rather than a structural-reference gate.
+    "lib.validators.assessment_item_payload.BlockAssessmentItemPayloadValidator",
 })
 
 
