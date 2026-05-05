@@ -452,6 +452,84 @@ def test_default_thresholds_match_module_constants() -> None:
     assert validator._confidence_floor == _DISAGREEMENT_CONFIDENCE_FLOOR
 
 
+# --------------------------------------------------------------------- #
+# H3 Wave W2 — DecisionCapture wiring smoke test.
+# --------------------------------------------------------------------- #
+
+
+class _StubCapture:
+    """Records every log_decision invocation."""
+
+    def __init__(self) -> None:
+        self.calls: List[Tuple[str, str, str]] = []
+
+    def log_decision(self, decision_type, decision, rationale, **kwargs):
+        self.calls.append((decision_type, decision, rationale))
+
+
+def test_decision_capture_emits_one_event_per_validate_call() -> None:
+    """A single audited block yields exactly one
+    ``bloom_classifier_disagreement_check`` decision capture event, with
+    rationale interpolating ensemble winner + dispersion + declared
+    bloom_level + member-vote dynamic signals."""
+    text = "Recall the definition of single sign-on."
+    ensemble = _StubEnsemble(
+        response_map={
+            text: {
+                "winner_level": "remember",
+                "winner_score": 0.92,
+                "dispersion": 0.1,
+                "per_member": [("remember", 0.95), ("remember", 0.89)],
+            }
+        }
+    )
+    capture = _StubCapture()
+    validator = BloomClassifierDisagreementValidator(ensemble=ensemble)
+    block = _make_assessment_block(statement=text, bloom_level="remember")
+    validator.validate({"blocks": [block], "decision_capture": capture})
+
+    assert len(capture.calls) == 1
+    decision_type, decision, rationale = capture.calls[0]
+    assert decision_type == "bloom_classifier_disagreement_check"
+    assert decision == "passed"
+    assert len(rationale) >= 20
+    # Dynamic signals appear in the rationale.
+    assert "declared_level=remember" in rationale
+    assert "ensemble_winner=remember" in rationale
+    assert "dispersion=" in rationale
+    assert "dispersion_threshold=" in rationale
+    assert "member_votes=" in rationale
+    assert "members_loaded=" in rationale
+
+
+def test_decision_capture_emits_for_disagreement_failure() -> None:
+    """A disagreeing block yields exactly one capture with
+    decision='failed:...' carrying the BERT_ENSEMBLE_DISAGREEMENT code
+    and the ensemble's winner level in the rationale."""
+    text = "Construct a novel argument refuting the textbook claim."
+    ensemble = _StubEnsemble(
+        response_map={
+            text: {
+                "winner_level": "create",
+                "winner_score": 0.78,
+                "dispersion": 0.2,
+                "per_member": [("create", 0.85), ("create", 0.71)],
+            }
+        }
+    )
+    capture = _StubCapture()
+    validator = BloomClassifierDisagreementValidator(ensemble=ensemble)
+    block = _make_assessment_block(statement=text, bloom_level="remember")
+    validator.validate({"blocks": [block], "decision_capture": capture})
+
+    assert len(capture.calls) == 1
+    _, decision, rationale = capture.calls[0]
+    assert decision.startswith("failed:")
+    assert "BERT_ENSEMBLE_DISAGREEMENT" in decision
+    assert "ensemble_winner=create" in rationale
+    assert "declared_level=remember" in rationale
+
+
 def test_per_block_classify_failure_is_silently_skipped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
