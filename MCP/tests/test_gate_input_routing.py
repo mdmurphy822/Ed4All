@@ -561,3 +561,96 @@ def test_group_e_degraded_chunk_input_returns_wrong_validator_class() -> None:
             "(W4 corrects the YAML mis-pointer)."
         )
         assert inputs == {}
+
+
+# ---------------------------------------------------------------------- #
+# W4 — outline-tier inter_tier_validation gates point at Block-shape
+# validators only. The chunk-shape validators (CurieAnchoringValidator /
+# ContentTypeValidator under ``lib.validators.*``) misfit the Block-input
+# inter-tier seam — W1 registered them as fail-loud safety-net entries
+# (`wrong_validator_class` skip), W4 corrects the YAML so the seam wires
+# the correct Block-shape variants. Any future YAML drift back to the
+# chunk-shape paths trips this gate's allow-list.
+# ---------------------------------------------------------------------- #
+
+
+# Six approved ``lib.validators.*`` paths used at the outline seam (in
+# course_generation::inter_tier_validation; textbook_to_course's seam
+# uses a strict subset). Anything else under ``lib.validators.*`` for an
+# ``outline_*`` gate trips the regression assertion.
+_W4_OUTLINE_LIB_VALIDATORS_ALLOWLIST = frozenset({
+    "lib.validators.objective_assessment_similarity.ObjectiveAssessmentSimilarityValidator",
+    "lib.validators.concept_example_similarity.ConceptExampleSimilarityValidator",
+    "lib.validators.objective_roundtrip_similarity.ObjectiveRoundtripSimilarityValidator",
+    "lib.validators.bloom_classifier_disagreement.BloomClassifierDisagreementValidator",
+    "lib.validators.courseforge_outline_shacl.CourseforgeOutlineShaclValidator",
+})
+
+
+def test_outline_seam_uses_block_validators() -> None:
+    """W4: every ``outline_*`` gate at the inter-tier seam wires a
+    Block-shape validator OR an approved statistical-tier
+    ``lib.validators.*`` path.
+
+    Pre-W4, ``outline_curie_anchoring`` and ``outline_content_type`` in
+    ``textbook_to_course::inter_tier_validation`` referenced the
+    chunk-shape validators (``lib.validators.curie_anchoring.*`` /
+    ``lib.validators.content_type.*``) which misfit the Block-input
+    seam. W1 added a fail-loud safety net in ``default_router`` so the
+    misfit chunk-shape entries return ``wrong_validator_class``. W4
+    repoints the YAML at the matching ``Courseforge.router.inter_tier_gates.Block*``
+    classes. This test guards against drift back to the chunk-shape
+    paths in either workflow.
+    """
+    import yaml
+
+    config_path = (
+        Path(__file__).resolve().parents[2] / "config" / "workflows.yaml"
+    )
+    with config_path.open() as fh:
+        workflows = yaml.safe_load(fh)
+
+    workflows_with_inter_tier = []
+    for workflow_name in ("textbook_to_course", "course_generation"):
+        wf = workflows["workflows"][workflow_name]
+        for phase in wf["phases"]:
+            if phase["name"] != "inter_tier_validation":
+                continue
+            workflows_with_inter_tier.append(workflow_name)
+            gates = phase.get("validation_gates", [])
+            outline_gates = [
+                g for g in gates if g["gate_id"].startswith("outline_")
+            ]
+            assert outline_gates, (
+                f"{workflow_name}::inter_tier_validation has no "
+                f"outline_* gates — sanity-check failed before assertions."
+            )
+            for gate in outline_gates:
+                validator = gate["validator"]
+                gate_id = gate["gate_id"]
+                allowed = (
+                    validator.startswith(
+                        "Courseforge.router.inter_tier_gates.Block"
+                    )
+                    or validator in _W4_OUTLINE_LIB_VALIDATORS_ALLOWLIST
+                )
+                assert allowed, (
+                    f"W4 regression: {workflow_name}::"
+                    f"inter_tier_validation::{gate_id} points at "
+                    f"{validator!r}. Outline-seam gates must wire a "
+                    f"Block-shape validator (Courseforge.router."
+                    f"inter_tier_gates.Block*) or one of the approved "
+                    f"statistical-tier paths "
+                    f"({sorted(_W4_OUTLINE_LIB_VALIDATORS_ALLOWLIST)})."
+                )
+
+    # Sanity-check: BOTH workflows have an inter_tier_validation phase.
+    # If a future refactor renames or drops the phase, this assertion
+    # surfaces it loudly instead of silently skipping the loop above.
+    assert set(workflows_with_inter_tier) == {
+        "textbook_to_course",
+        "course_generation",
+    }, (
+        "Expected inter_tier_validation in both textbook_to_course and "
+        f"course_generation; saw it in {workflows_with_inter_tier}."
+    )
