@@ -95,6 +95,55 @@ DEFAULT_THRESHOLD: float = 0.50
 _ISSUE_LIST_CAP: int = 50
 
 
+def _emit_decision(
+    capture: Any,
+    *,
+    block_id: str,
+    passed: bool,
+    code: Optional[str],
+    cosine: Optional[float],
+    threshold: float,
+    concept_ref: Optional[str],
+    concept_count: int,
+    embedder_strict: bool,
+) -> None:
+    """Emit one ``concept_example_similarity_check`` decision per
+    audited example block.
+
+    Rationale interpolates dynamic signals — block_id, weakest-pair
+    cosine + threshold + above/below flag, the offending concept_ref,
+    declared concept-ref count, and the embedder strict-mode flag (so
+    EMBEDDING_DEPS_MISSING graceful-degrade events stay distinguishable
+    from real low-similarity failures).
+    """
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    cos_str = f"{cosine:.4f}" if cosine is not None else "n/a"
+    above_threshold = (cosine is not None and cosine >= threshold)
+    rationale = (
+        f"Concept/example similarity check on Block {block_id!r}: "
+        f"min_pair_cosine={cos_str}, threshold={threshold:.4f}, "
+        f"above_threshold={above_threshold}, "
+        f"weakest_concept={concept_ref or 'n/a'}, "
+        f"declared_concept_count={concept_count}, "
+        f"embedder_strict_mode={embedder_strict}, "
+        f"failure_code={code or 'none'}."
+    )
+    try:
+        capture.log_decision(
+            decision_type="concept_example_similarity_check",
+            decision=decision,
+            rationale=rationale,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on "
+            "concept_example_similarity_check: %s",
+            exc,
+        )
+
+
 def _coerce_blocks(
     inputs: Dict[str, Any],
 ) -> Tuple[List[Block], Optional[GateIssue]]:
@@ -208,6 +257,7 @@ class ConceptExampleSimilarityValidator:
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
+        capture = inputs.get("decision_capture")
         threshold = float(inputs.get("threshold", self._threshold))
 
         blocks, err = _coerce_blocks(inputs)
@@ -234,8 +284,19 @@ class ConceptExampleSimilarityValidator:
                 issues=[],
             )
 
+        from lib.embedding.sentence_embedder import is_strict_mode
+        embedder_strict = is_strict_mode()
+
         embedder = self._embedder_override or try_load_embedder()
         if embedder is None:
+            for block in examples:
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=True,
+                    code="EMBEDDING_DEPS_MISSING", cosine=None,
+                    threshold=threshold, concept_ref=None,
+                    concept_count=len(_resolve_concept_refs(block)),
+                    embedder_strict=embedder_strict,
+                )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -285,6 +346,12 @@ class ConceptExampleSimilarityValidator:
                             location=block.block_id,
                         )
                     )
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=True,
+                    code="EXAMPLE_SURFACE_EMPTY", cosine=None,
+                    threshold=threshold, concept_ref=None,
+                    concept_count=0, embedder_strict=embedder_strict,
+                )
                 continue
 
             concept_refs = _resolve_concept_refs(block)
@@ -302,6 +369,12 @@ class ConceptExampleSimilarityValidator:
                             location=block.block_id,
                         )
                     )
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=True,
+                    code="EXAMPLE_NO_CONCEPT_REFS", cosine=None,
+                    threshold=threshold, concept_ref=None,
+                    concept_count=0, embedder_strict=embedder_strict,
+                )
                 continue
 
             try:
@@ -324,6 +397,13 @@ class ConceptExampleSimilarityValidator:
                             location=block.block_id,
                         )
                     )
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=True,
+                    code="EMBEDDING_ENCODE_ERROR", cosine=None,
+                    threshold=threshold, concept_ref=None,
+                    concept_count=len(concept_refs),
+                    embedder_strict=embedder_strict,
+                )
                 continue
 
             min_cos: Optional[float] = None
@@ -372,6 +452,13 @@ class ConceptExampleSimilarityValidator:
                 )
 
             if min_cos is None:
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=True,
+                    code="CONCEPT_DEFINITION_UNRESOLVED", cosine=None,
+                    threshold=threshold, concept_ref=None,
+                    concept_count=len(concept_refs),
+                    embedder_strict=embedder_strict,
+                )
                 continue
 
             if min_cos < threshold:
@@ -399,8 +486,23 @@ class ConceptExampleSimilarityValidator:
                             ),
                         )
                     )
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=False,
+                    code="EXAMPLE_CONCEPT_LOW_SIMILARITY",
+                    cosine=min_cos, threshold=threshold,
+                    concept_ref=min_concept,
+                    concept_count=len(concept_refs),
+                    embedder_strict=embedder_strict,
+                )
             else:
                 passed_count += 1
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=True,
+                    code=None, cosine=min_cos, threshold=threshold,
+                    concept_ref=min_concept,
+                    concept_count=len(concept_refs),
+                    embedder_strict=embedder_strict,
+                )
 
         score = 1.0 if audited == 0 else round(passed_count / audited, 4)
         passed = low_similarity_count == 0

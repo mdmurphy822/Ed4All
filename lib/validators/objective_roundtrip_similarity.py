@@ -117,6 +117,55 @@ _DEFAULT_PARAPHRASE_PROMPT: str = "Paraphrase preserving meaning"
 ParaphraseFn = Callable[[str], Optional[str]]
 
 
+def _emit_decision(
+    capture: Any,
+    *,
+    block_id: str,
+    passed: bool,
+    code: Optional[str],
+    cosine: Optional[float],
+    threshold: float,
+    statement_len: int,
+    paraphrase_len: int,
+    embedder_strict: bool,
+) -> None:
+    """Emit one ``objective_roundtrip_similarity_check`` decision per
+    audited objective block.
+
+    Rationale interpolates dynamic signals — block_id, cosine +
+    threshold + above/below flag, original-statement + paraphrase
+    surface lengths, and the embedder strict-mode flag (so
+    EMBEDDING_DEPS_MISSING graceful-degrade events are distinguishable
+    from real low-similarity events in the audit trail).
+    """
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    cos_str = f"{cosine:.4f}" if cosine is not None else "n/a"
+    above_threshold = (cosine is not None and cosine >= threshold)
+    rationale = (
+        f"Objective-roundtrip similarity check on Block {block_id!r}: "
+        f"roundtrip_cosine={cos_str}, threshold={threshold:.4f}, "
+        f"above_threshold={above_threshold}, "
+        f"statement_len={statement_len}, "
+        f"paraphrase_len={paraphrase_len}, "
+        f"embedder_strict_mode={embedder_strict}, "
+        f"failure_code={code or 'none'}."
+    )
+    try:
+        capture.log_decision(
+            decision_type="objective_roundtrip_similarity_check",
+            decision=decision,
+            rationale=rationale,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on "
+            "objective_roundtrip_similarity_check: %s",
+            exc,
+        )
+
+
 def _coerce_blocks(
     inputs: Dict[str, Any],
 ) -> Tuple[List[Block], Optional[GateIssue]]:
@@ -278,6 +327,7 @@ class ObjectiveRoundtripSimilarityValidator:
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
+        capture = inputs.get("decision_capture")
         threshold = float(inputs.get("threshold", self._threshold))
 
         blocks, err = _coerce_blocks(inputs)
@@ -304,8 +354,20 @@ class ObjectiveRoundtripSimilarityValidator:
                 issues=[],
             )
 
+        from lib.embedding.sentence_embedder import is_strict_mode
+        embedder_strict = is_strict_mode()
+
         embedder = self._embedder_override or try_load_embedder()
         if embedder is None:
+            for block in objectives:
+                stmt = _extract_objective_statement(block) or ""
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=True,
+                    code="EMBEDDING_DEPS_MISSING", cosine=None,
+                    threshold=threshold,
+                    statement_len=len(stmt), paraphrase_len=0,
+                    embedder_strict=embedder_strict,
+                )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -333,6 +395,15 @@ class ObjectiveRoundtripSimilarityValidator:
             inputs.get("paraphrase_fn") or self._paraphrase_fn
         )
         if paraphrase_fn is None:
+            for block in objectives:
+                stmt = _extract_objective_statement(block) or ""
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=True,
+                    code="PARAPHRASE_NOT_CONFIGURED", cosine=None,
+                    threshold=threshold,
+                    statement_len=len(stmt), paraphrase_len=0,
+                    embedder_strict=embedder_strict,
+                )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -381,6 +452,13 @@ class ObjectiveRoundtripSimilarityValidator:
                             location=block.block_id,
                         )
                     )
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=True,
+                    code="OBJECTIVE_STATEMENT_EMPTY", cosine=None,
+                    threshold=threshold,
+                    statement_len=0, paraphrase_len=0,
+                    embedder_strict=embedder_strict,
+                )
                 continue
 
             try:
@@ -403,6 +481,13 @@ class ObjectiveRoundtripSimilarityValidator:
                             location=block.block_id,
                         )
                     )
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=True,
+                    code="PARAPHRASE_DISPATCH_FAILED", cosine=None,
+                    threshold=threshold,
+                    statement_len=len(statement), paraphrase_len=0,
+                    embedder_strict=embedder_strict,
+                )
                 continue
 
             if not paraphrase or not isinstance(paraphrase, str):
@@ -419,6 +504,13 @@ class ObjectiveRoundtripSimilarityValidator:
                             location=block.block_id,
                         )
                     )
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=True,
+                    code="PARAPHRASE_DISPATCH_FAILED", cosine=None,
+                    threshold=threshold,
+                    statement_len=len(statement), paraphrase_len=0,
+                    embedder_strict=embedder_strict,
+                )
                 continue
 
             try:
@@ -442,6 +534,14 @@ class ObjectiveRoundtripSimilarityValidator:
                             location=block.block_id,
                         )
                     )
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=True,
+                    code="EMBEDDING_ENCODE_ERROR", cosine=None,
+                    threshold=threshold,
+                    statement_len=len(statement),
+                    paraphrase_len=len(paraphrase),
+                    embedder_strict=embedder_strict,
+                )
                 continue
 
             cos = cosine_similarity(original_vec, paraphrase_vec)
@@ -471,8 +571,23 @@ class ObjectiveRoundtripSimilarityValidator:
                             ),
                         )
                     )
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=False,
+                    code="OBJECTIVE_ROUNDTRIP_LOW_SIMILARITY",
+                    cosine=cos, threshold=threshold,
+                    statement_len=len(statement),
+                    paraphrase_len=len(paraphrase),
+                    embedder_strict=embedder_strict,
+                )
             else:
                 passed_count += 1
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=True,
+                    code=None, cosine=cos, threshold=threshold,
+                    statement_len=len(statement),
+                    paraphrase_len=len(paraphrase),
+                    embedder_strict=embedder_strict,
+                )
 
         score = 1.0 if audited == 0 else round(passed_count / audited, 4)
         passed = low_similarity_count == 0

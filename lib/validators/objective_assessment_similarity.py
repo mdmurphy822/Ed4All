@@ -107,6 +107,57 @@ DEFAULT_THRESHOLD: float = 0.55
 _ISSUE_LIST_CAP: int = 50
 
 
+def _emit_decision(
+    capture: Any,
+    *,
+    block_id: str,
+    passed: bool,
+    code: Optional[str],
+    cosine: Optional[float],
+    threshold: float,
+    objective_id: Optional[str],
+    objective_count: int,
+    embedder_strict: bool,
+) -> None:
+    """Emit one ``objective_assessment_similarity_check`` decision per
+    ``validate()`` invocation (per-block cardinality).
+
+    Rationale interpolates dynamic signals so captures are replayable:
+    block_id, declared-objective count, weakest-pair cosine + threshold +
+    above/below flag, the offending objective_id, and the embedder
+    strict-mode flag (so EMBEDDING_DEPS_MISSING graceful-degrade events
+    are distinguishable from real low-similarity events).
+    """
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    cos_str = f"{cosine:.4f}" if cosine is not None else "n/a"
+    above_threshold = (
+        cosine is not None and cosine >= threshold
+    )
+    rationale = (
+        f"Objective/assessment similarity check on Block {block_id!r}: "
+        f"min_pair_cosine={cos_str}, threshold={threshold:.4f}, "
+        f"above_threshold={above_threshold}, "
+        f"weakest_objective={objective_id or 'n/a'}, "
+        f"declared_objective_count={objective_count}, "
+        f"embedder_strict_mode={embedder_strict}, "
+        f"failure_code={code or 'none'}."
+    )
+    try:
+        capture.log_decision(
+            decision_type="objective_assessment_similarity_check",
+            decision=decision,
+            rationale=rationale,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on "
+            "objective_assessment_similarity_check: %s",
+            exc,
+        )
+
+
 def _coerce_blocks(
     inputs: Dict[str, Any],
 ) -> Tuple[List[Block], Optional[GateIssue]]:
@@ -212,6 +263,7 @@ class ObjectiveAssessmentSimilarityValidator:
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
+        capture = inputs.get("decision_capture")
         threshold = float(inputs.get("threshold", self._threshold))
 
         blocks, err = _coerce_blocks(inputs)
@@ -238,8 +290,27 @@ class ObjectiveAssessmentSimilarityValidator:
                 issues=[],
             )
 
+        from lib.embedding.sentence_embedder import is_strict_mode
+        embedder_strict = is_strict_mode()
+
         embedder = self._embedder_override or try_load_embedder()
         if embedder is None:
+            # Graceful-degrade — emit one passed=True capture per
+            # audited assessment so the silent-degrade C5 signal lands
+            # in the audit trail, then return the single warning gate
+            # result.
+            for block in assessments:
+                _emit_decision(
+                    capture,
+                    block_id=block.block_id,
+                    passed=True,
+                    code="EMBEDDING_DEPS_MISSING",
+                    cosine=None,
+                    threshold=threshold,
+                    objective_id=None,
+                    objective_count=len(_resolve_objective_ids(block)),
+                    embedder_strict=embedder_strict,
+                )
             # Wave N1 graceful-degrade contract — warning, passed=True,
             # no action. Mirrors the SHACL-deps-missing path in
             # courseforge_outline_shacl.py:299-317.
@@ -293,6 +364,12 @@ class ObjectiveAssessmentSimilarityValidator:
                             location=block.block_id,
                         )
                     )
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=True,
+                    code="ASSESSMENT_SURFACE_EMPTY", cosine=None,
+                    threshold=threshold, objective_id=None,
+                    objective_count=0, embedder_strict=embedder_strict,
+                )
                 continue
 
             obj_ids = _resolve_objective_ids(block)
@@ -310,6 +387,12 @@ class ObjectiveAssessmentSimilarityValidator:
                             location=block.block_id,
                         )
                     )
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=True,
+                    code="ASSESSMENT_NO_OBJECTIVE_REFS", cosine=None,
+                    threshold=threshold, objective_id=None,
+                    objective_count=0, embedder_strict=embedder_strict,
+                )
                 continue
 
             try:
@@ -332,6 +415,13 @@ class ObjectiveAssessmentSimilarityValidator:
                             location=block.block_id,
                         )
                     )
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=True,
+                    code="EMBEDDING_ENCODE_ERROR", cosine=None,
+                    threshold=threshold, objective_id=None,
+                    objective_count=len(obj_ids),
+                    embedder_strict=embedder_strict,
+                )
                 continue
 
             min_cos: Optional[float] = None
@@ -375,6 +465,13 @@ class ObjectiveAssessmentSimilarityValidator:
             if min_cos is None:
                 # No resolvable objective statements at all — already
                 # surfaced via the unresolved-warnings issue above.
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=True,
+                    code="OBJECTIVE_STATEMENT_UNRESOLVED", cosine=None,
+                    threshold=threshold, objective_id=None,
+                    objective_count=len(obj_ids),
+                    embedder_strict=embedder_strict,
+                )
                 continue
 
             if min_cos < threshold:
@@ -402,8 +499,23 @@ class ObjectiveAssessmentSimilarityValidator:
                             ),
                         )
                     )
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=False,
+                    code="ASSESSMENT_OBJECTIVE_LOW_SIMILARITY",
+                    cosine=min_cos, threshold=threshold,
+                    objective_id=min_obj,
+                    objective_count=len(obj_ids),
+                    embedder_strict=embedder_strict,
+                )
             else:
                 passed_count += 1
+                _emit_decision(
+                    capture, block_id=block.block_id, passed=True,
+                    code=None, cosine=min_cos, threshold=threshold,
+                    objective_id=min_obj,
+                    objective_count=len(obj_ids),
+                    embedder_strict=embedder_strict,
+                )
 
         # Compute aggregate score: passing assessments / audited
         # assessments. Mirrors the inter_tier_gates per-block scoring
