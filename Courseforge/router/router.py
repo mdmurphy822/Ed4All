@@ -881,16 +881,16 @@ class CourseforgeRouter:
         Returns the full list with input ordering preserved. Each block
         is routed through:
 
-        1. **Outline tier** — when an explicit per-block n_candidates
-           value resolves to > 1 (via per-block-type policy entry,
-           ``COURSEFORGE_OUTLINE_N_CANDIDATES`` env var, or
-           constructor-time instance attribute), the block is dispatched
-           via :meth:`route_with_self_consistency` so the per-block
-           sampling loop + validator-driven regen budget runs. When no
-           explicit override is present, the block falls through to the
-           single-candidate :meth:`route` path with ``tier="outline"``
-           (preserves the legacy direct-dispatch behavior the integration
-           regression suite pins). On dispatch failure the block is
+        1. **Outline tier** — every block dispatches via
+           :meth:`route_with_self_consistency` by default (C1 fix
+           2026-05). The canonical :meth:`_resolve_n_candidates` chain
+           terminates at layer 5's
+           ``_DEFAULT_OUTLINE_N_CANDIDATES = 3``, so the per-block
+           sampling loop + validator-driven regen budget runs without
+           operator opt-in. Per-block-type opt-out via
+           ``block_routing.yaml::blocks.{type}.n_candidates: 1``
+           short-circuits to the single-candidate :meth:`route` path
+           with ``tier="outline"``. On dispatch failure the block is
            marked ``content="failed"``-style by capturing the exception
            and setting ``escalation_marker="outline_budget_exhausted"``;
            the failed block is included in the returned list but is
@@ -922,18 +922,15 @@ class CourseforgeRouter:
         list (the providers will note the absence in their prompts via
         ``_format_source_chunks(...)``).
 
-        Phase 3.5 Subtask 33 contract:
+        Phase 3.5 Subtask 33 contract (C1 fix 2026-05):
         - Outline pass dispatches via
-          :meth:`route_with_self_consistency` when an EXPLICIT
-          n_candidates > 1 resolves for the block (via
-          :meth:`_resolve_explicit_n_candidates`). The hardcoded default
-          ``_DEFAULT_OUTLINE_N_CANDIDATES = 3`` is intentionally NOT
-          treated as "explicit" here — the absence of an opt-in
-          per-block-type policy entry / env var / instance attribute
-          means the legacy direct-dispatch behaviour wins, preserving
-          byte-stability with every existing :meth:`route_all` caller
-          (including the integration regression suite at
-          ``tests/integration/test_courseforge_two_pass_end_to_end.py``).
+          :meth:`route_with_self_consistency` whenever the canonical
+          :meth:`_resolve_n_candidates` chain returns ``> 1``. Layer 5
+          of that chain is the hardcoded
+          ``_DEFAULT_OUTLINE_N_CANDIDATES = 3``, so every block routes
+          through self-consistency by default. Per-block-type opt-out
+          is via ``block_routing.yaml::blocks.{type}.n_candidates: 1``
+          (resolves at layer 2 and short-circuits to direct dispatch).
         - Rewrite pass stays on the direct :meth:`route` call regardless
           of n_candidates resolution (asymmetric default — see contract
           note in the rewrite-tier section above).
@@ -950,22 +947,22 @@ class CourseforgeRouter:
         outline_results: List[Tuple[int, Block, bool]] = []
         for idx, block in enumerate(blocks):
             block_chunks = chunks_lookup.get(block.block_id, [])
-            # Phase 3.5 Subtask 33: opt-in self-consistency dispatch.
-            # ``_resolve_explicit_n_candidates`` returns the explicit
-            # value when ANY of (policy / env var / instance attr)
-            # supplies a positive int; ``None`` when no explicit
-            # override exists. We deliberately do NOT consult
-            # ``_DEFAULT_OUTLINE_N_CANDIDATES`` here — the default
-            # exists to size the loop INSIDE
-            # ``route_with_self_consistency`` once the caller has
-            # already opted in, not to flip every legacy
-            # ``route_all`` caller into the multi-candidate path.
-            explicit_n = self._resolve_explicit_n_candidates(block)
+            # C1 fix (2026-05): consult the canonical
+            # ``_resolve_n_candidates`` chain, which terminates at layer
+            # 5's hardcoded ``_DEFAULT_OUTLINE_N_CANDIDATES = 3``. Every
+            # block now routes through ``route_with_self_consistency``
+            # by default; per-block-type opt-out via
+            # ``block_routing.yaml::blocks.{type}.n_candidates: 1``
+            # short-circuits to direct dispatch (resolves at layer 2).
+            # The previous ``_resolve_explicit_n_candidates`` gate has
+            # been removed — its asymmetry made the doc-claimed default
+            # of 3 inert in production.
+            resolved_n = self._resolve_n_candidates(block, None)
             try:
-                if explicit_n is not None and explicit_n > 1:
+                if resolved_n > 1:
                     outlined = self.route_with_self_consistency(
                         block,
-                        n_candidates=explicit_n,
+                        n_candidates=resolved_n,
                         source_chunks=block_chunks,
                         objectives=objectives_list,
                     )
@@ -1970,60 +1967,6 @@ class CourseforgeRouter:
 
         # 5. Hardcoded default.
         return _DEFAULT_OUTLINE_N_CANDIDATES
-
-    def _resolve_explicit_n_candidates(self, block: Block) -> Optional[int]:
-        """Return the per-block n_candidates value ONLY if explicitly set.
-
-        Phase 3.5 Subtask 33 helper. Mirrors :meth:`_resolve_n_candidates`'s
-        precedence chain but stops at layer 4 — the hardcoded default
-        :data:`_DEFAULT_OUTLINE_N_CANDIDATES` is intentionally NOT
-        consulted, so the helper returns ``None`` when no operator has
-        opted into multi-candidate sampling for this block. The caller
-        (``route_all``) uses ``None`` as the signal to fall through to
-        the legacy single-candidate :meth:`route` dispatch path,
-        preserving byte-stability with every existing caller that
-        doesn't set up a policy / env var / instance attribute (e.g.
-        the integration regression suite).
-
-        Precedence (highest first; mirrors :meth:`_resolve_n_candidates`):
-
-        1. ``self._policy.n_candidates_by_block_type[block.block_type]``
-           (explicit per-block-type policy entry).
-        2. ``COURSEFORGE_OUTLINE_N_CANDIDATES`` env var (parsed as int;
-           silently falls through on parse failure).
-        3. ``self._n_candidates_override`` (constructor-time instance
-           attribute set via ``CourseforgeRouter(n_candidates=...)``).
-        4. ``None`` — no explicit opt-in present.
-        """
-        # 1. Policy fast-lookup map.
-        policy = self._policy
-        if policy is not None:
-            policy_map = getattr(policy, "n_candidates_by_block_type", None)
-            if isinstance(policy_map, dict):
-                policy_n = policy_map.get(block.block_type)
-                if isinstance(policy_n, int) and policy_n > 0:
-                    return policy_n
-
-        # 2. Env var.
-        env_value = os.environ.get(_ENV_OUTLINE_N_CANDIDATES)
-        if env_value:
-            try:
-                env_n = int(env_value.strip())
-                if env_n > 0:
-                    return env_n
-            except (TypeError, ValueError):
-                # Parse failure falls through.
-                pass
-
-        # 3. Constructor-time instance attribute.
-        if (
-            isinstance(self._n_candidates_override, int)
-            and self._n_candidates_override > 0
-        ):
-            return self._n_candidates_override
-
-        # 4. No explicit opt-in.
-        return None
 
     def _resolve_regen_budget(
         self, block: Block, override: Optional[int]
