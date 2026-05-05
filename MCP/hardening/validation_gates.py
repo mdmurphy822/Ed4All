@@ -171,11 +171,22 @@ class GateConfig:
 class ValidationGateManager:
     """Manages validation gates for workflow phases."""
 
-    def __init__(self):
-        """Initialize gate manager."""
+    def __init__(self, capture: Any = None):
+        """Initialize gate manager.
+
+        Args:
+            capture: Optional ``DecisionCapture`` instance threaded by
+                the orchestrator's ``WorkflowExecutor`` (H3 Worker S0.5).
+                Mirrored into ``inputs`` under both ``decision_capture``
+                (Pattern A) and ``capture`` (Pattern B) keys at
+                ``run_gate`` time so emitting validators see a live
+                capture on direct invocations (tests / future MCP
+                surfaces). ``None`` keeps the pre-S0.5 contract.
+        """
         self._validators: Dict[str, Validator] = {}
         self._waivers: Dict[str, GateWaiver] = {}
         self._results_history: List[GateResult] = []
+        self._capture = capture
 
     # Allowlist of module prefixes permitted for validator imports.
     # Prevents arbitrary module loading (e.g., os, subprocess) via config.
@@ -258,6 +269,17 @@ class ValidationGateManager:
                     merged_inputs.setdefault(k, v)
                 merged_inputs["_gate_config"] = dict(gate_config.config)
                 inputs = merged_inputs
+            # H3 Worker S0.5: mirror the executor-side capture injection
+            # so direct callers (test harness / future MCP-exposed
+            # validate tools that build inputs by hand) also see a live
+            # capture. Idempotent with the executor seam — the executor
+            # injects first, this ``setdefault`` is a no-op when both
+            # fire. ``setdefault`` so explicit per-call overrides win.
+            if self._capture is not None:
+                merged_inputs2: Dict[str, Any] = dict(inputs or {})
+                merged_inputs2.setdefault("decision_capture", self._capture)
+                merged_inputs2.setdefault("capture", self._capture)
+                inputs = merged_inputs2
             result = validator.validate(inputs)
             result.gate_id = gate_config.gate_id
 
