@@ -89,7 +89,6 @@ workflows:
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
               on_error: warn
 
           - gate_id: outline_content_type
@@ -98,7 +97,6 @@ workflows:
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
               on_error: warn
 
           - gate_id: outline_page_objectives
@@ -107,7 +105,6 @@ workflows:
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
               on_error: warn
 
       - name: content_generation_rewrite
@@ -143,7 +140,6 @@ workflows:
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
               on_error: warn
 
           - gate_id: rewrite_content_type
@@ -152,7 +148,6 @@ workflows:
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
               on_error: warn
 
           - gate_id: rewrite_page_objectives
@@ -161,7 +156,6 @@ workflows:
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
               on_error: warn
 
           - gate_id: rewrite_source_refs
@@ -170,7 +164,6 @@ workflows:
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
               on_error: warn
 
           # Followup §3.2: HTML-shape sentinel mirrored from
@@ -182,7 +175,6 @@ workflows:
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
               on_error: fail_closed
             description: Followup §3.2 — verify rewrite-tier emit is a bare HTML body fragment with required data-cf-* attributes per block_type.
 
@@ -194,7 +186,6 @@ workflows:
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
               on_error: fail_closed
             config:
               thresholds:
@@ -1058,7 +1049,6 @@ workflows:
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
               on_error: warn
             description: Phase 3 inter-tier — verify outline-tier Blocks anchor on a CURIE per §3 (warn-only initially)
 
@@ -1068,7 +1058,6 @@ workflows:
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
               on_error: warn
             description: Phase 3 inter-tier — verify outline-tier Block content_type stays in the canonical 8-value enum
 
@@ -1078,7 +1067,6 @@ workflows:
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
               on_error: warn
             description: Phase 3 inter-tier — verify outline-tier Blocks reference the page's declared objectives
 
@@ -1088,7 +1076,6 @@ workflows:
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
               on_error: warn
             description: Phase 3 inter-tier — verify outline-tier source_ids resolve against the DART staging manifest
 
@@ -1271,7 +1258,6 @@ workflows:
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
               on_error: warn
             description: Phase 3.5 post-rewrite — verify rewrite-tier Blocks anchor on a CURIE per §3 (warn-only initially)
 
@@ -1281,7 +1267,6 @@ workflows:
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
               on_error: warn
             description: Phase 3.5 post-rewrite — verify rewrite-tier Block content_type stays in the canonical 8-value enum
 
@@ -1291,7 +1276,6 @@ workflows:
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
               on_error: warn
             description: Phase 3.5 post-rewrite — verify rewrite-tier Blocks reference the page's declared objectives
 
@@ -1301,25 +1285,23 @@ workflows:
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
               on_error: warn
             description: Phase 3.5 post-rewrite — verify rewrite-tier source_ids resolve against the DART staging manifest
 
           # Followup §3.2 (plans/qwen7b-courseforge-fixes-2026-05-followup.md):
           # HTML-shape sentinel that closes the JSON-wrapped-emit
           # regression class observed on Qwen-2.5-7B-Q4. Critical
-          # severity with on_fail: warn so the gate's per-block
-          # action="regenerate" drives the rewrite-tier remediation
-          # loop (the workflow-level fail-closed posture comes from
-          # the router exhausting COURSEFORGE_REWRITE_REGEN_BUDGET,
-          # which currently defaults to 10).
+          # severity so the workflow halts on failure; the per-block
+          # action="regenerate" still drives the rewrite-tier
+          # remediation loop via the router exhausting
+          # COURSEFORGE_REWRITE_REGEN_BUDGET (defaults to 10) before
+          # the gate result reaches the executor.
           - gate_id: rewrite_html_shape
             validator: lib.validators.rewrite_html_shape.RewriteHtmlShapeValidator
             severity: critical
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
               on_error: fail_closed
             description: Followup §3.2 — verify rewrite-tier emit is a bare HTML body fragment (not JSON-wrapped, markdown-fenced, or unbalanced) with all required data-cf-* attributes per block_type.
 
@@ -1339,7 +1321,6 @@ workflows:
             threshold:
               max_critical_issues: 0
             behavior:
-              on_fail: warn
               on_error: fail_closed
             config:
               thresholds:

@@ -397,3 +397,41 @@ def test_dart_markers_gate_wired_to_batch_dart_and_textbook_pipeline(
         g["gate_id"] for g in (tbc_phases["dart_conversion"].get("validation_gates") or [])
     ]
     assert "dart_markers" in tbc_gates
+
+
+# ---------------------------------------------------------------------------
+# Worker W8: critical gates must not carry the decorative on_fail: warn clause.
+# ---------------------------------------------------------------------------
+
+
+def test_critical_gates_do_not_carry_warn_on_fail(workflows_yaml_data):
+    """Worker W8: a `severity: critical` gate paired with `on_fail: warn`
+    is dishonest — the executor (`MCP/core/executor.py:1448-1451`) and gate
+    manager (`MCP/hardening/validation_gates.py:225-314`) only honor
+    ``behavior.on_error`` on the success/failure path, not
+    ``behavior.on_fail``. A critical gate fails the workflow on
+    `result.passed == False` regardless of `on_fail`. Strip the
+    decorative clause so the YAML reads honestly.
+
+    Warning-severity gates with ``on_fail: warn`` are load-bearing and
+    NOT covered by this assertion.
+    """
+    offenders = []
+    for wf_name, wf in workflows_yaml_data["workflows"].items():
+        for phase in wf.get("phases", []):
+            phase_name = phase.get("name")
+            for gate in phase.get("validation_gates") or []:
+                severity = gate.get("severity", "critical")
+                behavior = gate.get("behavior") or {}
+                on_fail = behavior.get("on_fail")
+                if severity == "critical" and on_fail == "warn":
+                    offenders.append(
+                        f"{wf_name}::{phase_name}::{gate.get('gate_id')}"
+                    )
+
+    assert not offenders, (
+        "Critical-severity gates carry decorative `on_fail: warn` "
+        "clauses that the executor silently ignores. The clause must be "
+        "removed so the YAML matches runtime behavior. Offenders:\n  - "
+        + "\n  - ".join(offenders)
+    )
