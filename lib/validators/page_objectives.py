@@ -18,11 +18,59 @@ Referenced by: config/workflows.yaml (course_generation, textbook_to_course)
 """
 
 import importlib.util
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
+
+logger = logging.getLogger(__name__)
+
+
+# H3 W6a: orchestration-phase decision-capture (Pattern A — one emit per
+# validate() call with corpus-wide cardinality). The `decision_capture`
+# key is the canonical S0.5 injection seam; `capture` is honoured as a
+# back-compat alias matching `Courseforge/router/inter_tier_gates.py
+# ::_resolve_capture`.
+def _emit_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    pages_audited: int,
+    pages_with_objectives: int,
+    unresolved_objectives_count: int,
+    coverage_rate: Optional[float],
+    objectives_path: Optional[Path],
+    content_dir: Optional[Path],
+) -> None:
+    """Emit one ``page_objectives_check`` decision per validate() call."""
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    rate_str = f"{coverage_rate:.3f}" if coverage_rate is not None else "n/a"
+    rationale = (
+        f"Page-objectives orchestration check: "
+        f"pages_audited={pages_audited}, "
+        f"pages_with_objectives={pages_with_objectives}, "
+        f"unresolved_objectives_count={unresolved_objectives_count}, "
+        f"coverage_rate={rate_str}, "
+        f"content_dir={str(content_dir) if content_dir else 'n/a'!r}, "
+        f"objectives_path={str(objectives_path) if objectives_path else 'n/a'!r}, "
+        f"failure_code={code or 'none'}."
+    )
+    try:
+        capture.log_decision(
+            decision_type="page_objectives_check",
+            decision=decision,
+            rationale=rationale,
+        )
+    except Exception as exc:  # noqa: BLE001 — capture failure must not abort the gate
+        logger.debug(
+            "DecisionCapture.log_decision raised on page_objectives_check: %s",
+            exc,
+        )
 
 
 def _load_page_objectives_helpers():
@@ -78,9 +126,23 @@ class PageObjectivesValidator:
                 ``"page_objectives"``).
         """
         gate_id = inputs.get("gate_id", "page_objectives")
+        capture = inputs.get("decision_capture")
+        if capture is None:
+            capture = inputs.get("capture")
 
         content_dir_raw = inputs.get("content_dir")
         if not content_dir_raw:
+            _emit_decision(
+                capture,
+                passed=False,
+                code="MISSING_CONTENT_DIR",
+                pages_audited=0,
+                pages_with_objectives=0,
+                unresolved_objectives_count=0,
+                coverage_rate=None,
+                objectives_path=None,
+                content_dir=None,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -97,6 +159,17 @@ class PageObjectivesValidator:
 
         content_dir = Path(content_dir_raw)
         if not content_dir.exists():
+            _emit_decision(
+                capture,
+                passed=False,
+                code="CONTENT_DIR_NOT_FOUND",
+                pages_audited=0,
+                pages_with_objectives=0,
+                unresolved_objectives_count=0,
+                coverage_rate=None,
+                objectives_path=None,
+                content_dir=content_dir,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -138,6 +211,17 @@ class PageObjectivesValidator:
             # blocking, rather than letting the run ship a course whose
             # per-page LO specificity was never checked.
             candidate_path = str(content_dir / "course.json")
+            _emit_decision(
+                capture,
+                passed=False,
+                code="PAGE_OBJECTIVES_PATH_MISSING",
+                pages_audited=0,
+                pages_with_objectives=0,
+                unresolved_objectives_count=0,
+                coverage_rate=None,
+                objectives_path=None,
+                content_dir=content_dir,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -165,6 +249,17 @@ class PageObjectivesValidator:
             )
 
         if not objectives_path.exists():
+            _emit_decision(
+                capture,
+                passed=False,
+                code="OBJECTIVES_FILE_NOT_FOUND",
+                pages_audited=0,
+                pages_with_objectives=0,
+                unresolved_objectives_count=0,
+                coverage_rate=None,
+                objectives_path=objectives_path,
+                content_dir=content_dir,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -183,6 +278,17 @@ class PageObjectivesValidator:
         try:
             helpers = _load_page_objectives_helpers()
         except FileNotFoundError as exc:
+            _emit_decision(
+                capture,
+                passed=False,
+                code="VALIDATOR_DEPENDENCIES_MISSING",
+                pages_audited=0,
+                pages_with_objectives=0,
+                unresolved_objectives_count=0,
+                coverage_rate=None,
+                objectives_path=objectives_path,
+                content_dir=content_dir,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -202,11 +308,14 @@ class PageObjectivesValidator:
 
         issues: List[GateIssue] = []
         fail_count = 0
+        audited_count = 0
+        passed_pages = 0
         for page in pages:
             # Only validate week_* pages; project docs and non-week HTML aren't
             # expected to carry LO metadata.
             if not any(part.startswith("week_") for part in page.parts):
                 continue
+            audited_count += 1
             ok, msg = helpers.validate_page(page, canonical)
             if not ok:
                 fail_count += 1
@@ -222,9 +331,25 @@ class PageObjectivesValidator:
                         ),
                     )
                 )
+            else:
+                passed_pages += 1
 
         passed = fail_count == 0
         score = 1.0 if passed else max(0.0, 1.0 - fail_count * 0.1)
+        coverage_rate = (
+            passed_pages / audited_count if audited_count > 0 else None
+        )
+        _emit_decision(
+            capture,
+            passed=passed,
+            code=None if passed else "LO_SPECIFICITY_VIOLATION",
+            pages_audited=audited_count,
+            pages_with_objectives=passed_pages,
+            unresolved_objectives_count=fail_count,
+            coverage_rate=coverage_rate,
+            objectives_path=objectives_path,
+            content_dir=content_dir,
+        )
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,

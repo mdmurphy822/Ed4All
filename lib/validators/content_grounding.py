@@ -32,11 +32,60 @@ Referenced by: ``config/workflows.yaml`` →
 
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
+
+logger = logging.getLogger(__name__)
+
+
+# H3 W6a: orchestration-phase decision-capture (Pattern A — one emit
+# per validate() call).
+def _emit_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    blocks_audited: int,
+    blocks_grounded: int,
+    grounding_rate: Optional[float],
+    blocks_with_attribute_walk_failures: int,
+    pages_audited: int,
+    empty_pages: int,
+    resolution_enabled: bool,
+) -> None:
+    """Emit one ``content_grounding_check`` decision per validate() call."""
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    rate_str = (
+        f"{grounding_rate:.3f}" if grounding_rate is not None else "n/a"
+    )
+    rationale = (
+        f"Content-grounding orchestration check: "
+        f"pages_audited={pages_audited}, "
+        f"empty_pages={empty_pages}, "
+        f"blocks_audited={blocks_audited}, "
+        f"blocks_grounded={blocks_grounded}, "
+        f"grounding_rate={rate_str}, "
+        f"blocks_with_attribute_walk_failures={blocks_with_attribute_walk_failures}, "
+        f"resolution_enabled={resolution_enabled}, "
+        f"failure_code={code or 'none'}."
+    )
+    try:
+        capture.log_decision(
+            decision_type="content_grounding_check",
+            decision=decision,
+            rationale=rationale,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on content_grounding_check: %s",
+            exc,
+        )
 
 try:
     from bs4 import BeautifulSoup  # type: ignore
@@ -82,9 +131,24 @@ class ContentGroundingValidator:
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", "content_grounding")
+        capture = inputs.get("decision_capture")
+        if capture is None:
+            capture = inputs.get("capture")
         issues: List[GateIssue] = []
 
         if BeautifulSoup is None:
+            _emit_decision(
+                capture,
+                passed=False,
+                code="MISSING_DEPENDENCY",
+                blocks_audited=0,
+                blocks_grounded=0,
+                grounding_rate=None,
+                blocks_with_attribute_walk_failures=0,
+                pages_audited=0,
+                empty_pages=0,
+                resolution_enabled=False,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -99,6 +163,18 @@ class ContentGroundingValidator:
 
         page_paths = self._collect_page_paths(inputs)
         if not page_paths:
+            _emit_decision(
+                capture,
+                passed=True,
+                code="NO_PAGES_TO_SCAN",
+                blocks_audited=0,
+                blocks_grounded=0,
+                grounding_rate=None,
+                blocks_with_attribute_walk_failures=0,
+                pages_audited=0,
+                empty_pages=0,
+                resolution_enabled=False,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -200,6 +276,29 @@ class ContentGroundingValidator:
         critical_count = sum(1 for i in issues if i.severity == "critical")
         passed = critical_count == 0
 
+        # Pick a representative failure code for the rationale.
+        failure_code: Optional[str] = None
+        if not passed:
+            failure_code = next(
+                (i.code for i in issues if i.severity == "critical"), None
+            )
+        grounded = total_paragraphs - total_ungrounded
+        grounding_rate = (
+            grounded / total_paragraphs if total_paragraphs > 0 else None
+        )
+        attribute_walk_failures = total_ungrounded
+        _emit_decision(
+            capture,
+            passed=passed,
+            code=failure_code,
+            blocks_audited=total_paragraphs,
+            blocks_grounded=grounded,
+            grounding_rate=grounding_rate,
+            blocks_with_attribute_walk_failures=attribute_walk_failures,
+            pages_audited=total_pages,
+            empty_pages=len(empty_pages),
+            resolution_enabled=resolution_enabled,
+        )
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,

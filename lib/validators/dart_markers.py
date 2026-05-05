@@ -34,11 +34,64 @@ Referenced by: config/workflows.yaml
   - textbook_to_course.dart_conversion -> dart_markers
 """
 
+import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
+
+logger = logging.getLogger(__name__)
+
+
+# H3 W6a: orchestration-phase decision-capture (Pattern A — one emit
+# per validate() call).
+def _emit_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    pages_audited: int,
+    markers_found: int,
+    markers_missing: int,
+    marker_density: Optional[float],
+    sections_total: int,
+    sections_without_source: int,
+    sections_without_block_id: int,
+    empty_source_count: int,
+    empty_block_id_count: int,
+) -> None:
+    """Emit one ``dart_markers_check`` decision per validate() call."""
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    density_str = (
+        f"{marker_density:.3f}" if marker_density is not None else "n/a"
+    )
+    rationale = (
+        f"DART markers orchestration check: "
+        f"pages_audited={pages_audited}, "
+        f"markers_found={markers_found}, "
+        f"markers_missing={markers_missing}, "
+        f"marker_density={density_str}, "
+        f"sections_total={sections_total}, "
+        f"sections_without_source={sections_without_source}, "
+        f"sections_without_block_id={sections_without_block_id}, "
+        f"empty_source_count={empty_source_count}, "
+        f"empty_block_id_count={empty_block_id_count}, "
+        f"failure_code={code or 'none'}."
+    )
+    try:
+        capture.log_decision(
+            decision_type="dart_markers_check",
+            decision=decision,
+            rationale=rationale,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on dart_markers_check: %s",
+            exc,
+        )
 
 # Marker name -> tuple of literal substrings, any of which satisfies the marker.
 # Kept in sync with MCP/tools/pipeline_tools.py:validate_dart_markers.
@@ -89,11 +142,28 @@ class DartMarkersValidator:
             GateResult with one critical issue per missing marker.
         """
         gate_id = inputs.get("gate_id", "dart_markers")
+        capture = inputs.get("decision_capture")
+        if capture is None:
+            capture = inputs.get("capture")
         content = inputs.get("html_content", "") or ""
 
         if not content and inputs.get("html_path"):
             path = Path(inputs["html_path"])
             if not path.exists():
+                _emit_decision(
+                    capture,
+                    passed=False,
+                    code="FILE_NOT_FOUND",
+                    pages_audited=0,
+                    markers_found=0,
+                    markers_missing=len(_REQUIRED_MARKERS),
+                    marker_density=None,
+                    sections_total=0,
+                    sections_without_source=0,
+                    sections_without_block_id=0,
+                    empty_source_count=0,
+                    empty_block_id_count=0,
+                )
                 return GateResult(
                     gate_id=gate_id,
                     validator_name=self.name,
@@ -109,6 +179,20 @@ class DartMarkersValidator:
             try:
                 content = path.read_text(encoding="utf-8")
             except OSError as e:
+                _emit_decision(
+                    capture,
+                    passed=False,
+                    code="FILE_READ_ERROR",
+                    pages_audited=0,
+                    markers_found=0,
+                    markers_missing=len(_REQUIRED_MARKERS),
+                    marker_density=None,
+                    sections_total=0,
+                    sections_without_source=0,
+                    sections_without_block_id=0,
+                    empty_source_count=0,
+                    empty_block_id_count=0,
+                )
                 return GateResult(
                     gate_id=gate_id,
                     validator_name=self.name,
@@ -123,6 +207,20 @@ class DartMarkersValidator:
                 )
 
         if not content.strip():
+            _emit_decision(
+                capture,
+                passed=False,
+                code="EMPTY_CONTENT",
+                pages_audited=0,
+                markers_found=0,
+                markers_missing=len(_REQUIRED_MARKERS),
+                marker_density=None,
+                sections_total=0,
+                sections_without_source=0,
+                sections_without_block_id=0,
+                empty_source_count=0,
+                empty_block_id_count=0,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -234,11 +332,32 @@ class DartMarkersValidator:
         present = total_required - len(critical_issues)
         score = present / total_required if total_required else 1.0
 
+        passed = len(critical_issues) == 0
+        marker_density = (
+            present / total_required if total_required else None
+        )
+        first_critical = next(
+            (i.code for i in critical_issues), None
+        )
+        _emit_decision(
+            capture,
+            passed=passed,
+            code=first_critical,
+            pages_audited=1,
+            markers_found=present,
+            markers_missing=len(critical_issues),
+            marker_density=marker_density,
+            sections_total=total_sections,
+            sections_without_source=sections_without_source,
+            sections_without_block_id=sections_without_block_id,
+            empty_source_count=empty_source_count,
+            empty_block_id_count=empty_block_id_count,
+        )
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,
             validator_version=self.version,
-            passed=len(critical_issues) == 0,
+            passed=passed,
             score=score,
             issues=issues,
         )

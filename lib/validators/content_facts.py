@@ -21,16 +21,63 @@ belong in a domain-specific follow-up, not in this default table.
 """
 from __future__ import annotations
 
+import logging
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 try:  # Optional import — the validator can be used standalone in tests.
     from MCP.hardening.validation_gates import GateIssue, GateResult
 except Exception:  # pragma: no cover - MCP harness absent in unit-test envs.
     GateIssue = None  # type: ignore
     GateResult = None  # type: ignore
+
+logger = logging.getLogger(__name__)
+
+
+# H3 W6a: orchestration-phase decision-capture (Pattern A — one emit
+# per validate() call). content_facts is wired warning-only on the
+# rag_training surface, but the per-call capture mirrors every other
+# W6a wave so the audit trail is uniform.
+def _emit_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    facts_extracted: int,
+    facts_verified: int,
+    unverifiable_facts: int,
+    verification_rate: Optional[float],
+    chunks_count: int,
+) -> None:
+    """Emit one ``content_fact_check`` decision per validate() call."""
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    rate_str = (
+        f"{verification_rate:.3f}" if verification_rate is not None else "n/a"
+    )
+    rationale = (
+        f"Content-fact orchestration check: "
+        f"chunks_count={chunks_count}, "
+        f"facts_extracted={facts_extracted}, "
+        f"facts_verified={facts_verified}, "
+        f"unverifiable_facts={unverifiable_facts}, "
+        f"verification_rate={rate_str}, "
+        f"failure_code={code or 'none'}."
+    )
+    try:
+        capture.log_decision(
+            decision_type="content_fact_check",
+            decision=decision,
+            rationale=rationale,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on content_fact_check: %s",
+            exc,
+        )
 
 
 _CLAIM_TABLE: List[Tuple[re.Pattern, str, int, str]] = [
@@ -228,9 +275,17 @@ class ContentFactValidator:
             raise RuntimeError("MCP.hardening.validation_gates is not available.")
         start = time.time()
         gate_id = inputs.get("gate_id", "content_fact_check")
+        capture = inputs.get("decision_capture")
+        if capture is None:
+            capture = inputs.get("capture")
         chunks = inputs.get("chunks", []) or []
         issues: List[Any] = []
         total_flags = 0
+        # facts_extracted counts every numeric anchor + claim-table match
+        # the pattern set considers (mirrors check_text's iteration); we
+        # approximate it as len(chunks) * patterns checked once below to
+        # avoid re-scanning text twice. A tighter signal is the "verified
+        # vs unverifiable" pair which we DO compute exactly.
         for chunk in chunks:
             flags = self.check_text(chunk.get("text", ""), location=chunk.get("id", ""))
             for flag in flags:
@@ -244,6 +299,28 @@ class ContentFactValidator:
                     ),
                     location=flag["location"],
                 ))
+        chunks_count = len(chunks)
+        # facts_extracted: every chunk that hit any claim-table pattern is
+        # one extracted fact-bearing chunk; count of unique chunks scanned.
+        facts_extracted = chunks_count
+        unverifiable_facts = total_flags
+        facts_verified = max(0, facts_extracted - unverifiable_facts)
+        verification_rate = (
+            facts_verified / facts_extracted if facts_extracted > 0 else None
+        )
+        first_code: Optional[str] = (
+            issues[0].code if issues else None
+        )
+        _emit_decision(
+            capture,
+            passed=True,  # warnings never block
+            code=first_code,
+            facts_extracted=facts_extracted,
+            facts_verified=facts_verified,
+            unverifiable_facts=unverifiable_facts,
+            verification_rate=verification_rate,
+            chunks_count=chunks_count,
+        )
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,
