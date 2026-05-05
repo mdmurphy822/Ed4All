@@ -230,6 +230,58 @@ def test_assessment_item_skipped() -> None:
 
 
 # ---------------------------------------------------------------------- #
+# 4b. example block is skipped (URI-literal payload class)
+# ---------------------------------------------------------------------- #
+
+
+def test_example_block_skipped() -> None:
+    """``example`` blocks legitimately carry payload-heavy content
+    (URI literals, code fragments, schematic triples) whose per-sentence
+    cosine against source prose drops below the floor even when the
+    framing prose is grounded. ``concept_example_similarity`` is the
+    sibling validator that gates the right signal for this block type.
+    """
+    embedder = _StubEmbedder(vector_map={})  # never called
+    block = _make_block(
+        block_type="example",
+        content=_HALLUCINATED_HTML,  # would fail, but skipped
+        source_ids=("dart:slug#blk_0",),
+    )
+    result = RewriteSourceGroundingValidator(embedder=embedder).validate({
+        "blocks": [block],
+        "source_chunks": {"dart:slug#blk_0": _GROUNDING_SOURCE},
+    })
+    assert result.passed is True
+    assert result.action is None
+    # No critical issues — the block was skipped.
+    critical = [i for i in result.issues if i.severity == "critical"]
+    assert critical == []
+
+
+def test_example_block_skip_emits_decision_with_skip_code() -> None:
+    """``example`` block skip emits a passed=True decision with
+    SKIPPED_CONTENT_TYPE so the audit trail records the skip."""
+
+    class _StubCapture:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def log_decision(self, decision_type, decision, rationale, **kw):
+            self.calls.append((decision_type, decision, rationale))
+
+    block = _make_block(block_type="example", content=_HALLUCINATED_HTML)
+    capture = _StubCapture()
+    RewriteSourceGroundingValidator(embedder=_StubEmbedder({})).validate({
+        "blocks": [block],
+        "source_chunks": {},
+        "decision_capture": capture,
+    })
+    assert len(capture.calls) == 1
+    assert capture.calls[0][1] == "passed"
+    assert "SKIPPED_CONTENT_TYPE" in capture.calls[0][2]
+
+
+# ---------------------------------------------------------------------- #
 # 5. Embedding deps missing → warning, passed=True
 # ---------------------------------------------------------------------- #
 
