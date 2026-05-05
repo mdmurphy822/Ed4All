@@ -29,6 +29,15 @@ if str(PROJECT_ROOT) not in sys.path:
 if TYPE_CHECKING:
     from lib.decision_capture import DecisionCapture
 
+# Runtime import for the MLFeatures dataclass used by Worker W1's
+# assessment_template_skip decision-capture events. Best-effort: when
+# lib.decision_capture isn't importable (minimal test harness), we
+# fall back to None so the runtime keeps working without the helper.
+try:
+    from lib.decision_capture import MLFeatures  # type: ignore
+except Exception:  # pragma: no cover - defensive fallback
+    MLFeatures = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 # Import content extractor for content-grounded generation
@@ -117,6 +126,32 @@ class QuestionData:
 
 
 @dataclass
+class SkippedItem:
+    """A question generation attempt that was skipped (no placeholder emitted).
+
+    Worker W1: when source_chunks is missing or content extraction yields
+    nothing usable for the requested question type, the generator emits a
+    SkippedItem instead of the prior deterministic-template placeholder.
+    Downstream consumers (Trainforge synthesis, training data export)
+    filter these out rather than ingest placeholders.
+    """
+    question_id: str
+    question_type: str
+    bloom_level: str
+    objective_id: str
+    reason: str  # "no_source_chunks" | "no_extractable_content"
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "question_id": self.question_id,
+            "question_type": self.question_type,
+            "bloom_level": self.bloom_level,
+            "objective_id": self.objective_id,
+            "reason": self.reason,
+        }
+
+
+@dataclass
 class AssessmentData:
     """A complete assessment with multiple questions."""
     assessment_id: str
@@ -127,6 +162,7 @@ class AssessmentData:
     bloom_levels: List[str] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     status: str = "generated"
+    skipped_items: List[SkippedItem] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -140,6 +176,8 @@ class AssessmentData:
             "status": self.status,
             "question_count": len(self.questions),
             "total_points": sum(q.points for q in self.questions),
+            "skipped_items_count": len(self.skipped_items),
+            "skipped_items_summary": [s.to_dict() for s in self.skipped_items[:3]],
         }
 
 
@@ -241,7 +279,8 @@ class AssessmentGenerator:
             )
 
         # Distribute questions across objectives and levels
-        questions = []
+        questions: List[QuestionData] = []
+        skipped_items: List[SkippedItem] = []
         questions_per_combo = max(1, question_count // (len(objective_ids) * len(bloom_levels)))
 
         for obj_id in objective_ids:
@@ -250,31 +289,41 @@ class AssessmentGenerator:
                     if len(questions) >= question_count:
                         break
 
-                    question = self._generate_question(
+                    result = self._generate_question(
                         objective_id=obj_id,
                         bloom_level=bloom_level,
                         source_chunks=source_chunks,
                     )
-                    questions.append(question)
+                    if isinstance(result, QuestionData):
+                        questions.append(result)
+                    elif isinstance(result, SkippedItem):
+                        skipped_items.append(result)
 
                 if len(questions) >= question_count:
                     break
             if len(questions) >= question_count:
                 break
 
-        # Fill remaining with cycling through objectives
+        # Fill remaining with cycling through objectives. Bound the loop so
+        # an all-skip path (e.g. empty source_chunks) cannot spin forever.
         idx = 0
-        while len(questions) < question_count:
+        max_attempts = question_count * max(1, len(objective_ids) * len(bloom_levels))
+        attempt = 0
+        while len(questions) < question_count and attempt < max_attempts:
             obj_id = objective_ids[idx % len(objective_ids)]
             bloom_level = bloom_levels[idx % len(bloom_levels)]
 
-            question = self._generate_question(
+            result = self._generate_question(
                 objective_id=obj_id,
                 bloom_level=bloom_level,
                 source_chunks=source_chunks,
             )
-            questions.append(question)
+            if isinstance(result, QuestionData):
+                questions.append(result)
+            elif isinstance(result, SkippedItem):
+                skipped_items.append(result)
             idx += 1
+            attempt += 1
 
         # Run leak checker on generated questions
         if self._leak_checker and questions:
@@ -333,7 +382,34 @@ class AssessmentGenerator:
             questions=questions,
             objectives_targeted=objective_ids,
             bloom_levels=bloom_levels,
+            skipped_items=skipped_items,
         )
+
+        # Worker W1: surface skipped items in the rationale stream so an
+        # operator can see why questions are missing without grepping
+        # decision JSONL files. Includes total + first-3 summaries
+        # (objective_id + bloom_level + reason).
+        if self.capture and skipped_items:
+            preview = "; ".join(
+                f"{s.question_id}={s.reason}@{s.objective_id}/{s.bloom_level}"
+                for s in skipped_items[:3]
+            )
+            self.capture.log_decision(
+                decision_type="assessment_template_skip",
+                decision=(
+                    f"Skipped {len(skipped_items)} question slots "
+                    f"(no source content; would have emitted placeholders)"
+                ),
+                rationale=(
+                    f"Skipped {len(skipped_items)} of "
+                    f"{len(skipped_items) + len(questions)} attempted "
+                    f"question slots because the deterministic template "
+                    f"fallback path was killed in Worker W1; emitting "
+                    f"placeholder strings ('Correct answer based on "
+                    f"content', etc.) into training data poisons the "
+                    f"corpus. First slots: {preview}"
+                ),
+            )
 
         # Log final assessment decision with substantive rationale
         if self.capture:
@@ -373,7 +449,7 @@ class AssessmentGenerator:
         objective_id: str,
         bloom_level: str,
         source_chunks: Optional[List[Dict[str, Any]]] = None,
-    ) -> QuestionData:
+    ):
         """
         Generate a single question for the given objective and level.
 
@@ -386,7 +462,9 @@ class AssessmentGenerator:
             source_chunks: Optional content chunks
 
         Returns:
-            QuestionData with generated question
+            QuestionData on success; SkippedItem when source_chunks is
+            empty / unavailable and the deterministic-template fallback
+            would have fired (Worker W1: kill silent placeholder emit).
         """
         # Self-serve retrieval if no chunks provided
         if source_chunks is None and self.rag is not None:
@@ -457,42 +535,67 @@ class AssessmentGenerator:
 
         # Generate question based on type
         if question_type == "multiple_choice":
-            question = self._generate_multiple_choice(
+            result = self._generate_multiple_choice(
                 question_id, objective_id, bloom_level, level_config, source_chunks
             )
         elif question_type == "true_false":
-            question = self._generate_true_false(
+            result = self._generate_true_false(
                 question_id, objective_id, bloom_level, level_config, source_chunks
             )
         elif question_type == "fill_in_blank":
-            question = self._generate_fill_in_blank(
+            result = self._generate_fill_in_blank(
                 question_id, objective_id, bloom_level, level_config, source_chunks
             )
         elif question_type == "essay":
-            question = self._generate_essay(
+            result = self._generate_essay(
                 question_id, objective_id, bloom_level, level_config, source_chunks
             )
         else:
-            question = self._generate_short_answer(
+            result = self._generate_short_answer(
                 question_id, objective_id, bloom_level, level_config, source_chunks
             )
 
-        # Log content grounding decision
+        # Worker W1: skip-emit path. Log a structured skip event with
+        # interpolated rationale (objective + bloom + reason + question
+        # type) so post-hoc audits can replay why each slot was dropped.
+        if isinstance(result, SkippedItem):
+            if self.capture:
+                self.capture.log_decision(
+                    decision_type="assessment_template_skip",
+                    decision=(
+                        f"Skipped {question_type} for {objective_id} "
+                        f"({bloom_level}) — reason={result.reason}"
+                    ),
+                    rationale=(
+                        f"Refusing to emit placeholder for "
+                        f"question_id={question_id} "
+                        f"(type={question_type}, objective={objective_id}, "
+                        f"bloom={bloom_level}, reason={result.reason}). "
+                        f"Worker W1 killed the deterministic template "
+                        f"fallback that previously emitted strings like "
+                        f"'Correct answer based on content' into the "
+                        f"training corpus. Caller should re-dispatch with "
+                        f"valid source_chunks or accept the gap."
+                    ),
+                    ml_features=MLFeatures(
+                        bloom_levels=[bloom_level],
+                        component_types=[question_type],
+                    ),
+                )
+            return result
+
+        # Log content grounding decision (real question emit path).
         if self.capture:
-            is_grounded = (
-                question.generation_rationale
-                and "TEMPLATE_FALLBACK" not in question.generation_rationale
-            )
             self.capture.log_decision(
                 decision_type="question_generation",
                 decision=(
                     f"Generated {question_type} question {question_id} "
-                    f"({'content-grounded' if is_grounded else 'template fallback'})"
+                    f"(content-grounded)"
                 ),
-                rationale=question.generation_rationale or "No rationale available",
+                rationale=result.generation_rationale or "No rationale available",
             )
 
-        return question
+        return result
 
     def _generate_multiple_choice(
         self,
@@ -501,11 +604,14 @@ class AssessmentGenerator:
         bloom_level: str,
         level_config: Dict[str, Any],
         source_chunks: Optional[List[Dict[str, Any]]],
-    ) -> QuestionData:
-        """Generate a multiple choice question from content."""
-        verb = level_config["verbs"][0]
-        pattern = level_config["patterns"][0]
+    ):
+        """Generate a multiple choice question from content.
 
+        Returns QuestionData on success, or SkippedItem when source_chunks
+        is missing / empty / yields nothing extractable. Worker W1 killed
+        the deterministic-template fallback that previously emitted
+        ``"Correct answer based on content"`` placeholder strings.
+        """
         # Try content-grounded generation
         if source_chunks:
             terms = self._content_extractor.extract_key_terms(source_chunks)
@@ -616,25 +722,20 @@ class AssessmentGenerator:
                     ),
                 )
 
-        # Fallback: template-based (flagged for validation)
-        stem = f"<p>{pattern.replace('...', f' the concept from {objective_id}')}</p>"
-        choices = [
-            {"text": "<p>Correct answer based on content</p>", "is_correct": True},
-            {"text": "<p>Plausible distractor A</p>", "is_correct": False},
-            {"text": "<p>Plausible distractor B</p>", "is_correct": False},
-            {"text": "<p>Plausible distractor C</p>", "is_correct": False},
-        ]
-        return QuestionData(
+        # Worker W1: skip-emit instead of template fallback. Returning a
+        # SkippedItem keeps the placeholder strings out of the training
+        # corpus; the caller filters Nones / Skips and surfaces a count.
+        reason = (
+            "no_source_chunks"
+            if not source_chunks
+            else "no_extractable_content"
+        )
+        return SkippedItem(
             question_id=question_id,
             question_type="multiple_choice",
-            stem=stem,
             bloom_level=bloom_level,
             objective_id=objective_id,
-            choices=choices,
-            points=2.0,
-            feedback=f"<p>Review content for objective {objective_id}.</p>",
-            source_chunks=[c.get("chunk_id", c.get("id", "")) for c in (source_chunks or [])[:2]],
-            generation_rationale=f"TEMPLATE_FALLBACK: no source chunks; MCQ using verb '{verb}' at {bloom_level} level",
+            reason=reason,
         )
 
     def _generate_true_false(
@@ -644,8 +745,13 @@ class AssessmentGenerator:
         bloom_level: str,
         level_config: Dict[str, Any],
         source_chunks: Optional[List[Dict[str, Any]]],
-    ) -> QuestionData:
-        """Generate a true/false question from content."""
+    ):
+        """Generate a true/false question from content.
+
+        Returns QuestionData on success, or SkippedItem when no chunks
+        are available / no factual statement can be extracted. Worker W1
+        killed the legacy ``"Statement about ... content."`` placeholder.
+        """
         if source_chunks:
             statements = self._content_extractor.extract_factual_statements(source_chunks)
 
@@ -696,21 +802,18 @@ class AssessmentGenerator:
                         ),
                     )
 
-        # Fallback
-        return QuestionData(
+        # Worker W1: skip-emit instead of template fallback.
+        reason = (
+            "no_source_chunks"
+            if not source_chunks
+            else "no_extractable_content"
+        )
+        return SkippedItem(
             question_id=question_id,
             question_type="true_false",
-            stem=f"<p>Statement about {objective_id} content.</p>",
             bloom_level=bloom_level,
             objective_id=objective_id,
-            choices=[
-                {"text": "True", "is_correct": True},
-                {"text": "False", "is_correct": False},
-            ],
-            correct_answer="True",
-            points=1.0,
-            feedback=f"<p>This statement is accurate based on {objective_id}.</p>",
-            generation_rationale=f"TEMPLATE_FALLBACK: no source chunks; T/F question at {bloom_level} level",
+            reason=reason,
         )
 
     def _generate_fill_in_blank(
@@ -720,8 +823,13 @@ class AssessmentGenerator:
         bloom_level: str,
         level_config: Dict[str, Any],
         source_chunks: Optional[List[Dict[str, Any]]],
-    ) -> QuestionData:
-        """Generate a fill-in-the-blank question from content."""
+    ):
+        """Generate a fill-in-the-blank question from content.
+
+        Returns QuestionData on success, or SkippedItem when no chunks
+        are available / no key term can be blanked. Worker W1 killed the
+        legacy ``"The key concept from ... is _______."`` placeholder.
+        """
         if source_chunks:
             terms = self._content_extractor.extract_key_terms(source_chunks)
 
@@ -753,17 +861,18 @@ class AssessmentGenerator:
                         ),
                     )
 
-        # Fallback
-        return QuestionData(
+        # Worker W1: skip-emit instead of template fallback.
+        reason = (
+            "no_source_chunks"
+            if not source_chunks
+            else "no_extractable_content"
+        )
+        return SkippedItem(
             question_id=question_id,
             question_type="fill_in_blank",
-            stem=f"<p>The key concept from {objective_id} is _______.</p>",
             bloom_level=bloom_level,
             objective_id=objective_id,
-            correct_answer="concept term",
-            points=1.0,
-            feedback=f"<p>The correct term is found in {objective_id} content.</p>",
-            generation_rationale=f"TEMPLATE_FALLBACK: no source chunks; Fill-in-blank at {bloom_level} level",
+            reason=reason,
         )
 
     def _generate_essay(
@@ -773,8 +882,14 @@ class AssessmentGenerator:
         bloom_level: str,
         level_config: Dict[str, Any],
         source_chunks: Optional[List[Dict[str, Any]]],
-    ) -> QuestionData:
-        """Generate an essay question from content."""
+    ):
+        """Generate an essay question from content.
+
+        Returns QuestionData on success, or SkippedItem when no chunks
+        are available / no relationship or example can be extracted.
+        Worker W1 killed the legacy ``"...concepts from ... and provide
+        examples."`` placeholder.
+        """
         verb = level_config["verbs"][0]
 
         if source_chunks:
@@ -838,16 +953,18 @@ class AssessmentGenerator:
                     ),
                 )
 
-        # Fallback
-        return QuestionData(
+        # Worker W1: skip-emit instead of template fallback.
+        reason = (
+            "no_source_chunks"
+            if not source_chunks
+            else "no_extractable_content"
+        )
+        return SkippedItem(
             question_id=question_id,
             question_type="essay",
-            stem=f"<p>{verb.capitalize()} the concepts from {objective_id} and provide examples.</p>",
             bloom_level=bloom_level,
             objective_id=objective_id,
-            points=10.0,
-            feedback=f"<p>A complete response should address all aspects of {objective_id}.</p>",
-            generation_rationale=f"TEMPLATE_FALLBACK: no source chunks; Essay using verb '{verb}' at {bloom_level} level",
+            reason=reason,
         )
 
     def _generate_short_answer(
@@ -857,8 +974,14 @@ class AssessmentGenerator:
         bloom_level: str,
         level_config: Dict[str, Any],
         source_chunks: Optional[List[Dict[str, Any]]],
-    ) -> QuestionData:
-        """Generate a short answer question from content."""
+    ):
+        """Generate a short answer question from content.
+
+        Returns QuestionData on success, or SkippedItem when no chunks
+        are available / no procedure/relationship/term can be extracted.
+        Worker W1 killed the legacy ``"Briefly ... the key points from
+        ..."`` placeholder.
+        """
         verb = level_config["verbs"][0]
 
         if source_chunks:
@@ -933,16 +1056,18 @@ class AssessmentGenerator:
                     ),
                 )
 
-        # Fallback
-        return QuestionData(
+        # Worker W1: skip-emit instead of template fallback.
+        reason = (
+            "no_source_chunks"
+            if not source_chunks
+            else "no_extractable_content"
+        )
+        return SkippedItem(
             question_id=question_id,
             question_type="short_answer",
-            stem=f"<p>Briefly {verb} the key points from {objective_id}.</p>",
             bloom_level=bloom_level,
             objective_id=objective_id,
-            points=5.0,
-            feedback=f"<p>Your response should cover the main concepts from {objective_id}.</p>",
-            generation_rationale=f"TEMPLATE_FALLBACK: no source chunks; Short answer using verb '{verb}' at {bloom_level} level",
+            reason=reason,
         )
 
     @staticmethod
@@ -1015,14 +1140,18 @@ class AssessmentGenerator:
         """
         obj_id = objective.get("id", "LO-001")
 
-        questions = []
+        questions: List[QuestionData] = []
+        skipped: List[SkippedItem] = []
         for _ in range(question_count):
-            question = self._generate_question(
+            result = self._generate_question(
                 objective_id=obj_id,
                 bloom_level=bloom_level,
                 source_chunks=source_chunks,
             )
-            questions.append(question)
+            if isinstance(result, QuestionData):
+                questions.append(result)
+            elif isinstance(result, SkippedItem):
+                skipped.append(result)
 
         if self.capture:
             self.capture.log_decision(

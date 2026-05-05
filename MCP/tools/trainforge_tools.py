@@ -405,6 +405,12 @@ def register_trainforge_tools(mcp):
             assessment = assessment_data.to_dict()
             assessment_id = assessment["assessment_id"]
 
+            # Worker W1: surface skipped-item count from the killed
+            # template-fallback path. AssessmentData.to_dict() already
+            # carries skipped_items_count + skipped_items_summary, but
+            # we lift them onto the MCP envelope for visibility.
+            skipped_count = assessment.get("skipped_items_count", 0)
+            skipped_summary = assessment.get("skipped_items_summary", [])
             assessment.update({
                 "course_id": course_id,
                 "course_slug": course_slug,
@@ -442,6 +448,8 @@ def register_trainforge_tools(mcp):
                 "success": True,
                 "assessment_id": assessment_id,
                 "question_count": len(assessment["questions"]),
+                "skipped_items_count": skipped_count,
+                "skipped_items_summary": skipped_summary,
                 "output_path": str(assessment_path),
                 "rag_enabled": rag is not None,
                 "decision_capture_enabled": capture is not None,
