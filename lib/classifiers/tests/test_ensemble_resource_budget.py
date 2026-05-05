@@ -124,7 +124,7 @@ def test_default_ensemble_member_count_matches_plan() -> None:
     """
     assert len(_DEFAULT_ENSEMBLE_MEMBERS) == 3
     names = {m["name"] for m in _DEFAULT_ENSEMBLE_MEMBERS}
-    assert "kabir5297/bloom_taxonomy_classifier" in names
+    assert "cip29/bert-blooms-taxonomy-classifier" in names
     assert "distilbert-base-uncased-finetuned-sst-2-english" in names
     assert "MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli" in names
     # Every member carries a revision — placeholder "main" for now,
