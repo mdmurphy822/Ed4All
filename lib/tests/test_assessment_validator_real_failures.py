@@ -305,3 +305,61 @@ def test_mix_verbful_and_one_tf_verbless_passes():
     })
     assert not any(i.severity == "critical" for i in result.issues)
     assert result.passed
+
+
+def test_assessment_placeholder_emits_critical_severity():
+    """Worker W4: the four placeholder GateIssue codes
+    (PLACEHOLDER_QUESTION, PLACEHOLDER_CHOICE, PLACEHOLDER_ANSWER,
+    PLACEHOLDER_FEEDBACK) are fail-closed defense-in-depth — any leak
+    of placeholder text into a published assessment payload MUST flip
+    the gate to passed=False at critical severity, not merely degrade
+    the score-based pass threshold.
+
+    Synthesizes one question that hits all four sites simultaneously:
+    placeholder regex match in the stem, in a choice, in correct_answer,
+    and in feedback. Asserts each code is emitted at severity="critical"
+    and that the overall gate fails.
+    """
+    placeholder_question = {
+        "question_id": "q-placeholder-all-sites",
+        "question_type": "multiple_choice",
+        "stem": "<p>What is the concept from LO-001?</p>",  # PLACEHOLDER_QUESTION
+        "bloom_level": "remember",
+        "objective_id": "LO-001",
+        "choices": [
+            # PLACEHOLDER_CHOICE — matches "Correct answer based on content"
+            {"text": "<p>Correct answer based on content</p>", "is_correct": True},
+            {"text": "<p>Plausible distractor A</p>", "is_correct": False},
+            {"text": "<p>Plausible distractor B</p>", "is_correct": False},
+            {"text": "<p>Plausible distractor C</p>", "is_correct": False},
+        ],
+        # PLACEHOLDER_ANSWER — fill-in-blank shape
+        "correct_answer": "Review content for objective LO-001",
+        # PLACEHOLDER_FEEDBACK — same regex family
+        "feedback": "<p>Review content for objective LO-001.</p>",
+    }
+    result = AssessmentQualityValidator().validate({
+        "assessment_data": {"questions": [placeholder_question]},
+    })
+    by_code = {i.code: i for i in result.issues}
+    expected_codes = {
+        "PLACEHOLDER_QUESTION",
+        "PLACEHOLDER_CHOICE",
+        "PLACEHOLDER_ANSWER",
+        "PLACEHOLDER_FEEDBACK",
+    }
+    missing = expected_codes - by_code.keys()
+    assert not missing, (
+        f"Expected all four placeholder codes, missing: {missing}; "
+        f"emitted codes: {list(by_code.keys())}"
+    )
+    for code in expected_codes:
+        assert by_code[code].severity == "critical", (
+            f"{code} severity must be 'critical' (fail-closed defense-in-depth), "
+            f"got {by_code[code].severity!r}"
+        )
+    # Critical severity flips passed=False regardless of score.
+    assert not result.passed, (
+        f"placeholder leak must fail the gate; got passed=True with issues: "
+        f"{[(i.code, i.severity) for i in result.issues]}"
+    )
