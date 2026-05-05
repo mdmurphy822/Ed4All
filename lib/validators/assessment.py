@@ -10,6 +10,15 @@ AssessmentQualityValidator:
 - Coverage of learning objectives
 - Appropriate difficulty distribution
 
+Placeholder detection (PLACEHOLDER_QUESTION / PLACEHOLDER_CHOICE /
+PLACEHOLDER_ANSWER / PLACEHOLDER_FEEDBACK) emits ``severity="critical"``
+as fail-closed defense-in-depth. Worker W1 killed the runtime emit
+path that produced placeholder strings, so these codes should never
+fire on a healthy run; promotion to ``critical`` (Worker W4) means
+any external IMSCC import OR a future regression that re-introduces
+placeholder content fails the ``assessment_quality`` gate immediately
+rather than degrading the score-based pass threshold.
+
 FinalQualityValidator:
 - End-to-end quality check after all generation
 - Cross-assessment consistency
@@ -201,7 +210,7 @@ class AssessmentQualityValidator:
             if pattern.search(text):
                 issues.append(
                     GateIssue(
-                        severity="error",
+                        severity="critical",
                         code="PLACEHOLDER_QUESTION",
                         message=f"{q_id}: stem contains placeholder text matching '{pattern.pattern}'",
                     )
@@ -236,7 +245,7 @@ class AssessmentQualityValidator:
                     if pattern.search(choice_text):
                         issues.append(
                             GateIssue(
-                                severity="error",
+                                severity="critical",
                                 code="PLACEHOLDER_CHOICE",
                                 message=f"{q_id}: choice contains placeholder text: '{choice_text}'",
                             )
@@ -250,7 +259,7 @@ class AssessmentQualityValidator:
                 if pattern.search(correct_answer):
                     issues.append(
                         GateIssue(
-                            severity="error",
+                            severity="critical",
                             code="PLACEHOLDER_ANSWER",
                             message=f"{q_id}: correct_answer is placeholder text: '{correct_answer}'",
                         )
@@ -304,7 +313,7 @@ class AssessmentQualityValidator:
                 if pattern.search(feedback):
                     issues.append(
                         GateIssue(
-                            severity="warning",
+                            severity="critical",
                             code="PLACEHOLDER_FEEDBACK",
                             message=f"{q_id}: feedback contains placeholder text",
                         )
