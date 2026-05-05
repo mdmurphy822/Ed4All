@@ -31,12 +31,89 @@ finalized by archival time). Phase A3 of plans/wave-82-consolidation/.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
+
+logger = logging.getLogger(__name__)
+
+
+def _emit_semantic_graph_rule_output_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    rule_zero_drop_count: int,
+    total_rules_evaluated: int,
+    rules_below_floor: int,
+    rules_version_bumped: int,
+    current_total_edges: int,
+    baseline_total_edges: int,
+    current_path: Optional[str],
+    baseline_path: Optional[str],
+    min_baseline_edges: int,
+    enabled: bool,
+    zero_drop_rule_names: List[str],
+) -> None:
+    """Emit one ``semantic_graph_rule_output_check`` decision per validate() call.
+
+    H3 wave W3 closure for the silent-zero rule-drop gate. Pattern A
+    cardinality (one event per ``validate()``); rationale interpolates
+    the per-rule drop counts plus the rule names that fired plus the
+    input graph size so post-hoc replay can trace which rules silently
+    regressed without re-running the whole concept_extraction phase.
+    """
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    rule_names_str = ", ".join(sorted(zero_drop_rule_names)[:8]) or "none"
+    rationale = (
+        "semantic_graph_rule_output gate verdict: "
+        f"enabled={enabled}, rule_zero_drop_count={rule_zero_drop_count}, "
+        f"total_rules_evaluated={total_rules_evaluated}, "
+        f"rules_below_floor={rules_below_floor}, "
+        f"rules_version_bumped={rules_version_bumped}, "
+        f"current_total_edges={current_total_edges}, "
+        f"baseline_total_edges={baseline_total_edges}, "
+        f"min_baseline_edges={min_baseline_edges}, "
+        f"silent_zero_rules=({rule_names_str}), "
+        f"current_path={current_path or 'n/a'}, "
+        f"baseline_path={baseline_path or 'n/a'}, "
+        f"failure_code={code or 'none'}."
+    )
+    metrics: Dict[str, Any] = {
+        "rule_zero_drop_count": int(rule_zero_drop_count),
+        "total_rules_evaluated": int(total_rules_evaluated),
+        "rules_below_floor": int(rules_below_floor),
+        "rules_version_bumped": int(rules_version_bumped),
+        "current_total_edges": int(current_total_edges),
+        "baseline_total_edges": int(baseline_total_edges),
+        "min_baseline_edges": int(min_baseline_edges),
+        "enabled": bool(enabled),
+        "current_path": current_path,
+        "baseline_path": baseline_path,
+        "zero_drop_rule_names": list(zero_drop_rule_names),
+        "passed": bool(passed),
+        "failure_code": code,
+    }
+    try:
+        capture.log_decision(
+            decision_type="semantic_graph_rule_output_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(metrics),
+            metrics=metrics,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on "
+            "semantic_graph_rule_output_check: %s",
+            exc,
+        )
 
 
 def _count_edges_by_rule(graph: Mapping[str, Any]) -> Counter:
@@ -100,6 +177,7 @@ class SemanticGraphRuleOutputValidator:
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         issues: List[GateIssue] = []
+        capture = inputs.get("decision_capture")
 
         # Behaviour-flag short-circuit. Returns "passed" so the gate
         # doesn't accidentally hard-fail in environments without the flag.
@@ -108,7 +186,27 @@ class SemanticGraphRuleOutputValidator:
             enabled = (
                 os.getenv("TRAINFORGE_VALIDATE_RULE_OUTPUTS", "").lower() == "true"
             )
+        current_path_raw = inputs.get("current_path")
+        baseline_path_raw = inputs.get("baseline_path")
+        min_baseline_edges = int(inputs.get("min_baseline_edges", 10))
+
         if not enabled:
+            _emit_semantic_graph_rule_output_decision(
+                capture,
+                passed=True,
+                code="DISABLED",
+                rule_zero_drop_count=0,
+                total_rules_evaluated=0,
+                rules_below_floor=0,
+                rules_version_bumped=0,
+                current_total_edges=0,
+                baseline_total_edges=0,
+                current_path=str(current_path_raw) if current_path_raw else None,
+                baseline_path=str(baseline_path_raw) if baseline_path_raw else None,
+                min_baseline_edges=min_baseline_edges,
+                enabled=False,
+                zero_drop_rule_names=[],
+            )
             return GateResult(
                 gate_id=self.gate_id,
                 validator_name=self.name,
@@ -117,9 +215,8 @@ class SemanticGraphRuleOutputValidator:
                 issues=[],
             )
 
-        current_path = inputs.get("current_path")
-        baseline_path = inputs.get("baseline_path")
-        min_baseline_edges = int(inputs.get("min_baseline_edges", 10))
+        current_path = current_path_raw
+        baseline_path = baseline_path_raw
 
         if not current_path:
             issues.append(GateIssue(
@@ -131,6 +228,22 @@ class SemanticGraphRuleOutputValidator:
                     "concept_graph_semantic.json>, ...}."
                 ),
             ))
+            _emit_semantic_graph_rule_output_decision(
+                capture,
+                passed=False,
+                code="MISSING_CURRENT_PATH",
+                rule_zero_drop_count=0,
+                total_rules_evaluated=0,
+                rules_below_floor=0,
+                rules_version_bumped=0,
+                current_total_edges=0,
+                baseline_total_edges=0,
+                current_path=None,
+                baseline_path=str(baseline_path) if baseline_path else None,
+                min_baseline_edges=min_baseline_edges,
+                enabled=True,
+                zero_drop_rule_names=[],
+            )
             return GateResult(
                 gate_id=self.gate_id, validator_name=self.name,
                 validator_version=self.version, passed=False, issues=issues,
@@ -148,10 +261,29 @@ class SemanticGraphRuleOutputValidator:
                     "concept-graph emit step in Trainforge.process_course."
                 ),
             ))
+            _emit_semantic_graph_rule_output_decision(
+                capture,
+                passed=False,
+                code="CURRENT_UNREADABLE",
+                rule_zero_drop_count=0,
+                total_rules_evaluated=0,
+                rules_below_floor=0,
+                rules_version_bumped=0,
+                current_total_edges=0,
+                baseline_total_edges=0,
+                current_path=str(current_path),
+                baseline_path=str(baseline_path) if baseline_path else None,
+                min_baseline_edges=min_baseline_edges,
+                enabled=True,
+                zero_drop_rule_names=[],
+            )
             return GateResult(
                 gate_id=self.gate_id, validator_name=self.name,
                 validator_version=self.version, passed=False, issues=issues,
             )
+
+        current_counts = _count_edges_by_rule(current)
+        current_total_edges = sum(current_counts.values())
 
         # No baseline → soft pass with an info issue. Useful on first runs
         # of a corpus where no prior known-good output exists yet.
@@ -165,6 +297,22 @@ class SemanticGraphRuleOutputValidator:
                     "to enable regression detection."
                 ),
             ))
+            _emit_semantic_graph_rule_output_decision(
+                capture,
+                passed=True,
+                code="NO_BASELINE",
+                rule_zero_drop_count=0,
+                total_rules_evaluated=len(current_counts),
+                rules_below_floor=0,
+                rules_version_bumped=0,
+                current_total_edges=current_total_edges,
+                baseline_total_edges=0,
+                current_path=str(current_path),
+                baseline_path=None,
+                min_baseline_edges=min_baseline_edges,
+                enabled=True,
+                zero_drop_rule_names=[],
+            )
             return GateResult(
                 gate_id=self.gate_id, validator_name=self.name,
                 validator_version=self.version, passed=True, issues=issues,
@@ -181,20 +329,41 @@ class SemanticGraphRuleOutputValidator:
                     "or remove the baseline_path input to suppress this warning."
                 ),
             ))
+            _emit_semantic_graph_rule_output_decision(
+                capture,
+                passed=True,
+                code="BASELINE_UNREADABLE",
+                rule_zero_drop_count=0,
+                total_rules_evaluated=len(current_counts),
+                rules_below_floor=0,
+                rules_version_bumped=0,
+                current_total_edges=current_total_edges,
+                baseline_total_edges=0,
+                current_path=str(current_path),
+                baseline_path=str(baseline_path),
+                min_baseline_edges=min_baseline_edges,
+                enabled=True,
+                zero_drop_rule_names=[],
+            )
             return GateResult(
                 gate_id=self.gate_id, validator_name=self.name,
                 validator_version=self.version, passed=True, issues=issues,
             )
 
-        current_counts = _count_edges_by_rule(current)
         baseline_counts = _count_edges_by_rule(baseline)
+        baseline_total_edges = sum(baseline_counts.values())
         current_versions = _rule_versions(current)
         baseline_versions = _rule_versions(baseline)
+
+        zero_drop_rules: List[str] = []
+        rules_below_floor = 0
+        rules_version_bumped = 0
 
         # For each rule that produced ≥ floor in baseline, demand non-zero
         # in current OR a rule_version bump.
         for rule_name, baseline_n in sorted(baseline_counts.items()):
             if baseline_n < min_baseline_edges:
+                rules_below_floor += 1
                 continue
             current_n = current_counts.get(rule_name, 0)
             if current_n > 0:
@@ -203,7 +372,9 @@ class SemanticGraphRuleOutputValidator:
             base_v = baseline_versions.get(rule_name)
             if cur_v is not None and base_v is not None and cur_v != base_v:
                 # Rule_version changed → intentional behavior change → exempt.
+                rules_version_bumped += 1
                 continue
+            zero_drop_rules.append(rule_name)
             issues.append(GateIssue(
                 severity="critical",
                 code="SILENT_ZERO_REGRESSION",
@@ -225,6 +396,25 @@ class SemanticGraphRuleOutputValidator:
             ))
 
         passed = not any(i.severity == "critical" for i in issues)
+        total_rules_evaluated = len(
+            set(baseline_counts.keys()) | set(current_counts.keys())
+        )
+        _emit_semantic_graph_rule_output_decision(
+            capture,
+            passed=passed,
+            code=None if passed else "SILENT_ZERO_REGRESSION",
+            rule_zero_drop_count=len(zero_drop_rules),
+            total_rules_evaluated=total_rules_evaluated,
+            rules_below_floor=rules_below_floor,
+            rules_version_bumped=rules_version_bumped,
+            current_total_edges=current_total_edges,
+            baseline_total_edges=baseline_total_edges,
+            current_path=str(current_path),
+            baseline_path=str(baseline_path),
+            min_baseline_edges=min_baseline_edges,
+            enabled=True,
+            zero_drop_rule_names=zero_drop_rules,
+        )
         return GateResult(
             gate_id=self.gate_id,
             validator_name=self.name,

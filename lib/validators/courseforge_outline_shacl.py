@@ -66,6 +66,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -79,6 +80,91 @@ from lib.validators.shacl_runner import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _emit_courseforge_outline_shacl_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    violations_count: int,
+    critical_count: int,
+    warning_count: int,
+    info_count: int,
+    passed_count: int,
+    payloads_audited: int,
+    shapes_path: Optional[str],
+    shape_iri_counts: Dict[str, int],
+    block_type_counts: Dict[str, int],
+    score: Optional[float],
+    action: Optional[str],
+) -> None:
+    """Emit one ``courseforge_outline_shacl_check`` decision per validate() call.
+
+    H3 wave W3 closure for the Block-shape SHACL gate. Pattern A
+    cardinality (one event per ``validate()``); rationale interpolates
+    the SHACL violation counts plus the rule/shape names that fired
+    plus the input graph size + block-type distribution so post-hoc
+    replay can distinguish a deps-missing skip from a genuine pass
+    from a real shape miss + see which block types drove the failure.
+    """
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    score_str = f"{score:.4f}" if score is not None else "n/a"
+    top_shapes = ", ".join(
+        f"{iri}={n}"
+        for iri, n in sorted(
+            shape_iri_counts.items(), key=lambda kv: (-kv[1], kv[0])
+        )[:5]
+    ) or "none"
+    block_types_str = ", ".join(
+        f"{t}={n}"
+        for t, n in sorted(
+            block_type_counts.items(), key=lambda kv: (-kv[1], kv[0])
+        )[:8]
+    ) or "none"
+    rationale = (
+        "courseforge_outline SHACL gate verdict: "
+        f"violations={violations_count} (critical={critical_count}, "
+        f"warning={warning_count}, info={info_count}), "
+        f"passed_count={passed_count}, payloads_audited={payloads_audited}, "
+        f"action={action or 'none'}, score={score_str}, "
+        f"shapes_path={shapes_path or 'n/a'}, "
+        f"top_source_shapes=({top_shapes}), "
+        f"block_types=({block_types_str}), "
+        f"failure_code={code or 'none'}."
+    )
+    metrics: Dict[str, Any] = {
+        "violations_count": int(violations_count),
+        "critical_count": int(critical_count),
+        "warning_count": int(warning_count),
+        "info_count": int(info_count),
+        "passed_count": int(passed_count),
+        "payloads_audited": int(payloads_audited),
+        "target_class": "ed4all:Block",
+        "shapes_path": shapes_path,
+        "shape_iri_counts": dict(shape_iri_counts),
+        "block_type_counts": dict(block_type_counts),
+        "score": float(score) if score is not None else None,
+        "action": action,
+        "passed": bool(passed),
+        "failure_code": code,
+    }
+    try:
+        capture.log_decision(
+            decision_type="courseforge_outline_shacl_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(metrics),
+            metrics=metrics,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on "
+            "courseforge_outline_shacl_check: %s",
+            exc,
+        )
 
 
 #: Canonical multi-shape SHACL file the validator targets. Carries
@@ -266,9 +352,27 @@ class CourseforgeOutlineShaclValidator:
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
+        capture = inputs.get("decision_capture")
+        shapes_path_str = str(self._shapes_path)
 
         payloads, err = _coerce_block_payloads(inputs)
         if err is not None:
+            _emit_courseforge_outline_shacl_decision(
+                capture,
+                passed=False,
+                code=err.code,
+                violations_count=0,
+                critical_count=0,
+                warning_count=0,
+                info_count=0,
+                passed_count=0,
+                payloads_audited=0,
+                shapes_path=shapes_path_str,
+                shape_iri_counts={},
+                block_type_counts={},
+                score=None,
+                action="block",
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -278,9 +382,33 @@ class CourseforgeOutlineShaclValidator:
                 action="block",
             )
 
+        # Tally block_type distribution up front so every emit path
+        # carries the same input-graph signal.
+        block_type_counts: Counter = Counter()
+        for p in payloads:
+            bt = p.get("blockType") if isinstance(p, dict) else None
+            if isinstance(bt, str):
+                block_type_counts[bt] += 1
+
         # Empty input is a no-op pass — matches PageObjectivesShaclValidator
         # (sub-plan §8: empty corpus -> passed=True, no issues).
         if not payloads:
+            _emit_courseforge_outline_shacl_decision(
+                capture,
+                passed=True,
+                code=None,
+                violations_count=0,
+                critical_count=0,
+                warning_count=0,
+                info_count=0,
+                passed_count=0,
+                payloads_audited=0,
+                shapes_path=shapes_path_str,
+                shape_iri_counts={},
+                block_type_counts={},
+                score=1.0,
+                action=None,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -296,7 +424,23 @@ class CourseforgeOutlineShaclValidator:
         # Subtask 8's embedding-extras opt-out pattern.
         try:
             _ensure_deps()
-        except ShaclDepsMissing as exc:
+        except ShaclDepsMissing:
+            _emit_courseforge_outline_shacl_decision(
+                capture,
+                passed=True,
+                code="SHACL_DEPS_MISSING",
+                violations_count=0,
+                critical_count=0,
+                warning_count=1,
+                info_count=0,
+                passed_count=0,
+                payloads_audited=len(payloads),
+                shapes_path=shapes_path_str,
+                shape_iri_counts={},
+                block_type_counts=dict(block_type_counts),
+                score=1.0,
+                action=None,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -308,7 +452,7 @@ class CourseforgeOutlineShaclValidator:
                         severity="warning",
                         code="SHACL_DEPS_MISSING",
                         message=(
-                            f"SHACL toolchain not importable: {exc}. "
+                            "SHACL toolchain not importable. "
                             "Phase 4 PoC gate skipped; install the "
                             "`shacl` extras to enable Block-shape validation."
                         ),
@@ -322,6 +466,22 @@ class CourseforgeOutlineShaclValidator:
         try:
             conforms, violations = run_shacl(self._shapes_path, graph)
         except FileNotFoundError as exc:
+            _emit_courseforge_outline_shacl_decision(
+                capture,
+                passed=False,
+                code="SHAPE_FILE_MISSING",
+                violations_count=0,
+                critical_count=0,
+                warning_count=0,
+                info_count=0,
+                passed_count=0,
+                payloads_audited=len(payloads),
+                shapes_path=shapes_path_str,
+                shape_iri_counts={},
+                block_type_counts=dict(block_type_counts),
+                score=None,
+                action="block",
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -340,6 +500,12 @@ class CourseforgeOutlineShaclValidator:
         issues = [v.to_gate_issue() for v in violations]
         critical = sum(1 for i in issues if i.severity == "critical")
         warning = sum(1 for i in issues if i.severity == "warning")
+        info = sum(1 for i in issues if i.severity == "info")
+
+        shape_iri_counts: Counter = Counter()
+        for v in violations:
+            if v.source_shape:
+                shape_iri_counts[v.source_shape] += 1
 
         action = _decide_action(critical, warning)
         # `passed` follows the Python-validator convention: critical
@@ -350,6 +516,27 @@ class CourseforgeOutlineShaclValidator:
             1.0
             if not violations
             else max(0.0, 1.0 - len(violations) / max(1, len(payloads)))
+        )
+
+        violating_focus_nodes = {
+            v.focus_node for v in violations if v.focus_node
+        }
+        passed_count = max(0, len(payloads) - len(violating_focus_nodes))
+        _emit_courseforge_outline_shacl_decision(
+            capture,
+            passed=passed,
+            code=None if passed else "SHACL_CRITICAL_VIOLATIONS",
+            violations_count=len(violations),
+            critical_count=critical,
+            warning_count=warning,
+            info_count=info,
+            passed_count=passed_count,
+            payloads_audited=len(payloads),
+            shapes_path=shapes_path_str,
+            shape_iri_counts=dict(shape_iri_counts),
+            block_type_counts=dict(block_type_counts),
+            score=score,
+            action=action,
         )
 
         return GateResult(

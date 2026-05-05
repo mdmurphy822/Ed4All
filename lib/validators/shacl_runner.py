@@ -42,13 +42,17 @@ validator framework verbatim.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
+
+logger = logging.getLogger(__name__)
 
 #: Logical IRI for the Courseforge JSON-LD @context. Mirrors
 #: ``lib.ontology.jsonld_context_loader.CANONICAL_COURSEFORGE_CONTEXT_URL``.
@@ -470,6 +474,81 @@ def _discover_html_pages(content_dir: Path) -> List[Path]:
     return pages
 
 
+def _emit_page_objectives_shacl_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    violations_count: int,
+    critical_count: int,
+    warning_count: int,
+    info_count: int,
+    passed_count: int,
+    payloads_audited: int,
+    pages_scanned: int,
+    shapes_path: Optional[str],
+    shape_iri_counts: Dict[str, int],
+    score: Optional[float],
+) -> None:
+    """Emit one ``page_objectives_shacl_check`` decision per validate() call.
+
+    H3 wave W3 closure for the page_objectives SHACL gate. Pattern A
+    cardinality (one event per ``validate()``); rationale interpolates
+    the SHACL violation counts plus the rule/shape names that fired
+    plus the input graph size so post-hoc replay can distinguish a
+    genuine pass from a deps-missing skip from a real shape miss.
+    """
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    score_str = f"{score:.4f}" if score is not None else "n/a"
+    top_shapes = ", ".join(
+        f"{iri}={n}"
+        for iri, n in sorted(
+            shape_iri_counts.items(), key=lambda kv: (-kv[1], kv[0])
+        )[:5]
+    ) or "none"
+    rationale = (
+        "page_objectives SHACL gate verdict: "
+        f"violations={violations_count} (critical={critical_count}, "
+        f"warning={warning_count}, info={info_count}), "
+        f"passed_count={passed_count}, payloads_audited={payloads_audited}, "
+        f"pages_scanned={pages_scanned}, score={score_str}, "
+        f"shapes_path={shapes_path or 'n/a'}, "
+        f"top_source_shapes=({top_shapes}), "
+        f"failure_code={code or 'none'}."
+    )
+    metrics: Dict[str, Any] = {
+        "violations_count": int(violations_count),
+        "critical_count": int(critical_count),
+        "warning_count": int(warning_count),
+        "info_count": int(info_count),
+        "passed_count": int(passed_count),
+        "payloads_audited": int(payloads_audited),
+        "pages_scanned": int(pages_scanned),
+        "target_class": "schema:WebPage",
+        "shapes_path": shapes_path,
+        "shape_iri_counts": dict(shape_iri_counts),
+        "score": float(score) if score is not None else None,
+        "passed": bool(passed),
+        "failure_code": code,
+    }
+    try:
+        capture.log_decision(
+            decision_type="page_objectives_shacl_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(metrics),
+            metrics=metrics,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on "
+            "page_objectives_shacl_check: %s",
+            exc,
+        )
+
+
 class PageObjectivesShaclValidator:
     """Phase 4 PoC: SHACL parallel of PageObjectivesValidator.
 
@@ -513,9 +592,26 @@ class PageObjectivesShaclValidator:
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", "page_objectives_shacl")
+        capture = inputs.get("decision_capture")
+        shapes_path_str = str(self._shapes_path)
 
         content_dir_raw = inputs.get("content_dir")
         if not content_dir_raw:
+            _emit_page_objectives_shacl_decision(
+                capture,
+                passed=False,
+                code="MISSING_CONTENT_DIR",
+                violations_count=0,
+                critical_count=0,
+                warning_count=0,
+                info_count=0,
+                passed_count=0,
+                payloads_audited=0,
+                pages_scanned=0,
+                shapes_path=shapes_path_str,
+                shape_iri_counts={},
+                score=None,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -535,6 +631,21 @@ class PageObjectivesShaclValidator:
 
         content_dir = Path(content_dir_raw)
         if not content_dir.exists():
+            _emit_page_objectives_shacl_decision(
+                capture,
+                passed=False,
+                code="CONTENT_DIR_NOT_FOUND",
+                violations_count=0,
+                critical_count=0,
+                warning_count=0,
+                info_count=0,
+                passed_count=0,
+                payloads_audited=0,
+                pages_scanned=0,
+                shapes_path=shapes_path_str,
+                shape_iri_counts={},
+                score=None,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -556,6 +667,21 @@ class PageObjectivesShaclValidator:
         try:
             _ensure_deps()
         except ShaclDepsMissing as exc:
+            _emit_page_objectives_shacl_decision(
+                capture,
+                passed=True,
+                code="SHACL_DEPS_MISSING",
+                violations_count=0,
+                critical_count=0,
+                warning_count=1,
+                info_count=0,
+                passed_count=0,
+                payloads_audited=0,
+                pages_scanned=0,
+                shapes_path=shapes_path_str,
+                shape_iri_counts={},
+                score=1.0,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -577,6 +703,21 @@ class PageObjectivesShaclValidator:
 
         pages = _discover_html_pages(content_dir)
         if not pages:
+            _emit_page_objectives_shacl_decision(
+                capture,
+                passed=True,
+                code=None,
+                violations_count=0,
+                critical_count=0,
+                warning_count=0,
+                info_count=0,
+                passed_count=0,
+                payloads_audited=0,
+                pages_scanned=0,
+                shapes_path=shapes_path_str,
+                shape_iri_counts={},
+                score=1.0,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -595,6 +736,21 @@ class PageObjectivesShaclValidator:
             payloads.extend(_extract_jsonld_blocks(html))
 
         if not payloads:
+            _emit_page_objectives_shacl_decision(
+                capture,
+                passed=True,
+                code=None,
+                violations_count=0,
+                critical_count=0,
+                warning_count=0,
+                info_count=0,
+                passed_count=0,
+                payloads_audited=0,
+                pages_scanned=len(pages),
+                shapes_path=shapes_path_str,
+                shape_iri_counts={},
+                score=1.0,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -608,6 +764,21 @@ class PageObjectivesShaclValidator:
         try:
             conforms, violations = run_shacl(self._shapes_path, graph)
         except FileNotFoundError as exc:
+            _emit_page_objectives_shacl_decision(
+                capture,
+                passed=False,
+                code="SHAPE_FILE_MISSING",
+                violations_count=0,
+                critical_count=0,
+                warning_count=0,
+                info_count=0,
+                passed_count=0,
+                payloads_audited=len(payloads),
+                pages_scanned=len(pages),
+                shapes_path=shapes_path_str,
+                shape_iri_counts={},
+                score=None,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -624,14 +795,41 @@ class PageObjectivesShaclValidator:
 
         issues = [v.to_gate_issue() for v in violations]
         critical = sum(1 for i in issues if i.severity == "critical")
+        warning = sum(1 for i in issues if i.severity == "warning")
+        info = sum(1 for i in issues if i.severity == "info")
+        shape_iri_counts: Counter = Counter()
+        for v in violations:
+            if v.source_shape:
+                shape_iri_counts[v.source_shape] += 1
         score = 1.0 if not violations else max(
             0.0, 1.0 - len(violations) / max(1, len(payloads))
+        )
+        passed = conforms or critical == 0
+        # passed_count = payloads minus distinct violating focus nodes
+        violating_focus_nodes = {
+            v.focus_node for v in violations if v.focus_node
+        }
+        passed_count = max(0, len(payloads) - len(violating_focus_nodes))
+        _emit_page_objectives_shacl_decision(
+            capture,
+            passed=passed,
+            code=None if passed else "SHACL_CRITICAL_VIOLATIONS",
+            violations_count=len(violations),
+            critical_count=critical,
+            warning_count=warning,
+            info_count=info,
+            passed_count=passed_count,
+            payloads_audited=len(payloads),
+            pages_scanned=len(pages),
+            shapes_path=shapes_path_str,
+            shape_iri_counts=dict(shape_iri_counts),
+            score=score,
         )
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,
             validator_version=self.version,
-            passed=conforms or critical == 0,
+            passed=passed,
             score=score,
             issues=issues,
         )
