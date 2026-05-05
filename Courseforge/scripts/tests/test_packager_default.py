@@ -226,10 +226,20 @@ class TestPageObjectivesValidator:
         codes = {issue.code for issue in result.issues}
         assert "LO_SPECIFICITY_VIOLATION" in codes
 
-    def test_page_objectives_validator_no_objectives_warns(
+    def test_page_objectives_validator_no_objectives_fails_closed(
         self, content_dir_no_courseJson,
     ):
-        """No objectives available ⇒ passed=True with a NO_OBJECTIVES_FILE warning."""
+        """No objectives available ⇒ passed=False with a critical
+        PAGE_OBJECTIVES_PATH_MISSING issue (silent-degradation fix).
+
+        Pre-fix the validator returned passed=True with a warning so a
+        critical-severity packaging-phase gate silently skipped per-week
+        LO validation. Post-fix the validator fails closed: a run that
+        reaches packaging without an objectives source represents an
+        upstream contract break (course_planning didn't emit objectives,
+        or packaging didn't surface course.json), and the gate must
+        block instead of warn-and-pass.
+        """
         from lib.validators.page_objectives import PageObjectivesValidator
 
         (content_dir_no_courseJson / "week_01" / "week_01_overview.html").write_text(
@@ -238,12 +248,10 @@ class TestPageObjectivesValidator:
         result = PageObjectivesValidator().validate({
             "content_dir": content_dir_no_courseJson,
         })
-        assert result.passed is True
-        codes = {issue.code for issue in result.issues}
-        assert "NO_OBJECTIVES_FILE" in codes
-        # Warning, not critical - orchestrator must not block on this.
-        severities = {issue.severity for issue in result.issues}
-        assert "critical" not in severities
+        assert result.passed is False
+        critical_issues = [i for i in result.issues if i.severity == "critical"]
+        assert len(critical_issues) == 1
+        assert critical_issues[0].code == "PAGE_OBJECTIVES_PATH_MISSING"
 
 
 # ---------------------------------------------------------------------------

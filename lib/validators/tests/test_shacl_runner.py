@@ -223,10 +223,38 @@ def test_shacl_violation_to_gate_issue_carries_code_prefix():
 
 def _build_minimal_corpus(root: Path, *, with_los: bool) -> Path:
     """Create a content_dir with one week_01 page that does or does not
-    carry a learningObjectives entry."""
+    carry a learningObjectives entry.
+
+    Also writes a minimal ``course.json`` at the content-dir root so the
+    Python ``PageObjectivesValidator`` has a canonical objectives source
+    to validate against. Post-silent-degradation-cleanup the validator
+    fail-closes on missing objectives_path / course.json (was warn-and-
+    pass), so the SHACL ↔ Python equivalence tests need real objectives
+    fixtures to exercise the LO-content branch instead of tripping the
+    upstream-contract-failure branch. The course.json's
+    chapter_objectives entry covers ``Week 1`` and declares the same
+    ``CO-01`` URI that ``_make_page_payload`` emits in
+    ``learningObjectives``.
+    """
     page = root / "week_01" / "week_01_overview.html"
     payload = _make_page_payload() if with_los else _make_page_payload(lo_ids=[])
     _write_html_page(page, payload)
+    course_json = {
+        "terminal_objectives": [],
+        "chapter_objectives": [
+            {
+                "chapter": "Week 1",
+                "objectives": [
+                    {
+                        "id": "https://example.org/los/CO-01",
+                        "statement": "Apply the framework to sample data.",
+                        "bloomLevel": "apply",
+                    }
+                ],
+            }
+        ],
+    }
+    (root / "course.json").write_text(json.dumps(course_json), encoding="utf-8")
     return root
 
 
