@@ -205,6 +205,11 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
     },
     "packaging": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),
+        "blocks_final_path": (
+            "phase_outputs",
+            "content_generation_rewrite",
+            "blocks_final_path",
+        ),
     },
     # Phase 7c ST 16: imscc_chunking phase — IMSCC chunkset emit
     # post-packaging. Mirrors the YAML routing at

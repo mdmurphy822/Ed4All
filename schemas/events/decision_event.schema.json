@@ -79,6 +79,7 @@
         "block_capability_escalation",
         "block_escalation",
         "block_outline_call",
+        "block_packaging_skipped",
         "block_rewrite_call",
         "block_validation_action",
         "bloom_level_assignment",

@@ -489,6 +489,122 @@ def test_rewrite_phase_preserves_outline_escalation_marker(
     ), parsed
 
 
+def test_escalated_blocks_dropped_from_imscc(tmp_path, monkeypatch):
+    """W5: an escalated block (escalation_marker != None) is filtered
+    out of the per-page HTML emit and a ``block_packaging_skipped``
+    decision capture fires for the skip. The non-escalated sibling on
+    the same page rides through normally so the page itself is still
+    emitted."""
+    project_id = "TEST_W5_ESCALATION_FILTER"
+    project_path = _seed_project(tmp_path, project_id)
+    _patch_project_root(monkeypatch, tmp_path)
+
+    # Two blocks on the same page: one carries an escalation_marker
+    # already (outline-tier), the second is fresh and will be rewritten
+    # cleanly.
+    escalated_blk = dataclasses.replace(
+        _make_block("week_01_content_01#objective_to-01_0"),
+        escalation_marker="outline_budget_exhausted",
+    )
+    fresh_blk = _make_block(
+        "week_01_content_01#objective_to-02_0",
+    )
+    blocks_path = _seed_outline_blocks(
+        project_path, [escalated_blk, fresh_blk],
+    )
+    sidecar_paths = _seed_outline_sidecars(
+        project_path,
+        {escalated_blk.block_id: [], fresh_blk.block_id: []},
+        [],
+    )
+
+    from Courseforge.router import router as _router_mod
+
+    def fake_remediation(
+        self, block, *, validators=None, source_chunks=None,
+        objectives=None, **kw,
+    ):
+        return dataclasses.replace(
+            block, content="<p>fresh rewrite content</p>",
+        )
+
+    monkeypatch.setattr(
+        _router_mod.CourseforgeRouter,
+        "route_rewrite_with_remediation",
+        fake_remediation,
+    )
+
+    # Patch DecisionCapture used inside the rewrite phase so we can
+    # assert the block_packaging_skipped event fires. The rewrite
+    # phase wires DecisionCapture(streaming=True) on its own; we swap
+    # the class at module scope.
+    captured_events: List[Dict[str, Any]] = []
+
+    class _SpyCapture:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def log_decision(self, **kwargs: Any) -> None:
+            captured_events.append(dict(kwargs))
+
+    import lib.decision_capture as _dc_mod
+    monkeypatch.setattr(_dc_mod, "DecisionCapture", _SpyCapture)
+
+    result = asyncio.run(_pt._run_content_generation_rewrite(
+        project_id=project_id,
+        blocks_validated_path=str(blocks_path),
+        workflow_type="textbook_to_course",
+        outline_chunks_path=str(sidecar_paths["chunks"]),
+        outline_objectives_path=str(sidecar_paths["objectives"]),
+    ))
+    payload = json.loads(result)
+    assert payload["success"] is True, payload
+
+    # The escalated block ID must NOT appear in any per-page HTML.
+    page_paths = payload.get("page_paths") or []
+    assert page_paths, payload
+    for pp in page_paths:
+        page_html = Path(pp).read_text(encoding="utf-8")
+        assert escalated_blk.block_id not in page_html, (
+            f"Escalated block_id={escalated_blk.block_id!r} leaked "
+            f"into per-page HTML at {pp}: {page_html}"
+        )
+        # Fresh sibling is still emitted on the same page.
+        assert fresh_blk.block_id in page_html, (
+            f"Fresh sibling block_id={fresh_blk.block_id!r} is missing "
+            f"from per-page HTML at {pp}: {page_html}"
+        )
+
+    # The escalated block IS persisted on disk in blocks_final.jsonl
+    # so the audit / re-execution pass can find it.
+    blocks_final = Path(payload["blocks_final_path"])
+    parsed = [
+        json.loads(ln)
+        for ln in blocks_final.read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert any(
+        entry.get("block_id") == escalated_blk.block_id
+        and entry.get("escalation_marker") == "outline_budget_exhausted"
+        for entry in parsed
+    ), parsed
+
+    # The block_packaging_skipped decision capture fires for the
+    # skipped block — gate_id matches W5's emit-loop sentinel.
+    skip_events = [
+        e for e in captured_events
+        if e.get("decision_type") == "block_packaging_skipped"
+    ]
+    assert len(skip_events) >= 1, captured_events
+    skip = skip_events[0]
+    feats = skip.get("ml_features") or {}
+    assert feats.get("block_id") == escalated_blk.block_id, skip
+    assert feats.get("escalation_marker") == "outline_budget_exhausted"
+    assert feats.get("gate_id") == "_run_content_generation_rewrite"
+    # Rationale honours the >=20-char contract.
+    assert len(skip.get("rationale", "")) >= 20, skip
+
+
 def test_resolve_post_rewrite_validators_returns_empty_on_unknown_workflow():
     """``_resolve_post_rewrite_validators`` falls back to [] when the
     workflow_type is empty or unknown — preserving pre-W3 behavior on

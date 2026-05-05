@@ -1451,6 +1451,15 @@ workflows:
             source: phase_outputs
             phase: objective_extraction
             output: project_id
+          # W5: thread the rewrite-tier blocks_final_path through to
+          # the packaging gate so IMSCCValidator can run its defensive
+          # escalation-marker leak check (no-op when the two-pass
+          # router didn't run, since content_generation_rewrite isn't
+          # in phase_outputs and the input falls through as None).
+          - param: blocks_final_path
+            source: phase_outputs
+            phase: content_generation_rewrite
+            output: blocks_final_path
 
         # Wave 32 Deliverable B: surface imscc_path + content_dir so
         # IMSCCValidator + PageObjectivesValidator builders stop

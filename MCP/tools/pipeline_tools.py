@@ -3718,6 +3718,45 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
         )
         body_parts = []
         for b in page_blocks:
+            # W5: marker-bearing blocks (outline_budget_exhausted /
+            # structural_unfixable / validator_consensus_fail) MUST NOT
+            # ship into per-page HTML. They persist on disk in
+            # blocks_final.jsonl for re-execution / audit, but they
+            # never become part of the IMSCC body.
+            if b.escalation_marker is not None:
+                if capture is not None:
+                    try:
+                        capture.log_decision(
+                            decision_type="block_packaging_skipped",
+                            decision=(
+                                f"Skipped HTML emit for block_id="
+                                f"{b.block_id} (block_type={b.block_type}, "
+                                f"escalation_marker={b.escalation_marker})."
+                            ),
+                            rationale=(
+                                "W5 packaging gate: blocks carrying a "
+                                "non-null escalation_marker (consensus "
+                                "failure / outline budget exhausted / "
+                                "structural unfixable) MUST NOT ship "
+                                "into the IMSCC. The block remains on "
+                                "disk in blocks_final.jsonl for "
+                                "re-execution; this skip prevents an "
+                                "unvalidated block_id="
+                                f"{b.block_id} from leaking into the "
+                                "per-page HTML and bypassing the "
+                                "post-rewrite validator chain."
+                            ),
+                            ml_features={
+                                "gate_id": "_run_content_generation_rewrite",
+                                "block_id": b.block_id,
+                                "block_type": b.block_type,
+                                "escalation_marker": b.escalation_marker,
+                                "page_id": page_id,
+                            },
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                continue
             content = b.content if isinstance(b.content, str) else ""
             if not content.strip():
                 continue
