@@ -84,7 +84,7 @@ workflows:
 
         validation_gates:
           - gate_id: outline_curie_anchoring
-            validator: lib.validators.curie_anchoring.CurieAnchoringValidator
+            validator: Courseforge.router.inter_tier_gates.BlockCurieAnchoringValidator
             severity: critical
             threshold:
               max_critical_issues: 0
@@ -93,7 +93,7 @@ workflows:
               on_error: warn
 
           - gate_id: outline_content_type
-            validator: lib.validators.content_type.ContentTypeValidator
+            validator: Courseforge.router.inter_tier_gates.BlockContentTypeValidator
             severity: critical
             threshold:
               max_critical_issues: 0
@@ -102,7 +102,7 @@ workflows:
               on_error: warn
 
           - gate_id: outline_page_objectives
-            validator: lib.validators.page_objectives.PageObjectivesValidator
+            validator: Courseforge.router.inter_tier_gates.BlockPageObjectivesValidator
             severity: critical
             threshold:
               max_critical_issues: 0
