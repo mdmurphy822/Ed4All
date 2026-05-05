@@ -29,13 +29,115 @@ Referenced by: config/workflows.yaml (rag_training, textbook_to_course)
 """
 
 import json
+import logging
 import re
 from collections import Counter
 from pathlib import Path
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
 from lib.validators.bloom import detect_bloom_level
 from MCP.hardening.validation_gates import GateIssue, GateResult
+
+logger = logging.getLogger(__name__)
+
+
+def _emit_assessment_quality_decision(
+    capture: Any,
+    *,
+    question_id: str,
+    passed: bool,
+    placeholder_hits: int,
+    bloom_level: str,
+    is_mcq: bool,
+    issue_codes: List[str],
+) -> None:
+    """Emit one ``assessment_quality_check`` decision per question audited.
+
+    Per H3 W5 contract: per-question cardinality, dynamic signals
+    interpolated (question_id, placeholder_hits, bloom_level, is_mcq,
+    issue_codes). Rationale length >= 60 chars to avoid the static-
+    rationale regression class.
+    """
+    if capture is None:
+        return
+    decision = "passed" if passed else "failed:" + (issue_codes[0] if issue_codes else "unknown")
+    rationale = (
+        f"AssessmentQualityValidator audited question {question_id!r}: "
+        f"placeholder_hits={placeholder_hits}, bloom_level={bloom_level or 'n/a'}, "
+        f"is_mcq={is_mcq}, issue_codes={issue_codes!r}, "
+        f"per_question_passed={passed}."
+    )
+    metrics: Dict[str, Any] = {
+        "question_id": question_id,
+        "placeholder_hits": int(placeholder_hits),
+        "bloom_level": bloom_level or "",
+        "is_mcq": bool(is_mcq),
+        "issue_codes": list(issue_codes),
+        "passed": bool(passed),
+    }
+    try:
+        capture.log_decision(
+            decision_type="assessment_quality_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(metrics),
+            metrics=metrics,
+        )
+    except Exception as exc:  # noqa: BLE001 — capture must not break the gate
+        logger.debug(
+            "DecisionCapture.log_decision raised on assessment_quality_check: %s",
+            exc,
+        )
+
+
+def _emit_final_quality_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    total_questions: int,
+    n_assessments: int,
+    duplicate_count: int,
+    score: float,
+    min_score: float,
+) -> None:
+    """Emit one corpus-wide ``final_quality_check`` per validate() call.
+
+    Per H3 W5 contract: corpus-wide cardinality. Dynamic signals:
+    total_questions, passed_count proxy via score, error_rate proxy
+    via duplicate_count.
+    """
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    rationale = (
+        f"FinalQualityValidator corpus-wide verdict: "
+        f"n_assessments={n_assessments}, total_questions={total_questions}, "
+        f"duplicate_stem_count={duplicate_count}, score={score:.4f}, "
+        f"min_score={min_score:.4f}, failure_code={code or 'none'}."
+    )
+    metrics: Dict[str, Any] = {
+        "n_assessments": int(n_assessments),
+        "total_questions": int(total_questions),
+        "duplicate_count": int(duplicate_count),
+        "score": float(score),
+        "min_score": float(min_score),
+        "passed": bool(passed),
+        "failure_code": code,
+    }
+    try:
+        capture.log_decision(
+            decision_type="final_quality_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(metrics),
+            metrics=metrics,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on final_quality_check: %s",
+            exc,
+        )
 
 ASSESSMENT_PLACEHOLDER_PATTERNS = [
     re.compile(r"Correct answer based on content", re.IGNORECASE),
@@ -110,6 +212,7 @@ class AssessmentQualityValidator:
         gate_id = inputs.get("gate_id", "assessment_quality")
         issues: List[GateIssue] = []
         min_score = inputs.get("min_score", 0.8)
+        capture = inputs.get("decision_capture")
 
         # Load assessment data
         data = inputs.get("assessment_data")
@@ -148,9 +251,35 @@ class AssessmentQualityValidator:
 
         questions = data["questions"]
 
-        # Check each question (per-question issues)
+        # Check each question (per-question issues). Wave H3-W5 wiring:
+        # emit one ``assessment_quality_check`` capture event per
+        # question audited so post-hoc replay can reconstruct the per-
+        # question pass/fail trail (placeholder hits, Bloom level,
+        # MCQ flag).
         for q in questions:
-            issues.extend(self._check_question(q))
+            q_issues = self._check_question(q)
+            issues.extend(q_issues)
+            q_id = str(q.get("question_id", "unknown"))
+            placeholder_codes = {
+                "PLACEHOLDER_QUESTION", "PLACEHOLDER_CHOICE",
+                "PLACEHOLDER_ANSWER", "PLACEHOLDER_FEEDBACK",
+            }
+            placeholder_hits = sum(
+                1 for i in q_issues if i.code in placeholder_codes
+            )
+            issue_codes = sorted({i.code for i in q_issues if i.code})
+            q_passed = not any(
+                i.severity in ("critical", "error") for i in q_issues
+            )
+            _emit_assessment_quality_decision(
+                capture,
+                question_id=q_id,
+                passed=q_passed,
+                placeholder_hits=placeholder_hits,
+                bloom_level=str(q.get("bloom_level") or ""),
+                is_mcq=q.get("question_type") == "multiple_choice",
+                issue_codes=issue_codes,
+            )
 
         # Wave 26: cross-question real-failure-mode checks
         issues.extend(self._check_cross_question_failures(questions))
@@ -507,6 +636,7 @@ class FinalQualityValidator:
         gate_id = inputs.get("gate_id", "final_quality")
         issues: List[GateIssue] = []
         min_score = inputs.get("min_score", 0.85)
+        capture = inputs.get("decision_capture")
 
         # Load assessments
         assessments = inputs.get("assessments", [])
@@ -528,6 +658,16 @@ class FinalQualityValidator:
                         )
 
         if not assessments:
+            _emit_final_quality_decision(
+                capture,
+                passed=False,
+                code="NO_ASSESSMENTS",
+                total_questions=0,
+                n_assessments=0,
+                duplicate_count=0,
+                score=0.0,
+                min_score=min_score,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -578,6 +718,27 @@ class FinalQualityValidator:
         warning_count = sum(1 for i in issues if i.severity == "warning")
         score = max(0.0, 1.0 - error_count * 0.2 - warning_count * 0.05)
         passed = score >= min_score
+
+        # Wave H3-W5 wiring: emit one corpus-wide
+        # ``final_quality_check`` decision per validate() call.
+        failure_code: Optional[str] = None
+        if not passed:
+            if dupes:
+                failure_code = "DUPLICATE_QUESTIONS"
+            elif total < 5:
+                failure_code = "FEW_QUESTIONS"
+            else:
+                failure_code = "BELOW_MIN_SCORE"
+        _emit_final_quality_decision(
+            capture,
+            passed=passed,
+            code=failure_code,
+            total_questions=total,
+            n_assessments=len(assessments),
+            duplicate_count=len(dupes),
+            score=score,
+            min_score=min_score,
+        )
 
         return GateResult(
             gate_id=gate_id,

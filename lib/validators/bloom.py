@@ -11,6 +11,7 @@ Referenced by: config/workflows.yaml (rag_training assessment_generation phase)
 """
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
@@ -18,6 +19,56 @@ from typing import Any, Dict, List, Optional, Set
 from lib.ontology.bloom import detect_bloom_level as _canonical_detect_bloom_level
 from lib.ontology.bloom import get_verbs as _get_canonical_verbs
 from MCP.hardening.validation_gates import GateIssue, GateResult
+
+logger = logging.getLogger(__name__)
+
+
+def _emit_bloom_alignment_decision(
+    capture: Any,
+    *,
+    question_id: str,
+    declared_level: str,
+    detected_level: Optional[str],
+    match: bool,
+    permissive_mode: bool,
+    aligned: bool,
+) -> None:
+    """Emit one ``bloom_alignment_check`` per question.
+
+    Per H3 W5 contract: per-question cardinality. Dynamic signals:
+    question_id, declared_level, detected_level, match.
+    """
+    if capture is None:
+        return
+    decision = "aligned" if aligned else "unaligned"
+    rationale = (
+        f"BloomAlignmentValidator audited question {question_id!r}: "
+        f"declared_level={declared_level or 'n/a'}, "
+        f"detected_level={detected_level or 'none'}, "
+        f"verb_match={match}, permissive_mode={permissive_mode}, "
+        f"aligned={aligned}."
+    )
+    metrics: Dict[str, Any] = {
+        "question_id": question_id,
+        "declared_level": declared_level or "",
+        "detected_level": detected_level or "",
+        "match": bool(match),
+        "permissive_mode": bool(permissive_mode),
+        "aligned": bool(aligned),
+    }
+    try:
+        capture.log_decision(
+            decision_type="bloom_alignment_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(metrics),
+            metrics=metrics,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on bloom_alignment_check: %s",
+            exc,
+        )
 
 # Bloom's taxonomy verb indicators per level.
 # Source of truth: schemas/taxonomies/bloom_verbs.json (loaded via
@@ -67,6 +118,7 @@ class BloomAlignmentValidator:
         issues: List[GateIssue] = []
         min_score = inputs.get("min_alignment_score", 0.7)
         permissive_mode = bool(inputs.get("permissive_mode", False))
+        capture = inputs.get("decision_capture")
 
         # Load assessment data
         data = inputs.get("assessment_data")
@@ -126,6 +178,9 @@ class BloomAlignmentValidator:
         # treated as UNALIGNED by default. The legacy "None counts as
         # aligned" behavior is preserved behind permissive_mode=True for
         # back-compat with fixtures that rely on the old scoring.
+        # Wave H3-W5 wiring: emit one ``bloom_alignment_check`` per
+        # question audited so post-hoc replay can reconstruct
+        # declared-vs-detected per-question alignment trail.
         aligned = 0
         for q in questions:
             stem = q.get("stem", "")
@@ -134,12 +189,15 @@ class BloomAlignmentValidator:
             declared = q.get("bloom_level", "")
             detected = detect_bloom_level(stem_text)
             q_id = q.get("question_id", "unknown")
+            q_aligned = False
+            q_match = False
 
             if detected is None:
                 # No Bloom verb found in the stem.
                 if permissive_mode:
                     # Legacy behavior: count as aligned.
                     aligned += 1
+                    q_aligned = True
                 else:
                     # Wave 26 strict: count as unaligned and emit diagnostic.
                     excerpt = stem_text[:80]
@@ -170,6 +228,21 @@ class BloomAlignmentValidator:
                 # detected is not None and either matches declared OR
                 # declared is empty — treat as aligned.
                 aligned += 1
+                q_aligned = True
+                # match is True only if declared was non-empty AND
+                # equals detected (not the empty-declared positive
+                # path).
+                q_match = bool(declared) and detected == declared
+
+            _emit_bloom_alignment_decision(
+                capture,
+                question_id=str(q_id),
+                declared_level=str(declared or ""),
+                detected_level=detected,
+                match=q_match,
+                permissive_mode=permissive_mode,
+                aligned=q_aligned,
+            )
 
             # Check target level coverage
             if target_levels and declared not in target_levels:

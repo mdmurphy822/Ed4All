@@ -49,12 +49,72 @@ Wired symmetrically at the inter-tier and post-rewrite seams via
 """
 from __future__ import annotations
 
+import logging
 import re
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
+
+logger = logging.getLogger(__name__)
+
+
+def _emit_payload_decision(
+    capture: Any,
+    *,
+    block_id: str,
+    block_type: str,
+    mode: str,
+    distractors_count: int,
+    correct_answer_index_valid: bool,
+    misconception_refs_resolved: int,
+    misconception_refs_total: int,
+    passed: bool,
+    issue_codes: List[str],
+) -> None:
+    """Emit one ``block_assessment_item_payload_check`` per assessment_item Block.
+
+    Per H3 W5 contract: per-block cardinality. Dynamic signals:
+    block_id, distractors_count, correct_answer_index_valid,
+    misconception_refs_resolved.
+    """
+    if capture is None:
+        return
+    decision = "passed" if passed else "failed:" + (issue_codes[0] if issue_codes else "unknown")
+    rationale = (
+        f"BlockAssessmentItemPayloadValidator audited block {block_id!r} "
+        f"({block_type}, mode={mode}): distractors_count={distractors_count}, "
+        f"correct_answer_index_valid={correct_answer_index_valid}, "
+        f"misconception_refs_resolved={misconception_refs_resolved}/"
+        f"{misconception_refs_total}, issue_codes={issue_codes!r}, "
+        f"per_block_passed={passed}."
+    )
+    metrics: Dict[str, Any] = {
+        "block_id": block_id,
+        "block_type": block_type,
+        "mode": mode,
+        "distractors_count": int(distractors_count),
+        "correct_answer_index_valid": bool(correct_answer_index_valid),
+        "misconception_refs_resolved": int(misconception_refs_resolved),
+        "misconception_refs_total": int(misconception_refs_total),
+        "issue_codes": list(issue_codes),
+        "passed": bool(passed),
+    }
+    try:
+        capture.log_decision(
+            decision_type="block_assessment_item_payload_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(metrics),
+            metrics=metrics,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on "
+            "block_assessment_item_payload_check: %s",
+            exc,
+        )
 
 # ``blocks.py`` lives at ``Courseforge/scripts/blocks.py``; mirror the
 # router / inter_tier_gates import bridge so ``from blocks import Block``
@@ -361,6 +421,7 @@ class BlockAssessmentItemPayloadValidator:
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
+        capture = inputs.get("decision_capture")
         blocks, err = _coerce_blocks(inputs)
         if err is not None:
             return GateResult(
@@ -376,20 +437,95 @@ class BlockAssessmentItemPayloadValidator:
         audited = 0
         passed_count = 0
 
+        # Wave H3-W5 wiring: emit one
+        # ``block_assessment_item_payload_check`` decision per
+        # assessment_item Block audited so post-hoc replay can
+        # reconstruct the per-block payload-shape verdict (distractor
+        # count, correct_answer_index validity, misconception_ref
+        # resolution).
         for block in blocks:
             block_type = getattr(block, "block_type", None)
             if block_type != "assessment_item":
                 continue
 
             content = getattr(block, "content", None)
+            issues_before = len(issues)
+            block_id = str(getattr(block, "block_id", "<unknown>"))
+
             if isinstance(content, dict):
                 audited += 1
-                if _audit_outline_block(block, issues):
+                block_passed = _audit_outline_block(block, issues)
+                if block_passed:
                     passed_count += 1
+                # Compute per-block dynamic signals for capture.
+                distractors = content.get("distractors")
+                distractors_count = (
+                    len(distractors) if isinstance(distractors, list) else 0
+                )
+                cai = content.get("correct_answer_index")
+                cai_valid = (
+                    isinstance(cai, int)
+                    and not isinstance(cai, bool)
+                    and 0 <= cai < distractors_count
+                )
+                m_total = 0
+                m_resolved = 0
+                if isinstance(distractors, list):
+                    for entry in distractors:
+                        if not isinstance(entry, dict):
+                            continue
+                        ref = entry.get("misconception_ref")
+                        if ref is None:
+                            continue
+                        m_total += 1
+                        if (
+                            isinstance(ref, str)
+                            and _MISCONCEPTION_REF_RE.match(ref)
+                        ):
+                            m_resolved += 1
+                new_codes = sorted({
+                    i.code for i in issues[issues_before:] if i.code
+                })
+                _emit_payload_decision(
+                    capture,
+                    block_id=block_id,
+                    block_type=str(block_type),
+                    mode="outline",
+                    distractors_count=distractors_count,
+                    correct_answer_index_valid=cai_valid,
+                    misconception_refs_resolved=m_resolved,
+                    misconception_refs_total=m_total,
+                    passed=block_passed,
+                    issue_codes=new_codes,
+                )
             elif isinstance(content, str):
                 audited += 1
-                if _audit_rewrite_block(block, issues):
+                block_passed = _audit_rewrite_block(block, issues)
+                if block_passed:
                     passed_count += 1
+                # Per-block dynamic signals from the rewrite-tier HTML.
+                matches = list(
+                    _DATA_CF_DISTRACTOR_INDEX_LI_RE.finditer(content)
+                )
+                distractors_count = len(matches)
+                # The rewrite-tier HTML doesn't carry
+                # correct_answer_index or misconception_refs.
+                cai_valid = block_passed and distractors_count >= 2
+                new_codes = sorted({
+                    i.code for i in issues[issues_before:] if i.code
+                })
+                _emit_payload_decision(
+                    capture,
+                    block_id=block_id,
+                    block_type=str(block_type),
+                    mode="rewrite",
+                    distractors_count=distractors_count,
+                    correct_answer_index_valid=cai_valid,
+                    misconception_refs_resolved=0,
+                    misconception_refs_total=0,
+                    passed=block_passed,
+                    issue_codes=new_codes,
+                )
             else:
                 # Non-dict / non-str content — nothing to audit.
                 continue
