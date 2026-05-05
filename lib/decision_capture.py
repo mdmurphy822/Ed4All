@@ -24,6 +24,7 @@ import hashlib
 import json
 import logging
 import os
+import secrets
 from dataclasses import asdict, dataclass, field
 
 # Worker W3: advisory file locking around the legacy decision-capture write
@@ -258,7 +259,17 @@ class DecisionCapture:
         self.course_code = course_code
         self.phase = phase
         self.tool = tool
-        self.session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Worker W6: 1-second granularity collides under multi-worker fanout
+        # (DART per-PDF max_concurrent=4, assessment_generation max_concurrent=5,
+        # etc.). Append PID + 6-char random hex suffix so two captures
+        # initialized in the same wall-second from parallel workers (or even
+        # the same process) get distinct session_ids, JSONL paths, and run_id
+        # fallbacks. Timestamp prefix `%Y%m%d_%H%M%S` (chars 0..15) preserved
+        # so existing glob patterns `decisions_*.jsonl` still match.
+        self.session_id = (
+            datetime.now().strftime("%Y%m%d_%H%M%S")
+            + f"_{os.getpid()}_{secrets.token_hex(3)}"
+        )
         self.streaming_mode = streaming
         self.task_id = task_id  # Phase 0: Cross-link to orchestrator
 
