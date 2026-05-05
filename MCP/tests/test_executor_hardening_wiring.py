@@ -30,17 +30,73 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
+def _save_executor_module_state():
+    """Snapshot ``sys.modules`` entries + the ``MCP.core`` package's
+    ``executor`` attribute that point at the live ``MCP.core.executor``
+    module, so ``_restore_executor_module_state`` can put them back.
+
+    Why both? ``sys.modules['MCP.core.executor']`` and the
+    ``MCP.core.executor`` attribute on the parent ``MCP.core`` package
+    are independently bound to the module object. When CPython
+    resolves ``import MCP.core.executor as e`` it returns the
+    **parent package's attribute**, NOT ``sys.modules``. A fresh
+    ``importlib.import_module("MCP.core.executor")`` updates BOTH —
+    so a polluter that re-imports without restoration leaves the
+    parent attribute pointing at a stale fresh module that subsequent
+    ``monkeypatch.setattr("MCP.core.executor.STATE_PATH", ...)``
+    calls cannot reach (the monkeypatch lands on the original
+    sys.modules entry, while the W9 test's ``import MCP.core.executor``
+    silently picks up the orphaned fresh module via the parent
+    package, sees the un-patched module-level ``STATE_PATH``, and
+    looks up tasks under the stale repo-root state dir — explaining
+    the silent "0 tasks executed" failure mode against
+    ``test_workflow_runner_courseforge_two_pass_gates_e2e.py``.
+    """
+    saved_modules = {
+        mod_name: sys.modules[mod_name]
+        for mod_name in list(sys.modules)
+        if mod_name.startswith("MCP.core.executor")
+    }
+    parent = sys.modules.get("MCP.core")
+    saved_parent_attr = (
+        getattr(parent, "executor", None) if parent is not None else None
+    )
+    return saved_modules, saved_parent_attr
+
+
+def _restore_executor_module_state(saved_modules, saved_parent_attr):
+    for mod_name in list(sys.modules):
+        if mod_name.startswith("MCP.core.executor"):
+            del sys.modules[mod_name]
+    for mod_name, mod_obj in saved_modules.items():
+        sys.modules[mod_name] = mod_obj
+    parent = sys.modules.get("MCP.core")
+    if parent is not None and saved_parent_attr is not None:
+        parent.executor = saved_parent_attr
+
+
 @pytest.fixture
 def fresh_executor_module():
     """Return a fresh import of ``MCP.core.executor``.
 
     Re-imports the module so monkeypatched loggers observe any
     import-time debug lines emitted by the ``except ImportError`` arms.
+
+    Saves + restores both the ``sys.modules`` entries AND the parent
+    package's attribute binding so subsequent tests in the same session
+    see the original module object via every retrieval path
+    (``import MCP.core.executor``, ``from MCP.core import executor``,
+    ``sys.modules['MCP.core.executor']``). See
+    ``_save_executor_module_state`` docstring for the failure mode
+    that motivated the parent-attribute restoration.
     """
-    for mod_name in list(sys.modules):
-        if mod_name.startswith("MCP.core.executor"):
-            del sys.modules[mod_name]
-    return importlib.import_module("MCP.core.executor")
+    saved_modules, saved_parent_attr = _save_executor_module_state()
+    for mod_name in list(saved_modules):
+        del sys.modules[mod_name]
+    try:
+        yield importlib.import_module("MCP.core.executor")
+    finally:
+        _restore_executor_module_state(saved_modules, saved_parent_attr)
 
 
 @pytest.mark.unit
@@ -111,17 +167,23 @@ def test_executor_import_does_not_log_silent_import_error(monkeypatch, caplog):
     submodules) becomes observable in logs.
     """
     # Force-reload at DEBUG so we can see the debug lines the guard arms emit.
-    for mod_name in list(sys.modules):
-        if mod_name.startswith("MCP.core.executor"):
-            del sys.modules[mod_name]
+    # Save + restore both the ``sys.modules`` entries AND the parent
+    # package's attribute binding (see ``_save_executor_module_state``
+    # docstring for why both are needed).
+    saved_modules, saved_parent_attr = _save_executor_module_state()
+    for mod_name in list(saved_modules):
+        del sys.modules[mod_name]
 
-    with caplog.at_level(logging.DEBUG, logger="MCP.core.executor"):
-        importlib.import_module("MCP.core.executor")
+    try:
+        with caplog.at_level(logging.DEBUG, logger="MCP.core.executor"):
+            importlib.import_module("MCP.core.executor")
 
-    for record in caplog.records:
-        if "Hardening import failed" in record.getMessage():
-            pytest.fail(
-                f"Executor import logged a silent-ImportError debug line "
-                f"(this means one of the hardening imports is failing): "
-                f"{record.getMessage()}"
-            )
+        for record in caplog.records:
+            if "Hardening import failed" in record.getMessage():
+                pytest.fail(
+                    f"Executor import logged a silent-ImportError debug line "
+                    f"(this means one of the hardening imports is failing): "
+                    f"{record.getMessage()}"
+                )
+    finally:
+        _restore_executor_module_state(saved_modules, saved_parent_attr)
