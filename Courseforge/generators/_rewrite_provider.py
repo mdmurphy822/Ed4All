@@ -72,6 +72,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from Courseforge.generators._base import _BaseLLMProvider
+from MCP.hardening.error_classifier import (  # noqa: E402
+    ErrorClass,
+    classify_error,
+)
 # Phase 3.5 Subtask 3: the generalized preserve-token helpers live in
 # ``Courseforge/router/remediation.py`` so the Phase 3.5 router-side
 # remediation injection (Subtasks 18-22) and the rewrite-tier CURIE-
@@ -130,6 +134,15 @@ SUPPORTED_PROVIDERS = ("anthropic", "together", "local", "openai_compatible")
 # gate. Direct port of the Trainforge precedent
 # (``_local_provider.py:540`` :: ``MAX_PARSE_RETRIES``).
 MAX_PARSE_RETRIES = 2
+
+# Worker W6: per-block transient-retry budget for dispatch-side
+# failures (Ollama 503 / connection reset / read timeout). Transient
+# retries do NOT advance ``MAX_PARSE_RETRIES`` so a flaky local server
+# can't burn the parse budget before any parse attempt completes.
+# Permanent errors (auth failure, bad request) re-raise immediately.
+# UNKNOWN-class errors fall through to the legacy parse-retry path so
+# semantic regressions don't change behavior on unclassified errors.
+_TRANSIENT_RETRY_BUDGET = 3
 
 
 # ---------------------------------------------------------------------------
@@ -828,6 +841,12 @@ class RewriteProviderError(RuntimeError):
       CURIEs declared in the input outline's ``content["curies"]`` and
       did not recover after ``MAX_PARSE_RETRIES`` remediation turns.
       ``missing_curies`` carries the dropped tokens for postmortem.
+    - ``rewrite_transient_exhausted`` — Worker W6: the transient-retry
+      budget (``_TRANSIENT_RETRY_BUDGET``) was exhausted on dispatch-
+      side failures (Ollama 503 / connection reset / read timeout)
+      without any parse attempt completing. Distinct from
+      ``rewrite_curie_drop`` so the router can branch on the failure
+      mode.
     """
 
     def __init__(
@@ -1173,12 +1192,58 @@ class RewriteProvider(_BaseLLMProvider):
         last_text = ""
         last_missing: List[str] = []
         total_retries = 0
+        # Worker W6: transient retries (Ollama 503 / connection reset /
+        # read timeout) are counted separately from MAX_PARSE_RETRIES so
+        # they do NOT burn the parse budget. Permanent errors re-raise
+        # immediately. UNKNOWN-class errors preserve legacy semantics
+        # (advance the parse retry loop).
+        transient_retries = 0
+        attempt = 0
         # Initial attempt + ``MAX_PARSE_RETRIES`` remediation retries =
         # ``MAX_PARSE_RETRIES + 1`` total dispatches at most. Mirrors the
         # ``for attempts in range(retry_budget)`` loop in
         # ``_local_provider._call_with_parse``.
-        for attempt in range(MAX_PARSE_RETRIES + 1):
-            html_response, retry_count = self._dispatch_call(user_prompt)
+        while attempt < MAX_PARSE_RETRIES + 1:
+            try:
+                html_response, retry_count = self._dispatch_call(user_prompt)
+            except Exception as exc:
+                # Worker W6: classify the dispatch-side failure so a
+                # transient (Ollama 503 / connection reset / read
+                # timeout) doesn't burn the parse-retry budget. Permanent
+                # errors (auth failure, bad request) surface immediately;
+                # UNKNOWN-class errors preserve the legacy parse-retry
+                # path so semantic regressions don't shift behavior on
+                # unclassified errors.
+                classified = classify_error(exc, task_id=block.block_id)
+                if classified.error_class is ErrorClass.TRANSIENT:
+                    if transient_retries < _TRANSIENT_RETRY_BUDGET:
+                        transient_retries += 1
+                        # Do NOT advance attempt — re-dispatch under the
+                        # same parse-retry slot.
+                        continue
+                    raise RewriteProviderError(
+                        f"RewriteProvider: rewrite tier exhausted "
+                        f"transient-retry budget ({_TRANSIENT_RETRY_BUDGET}) "
+                        f"for block {block.block_id!r} (last_error={exc!r})",
+                        code="rewrite_transient_exhausted",
+                    ) from exc
+                if classified.error_class is ErrorClass.PERMANENT:
+                    # Re-raise immediately — no retry on permanent
+                    # errors (validation_error, missing_input,
+                    # 401/403/404, etc.).
+                    raise
+                # UNKNOWN / POISON_PILL → fall through to legacy
+                # parse-retry path. POISON_PILL is treated like UNKNOWN
+                # at the per-call site; batch-level poison-pill detection
+                # is the orchestrator's responsibility.
+                logger.warning(
+                    "RewriteProvider: dispatch failure (%s) on attempt %d: %s",
+                    classified.error_class.value,
+                    attempt,
+                    exc,
+                )
+                attempt += 1
+                continue
             # Post-emit sanitizer: escape orphan-opener placeholder tags
             # before any downstream gate or consumer sees the response.
             # Conservative — only ``<word>`` openers with no attributes
@@ -1221,6 +1286,7 @@ class RewriteProvider(_BaseLLMProvider):
                 user_prompt = _append_curie_remediation(
                     user_prompt, missing,
                 )
+            attempt += 1
 
         # Exhausted retry budget. Emit the failure decision so the
         # audit trail captures the drop, then raise.
