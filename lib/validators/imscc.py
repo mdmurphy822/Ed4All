@@ -8,6 +8,10 @@ IMSCCValidator:
 - All resource references resolve to existing files
 - Namespace declarations correct (IMS CC 1.1/1.2/1.3)
 - Organization hierarchy complete
+- W5: escalation-marker-bearing blocks (consensus failure / outline budget
+  exhausted / structural unfixable) MUST NOT appear in the per-page IMSCC
+  HTML — defensive packager-side check that reads ``blocks_final.jsonl``
+  and scans the emitted HTML for any matching ``data-cf-block-id``.
 
 IMSCCParseValidator:
 - IMSCC zip extractable
@@ -18,10 +22,12 @@ IMSCCParseValidator:
 Referenced by: config/workflows.yaml (course_generation, intake_remediation, textbook_to_course)
 """
 
+import json
+import re
 import xml.etree.ElementTree as ET
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List, Optional
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
 
@@ -94,6 +100,13 @@ class IMSCCValidator:
                 )
             )
 
+        # W5: defensive packager-side escalation-marker leak check.
+        # Walks ``blocks_final.jsonl`` (when present) and the emitted
+        # per-page HTML to confirm no escalated block_id leaked into
+        # shipped HTML. Pre-W5 runs without ``blocks_final_path`` /
+        # ``content_dir`` inputs no-op silently (backward compat).
+        issues.extend(self._check_escalated_blocks_absent(inputs))
+
         has_errors = any(i.severity == "error" for i in issues)
         return GateResult(
             gate_id=gate_id,
@@ -155,6 +168,168 @@ class IMSCCValidator:
             )
 
         return issues
+
+    def _check_escalated_blocks_absent(
+        self, inputs: Dict[str, Any],
+    ) -> List[GateIssue]:
+        """W5 defensive check: confirm no escalation-marker-bearing
+        block leaked into shipped IMSCC HTML.
+
+        Inputs (all optional — pre-W5 runs / legacy direct callers
+        no-op silently):
+            blocks_final_path: Path to the rewrite-tier
+                ``blocks_final.jsonl`` (one snake_case Block entry per
+                line). When absent, the check returns an empty issue
+                list so this method is purely additive.
+            content_dir: Directory containing the per-page HTML files
+                (preferred). When absent, the check falls back to
+                walking ``imscc_path`` (extracted dir) or extracting
+                the IMSCC zip into a temp dir.
+
+        Emits ``code="ESCALATED_BLOCK_IN_IMSCC"`` (critical) for every
+        match between an escalated block_id and a
+        ``data-cf-block-id="{id}"`` attribute in the shipped HTML.
+        """
+        issues: List[GateIssue] = []
+
+        blocks_final_raw = inputs.get("blocks_final_path")
+        if not blocks_final_raw:
+            # Backward compat: no blocks_final_path threaded in →
+            # nothing to check. Pre-W5 callers (and the
+            # course_generation / intake_remediation workflows that
+            # don't run the two-pass router) hit this path.
+            return issues
+
+        blocks_final_path = Path(blocks_final_raw)
+        if not blocks_final_path.exists():
+            issues.append(
+                GateIssue(
+                    severity="info",
+                    code="BLOCKS_FINAL_MISSING",
+                    message=(
+                        "blocks_final_path was provided but does not "
+                        f"exist on disk: {blocks_final_path}"
+                    ),
+                )
+            )
+            return issues
+
+        escalated_ids = self._collect_escalated_block_ids(blocks_final_path)
+        if not escalated_ids:
+            # No escalated blocks at all → vacuously safe.
+            return issues
+
+        html_files = self._gather_html_files(inputs)
+        if not html_files:
+            issues.append(
+                GateIssue(
+                    severity="info",
+                    code="ESCALATED_BLOCK_CHECK_NO_HTML",
+                    message=(
+                        "blocks_final.jsonl listed escalated block(s) "
+                        "but no HTML files were found to scan; check "
+                        "skipped."
+                    ),
+                )
+            )
+            return issues
+
+        # Compile one regex per escalated id rather than scanning the
+        # full file list once per id — short-circuits on the first
+        # leak per id and keeps the worst case O(html_files * ids).
+        for block_id in escalated_ids:
+            # Escape the id so block_ids carrying regex metacharacters
+            # (``#`` / ``.`` / etc.) don't blow up the pattern.
+            pat = re.compile(
+                rf'data-cf-block-id="{re.escape(block_id)}"'
+            )
+            for html_path in html_files:
+                try:
+                    text = html_path.read_text(
+                        encoding="utf-8", errors="replace",
+                    )
+                except OSError:
+                    continue
+                if pat.search(text):
+                    issues.append(
+                        GateIssue(
+                            severity="error",
+                            code="ESCALATED_BLOCK_IN_IMSCC",
+                            message=(
+                                f"Escalated block_id={block_id!r} "
+                                f"found in shipped HTML "
+                                f"{html_path.name}; W5 packaging gate "
+                                "requires marker-bearing blocks to be "
+                                "filtered out at HTML emit time."
+                            ),
+                            suggestion=(
+                                "Confirm _run_content_generation_rewrite "
+                                "is filtering blocks where "
+                                "escalation_marker is not None before "
+                                "emitting <section data-cf-block-id>."
+                            ),
+                        )
+                    )
+                    break  # one leak per id is enough
+
+        return issues
+
+    def _collect_escalated_block_ids(
+        self, blocks_final_path: Path,
+    ) -> List[str]:
+        """Read the JSONL and return block_ids with non-null
+        ``escalation_marker``."""
+        escalated: List[str] = []
+        try:
+            with blocks_final_path.open(
+                "r", encoding="utf-8",
+            ) as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(entry, dict):
+                        continue
+                    if entry.get("escalation_marker") is None:
+                        continue
+                    block_id = entry.get("block_id")
+                    if isinstance(block_id, str) and block_id:
+                        escalated.append(block_id)
+        except OSError:
+            pass
+        return escalated
+
+    def _gather_html_files(
+        self, inputs: Dict[str, Any],
+    ) -> List[Path]:
+        """Resolve the list of HTML files to scan.
+
+        Prefers ``content_dir`` (the rewrite phase's per-page emit
+        target); falls back to walking an extracted ``imscc_path``
+        directory. Zip-only ``imscc_path`` is intentionally NOT
+        extracted here — the packaging phase always writes pages to
+        ``content_dir`` first, so the directory walk is sufficient.
+        """
+        html_files: List[Path] = []
+
+        content_dir_raw = inputs.get("content_dir")
+        if content_dir_raw:
+            cd = Path(content_dir_raw)
+            if cd.is_dir():
+                html_files.extend(sorted(cd.rglob("*.html")))
+
+        if not html_files:
+            imscc_path_raw = inputs.get("imscc_path")
+            if imscc_path_raw:
+                ip = Path(imscc_path_raw)
+                if ip.is_dir():
+                    html_files.extend(sorted(ip.rglob("*.html")))
+
+        return html_files
 
 
 class IMSCCParseValidator:
