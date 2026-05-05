@@ -65,6 +65,40 @@ _CONCEPT_GRAPH_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _CHUNKS_SHA256_RE = _CONCEPT_GRAPH_SHA256_RE
 
 
+def _emit_libv2_manifest_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    metrics: Dict[str, Any],
+) -> None:
+    """Emit one ``libv2_manifest_check`` decision per ``validate()`` (H3 W6b)."""
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    metric_strs = ", ".join(f"{k}={v}" for k, v in sorted(metrics.items()))
+    rationale = (
+        f"LibV2 manifest gate verdict={decision}, "
+        f"failure_code={code or 'none'}, metrics=({metric_strs})."
+    )
+    enriched = dict(metrics)
+    enriched["passed"] = bool(passed)
+    enriched["failure_code"] = code
+    try:
+        capture.log_decision(
+            decision_type="libv2_manifest_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(enriched),
+            metrics=enriched,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on libv2_manifest_check: %s",
+            exc,
+        )
+
+
 class LibV2ManifestValidator:
     """Validates a LibV2 course archive manifest + on-disk artifacts."""
 
@@ -81,11 +115,22 @@ class LibV2ManifestValidator:
                         Optional; derived from manifest_path when absent.
         """
         gate_id = inputs.get("gate_id", "libv2_manifest")
+        capture = inputs.get("decision_capture")
         issues: List[GateIssue] = []
 
         # -- 1. Manifest path is required.
         manifest_path_raw = inputs.get("manifest_path")
         if not manifest_path_raw:
+            _emit_libv2_manifest_decision(
+                capture,
+                passed=False,
+                code="MISSING_MANIFEST_PATH",
+                metrics={
+                    "manifest_path_str": None,
+                    "manifest_present": False,
+                    "issue_count": 1,
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -99,6 +144,16 @@ class LibV2ManifestValidator:
             )
         manifest_path = Path(manifest_path_raw)
         if not manifest_path.exists():
+            _emit_libv2_manifest_decision(
+                capture,
+                passed=False,
+                code="MANIFEST_NOT_FOUND",
+                metrics={
+                    "manifest_path_str": str(manifest_path),
+                    "manifest_present": False,
+                    "issue_count": 1,
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -120,6 +175,17 @@ class LibV2ManifestValidator:
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
+            _emit_libv2_manifest_decision(
+                capture,
+                passed=False,
+                code="INVALID_JSON",
+                metrics={
+                    "manifest_path_str": str(manifest_path),
+                    "manifest_present": True,
+                    "json_parse_error": exc.__class__.__name__,
+                    "issue_count": 1,
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -163,12 +229,30 @@ class LibV2ManifestValidator:
         issues.extend(self._check_imscc_chunks_sha256(manifest, course_dir))
 
         critical_count = sum(1 for i in issues if i.severity == "critical")
+        warning_count = sum(1 for i in issues if i.severity == "warning")
         passed = critical_count == 0
 
         # Score: 1.0 when no issues; degrades by 0.1 per issue with a
         # floor at 0.0. Matches the convention used by ContentStructureValidator.
         score = max(0.0, 1.0 - len(issues) * 0.1) if issues else 1.0
 
+        first_critical_code = next(
+            (i.code for i in issues if i.severity == "critical"), None
+        )
+        _emit_libv2_manifest_decision(
+            capture,
+            passed=passed,
+            code=first_critical_code,
+            metrics={
+                "manifest_path_str": str(manifest_path),
+                "manifest_present": True,
+                "score": float(round(score, 4)),
+                "critical_count": int(critical_count),
+                "warning_count": int(warning_count),
+                "issue_count": len(issues),
+                "course_dir_str": str(course_dir),
+            },
+        )
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,

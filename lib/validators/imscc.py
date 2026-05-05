@@ -23,6 +23,7 @@ Referenced by: config/workflows.yaml (course_generation, intake_remediation, tex
 """
 
 import json
+import logging
 import re
 import xml.etree.ElementTree as ET
 import zipfile
@@ -30,6 +31,50 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
+
+logger = logging.getLogger(__name__)
+
+
+def _emit_imscc_decision(
+    capture: Any,
+    *,
+    decision_type: str,
+    passed: bool,
+    code: Optional[str],
+    metrics: Dict[str, Any],
+    rationale_extra: str = "",
+) -> None:
+    """Emit one decision per ``validate()`` call (H3 Wave W6b).
+
+    ``decision_type`` is one of ``imscc_structure_check`` /
+    ``imscc_parse_check``. Rationale + ``metrics`` interpolate the
+    dynamic signals (issue counts by severity, manifest path,
+    extractability flags) so post-hoc replay can distinguish the
+    pass / fail / missing-input outcomes.
+    """
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    metric_strs = ", ".join(f"{k}={v}" for k, v in sorted(metrics.items()))
+    rationale = (
+        f"IMSCC {decision_type}: verdict={decision}, "
+        f"failure_code={code or 'none'}, metrics=({metric_strs})"
+        f"{(' ' + rationale_extra) if rationale_extra else ''}."
+    )
+    try:
+        capture.log_decision(
+            decision_type=decision_type,
+            decision=decision,
+            rationale=rationale,
+            context=str(metrics),
+            metrics=metrics,
+        )
+    except Exception as exc:  # noqa: BLE001 — capture errors never block emit
+        logger.debug(
+            "DecisionCapture.log_decision raised on %s: %s",
+            decision_type,
+            exc,
+        )
 
 
 class IMSCCValidator:
@@ -46,10 +91,22 @@ class IMSCCValidator:
             manifest_path: Path to imsmanifest.xml (optional)
         """
         gate_id = inputs.get("gate_id", "imscc_structure")
+        capture = inputs.get("decision_capture")
         issues: List[GateIssue] = []
 
         imscc_path = Path(inputs.get("imscc_path", ""))
         if not imscc_path.exists():
+            _emit_imscc_decision(
+                capture,
+                decision_type="imscc_structure_check",
+                passed=False,
+                code="FILE_NOT_FOUND",
+                metrics={
+                    "imscc_path_str": str(imscc_path),
+                    "exists": False,
+                    "issue_count": 1,
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -78,6 +135,18 @@ class IMSCCValidator:
                     code="ZIP_PACKAGE",
                     message="Zip package provided; use IMSCCParseValidator for extraction checks",
                 )
+            )
+            _emit_imscc_decision(
+                capture,
+                decision_type="imscc_structure_check",
+                passed=True,
+                code="ZIP_PACKAGE",
+                metrics={
+                    "imscc_path_str": str(imscc_path),
+                    "is_zip": True,
+                    "manifest_checked": False,
+                    "issue_count": len(issues),
+                },
             )
             return GateResult(
                 gate_id=gate_id,
@@ -108,6 +177,24 @@ class IMSCCValidator:
         issues.extend(self._check_escalated_blocks_absent(inputs))
 
         has_errors = any(i.severity == "error" for i in issues)
+        error_count = sum(1 for i in issues if i.severity == "error")
+        warning_count = sum(1 for i in issues if i.severity == "warning")
+        first_error_code = next(
+            (i.code for i in issues if i.severity == "error"), None
+        )
+        _emit_imscc_decision(
+            capture,
+            decision_type="imscc_structure_check",
+            passed=not has_errors,
+            code=first_error_code,
+            metrics={
+                "imscc_path_str": str(imscc_path),
+                "manifest_path_str": str(manifest_path) if manifest_path else None,
+                "issue_count": len(issues),
+                "error_count": error_count,
+                "warning_count": warning_count,
+            },
+        )
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,
@@ -346,10 +433,22 @@ class IMSCCParseValidator:
             parse_result: Parsed content inventory dict (optional)
         """
         gate_id = inputs.get("gate_id", "imscc_parse")
+        capture = inputs.get("decision_capture")
         issues: List[GateIssue] = []
 
         imscc_path = Path(inputs.get("imscc_path", ""))
         if not imscc_path.exists():
+            _emit_imscc_decision(
+                capture,
+                decision_type="imscc_parse_check",
+                passed=False,
+                code="FILE_NOT_FOUND",
+                metrics={
+                    "imscc_path_str": str(imscc_path),
+                    "exists": False,
+                    "issue_count": 1,
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -374,6 +473,25 @@ class IMSCCParseValidator:
             issues.extend(self._check_parse_result(parse_result))
 
         has_errors = any(i.severity == "error" for i in issues)
+        error_count = sum(1 for i in issues if i.severity == "error")
+        warning_count = sum(1 for i in issues if i.severity == "warning")
+        first_error_code = next(
+            (i.code for i in issues if i.severity == "error"), None
+        )
+        _emit_imscc_decision(
+            capture,
+            decision_type="imscc_parse_check",
+            passed=not has_errors,
+            code=first_error_code,
+            metrics={
+                "imscc_path_str": str(imscc_path),
+                "suffix": imscc_path.suffix,
+                "parse_result_provided": parse_result is not None,
+                "issue_count": len(issues),
+                "error_count": error_count,
+                "warning_count": warning_count,
+            },
+        )
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,

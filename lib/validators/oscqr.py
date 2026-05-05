@@ -48,6 +48,7 @@ Referenced by: ``config/workflows.yaml``
 from __future__ import annotations
 
 import json
+import logging
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -55,6 +56,63 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
+
+logger = logging.getLogger(__name__)
+
+
+def _emit_oscqr_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    score: float,
+    items_checkable: int,
+    items_passed: int,
+    items_failed: int,
+    items_skipped: int,
+    critical_failures: int,
+    failed_item_ids: List[str],
+) -> None:
+    """Emit one ``oscqr_score_check`` decision per ``validate()`` call (H3 W6b).
+
+    Rationale + ``metrics`` interpolate the OSCQR rubric counts so
+    post-hoc replay can distinguish per-rubric pass/fail mixes.
+    """
+    if capture is None:
+        return
+    code = None if passed else "OSCQR_CRITICAL_FAILURES"
+    decision = "passed" if passed else f"failed:{code}"
+    failed_id_preview = ",".join(failed_item_ids[:5]) or "<none>"
+    metrics: Dict[str, Any] = {
+        "score": float(round(score, 4)),
+        "items_checkable": int(items_checkable),
+        "items_passed": int(items_passed),
+        "items_failed": int(items_failed),
+        "items_skipped": int(items_skipped),
+        "critical_failures": int(critical_failures),
+        "passed": bool(passed),
+        "failure_code": code,
+    }
+    rationale = (
+        f"OSCQR rubric verdict: score={score:.4f}, "
+        f"items=({items_passed} passed / {items_failed} failed / "
+        f"{items_skipped} skipped of {items_checkable} checkable), "
+        f"critical_failures={critical_failures}, "
+        f"failed_item_ids=[{failed_id_preview}], "
+        f"failure_code={code or 'none'}."
+    )
+    try:
+        capture.log_decision(
+            decision_type="oscqr_score_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(metrics),
+            metrics=metrics,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on oscqr_score_check: %s",
+            exc,
+        )
 
 # Keep the import order explicit so downstream tooling (pytest-order)
 # doesn't have to introspect our dependencies.
@@ -106,6 +164,7 @@ class OSCQRValidator:
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", "oscqr_score")
+        capture = inputs.get("decision_capture")
 
         course_path = self._resolve_course_dir(inputs)
         course_json = self._resolve_course_json(inputs, course_path)
@@ -171,6 +230,19 @@ class OSCQRValidator:
         critical = [i for i in failed if i.severity == "critical"]
         passed_overall = len(critical) == 0
 
+        skipped = [i for i in items if i.severity == "skipped"]
+        failed_item_ids = [i.item_id for i in failed]
+        _emit_oscqr_decision(
+            capture,
+            passed=passed_overall,
+            score=score,
+            items_checkable=len(checkable),
+            items_passed=len(passed),
+            items_failed=len(failed),
+            items_skipped=len(skipped),
+            critical_failures=len(critical),
+            failed_item_ids=failed_item_ids,
+        )
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,

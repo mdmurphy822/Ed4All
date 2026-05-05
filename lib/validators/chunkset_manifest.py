@@ -166,6 +166,40 @@ def _count_jsonl_lines(path: Path) -> int:
     return count
 
 
+def _emit_chunkset_manifest_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    metrics: Dict[str, Any],
+) -> None:
+    """Emit one ``chunkset_manifest_check`` decision per ``validate()`` (H3 W6b)."""
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    metric_strs = ", ".join(f"{k}={v}" for k, v in sorted(metrics.items()))
+    rationale = (
+        f"Chunkset manifest check verdict={decision}, "
+        f"failure_code={code or 'none'}, metrics=({metric_strs})."
+    )
+    enriched = dict(metrics)
+    enriched["passed"] = bool(passed)
+    enriched["failure_code"] = code
+    try:
+        capture.log_decision(
+            decision_type="chunkset_manifest_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(enriched),
+            metrics=enriched,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on chunkset_manifest_check: %s",
+            exc,
+        )
+
+
 class ChunksetManifestValidator:
     """Phase 7b chunkset-manifest gate.
 
@@ -182,11 +216,22 @@ class ChunksetManifestValidator:
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
+        capture = inputs.get("decision_capture")
         issues: List[GateIssue] = []
 
         # ---- 1. manifest path required + exists.
         path_raw = inputs.get("chunkset_manifest_path")
         if not path_raw:
+            _emit_chunkset_manifest_decision(
+                capture,
+                passed=False,
+                code="CHUNKSET_MANIFEST_MISSING_INPUT",
+                metrics={
+                    "manifest_path_str": None,
+                    "manifest_present": False,
+                    "issue_count": 1,
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -207,6 +252,16 @@ class ChunksetManifestValidator:
 
         manifest_path = Path(path_raw)
         if not manifest_path.exists() or not manifest_path.is_file():
+            _emit_chunkset_manifest_decision(
+                capture,
+                passed=False,
+                code="CHUNKSET_MANIFEST_NOT_FOUND",
+                metrics={
+                    "manifest_path_str": str(manifest_path),
+                    "manifest_present": False,
+                    "issue_count": 1,
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -229,6 +284,17 @@ class ChunksetManifestValidator:
         try:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
+            _emit_chunkset_manifest_decision(
+                capture,
+                passed=False,
+                code="CHUNKSET_MANIFEST_INVALID_JSON",
+                metrics={
+                    "manifest_path_str": str(manifest_path),
+                    "manifest_present": True,
+                    "json_parse_error": exc.__class__.__name__,
+                    "issue_count": 1,
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -249,6 +315,17 @@ class ChunksetManifestValidator:
             )
 
         if not isinstance(manifest, dict):
+            _emit_chunkset_manifest_decision(
+                capture,
+                passed=False,
+                code="CHUNKSET_MANIFEST_SCHEMA_VIOLATION",
+                metrics={
+                    "manifest_path_str": str(manifest_path),
+                    "manifest_present": True,
+                    "manifest_root_type": type(manifest).__name__,
+                    "issue_count": 1,
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -281,6 +358,17 @@ class ChunksetManifestValidator:
             manifest.get("chunks_sha256") is None
             or manifest.get("chunkset_kind") not in _ALLOWED_CHUNKSET_KINDS
         ):
+            _emit_chunkset_manifest_decision(
+                capture,
+                passed=False,
+                code="CHUNKSET_MANIFEST_SCHEMA_VIOLATION",
+                metrics={
+                    "manifest_path_str": str(manifest_path),
+                    "manifest_present": True,
+                    "schema_critical_count": len(critical_so_far),
+                    "issue_count": len(issues),
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -307,6 +395,17 @@ class ChunksetManifestValidator:
                         "or remove the orphaned manifest.json."
                     ),
                 )
+            )
+            _emit_chunkset_manifest_decision(
+                capture,
+                passed=False,
+                code="CHUNKSET_CHUNKS_NOT_FOUND",
+                metrics={
+                    "manifest_path_str": str(manifest_path),
+                    "manifest_present": True,
+                    "chunks_jsonl_present": False,
+                    "issue_count": len(issues),
+                },
             )
             return GateResult(
                 gate_id=gate_id,
@@ -400,6 +499,24 @@ class ChunksetManifestValidator:
         # LibV2ManifestValidator and ContentStructureValidator.
         score = max(0.0, 1.0 - len(issues) * 0.1) if issues else 1.0
 
+        first_critical_code = next(
+            (i.code for i in issues if i.severity == "critical"), None
+        )
+        _emit_chunkset_manifest_decision(
+            capture,
+            passed=passed,
+            code=first_critical_code,
+            metrics={
+                "manifest_path_str": str(manifest_path),
+                "manifest_present": True,
+                "chunks_jsonl_present": True,
+                "score": float(round(score, 4)),
+                "critical_count": int(critical_count),
+                "issue_count": len(issues),
+                "chunkset_kind": manifest.get("chunkset_kind"),
+                "chunks_count_declared": manifest.get("chunks_count"),
+            },
+        )
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,

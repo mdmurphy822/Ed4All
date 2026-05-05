@@ -27,14 +27,51 @@ Usage:
 """
 
 import json
+import logging
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from bs4 import BeautifulSoup
+
+logger = logging.getLogger(__name__)
+
+
+def _emit_wcag_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    metrics: Dict[str, Any],
+) -> None:
+    """Emit one ``wcag_compliance_check`` decision per gate-shape ``validate()`` (H3 W6b)."""
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    metric_strs = ", ".join(f"{k}={v}" for k, v in sorted(metrics.items()))
+    rationale = (
+        f"WCAG 2.2 AA compliance gate verdict={decision}, "
+        f"failure_code={code or 'none'}, metrics=({metric_strs})."
+    )
+    enriched = dict(metrics)
+    enriched["passed"] = bool(passed)
+    enriched["failure_code"] = code
+    try:
+        capture.log_decision(
+            decision_type="wcag_compliance_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(enriched),
+            metrics=enriched,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on wcag_compliance_check: %s",
+            exc,
+        )
 
 
 class IssueSeverity(Enum):
@@ -253,6 +290,7 @@ class WCAGValidator:
         from MCP.hardening.validation_gates import GateIssue, GateResult
 
         gate_id = inputs.get("gate_id", "wcag_compliance")
+        capture = inputs.get("decision_capture")
         html_content = inputs.get("html_content") or ""
         html_path = inputs.get("html_path")
         file_path_str = "inline"
@@ -260,6 +298,16 @@ class WCAGValidator:
         if not html_content and html_path:
             p = Path(html_path)
             if not p.exists():
+                _emit_wcag_decision(
+                    capture,
+                    passed=False,
+                    code="FILE_NOT_FOUND",
+                    metrics={
+                        "html_path_str": str(p),
+                        "html_present": False,
+                        "issue_count": 1,
+                    },
+                )
                 return GateResult(
                     gate_id=gate_id,
                     validator_name=self.name,
@@ -275,6 +323,17 @@ class WCAGValidator:
                 html_content = p.read_text(encoding="utf-8", errors="ignore")
                 file_path_str = str(p)
             except OSError as exc:
+                _emit_wcag_decision(
+                    capture,
+                    passed=False,
+                    code="FILE_READ_ERROR",
+                    metrics={
+                        "html_path_str": str(p),
+                        "html_present": True,
+                        "read_error": exc.__class__.__name__,
+                        "issue_count": 1,
+                    },
+                )
                 return GateResult(
                     gate_id=gate_id,
                     validator_name=self.name,
@@ -288,6 +347,16 @@ class WCAGValidator:
                 )
 
         if not html_content:
+            _emit_wcag_decision(
+                capture,
+                passed=False,
+                code="EMPTY_HTML",
+                metrics={
+                    "html_path_str": str(html_path) if html_path else None,
+                    "html_present": False,
+                    "issue_count": 1,
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -324,6 +393,7 @@ class WCAGValidator:
             ))
 
         critical_count = sum(1 for g in gate_issues if g.severity == "critical")
+        warning_count = sum(1 for g in gate_issues if g.severity == "warning")
         high_count = report.high_count  # legacy count for scoring
 
         # Score formula (Wave 31): 1.0 clean; proportional drop with
@@ -339,6 +409,24 @@ class WCAGValidator:
 
         passed = critical_count == 0
 
+        first_critical_code = next(
+            (g.code for g in gate_issues if g.severity == "critical"), None
+        )
+        _emit_wcag_decision(
+            capture,
+            passed=passed,
+            code=first_critical_code,
+            metrics={
+                "html_path_str": file_path_str,
+                "html_present": True,
+                "score": float(round(score, 4)),
+                "critical_count": int(critical_count),
+                "warning_count": int(warning_count),
+                "high_count": int(high_count),
+                "total_issues": int(report.total_issues),
+                "html_length": int(len(html_content)),
+            },
+        )
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,
