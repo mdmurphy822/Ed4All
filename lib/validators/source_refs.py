@@ -89,6 +89,55 @@ class PageSourceRefValidator:
         for err in emit_errors:
             issues.append(err)
 
+        # Silent-degradation guard (C5 audit fix): when the builder
+        # forwarded a ``staging_dir`` but harvesting yielded zero valid
+        # IDs (manifest missing, sidecars unreadable, or staging dir
+        # truly empty), AND the emitter actually produced sourceIds,
+        # the legacy ``valid_ids and sid not in valid_ids`` short-circuit
+        # would skip every resolution check and silently pass arbitrary
+        # IDs that no downstream consumer can resolve. Tests + callers
+        # that intentionally seed ``valid_source_ids`` (including the
+        # empty list — meaning "no refs expected") are unaffected because
+        # the explicit override branch in ``_collect_valid_ids`` does
+        # not reach the staging-harvest path.
+        staging_dir_provided = bool(inputs.get("staging_dir"))
+        valid_source_ids_provided = inputs.get("valid_source_ids") is not None
+        if (
+            staging_dir_provided
+            and not valid_source_ids_provided
+            and not valid_ids
+            and emitted_ids
+        ):
+            staging_dir_loc = str(inputs.get("staging_dir"))
+            manifest_loc = str(Path(staging_dir_loc) / "staging_manifest.json")
+            issues.append(GateIssue(
+                severity="critical",
+                code="SOURCE_REFS_MANIFEST_MISSING",
+                message=(
+                    f"staging_dir was provided ({staging_dir_loc}) but the "
+                    f"DART staging manifest at {manifest_loc} produced zero "
+                    "valid sourceIds (manifest missing, sidecars unreadable, "
+                    "or staging dir empty). Did the upstream stage_dart_outputs "
+                    "phase run? Without a resolvable manifest the gate would "
+                    "vacuously accept any emitted sourceId."
+                ),
+                location=manifest_loc,
+                suggestion=(
+                    "Re-run stage_dart_outputs to regenerate "
+                    "staging_manifest.json + *_synthesized.json sidecars, "
+                    "or pass valid_source_ids explicitly when staging_dir "
+                    "is intentionally absent."
+                ),
+            ))
+            return GateResult(
+                gate_id=gate_id,
+                validator_name=self.name,
+                validator_version=self.version,
+                passed=False,
+                score=0.0,
+                issues=issues,
+            )
+
         if not emitted_ids:
             # Nothing to check. Backward-compat path.
             #

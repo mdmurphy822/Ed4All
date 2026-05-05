@@ -397,6 +397,82 @@ class TestFileReading:
 # ---------------------------------------------------------------------- #
 
 
+class TestSourceRefsManifestMissing:
+    """C5 audit fix: when ``staging_dir`` is provided but the manifest
+    + sidecars produce zero valid IDs, AND the emitter actually stamped
+    sourceIds into HTML, fail closed rather than silently accept any ID
+    (the legacy ``valid_ids and sid not in valid_ids`` short-circuit).
+    """
+
+    def test_empty_staging_dir_with_emitted_ids_fails_closed(self, tmp_path):
+        # staging_dir exists but is completely empty — no manifest, no
+        # sidecars. Harvested valid_ids will be empty.
+        empty_staging = tmp_path / "staging_empty"
+        empty_staging.mkdir()
+        html = _html_with_json_ld(["dart:slug#s0_c0"])
+        result = PageSourceRefValidator().validate({
+            "staging_dir": str(empty_staging),
+            "html_contents": [{"path": "page.html", "html": html}],
+        })
+        assert result.passed is False
+        codes = {i.code for i in result.issues}
+        assert "SOURCE_REFS_MANIFEST_MISSING" in codes
+        crit = [
+            i for i in result.issues
+            if i.code == "SOURCE_REFS_MANIFEST_MISSING"
+        ]
+        assert crit and crit[0].severity == "critical"
+        msg = crit[0].message
+        assert str(empty_staging) in msg
+        assert "stage_dart_outputs" in msg
+        assert "staging_manifest.json" in msg
+
+    def test_missing_manifest_no_sidecars_fails_closed(self, tmp_path):
+        """Staging dir with no manifest AND no sidecars + emitted IDs."""
+        staging = tmp_path / "staging_no_manifest"
+        staging.mkdir()
+        # Create unrelated junk so dir exists but no sidecars resolve.
+        (staging / "readme.txt").write_text("nothing useful here")
+        html = _html_with_attrs_only(["dart:slug#s0_c0"])
+        result = PageSourceRefValidator().validate({
+            "staging_dir": str(staging),
+            "html_contents": [{"path": "page.html", "html": html}],
+        })
+        assert result.passed is False
+        codes = {i.code for i in result.issues}
+        assert "SOURCE_REFS_MANIFEST_MISSING" in codes
+
+    def test_explicit_valid_source_ids_empty_list_does_not_trigger(self, tmp_path):
+        """Callers that explicitly seed ``valid_source_ids=[]`` are
+        intentionally telling the gate "no refs expected". The new
+        fail-closed branch must not mistake that for the silent-degrade
+        case (which is detected via missing ``staging_dir``).
+        """
+        html = _html_with_attrs_only(["dart:doc#s0"])
+        result = PageSourceRefValidator().validate({
+            "valid_source_ids": [],
+            "html_contents": [{"path": "page.html", "html": html}],
+        })
+        # No SOURCE_REFS_MANIFEST_MISSING; the existing
+        # UNRESOLVED_SOURCE_ID logic already fires (correct legacy
+        # behavior — caller said "no IDs are valid").
+        codes = {i.code for i in result.issues}
+        assert "SOURCE_REFS_MANIFEST_MISSING" not in codes
+
+    def test_no_emitted_ids_does_not_trigger(self, tmp_path):
+        """Empty staging + no emitted IDs is the legitimate empty-run
+        path; should NOT trip the new fail-closed branch."""
+        empty_staging = tmp_path / "staging_empty"
+        empty_staging.mkdir()
+        result = PageSourceRefValidator().validate({
+            "staging_dir": str(empty_staging),
+            "html_contents": [{"path": "page.html", "html": "<html></html>"}],
+        })
+        codes = {i.code for i in result.issues}
+        assert "SOURCE_REFS_MANIFEST_MISSING" not in codes
+        assert result.passed is True
+
+
 class TestWave27EmptyEmitWarning:
     """Wave 27 turn-down: real textbook-to-course runs should always emit
     source-ids. Empty emit on a run that actually fed pages in surfaces

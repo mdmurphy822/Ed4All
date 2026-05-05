@@ -111,6 +111,31 @@ class AssessmentObjectiveAlignmentValidator:
                 location=str(chunks_path),
             )
 
+        # Silent-degradation guard (C4 audit fix): a chunks file that
+        # parses cleanly but yields zero learning_outcome_refs means the
+        # upstream Trainforge chunking phase produced no chunks (or every
+        # chunk dropped its refs). The gate would otherwise vacuously
+        # accept any objective_id since the "covered by at least one
+        # chunk's learning_outcome_refs" predicate is trivially false
+        # for every question — but the failure mode would be reported
+        # downstream as 100% phantom refs rather than as the upstream
+        # chunking failure it actually is. Fail closed here with a
+        # named code so operators know to inspect imscc_chunking.
+        if not chunk_refs:
+            return self._fail(
+                gate_id,
+                "ASSESSMENT_ALIGNMENT_NO_CHUNKS",
+                (
+                    f"Chunks file at {chunks_path} contained zero "
+                    "learning_outcome_refs across all chunks. "
+                    "Did the imscc_chunking / trainforge_assessment "
+                    "phase run successfully? Without chunk refs every "
+                    "assessment objective_id is vacuously phantom; "
+                    "fail closed rather than ship 100% phantom refs."
+                ),
+                location=str(chunks_path),
+            )
+
         # Normalize refs to lowercase for case-insensitive comparison —
         # Trainforge emits lowercase on chunk refs, Courseforge emits
         # mixed-case IDs. Opt-in preservation via TRAINFORGE_PRESERVE_LO_CASE
