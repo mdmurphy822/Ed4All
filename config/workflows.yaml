@@ -1204,6 +1204,22 @@ workflows:
           - param: duration_weeks_explicit
             source: workflow_params
             key: duration_weeks_explicit
+          # Worker W3 (validation-wiring fix): thread workflow_type +
+          # rehydrate the W2-persisted outline sidecars so the rewrite
+          # phase can resolve the post_rewrite_validation gate chain
+          # AND pass per-block source_chunks + objectives into the
+          # remediation loop instead of the legacy [] defaults.
+          - param: workflow_type
+            source: workflow_params
+            key: workflow_type
+          - param: outline_chunks_path
+            source: phase_outputs
+            phase: content_generation_outline
+            output: outline_chunks_path
+          - param: outline_objectives_path
+            source: phase_outputs
+            phase: content_generation_outline
+            output: outline_objectives_path
 
         outputs:
           - content_paths

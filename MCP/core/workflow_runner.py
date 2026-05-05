@@ -181,6 +181,27 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         "duration_weeks_explicit": (
             "workflow_params", "duration_weeks_explicit",
         ),
+        # Worker W3 (validation-wiring fix): thread workflow_type so
+        # ``_run_content_generation_rewrite`` can resolve the
+        # ``post_rewrite_validation`` phase's validation_gates from the
+        # YAML spec, instantiate them, and pass the resolved validator
+        # list into ``router.route_rewrite_with_remediation``. Without
+        # this thread the rewrite phase falls back to the empty-
+        # validators path (preserves pre-fix behavior on legacy direct
+        # calls).
+        "workflow_type": ("workflow_params", "workflow_type"),
+        # Worker W3: rehydrate the W2-persisted outline sidecars so the
+        # rewrite phase can pass per-block ``source_chunks`` +
+        # ``objectives`` into the remediation loop instead of the
+        # legacy ``[]`` defaults that broke the inter-tier seam.
+        "outline_chunks_path": (
+            "phase_outputs", "content_generation_outline",
+            "outline_chunks_path",
+        ),
+        "outline_objectives_path": (
+            "phase_outputs", "content_generation_outline",
+            "outline_objectives_path",
+        ),
     },
     "packaging": {
         "project_id": ("phase_outputs", "objective_extraction", "project_id"),
