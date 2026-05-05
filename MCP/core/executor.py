@@ -1251,6 +1251,15 @@ class TaskExecutor:
         task_ids = [t.get("id") for t in tasks]
         gate_results = None
 
+        # W2: clear cross-phase poison-pill state at every phase boundary.
+        # The poison detector accumulates errors keyed by pattern hash for
+        # the lifetime of the executor; without this reset, three same-
+        # pattern errors spread across phases N, N+1, ... falsely trip the
+        # detector on phase N+1's first error. Per-phase reset matches the
+        # Wave 38 semantics that poison detection halts a batch (not the
+        # whole workflow).
+        self.reset_poison_detector()
+
         # Start checkpoint
         if self.checkpoint_manager:
             try:
