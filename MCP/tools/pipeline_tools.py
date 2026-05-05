@@ -2489,6 +2489,121 @@ def _block_to_snake_case_entry(block: Any) -> Dict[str, Any]:
 #   ``ml_features.tier="outline"`` for inter_tier_validation failures.
 
 
+def _resolve_inter_tier_validators(
+    workflow_type: str,
+    capture: Any = None,
+) -> List[Any]:
+    """Resolve the YAML-declared ``inter_tier_validation`` gate chain
+    for ``workflow_type`` into a list of validator instances suitable
+    for ``CourseforgeRouter.route_with_self_consistency(validators=...)``.
+
+    Worker W2 (validation-wiring fix): Phase 3's self-consistency loop
+    runs the inter-tier validators INSIDE the regen budget so failed
+    outline candidates re-roll with remediation suffixes attached. Pre-
+    fix, the outline phase called ``router.route()`` once per block and
+    let the standalone ``inter_tier_validation`` phase catch failures
+    after the fact — by which point the regen budget was already gone.
+
+    Resolution chain:
+      1. Load the workflow spec via ``OrchestratorConfig.load()``.
+      2. Walk ``wf.phases`` for the ``inter_tier_validation`` phase.
+      3. For each gate dict in ``phase.validation_gates``, import the
+         dotted ``validator`` path and instantiate.
+      4. Skip gates that fail to import; emit a structured warning per
+         skip via ``capture`` (decision_type=
+         ``inter_tier_validator_import_failed``).
+
+    Returns ``[]`` when ``workflow_type`` is empty / unknown / has no
+    ``inter_tier_validation`` phase / has no validation_gates declared
+    — matching the pre-W2 ``route()`` semantics so legacy direct
+    callers (tests, MCP-tool entry points without a workflow_runner-
+    managed run) keep working unchanged.
+    """
+    import importlib
+
+    if not workflow_type:
+        return []
+
+    try:
+        from MCP.core.config import OrchestratorConfig  # noqa: PLC0415
+        cfg = OrchestratorConfig.load()
+        wf = cfg.get_workflow(workflow_type)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Worker W2: OrchestratorConfig.load() failed for "
+            "workflow_type=%r: %s; falling back to empty validator list",
+            workflow_type, exc,
+        )
+        return []
+
+    if wf is None:
+        logger.warning(
+            "Worker W2: workflow_type=%r not registered; falling back "
+            "to empty validator list",
+            workflow_type,
+        )
+        return []
+
+    target_phase = None
+    for phase in getattr(wf, "phases", []) or []:
+        if getattr(phase, "name", "") == "inter_tier_validation":
+            target_phase = phase
+            break
+    if target_phase is None:
+        return []
+
+    gates = getattr(target_phase, "validation_gates", None) or []
+    validators: List[Any] = []
+    for gate in gates:
+        if not isinstance(gate, dict):
+            continue
+        dotted = gate.get("validator") or ""
+        gate_id = gate.get("gate_id") or dotted
+        if not dotted:
+            continue
+        try:
+            module_path, _, class_name = dotted.rpartition(".")
+            if not module_path or not class_name:
+                raise ImportError(f"malformed dotted path: {dotted!r}")
+            module = importlib.import_module(module_path)
+            validator_cls = getattr(module, class_name)
+            validators.append(validator_cls())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Worker W2: failed to import inter-tier validator "
+                "gate_id=%s validator=%s: %s",
+                gate_id, dotted, exc,
+            )
+            if capture is not None:
+                try:
+                    capture.log_decision(
+                        decision_type="inter_tier_validator_import_failed",
+                        decision=(
+                            f"Skipped inter-tier validator {gate_id!r} "
+                            f"(dotted path {dotted!r}) — import error."
+                        ),
+                        rationale=(
+                            f"OrchestratorConfig declared the gate at "
+                            f"workflow_type={workflow_type!r} phase="
+                            f"inter_tier_validation but the validator "
+                            f"class did not import: {exc}. Falling "
+                            f"through means this gate will NOT fire "
+                            f"during the outline-tier self-consistency "
+                            f"loop; check the validator dotted path."
+                        ),
+                        ml_features={
+                            "workflow_type": workflow_type,
+                            "gate_id": gate_id,
+                            "dotted_path": dotted,
+                            "error": str(exc),
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            continue
+    return validators
+
+
 async def _run_content_generation_outline(**kwargs) -> str:
     """Run the outline tier of the Phase 3 two-pass content pipeline.
 
@@ -2688,28 +2803,35 @@ async def _run_content_generation_outline(**kwargs) -> str:
         if week_block_added:
             weeks_with_blocks += 1
 
-    # Pre-filter to outline tier: invoke route() per block with
-    # tier="outline" so we don't spin the rewrite tier here. (Subtask
-    # plan: pre-filter rather than widen route_all's signature; that's
-    # Worker N2's scope.)
+    # Worker W2: dispatch each block through
+    # ``router.route_with_self_consistency`` with the resolved
+    # validator chain so the inter-tier seam runs INSIDE the regen
+    # budget (instead of catching failures after the fact). The chain
+    # is resolved from the YAML ``inter_tier_validation`` phase via
+    # ``_resolve_inter_tier_validators``; absent workflow_type (legacy
+    # direct caller) returns []  → behaves identically to the prior
+    # ``router.route()`` single-shot path.
     objectives_payload = [
         {"id": o.get("id"), "statement": o.get("statement")}
         for o in (terminal_objectives + chapter_objectives)
     ]
+    workflow_type = kwargs.get("workflow_type") or ""
+    validators = _resolve_inter_tier_validators(workflow_type, capture)
     outline_blocks: List[Any] = []
     for blk in all_blocks:
         block_chunks = chunks_lookup.get(blk.block_id, [])
         try:
-            outlined = router.route(
+            outlined = router.route_with_self_consistency(
                 blk,
-                tier="outline",
+                validators=validators,
                 source_chunks=block_chunks,
                 objectives=objectives_payload,
             )
             outline_blocks.append(outlined)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "outline phase: route() failed for block_id=%s: %s",
+                "outline phase: route_with_self_consistency() failed "
+                "for block_id=%s: %s",
                 blk.block_id, exc,
             )
             # Persist a stub-with-marker so downstream sees the failure.
@@ -2731,6 +2853,28 @@ async def _run_content_generation_outline(**kwargs) -> str:
             ))
             fh.write("\n")
 
+    # Worker W2: persist chunks_lookup + objectives_payload as sidecars
+    # next to blocks_outline.jsonl so W3's rewrite phase can rehydrate
+    # them without re-walking staging / synthesized_objectives. JSON
+    # is canonicalised (indent=2, sort_keys=True) so on-disk diffs are
+    # operator-readable.
+    chunks_sidecar_path = out_dir / "outline_chunks.json"
+    objectives_sidecar_path = out_dir / "outline_objectives.json"
+    try:
+        chunks_sidecar_path.write_text(
+            json.dumps(chunks_lookup, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        objectives_sidecar_path.write_text(
+            json.dumps(objectives_payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        logger.warning(
+            "outline phase: failed to persist outline sidecars at %s: %s",
+            out_dir, exc,
+        )
+
     if capture is not None:
         try:
             capture.log_decision(
@@ -2741,7 +2885,9 @@ async def _run_content_generation_outline(**kwargs) -> str:
                     f"{weeks_with_blocks} weeks."
                 ),
                 rationale=(
-                    f"Pre-filtered route() per block with tier='outline'; "
+                    f"Dispatched route_with_self_consistency per block "
+                    f"with {len(validators)} inter-tier validators "
+                    f"resolved from workflow_type={workflow_type!r}; "
                     f"persisted to {blocks_outline_path.name} for the "
                     f"inter_tier_validation phase to consume."
                 ),
@@ -2749,6 +2895,7 @@ async def _run_content_generation_outline(**kwargs) -> str:
                     "block_count": len(outline_blocks),
                     "weeks_prepared": weeks_with_blocks,
                     "tier": "outline",
+                    "validator_count": len(validators),
                 },
             )
         except Exception:  # noqa: BLE001
@@ -2757,6 +2904,8 @@ async def _run_content_generation_outline(**kwargs) -> str:
     return json.dumps({
         "success": True,
         "blocks_outline_path": str(blocks_outline_path),
+        "outline_chunks_path": str(chunks_sidecar_path),
+        "outline_objectives_path": str(objectives_sidecar_path),
         "project_id": project_id,
         "weeks_prepared": weeks_with_blocks,
         "block_count": len(outline_blocks),

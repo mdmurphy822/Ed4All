@@ -997,11 +997,16 @@ workflows:
           - param: duration_weeks_explicit
             source: workflow_params
             key: duration_weeks_explicit
+          - param: workflow_type
+            source: workflow_params
+            key: workflow_type
 
         outputs:
           - blocks_outline_path
           - project_id
           - weeks_prepared
+          - outline_chunks_path
+          - outline_objectives_path
 
       - name: inter_tier_validation
         # No agent — runs Python validators only. Phase 4 Subtask 1:

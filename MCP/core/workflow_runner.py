@@ -152,6 +152,14 @@ _LEGACY_PHASE_PARAM_ROUTING: Dict[str, Dict[str, Tuple]] = {
         "duration_weeks_explicit": (
             "workflow_params", "duration_weeks_explicit",
         ),
+        # Worker W2 (validation-wiring fix): thread workflow_type so
+        # ``_run_content_generation_outline`` can resolve the
+        # ``inter_tier_validation`` phase's validation_gates from the
+        # YAML spec, instantiate them, and pass the resolved validator
+        # list into ``router.route_with_self_consistency``. Without this
+        # thread, the outline phase falls back to the empty-validators
+        # path (preserving pre-fix behavior on legacy direct calls).
+        "workflow_type": ("workflow_params", "workflow_type"),
     },
     "inter_tier_validation": {
         "blocks_outline_path": (
@@ -285,6 +293,11 @@ _LEGACY_PHASE_OUTPUT_KEYS: Dict[str, List[str]] = {
     # rewrite-tier blocks_final_path when COURSEFORGE_TWO_PASS=true).
     "content_generation_outline": [
         "blocks_outline_path", "project_id", "weeks_prepared",
+        # Worker W2 (validation-wiring fix): sidecars persisted next to
+        # blocks_outline.jsonl so the rewrite phase can rehydrate the
+        # chunks_lookup + objectives_payload that the outline tier
+        # built (without re-walking staging / synthesized_objectives).
+        "outline_chunks_path", "outline_objectives_path",
     ],
     "inter_tier_validation": [
         "blocks_validated_path", "blocks_failed_path",
@@ -894,6 +907,15 @@ class WorkflowRunner:
         workflow_params = workflow_state.get("params", {})
         if isinstance(workflow_params, str):
             workflow_params = json.loads(workflow_params)
+
+        # Worker W2 (validation-wiring fix): thread workflow_type into
+        # workflow_params so ``_route_params`` can route it through to
+        # the ``content_generation_outline`` phase handler. The handler
+        # uses it to resolve the YAML-declared ``inter_tier_validation``
+        # gate chain into validator instances threaded into
+        # ``router.route_with_self_consistency``.
+        if workflow_type and "workflow_type" not in workflow_params:
+            workflow_params["workflow_type"] = workflow_type
 
         # Load workflow config from YAML
         wf_config = self.config.get_workflow(workflow_type)
