@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
@@ -41,6 +42,103 @@ from typing import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Base class — provider-agnostic decision-capture wiring
+# =============================================================================
+
+
+class _CaptureMixin:
+    """Provider-agnostic ``DecisionCapture`` wiring for every backend.
+
+    Every concrete ``LLMBackend`` subclass that subclasses this mixin gets
+    one canonical ``decision_type="llm_chat_call"`` event per ``invoke`` /
+    ``complete_sync`` dispatch when ``capture`` is wired. The helper is a
+    no-op when ``capture is None`` so callers can opt out without ceremony.
+
+    Mirrors the LLM-agnostic pattern at
+    ``Trainforge/generators/_openai_compatible_client.py``: rationale
+    interpolates dynamic signals (model, max_tokens, latency_ms,
+    messages_count, response_text_len) so post-hoc replay sees per-call
+    structure. The ``provider`` field is set per-backend (``"anthropic"``,
+    ``"local"``, ``"mailbox"``, ``"openai"``, ``"mock"``) so the audit
+    trail records which backend fired without leaking provider names
+    into field names.
+
+    Subclasses MUST set ``self.provider_label`` and call
+    ``self._set_capture(capture)`` from ``__init__``. Each ``invoke`` /
+    ``complete_sync`` body wraps the underlying provider call in a
+    try/finally that records ``time.monotonic()`` before/after and calls
+    ``self._emit_llm_chat_capture(...)``. Capture failures NEVER crash
+    the LLM dispatch (matches the project's existing capture-wrapping
+    convention).
+    """
+
+    # Default — subclasses override.
+    provider_label: str = "unknown"
+
+    def _set_capture(self, capture: Optional[Any]) -> None:
+        """Stash the capture handle. ``None`` is a clean no-op."""
+        self._capture = capture
+
+    def _emit_llm_chat_capture(
+        self,
+        *,
+        model: str,
+        max_tokens: int,
+        temperature: float,
+        messages_count: int,
+        response_text_len: int,
+        latency_ms: float,
+        stream: bool = False,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Emit one ``decision_type="llm_chat_call"`` event.
+
+        Generic field names only — no ``claude_*`` / ``anthropic_*`` /
+        ``gpt_*`` keys. The ``provider`` value distinguishes backends
+        in the audit trail. Wrapped in try/except so a logging failure
+        never crashes the LLM dispatch.
+        """
+        capture = getattr(self, "_capture", None)
+        if capture is None:
+            return
+        try:
+            extra_str = ""
+            if extra:
+                pairs = [
+                    f"{k}={extra[k]}"
+                    for k in sorted(extra.keys())
+                    if extra[k] is not None
+                ]
+                if pairs:
+                    extra_str = "; " + ", ".join(pairs)
+
+            decision = (
+                f"{self.provider_label} chat call to model {model}; "
+                f"messages_count={messages_count}, "
+                f"response_text_len={response_text_len}, "
+                f"latency_ms={latency_ms:.1f}{extra_str}."
+            )
+            rationale = (
+                f"LLM chat dispatch via provider={self.provider_label}, "
+                f"model={model}, max_tokens={max_tokens}, "
+                f"temperature={temperature}, "
+                f"messages_count={messages_count}, "
+                f"response_text_len={response_text_len}, "
+                f"latency_ms={latency_ms:.1f}, stream={stream}."
+            )
+            capture.log_decision(
+                decision_type="llm_chat_call",
+                decision=decision,
+                rationale=rationale,
+            )
+        except Exception as exc:  # noqa: BLE001 — defensive
+            logger.warning(
+                "llm_chat_call capture failed for provider=%s model=%s: %s",
+                self.provider_label, model, exc,
+            )
 
 
 # Default model identifiers per provider. These map to the models the
@@ -118,7 +216,7 @@ class LLMBackend(Protocol):
 # =============================================================================
 
 
-class AnthropicBackend:
+class AnthropicBackend(_CaptureMixin):
     """Direct Anthropic SDK backend.
 
     The ``anthropic`` package is imported lazily so that ``LLMBackend``
@@ -129,10 +227,14 @@ class AnthropicBackend:
     ``stream=True`` raises ``NotImplementedError``.
     """
 
+    provider_label = "anthropic"
+
     def __init__(
         self,
         api_key: Optional[str] = None,
         default_model: str = DEFAULT_ANTHROPIC_MODEL,
+        *,
+        capture: Optional[Any] = None,
     ):
         resolved_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not resolved_key:
@@ -143,6 +245,7 @@ class AnthropicBackend:
         self.api_key = resolved_key
         self.default_model = default_model
         self._client = None  # lazy init
+        self._set_capture(capture)
 
     @property
     def client(self):
@@ -193,8 +296,9 @@ class AnthropicBackend:
     ) -> str:
         """Synchronous completion. The SDK is itself sync, so no await needed."""
         messages = self._build_messages(user, images=images)
+        resolved_model = model or self.default_model
         kwargs: Dict[str, Any] = {
-            "model": model or self.default_model,
+            "model": resolved_model,
             "max_tokens": max_tokens,
             "messages": messages,
         }
@@ -203,8 +307,22 @@ class AnthropicBackend:
         if temperature is not None:
             kwargs["temperature"] = temperature
 
-        response = self.client.messages.create(**kwargs)
-        return response.content[0].text
+        start = time.monotonic()
+        text: str = ""
+        try:
+            response = self.client.messages.create(**kwargs)
+            text = response.content[0].text
+            return text
+        finally:
+            self._emit_llm_chat_capture(
+                model=resolved_model,
+                max_tokens=int(max_tokens),
+                temperature=float(temperature) if temperature is not None else 0.0,
+                messages_count=len(messages),
+                response_text_len=len(text or ""),
+                latency_ms=(time.monotonic() - start) * 1000.0,
+                extra={"images_count": len(images) if images else 0},
+            )
 
     async def complete(
         self,
@@ -237,7 +355,7 @@ class AnthropicBackend:
 # =============================================================================
 
 
-class LocalBackend:
+class LocalBackend(_CaptureMixin):
     """Backend for ``--mode local`` runs.
 
     When the pipeline runs inside a Claude Code session, the *session itself*
@@ -252,8 +370,16 @@ class LocalBackend:
     or should be in ``api`` mode.
     """
 
-    def __init__(self, *, description: str = "local Claude Code session"):
+    provider_label = "local"
+
+    def __init__(
+        self,
+        *,
+        description: str = "local Claude Code session",
+        capture: Optional[Any] = None,
+    ):
         self.description = description
+        self._set_capture(capture)
 
     def _err(self) -> NotImplementedError:
         return NotImplementedError(
@@ -294,7 +420,7 @@ class LocalBackend:
 # =============================================================================
 
 
-class MailboxBrokeredBackend:
+class MailboxBrokeredBackend(_CaptureMixin):
     """``LLMBackend`` that routes completions through a ``TaskMailbox``.
 
     Wave 73: in ``--mode local`` runs the orchestrator is a Python subprocess
@@ -333,6 +459,8 @@ class MailboxBrokeredBackend:
     decision O3 anyway.
     """
 
+    provider_label = "mailbox"
+
     def __init__(
         self,
         mailbox,
@@ -341,6 +469,7 @@ class MailboxBrokeredBackend:
         poll_interval: float = 0.25,
         default_model: Optional[str] = None,
         task_id_prefix: str = "llm",
+        capture: Optional[Any] = None,
     ):
         """
         Args:
@@ -377,6 +506,7 @@ class MailboxBrokeredBackend:
         self.default_model = default_model or DEFAULT_ANTHROPIC_MODEL
         self.task_id_prefix = str(task_id_prefix)
         self._call_counter = 0
+        self._set_capture(capture)
 
     def _next_task_id(self) -> str:
         """Return a mailbox task id globally unique across concurrent backends.
@@ -417,11 +547,12 @@ class MailboxBrokeredBackend:
         images: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         task_id = self._next_task_id()
+        resolved_model = model or self.default_model
         spec: Dict[str, Any] = {
             "kind": "llm_call",
             "system": system or "",
             "user": user,
-            "model": model or self.default_model,
+            "model": resolved_model,
             "max_tokens": int(max_tokens),
             "temperature": float(temperature),
         }
@@ -436,25 +567,46 @@ class MailboxBrokeredBackend:
             max_tokens,
         )
 
+        start = time.monotonic()
+        text: str = ""
+        # Mailbox dispatch flows through one logical "messages" pair
+        # (system + user). Match the count to the AnthropicBackend shape
+        # so the audit trail compares cleanly across providers.
+        messages_count = 2 if system else 1
         try:
-            envelope = self.mailbox.wait_for_completion(
-                task_id,
-                timeout_seconds=self.timeout_seconds,
-                poll_interval=self.poll_interval,
-            )
-        finally:
-            # Prune per-task files regardless of success so the mailbox
-            # stays bounded across long runs. Mirrors LocalDispatcher's
-            # cleanup pattern.
             try:
-                self.mailbox.cleanup(task_id)
-            except Exception:  # noqa: BLE001
-                logger.debug(
-                    "MailboxBrokeredBackend: cleanup failed for %s (non-fatal)",
+                envelope = self.mailbox.wait_for_completion(
                     task_id,
+                    timeout_seconds=self.timeout_seconds,
+                    poll_interval=self.poll_interval,
                 )
+            finally:
+                # Prune per-task files regardless of success so the mailbox
+                # stays bounded across long runs. Mirrors LocalDispatcher's
+                # cleanup pattern.
+                try:
+                    self.mailbox.cleanup(task_id)
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "MailboxBrokeredBackend: cleanup failed for %s (non-fatal)",
+                        task_id,
+                    )
 
-        return self._text_from_envelope(envelope, task_id)
+            text = self._text_from_envelope(envelope, task_id)
+            return text
+        finally:
+            self._emit_llm_chat_capture(
+                model=resolved_model,
+                max_tokens=int(max_tokens),
+                temperature=float(temperature),
+                messages_count=messages_count,
+                response_text_len=len(text or ""),
+                latency_ms=(time.monotonic() - start) * 1000.0,
+                extra={
+                    "task_id": task_id,
+                    "images_count": len(images) if images else 0,
+                },
+            )
 
     @staticmethod
     def _text_from_envelope(envelope: Dict[str, Any], task_id: str) -> str:
@@ -541,7 +693,7 @@ class MailboxBrokeredBackend:
 # =============================================================================
 
 
-class OpenAIBackend:
+class OpenAIBackend(_CaptureMixin):
     """Reserved for a future wave (decision O2).
 
     Construction is allowed so the provider registry surface works, but any
@@ -550,13 +702,18 @@ class OpenAIBackend:
     lands the OpenAI SDK integration.
     """
 
+    provider_label = "openai"
+
     def __init__(
         self,
         api_key: Optional[str] = None,
         default_model: str = DEFAULT_OPENAI_MODEL,
+        *,
+        capture: Optional[Any] = None,
     ):
         self.api_key = api_key or os.environ.get("OPENAI_API_KEY")
         self.default_model = default_model
+        self._set_capture(capture)
 
     def _err(self) -> NotImplementedError:
         return NotImplementedError(
@@ -609,7 +766,7 @@ class _MockCall:
     images: Optional[List[Dict[str, Any]]]
 
 
-class MockBackend:
+class MockBackend(_CaptureMixin):
     """Test backend that records calls and returns fixture-driven responses.
 
     Two ways to configure responses:
@@ -626,18 +783,23 @@ class MockBackend:
     If nothing is configured, returns ``default_response`` (empty by default).
     """
 
+    provider_label = "mock"
+
     def __init__(
         self,
         responses: Optional[List[str]] = None,
         response_fn: Optional[Callable[[str, str], str]] = None,
         fixture_dir: Optional[Path] = None,
         default_response: str = "",
+        *,
+        capture: Optional[Any] = None,
     ):
         self._responses: List[str] = list(responses) if responses else []
         self._response_fn = response_fn
         self._fixture_dir = Path(fixture_dir) if fixture_dir else None
         self._default_response = default_response
         self.calls: List[_MockCall] = []
+        self._set_capture(capture)
 
     @staticmethod
     def _fixture_key(system: str, user: str) -> str:
@@ -696,7 +858,21 @@ class MockBackend:
         images: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
         self._record(system, user, model, max_tokens, temperature, False, images)
-        return self._resolve_response(system, user)
+        start = time.monotonic()
+        text: str = ""
+        try:
+            text = self._resolve_response(system, user)
+            return text
+        finally:
+            self._emit_llm_chat_capture(
+                model=model or "mock",
+                max_tokens=int(max_tokens),
+                temperature=float(temperature),
+                messages_count=2 if system else 1,
+                response_text_len=len(text or ""),
+                latency_ms=(time.monotonic() - start) * 1000.0,
+                extra={"images_count": len(images) if images else 0},
+            )
 
     async def complete(
         self,
@@ -715,7 +891,22 @@ class MockBackend:
                 "MockBackend does not emulate streaming (deferred per O3). "
                 "Call with stream=False in tests."
             )
-        return self._resolve_response(system, user)
+        start = time.monotonic()
+        text: str = ""
+        try:
+            text = self._resolve_response(system, user)
+            return text
+        finally:
+            self._emit_llm_chat_capture(
+                model=model or "mock",
+                max_tokens=int(max_tokens),
+                temperature=float(temperature),
+                messages_count=2 if system else 1,
+                response_text_len=len(text or ""),
+                latency_ms=(time.monotonic() - start) * 1000.0,
+                stream=stream,
+                extra={"images_count": len(images) if images else 0},
+            )
 
 
 # =============================================================================
@@ -745,7 +936,12 @@ class BackendSpec:
     mailbox_base_dir: Optional[str] = None
 
 
-def build_backend(spec: Optional[BackendSpec] = None, **overrides: Any) -> LLMBackend:
+def build_backend(
+    spec: Optional[BackendSpec] = None,
+    *,
+    capture: Optional[Any] = None,
+    **overrides: Any,
+) -> LLMBackend:
     """Build an ``LLMBackend`` from a spec + env fallbacks.
 
     Precedence: explicit ``overrides`` > ``spec`` fields > env vars > defaults.
@@ -794,25 +990,27 @@ def build_backend(spec: Optional[BackendSpec] = None, **overrides: Any) -> LLMBa
             base_path = Path(mailbox_base_dir) if mailbox_base_dir else None
             mailbox = TaskMailbox(run_id=run_id, base_dir=base_path)
             timeout = overrides.get("mailbox_timeout_seconds")
-            kwargs: Dict[str, Any] = {"default_model": model}
+            kwargs: Dict[str, Any] = {"default_model": model, "capture": capture}
             if timeout is not None:
                 kwargs["timeout_seconds"] = float(timeout)
             return MailboxBrokeredBackend(mailbox, **kwargs)
-        return LocalBackend()
+        return LocalBackend(capture=capture)
 
     # api mode
     if provider == "mock":
-        return MockBackend(responses=list(spec.mock_responses))
+        return MockBackend(responses=list(spec.mock_responses), capture=capture)
     if provider == "anthropic":
         api_key = overrides.get("api_key") or spec.api_key
         return AnthropicBackend(
             api_key=api_key,
             default_model=model or DEFAULT_ANTHROPIC_MODEL,
+            capture=capture,
         )
     if provider == "openai":
         api_key = overrides.get("api_key") or spec.api_key
         return OpenAIBackend(
             api_key=api_key,
             default_model=model or DEFAULT_OPENAI_MODEL,
+            capture=capture,
         )
     raise ValueError(f"Unknown LLM provider: {provider}")
