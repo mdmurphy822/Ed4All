@@ -183,6 +183,7 @@ class ValidationGateManager:
         "lib.validators.",
         "lib.leak_checker",
         "DART.pdf_converter.",
+        "Courseforge.router.",
     )
 
     def load_validator(self, validator_path: str) -> Validator:
