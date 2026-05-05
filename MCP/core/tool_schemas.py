@@ -698,6 +698,11 @@ TOOL_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "source_module_map_path",
             "staging_dir",
             "duration_weeks_explicit",
+            # Worker W2: workflow_type drives validator-chain resolution
+            # for ``router.route_with_self_consistency`` (Phase 3 self-
+            # consistency loop). Optional so legacy direct callers
+            # (without a workflow_runner-managed run) still work.
+            "workflow_type",
         ],
         "defaults": {},
         "param_mapping": {},
