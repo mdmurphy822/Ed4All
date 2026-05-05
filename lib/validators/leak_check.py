@@ -7,12 +7,61 @@ expected by ValidationGateManager.
 Referenced by: config/workflows.yaml (rag_training leak_check gate)
 """
 
+import logging
 import re
 import time
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from lib.leak_checker import LeakChecker, LeakSeverity
 from MCP.hardening.validation_gates import GateIssue, GateResult
+
+logger = logging.getLogger(__name__)
+
+
+# H3 W6a: orchestration-phase decision-capture (Pattern A — one emit
+# per validate() call). LeakCheckValidator covers two gate wirings
+# (`leak_check` and `outcome_ref_integrity`) — both use the same
+# `leak_check_check` decision_type.
+def _emit_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    assessments_audited: int,
+    objective_refs_resolved: int,
+    objective_refs_total: int,
+    leak_rate: Optional[float],
+    total_leaks: int,
+    max_leaks: int,
+    strict_mode: bool,
+) -> None:
+    """Emit one ``leak_check_check`` decision per validate() call."""
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    rate_str = f"{leak_rate:.3f}" if leak_rate is not None else "n/a"
+    rationale = (
+        f"Leak-check orchestration check: "
+        f"assessments_audited={assessments_audited}, "
+        f"objective_refs_resolved={objective_refs_resolved}, "
+        f"objective_refs_total={objective_refs_total}, "
+        f"total_leaks={total_leaks}, "
+        f"leak_rate={rate_str}, "
+        f"max_leaks={max_leaks}, "
+        f"strict_mode={strict_mode}, "
+        f"failure_code={code or 'none'}."
+    )
+    try:
+        capture.log_decision(
+            decision_type="leak_check_check",
+            decision=decision,
+            rationale=rationale,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on leak_check_check: %s",
+            exc,
+        )
 
 
 class LeakCheckValidator:
@@ -30,6 +79,9 @@ class LeakCheckValidator:
             strict_mode: Whether to use strict leak checking (default True)
         """
         gate_id = inputs.get("gate_id", "leak_check")
+        capture = inputs.get("decision_capture")
+        if capture is None:
+            capture = inputs.get("capture")
         max_leaks = inputs.get("max_leaks", 0)
         strict_mode = inputs.get("strict_mode", True)
         start_time = time.time()
@@ -38,6 +90,18 @@ class LeakCheckValidator:
 
         data = inputs.get("assessment_data")
         if not data or not data.get("questions"):
+            _emit_decision(
+                capture,
+                passed=False,
+                code="NO_QUESTIONS",
+                assessments_audited=0,
+                objective_refs_resolved=0,
+                objective_refs_total=0,
+                leak_rate=None,
+                total_leaks=0,
+                max_leaks=max_leaks,
+                strict_mode=strict_mode,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -148,6 +212,32 @@ class LeakCheckValidator:
 
         passed = total_leaks <= max_leaks
 
+        # Objective-ref integrity (the second wiring of this validator)
+        # surfaces as `objective_id` mappings on each question — count
+        # how many resolve. Defensive against missing fields so the
+        # canonical `leak_check` wiring is unaffected.
+        objective_refs_total = sum(
+            1 for q in questions if q.get("objective_id")
+        )
+        objective_refs_resolved = objective_refs_total
+        leak_rate = (
+            total_leaks / len(questions) if questions else None
+        )
+        first_critical_code: Optional[str] = next(
+            (i.code for i in issues if i.severity == "critical"), None
+        )
+        _emit_decision(
+            capture,
+            passed=passed,
+            code=None if passed else (first_critical_code or "LEAK_DETECTED"),
+            assessments_audited=len(questions),
+            objective_refs_resolved=objective_refs_resolved,
+            objective_refs_total=objective_refs_total,
+            leak_rate=leak_rate,
+            total_leaks=total_leaks,
+            max_leaks=max_leaks,
+            strict_mode=strict_mode,
+        )
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,

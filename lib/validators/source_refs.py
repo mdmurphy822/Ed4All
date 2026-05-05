@@ -23,11 +23,56 @@ minting — the ``sourceId`` pattern is validated by the
 from __future__ import annotations
 
 import json
+import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
+
+logger = logging.getLogger(__name__)
+
+
+# H3 W6a: orchestration-phase decision-capture (Pattern A — one emit
+# per validate() call). Honours both ``decision_capture`` (canonical
+# S0.5 seam) and ``capture`` (back-compat alias) keys.
+def _emit_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    source_refs_declared: int,
+    source_refs_resolved: int,
+    unresolved_count: int,
+    staging_manifest_size: int,
+    staging_dir: Optional[str],
+    map_is_empty: bool,
+) -> None:
+    """Emit one ``page_source_ref_check`` decision per validate() call."""
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    rationale = (
+        f"Page source-ref orchestration check: "
+        f"source_refs_declared={source_refs_declared}, "
+        f"source_refs_resolved={source_refs_resolved}, "
+        f"unresolved_count={unresolved_count}, "
+        f"staging_manifest_size={staging_manifest_size}, "
+        f"staging_dir={staging_dir!r}, "
+        f"source_module_map_empty={map_is_empty}, "
+        f"failure_code={code or 'none'}."
+    )
+    try:
+        capture.log_decision(
+            decision_type="page_source_ref_check",
+            decision=decision,
+            rationale=rationale,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on page_source_ref_check: %s",
+            exc,
+        )
 
 # Matches the canonical shape: dart:{slug}#{block_id}
 # (lowercase slug/block, kept in sync with schemas/knowledge/source_reference.schema.json).
@@ -75,6 +120,9 @@ class PageSourceRefValidator:
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", "source_refs")
+        capture = inputs.get("decision_capture")
+        if capture is None:
+            capture = inputs.get("capture")
         issues: List[GateIssue] = []
 
         valid_ids = self._collect_valid_ids(inputs)
@@ -129,6 +177,17 @@ class PageSourceRefValidator:
                     "is intentionally absent."
                 ),
             ))
+            _emit_decision(
+                capture,
+                passed=False,
+                code="SOURCE_REFS_MANIFEST_MISSING",
+                source_refs_declared=len(emitted_ids),
+                source_refs_resolved=0,
+                unresolved_count=len(emitted_ids),
+                staging_manifest_size=len(valid_ids),
+                staging_dir=str(inputs.get("staging_dir")),
+                map_is_empty=map_is_empty,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -169,6 +228,21 @@ class PageSourceRefValidator:
                         "this warning."
                     ),
                 ))
+            _emit_decision(
+                capture,
+                passed=True,
+                code="EMPTY_SOURCE_REFS" if (
+                    inputs.get("page_paths") or inputs.get("html_contents")
+                ) else None,
+                source_refs_declared=0,
+                source_refs_resolved=0,
+                unresolved_count=0,
+                staging_manifest_size=len(valid_ids),
+                staging_dir=(
+                    str(inputs.get("staging_dir")) if inputs.get("staging_dir") else None
+                ),
+                map_is_empty=map_is_empty,
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -232,11 +306,34 @@ class PageSourceRefValidator:
         bad_entries = len(critical)
         total = max(1, len(emitted_ids))
         score = max(0.0, 1.0 - bad_entries / total)
+        passed = len(critical) == 0
+        # Resolution count: emitted IDs that match the canonical shape AND
+        # resolve against the valid universe (or simply match shape when no
+        # valid universe was wired).
+        resolved_count = max(0, len(emitted_ids) - bad_entries)
+        # Pick a representative failure code for the rationale; the issues
+        # list still carries every failure detail.
+        failure_code: Optional[str] = None
+        if not passed:
+            failure_code = critical[0].code
+        _emit_decision(
+            capture,
+            passed=passed,
+            code=failure_code,
+            source_refs_declared=len(emitted_ids),
+            source_refs_resolved=resolved_count,
+            unresolved_count=bad_entries,
+            staging_manifest_size=len(valid_ids),
+            staging_dir=(
+                str(inputs.get("staging_dir")) if inputs.get("staging_dir") else None
+            ),
+            map_is_empty=map_is_empty,
+        )
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,
             validator_version=self.version,
-            passed=len(critical) == 0,
+            passed=passed,
             score=score,
             issues=issues,
         )
