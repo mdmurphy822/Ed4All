@@ -1,16 +1,16 @@
-"""Tests for ``route_all``'s opt-in self-consistency dispatch (Phase 3.5 Subtask 34).
+"""Tests for ``route_all``'s self-consistency dispatch.
 
-Pins the Subtask-33 contract: when an EXPLICIT per-block n_candidates
-value > 1 resolves (via per-block-type policy entry,
-``COURSEFORGE_OUTLINE_N_CANDIDATES`` env var, or constructor-time
-instance attribute), ``route_all`` dispatches its outline pass through
-:meth:`CourseforgeRouter.route_with_self_consistency` instead of
-:meth:`route` directly. When no explicit override resolves the
-hardcoded default (3) is intentionally NOT consulted — the legacy
-single-candidate ``route`` path runs so byte-stability with every
-existing ``route_all`` caller (including the integration regression
-suite at ``tests/integration/test_courseforge_two_pass_end_to_end.py``)
-is preserved.
+C1 fix (2026-05): ``route_all`` now consults the canonical
+:meth:`CourseforgeRouter._resolve_n_candidates` chain, which terminates
+at layer 5's hardcoded ``_DEFAULT_OUTLINE_N_CANDIDATES = 3``. As a
+result every block routes through
+:meth:`CourseforgeRouter.route_with_self_consistency` by default — the
+prior asymmetric ``_resolve_explicit_n_candidates`` gate has been
+removed because it made the doc-claimed default of 3 inert in
+production. Per-block-type opt-out via
+``block_routing.yaml::blocks.{type}.n_candidates: 1`` (resolves at
+layer 2) short-circuits to the single-candidate direct
+:meth:`CourseforgeRouter.route` dispatch.
 
 Also pins the asymmetric default: the rewrite pass stays on the direct
 :meth:`route` call regardless of n_candidates resolution. Operators that
@@ -25,12 +25,11 @@ Test count target: ≥5 covering:
 
 - ``test_route_all_dispatches_through_self_consistency_when_n_candidates_gt_1``
 - ``test_route_all_dispatches_direct_when_n_candidates_eq_1``
-- ``test_route_all_per_block_n_candidates_resolution_via_policy``
+- ``test_route_all_per_block_n_candidates_one_skips_self_consistency``
 - ``test_route_all_outline_pass_uses_self_consistency``
 - ``test_route_all_rewrite_pass_stays_direct``
-- ``test_route_all_default_no_explicit_override_stays_direct`` — the
-  hardcoded default of 3 must NOT trip the self-consistency path on
-  legacy callers (this is the integration-byte-stability sentinel).
+- ``test_route_all_default_routes_through_self_consistency`` — the
+  hardcoded default of 3 fires by default; closes the C1 audit gap.
 """
 
 from __future__ import annotations
@@ -127,9 +126,8 @@ class _StubPolicy:
     ``n_candidates_by_block_type`` fast-lookup map.
 
     Mirrors the surface :meth:`CourseforgeRouter._resolve_n_candidates`
-    + :meth:`CourseforgeRouter._resolve_explicit_n_candidates` reach
-    into. ``resolve`` is wired so spec-resolution doesn't crash; it
-    returns ``None`` (the "fall through to env / hardcoded default"
+    reaches into. ``resolve`` is wired so spec-resolution doesn't crash;
+    it returns ``None`` (the "fall through to env / hardcoded default"
     signal).
     """
 
@@ -224,16 +222,17 @@ def test_route_all_dispatches_direct_when_n_candidates_eq_1(monkeypatch):
         )
 
 
-def test_route_all_per_block_n_candidates_resolution_via_policy(monkeypatch):
-    """The per-block-type policy fast-lookup map drives the dispatch
-    decision. When a policy entry pins ``concept`` to n_candidates=3
-    but ``example`` carries no entry (no env var either), the
-    ``concept`` block dispatches via self-consistency while the
-    ``example`` block falls through to the direct route() path.
+def test_route_all_per_block_n_candidates_one_skips_self_consistency(monkeypatch):
+    """C1 fix (2026-05): per-block-type ``n_candidates: 1`` is the
+    operator opt-out from the default-on self-consistency dispatch.
+    When a policy entry pins ``example`` to ``n_candidates=1`` (and
+    ``concept`` carries no entry, falling through to layer-5 default
+    of 3), the ``concept`` block dispatches via self-consistency while
+    the ``example`` block short-circuits to the direct route() path.
     Documents per-block resolution under mixed policy + default."""
     monkeypatch.delenv("COURSEFORGE_OUTLINE_N_CANDIDATES", raising=False)
     policy = _StubPolicy(
-        n_candidates_by_block_type={"concept": 3},
+        n_candidates_by_block_type={"example": 1},
     )
     provider = _RecordingProvider()
     rewrite_provider = _RecordingProvider()
@@ -248,17 +247,19 @@ def test_route_all_per_block_n_candidates_resolution_via_policy(monkeypatch):
     ]
     out = r.route_all(blocks)
     by_id = {b.block_id: b for b in out}
-    # ``concept`` block dispatched through self-consistency.
+    # ``concept`` block dispatched through self-consistency (layer-5
+    # default of 3 fires).
     concept_purposes = {t.purpose for t in by_id["page1#concept_a_0"].touched_by}
     assert "self_consistency_winner" in concept_purposes, (
         f"concept block missing self_consistency_winner; "
         f"touched_by={by_id['page1#concept_a_0'].touched_by!r}"
     )
-    # ``example`` block fell through to direct route() — no winner
-    # Touch.
+    # ``example`` block short-circuited to direct route() via
+    # per-block-type ``n_candidates: 1`` opt-out — no winner Touch.
     example_purposes = {t.purpose for t in by_id["page1#example_b_0"].touched_by}
     assert "self_consistency_winner" not in example_purposes, (
-        f"example block unexpectedly went through self-consistency; "
+        f"example block unexpectedly went through self-consistency "
+        f"despite n_candidates=1 opt-out; "
         f"touched_by={by_id['page1#example_b_0'].touched_by!r}"
     )
 
@@ -361,16 +362,15 @@ def test_route_all_rewrite_pass_stays_direct(monkeypatch):
     assert len(rewrite_provider.rewrite_calls) == 1
 
 
-def test_route_all_default_no_explicit_override_stays_direct(monkeypatch):
-    """Integration-byte-stability sentinel: with no policy + no env var
-    + no constructor override, the hardcoded default of 3 must NOT
-    trigger the self-consistency dispatch path. Legacy callers (e.g.
-    the integration test at
-    ``tests/integration/test_courseforge_two_pass_end_to_end.py``)
-    that don't set up any opt-in mechanism must keep the
-    single-candidate direct-dispatch behaviour. This is the contract
-    that distinguishes :meth:`_resolve_explicit_n_candidates` from
-    :meth:`_resolve_n_candidates`."""
+def test_route_all_default_routes_through_self_consistency(monkeypatch):
+    """C1 fix sentinel (2026-05): with no policy + no env var + no
+    constructor override, the layer-5 hardcoded default of 3 fires
+    via :meth:`CourseforgeRouter._resolve_n_candidates`, so every
+    block routes through ``route_with_self_consistency``. Replaces
+    the previous "stays-direct" sentinel that pinned the inert
+    asymmetric ``_resolve_explicit_n_candidates`` behaviour. Closes
+    the C1 audit gap where ``CLAUDE.md``'s "Default 3" claim was
+    contradicted by the de facto runtime default of 1."""
     monkeypatch.delenv("COURSEFORGE_OUTLINE_N_CANDIDATES", raising=False)
     provider = _RecordingProvider()
     rewrite_provider = _RecordingProvider()
@@ -385,13 +385,14 @@ def test_route_all_default_no_explicit_override_stays_direct(monkeypatch):
     ]
     out = r.route_all(blocks)
 
-    # No block goes through self-consistency.
+    # Every block goes through self-consistency by default.
     for b in out:
         purposes = {t.purpose for t in b.touched_by}
-        assert "self_consistency_winner" not in purposes, (
-            f"Block {b.block_id} unexpectedly went through self-consistency "
-            f"despite no explicit override; touched_by={b.touched_by!r}"
+        assert "self_consistency_winner" in purposes, (
+            f"Block {b.block_id} missing self_consistency_winner Touch "
+            f"under default-on routing; touched_by={b.touched_by!r}"
         )
-    # Both blocks reached both tiers.
+    # Both blocks reached both tiers (validator list empty → first
+    # candidate trivially passes → one outline call per block).
     assert len(provider.outline_calls) == 2
     assert len(rewrite_provider.rewrite_calls) == 2
