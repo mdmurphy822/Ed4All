@@ -2604,6 +2604,287 @@ def _resolve_inter_tier_validators(
     return validators
 
 
+def _resolve_post_rewrite_validators(
+    workflow_type: str,
+    capture: Any = None,
+) -> List[Any]:
+    """Resolve the YAML-declared ``post_rewrite_validation`` gate chain
+    for ``workflow_type`` into a list of validator instances suitable
+    for ``CourseforgeRouter.route_rewrite_with_remediation(validators=...)``.
+
+    Worker W3 (validation-wiring fix): symmetric mirror of
+    :func:`_resolve_inter_tier_validators` — pulls the rewrite-tier
+    validator chain from the YAML ``post_rewrite_validation`` phase so
+    the rewrite-tier remediation loop runs the same gates that the
+    standalone post-rewrite phase would catch (CURIE / content_type /
+    page_objectives / source_refs / rewrite_html_shape /
+    rewrite_source_grounding) — only INSIDE the regen budget so a
+    failed rewrite re-rolls with a remediation suffix instead of being
+    persisted as-is and caught downstream.
+
+    Returns ``[]`` on missing workflow_type, missing phase, or absent
+    validation_gates — matching pre-W3 ``route(..., tier="rewrite",
+    source_chunks=[], objectives=[])`` semantics so legacy direct
+    callers (tests, MCP-tool entry points without a workflow_runner-
+    managed run) keep working unchanged.
+    """
+    import importlib
+
+    if not workflow_type:
+        return []
+
+    try:
+        from MCP.core.config import OrchestratorConfig  # noqa: PLC0415
+        cfg = OrchestratorConfig.load()
+        wf = cfg.get_workflow(workflow_type)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Worker W3: OrchestratorConfig.load() failed for "
+            "workflow_type=%r: %s; falling back to empty validator list",
+            workflow_type, exc,
+        )
+        return []
+
+    if wf is None:
+        logger.warning(
+            "Worker W3: workflow_type=%r not registered; falling back "
+            "to empty validator list",
+            workflow_type,
+        )
+        return []
+
+    target_phase = None
+    for phase in getattr(wf, "phases", []) or []:
+        if getattr(phase, "name", "") == "post_rewrite_validation":
+            target_phase = phase
+            break
+    if target_phase is None:
+        return []
+
+    gates = getattr(target_phase, "validation_gates", None) or []
+    validators: List[Any] = []
+    for gate in gates:
+        if not isinstance(gate, dict):
+            continue
+        dotted = gate.get("validator") or ""
+        gate_id = gate.get("gate_id") or dotted
+        if not dotted:
+            continue
+        try:
+            module_path, _, class_name = dotted.rpartition(".")
+            if not module_path or not class_name:
+                raise ImportError(f"malformed dotted path: {dotted!r}")
+            module = importlib.import_module(module_path)
+            validator_cls = getattr(module, class_name)
+            validators.append(validator_cls())
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Worker W3: failed to import post-rewrite validator "
+                "gate_id=%s validator=%s: %s",
+                gate_id, dotted, exc,
+            )
+            if capture is not None:
+                try:
+                    capture.log_decision(
+                        decision_type="post_rewrite_validator_import_failed",
+                        decision=(
+                            f"Skipped post-rewrite validator {gate_id!r} "
+                            f"(dotted path {dotted!r}) — import error."
+                        ),
+                        rationale=(
+                            f"OrchestratorConfig declared the gate at "
+                            f"workflow_type={workflow_type!r} phase="
+                            f"post_rewrite_validation but the validator "
+                            f"class did not import: {exc}. Falling "
+                            f"through means this gate will NOT fire "
+                            f"during the rewrite-tier remediation "
+                            f"loop; check the validator dotted path."
+                        ),
+                        ml_features={
+                            "workflow_type": workflow_type,
+                            "gate_id": gate_id,
+                            "dotted_path": dotted,
+                            "error": str(exc),
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+            continue
+    return validators
+
+
+def _load_outline_chunks(
+    phase_outputs: Dict[str, Any],
+    capture: Any = None,
+) -> Dict[str, Any]:
+    """Rehydrate the W2-persisted ``outline_chunks.json`` sidecar.
+
+    Reads ``phase_outputs["content_generation_outline"]
+    ["outline_chunks_path"]`` and returns the deserialized
+    ``chunks_lookup`` dict (block_id -> list of chunk dicts) the outline
+    phase fed into ``router.route_with_self_consistency(source_chunks=
+    ...)``.
+
+    On missing key OR missing file, emits a structured
+    ``decision_type="rewrite_grounding_missing"`` warning capture and
+    returns an empty dict. Pre-W3 the rewrite phase passed
+    ``source_chunks=[]`` unconditionally; the empty-dict fallback
+    preserves that behavior so the rewrite phase itself does not crash
+    when the upstream sidecar is absent (legacy direct caller, mid-run
+    crash before W2's sidecar emit, etc.).
+    """
+    outline_outputs = (phase_outputs or {}).get(
+        "content_generation_outline"
+    ) or {}
+    chunks_path_raw = outline_outputs.get("outline_chunks_path")
+    if not chunks_path_raw:
+        if capture is not None:
+            try:
+                capture.log_decision(
+                    decision_type="rewrite_grounding_missing",
+                    decision=(
+                        "Rewrite phase falling through with empty "
+                        "source_chunks: outline_chunks_path absent from "
+                        "phase_outputs[content_generation_outline]."
+                    ),
+                    rationale=(
+                        "Worker W2 persists outline_chunks.json sidecar "
+                        "from the outline phase so W3's rewrite phase "
+                        "can rehydrate per-block source chunks for the "
+                        "remediation loop. Missing key indicates the "
+                        "outline phase ran a pre-W2 build, the run was "
+                        "resumed from a checkpoint without the sidecar, "
+                        "or this is a legacy direct call without a "
+                        "workflow_runner-managed phase_outputs dict. "
+                        "Falling through preserves pre-W3 ``source_chunks="
+                        "[]`` semantics; downstream gates will surface "
+                        "the missing-grounding signal."
+                    ),
+                    ml_features={
+                        "gate_id": "_run_content_generation_rewrite",
+                        "missing_key": "outline_chunks_path",
+                        "phase": "content_generation_outline",
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return {}
+    try:
+        chunks_path = Path(chunks_path_raw)
+        if not chunks_path.exists():
+            raise FileNotFoundError(str(chunks_path))
+        return json.loads(chunks_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, FileNotFoundError) as exc:
+        if capture is not None:
+            try:
+                capture.log_decision(
+                    decision_type="rewrite_grounding_missing",
+                    decision=(
+                        "Rewrite phase falling through with empty "
+                        "source_chunks: outline_chunks.json failed "
+                        f"to load ({exc})."
+                    ),
+                    rationale=(
+                        "Sidecar path was present in phase_outputs but "
+                        "the file did not load. Falling through preserves "
+                        "pre-W3 ``source_chunks=[]`` semantics so the "
+                        "rewrite phase itself does not crash; downstream "
+                        "gates surface the missing-grounding signal."
+                    ),
+                    ml_features={
+                        "gate_id": "_run_content_generation_rewrite",
+                        "missing_key": "outline_chunks_path",
+                        "sidecar_path": str(chunks_path_raw),
+                        "error": str(exc),
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return {}
+
+
+def _load_outline_objectives(
+    phase_outputs: Dict[str, Any],
+    capture: Any = None,
+) -> List[Any]:
+    """Rehydrate the W2-persisted ``outline_objectives.json`` sidecar.
+
+    Symmetric mirror of :func:`_load_outline_chunks` for the
+    ``objectives`` arg threaded into
+    ``router.route_rewrite_with_remediation(objectives=...)``. Returns a
+    list (canonical empty default) on missing key / missing file with a
+    structured ``rewrite_grounding_missing`` warning capture.
+    """
+    outline_outputs = (phase_outputs or {}).get(
+        "content_generation_outline"
+    ) or {}
+    objectives_path_raw = outline_outputs.get("outline_objectives_path")
+    if not objectives_path_raw:
+        if capture is not None:
+            try:
+                capture.log_decision(
+                    decision_type="rewrite_grounding_missing",
+                    decision=(
+                        "Rewrite phase falling through with empty "
+                        "objectives: outline_objectives_path absent from "
+                        "phase_outputs[content_generation_outline]."
+                    ),
+                    rationale=(
+                        "Worker W2 persists outline_objectives.json "
+                        "sidecar from the outline phase so W3's rewrite "
+                        "phase can rehydrate the canonical TO-NN/CO-NN "
+                        "objectives payload. Missing key indicates a "
+                        "pre-W2 build / mid-run resume / legacy direct "
+                        "call. Falling through preserves pre-W3 "
+                        "``objectives=[]`` semantics; downstream gates "
+                        "surface the missing-grounding signal."
+                    ),
+                    ml_features={
+                        "gate_id": "_run_content_generation_rewrite",
+                        "missing_key": "outline_objectives_path",
+                        "phase": "content_generation_outline",
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return []
+    try:
+        objectives_path = Path(objectives_path_raw)
+        if not objectives_path.exists():
+            raise FileNotFoundError(str(objectives_path))
+        payload = json.loads(objectives_path.read_text(encoding="utf-8"))
+        if isinstance(payload, list):
+            return payload
+        return []
+    except (OSError, ValueError, FileNotFoundError) as exc:
+        if capture is not None:
+            try:
+                capture.log_decision(
+                    decision_type="rewrite_grounding_missing",
+                    decision=(
+                        "Rewrite phase falling through with empty "
+                        "objectives: outline_objectives.json failed "
+                        f"to load ({exc})."
+                    ),
+                    rationale=(
+                        "Sidecar path was present in phase_outputs but "
+                        "the file did not load. Falling through preserves "
+                        "pre-W3 ``objectives=[]`` semantics so the "
+                        "rewrite phase itself does not crash; downstream "
+                        "gates surface the missing-grounding signal."
+                    ),
+                    ml_features={
+                        "gate_id": "_run_content_generation_rewrite",
+                        "missing_key": "outline_objectives_path",
+                        "sidecar_path": str(objectives_path_raw),
+                        "error": str(exc),
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        return []
+
+
 async def _run_content_generation_outline(**kwargs) -> str:
     """Run the outline tier of the Phase 3 two-pass content pipeline.
 
@@ -3343,32 +3624,63 @@ async def _run_content_generation_rewrite(**kwargs) -> str:
             "project_id": project_id,
         })
 
-    # Pre-filter to rewrite tier: invoke route() per block with
-    # tier="rewrite". (Subtask plan: pre-filter rather than widen
-    # route_all's signature; that's Worker N2's scope.) Blocks with
-    # an existing escalation_marker (outline tier failed) bypass the
-    # rewrite call and ride through to the final list with the marker
-    # intact so packaging persists them for re-execution.
+    # Worker W3 (validation-wiring fix): dispatch each block through
+    # ``router.route_rewrite_with_remediation`` with the resolved
+    # post-rewrite validator chain so the rewrite-tier seam runs INSIDE
+    # the regen budget (instead of catching failures post-hoc in the
+    # standalone post_rewrite_validation phase). The chain is resolved
+    # from the YAML ``post_rewrite_validation`` phase via
+    # ``_resolve_post_rewrite_validators``; absent workflow_type
+    # (legacy direct caller) returns [] and behaves identically to the
+    # prior ``router.route(blk, tier="rewrite", source_chunks=[],
+    # objectives=[])`` single-shot path. ``source_chunks`` +
+    # ``objectives`` are rehydrated from the W2-persisted sidecars
+    # (``outline_chunks.json`` / ``outline_objectives.json`` next to
+    # ``blocks_outline.jsonl``); the workflow_runner threads the
+    # sidecar paths in as kwargs via the YAML ``inputs_from`` block.
+    workflow_type = kwargs.get("workflow_type") or ""
+    validators = _resolve_post_rewrite_validators(workflow_type, capture)
+    # Reconstruct the phase_outputs sub-shape the loader helpers expect
+    # from the resolved path kwargs the workflow_runner threaded in.
+    _phase_outputs_proxy: Dict[str, Any] = {
+        "content_generation_outline": {
+            "outline_chunks_path": kwargs.get("outline_chunks_path"),
+            "outline_objectives_path": kwargs.get("outline_objectives_path"),
+        },
+    }
+    chunks_lookup = _load_outline_chunks(_phase_outputs_proxy, capture)
+    objectives_payload = _load_outline_objectives(
+        _phase_outputs_proxy, capture,
+    )
+
+    # Blocks with an existing escalation_marker (outline tier failed)
+    # bypass the rewrite call and ride through to the final list with
+    # the marker intact so packaging persists them for re-execution.
+    # W5 will introduce the emit-time filter.
     rewrite_blocks: list = []
+    import dataclasses as _dc
     for blk in outline_blocks:
         if blk.escalation_marker is not None:
             rewrite_blocks.append(blk)
             continue
+        block_chunks = chunks_lookup.get(blk.block_id, []) if isinstance(
+            chunks_lookup, dict
+        ) else []
         try:
-            rewritten = router.route(
+            rewritten = router.route_rewrite_with_remediation(
                 blk,
-                tier="rewrite",
-                source_chunks=[],
-                objectives=[],
+                validators=validators,
+                source_chunks=block_chunks,
+                objectives=objectives_payload,
             )
             rewrite_blocks.append(rewritten)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "rewrite phase: route() failed for block_id=%s: %s",
+                "rewrite phase: route_rewrite_with_remediation() "
+                "failed for block_id=%s: %s",
                 blk.block_id, exc,
             )
             try:
-                import dataclasses as _dc
                 rewrite_blocks.append(_dc.replace(
                     blk, escalation_marker="validator_consensus_fail",
                 ))
