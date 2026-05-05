@@ -122,23 +122,43 @@ class PageObjectivesValidator:
                 objectives_path = candidate
 
         if objectives_path is None:
-            # Backward-compat: no objectives available - warn, do not fail.
+            # Silent-degradation guard (page_objectives audit fix): the
+            # gate is wired ``critical`` on both ``course_generation`` and
+            # ``textbook_to_course`` packaging phases (see
+            # ``config/workflows.yaml::validation_gates``), so a run that
+            # reaches this validator without either an explicit
+            # ``objectives_path`` OR an auto-discoverable
+            # ``content_dir / course.json`` represents an upstream
+            # contract failure (course-planning didn't emit objectives,
+            # or packaging didn't surface course.json). The pre-fix
+            # branch returned ``passed=True`` with a "backward-compat"
+            # warning, which silently skipped per-week LO validation on
+            # a critical-severity gate. Inverting to fail-closed surfaces
+            # the failure at the gate that's already declared as
+            # blocking, rather than letting the run ship a course whose
+            # per-page LO specificity was never checked.
+            candidate_path = str(content_dir / "course.json")
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
                 validator_version=self.version,
-                passed=True,
+                passed=False,
                 issues=[
                     GateIssue(
-                        severity="warning",
-                        code="NO_OBJECTIVES_FILE",
+                        severity="critical",
+                        code="PAGE_OBJECTIVES_PATH_MISSING",
                         message=(
                             "No objectives file provided and no course.json "
-                            f"found at {content_dir}. Per-week LO validation skipped."
+                            f"found at {candidate_path}. Did the upstream "
+                            "course_planning / packaging phase run and emit "
+                            "course.json? Cannot validate per-week LO "
+                            "specificity without a canonical objectives "
+                            "source."
                         ),
                         suggestion=(
-                            "Pass objectives_path or emit course.json "
-                            "at the content dir root to enable validation."
+                            "Pass objectives_path explicitly or ensure "
+                            "course.json is emitted at the content dir "
+                            "root by the packaging phase."
                         ),
                     )
                 ],

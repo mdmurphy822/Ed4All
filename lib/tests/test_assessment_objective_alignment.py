@@ -114,6 +114,57 @@ def test_case_insensitive_match(tmp_path):
     assert result.passed
 
 
+def test_empty_chunkset_fails_closed(tmp_path):
+    """C4 audit fix: zero learning_outcome_refs across chunks file
+    indicates an upstream chunking failure. Fail closed with the
+    named code rather than vacuously passing.
+    """
+    assessments = tmp_path / "assessments.json"
+    chunks = tmp_path / "chunks.jsonl"
+    _write_json(assessments, {
+        "questions": [
+            {"question_id": "Q1", "objective_id": "TO-01"},
+        ],
+    })
+    # File exists, parses cleanly, but no chunk carries refs.
+    _write_chunks(chunks, [
+        {"id": "c1"},
+        {"id": "c2", "learning_outcome_refs": []},
+    ])
+    result = AssessmentObjectiveAlignmentValidator().validate({
+        "assessments_path": str(assessments),
+        "chunks_path": str(chunks),
+    })
+    assert not result.passed
+    codes = {i.code for i in result.issues}
+    assert "ASSESSMENT_ALIGNMENT_NO_CHUNKS" in codes
+    crit = [i for i in result.issues if i.code == "ASSESSMENT_ALIGNMENT_NO_CHUNKS"]
+    assert crit and crit[0].severity == "critical"
+    # Operator hint must reference the upstream phase + the chunks path.
+    msg = crit[0].message
+    assert str(chunks) in msg
+    assert "imscc_chunking" in msg or "trainforge_assessment" in msg
+
+
+def test_completely_empty_chunks_file_fails_closed(tmp_path):
+    """An empty chunks.jsonl file (zero lines) also fails closed."""
+    assessments = tmp_path / "assessments.json"
+    chunks = tmp_path / "chunks.jsonl"
+    _write_json(assessments, {
+        "questions": [
+            {"question_id": "Q1", "objective_id": "TO-01"},
+        ],
+    })
+    chunks.write_text("", encoding="utf-8")
+    result = AssessmentObjectiveAlignmentValidator().validate({
+        "assessments_path": str(assessments),
+        "chunks_path": str(chunks),
+    })
+    assert not result.passed
+    codes = {i.code for i in result.issues}
+    assert "ASSESSMENT_ALIGNMENT_NO_CHUNKS" in codes
+
+
 def test_question_missing_objective_id_fails(tmp_path):
     """Question with no objective_id → critical."""
     assessments = tmp_path / "assessments.json"
