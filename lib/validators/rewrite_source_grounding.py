@@ -12,9 +12,11 @@ ancestor walk today; this gate critical-fails it.
 Contract per ``plans/qwen7b-courseforge-fixes-2026-05-followup.md``
 §3.3:
 
-- Skip blocks whose ``content_type`` (or ``block_type``) is
-  ``assessment_item`` — assessment grounding is the
-  ``objective_assessment_similarity`` gate's job.
+- Skip blocks whose ``content_type`` (or ``block_type``) is in
+  ``_SKIPPED_CONTENT_TYPES`` — the surface's grounding frame is
+  structurally not "paraphrase of source prose" and a sibling
+  statistical-tier validator handles the right signal. See the
+  ``_SKIPPED_CONTENT_TYPES`` docstring for the per-type rationale.
 - Strip HTML to plain prose via stdlib ``html.parser``.
 - Sentence-segment via a regex split on ``[.!?]\\s+[A-Z]``. No nltk
   dependency.
@@ -91,10 +93,26 @@ _MIN_SENTENCE_WORDS: int = 10
 #: Cap per-block issue list (mirrors sibling validators).
 _ISSUE_LIST_CAP: int = 50
 
-#: Block content_types / block_types skipped (assessment-item
-#: grounding is the objective_assessment_similarity gate's job).
+#: Block content_types / block_types skipped because per-sentence
+#: paraphrase-of-source-prose is structurally the wrong grounding
+#: frame for the surface, AND a sibling statistical-tier validator
+#: already gates the right signal:
+#:
+#: - ``assessment_item`` / ``self_check_question`` — question-shaped
+#:   surfaces; ground via question-stem ↔ referenced-LO cosine
+#:   (``objective_assessment_similarity``), not via source prose.
+#: - ``objective`` — re-states a course goal; ground via paraphrase
+#:   ↔ source-objective cosine (``objective_roundtrip_similarity``),
+#:   not via source-chunk prose.
+#: - ``example`` — worked examples legitimately carry payload-heavy
+#:   content (URI literals, code fragments, schematic triples) whose
+#:   per-sentence cosine against source prose drops below the floor
+#:   even when the framing prose IS grounded. The right grounding
+#:   signal is the concept-definition ↔ example cosine
+#:   (``concept_example_similarity``), which already gates this block
+#:   type symmetrically at both validation seams.
 _SKIPPED_CONTENT_TYPES: frozenset = frozenset(
-    {"assessment_item", "self_check_question", "objective"}
+    {"assessment_item", "self_check_question", "objective", "example"}
 )
 
 #: Sentence boundary: . ! ? followed by whitespace + capital letter.
@@ -429,9 +447,10 @@ class RewriteSourceGroundingValidator:
                 # Outline-tier dict content — skip silently.
                 continue
             if _block_should_skip(block):
-                # assessment_item / self_check_question / objective:
-                # emit a passed=True decision so the audit trail
-                # records the skip.
+                # See _SKIPPED_CONTENT_TYPES docstring for the per-type
+                # rationale (assessment_item / self_check_question /
+                # objective / example). Emit a passed=True decision
+                # so the audit trail records the skip.
                 _emit_decision(
                     capture, block,
                     passed=True, code="SKIPPED_CONTENT_TYPE",
