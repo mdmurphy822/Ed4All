@@ -296,24 +296,24 @@ Tools and scripts for validating IMSCC package compliance
 
 ## Error Prevention Guidelines
 
-### Pattern 15 Prevention (XML Compliance)
+### Prevention: XML Compliance
 - Use QTI 1.2 format for assessments
 - Include D2L extensions for Brightspace compatibility
 - Validate XML schema compliance before packaging
 
-### Pattern 19 Prevention (Educational Structure)
+### Prevention: Educational Structure
 - Maintain module structure per course outline (no artificial consolidation)
 - Avoid single-page content consolidation of complex topics
 - Preserve pedagogical organization hierarchy
 
-### Pattern 22 Prevention (Content Depth)
+### Prevention: Content Depth
 - Ensure comprehensive educational content before examples
 - Integrate authentic examples within theoretical context
 - Maintain academic rigor throughout all modules
 
-### Pattern 24 Prevention (IMSCC Version Consistency) - CRITICAL
+### Prevention: IMSCC Version Consistency - CRITICAL
 
-**Root Cause**: When manifest declares one IMSCC version but content XMLs use different version namespaces, Brightspace fails to parse titles and creates flat module structures.
+When manifest declares one IMSCC version but content XMLs use different version namespaces, Brightspace fails to parse titles and creates flat module structures.
 
 **Symptoms**:
 - All content appears in ONE flat module instead of weekly organization
@@ -332,7 +332,7 @@ Tools and scripts for validating IMSCC package compliance
 | Assignment resource type | `assignment_xmlv1p0` |
 | Assignment XML namespace | `http://www.imsglobal.org/xsd/imscc_extensions/assignment` |
 
-**IMPORTANT**: Do NOT use `associatedcontent/imscc_xmlv1p3/learning-application-resource` for assignments - this causes Brightspace to import assignments as raw XML files instead of native assignment tools (Pattern 25).
+**IMPORTANT**: Do NOT use `associatedcontent/imscc_xmlv1p3/learning-application-resource` for assignments - this causes Brightspace to import assignments as raw XML files instead of native assignment tools.
 
 **Validation Command**:
 ```bash

@@ -100,8 +100,8 @@ python -m tools.libv2.cli multi-retrieve "assessment strategies for stem" \
 ### Ask + Answer (Persistent Q&A Log — cache-first)
 
 `libv2 ask` runs retrieval and persists the query + retrieved chunks
-under the queried corpus so Claude's interactions with LibV2 leave a
-durable trail alongside the source data. After Claude reads the
+under the queried corpus so the assistant's interactions with LibV2 leave a
+durable trail alongside the source data. After the assistant reads the
 chunks and synthesizes an answer, `libv2 answer <query_id> "<text>"`
 attaches the answer to the same record.
 
@@ -122,7 +122,7 @@ libv2 ask "How does SHACL distinguish NodeShape from PropertyShape?" \
 # Cross-course query (record lands at catalog/queries/<query_id>.json):
 libv2 ask "compare UDL vs differentiated instruction" --method hybrid
 
-# Attach Claude's synthesized answer to a previously-asked query:
+# Attach the synthesized answer to a previously-asked query:
 libv2 answer q_20260426_204818_7c65277e --course rdf-shacl-551-2 \
   "<synthesized answer text>"
 
@@ -138,7 +138,7 @@ Default retrieval method is `bm25+intent`; override with `--method
 {bm25, bm25+graph, bm25+intent, bm25+tag, hybrid}`. Limit is capped
 at 50 to honor the policy above.
 
-The Q&A log is the canonical place to look when reviewing what Claude
+The Q&A log is the canonical place to look when reviewing what the assistant
 asked the corpus and what it synthesized — useful for auditing
 RDF/SHACL enrichment work, building evals, and detecting recurring
 gaps in coverage.
@@ -191,9 +191,9 @@ Division (STEM/ARTS)
 | `../schemas/taxonomies/` | Classification taxonomy + pedagogy framework — unified at project root |
 
 Each course directory (`courses/[slug]/`) contains:
-- `dart_chunks/` — DART-derived chunkset (Phase 7b). `chunks.jsonl` (one canonical v4 chunk per line, JSONL) + sibling `manifest.json` (chunkset sidecar). Anchored to the textbook PDF via `manifest.source_dart_html_sha256` (aggregate Merkle of the staged DART HTML inputs). Emit path: the `chunking` workflow phase between `staging` and `objective_extraction` (see `_run_dart_chunking` below). Hash recorded at the course-manifest scope as `manifest.json::dart_chunks_sha256` — Phase 7c ST 17 promoted this field to **required**.
-- `imscc_chunks/` — IMSCC-derived chunkset (Phase 7c, renamed from `corpus/`). Symmetric sibling to `dart_chunks/`: same JSONL + manifest pair, but anchored to the packaged `.imscc` archive via `manifest.source_imscc_sha256`. Emit path: the `imscc_chunking` workflow phase between `packaging` and `training_synthesis` (see `_run_imscc_chunking` below). Hash recorded at the course-manifest scope as `manifest.json::imscc_chunks_sha256` — Phase 7c ST 17 promoted this field to **required**. Read shim: `lib/libv2_storage.py::resolve_imscc_chunks_path` (aliased `resolve_imscc_chunks_dir`) accepts the legacy `corpus/` directory name with a deprecation warning so pre-Phase-7c archives still resolve at consumer call sites; the back-compat layer is scheduled for removal in Phase 8.
-- `concept_graph/` — Pedagogy concept graph (Phase 6). `concept_graph_semantic.json` produced by the `concept_extraction` workflow phase. Hash recorded at `manifest.json::concept_graph_sha256` — Phase 7c ST 17 promoted this field from warning-severity to **required + critical** alongside the two chunkset hashes (the three-hash triangle pins DART chunks ↔ IMSCC chunks ↔ concept graph to the same course manifest revision).
+- `dart_chunks/` — DART-derived chunkset. `chunks.jsonl` (one canonical v4 chunk per line, JSONL) + sibling `manifest.json` (chunkset sidecar). Anchored to the textbook PDF via `manifest.source_dart_html_sha256` (aggregate Merkle of the staged DART HTML inputs). Emit path: the `chunking` workflow phase between `staging` and `objective_extraction` (see `_run_dart_chunking` below). Hash recorded at the course-manifest scope as `manifest.json::dart_chunks_sha256` — **required**.
+- `imscc_chunks/` — IMSCC-derived chunkset. Symmetric sibling to `dart_chunks/`: same JSONL + manifest pair, but anchored to the packaged `.imscc` archive via `manifest.source_imscc_sha256`. Emit path: the `imscc_chunking` workflow phase between `packaging` and `training_synthesis` (see `_run_imscc_chunking` below). Hash recorded at the course-manifest scope as `manifest.json::imscc_chunks_sha256` — **required**. Read shim: `lib/libv2_storage.py::resolve_imscc_chunks_path` (aliased `resolve_imscc_chunks_dir`) accepts the legacy `corpus/` directory name with a deprecation warning so pre-rename archives still resolve at consumer call sites.
+- `concept_graph/` — Pedagogy concept graph. `concept_graph_semantic.json` produced by the `concept_extraction` workflow phase. Hash recorded at `manifest.json::concept_graph_sha256` — **required + critical**. The three-hash triangle pins DART chunks ↔ IMSCC chunks ↔ concept graph to the same course manifest revision.
 - `course.json` — Course-level learning outcomes and metadata.
 - `graph/` — Concept co-occurrence graph (legacy / advisory; distinct from `concept_graph/`).
 - `manifest.json` — Course metadata and classification. Carries the three required SHA-256 fields above plus `chunker_version`, source artifacts, classification, and feature flags.
@@ -202,14 +202,14 @@ Each course directory (`courses/[slug]/`) contains:
 - `source/` — Source artifacts (IMSCC, PDF, HTML).
 - `training_specs/` — Training specification files.
 
-#### Phase 7b/c chunkset architecture cross-links
+#### Chunkset architecture cross-links
 
 - `schemas/library/chunkset_manifest.schema.json` — single canonical sidecar schema for both `dart_chunks/manifest.json` and `imscc_chunks/manifest.json`. Discriminator field `chunkset_kind: "dart" | "imscc"` plus a conditional source-SHA branch (`source_dart_html_sha256` for `dart`, `source_imscc_sha256` for `imscc`) anchors each chunkset to its upstream source artifact. Required fields: `chunks_sha256`, `chunker_version`, `chunkset_kind`, plus the conditional source SHA. Optional: `chunks_count`, `generated_at`.
-- `MCP/tools/pipeline_tools.py::_run_dart_chunking` — async helper registered as `registry["run_dart_chunking"]` for the Phase 7b `chunking` phase. Walks `staging_dir` for DART HTML files, parses via `Trainforge/parsers/html_content_parser.py::HTMLContentParser`, threads sections into `Trainforge.chunker.chunk_content`, persists `chunks.jsonl` + `manifest.json` to `LibV2/courses/<slug>/dart_chunks/`, surfaces `dart_chunks_path` + `dart_chunks_sha256` through phase outputs.
-- `MCP/tools/pipeline_tools.py::_run_imscc_chunking` — async helper registered as `registry["run_imscc_chunking"]` for the Phase 7c `imscc_chunking` phase. Mirrors `_run_dart_chunking`'s template but reads HTML entries in-memory from the packaged `.imscc` zip via `zipfile.ZipFile` and emits `chunkset_kind="imscc"` + `source_imscc_sha256` (SHA-256 of the archive bytes).
+- `MCP/tools/pipeline_tools.py::_run_dart_chunking` — async helper registered as `registry["run_dart_chunking"]` for the `chunking` phase. Walks `staging_dir` for DART HTML files, parses via `Trainforge/parsers/html_content_parser.py::HTMLContentParser`, threads sections into `Trainforge.chunker.chunk_content`, persists `chunks.jsonl` + `manifest.json` to `LibV2/courses/<slug>/dart_chunks/`, surfaces `dart_chunks_path` + `dart_chunks_sha256` through phase outputs.
+- `MCP/tools/pipeline_tools.py::_run_imscc_chunking` — async helper registered as `registry["run_imscc_chunking"]` for the `imscc_chunking` phase. Mirrors `_run_dart_chunking`'s template but reads HTML entries in-memory from the packaged `.imscc` zip via `zipfile.ZipFile` and emits `chunkset_kind="imscc"` + `source_imscc_sha256` (SHA-256 of the archive bytes).
 - `lib/validators/chunkset_manifest.py::ChunksetManifestValidator` — warning-severity gate wired at both chunking phases. Verifies the sidecar manifest exists, parses, conforms to the schema, its `chunks_sha256` matches the on-disk JSONL bytes, and `chunker_version` matches `Trainforge.chunker.CHUNKER_SCHEMA_VERSION`.
-- `lib/validators/libv2_manifest.py::LibV2ManifestValidator` — critical-severity gate at the `libv2_archival` phase. Phase 7c ST 17 added three new check methods (`_check_dart_chunks_sha256`, `_check_imscc_chunks_sha256`, plus the existing `_check_concept_graph_sha256` promoted from warning to critical). Each fires a `MISSING_*` / `INVALID_*` / `*_HASH_MISMATCH` GateIssue triplet against the matching course-manifest field — fail-closed when any of the three required hashes is absent or diverges from the on-disk artifact bytes.
-- `LibV2/tools/libv2/scripts/backfill_dart_chunks.py` — operator-driven script for migrating legacy archives that lack `dart_chunks/`. Walks `LibV2/courses/<slug>/source/html/`, runs the chunker, writes `dart_chunks/{chunks.jsonl, manifest.json}`, computes the chunkset SHA, and updates `manifest.json::dart_chunks_sha256`. Idempotent by default (skips when the chunkset already exists); `--force` re-emits over an existing chunkset; `--dry-run` plans without writing. Supports `--course-slug <slug>` for single-course backfill or scans every course under `--libv2-root` when omitted.
+- `lib/validators/libv2_manifest.py::LibV2ManifestValidator` — critical-severity gate at the `libv2_archival` phase. Three check methods (`_check_dart_chunks_sha256`, `_check_imscc_chunks_sha256`, `_check_concept_graph_sha256`) each fire a `MISSING_*` / `INVALID_*` / `*_HASH_MISMATCH` GateIssue triplet against the matching course-manifest field — fail-closed when any of the three required hashes is absent or diverges from the on-disk artifact bytes.
+- `LibV2/tools/libv2/scripts/backfill_dart_chunks.py` — script for archives that lack `dart_chunks/`. Walks `LibV2/courses/<slug>/source/html/`, runs the chunker, writes `dart_chunks/{chunks.jsonl, manifest.json}`, computes the chunkset SHA, and updates `manifest.json::dart_chunks_sha256`. Idempotent by default (skips when the chunkset already exists); `--force` re-emits over an existing chunkset; `--dry-run` plans without writing. Supports `--course-slug <slug>` for single-course backfill or scans every course under `--libv2-root` when omitted.
 
 ## Common Tasks
 
