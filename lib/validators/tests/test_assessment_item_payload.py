@@ -435,3 +435,89 @@ def test_empty_blocks_list_passes():
     assert result.passed is True
     assert result.action is None
     assert result.score == 1.0
+
+
+# --------------------------------------------------------------------- #
+# H3 Wave W5 — decision-capture wiring
+# --------------------------------------------------------------------- #
+
+
+class _StubCapture:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def log_decision(self, decision_type, decision, rationale, **kw):
+        self.calls.append({
+            "decision_type": decision_type,
+            "decision": decision,
+            "rationale": rationale,
+            "kwargs": kw,
+        })
+
+
+def test_capture_emits_one_decision_per_assessment_item_block() -> None:
+    """Per-block cardinality: 2 assessment_item blocks → 2 emits;
+    non-assessment_item blocks are silently skipped (no emit)."""
+    capture = _StubCapture()
+    BlockAssessmentItemPayloadValidator().validate({
+        "blocks": [
+            _outline_assessment_block(block_id="page_01#assessment_item_q_0"),
+            _rewrite_assessment_block(block_id="page_01#assessment_item_q_1"),
+            _non_assessment_block(),
+        ],
+        "decision_capture": capture,
+    })
+    assert len(capture.calls) == 2
+    types = {c["decision_type"] for c in capture.calls}
+    assert types == {"block_assessment_item_payload_check"}
+
+
+def test_capture_rationale_carries_dynamic_signals() -> None:
+    capture = _StubCapture()
+    BlockAssessmentItemPayloadValidator().validate({
+        "blocks": [_outline_assessment_block(block_id="page_01#assessment_item_q_0")],
+        "decision_capture": capture,
+    })
+    rationale = capture.calls[0]["rationale"]
+    assert len(rationale) >= 60
+    assert "page_01#assessment_item_q_0" in rationale
+    assert "distractors_count=" in rationale
+    assert "correct_answer_index_valid=" in rationale
+    assert "misconception_refs_resolved=" in rationale
+    assert "mode=outline" in rationale
+
+
+def test_capture_rewrite_mode_signals() -> None:
+    capture = _StubCapture()
+    BlockAssessmentItemPayloadValidator().validate({
+        "blocks": [_rewrite_assessment_block(block_id="page_01#assessment_item_q_0")],
+        "decision_capture": capture,
+    })
+    assert len(capture.calls) == 1
+    assert "mode=rewrite" in capture.calls[0]["rationale"]
+
+
+def test_capture_failure_block_emits_failure_decision() -> None:
+    """A block missing distractors emits a failed:* decision."""
+    capture = _StubCapture()
+    BlockAssessmentItemPayloadValidator().validate({
+        "blocks": [_outline_assessment_block(drop_distractors=True)],
+        "decision_capture": capture,
+    })
+    assert len(capture.calls) == 1
+    assert "failed:" in capture.calls[0]["decision"]
+    assert "ASSESSMENT_ITEM_MISSING_DISTRACTORS" in capture.calls[0]["decision"]
+
+
+def test_capture_no_capture_no_emit_no_crash() -> None:
+    """Absent decision_capture → identical GateResult, no exception."""
+    validator = BlockAssessmentItemPayloadValidator()
+    blocks = [_outline_assessment_block(block_id="page_01#assessment_item_q_0")]
+    base = validator.validate({"blocks": blocks})
+    captured = validator.validate({
+        "blocks": blocks,
+        "decision_capture": _StubCapture(),
+    })
+    assert base.passed == captured.passed
+    assert base.score == captured.score
+    assert [i.code for i in base.issues] == [i.code for i in captured.issues]

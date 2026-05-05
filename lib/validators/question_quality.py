@@ -12,12 +12,67 @@ rather than structural checks alone. Assesses:
 Referenced by: config/workflows.yaml (rag_training question_quality gate)
 """
 
+import logging
 import re
 import time
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
 from lib.validators.bloom import detect_bloom_level
 from MCP.hardening.validation_gates import GateIssue, GateResult
+
+logger = logging.getLogger(__name__)
+
+
+def _emit_question_quality_decision(
+    capture: Any,
+    *,
+    question_id: str,
+    stem_grounding: float,
+    distractor_pairwise_max: float,
+    distractor_count: int,
+    score: float,
+    passed: bool,
+    issue_codes: List[str],
+) -> None:
+    """Emit one ``question_quality_check`` per question scored.
+
+    Per H3 W5 contract: per-question cardinality. Dynamic signals:
+    question_id, stem_grounding_jaccard, distractor_pairwise_jaccard,
+    score.
+    """
+    if capture is None:
+        return
+    decision = "passed" if passed else "failed:" + (issue_codes[0] if issue_codes else "low_score")
+    rationale = (
+        f"QuestionQualityValidator scored question {question_id!r}: "
+        f"stem_grounding_jaccard={stem_grounding:.4f}, "
+        f"distractor_pairwise_jaccard_max={distractor_pairwise_max:.4f}, "
+        f"distractor_count={distractor_count}, "
+        f"composite_score={score:.4f}, issue_codes={issue_codes!r}, "
+        f"per_question_passed={passed}."
+    )
+    metrics: Dict[str, Any] = {
+        "question_id": question_id,
+        "stem_grounding_jaccard": float(stem_grounding),
+        "distractor_pairwise_jaccard_max": float(distractor_pairwise_max),
+        "distractor_count": int(distractor_count),
+        "score": float(score),
+        "issue_codes": list(issue_codes),
+        "passed": bool(passed),
+    }
+    try:
+        capture.log_decision(
+            decision_type="question_quality_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(metrics),
+            metrics=metrics,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on question_quality_check: %s",
+            exc,
+        )
 
 
 def _strip_html(text: str) -> str:
@@ -78,6 +133,7 @@ class QuestionQualityValidator:
         """
         gate_id = inputs.get("gate_id", "question_quality")
         min_score = inputs.get("min_score", 0.6)
+        capture = inputs.get("decision_capture")
         start_time = time.time()
         issues: List[GateIssue] = []
 
@@ -110,6 +166,10 @@ class QuestionQualityValidator:
             dim: [] for dim in self.DIMENSION_WEIGHTS
         }
 
+        # Wave H3-W5 wiring: emit one ``question_quality_check``
+        # decision per question scored so post-hoc replay can
+        # reconstruct per-question grounding + distractor-pairwise
+        # signals.
         for q in questions:
             q_id = q.get("question_id", "unknown")
             q_issues, q_scores = self._score_question(
@@ -118,6 +178,47 @@ class QuestionQualityValidator:
             issues.extend(q_issues)
             for dim, score in q_scores.items():
                 dimension_scores[dim].append(score)
+
+            # Per-question composite score (weighted average of the
+            # five dimensions for THIS question only) for the capture.
+            q_composite = sum(
+                self.DIMENSION_WEIGHTS[d] * q_scores.get(d, 0.0)
+                for d in self.DIMENSION_WEIGHTS
+            )
+
+            # Distractor pairwise max jaccard for the dynamic signal
+            # (re-derived here to avoid threading it out of
+            # _score_question).
+            distractor_pairwise_max = 0.0
+            distractor_count = 0
+            if q.get("question_type") == "multiple_choice":
+                choices = q.get("choices", [])
+                distractors = [
+                    _strip_html(c.get("text", ""))
+                    for c in choices
+                    if not c.get("is_correct")
+                ]
+                distractor_count = len(distractors)
+                for i in range(distractor_count):
+                    t1 = _content_words(distractors[i])
+                    for j in range(i + 1, distractor_count):
+                        t2 = _content_words(distractors[j])
+                        sim = _jaccard(t1, t2)
+                        if sim > distractor_pairwise_max:
+                            distractor_pairwise_max = sim
+
+            issue_codes = sorted({i.code for i in q_issues if i.code})
+            q_passed = q_composite >= min_score
+            _emit_question_quality_decision(
+                capture,
+                question_id=str(q_id),
+                stem_grounding=float(q_scores.get("stem_grounding", 0.0)),
+                distractor_pairwise_max=distractor_pairwise_max,
+                distractor_count=distractor_count,
+                score=float(q_composite),
+                passed=q_passed,
+                issue_codes=issue_codes,
+            )
 
         # Compute weighted average across all questions and dimensions
         overall = 0.0

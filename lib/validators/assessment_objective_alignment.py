@@ -35,6 +35,56 @@ from MCP.hardening.validation_gates import GateIssue, GateResult
 logger = logging.getLogger(__name__)
 
 
+def _emit_alignment_decision(
+    capture: Any,
+    *,
+    question_id: str,
+    declared_objective_ids: List[str],
+    resolved_in_chunk: bool,
+    n_chunks_searched: int,
+    passed: bool,
+    code: Optional[str],
+) -> None:
+    """Emit one ``assessment_objective_alignment_check`` decision per question.
+
+    Per H3 W5 contract: per-question cardinality. Dynamic signals:
+    question_id, declared_objective_id(s), resolved_in_chunk,
+    n_chunks_searched.
+    """
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    rationale = (
+        f"AssessmentObjectiveAlignmentValidator audited question "
+        f"{question_id!r}: declared_objective_ids={declared_objective_ids!r}, "
+        f"resolved_in_chunk={resolved_in_chunk}, "
+        f"n_chunks_searched={n_chunks_searched}, "
+        f"failure_code={code or 'none'}."
+    )
+    metrics: Dict[str, Any] = {
+        "question_id": question_id,
+        "declared_objective_ids": list(declared_objective_ids),
+        "resolved_in_chunk": bool(resolved_in_chunk),
+        "n_chunks_searched": int(n_chunks_searched),
+        "passed": bool(passed),
+        "failure_code": code,
+    }
+    try:
+        capture.log_decision(
+            decision_type="assessment_objective_alignment_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(metrics),
+            metrics=metrics,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on "
+            "assessment_objective_alignment_check: %s",
+            exc,
+        )
+
+
 class AssessmentObjectiveAlignmentValidator:
     """Validator: every assessment.questions[].objective_id is chunk-resolvable."""
 
@@ -53,6 +103,7 @@ class AssessmentObjectiveAlignmentValidator:
         """
         gate_id = inputs.get("gate_id", "assessment_objective_alignment")
         issues: List[GateIssue] = []
+        capture = inputs.get("decision_capture")
 
         assessments_raw = inputs.get("assessments_path") or inputs.get("assessment_path")
         chunks_raw = inputs.get("chunks_path")
@@ -166,8 +217,14 @@ class AssessmentObjectiveAlignmentValidator:
 
         # Core alignment check: every question.objective_id (and optional
         # question.objective_ids list) must appear in normalized_refs.
+        # Wave H3-W5 wiring: emit one
+        # ``assessment_objective_alignment_check`` decision per
+        # question audited so post-hoc replay can reconstruct which
+        # specific objective_id resolved (or didn't) in chunk refs.
         mismatches: List[Dict[str, Any]] = []
+        n_chunks_searched = len(normalized_refs)
         for idx, q in enumerate(questions):
+            q_id = str(q.get("question_id") or q.get("id") or f"idx:{idx}")
             q_objectives = self._question_objectives(q)
             if not q_objectives:
                 # Missing objective_id on a question → critical: the
@@ -181,14 +238,35 @@ class AssessmentObjectiveAlignmentValidator:
                     ),
                     location=str(assessments_path),
                 ))
+                _emit_alignment_decision(
+                    capture,
+                    question_id=q_id,
+                    declared_objective_ids=[],
+                    resolved_in_chunk=False,
+                    n_chunks_searched=n_chunks_searched,
+                    passed=False,
+                    code="QUESTION_MISSING_OBJECTIVE",
+                )
                 continue
+            q_unresolved: List[str] = []
             for obj_id in q_objectives:
                 if obj_id.lower() not in normalized_refs:
+                    q_unresolved.append(obj_id)
                     mismatches.append({
                         "question_index": idx,
                         "question_id": q.get("question_id") or q.get("id") or "?",
                         "objective_id": obj_id,
                     })
+            q_resolved = not q_unresolved
+            _emit_alignment_decision(
+                capture,
+                question_id=q_id,
+                declared_objective_ids=list(q_objectives),
+                resolved_in_chunk=q_resolved,
+                n_chunks_searched=n_chunks_searched,
+                passed=q_resolved,
+                code=None if q_resolved else "PHANTOM_OBJECTIVE_REFS",
+            )
 
         if mismatches:
             # Roll up into a single critical issue with up to 10 samples
