@@ -480,7 +480,11 @@ class TaskExecutor:
         # Validation gate manager
         self.gate_manager = None
         if HARDENING_VALIDATION_GATES:
-            self.gate_manager = ValidationGateManager()
+            # H3 Worker S0.5: thread the executor's capture into the gate
+            # manager so the direct-invocation `run_gate` path (test
+            # harness / future MCP-exposed validate tools) also injects
+            # `decision_capture` / `capture` keys for emitting validators.
+            self.gate_manager = ValidationGateManager(capture=self.capture)
             logger.debug(f"[{self.run_id}] Validation gate manager initialized")
 
         # Wave 23 Sub-task A: per-gate input router. Pre-Wave-23, gates
@@ -1440,6 +1444,16 @@ class TaskExecutor:
                 # look for 'artifacts' still find it.
                 merged_inputs: Dict[str, Any] = dict(fallback_inputs)
                 merged_inputs.update(inputs)
+
+                # H3 Worker S0.5: inject the executor's capture so any
+                # validator that reads ``inputs.get("decision_capture")``
+                # (Pattern A) or ``inputs.get("capture")`` (Pattern B —
+                # family_completeness, eval_gating) actually receives a
+                # live capture in production. ``setdefault`` so an
+                # explicit per-builder override still wins.
+                if self.capture is not None:
+                    merged_inputs.setdefault("decision_capture", self.capture)
+                    merged_inputs.setdefault("capture", self.capture)
 
                 # Run the gate via the manager (handles waivers + errors)
                 result = self.gate_manager.run_gate(gate, merged_inputs)
