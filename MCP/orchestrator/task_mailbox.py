@@ -41,6 +41,7 @@ Example usage (watcher side)
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -272,6 +273,30 @@ class TaskMailbox:
                 f"could not read completion {task_id}: {exc}"
             ) from exc
 
+    def _check_completion_once(
+        self,
+        task_id: str,
+        target: Path,
+        deadline: float,
+        first_check: bool,
+        timeout_seconds: float,
+    ) -> Optional[Dict[str, Any]]:
+        """Single non-blocking poll step shared by sync + async waiters.
+
+        Returns the completion envelope if the target file is present,
+        ``None`` to signal "not yet — sleep and retry". Raises
+        ``TimeoutError`` when the deadline has elapsed past the initial
+        check (matching the original sync semantics: always probe at
+        least once before timing out).
+        """
+        if target.exists():
+            return self.read_completion(task_id)
+        if not first_check and time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"timed out after {timeout_seconds}s waiting for {task_id!r}"
+            )
+        return None
+
     def wait_for_completion(
         self,
         task_id: str,
@@ -281,20 +306,54 @@ class TaskMailbox:
         """Block until ``completed/{task_id}.json`` exists, then return its contents.
 
         Raises ``TimeoutError`` if ``timeout_seconds`` elapses first.
+
+        Synchronous variant — use ``await_completion_async`` from
+        async dispatcher / orchestrator code paths so the asyncio
+        default thread pool is not saturated by ``run_in_executor``
+        wrappers (Wave W5).
         """
         self._validate_task_id(task_id)
         target = self.completed_dir / f"{task_id}.json"
         deadline = time.monotonic() + max(0.0, float(timeout_seconds))
         first_check = True
         while True:
-            if target.exists():
-                return self.read_completion(task_id)
-            if not first_check and time.monotonic() >= deadline:
-                raise TimeoutError(
-                    f"timed out after {timeout_seconds}s waiting for {task_id!r}"
-                )
+            envelope = self._check_completion_once(
+                task_id, target, deadline, first_check, timeout_seconds
+            )
+            if envelope is not None:
+                return envelope
             first_check = False
             time.sleep(poll_interval)
+
+    async def await_completion_async(
+        self,
+        task_id: str,
+        timeout_seconds: float = 600.0,
+        poll_interval: float = 0.25,
+    ) -> Dict[str, Any]:
+        """Async sibling of ``wait_for_completion``.
+
+        Mirrors the sync method's signature and ``TimeoutError`` /
+        ``MailboxError`` semantics, but yields control via
+        ``asyncio.sleep`` between polls instead of blocking a thread
+        pool slot. Wave W5: the dispatcher's mailbox bridge calls this
+        directly under 10-way fanout instead of wrapping the sync
+        method in ``loop.run_in_executor``, which would otherwise
+        saturate the asyncio default executor (default 16 slots vs.
+        10 concurrent waiters + unrelated I/O).
+        """
+        self._validate_task_id(task_id)
+        target = self.completed_dir / f"{task_id}.json"
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        first_check = True
+        while True:
+            envelope = self._check_completion_once(
+                task_id, target, deadline, first_check, timeout_seconds
+            )
+            if envelope is not None:
+                return envelope
+            first_check = False
+            await asyncio.sleep(poll_interval)
 
     def cleanup(self, task_id: str) -> None:
         """Remove any pending/in_progress/completed files for ``task_id``.

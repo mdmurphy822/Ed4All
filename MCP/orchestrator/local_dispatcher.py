@@ -408,15 +408,14 @@ class LocalDispatcher:
             task_id, agent_type, task_name, timeout,
         )
 
-        loop = asyncio.get_event_loop()
+        # Wave W5: call the async-native mailbox waiter directly so
+        # 10-way fanout doesn't saturate the asyncio default thread
+        # pool via ``run_in_executor`` wrappers.
         try:
-            envelope = await loop.run_in_executor(
-                None,
-                lambda: mailbox.wait_for_completion(
-                    task_id,
-                    timeout_seconds=timeout,
-                    poll_interval=self.mailbox_poll_interval,
-                ),
+            envelope = await mailbox.await_completion_async(
+                task_id,
+                timeout_seconds=timeout,
+                poll_interval=self.mailbox_poll_interval,
             )
         except TimeoutError:
             logger.error(
@@ -602,17 +601,15 @@ class LocalDispatcher:
             self.mailbox_timeout_seconds,
         )
 
-        # Run the blocking wait in a thread so we don't stall the event
-        # loop. wait_for_completion uses short sleeps internally.
-        loop = asyncio.get_event_loop()
+        # Wave W5: call the async-native mailbox waiter directly. The
+        # legacy ``run_in_executor`` wrapper held a thread-pool slot
+        # for the entire wait, which under 10-way phase fanout
+        # saturated the asyncio default executor (default 16 slots).
         try:
-            envelope = await loop.run_in_executor(
-                None,
-                lambda: mailbox.wait_for_completion(
-                    task_id,
-                    timeout_seconds=self.mailbox_timeout_seconds,
-                    poll_interval=self.mailbox_poll_interval,
-                ),
+            envelope = await mailbox.await_completion_async(
+                task_id,
+                timeout_seconds=self.mailbox_timeout_seconds,
+                poll_interval=self.mailbox_poll_interval,
             )
         except TimeoutError:
             logger.error(
