@@ -2174,6 +2174,75 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
             "error": f"failed to parse {blocks_path}: {exc}",
         })
 
+    # M3 fix: instrument the silent-drop sites the docstring above flags.
+    # When a JSON entry's CURIE / content_type_label / objective_ref /
+    # source_id values are malformed, we previously dropped them silently
+    # via list / tuple coercion. The post_rewrite_validation phase now
+    # records each drop in ``metadata_drops`` and emits a
+    # ``metadata_field_drop`` decision event so an operator sees the
+    # silent-degradation class without re-running the rewrite tier.
+    metadata_drops: List[Dict[str, Any]] = []
+    _capture_meta = None
+    try:
+        from lib.decision_capture import DecisionCapture as _DC_meta
+        _capture_meta = _DC_meta(
+            course_code=project_id or "post_rewrite_validation",
+            phase="post_rewrite_validation",
+            tool="courseforge",
+            streaming=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        logger.warning(
+            "post_rewrite_validation: DecisionCapture init for "
+            "metadata_field_drop failed (%s); drops will be tracked "
+            "but not persisted.",
+            exc,
+        )
+        _capture_meta = None
+
+    _CURIE_RE = __import__("re").compile(r"^[A-Za-z][A-Za-z0-9_-]*:[A-Za-z0-9_./#:-]+$")
+    _LO_REF_RE = __import__("re").compile(r"^[A-Za-z]{2,}-\d{2,}$")
+    _CONTENT_TYPE_ENUM = {
+        "definition", "example", "procedure", "principle",
+        "fact", "concept", "rule", "narrative",
+    }
+
+    def _record_metadata_drop(
+        field_name: str, reason: str, **fields: Any,
+    ) -> None:
+        """Append a structured drop record + emit a decision event."""
+        rec = {"field_name": field_name, "reason": reason, **fields}
+        metadata_drops.append(rec)
+        if _capture_meta is None:
+            return
+        try:
+            _capture_meta.log_decision(
+                decision_type="metadata_field_drop",
+                decision=f"dropped {field_name} reason={reason}",
+                rationale=(
+                    f"post_rewrite_validation _entry_to_block dropped a "
+                    f"malformed {field_name} on a rewrite-tier block. "
+                    f"reason={reason}; context={fields!r}. Surfaced via "
+                    f"metadata_drops_count in phase output so operators "
+                    f"see the silent-degradation class instead of the "
+                    f"downstream gate firing on the stripped block."
+                ),
+                ml_features={
+                    "field_name": field_name,
+                    "reason": reason,
+                    **{
+                        k: v for k, v in fields.items()
+                        if isinstance(v, (str, int, float, bool))
+                    },
+                },
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "post_rewrite_validation: log_decision("
+                "metadata_field_drop) failed (%s); drop still recorded.",
+                exc,
+            )
+
     def _entry_to_block(entry: dict) -> Optional["Block"]:  # type: ignore[name-defined]
         """Project a JSON entry onto a frozen Block, dropping unknown keys.
 
@@ -2193,16 +2262,72 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
             "source_references", "content_hash",
             "validation_attempts", "escalation_marker",
         }
+        block_id_for_log = (entry or {}).get("block_id") or "<unknown>"
         kwargs_clean: dict = {}
         for k, v in (entry or {}).items():
             if k not in accepted:
                 continue
+            # M3: validate + filter the four silent-drop classes the
+            # docstring at line ~2091 flags.
+            if k == "objective_ids":
+                if isinstance(v, list):
+                    cleaned: List[str] = []
+                    for ref in v:
+                        if isinstance(ref, str) and _LO_REF_RE.match(ref):
+                            cleaned.append(ref)
+                        else:
+                            _record_metadata_drop(
+                                "objective_ref",
+                                "malformed_lo_ref",
+                                block_id=str(block_id_for_log),
+                                value=str(ref)[:64],
+                            )
+                    v = tuple(cleaned)
+            elif k == "source_ids":
+                if isinstance(v, list):
+                    cleaned_src: List[str] = []
+                    for sid in v:
+                        if isinstance(sid, str) and sid.strip():
+                            cleaned_src.append(sid)
+                        else:
+                            _record_metadata_drop(
+                                "source_id",
+                                "empty_or_non_string",
+                                block_id=str(block_id_for_log),
+                                value=str(sid)[:64],
+                            )
+                    v = tuple(cleaned_src)
+            elif k == "content_type_label":
+                if v is not None and (
+                    not isinstance(v, str) or v not in _CONTENT_TYPE_ENUM
+                ):
+                    _record_metadata_drop(
+                        "content_type",
+                        "out_of_enum",
+                        block_id=str(block_id_for_log),
+                        value=str(v)[:64],
+                    )
+                    continue  # drop the field; Block ctor accepts None
+            elif k == "key_terms":
+                if isinstance(v, list):
+                    cleaned_kt: List[str] = []
+                    for term in v:
+                        if isinstance(term, str) and ":" in term and not _CURIE_RE.match(term):
+                            # Looks-like-CURIE that fails CURIE shape.
+                            _record_metadata_drop(
+                                "curie",
+                                "malformed_curie",
+                                block_id=str(block_id_for_log),
+                                value=str(term)[:64],
+                            )
+                            continue
+                        cleaned_kt.append(term)
+                    v = tuple(cleaned_kt)
             # Tuple-typed fields take tuple input; lists from JSON are
             # acceptable to dataclasses.replace via Block.__init__ but
             # the frozen dataclass coerces nothing — pass tuples.
             if k in {
-                "key_terms", "objective_ids", "bloom_levels",
-                "bloom_verbs", "source_ids", "source_references",
+                "bloom_levels", "bloom_verbs", "source_references",
             }:
                 if isinstance(v, list):
                     v = tuple(v) if k != "source_references" else tuple(
@@ -2390,6 +2515,11 @@ async def _run_post_rewrite_validation(**kwargs) -> str:
         "gate_results": gate_results,
         "block_count": len(blocks),
         "failed_block_count": len(failed_block_ids),
+        # M3 fix: surface silent-drop counts from _entry_to_block. The
+        # first 10 records are inlined for postmortem readability; the
+        # count is authoritative.
+        "metadata_drops_count": len(metadata_drops),
+        "metadata_drops": metadata_drops[:10],
     })
 
 
@@ -4345,8 +4475,17 @@ def _build_tool_registry() -> dict:
                 encoding="utf-8",
             )
 
-            return json.dumps({
-                "success": True,
+            # C6 fix: silent-degradation closure. When `_extract_textbook_structure`
+            # raises on N of M files (e.g. malformed HTML, encoding error,
+            # SemanticStructureExtractor crash), the surviving (M-N) files
+            # would still emit a graph that downstream gates (e.g.
+            # ``min_edge_count``) could clear. The phase now fails closed
+            # when ``extraction_errors`` is non-empty so an operator sees
+            # the partial-extraction class before it propagates.
+            extraction_errors_count = len(extraction_errors)
+            phase_success = extraction_errors_count == 0
+            envelope: Dict[str, Any] = {
+                "success": phase_success,
                 "project_id": project_id,
                 "project_path": str(project_path),
                 "textbook_structure_path": str(structure_path),
@@ -4356,8 +4495,25 @@ def _build_tool_registry() -> dict:
                     not duration_explicit and merged_chapters
                 ),
                 "source_file_count": len(html_files),
-                "extraction_error_count": len(extraction_errors),
-            })
+                "extraction_error_count": extraction_errors_count,
+                "extraction_errors_count": extraction_errors_count,
+            }
+            if not phase_success:
+                envelope["error"] = (
+                    f"objective_extraction: {extraction_errors_count} of "
+                    f"{len(html_files)} HTML files failed structure "
+                    f"extraction; downstream phases would consume a "
+                    f"partial graph. First {min(3, extraction_errors_count)} "
+                    f"errors:"
+                )
+                envelope["extraction_error_summaries"] = [
+                    {
+                        "source_file": err.get("source_file", ""),
+                        "error": err.get("error", ""),
+                    }
+                    for err in extraction_errors[:3]
+                ]
+            return json.dumps(envelope)
 
         registry["extract_textbook_structure"] = _extract_textbook_structure
 
@@ -6803,6 +6959,70 @@ def _build_tool_registry() -> dict:
         chunks: List[Dict[str, Any]] = []
         chunk_counter = 1
 
+        # M2 fix: track inline-projection drops so the phase output
+        # carries a ``projection_drops_count`` and a structured
+        # ``concept_projection_drop`` decision event fires per skip.
+        # Pre-fix the per-section / per-sidecar drops were logger-only
+        # and operators could not tell from the workflow report whether
+        # extraction silently dropped concepts before
+        # ``build_pedagogy_graph`` was even called.
+        projection_drops: List[Dict[str, Any]] = []
+        _capture_concept = None
+        try:
+            from lib.decision_capture import DecisionCapture as _DC_concept
+            _capture_concept = _DC_concept(
+                course_code=course_name.upper() or "concept_extraction",
+                phase="content-analysis",
+                tool="trainforge",
+                streaming=True,
+            )
+        except Exception as exc:  # noqa: BLE001 — capture is best-effort
+            logger.warning(
+                "concept_extraction: DecisionCapture init failed (%s); "
+                "projection drops will be tracked but not persisted.",
+                exc,
+            )
+            _capture_concept = None
+
+        def _record_projection_drop(reason: str, **fields: Any) -> None:
+            """Append a structured drop record + emit a decision event.
+
+            ``reason`` is a stable enum-ish slug (``malformed_sidecar``,
+            ``non_list_sections``, ``non_dict_section``,
+            ``missing_section_id``, ``malformed_upstream_chunk_jsonl``).
+            Extra context fields are stamped onto both the drop record
+            and the decision event's ``ml_features`` so a postmortem
+            reader can stratify by reason without re-running.
+            """
+            drop_record = {"reason": reason, **fields}
+            projection_drops.append(drop_record)
+            if _capture_concept is None:
+                return
+            try:
+                _capture_concept.log_decision(
+                    decision_type="concept_projection_drop",
+                    decision=f"dropped_section reason={reason}",
+                    rationale=(
+                        f"concept_extraction inline projection dropped a "
+                        f"section before build_pedagogy_graph could "
+                        f"consume it. reason={reason}; context={fields!r}. "
+                        f"Surfaced via projection_drops_count in phase "
+                        f"output so downstream operators see the silent-"
+                        f"degradation class instead of relying on the "
+                        f"min_edge_count gate to catch a thin graph."
+                    ),
+                    ml_features={"reason": reason, **{
+                        k: v for k, v in fields.items()
+                        if isinstance(v, (str, int, float, bool))
+                    }},
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                logger.warning(
+                    "concept_extraction: log_decision(concept_projection_drop) "
+                    "failed (%s); drop still recorded in projection_drops.",
+                    exc,
+                )
+
         # Phase 7b ST 14.5: consume upstream DART chunkset when present.
         # The ``chunking`` phase (Phase 7b ST 11) emits
         # ``LibV2/courses/<slug>/dart_chunks/chunks.jsonl`` via the
@@ -6819,16 +7039,21 @@ def _build_tool_registry() -> dict:
             if cand_chunks_path.exists() and cand_chunks_path.is_file():
                 try:
                     with cand_chunks_path.open("r", encoding="utf-8") as fh:
-                        for line in fh:
+                        for _line_no, line in enumerate(fh, start=1):
                             line = line.strip()
                             if not line:
                                 continue
                             try:
                                 chunks.append(json.loads(line))
-                            except ValueError:
-                                # Skip malformed JSONL lines silently —
-                                # the gate validates the chunkset
-                                # manifest, not per-line shape.
+                            except ValueError as _ve:
+                                # M2 fix: surface the drop so the
+                                # silent-skip is visible to operators.
+                                _record_projection_drop(
+                                    "malformed_upstream_chunk_jsonl",
+                                    source=str(cand_chunks_path),
+                                    line=_line_no,
+                                    parse_error=str(_ve),
+                                )
                                 continue
                     upstream_chunks_loaded = True
                 except OSError as exc:
@@ -6878,7 +7103,12 @@ def _build_tool_registry() -> dict:
             for sidecar in sorted(staging_dir.rglob("*_synthesized.json")):
                 try:
                     doc = json.loads(sidecar.read_text(encoding="utf-8"))
-                except (OSError, ValueError):
+                except (OSError, ValueError) as _e:
+                    _record_projection_drop(
+                        "malformed_sidecar",
+                        source=str(sidecar),
+                        parse_error=str(_e),
+                    )
                     continue
                 slug = (
                     sidecar.stem.replace("_synthesized", "")
@@ -6887,12 +7117,28 @@ def _build_tool_registry() -> dict:
                 )
                 sections = doc.get("sections") or []
                 if not isinstance(sections, list):
+                    _record_projection_drop(
+                        "non_list_sections",
+                        source=str(sidecar),
+                        sections_type=type(sections).__name__,
+                    )
                     continue
-                for section in sections:
+                for _sec_idx, section in enumerate(sections):
                     if not isinstance(section, dict):
+                        _record_projection_drop(
+                            "non_dict_section",
+                            source=str(sidecar),
+                            section_index=_sec_idx,
+                            section_type=type(section).__name__,
+                        )
                         continue
                     section_id = str(section.get("section_id") or "").strip()
                     if not section_id:
+                        _record_projection_drop(
+                            "missing_section_id",
+                            source=str(sidecar),
+                            section_index=_sec_idx,
+                        )
                         continue
                     title = str(section.get("section_title") or "").strip()
                     section_type = (
@@ -7043,6 +7289,12 @@ def _build_tool_registry() -> dict:
             "chunk_count": len(chunks),
             "node_count": len(graph.get("nodes") or []),
             "edge_count": len(graph.get("edges") or []),
+            # M2 fix: surface inline-projection drop counts so workflow
+            # consumers see the silent-degradation signal without parsing
+            # logs. ``projection_drops`` carries the first 10 drop records
+            # for postmortem readability; the count is authoritative.
+            "projection_drops_count": len(projection_drops),
+            "projection_drops": projection_drops[:10],
         })
 
     registry["run_concept_extraction"] = _run_concept_extraction
