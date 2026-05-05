@@ -445,6 +445,441 @@ def _build_libv2_manifest(
     return inputs, []
 
 
+# ---------------------------------------------------------------------- #
+# W1: Phase 3 / 3.5 / 4 Block-input + statistical-tier builders
+# ---------------------------------------------------------------------- #
+
+
+def _accepted_block_fields() -> frozenset:
+    """Mirror the accepted-fields set in
+    ``MCP/tools/pipeline_tools.py::_run_post_rewrite_validation``.
+
+    Single source of truth for the hydration projection — every Block
+    field the JSONL emit can carry. Unknown keys are silently dropped.
+    """
+    return frozenset({
+        "block_id", "block_type", "page_id", "sequence", "content",
+        "template_type", "key_terms", "objective_ids",
+        "bloom_level", "bloom_verb", "bloom_range",
+        "bloom_levels", "bloom_verbs", "cognitive_domain",
+        "teaching_role", "content_type_label", "purpose",
+        "component", "source_ids", "source_primary",
+        "source_references", "content_hash",
+        "validation_attempts", "escalation_marker",
+    })
+
+
+def _hydrate_blocks_from_path(blocks_path: Path) -> List[Any]:
+    """Deserialise a ``blocks_*_path`` JSONL/JSON file into a List[Block].
+
+    Mirrors ``_run_post_rewrite_validation::_entry_to_block`` so the
+    workflow runner and the gate-input router agree on the projection
+    rules. Malformed entries are dropped (logged at WARNING). Missing
+    file → empty list.
+    """
+    try:
+        from Courseforge.scripts.blocks import Block  # type: ignore[import-not-found]
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Failed to import Courseforge.scripts.blocks.Block "
+            "for hydration: %s",
+            exc,
+        )
+        return []
+
+    if blocks_path is None or not blocks_path.exists():
+        return []
+
+    try:
+        raw_text = blocks_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Failed to read %s: %s", blocks_path, exc)
+        return []
+
+    raw_entries: List[Any] = []
+    try:
+        if blocks_path.suffix == ".jsonl":
+            import json as _json
+            for line in raw_text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                raw_entries.append(_json.loads(line))
+        else:
+            import json as _json
+            parsed = _json.loads(raw_text)
+            if isinstance(parsed, list):
+                raw_entries = parsed
+            elif isinstance(parsed, dict):
+                inner = parsed.get("blocks")
+                if isinstance(inner, list):
+                    raw_entries = inner
+    except (ValueError, OSError) as exc:
+        logger.warning("Failed to parse %s: %s", blocks_path, exc)
+        return []
+
+    accepted = _accepted_block_fields()
+    tuple_fields = {
+        "key_terms", "objective_ids", "bloom_levels",
+        "bloom_verbs", "source_ids", "source_references",
+    }
+    blocks: List[Any] = []
+    for entry in raw_entries:
+        if not isinstance(entry, dict):
+            continue
+        cleaned: Dict[str, Any] = {}
+        for k, v in entry.items():
+            if k not in accepted:
+                continue
+            if k in tuple_fields and isinstance(v, list):
+                if k == "source_references":
+                    v = tuple(
+                        dict(r) if isinstance(r, dict) else r for r in v
+                    )
+                else:
+                    v = tuple(v)
+            cleaned[k] = v
+        if "block_id" not in cleaned or "block_type" not in cleaned:
+            continue
+        cleaned.setdefault("page_id", cleaned.get("block_id", ""))
+        cleaned.setdefault("sequence", 0)
+        cleaned.setdefault("content", "")
+        try:
+            blocks.append(Block(**cleaned))
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "Skipping malformed block entry block_id=%r: %s",
+                entry.get("block_id"),
+                exc,
+            )
+    return blocks
+
+
+def _resolve_blocks_path_for_gate(
+    gate_id: str,
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> Optional[Path]:
+    """Pick the canonical blocks-source for a given gate_id.
+
+    ``outline_*`` gates read ``content_generation_outline.blocks_outline_path``
+    (Phase 3 inter-tier seam). ``rewrite_*`` gates read
+    ``content_generation_rewrite.blocks_final_path`` (Phase 3.5 post-
+    rewrite seam). Both fall back to explicit workflow_params overrides
+    when the upstream phase output isn't present (e.g. Phase 5 stage
+    subcommand re-runs).
+    """
+    gid = gate_id or ""
+    is_rewrite = gid.startswith("rewrite_")
+    if is_rewrite:
+        cgr = phase_outputs.get("content_generation_rewrite") or {}
+        candidate = (
+            cgr.get("blocks_final_path")
+            or workflow_params.get("blocks_final_path")
+        )
+    else:
+        cgo = phase_outputs.get("content_generation_outline") or {}
+        candidate = (
+            cgo.get("blocks_outline_path")
+            or workflow_params.get("blocks_outline_path")
+        )
+    if not candidate:
+        return None
+    try:
+        return Path(candidate)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_objectives_path(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> Optional[str]:
+    """Find the canonical synthesized_objectives.json (course_planning emit)."""
+    op = workflow_params.get("objectives_path")
+    if isinstance(op, str) and op:
+        return op
+    located = _locate(
+        phase_outputs,
+        "objectives_path",
+        "synthesized_objectives_path",
+    )
+    if located:
+        return located
+    # Derive from objective_extraction.project_path -> Courseforge exports.
+    oe = phase_outputs.get("objective_extraction") or {}
+    project_path = oe.get("project_path")
+    if isinstance(project_path, str) and project_path:
+        derived = (
+            Path(project_path)
+            / "01_learning_objectives"
+            / "synthesized_objectives.json"
+        )
+        if derived.exists():
+            return str(derived)
+    return None
+
+
+def _resolve_staging_manifest_path(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> Optional[str]:
+    """Locate the DART staging_manifest.json BlockSourceRefValidator wants."""
+    explicit = _locate(phase_outputs, "manifest_path")
+    if explicit:
+        # Prefer staging-side manifest_path; libv2_archival also emits
+        # manifest_path but for the course manifest. Distinguish by
+        # filename when possible.
+        if explicit.endswith("staging_manifest.json"):
+            return explicit
+    staging = phase_outputs.get("staging") or {}
+    mp = staging.get("manifest_path")
+    if isinstance(mp, str) and mp:
+        return mp
+    staging_dir = (
+        staging.get("staging_dir")
+        or _locate(phase_outputs, "staging_dir")
+        or workflow_params.get("staging_dir")
+    )
+    if isinstance(staging_dir, str) and staging_dir:
+        derived = Path(staging_dir) / "staging_manifest.json"
+        if derived.exists():
+            return str(derived)
+        return str(derived)  # validator handles missing-file gracefully
+    return None
+
+
+def _build_block_input(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+    *,
+    gate_id: str = "",
+) -> BuilderResult:
+    """Group A — Block-input builder for the four ``Block*Validator``s.
+
+    Surfaces ``{blocks, objectives_path?, manifest_path?, valid_objective_ids?,
+    valid_source_ids?}`` so all four ``Courseforge.router.inter_tier_gates``
+    Block validators see the inputs their ``validate()`` paths consult.
+
+    Distinguishes ``outline_*`` vs ``rewrite_*`` gates via gate_id
+    prefix and routes blocks_path resolution accordingly. The Phase
+    ``inter_tier_validation`` / ``post_rewrite_validation`` helpers
+    pass an explicit ``gate_id`` per validator dispatch, but the
+    register layer doesn't carry the gate_id directly — we read it
+    out of ``inputs.gate_id`` after the executor merges
+    ``gate.config`` (see ``executor.py:1442``). Until then we infer
+    from phase_outputs presence: rewrite path wins when both exist.
+    """
+    blocks_path = _resolve_blocks_path_for_gate(
+        gate_id, phase_outputs, workflow_params,
+    )
+    if blocks_path is None:
+        # Fall back: prefer rewrite-tier emit when present (post-rewrite
+        # phase has both paths in phase_outputs), else outline.
+        cgr = phase_outputs.get("content_generation_rewrite") or {}
+        cgo = phase_outputs.get("content_generation_outline") or {}
+        candidate = (
+            cgr.get("blocks_final_path")
+            or cgo.get("blocks_outline_path")
+            or workflow_params.get("blocks_final_path")
+            or workflow_params.get("blocks_outline_path")
+        )
+        if candidate:
+            try:
+                blocks_path = Path(candidate)
+            except (TypeError, ValueError):
+                blocks_path = None
+    if blocks_path is None:
+        return {}, ["blocks_outline_path|blocks_final_path"]
+    if not blocks_path.exists():
+        return {}, [f"blocks_path:{blocks_path}"]
+
+    blocks = _hydrate_blocks_from_path(blocks_path)
+    if not blocks:
+        return {}, ["blocks (hydration produced 0 entries)"]
+
+    inputs: Dict[str, Any] = {"blocks": blocks}
+
+    objectives_path = _resolve_objectives_path(phase_outputs, workflow_params)
+    if objectives_path:
+        inputs["objectives_path"] = objectives_path
+
+    seeded_objectives = workflow_params.get("valid_objective_ids")
+    if seeded_objectives is not None:
+        inputs["valid_objective_ids"] = seeded_objectives
+
+    manifest_path = _resolve_staging_manifest_path(phase_outputs, workflow_params)
+    if manifest_path:
+        inputs["manifest_path"] = manifest_path
+        # BlockSourceRefValidator looks at ``staging_dir`` only via
+        # ``manifest_path`` resolution; surface staging_dir too for
+        # downstream callers / debugging parity.
+        staging = phase_outputs.get("staging") or {}
+        sd = staging.get("staging_dir") or _locate(phase_outputs, "staging_dir")
+        if sd:
+            inputs["staging_dir"] = sd
+
+    seeded_sources = workflow_params.get("valid_source_ids")
+    if seeded_sources is not None:
+        inputs["valid_source_ids"] = seeded_sources
+
+    return inputs, []
+
+
+def _build_block_input_outline(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Outline-tier registration shim — pins gate_id prefix to outline."""
+    return _build_block_input(
+        phase_outputs, workflow_params, gate_id="outline_",
+    )
+
+
+def _build_block_input_rewrite(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Rewrite-tier registration shim — pins gate_id prefix to rewrite."""
+    return _build_block_input(
+        phase_outputs, workflow_params, gate_id="rewrite_",
+    )
+
+
+def _build_rewrite_block_input(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Group B — Rewrite-emit shape / sentence-grounding builder.
+
+    Adds ``source_chunks`` (a Dict[sourceId, chunk_text] mapping) on
+    top of the Group A surface so ``RewriteSourceGroundingValidator``
+    can compute per-sentence cosine grounding. ``RewriteHtmlShapeValidator``
+    only consumes ``blocks`` and ignores the extra keys.
+
+    The source_chunks mapping is rebuilt from the staging manifest +
+    sidecar JSON files when present; when the staging surface is
+    unavailable the validator's no-grounding-source path emits a
+    warning per block (passed=True), so the absence is non-fatal.
+    """
+    inputs, missing = _build_block_input_rewrite(phase_outputs, workflow_params)
+    if missing:
+        return inputs, missing
+
+    # Best-effort source_chunks rebuild from sidecar files alongside
+    # the staging manifest. The sentence-grounding validator handles
+    # an empty mapping gracefully (warning, passed=True per block).
+    chunks_lookup: Dict[str, str] = {}
+    manifest_path_str = inputs.get("manifest_path")
+    if isinstance(manifest_path_str, str) and manifest_path_str:
+        try:
+            import json as _json
+            mp = Path(manifest_path_str)
+            if mp.exists():
+                manifest = _json.loads(mp.read_text(encoding="utf-8"))
+                files = manifest.get("files", []) or []
+                if isinstance(files, list):
+                    for entry in files:
+                        if not isinstance(entry, dict):
+                            continue
+                        sid = entry.get("source_id") or entry.get("sourceId")
+                        text = entry.get("text") or entry.get("plain_text")
+                        if isinstance(sid, str) and isinstance(text, str):
+                            chunks_lookup[sid] = text
+        except (OSError, ValueError, TypeError) as exc:
+            logger.debug(
+                "rewrite-block source_chunks rebuild from %s failed: %s",
+                manifest_path_str, exc,
+            )
+    if chunks_lookup:
+        inputs["source_chunks"] = chunks_lookup
+    return inputs, []
+
+
+def _build_block_only_input(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Group C — block-only input for ``CourseforgeOutlineShaclValidator``.
+
+    The SHACL validator's ``_coerce_block_payloads`` accepts either
+    ``inputs['blocks']`` (preferred) or ``inputs['blocks_path']``. We
+    surface ``blocks`` as Block dataclass instances; the validator
+    silently skips non-dict entries via the dict / str dispatch in
+    ``_extract_jsonld_blocks``, but Phase 4 PoC contract is
+    informational severity so a partial drop just yields a warning.
+    """
+    # Prefer rewrite-tier blocks (post_rewrite_validation::rewrite_shacl)
+    # when present, else outline-tier (inter_tier_validation::outline_shacl).
+    inputs, missing = _build_block_input(
+        phase_outputs, workflow_params, gate_id="rewrite_shacl",
+    )
+    if missing:
+        # Try outline path explicitly.
+        inputs, missing = _build_block_input(
+            phase_outputs, workflow_params, gate_id="outline_shacl",
+        )
+        if missing:
+            return {}, missing
+    # Strip non-essential keys; SHACL validator only reads "blocks" /
+    # "blocks_path".
+    blocks_only: Dict[str, Any] = {"blocks": inputs.get("blocks", [])}
+    return blocks_only, []
+
+
+def _build_block_statistical_input(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Group D — Phase-4 statistical-tier builder.
+
+    Surfaces ``{blocks, objectives_path}``. The executor merges
+    ``gate.config`` (and therefore ``gate.config.thresholds``) into
+    the inputs dict at ``executor.py:1442`` so the per-validator
+    threshold dial flows through unchanged. Each validator additionally
+    accepts ``objective_statements`` / ``concept_definitions`` /
+    ``paraphrase_fn`` / ``embedder`` overrides via ``inputs.*``; the
+    Phase 4 PoC contract degrades to ``passed=True`` warnings when
+    those auxiliaries aren't wired.
+    """
+    inputs, missing = _build_block_input(
+        phase_outputs, workflow_params, gate_id="rewrite_",
+    )
+    if missing:
+        inputs, missing = _build_block_input(
+            phase_outputs, workflow_params, gate_id="outline_",
+        )
+        if missing:
+            return {}, missing
+    # Statistical-tier validators consume only ``blocks`` +
+    # ``objectives_path`` + the threshold inputs the executor merges
+    # in via gate.config. Drop manifest/staging so the validator
+    # doesn't see unrelated keys.
+    pruned: Dict[str, Any] = {"blocks": inputs.get("blocks", [])}
+    if inputs.get("objectives_path"):
+        pruned["objectives_path"] = inputs["objectives_path"]
+    return pruned, []
+
+
+def _build_degraded_chunk_input(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Group E — fail-loud structured-skip for a YAML mis-pointing.
+
+    The legacy chunk-shape ``CurieAnchoringValidator`` /
+    ``ContentTypeValidator`` are wired at the Phase 3
+    ``content_generation_outline`` validation_gates by a YAML mistake
+    (the Block-shape variants live in
+    ``Courseforge.router.inter_tier_gates``). Emitting a non-empty
+    missing-list here surfaces the mismatch as a structured skip
+    (``GATE_SKIPPED_MISSING_INPUTS``) instead of letting the no-builder
+    fallthrough silently pass. W4 corrects the YAML; this builder is
+    safety against future drift.
+    """
+    return {}, ["wrong_validator_class"]
+
+
 def _build_assessment_objective_alignment(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
@@ -668,6 +1103,92 @@ def default_router() -> GateInputRouter:
     except ImportError:  # pragma: no cover
         # Keep router functional even when the validator import fails.
         logger.warning("content_grounding validator import failed")
+
+    # ------------------------------------------------------------------ #
+    # W1 — Phase 3 / 3.5 / 4 Courseforge two-pass validator wiring.
+    # Closes the no-builder fallthrough that stamped these gates
+    # passed=True via waiver_info["skipped"]="true". 13 validators
+    # split into five input-shape groups; one helper per group.
+    # ------------------------------------------------------------------ #
+
+    # Group A — four Block-input validators (rewrite_* gates pull
+    # blocks_final_path; outline-tier seam reuses the same builder via
+    # the outline_* shim).
+    r.register(
+        "Courseforge.router.inter_tier_gates.BlockCurieAnchoringValidator",
+        _build_block_input_rewrite,
+    )
+    r.register(
+        "Courseforge.router.inter_tier_gates.BlockContentTypeValidator",
+        _build_block_input_rewrite,
+    )
+    r.register(
+        "Courseforge.router.inter_tier_gates.BlockPageObjectivesValidator",
+        _build_block_input_rewrite,
+    )
+    r.register(
+        "Courseforge.router.inter_tier_gates.BlockSourceRefValidator",
+        _build_block_input_rewrite,
+    )
+
+    # Group B — Rewrite-emit shape + sentence-grounding gates. Reuse
+    # the rewrite-tier Block surface and additionally surface
+    # source_chunks from the staging manifest.
+    r.register(
+        "lib.validators.rewrite_html_shape.RewriteHtmlShapeValidator",
+        _build_block_input_rewrite,
+    )
+    r.register(
+        "lib.validators.rewrite_source_grounding.RewriteSourceGroundingValidator",
+        _build_rewrite_block_input,
+    )
+
+    # Group C — Block-only SHACL validator (one binding wired at both
+    # outline and rewrite seams in YAML; same builder routes both).
+    r.register(
+        "lib.validators.courseforge_outline_shacl.CourseforgeOutlineShaclValidator",
+        _build_block_only_input,
+    )
+
+    # Group D — Phase-4 statistical-tier validators (objective ↔
+    # assessment cosine; concept ↔ example cosine; objective paraphrase
+    # roundtrip cosine; BERT-ensemble Bloom disagreement). Each is
+    # wired symmetrically at outline + rewrite seams; gate.config
+    # thresholds flow through via the executor's :1442 merge.
+    r.register(
+        "lib.validators.objective_assessment_similarity.ObjectiveAssessmentSimilarityValidator",
+        _build_block_statistical_input,
+    )
+    r.register(
+        "lib.validators.concept_example_similarity.ConceptExampleSimilarityValidator",
+        _build_block_statistical_input,
+    )
+    r.register(
+        "lib.validators.objective_roundtrip_similarity.ObjectiveRoundtripSimilarityValidator",
+        _build_block_statistical_input,
+    )
+    r.register(
+        "lib.validators.bloom_classifier_disagreement.BloomClassifierDisagreementValidator",
+        _build_block_statistical_input,
+    )
+
+    # Group E — degraded fail-loud entries. The chunk-shape
+    # CurieAnchoringValidator / ContentTypeValidator are wired at the
+    # Phase 3 outline gates by a YAML misnomer (the Block-shape
+    # variants live under Courseforge.router.inter_tier_gates). W4
+    # corrects the YAML; until then these entries surface the mismatch
+    # as a structured GATE_SKIPPED_MISSING_INPUTS skip rather than a
+    # silent no-builder pass. After W4 the YAML stops pointing here,
+    # but the registrations stay as fail-loud safety against drift.
+    r.register(
+        "lib.validators.curie_anchoring.CurieAnchoringValidator",
+        _build_degraded_chunk_input,
+    )
+    r.register(
+        "lib.validators.content_type.ContentTypeValidator",
+        _build_degraded_chunk_input,
+    )
+
     return r
 
 
