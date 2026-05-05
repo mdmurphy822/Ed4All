@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any, Optional
 
 
@@ -74,6 +75,15 @@ class QualitativeJudge:
         nli_pipeline: Optional pre-built HF pipeline returning
             ``[{"label": "ENTAILMENT", "score": float}, ...]`` (used in
             tests).
+        capture: Optional ``DecisionCapture`` instance. When wired,
+            every per-probe scoring call emits one
+            ``decision_type="llm_chat_call"`` event so the audit trail
+            can distinguish a real-LLM-driven score from a degenerate
+            stub-response (the H2 silent-degradation regression class).
+            Field names are LLM-agnostic — the provider lands as a
+            VALUE in ``ml_features["provider"]``. Capture failures are
+            swallowed so logging never crashes scoring; ``capture=None``
+            is a silent no-op.
     """
 
     VALID_PROVIDERS = ("none", "anthropic", "local_nli")
@@ -85,6 +95,8 @@ class QualitativeJudge:
         model: Optional[str] = None,
         anthropic_client: Optional[Any] = None,
         nli_pipeline: Optional[Any] = None,
+        capture: Optional[Any] = None,
+        probe_id: Optional[str] = None,
     ) -> None:
         if provider is None:
             provider = os.environ.get(_DEFAULT_PROVIDER_ENV, "none").strip().lower()
@@ -101,6 +113,8 @@ class QualitativeJudge:
         )
         self._anthropic_client = anthropic_client
         self._nli_pipeline = nli_pipeline
+        self._capture = capture
+        self._probe_id = probe_id
 
     @property
     def enabled(self) -> bool:
@@ -112,12 +126,24 @@ class QualitativeJudge:
         prompt: str,
         model_output: str,
         ground_truth: str,
+        *,
+        probe_id: Optional[str] = None,
     ) -> Optional[float]:
-        """Return a 1-5 quality score, or None when provider=none."""
+        """Return a 1-5 quality score, or None when provider=none.
+
+        Args:
+            probe_id: Optional per-call probe identifier surfaced in the
+                ``llm_chat_call`` decision event (``ml_features["probe_id"]``)
+                so a post-hoc audit can correlate scores back to the
+                originating ablation probe. Falls back to the
+                instance-level ``probe_id`` when omitted.
+        """
         if self.provider == "none":
             return None
         if self.provider == "anthropic":
-            return self._score_anthropic(prompt, model_output, ground_truth)
+            return self._score_anthropic(
+                prompt, model_output, ground_truth, probe_id=probe_id,
+            )
         if self.provider == "local_nli":
             return self._score_local_nli(prompt, model_output, ground_truth)
         raise RuntimeError(  # pragma: no cover
@@ -129,7 +155,12 @@ class QualitativeJudge:
     # ------------------------------------------------------------------ #
 
     def _score_anthropic(
-        self, prompt: str, model_output: str, ground_truth: str,
+        self,
+        prompt: str,
+        model_output: str,
+        ground_truth: str,
+        *,
+        probe_id: Optional[str] = None,
     ) -> float:
         client = self._anthropic_client
         if client is None:
@@ -151,9 +182,11 @@ class QualitativeJudge:
         # Cache-control on the rubric prefix so repeated probe scoring
         # in a single ablation run reuses the cached prompt prefix.
         # Wave 102 wires the call but does not retry; eval is one-shot.
+        max_tokens = 8
+        start = time.monotonic()
         message = client.messages.create(
             model=self.model,
-            max_tokens=8,
+            max_tokens=max_tokens,
             system=[
                 {
                     "type": "text",
@@ -173,8 +206,70 @@ class QualitativeJudge:
                 },
             ],
         )
+        latency_ms = int((time.monotonic() - start) * 1000)
         text = _extract_anthropic_text(message)
-        return _parse_score_1_to_5(text)
+        score = _parse_score_1_to_5(text)
+        self._emit_decision(
+            provider="anthropic",
+            probe_id=probe_id if probe_id is not None else self._probe_id,
+            max_tokens=max_tokens,
+            score=score,
+            latency_ms=latency_ms,
+            response_text=text,
+        )
+        return score
+
+    # ------------------------------------------------------------------ #
+    # Decision capture                                                    #
+    # ------------------------------------------------------------------ #
+
+    def _emit_decision(
+        self,
+        *,
+        provider: str,
+        probe_id: Optional[str],
+        max_tokens: int,
+        score: float,
+        latency_ms: int,
+        response_text: str,
+    ) -> None:
+        """Emit one ``llm_chat_call`` event per scoring call.
+
+        Field names are LLM-agnostic per the standing decision-capture
+        contract — provider lands as a VALUE in ``ml_features["provider"]``.
+        Capture failures are swallowed so observability never crashes
+        scoring; capture=None is a silent no-op.
+        """
+        if self._capture is None:
+            return
+        try:
+            self._capture.log_decision(
+                decision_type="llm_chat_call",
+                decision=(
+                    f"Qualitative judge scored probe "
+                    f"{probe_id or 'unknown'} as {score} via model "
+                    f"{self.model} (latency_ms={latency_ms})."
+                ),
+                rationale=(
+                    f"Per-probe LLM-as-judge scoring against model "
+                    f"{self.model} with max_tokens={max_tokens}; "
+                    f"parsed 1-5 score={score} from response_len="
+                    f"{len(response_text or '')}; latency_ms={latency_ms}. "
+                    f"Captured so a downgraded stub-response run can be "
+                    f"distinguished from a real-LLM scoring pass when "
+                    f"the eval gate inspects the audit trail."
+                ),
+                ml_features={
+                    "provider": provider,
+                    "model": self.model,
+                    "probe_id": probe_id,
+                    "max_tokens": max_tokens,
+                    "score": score,
+                    "latency_ms": latency_ms,
+                },
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            logger.warning("llm_chat_call capture failed: %s", exc)
 
     # ------------------------------------------------------------------ #
     # Local NLI backend                                                   #

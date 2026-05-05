@@ -373,11 +373,18 @@ class AnthropicSynthesisProvider:
                 )
                 continue
             return parsed, self._extract_usage(response)
-        raise RuntimeError(
+        # H4: typed exception parity with LocalSynthesisProvider so the
+        # caller's recovery branch (paraphrase-exhaustion soft-skip in
+        # ``run_synthesis``) doesn't have to dispatch on provider. The
+        # ``code`` value matches ``_local_provider.py``'s exhaustion path
+        # exactly. Original parse cause preserved via ``__cause__`` so
+        # postmortem audits keep the underlying parse trace.
+        raise SynthesisProviderError(
             f"AnthropicSynthesisProvider: failed to parse a valid JSON "
             f"response after {MAX_PARSE_RETRIES} attempts. "
-            f"Last error: {last_err}; tail of last response: {last_text[-200:]!r}"
-        )
+            f"Last error: {last_err}; tail of last response: {last_text[-200:]!r}",
+            code="paraphrase_invalid_after_retry",
+        ) from last_err
 
     @staticmethod
     def _render_instruction_user(
