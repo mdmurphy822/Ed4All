@@ -220,38 +220,9 @@ schemas/training/schema_translation_catalog.*.yaml
 !Trainforge/tests/fixtures/**/model_card.json
 
 # =============================================================================
-# Plans directory — ignore-by-default with explicit allow-list
+# Plans directory — local-only working notes, never committed
 # =============================================================================
-# `plans/` mixes two file classes: (a) canonical, deliverable architecture
-# docs that the team treats as source of truth (the roadmap, the phase{1..8}
-# plans, the README, the post-phase8 review, the v2 / handoff docx), and
-# (b) ephemeral working notes — dated brainstorms (`2026-MM-DD-*.md`),
-# wave-scoped audit subdirectories (`wave-*/`, `*-2026-*/`), and
-# investigation scratchpads (`pipeline-*/`, `*-remediation/`, `*-audit-*/`,
-# `source-provenance/`, etc.). The latter regenerate as work progresses
-# and shouldn't accumulate in git history.
-#
-# Strategy: blanket-ignore plans/, then explicitly re-allow the canonical
-# set. New canonical docs need a corresponding allow-line below.
-plans/*
-!plans/README.md
-!plans/courseforge_architecture_roadmap.md
-!plans/courseforge_architecture_v2.docx
-!plans/courseforge_architecture_handoff.docx
-!plans/post-phase8-review-2026-05.md
-!plans/phase1_tos_unblock.md
-!plans/phase1_tos_unblock_detailed.md
-!plans/phase2_intermediate_format.md
-!plans/phase2_intermediate_format_detailed.md
-!plans/phase3_two_pass_router.md
-!plans/phase3_two_pass_router_detailed.md
-!plans/phase3_5_post_rewrite_validation.md
-!plans/phase4_statistical_tier.md
-!plans/phase4_statistical_tier_detailed.md
-!plans/phase5_independent_stages.md
-!plans/phase6_abcd_concept_extractor.md
-!plans/phase7_chunker_dual_chunkset.md
-!plans/phase8_cleanup.md
+plans/
 
 # =============================================================================
 # Windows-from-WSL leftovers
