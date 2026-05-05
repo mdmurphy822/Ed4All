@@ -120,6 +120,17 @@ _ESCALATION_MARKERS: frozenset = frozenset(
         "outline_budget_exhausted",
         "structural_unfixable",
         "validator_consensus_fail",
+        # C2 silent-degradation fix: dedicated markers for per-block
+        # dispatch errors (network failure / provider raise / unhandled
+        # exception inside ``CourseforgeRouter.route_all``). Previously
+        # such errors were silently logged and the block was DROPPED
+        # from the output, so the W5 packager-side filter
+        # (``escalation_marker is not None``) never saw the block and
+        # the IMSCC shipped without it. Stamping with one of these two
+        # markers keeps the block in the return list AND triggers the
+        # W5 filter / ESCALATED_BLOCK_IN_IMSCC gate.
+        "outline_dispatch_error",
+        "rewrite_dispatch_error",
     }
 )
 
