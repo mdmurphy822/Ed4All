@@ -1126,6 +1126,14 @@ class WorkflowRunner:
             extracted = self._extract_phase_outputs(phase_name, results)
             extracted["_completed"] = True
             extracted["_gates_passed"] = gates_passed
+            # Worker W5: stash the per-phase gate_results chain so the
+            # post-loop ``courseforge_validation_report.json`` aggregator
+            # can include phases that don't write their own report.json
+            # (packaging, libv2_archival, etc.). The
+            # ``_gate_results`` key is private (underscore-prefixed) and
+            # gets stripped from the run_workflow return payload by the
+            # existing dict comprehension below.
+            extracted["_gate_results"] = list(gate_results or [])
             phase_outputs[phase_name] = extracted
 
             # Phase 5 Subtask 4: write the operator-facing
@@ -1195,6 +1203,20 @@ class WorkflowRunner:
         workflow_state["completed_at"] = datetime.now().isoformat()
         self._save_workflow_state(workflow_path, workflow_state)
 
+        # Worker W5 (GPT-feedback follow-up): post-loop aggregator that
+        # walks every per-phase ``02_validation_report/report.json``
+        # plus any in-memory ``_gate_results`` we just stashed and
+        # writes a single top-level
+        # ``<project_path>/courseforge_validation_report.json``. Best-
+        # effort — aggregator failure (missing project_path, OSError
+        # on write) does NOT alter ``final_status``; the per-phase
+        # reports remain the source of truth.
+        aggregator_path = self._maybe_write_courseforge_validation_report(
+            workflow_id=workflow_id,
+            workflow_params=workflow_params,
+            phase_outputs=phase_outputs,
+        )
+
         return {
             "workflow_id": workflow_id,
             "status": final_status,
@@ -1203,7 +1225,89 @@ class WorkflowRunner:
                 k: {pk: pv for pk, pv in v.items() if not pk.startswith("_")}
                 for k, v in phase_outputs.items()
             },
+            "courseforge_validation_report_path": (
+                str(aggregator_path) if aggregator_path else None
+            ),
         }
+
+    def _maybe_write_courseforge_validation_report(
+        self,
+        *,
+        workflow_id: str,
+        workflow_params: Dict[str, Any],
+        phase_outputs: Dict[str, Dict],
+    ) -> Optional[Path]:
+        """Worker W5 helper — write top-level aggregator JSON if possible.
+
+        Resolves ``project_path`` from the standard upstream signal
+        (``phase_outputs['objective_extraction']``: explicit
+        ``project_path`` key first, else
+        ``Courseforge/exports/<project_id>``). Returns ``None`` when
+        no project_path can be resolved (no Courseforge phases ran)
+        or when the aggregator raises during build/write.
+        """
+        try:
+            project_path = self._resolve_courseforge_project_path(
+                phase_outputs
+            )
+            if project_path is None:
+                logger.debug(
+                    "courseforge_validation_report: no project_path "
+                    "resolvable; skipping aggregator (run_id=%s)",
+                    workflow_id,
+                )
+                return None
+
+            # Local import to keep the workflow_runner import-time
+            # dependency surface unchanged for non-Courseforge runs.
+            from lib.aggregators.courseforge_validation_report import (
+                CourseforgeValidationReport,
+            )
+
+            course_code = (workflow_params or {}).get("course_name") or ""
+            aggregator = CourseforgeValidationReport(
+                project_path=project_path,
+                phase_outputs=phase_outputs,
+                course_code=course_code,
+                run_id=workflow_id,
+            )
+            output_path = (
+                project_path / "courseforge_validation_report.json"
+            )
+            aggregator.write(output_path)
+            logger.info(
+                "courseforge_validation_report: wrote %s "
+                "(run_id=%s, course_code=%s)",
+                output_path, workflow_id, course_code,
+            )
+            return output_path
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "courseforge_validation_report aggregator failed "
+                "(non-fatal, run_id=%s): %s",
+                workflow_id, exc,
+            )
+            return None
+
+    @staticmethod
+    def _resolve_courseforge_project_path(
+        phase_outputs: Dict[str, Dict],
+    ) -> Optional[Path]:
+        """Resolve the Courseforge project export root from phase_outputs.
+
+        Mirrors the ``reuse_objectives`` resolution chain at
+        ``WorkflowRunner._synthesize_outline_output`` so the
+        aggregator picks up the same path the phase handlers wrote
+        per-phase reports under.
+        """
+        oe = phase_outputs.get("objective_extraction") or {}
+        explicit = oe.get("project_path")
+        if explicit:
+            return Path(explicit)
+        project_id = oe.get("project_id")
+        if project_id:
+            return PROJECT_ROOT / "Courseforge" / "exports" / project_id
+        return None
 
     def _route_params(
         self,
