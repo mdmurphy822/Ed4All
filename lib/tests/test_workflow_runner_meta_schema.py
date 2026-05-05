@@ -435,3 +435,59 @@ def test_critical_gates_do_not_carry_warn_on_fail(workflows_yaml_data):
         "removed so the YAML matches runtime behavior. Offenders:\n  - "
         + "\n  - ".join(offenders)
     )
+
+
+# ---------------------------------------------------------------------------
+# Multi-agent parallelism W1: 10x LLM cost regression guard
+# ---------------------------------------------------------------------------
+
+
+def test_two_pass_phases_are_not_parallel_until_handler_supports_week_range(
+    workflows_yaml_data,
+):
+    """Multi-agent parallelism W1: ``content_generation_outline`` /
+    ``content_generation_rewrite`` two-pass phases must NOT declare
+    ``parallel: true`` / ``max_concurrent: 10`` / ``batch_by: week`` until
+    the underlying handlers in
+    ``MCP/tools/pipeline_tools.py::_run_content_generation_outline`` and
+    ``_run_content_generation_rewrite`` accept a ``week_range`` kwarg and
+    slice the internal ``for week_num in range(1, duration_weeks + 1)``
+    loop accordingly.
+
+    Without ``week_range`` slicing, the orchestrator dispatches
+    ``duration_weeks`` parallel tasks, each of which generates ALL weeks
+    internally. LLM cost = ``duration_weeks**2`` instead of
+    ``duration_weeks`` (12x redundancy on a default 12-week course),
+    plus blocks racing on the same disk paths.
+
+    Re-enabling the parallel declaration without first wiring
+    ``week_range`` into the handlers is a regression. This test fires
+    if that happens.
+    """
+    offenders = []
+    for wf_name, wf in workflows_yaml_data["workflows"].items():
+        for phase in wf.get("phases", []):
+            phase_name = phase.get("name", "")
+            if phase_name not in {
+                "content_generation_outline",
+                "content_generation_rewrite",
+            }:
+                continue
+            problems = []
+            if phase.get("parallel") is True:
+                problems.append("parallel=True")
+            if phase.get("batch_by") is not None:
+                problems.append(f"batch_by={phase.get('batch_by')!r}")
+            max_concurrent = phase.get("max_concurrent")
+            if max_concurrent is not None and max_concurrent > 1:
+                problems.append(f"max_concurrent={max_concurrent}")
+            if problems:
+                offenders.append(f"{wf_name}::{phase_name} ({', '.join(problems)})")
+
+    assert not offenders, (
+        "Two-pass content_generation_* phases must stay sequential "
+        "(parallel=False, no batch_by, max_concurrent=1) until the "
+        "handler accepts a `week_range` kwarg. Otherwise dispatch emits "
+        "duration_weeks**2 LLM calls. Offenders:\n  - "
+        + "\n  - ".join(offenders)
+    )

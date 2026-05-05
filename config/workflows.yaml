@@ -64,9 +64,14 @@ workflows:
       # textbook_to_course. Engaged when ``COURSEFORGE_TWO_PASS=true``.
       - name: content_generation_outline
         agents: [content-generator]
-        parallel: true
-        max_concurrent: 10
-        batch_by: week
+        # NOTE: parallel/batch_by intentionally disabled. The handler
+        # ``MCP/tools/pipeline_tools.py::_run_content_generation_outline``
+        # iterates ``for week_num in range(1, duration_weeks + 1)``
+        # internally with no ``week_range`` slicing, so dispatching N
+        # parallel tasks would emit N² LLM calls. Re-enable only after
+        # the handler accepts a ``week_range`` kwarg.
+        parallel: false
+        max_concurrent: 1
         depends_on: [planning]
         timeout_minutes: 30
         batch_timeout_minutes: 10
@@ -121,9 +126,14 @@ workflows:
 
       - name: content_generation_rewrite
         agents: [content-generator]
-        parallel: true
-        max_concurrent: 10
-        batch_by: week
+        # NOTE: parallel/batch_by intentionally disabled. The handler
+        # ``MCP/tools/pipeline_tools.py::_run_content_generation_rewrite``
+        # iterates ``for week_num in range(1, duration_weeks + 1)``
+        # internally with no ``week_range`` slicing, so dispatching N
+        # parallel tasks would emit N² LLM calls. Re-enable only after
+        # the handler accepts a ``week_range`` kwarg.
+        parallel: false
+        max_concurrent: 1
         depends_on: [inter_tier_validation]
         timeout_minutes: 90
         batch_timeout_minutes: 30
@@ -995,9 +1005,14 @@ workflows:
       # the final HTML pages.
       - name: content_generation_outline
         agents: [content-generator]
-        parallel: true
-        max_concurrent: 10
-        batch_by: week
+        # NOTE: parallel/batch_by intentionally disabled. The handler
+        # ``MCP/tools/pipeline_tools.py::_run_content_generation_outline``
+        # iterates ``for week_num in range(1, duration_weeks + 1)``
+        # internally with no ``week_range`` slicing, so dispatching N
+        # parallel tasks would emit N² LLM calls. Re-enable only after
+        # the handler accepts a ``week_range`` kwarg.
+        parallel: false
+        max_concurrent: 1
         depends_on: [course_planning, source_mapping, staging]
         timeout_minutes: 30
         batch_timeout_minutes: 10
@@ -1216,9 +1231,14 @@ workflows:
 
       - name: content_generation_rewrite
         agents: [content-generator]
-        parallel: true
-        max_concurrent: 10
-        batch_by: week
+        # NOTE: parallel/batch_by intentionally disabled. The handler
+        # ``MCP/tools/pipeline_tools.py::_run_content_generation_rewrite``
+        # iterates ``for week_num in range(1, duration_weeks + 1)``
+        # internally with no ``week_range`` slicing, so dispatching N
+        # parallel tasks would emit N² LLM calls. Re-enable only after
+        # the handler accepts a ``week_range`` kwarg.
+        parallel: false
+        max_concurrent: 1
         depends_on: [inter_tier_validation]
         timeout_minutes: 90
         batch_timeout_minutes: 30
