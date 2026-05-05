@@ -1229,6 +1229,61 @@ workflows:
               on_error: warn
             description: Phase 4 PoC BERT-ensemble disagreement check on outline-tier objective / assessment_item Blocks. Informational; structural gates remain authoritative.
 
+          # GPT-feedback W2-W7 wave: five new gates wired warning-only at
+          # both seams (inter_tier + post_rewrite). Promoted to critical
+          # in a follow-up commit once alignment-rate signal stabilises
+          # in CI. All five operate on Block-shape inputs so both seams
+          # carry symmetric coverage.
+          - gate_id: outline_assessment_retrieval_grounding
+            validator: lib.validators.assessment_retrieval_grounding.AssessmentRetrievalGroundingValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: W2 — answerability gate; every assessment_item Block answer must overlap a referenced source chunk above the Jaccard floor (default 0.30).
+
+          - gate_id: outline_distractor_plausibility
+            validator: lib.validators.distractor_plausibility.DistractorPlausibilityValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: W3b — CPU-only Jaccard distinctness gate; distractors must not be near-duplicates of the answer key or of one another (rewrite[2] regression class).
+
+          - gate_id: outline_distractor_misconception_alignment
+            validator: lib.validators.distractor_misconception_alignment.DistractorMisconceptionAlignmentValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: W3a — embedding-gated alignment between distractor text and the declared misconception_ref (cosine when extras loaded; Jaccard fallback otherwise).
+
+          - gate_id: outline_instructional_depth
+            validator: lib.validators.instructional_depth.InstructionalDepthValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: W7 — per-page pedagogical-density floors (concepts / examples-per-concept / explanation-tokens-per-concept).
+
+          - gate_id: outline_bloom_structural_enforcement
+            validator: lib.validators.bloom_structural_enforcement.BloomStructuralEnforcementValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: W6 — deterministic regex-on-stem structural enforcement; assessment_item stems must match the declared bloom_level's clause/verb/marker rules.
+
       - name: content_generation_rewrite
         agents: [content-generator]
         # NOTE: parallel/batch_by intentionally disabled. The handler
@@ -1504,6 +1559,60 @@ workflows:
               on_fail: warn
               on_error: warn
             description: Phase 4 PoC BERT-ensemble disagreement check on rewrite-tier objective / assessment_item Blocks. Informational; structural gates remain authoritative.
+
+          # GPT-feedback W2-W7 wave: post-rewrite mirror of the five
+          # outline-seam gates. Same Block-shape inputs; the validators'
+          # internal shape-dispatch handles rewrite-tier HTML-string
+          # content vs. outline-tier dict content via isinstance checks.
+          - gate_id: rewrite_assessment_retrieval_grounding
+            validator: lib.validators.assessment_retrieval_grounding.AssessmentRetrievalGroundingValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: W2 — post-rewrite answerability gate; every rewrite-tier assessment_item answer must overlap a referenced source chunk above the Jaccard floor.
+
+          - gate_id: rewrite_distractor_plausibility
+            validator: lib.validators.distractor_plausibility.DistractorPlausibilityValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: W3b — post-rewrite distractor distinctness gate; rewrite-tier distractors must remain semantically diverse.
+
+          - gate_id: rewrite_distractor_misconception_alignment
+            validator: lib.validators.distractor_misconception_alignment.DistractorMisconceptionAlignmentValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: W3a — post-rewrite distractor / misconception alignment (no-op on rewrite-tier HTML when misconception_ref slot isn't carried; surfaces unresolved refs symmetrically when present).
+
+          - gate_id: rewrite_instructional_depth
+            validator: lib.validators.instructional_depth.InstructionalDepthValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: W7 — post-rewrite per-page pedagogical-density floors over the final Block batch.
+
+          - gate_id: rewrite_bloom_structural_enforcement
+            validator: lib.validators.bloom_structural_enforcement.BloomStructuralEnforcementValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: W6 — post-rewrite Bloom structural enforcement; rewrite-tier assessment_item stems must structurally match their declared bloom_level.
 
       - name: packaging
         agents: [brightspace-packager]
