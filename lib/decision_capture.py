@@ -25,6 +25,16 @@ import json
 import logging
 import os
 from dataclasses import asdict, dataclass, field
+
+# Worker W3: advisory file locking around the legacy decision-capture write
+# path. fcntl is POSIX-only; Windows / non-POSIX environments degrade to the
+# pre-W3 unlocked behavior. flock is also unreliable on WSL2 DrvFS (`/mnt/c/`)
+# and some NFS mounts; the runtime OSError fallback inside _write_to_streams
+# handles that case.
+try:
+    import fcntl as _fcntl  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - non-POSIX (Windows) fallback
+    _fcntl = None  # type: ignore[assignment]
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -556,7 +566,12 @@ class DecisionCapture:
         if self._write_with_facade(line):
             return
 
-        # Fall back to legacy triple-write
+        # Fall back to legacy triple-write.
+        # Worker W3: acquire LOCK_EX around each write so concurrent writers
+        # sharing a JSONL path (multi-worker fanout, pinned RUN_ID re-runs,
+        # module-scoped captures sharing _run_decisions_path) cannot
+        # interleave records mid-line. OSError fallback covers WSL2 DrvFS /
+        # NFS / unsupported FS where flock silently no-ops or crashes.
         for fh, label in [
             (self._stream_file, "decision stream"),
             (self._legacy_stream_file, "legacy stream"),
@@ -564,9 +579,34 @@ class DecisionCapture:
         ]:
             if fh:
                 try:
-                    fh.write(line)
-                    fh.flush()
-                    os.fsync(fh.fileno())
+                    if _fcntl is not None:
+                        try:
+                            _fcntl.flock(fh.fileno(), _fcntl.LOCK_EX)
+                            try:
+                                fh.write(line)
+                                fh.flush()
+                                os.fsync(fh.fileno())
+                            finally:
+                                _fcntl.flock(fh.fileno(), _fcntl.LOCK_UN)
+                        except OSError as lock_exc:
+                            # WSL2 DrvFS / NFS / unsupported FS: degrade to
+                            # unlocked write + warn so the audit trail still
+                            # captures the event (concurrent writers may
+                            # interleave on this filesystem).
+                            logger.warning(
+                                "decision-capture flock unavailable on %s: %s. "
+                                "Falling back to unlocked write — concurrent "
+                                "writers may interleave.",
+                                getattr(fh, "name", label), lock_exc,
+                            )
+                            fh.write(line)
+                            fh.flush()
+                            os.fsync(fh.fileno())
+                    else:
+                        # Non-POSIX (Windows): pre-W3 unlocked behavior.
+                        fh.write(line)
+                        fh.flush()
+                        os.fsync(fh.fileno())
                 except OSError as e:
                     logger.warning("%s write failed: %s", label, e)
 
