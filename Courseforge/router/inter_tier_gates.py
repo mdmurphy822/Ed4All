@@ -42,6 +42,7 @@ for the same signal (CURIEs in text, ``data-cf-content-type`` /
 """
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -49,6 +50,8 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from MCP.hardening.validation_gates import GateIssue, GateResult
 from lib.ontology.curie_extraction import extract_curies as _extract_curies
 from lib.validators.content_type import get_valid_chunk_types
+
+logger = logging.getLogger(__name__)
 
 # ``blocks.py`` lives at ``Courseforge/scripts/blocks.py``; mirror the
 # router's import bridge so ``from blocks import Block`` resolves
@@ -112,6 +115,79 @@ def _outline_dict(block: Block) -> Optional[Dict[str, Any]]:
     if isinstance(content, dict):
         return content
     return None
+
+
+# --------------------------------------------------------------------------- #
+# H3 W1: per-block decision capture (Pattern A, borrowed from
+# lib/validators/rewrite_source_grounding.py:268-311). One emit per
+# validate() call per audited Block; never raises — capture failures
+# log at DEBUG and pass through. ``inputs.get("decision_capture")`` is
+# the canonical injection seam (S0.5 commit ``8914fce``); ``inputs.get
+# ("capture")`` is honoured as a back-compat alias.
+# --------------------------------------------------------------------------- #
+
+
+def _resolve_capture(inputs: Dict[str, Any]) -> Any:
+    """Pull the DecisionCapture instance from gate-runner inputs.
+
+    Honours both keys S0.5 wired up: ``decision_capture`` (canonical)
+    and ``capture`` (alias). Returns None when neither is present so
+    the per-block emit helpers no-op silently.
+    """
+    capture = inputs.get("decision_capture")
+    if capture is None:
+        capture = inputs.get("capture")
+    return capture
+
+
+def _emit_block_decision(
+    capture: Any,
+    *,
+    decision_type: str,
+    block: Block,
+    passed: bool,
+    code: Optional[str],
+    signals: Dict[str, Any],
+) -> None:
+    """Emit one Pattern A decision-capture event for a Block audit.
+
+    `signals` carries validator-specific dynamic interpolations the
+    rationale interpolates verbatim (block_id, gate counters, threshold
+    values per H3 plan §3 W1 "Per-block dynamic signals"). The
+    rationale is constructed once here so all four W1 validators share
+    the same emit shape — sole differentiator is `decision_type` +
+    the per-validator signals dict.
+    """
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    # Render signals as `key=value` pairs for the rationale tail. Sort
+    # by key so the rendered string is deterministic across runs (the
+    # H3 regression suite asserts rationale-length floor; keeping the
+    # render stable lets a future suite assert exact strings.).
+    rendered_signals = ", ".join(
+        f"{k}={signals[k]!r}" for k in sorted(signals.keys())
+    )
+    rationale = (
+        f"Outline/rewrite-tier {decision_type} on Block "
+        f"{block.block_id!r}: block_type={block.block_type}, "
+        f"content_type={block.content_type_label or 'n/a'}, "
+        f"failure_code={code or 'none'}, "
+        f"signals: {rendered_signals}."
+    )
+    try:
+        capture.log_decision(
+            decision_type=decision_type,
+            decision=decision,
+            rationale=rationale,
+        )
+    except Exception as exc:  # noqa: BLE001 — capture failure must not abort the gate
+        logger.debug(
+            "DecisionCapture.log_decision raised on %s for %s: %s",
+            decision_type,
+            block.block_id,
+            exc,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -305,6 +381,7 @@ class BlockCurieAnchoringValidator:
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
+        capture = _resolve_capture(inputs)
         blocks, err = _coerce_blocks(inputs)
         if err is not None:
             return GateResult(
@@ -345,8 +422,15 @@ class BlockCurieAnchoringValidator:
                 # tautologically satisfied when curies is non-empty.
                 surface_curies = set(curies)
             else:
-                # Non-dict / non-str content — nothing to audit.
+                # Non-dict / non-str content — nothing to audit. No
+                # capture emit either; the "block" wasn't actually a
+                # member of the validator's input universe.
                 continue
+
+            anchored_count = sum(1 for c in curies if c in surface_curies)
+            anchoring_rate = (
+                (anchored_count / len(curies)) if curies else 0.0
+            )
 
             if not curies:
                 if len(issues) < _ISSUE_LIST_CAP:
@@ -368,11 +452,38 @@ class BlockCurieAnchoringValidator:
                             "marks ``curies`` as a non-empty array."
                         ),
                     ))
+                _emit_block_decision(
+                    capture,
+                    decision_type="block_curie_anchoring_check",
+                    block=block,
+                    passed=False,
+                    code="OUTLINE_BLOCK_MISSING_CURIES",
+                    signals={
+                        "curies_count": 0,
+                        "anchored_count": 0,
+                        "anchoring_rate": 0.0,
+                        "min_rate_threshold": 1.0,
+                        "surface_curies_count": len(surface_curies),
+                    },
+                )
                 continue
 
-            anchored = any(c in surface_curies for c in curies)
-            if anchored:
+            if anchored_count >= 1:
                 passed_count += 1
+                _emit_block_decision(
+                    capture,
+                    decision_type="block_curie_anchoring_check",
+                    block=block,
+                    passed=True,
+                    code=None,
+                    signals={
+                        "curies_count": len(curies),
+                        "anchored_count": anchored_count,
+                        "anchoring_rate": round(anchoring_rate, 4),
+                        "min_rate_threshold": 1.0,
+                        "surface_curies_count": len(surface_curies),
+                    },
+                )
             else:
                 if len(issues) < _ISSUE_LIST_CAP:
                     issues.append(GateIssue(
@@ -387,6 +498,20 @@ class BlockCurieAnchoringValidator:
                         ),
                         location=block.block_id,
                     ))
+                _emit_block_decision(
+                    capture,
+                    decision_type="block_curie_anchoring_check",
+                    block=block,
+                    passed=False,
+                    code="OUTLINE_BLOCK_CURIE_NOT_ANCHORED",
+                    signals={
+                        "curies_count": len(curies),
+                        "anchored_count": 0,
+                        "anchoring_rate": 0.0,
+                        "min_rate_threshold": 1.0,
+                        "surface_curies_count": len(surface_curies),
+                    },
+                )
 
         passed = len(issues) == 0
         score = 1.0 if audited == 0 else round(passed_count / audited, 4)
@@ -421,6 +546,7 @@ class BlockContentTypeValidator:
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
+        capture = _resolve_capture(inputs)
         blocks, err = _coerce_blocks(inputs)
         if err is not None:
             return GateResult(
@@ -463,6 +589,18 @@ class BlockContentTypeValidator:
                         ),
                         location=block.block_id,
                     ))
+                _emit_block_decision(
+                    capture,
+                    decision_type="block_content_type_check",
+                    block=block,
+                    passed=False,
+                    code="OUTLINE_BLOCK_MISSING_CONTENT_TYPE",
+                    signals={
+                        "declared_content_type": None,
+                        "valid": False,
+                        "expected_enum_size": len(valid_types),
+                    },
+                )
                 continue
             if ctype not in valid_types:
                 if len(issues) < _ISSUE_LIST_CAP:
@@ -484,8 +622,32 @@ class BlockContentTypeValidator:
                             "a taxonomy-compliant label."
                         ),
                     ))
+                _emit_block_decision(
+                    capture,
+                    decision_type="block_content_type_check",
+                    block=block,
+                    passed=False,
+                    code="OUTLINE_BLOCK_INVALID_CONTENT_TYPE",
+                    signals={
+                        "declared_content_type": ctype,
+                        "valid": False,
+                        "expected_enum_size": len(valid_types),
+                    },
+                )
             else:
                 passed_count += 1
+                _emit_block_decision(
+                    capture,
+                    decision_type="block_content_type_check",
+                    block=block,
+                    passed=True,
+                    code=None,
+                    signals={
+                        "declared_content_type": ctype,
+                        "valid": True,
+                        "expected_enum_size": len(valid_types),
+                    },
+                )
 
         passed = len(issues) == 0
         score = 1.0 if audited == 0 else round(passed_count / audited, 4)
@@ -559,6 +721,7 @@ class BlockPageObjectivesValidator:
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
+        capture = _resolve_capture(inputs)
         blocks, err = _coerce_blocks(inputs)
         if err is not None:
             return GateResult(
@@ -582,6 +745,10 @@ class BlockPageObjectivesValidator:
         seeded = inputs.get("valid_objective_ids")
         if seeded is not None:
             canonical_ids = {str(o) for o in seeded}
+
+        valid_objective_ids_count = (
+            len(canonical_ids) if canonical_ids is not None else 0
+        )
 
         issues: List[GateIssue] = []
         audited = 0
@@ -614,12 +781,36 @@ class BlockPageObjectivesValidator:
                         ),
                         location=block.block_id,
                     ))
+                _emit_block_decision(
+                    capture,
+                    decision_type="block_page_objectives_check",
+                    block=block,
+                    passed=False,
+                    code="OUTLINE_BLOCK_MISSING_OBJECTIVE_REF",
+                    signals={
+                        "declared_objective_ids": [],
+                        "unresolved_count": 0,
+                        "valid_objective_ids_count": valid_objective_ids_count,
+                    },
+                )
                 continue
             if canonical_ids is None:
                 # No canonical universe to check against — count as
                 # passing the structural check (a non-empty reference
                 # is the only thing we can audit).
                 passed_count += 1
+                _emit_block_decision(
+                    capture,
+                    decision_type="block_page_objectives_check",
+                    block=block,
+                    passed=True,
+                    code=None,
+                    signals={
+                        "declared_objective_ids": list(obj_ids),
+                        "unresolved_count": 0,
+                        "valid_objective_ids_count": valid_objective_ids_count,
+                    },
+                )
                 continue
             unknown = [oid for oid in obj_ids if oid not in canonical_ids]
             if unknown:
@@ -641,8 +832,32 @@ class BlockPageObjectivesValidator:
                             "extend synthesized_objectives.json upstream."
                         ),
                     ))
+                _emit_block_decision(
+                    capture,
+                    decision_type="block_page_objectives_check",
+                    block=block,
+                    passed=False,
+                    code="OUTLINE_BLOCK_UNKNOWN_OBJECTIVE",
+                    signals={
+                        "declared_objective_ids": list(obj_ids),
+                        "unresolved_count": len(unknown),
+                        "valid_objective_ids_count": valid_objective_ids_count,
+                    },
+                )
             else:
                 passed_count += 1
+                _emit_block_decision(
+                    capture,
+                    decision_type="block_page_objectives_check",
+                    block=block,
+                    passed=True,
+                    code=None,
+                    signals={
+                        "declared_objective_ids": list(obj_ids),
+                        "unresolved_count": 0,
+                        "valid_objective_ids_count": valid_objective_ids_count,
+                    },
+                )
 
         passed = len(issues) == 0
         score = 1.0 if audited == 0 else round(passed_count / audited, 4)
@@ -719,6 +934,7 @@ class BlockSourceRefValidator:
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
+        capture = _resolve_capture(inputs)
         blocks, err = _coerce_blocks(inputs)
         if err is not None:
             return GateResult(
@@ -740,6 +956,12 @@ class BlockSourceRefValidator:
         seeded = inputs.get("valid_source_ids")
         if seeded is not None:
             valid_ids = {str(s) for s in seeded}
+
+        # Per H3 W1 dynamic-signal contract: the staging-dir signal is
+        # the manifest path's parent. None when no manifest is wired.
+        staging_dir = (
+            str(manifest_path.parent) if manifest_path is not None else None
+        )
 
         issues: List[GateIssue] = []
         audited = 0
@@ -764,12 +986,29 @@ class BlockSourceRefValidator:
                 # applies, so an empty list passes the structural check
                 # on both tiers.
                 passed_count += 1
+                _emit_block_decision(
+                    capture,
+                    decision_type="block_source_ref_check",
+                    block=block,
+                    passed=True,
+                    code=None,
+                    signals={
+                        "declared_source_ids_count": 0,
+                        "unresolved_count": 0,
+                        "staging_dir": staging_dir,
+                        "valid_ids_universe_size": len(valid_ids),
+                    },
+                )
                 continue
 
             block_passed = True
+            unresolved_count = 0
+            failure_code: Optional[str] = None
             for sid in block_ids:
                 if not _SOURCE_ID_RE.match(sid):
                     block_passed = False
+                    unresolved_count += 1
+                    failure_code = "OUTLINE_BLOCK_INVALID_SOURCE_ID_SHAPE"
                     if len(issues) < _ISSUE_LIST_CAP:
                         issues.append(GateIssue(
                             severity="critical",
@@ -785,6 +1024,9 @@ class BlockSourceRefValidator:
                     continue
                 if valid_ids and sid not in valid_ids:
                     block_passed = False
+                    unresolved_count += 1
+                    if failure_code is None:
+                        failure_code = "OUTLINE_BLOCK_UNRESOLVED_SOURCE_ID"
                     if len(issues) < _ISSUE_LIST_CAP:
                         issues.append(GateIssue(
                             severity="critical",
@@ -804,6 +1046,33 @@ class BlockSourceRefValidator:
                         ))
             if block_passed:
                 passed_count += 1
+                _emit_block_decision(
+                    capture,
+                    decision_type="block_source_ref_check",
+                    block=block,
+                    passed=True,
+                    code=None,
+                    signals={
+                        "declared_source_ids_count": len(block_ids),
+                        "unresolved_count": 0,
+                        "staging_dir": staging_dir,
+                        "valid_ids_universe_size": len(valid_ids),
+                    },
+                )
+            else:
+                _emit_block_decision(
+                    capture,
+                    decision_type="block_source_ref_check",
+                    block=block,
+                    passed=False,
+                    code=failure_code,
+                    signals={
+                        "declared_source_ids_count": len(block_ids),
+                        "unresolved_count": unresolved_count,
+                        "staging_dir": staging_dir,
+                        "valid_ids_universe_size": len(valid_ids),
+                    },
+                )
 
         # Empty-manifest path: when the manifest is empty / missing
         # AND no Block declared a sourceId, pass with an info note.
