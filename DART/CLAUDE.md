@@ -2,7 +2,7 @@
 
 > **Universal Protocols**: See root `/CLAUDE.md` for orchestrator protocol, execution rules, decision capture requirements, and error handling. This file contains DART-specific guidance only.
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to coding agents working in this repository.
 
 ## Overview
 
@@ -52,7 +52,7 @@ DART is exposed via the Ed4All MCP server with these tools:
 | `convert_pdf_multi_source` | Convert single PDF using multi-source synthesis |
 | `batch_convert_multi_source` | Batch convert all PDFs |
 | `validate_wcag_compliance` | Validate HTML for WCAG 2.2 AA |
-| `validate_dart_markers` | Validate DART output markers. Wired as the `dart_markers` gate on `batch_dart` and `textbook_to_course` (Wave 6). |
+| `validate_dart_markers` | Validate DART output markers. Wired as the `dart_markers` gate on `batch_dart` and `textbook_to_course`. |
 | `get_dart_status` | Get DART capabilities |
 | `list_available_campuses` | List available combined JSONs |
 | `extract_and_convert_pdf` | Extract and convert a single PDF to accessible HTML |
@@ -202,10 +202,10 @@ universe" from the same `path.stem`:
 - `lib/validators/content_grounding.py::_resolve_valid_block_ids` —
   `slug = html_path.stem.lower().replace(" ", "-")`.
 - `lib/validators/source_refs.py` — same rule.
-- `MCP/tools/pipeline_tools.py::_build_source_module_map` (Wave 9
-  source-router) — `slug = sidecar.stem.replace("_synthesized", "").lower().replace(" ", "-")`.
-- `MCP/tools/_content_gen_helpers.py::_topic_source_references`
-  (Wave 35 content-generator) — `slug = stem.lower().replace(" ", "-")`.
+- `MCP/tools/pipeline_tools.py::_build_source_module_map` —
+  `slug = sidecar.stem.replace("_synthesized", "").lower().replace(" ", "-")`.
+- `MCP/tools/_content_gen_helpers.py::_topic_source_references` —
+  `slug = stem.lower().replace(" ", "-")`.
 
 Do **not** use `lib.ontology.slugs.canonical_slug` for sourceId slugs
 — it collapses underscores into one token, producing slugs like
@@ -234,7 +234,7 @@ these values; do not invent new scale points.
 ### `data-dart-*` HTML attributes
 
 Emitted on every `<section>` + `.contact-card` + `<tr>` in multi-source
-output. Per the design doc's P2 decision, attributes stop at the section /
+output. Attributes stop at the section /
 component wrapper level — never on every `<p>` / `<li>` / `<tr>` in prose,
 to keep HTML size bounded at textbook scale.
 
@@ -248,8 +248,7 @@ to keep HTML size bounded at textbook scale.
 | `data-dart-strategy` | Free-form | Mirrors `provenance.strategy` in JSON |
 
 The legacy `claude_processor` / `_generate_html_from_structure` path stamps
-only a minimal `data-dart-source="claude_llm"` on the section wrapper (P5
-decision — full parity is non-goal).
+only a minimal `data-dart-source="claude_llm"` on the section wrapper.
 
 ### Staging handoff
 
@@ -360,7 +359,7 @@ when PyMuPDF is unavailable (import fails or the document won't open).
 2. **Classify** (`heuristic_classifier.py` or `llm_classifier.py`) —
    assign exactly one `BlockRole` from the 35-value enum in
    `block_roles.py`. Heuristic classifier is the offline default; LLM
-   classifier routes through Claude via `MCP/orchestrator/llm_backend.py`
+   classifier routes through the configured LLM backend via `MCP/orchestrator/llm_backend.py`
    for ambiguous blocks.
 3. **Template** (`block_templates.py`) — render each classified block
    with DPUB-ARIA + schema.org + microdata. Every role has exactly one
@@ -413,7 +412,7 @@ accidental anchors.
 
 | Env var | Effect |
 |---------|--------|
-| `DART_LLM_CLASSIFICATION=true` | Route classification through Claude via `LLMClassifier` instead of the heuristic regex path. Requires an injected `LLMBackend`. |
+| `DART_LLM_CLASSIFICATION=true` | Route classification through an LLM backend via `LLMClassifier` instead of the heuristic regex path. Requires an injected `LLMBackend`. |
 
 ### Entry point
 
@@ -543,7 +542,7 @@ The classifier layer honours the hint:
 
   No LaTeX-to-MathML compilation — the `<annotation>` arm preserves
   the raw source for assistive tech. Full LaTeX fidelity is out of
-  scope for this wave.
+  scope.
 
 ### `pipeline_tools` plumbing
 
@@ -647,8 +646,7 @@ every `<p>` / `<span>` / `<li>` / `<h3>` / `<cite>` / `<a>` /
 `<figcaption>` in prose — those are leaf nodes, and the enclosing
 wrapper carries the provenance. The canonical leaf-role set is
 `DART/converter/block_templates._WAVE19_LEAF_ROLES`. This keeps HTML
-size bounded at textbook scale (measured ~20% reduction vs. full-leaf
-stamping on a several-hundred-page textbook).
+size bounded at textbook scale.
 
 ### Sidecar emit
 
@@ -748,7 +746,7 @@ themselves, those become `sub_items` on the parent item. In the
 current pipeline the segmenter whitespace-collapses blocks before
 the classifier sees them, so this path rarely fires end-to-end —
 it's retained so callers that feed raw multi-line blocks
-(tests, future waves that preserve layout) still get nested
+(tests, future layout-preserving paths) still get nested
 output.
 
 ### Template output + attribute placement
@@ -770,7 +768,7 @@ common 1-indexed case.
 
 ### Stray LIST_ITEM fallback
 
-If a `LIST_ITEM` escapes grouping (shouldn't happen normally),
+If a `LIST_ITEM` escapes grouping,
 `_tpl_list_item` emits a single-item `<ul>` / `<ol>` wrapper
 rather than a naked `<li>` — keeps the HTML valid.
 
@@ -849,7 +847,7 @@ HTML that lacks the explicit doc-chapter role.
 
 ## Decision capture
 
-A `DecisionCapture` instance is threaded through every Claude call
+A `DecisionCapture` instance is threaded through every LLM call
 site in the pipeline. The table below is the source of truth for
 what fires where.
 
@@ -858,7 +856,7 @@ what fires where.
 | `MCP/tools/pipeline_tools.py::_raw_text_to_accessible_html` | `pipeline_run_attribution` | Once per pipeline run at function entry | backend, classifier_mode, raw_text length, title, output_path state, figures_dir state, llm injection state |
 | `DART/converter/llm_classifier.py::LLMClassifier._classify_batch` | `structure_detection` | One per batch (typical batch_size=20) | block-ID range, LLM vs heuristic-fallback counts, fallback fraction, avg confidence, low-confidence fraction, char prompt payload, model + max_tokens |
 | `DART/pdf_converter/alt_text_generator.py::AltTextGenerator.generate` | `alt_text_generation` (via `DARTDecisionCapture.log_alt_text_decision` + `log_decision`) | One per figure | page, bbox, image hash (first 12 chars of sha256), width×height, chosen source (claude / ocr / caption / generic), caption presence, alt-text length, long-description length, context length |
-| `MCP/tools/dart_tools.py::convert_pdf_multi_source` | `approach_selection` + `validation_result` | Once per call | multi-source synthesis details (legacy-path telemetry) |
+| `MCP/tools/dart_tools.py::convert_pdf_multi_source` | `approach_selection` + `validation_result` | Once per call | multi-source synthesis details |
 
 ### Plumbing contract
 
@@ -870,7 +868,7 @@ what fires where.
   per-figure alt-text records).
 * `default_classifier(llm=..., capture=...)` — forwards `capture`
   into `LLMClassifier` when routing goes to the LLM path. The
-  heuristic classifier ignores `capture` (no Claude calls = nothing
+  heuristic classifier ignores `capture` (no LLM calls = nothing
   to log).
 * `extract_document(pdf_path, *, llm=..., figures_dir=..., capture=...)` —
   forwards `capture` into the figure-extraction loop, which hands

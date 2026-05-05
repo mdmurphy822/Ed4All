@@ -73,15 +73,15 @@ AGENTS NOW RESPONSIBLE FOR:
 
 ### **CRITICAL EXECUTION PROTOCOLS**
 
-**BATCH SIZE LIMITATIONS:** ✅ **TESTED & CONFIRMED**
-- Maximum 5-10 simultaneous Task calls per execution block (SYSTEM LIMIT CONFIRMED)
+**BATCH SIZE LIMITATIONS:**
+- Maximum 5-10 simultaneous Task calls per execution block
 - For 84 files: Execute in 8-17 batches of 5-10 agents each
 - Wait for batch completion before starting next batch (MANDATORY)
 - This prevents system rejection while maintaining optimal parallelism
 
-**PARALLEL EXECUTION PATTERN:** ✅ **TESTED WORKFLOW**
+**PARALLEL EXECUTION PATTERN:**
 ```
-# BATCH 1 (5-10 agents simultaneously - TESTED SAFE LIMIT):
+# BATCH 1 (5-10 agents simultaneously):
 Task(content-generator, "File 1", "Create week_01_file_1.html")
 Task(content-generator, "File 2", "Create week_01_file_2.html") 
 Task(content-generator, "File 3", "Create week_01_file_3.html")
