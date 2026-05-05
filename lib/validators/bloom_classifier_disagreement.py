@@ -92,6 +92,77 @@ _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
+def _emit_decision(
+    capture: Any,
+    *,
+    block_id: Optional[str],
+    passed: bool,
+    code: Optional[str],
+    declared_level: Optional[str],
+    winner_level: Optional[str],
+    winner_score: Optional[float],
+    dispersion: Optional[float],
+    dispersion_threshold: float,
+    confidence_floor: float,
+    member_votes: Optional[List[Any]],
+    members_loaded: int,
+) -> None:
+    """Emit one ``bloom_classifier_disagreement_check`` decision per
+    audited block (or per pre-block-loop short-circuit event when no
+    block-level signal is available, e.g. graceful-degrade).
+
+    Rationale interpolates dynamic signals — block_id, declared level,
+    ensemble winner + winner_score, dispersion + threshold, confidence
+    floor, member-vote summary, and the loaded-member count (so
+    BERT_ENSEMBLE_DEPS_MISSING graceful-degrade events stay
+    distinguishable from real disagreement / dispersion events).
+    """
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    score_str = f"{winner_score:.3f}" if winner_score is not None else "n/a"
+    disp_str = f"{dispersion:.3f}" if dispersion is not None else "n/a"
+    votes_summary: str
+    if member_votes:
+        # Summarise as a compact list of (level, score) tuples; cap at
+        # 5 to keep the rationale bounded.
+        capped = list(member_votes)[:5]
+        votes_summary = ",".join(
+            f"({lvl}:{score:.2f})" if isinstance(score, (int, float))
+            else f"({lvl}:?)"
+            for lvl, score in (
+                (m if isinstance(m, tuple) and len(m) == 2 else (str(m), 0.0))
+                for m in capped
+            )
+        )
+    else:
+        votes_summary = "n/a"
+    rationale = (
+        f"Bloom-classifier-disagreement check on Block {block_id or 'n/a'!r}: "
+        f"declared_level={declared_level or 'n/a'}, "
+        f"ensemble_winner={winner_level or 'n/a'}, "
+        f"winner_score={score_str}, "
+        f"dispersion={disp_str}, "
+        f"dispersion_threshold={dispersion_threshold:.3f}, "
+        f"confidence_floor={confidence_floor:.3f}, "
+        f"member_votes={votes_summary}, "
+        f"members_loaded={members_loaded}, "
+        f"failure_code={code or 'none'}."
+    )
+    try:
+        capture.log_decision(
+            decision_type="bloom_classifier_disagreement_check",
+            decision=decision,
+            rationale=rationale,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on "
+            "bloom_classifier_disagreement_check: %s",
+            exc,
+        )
+
+
 def _strip_html(html: str) -> str:
     """Strip HTML tags and collapse whitespace.
 
@@ -235,6 +306,7 @@ class BloomClassifierDisagreementValidator:
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
+        capture = inputs.get("decision_capture")
 
         blocks, err = _coerce_blocks(inputs)
         if err is not None:
@@ -264,6 +336,23 @@ class BloomClassifierDisagreementValidator:
             ensemble = self._get_ensemble()
             loaded = ensemble._load_members()
         except BertEnsembleDepsMissing as exc:
+            # Strict-mode degrade — emit one capture per audited block
+            # so the audit trail records the gate ran on each block.
+            for block in blocks:
+                if _block_attr(block, "block_type") not in _AUDITED_BLOCK_TYPES:
+                    continue
+                _emit_decision(
+                    capture,
+                    block_id=_block_attr(block, "block_id"),
+                    passed=False,
+                    code="BERT_ENSEMBLE_DEPS_MISSING",
+                    declared_level=_block_attr(block, "bloom_level"),
+                    winner_level=None, winner_score=None,
+                    dispersion=None,
+                    dispersion_threshold=self._dispersion_threshold,
+                    confidence_floor=self._confidence_floor,
+                    member_votes=None, members_loaded=0,
+                )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -288,6 +377,23 @@ class BloomClassifierDisagreementValidator:
 
         # Default-mode missing extras → graceful-degrade warning.
         if not loaded:
+            # Emit one passed=True capture per audited block so the
+            # audit trail records the silent-degrade C5 signal.
+            for block in blocks:
+                if _block_attr(block, "block_type") not in _AUDITED_BLOCK_TYPES:
+                    continue
+                _emit_decision(
+                    capture,
+                    block_id=_block_attr(block, "block_id"),
+                    passed=True,
+                    code="BERT_ENSEMBLE_DEPS_MISSING",
+                    declared_level=_block_attr(block, "bloom_level"),
+                    winner_level=None, winner_score=None,
+                    dispersion=None,
+                    dispersion_threshold=self._dispersion_threshold,
+                    confidence_floor=self._confidence_floor,
+                    member_votes=None, members_loaded=0,
+                )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -314,6 +420,7 @@ class BloomClassifierDisagreementValidator:
         issues: List[GateIssue] = []
         audited = 0
         passed_count = 0
+        members_loaded = len(loaded) if isinstance(loaded, list) else 1
 
         for block in blocks:
             block_type = _block_attr(block, "block_type")
@@ -340,11 +447,25 @@ class BloomClassifierDisagreementValidator:
                     _block_attr(block, "block_id"),
                     exc,
                 )
+                _emit_decision(
+                    capture,
+                    block_id=_block_attr(block, "block_id"),
+                    passed=True,
+                    code="ENSEMBLE_CLASSIFY_ERROR",
+                    declared_level=declared,
+                    winner_level=None, winner_score=None,
+                    dispersion=None,
+                    dispersion_threshold=self._dispersion_threshold,
+                    confidence_floor=self._confidence_floor,
+                    member_votes=None,
+                    members_loaded=members_loaded,
+                )
                 continue
 
             winner = result.get("winner_level", "unknown")
             winner_score = float(result.get("winner_score", 0.0))
             dispersion = float(result.get("dispersion", 0.0))
+            per_member = result.get("per_member") or []
             block_id = _block_attr(block, "block_id")
 
             block_passed = True
@@ -405,6 +526,38 @@ class BloomClassifierDisagreementValidator:
                         )
                     )
                 block_passed = False
+
+            # Emit one capture per audited block, after both
+            # disagreement + dispersion checks have run. The failure
+            # code is the most-relevant of the two (disagreement
+            # dominates dispersion when both fire — disagreement
+            # implies the rewrite tier should re-roll the whole block,
+            # whereas dispersion alone is a softer signal).
+            if not block_passed:
+                if (
+                    winner != "unknown"
+                    and winner != declared
+                    and winner_score >= self._confidence_floor
+                ):
+                    fail_code = "BERT_ENSEMBLE_DISAGREEMENT"
+                else:
+                    fail_code = "BERT_ENSEMBLE_DISPERSION_HIGH"
+            else:
+                fail_code = None
+            _emit_decision(
+                capture,
+                block_id=block_id,
+                passed=block_passed,
+                code=fail_code,
+                declared_level=declared,
+                winner_level=winner,
+                winner_score=winner_score,
+                dispersion=dispersion,
+                dispersion_threshold=self._dispersion_threshold,
+                confidence_floor=self._confidence_floor,
+                member_votes=per_member,
+                members_loaded=members_loaded,
+            )
 
             if block_passed:
                 passed_count += 1

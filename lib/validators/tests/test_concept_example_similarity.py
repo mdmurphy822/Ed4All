@@ -277,3 +277,84 @@ def test_default_threshold_is_lower_than_assessment() -> None:
 
     assert DEFAULT_THRESHOLD < ASSESS_THRESHOLD
     assert DEFAULT_THRESHOLD == 0.50
+
+
+# --------------------------------------------------------------------- #
+# H3 Wave W2 — DecisionCapture wiring smoke test.
+# --------------------------------------------------------------------- #
+
+
+class _StubCapture:
+    """Records every log_decision invocation."""
+
+    def __init__(self) -> None:
+        self.calls: List[Tuple[str, str, str]] = []
+
+    def log_decision(self, decision_type, decision, rationale, **kwargs):
+        self.calls.append((decision_type, decision, rationale))
+
+
+def test_decision_capture_emits_one_event_per_validate_call() -> None:
+    """A single audited example block yields exactly one
+    ``concept_example_similarity_check`` decision capture event, with
+    rationale interpolating cosine + threshold + above/below flag
+    dynamic signals."""
+    embedder = _StubEmbedder(
+        vector_map={
+            "EXAMPLE:": [1.0, 0.0, 0.0],
+            "ed4all:FederatedIdentity ": [1.0, 0.0, 0.0],
+        }
+    )
+    capture = _StubCapture()
+    validator = ConceptExampleSimilarityValidator(embedder=embedder)
+    validator.validate(
+        {
+            "blocks": [_make_example_block(
+                concept_refs=("ed4all:FederatedIdentity",)
+            )],
+            "concept_definitions": {
+                "ed4all:FederatedIdentity": "An identity model.",
+            },
+            "decision_capture": capture,
+        }
+    )
+
+    assert len(capture.calls) == 1
+    decision_type, decision, rationale = capture.calls[0]
+    assert decision_type == "concept_example_similarity_check"
+    assert decision == "passed"
+    assert len(rationale) >= 20
+    assert "min_pair_cosine=" in rationale
+    assert "threshold=" in rationale
+    assert "above_threshold=True" in rationale
+    assert "ed4all:FederatedIdentity" in rationale
+
+
+def test_decision_capture_emits_for_low_similarity_failure() -> None:
+    """A failing example block yields exactly one capture with
+    decision='failed:...' and below-threshold signal."""
+    embedder = _StubEmbedder(
+        vector_map={
+            "EXAMPLE:": [1.0, 0.0, 0.0],
+            "ed4all:DiskEncryption ": [0.0, 1.0, 0.0],
+        }
+    )
+    capture = _StubCapture()
+    validator = ConceptExampleSimilarityValidator(embedder=embedder)
+    validator.validate(
+        {
+            "blocks": [_make_example_block(
+                body="EXAMPLE: A user logs in via OAuth.",
+                concept_refs=("ed4all:DiskEncryption",),
+            )],
+            "concept_definitions": {
+                "ed4all:DiskEncryption": "Cryptographic protection.",
+            },
+            "decision_capture": capture,
+        }
+    )
+    assert len(capture.calls) == 1
+    _, decision, rationale = capture.calls[0]
+    assert decision.startswith("failed:")
+    assert "EXAMPLE_CONCEPT_LOW_SIMILARITY" in decision
+    assert "above_threshold=False" in rationale

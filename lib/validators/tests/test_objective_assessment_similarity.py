@@ -288,3 +288,86 @@ def test_deps_missing_emits_warning_passes(monkeypatch: pytest.MonkeyPatch) -> N
     assert len(result.issues) == 1
     assert result.issues[0].code == "EMBEDDING_DEPS_MISSING"
     assert result.issues[0].severity == "warning"
+
+
+# --------------------------------------------------------------------- #
+# H3 Wave W2 — DecisionCapture wiring smoke test.
+# --------------------------------------------------------------------- #
+
+
+class _StubCapture:
+    """Stub DecisionCapture that records every log_decision invocation."""
+
+    def __init__(self) -> None:
+        self.calls: List[Tuple[str, str, str]] = []
+
+    def log_decision(
+        self,
+        decision_type: str,
+        decision: str,
+        rationale: str,
+        **kwargs: Any,
+    ) -> None:
+        self.calls.append((decision_type, decision, rationale))
+
+
+def test_decision_capture_emits_one_event_per_validate_call() -> None:
+    """A single audited block yields exactly one
+    ``objective_assessment_similarity_check`` decision capture event,
+    with rationale interpolating the cosine + threshold + above/below
+    flag dynamic signals."""
+    embedder = _StubEmbedder(
+        vector_map={
+            "ASSESSMENT:": [1.0, 0.0, 0.0],
+            "OBJECTIVE:": [1.0, 0.0, 0.0],
+        }
+    )
+    capture = _StubCapture()
+    validator = ObjectiveAssessmentSimilarityValidator(embedder=embedder)
+    validator.validate(
+        {
+            "blocks": [_make_assessment_block(objective_ids=("TO-01",))],
+            "objective_statements": {
+                "TO-01": "OBJECTIVE: Aligned objective.",
+            },
+            "decision_capture": capture,
+        }
+    )
+
+    assert len(capture.calls) == 1
+    decision_type, decision, rationale = capture.calls[0]
+    assert decision_type == "objective_assessment_similarity_check"
+    assert decision == "passed"
+    assert len(rationale) >= 20
+    # Dynamic signals appear in the rationale.
+    assert "min_pair_cosine=" in rationale
+    assert "threshold=" in rationale
+    assert "above_threshold=True" in rationale
+    assert "TO-01" in rationale
+
+
+def test_decision_capture_emits_for_low_similarity_failure() -> None:
+    """A failing block yields exactly one capture with decision='failed:...'
+    and below-threshold signal in the rationale."""
+    embedder = _StubEmbedder(
+        vector_map={
+            "ASSESSMENT:": [1.0, 0.0, 0.0],
+            "OBJECTIVE:": [0.0, 1.0, 0.0],
+        }
+    )
+    capture = _StubCapture()
+    validator = ObjectiveAssessmentSimilarityValidator(embedder=embedder)
+    validator.validate(
+        {
+            "blocks": [_make_assessment_block(objective_ids=("TO-01",))],
+            "objective_statements": {
+                "TO-01": "OBJECTIVE: Unrelated topic.",
+            },
+            "decision_capture": capture,
+        }
+    )
+    assert len(capture.calls) == 1
+    _, decision, rationale = capture.calls[0]
+    assert decision.startswith("failed:")
+    assert "ASSESSMENT_OBJECTIVE_LOW_SIMILARITY" in decision
+    assert "above_threshold=False" in rationale

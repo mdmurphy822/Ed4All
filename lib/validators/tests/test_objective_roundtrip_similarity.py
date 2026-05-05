@@ -305,6 +305,80 @@ def test_paraphrase_via_router_adapter() -> None:
     assert len(router.calls) == 1
 
 
+# --------------------------------------------------------------------- #
+# H3 Wave W2 — DecisionCapture wiring smoke test.
+# --------------------------------------------------------------------- #
+
+
+class _StubCapture:
+    """Records every log_decision invocation."""
+
+    def __init__(self) -> None:
+        self.calls: List[Tuple[str, str, str]] = []
+
+    def log_decision(self, decision_type, decision, rationale, **kwargs):
+        self.calls.append((decision_type, decision, rationale))
+
+
+def test_decision_capture_emits_one_event_per_validate_call() -> None:
+    """A single audited objective block yields exactly one
+    ``objective_roundtrip_similarity_check`` decision capture event, with
+    rationale interpolating cosine + threshold + above/below flag
+    dynamic signals."""
+    embedder = _StubEmbedder(
+        vector_map={
+            "ORIGINAL:": [1.0, 0.0, 0.0],
+            "PARAPHRASE:": [1.0, 0.0, 0.0],
+        }
+    )
+    capture = _StubCapture()
+    validator = ObjectiveRoundtripSimilarityValidator(
+        embedder=embedder,
+        paraphrase_fn=_make_stub_paraphrase_fn("PARAPHRASE:"),
+    )
+    validator.validate({
+        "blocks": [_make_objective_block()],
+        "decision_capture": capture,
+    })
+
+    assert len(capture.calls) == 1
+    decision_type, decision, rationale = capture.calls[0]
+    assert decision_type == "objective_roundtrip_similarity_check"
+    assert decision == "passed"
+    assert len(rationale) >= 20
+    assert "roundtrip_cosine=" in rationale
+    assert "threshold=" in rationale
+    assert "above_threshold=True" in rationale
+    assert "statement_len=" in rationale
+    assert "paraphrase_len=" in rationale
+
+
+def test_decision_capture_emits_for_low_similarity_failure() -> None:
+    """A failing block yields exactly one capture with
+    decision='failed:...' and below-threshold signal."""
+    embedder = _StubEmbedder(
+        vector_map={
+            "ORIGINAL:": [1.0, 0.0, 0.0],
+            "PARAPHRASE:": [0.0, 1.0, 0.0],
+        }
+    )
+    capture = _StubCapture()
+    validator = ObjectiveRoundtripSimilarityValidator(
+        embedder=embedder,
+        paraphrase_fn=_make_stub_paraphrase_fn("PARAPHRASE:"),
+    )
+    validator.validate({
+        "blocks": [_make_objective_block()],
+        "decision_capture": capture,
+    })
+
+    assert len(capture.calls) == 1
+    _, decision, rationale = capture.calls[0]
+    assert decision.startswith("failed:")
+    assert "OBJECTIVE_ROUNDTRIP_LOW_SIMILARITY" in decision
+    assert "above_threshold=False" in rationale
+
+
 def test_inputs_paraphrase_fn_overrides_constructor() -> None:
     """``inputs['paraphrase_fn']`` overrides the constructor-time wiring."""
     embedder = _StubEmbedder(
