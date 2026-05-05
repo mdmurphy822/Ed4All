@@ -132,17 +132,159 @@ def test_composite_score_is_unweighted_mean(tmp_path: Path):
     assert result.score == expected
 
 
-def test_missing_input_yields_warning_not_block(tmp_path: Path):
-    """Missing required inputs -> advisory warning, passed=True."""
+def test_validator_fails_closed_on_missing_pedagogy_graph(tmp_path: Path):
+    """Audit C3: missing graph inputs are now a critical fail-closed.
+
+    Previously this returned ``passed=True`` with a warning issue —
+    silently shipping an empty knowledge graph to LibV2 when upstream
+    concept_extraction failed. The contract per
+    ``config/workflows.yaml::textbook_to_course::libv2_archival`` is
+    critical-severity, so missing graphs now block.
+    """
     validator = KGQualityValidator(reporter_factory=_factory({
         "completeness": 1.0, "consistency": 1.0,
         "accuracy": 1.0, "coverage": 1.0,
     }))
     result = validator.validate({"course_slug": "test"})
-    assert result.passed is True  # advisory only
+    assert result.passed is False
+    assert result.action == "block"
     assert len(result.issues) == 1
-    assert result.issues[0].code == "KG_QUALITY_INPUT_MISSING"
-    assert result.issues[0].severity == "warning"
+    assert result.issues[0].code == "KG_QUALITY_PEDAGOGY_GRAPH_MISSING"
+    assert result.issues[0].severity == "critical"
+
+
+def test_validator_fails_closed_on_reporter_exception(tmp_path: Path):
+    """Audit C3: a reporter raise was previously swallowed as
+    ``passed=True``; now it critical-fails with the exception class +
+    message threaded through the GateIssue."""
+
+    class _RaisingReporter:
+        def __init__(self, **_: Any) -> None:
+            pass
+
+        def compute(self, **_: Any) -> Dict[str, Any]:
+            raise RuntimeError("simulated reporter failure")
+
+        def write(self, _: Dict[str, Any]) -> Path:
+            raise AssertionError("write should not be reached")
+
+    def raising_factory(**kw: Any) -> Any:
+        return _RaisingReporter(**kw)
+
+    validator = KGQualityValidator(reporter_factory=raising_factory)
+    result = validator.validate(_base_inputs(tmp_path))
+    assert result.passed is False
+    assert result.action == "block"
+    assert len(result.issues) == 1
+    assert result.issues[0].code == "KG_QUALITY_REPORTER_ERROR"
+    assert result.issues[0].severity == "critical"
+    # Exception class + message are surfaced for triage.
+    assert "RuntimeError" in result.issues[0].message
+    assert "simulated reporter failure" in result.issues[0].message
+
+
+class _MockCapture:
+    """Minimal DecisionCapture stub — records every log_decision call."""
+
+    def __init__(self) -> None:
+        self.calls: list = []
+
+    def log_decision(self, **kwargs: Any) -> None:
+        self.calls.append(kwargs)
+
+
+def test_validator_emits_decision_capture_on_pass(tmp_path: Path):
+    """Audit H3 (partial): one ``kg_quality_report_check`` event per
+    ``validate()`` call, with computed metrics + verdict."""
+    capture = _MockCapture()
+    validator = KGQualityValidator(
+        reporter_factory=_factory({
+            "completeness": 0.9, "consistency": 0.8,
+            "accuracy": 0.7, "coverage": 0.6,
+        }),
+        decision_capture=capture,
+    )
+    validator.validate(_base_inputs(tmp_path))
+    assert len(capture.calls) == 1
+    call = capture.calls[0]
+    assert call["decision_type"] == "kg_quality_report_check"
+    assert call["decision"] == "passed"
+    metrics = call["metrics"]
+    assert metrics["completeness"] == 0.9
+    assert metrics["consistency"] == 0.8
+    assert metrics["accuracy"] == 0.7
+    assert metrics["coverage"] == 0.6
+    assert metrics["passed"] is True
+    # Composite is the unweighted mean.
+    assert abs(metrics["composite"] - (0.9 + 0.8 + 0.7 + 0.6) / 4) < 1e-9
+
+
+def test_validator_emits_decision_capture_on_missing_graph(tmp_path: Path):
+    """Decision capture must fire on the fail-closed missing-graph
+    path so post-hoc replay can distinguish it from below-threshold."""
+    capture = _MockCapture()
+    validator = KGQualityValidator(
+        reporter_factory=_factory({
+            "completeness": 1.0, "consistency": 1.0,
+            "accuracy": 1.0, "coverage": 1.0,
+        }),
+        decision_capture=capture,
+    )
+    validator.validate({"course_slug": "test"})
+    assert len(capture.calls) == 1
+    call = capture.calls[0]
+    assert call["decision_type"] == "kg_quality_report_check"
+    assert call["decision"] == "failed:KG_QUALITY_PEDAGOGY_GRAPH_MISSING"
+    assert call["metrics"]["failure_code"] == (
+        "KG_QUALITY_PEDAGOGY_GRAPH_MISSING"
+    )
+    assert call["metrics"]["passed"] is False
+
+
+def test_validator_emits_decision_capture_on_reporter_exception(tmp_path: Path):
+    """Decision capture fires on the reporter-exception fail-closed."""
+
+    def raising_factory(**_: Any) -> Any:
+        class _R:
+            def compute(self, **__: Any) -> Dict[str, Any]:
+                raise ValueError("boom")
+
+            def write(self, _r: Dict[str, Any]) -> Path:
+                raise AssertionError("unreached")
+
+        return _R()
+
+    capture = _MockCapture()
+    validator = KGQualityValidator(
+        reporter_factory=raising_factory,
+        decision_capture=capture,
+    )
+    validator.validate(_base_inputs(tmp_path))
+    assert len(capture.calls) == 1
+    call = capture.calls[0]
+    assert call["decision_type"] == "kg_quality_report_check"
+    assert call["metrics"]["failure_code"] == "KG_QUALITY_REPORTER_ERROR"
+    assert call["metrics"]["passed"] is False
+
+
+def test_validator_threads_capture_via_inputs(tmp_path: Path):
+    """Per-call ``inputs['decision_capture']`` overrides the
+    constructor-injected one (workflow-runner dispatch path)."""
+    constructor_capture = _MockCapture()
+    per_call_capture = _MockCapture()
+    validator = KGQualityValidator(
+        reporter_factory=_factory({
+            "completeness": 1.0, "consistency": 1.0,
+            "accuracy": 1.0, "coverage": 1.0,
+        }),
+        decision_capture=constructor_capture,
+    )
+    inputs = _base_inputs(tmp_path)
+    inputs["decision_capture"] = per_call_capture
+    validator.validate(inputs)
+    # Per-call wins; constructor capture is untouched.
+    assert len(per_call_capture.calls) == 1
+    assert len(constructor_capture.calls) == 0
 
 
 def test_writes_report_to_disk(tmp_path: Path):
