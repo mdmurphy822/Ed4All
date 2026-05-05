@@ -988,14 +988,21 @@ class CourseforgeRouter:
                     "route_all: outline tier failed for block_id=%s: %s",
                     block.block_id, exc,
                 )
-                # Mark the block as outline-failed so it's persisted
-                # (with marker) for re-execution and skipped by the
-                # rewrite pass. ``escalation_marker`` lives in the
-                # canonical _ESCALATION_MARKERS set, which keeps
-                # Block.__post_init__ from raising on the replace.
+                # C2 silent-degradation fix: stamp a dedicated
+                # ``outline_dispatch_error`` marker (NOT
+                # ``outline_budget_exhausted``, which is reserved for
+                # the regen-budget exhaustion / ``escalate_immediately``
+                # short-circuit paths). Distinguishing the two markers
+                # keeps the IMSCC W5 filter catching dispatch failures
+                # while letting postmortems tell network/provider
+                # raises apart from genuine budget exhaustion. The
+                # block is persisted (with marker) for re-execution
+                # and skipped by the rewrite pass; the marker lives in
+                # the canonical _ESCALATION_MARKERS set so
+                # Block.__post_init__ doesn't raise on the replace.
                 failed = dataclasses.replace(
                     block,
-                    escalation_marker="outline_budget_exhausted",
+                    escalation_marker="outline_dispatch_error",
                 )
                 outline_results.append((idx, failed, False))
 
@@ -1025,14 +1032,26 @@ class CourseforgeRouter:
                     "route_all: rewrite tier failed for block_id=%s: %s",
                     outlined.block_id, exc,
                 )
-                # Rewrite failure: keep the outlined block (with marker)
-                # so the caller can persist for re-execution.
+                # C2 silent-degradation fix: rewrite-tier dispatch
+                # failures (network / provider raise / unhandled
+                # exception inside the rewrite call path) stamp the
+                # dedicated ``rewrite_dispatch_error`` marker rather
+                # than reusing ``validator_consensus_fail`` (reserved
+                # for the regen-budget-exhausted post-validator path
+                # in ``route_rewrite_with_remediation``). Keeping the
+                # markers distinct lets postmortems separate network
+                # failures from semantic-validation exhaustion. The
+                # block is preserved at its original index so the
+                # caller can persist for re-execution and the
+                # downstream IMSCC W5 filter catches the marker.
+                # Outline-failed blocks already carry their own marker
+                # — don't overwrite it.
                 failed_rewrite = (
                     outlined
                     if outlined.escalation_marker is not None
                     else dataclasses.replace(
                         outlined,
-                        escalation_marker="validator_consensus_fail",
+                        escalation_marker="rewrite_dispatch_error",
                     )
                 )
                 rewrite_results.append((idx, failed_rewrite))

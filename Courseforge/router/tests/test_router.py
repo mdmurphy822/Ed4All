@@ -453,9 +453,12 @@ def test_route_all_runs_two_pass(monkeypatch):
 
 def test_route_all_excludes_failed_outline_from_rewrite(monkeypatch):
     """A block whose outline-tier dispatch raises is marked
-    ``escalation_marker="outline_budget_exhausted"`` and is NOT
-    passed to the rewrite tier; the failed block still appears in the
-    returned list at its original index."""
+    ``escalation_marker="outline_dispatch_error"`` (C2 silent-
+    degradation fix: dedicated marker for dispatch failures, distinct
+    from the regen-budget-exhausted ``outline_budget_exhausted``
+    path) and is NOT passed to the rewrite tier; the failed block
+    still appears in the returned list at its original index so the
+    W5 packager-side filter catches it."""
     fake_outline = _FakeProvider(raise_on_outline=True)
     fake_rewrite = _FakeProvider()
     r = CourseforgeRouter(
@@ -468,16 +471,16 @@ def test_route_all_excludes_failed_outline_from_rewrite(monkeypatch):
     assert len(fake_outline.outline_calls) == 1
     # Rewrite was NOT attempted on the failed block.
     assert len(fake_rewrite.rewrite_calls) == 0
-    # Block is returned with outline-failed marker.
+    # Block is returned with outline-dispatch-error marker.
     assert len(out) == 1
-    assert out[0].escalation_marker == "outline_budget_exhausted"
+    assert out[0].escalation_marker == "outline_dispatch_error"
 
 
 def test_route_all_preserves_ordering_with_mixed_outcomes(monkeypatch):
     """A list with one failing and two passing outline dispatches
     returns blocks in input order; the failed block has the
-    ``outline_budget_exhausted`` marker, the passing blocks reach
-    the rewrite tier."""
+    ``outline_dispatch_error`` marker (C2 fix), the passing blocks
+    reach the rewrite tier."""
 
     class _MixedOutline:
         """Outline provider that fails for ``block_id`` containing
@@ -518,9 +521,9 @@ def test_route_all_preserves_ordering_with_mixed_outcomes(monkeypatch):
     assert len(fake_rewrite.rewrite_calls) == 2
     rewrite_ids = [c["block"].block_id for c in fake_rewrite.rewrite_calls]
     assert "page1#concept_failure_1" not in rewrite_ids
-    # Failed block carries the marker.
+    # Failed block carries the dedicated dispatch-error marker.
     failed = [b for b in out if "failure" in b.block_id][0]
-    assert failed.escalation_marker == "outline_budget_exhausted"
+    assert failed.escalation_marker == "outline_dispatch_error"
 
 
 # ---------------------------------------------------------------------------
