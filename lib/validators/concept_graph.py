@@ -154,6 +154,40 @@ def _has_provenance(edge: Dict[str, Any]) -> bool:
     return True
 
 
+def _emit_concept_graph_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    metrics: Dict[str, Any],
+) -> None:
+    """Emit one ``concept_graph_check`` decision per ``validate()`` (H3 W6b)."""
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    metric_strs = ", ".join(f"{k}={v}" for k, v in sorted(metrics.items()))
+    rationale = (
+        f"Concept graph gate verdict={decision}, "
+        f"failure_code={code or 'none'}, metrics=({metric_strs})."
+    )
+    enriched = dict(metrics)
+    enriched["passed"] = bool(passed)
+    enriched["failure_code"] = code
+    try:
+        capture.log_decision(
+            decision_type="concept_graph_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(enriched),
+            metrics=enriched,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on concept_graph_check: %s",
+            exc,
+        )
+
+
 class ConceptGraphValidator:
     """Phase 6 concept-graph structural + minimal-quality gate.
 
@@ -178,10 +212,21 @@ class ConceptGraphValidator:
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
+        capture = inputs.get("decision_capture")
         issues: List[GateIssue] = []
 
         path_raw = inputs.get("concept_graph_path")
         if not path_raw:
+            _emit_concept_graph_decision(
+                capture,
+                passed=False,
+                code="CONCEPT_GRAPH_MISSING_INPUT",
+                metrics={
+                    "concept_graph_path_str": None,
+                    "graph_present": False,
+                    "issue_count": 1,
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -202,6 +247,16 @@ class ConceptGraphValidator:
 
         path = Path(path_raw)
         if not path.exists():
+            _emit_concept_graph_decision(
+                capture,
+                passed=False,
+                code="CONCEPT_GRAPH_NOT_FOUND",
+                metrics={
+                    "concept_graph_path_str": str(path),
+                    "graph_present": False,
+                    "issue_count": 1,
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -224,6 +279,17 @@ class ConceptGraphValidator:
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
+            _emit_concept_graph_decision(
+                capture,
+                passed=False,
+                code="CONCEPT_GRAPH_INVALID_JSON",
+                metrics={
+                    "concept_graph_path_str": str(path),
+                    "graph_present": True,
+                    "json_parse_error": exc.__class__.__name__,
+                    "issue_count": 1,
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -244,6 +310,17 @@ class ConceptGraphValidator:
             )
 
         if not isinstance(data, dict):
+            _emit_concept_graph_decision(
+                capture,
+                passed=False,
+                code="CONCEPT_GRAPH_BAD_SHAPE",
+                metrics={
+                    "concept_graph_path_str": str(path),
+                    "graph_present": True,
+                    "data_root_type": type(data).__name__,
+                    "issue_count": 1,
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -291,6 +368,17 @@ class ConceptGraphValidator:
                 )
             )
         if shape_errors:
+            _emit_concept_graph_decision(
+                capture,
+                passed=False,
+                code="CONCEPT_GRAPH_BAD_SHAPE",
+                metrics={
+                    "concept_graph_path_str": str(path),
+                    "graph_present": True,
+                    "shape_error_count": len(shape_errors),
+                    "issue_count": len(shape_errors),
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -493,6 +581,7 @@ class ConceptGraphValidator:
         )
 
         critical_count = sum(1 for i in issues if i.severity == "critical")
+        warning_count = sum(1 for i in issues if i.severity == "warning")
         passed = critical_count == 0
 
         # Action: warning-only by design. Critical-severity file/shape
@@ -500,6 +589,25 @@ class ConceptGraphValidator:
         # by the time we reach here the only issues are warnings.
         action: Optional[str] = None
 
+        first_issue_code = next((i.code for i in issues), None)
+        _emit_concept_graph_decision(
+            capture,
+            passed=passed,
+            code=first_issue_code if not passed else None,
+            metrics={
+                "concept_graph_path_str": str(path),
+                "graph_present": True,
+                "score": float(round(score, 4)),
+                "node_count": int(node_count),
+                "edge_count": int(len(edges)),
+                "edge_type_count": int(edge_type_count),
+                "min_nodes": int(min_nodes),
+                "min_edge_types": int(min_edge_types),
+                "critical_count": int(critical_count),
+                "warning_count": int(warning_count),
+                "issue_count": len(issues),
+            },
+        )
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,

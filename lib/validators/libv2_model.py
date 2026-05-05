@@ -56,6 +56,40 @@ _PEDAGOGY_CANDIDATES = (
 )
 
 
+def _emit_libv2_model_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    metrics: Dict[str, Any],
+) -> None:
+    """Emit one ``libv2_model_check`` decision per ``validate()`` (H3 W6b)."""
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    metric_strs = ", ".join(f"{k}={v}" for k, v in sorted(metrics.items()))
+    rationale = (
+        f"LibV2 model card gate verdict={decision}, "
+        f"failure_code={code or 'none'}, metrics=({metric_strs})."
+    )
+    enriched = dict(metrics)
+    enriched["passed"] = bool(passed)
+    enriched["failure_code"] = code
+    try:
+        capture.log_decision(
+            decision_type="libv2_model_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(enriched),
+            metrics=enriched,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on libv2_model_check: %s",
+            exc,
+        )
+
+
 class LibV2ModelValidator:
     """Validates a LibV2-imported trained adapter + its model card.
 
@@ -75,11 +109,22 @@ class LibV2ModelValidator:
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", "libv2_model")
+        capture = inputs.get("decision_capture")
         issues: List[GateIssue] = []
 
         # -- 1. Required input.
         card_path_raw = inputs.get("model_card_path")
         if not card_path_raw:
+            _emit_libv2_model_decision(
+                capture,
+                passed=False,
+                code="MISSING_MODEL_CARD_PATH",
+                metrics={
+                    "card_path_str": None,
+                    "card_present": False,
+                    "issue_count": 1,
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -93,6 +138,16 @@ class LibV2ModelValidator:
             )
         card_path = Path(card_path_raw)
         if not card_path.exists():
+            _emit_libv2_model_decision(
+                capture,
+                passed=False,
+                code="MODEL_CARD_NOT_FOUND",
+                metrics={
+                    "card_path_str": str(card_path),
+                    "card_present": False,
+                    "issue_count": 1,
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -124,6 +179,17 @@ class LibV2ModelValidator:
         try:
             card = json.loads(card_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
+            _emit_libv2_model_decision(
+                capture,
+                passed=False,
+                code="INVALID_JSON",
+                metrics={
+                    "card_path_str": str(card_path),
+                    "card_present": True,
+                    "json_parse_error": exc.__class__.__name__,
+                    "issue_count": 1,
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -145,6 +211,19 @@ class LibV2ModelValidator:
         # short-circuit before the on-disk integrity / hash-resolution
         # passes (they assume a well-shaped card).
         if not isinstance(card, dict) or "adapter_format" not in card:
+            _emit_libv2_model_decision(
+                capture,
+                passed=False,
+                code="SCHEMA_VIOLATION",
+                metrics={
+                    "card_path_str": str(card_path),
+                    "card_present": True,
+                    "card_root_type": type(card).__name__,
+                    "adapter_format_present": isinstance(card, dict)
+                    and "adapter_format" in card,
+                    "issue_count": len(issues),
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -169,9 +248,28 @@ class LibV2ModelValidator:
         issues.extend(self._check_huggingface_repo_shape(card, card_path))
 
         critical_count = sum(1 for i in issues if i.severity == "critical")
+        warning_count = sum(1 for i in issues if i.severity == "warning")
         passed = critical_count == 0
         score = max(0.0, 1.0 - len(issues) * 0.1) if issues else 1.0
 
+        first_critical_code = next(
+            (i.code for i in issues if i.severity == "critical"), None
+        )
+        _emit_libv2_model_decision(
+            capture,
+            passed=passed,
+            code=first_critical_code,
+            metrics={
+                "card_path_str": str(card_path),
+                "card_present": True,
+                "score": float(round(score, 4)),
+                "critical_count": int(critical_count),
+                "warning_count": int(warning_count),
+                "issue_count": len(issues),
+                "adapter_format": card.get("adapter_format"),
+                "course_dir_str": str(course_dir) if course_dir else None,
+            },
+        )
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,

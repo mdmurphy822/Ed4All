@@ -278,6 +278,40 @@ def _env_relax() -> bool:
 # ---------------------------------------------------------------------- #
 
 
+def _emit_packet_integrity_decision(
+    capture: Any,
+    *,
+    passed: bool,
+    code: Optional[str],
+    metrics: Dict[str, Any],
+) -> None:
+    """Emit one ``libv2_packet_integrity_check`` decision per gate-shape ``validate()`` (H3 W6b)."""
+    if capture is None:
+        return
+    decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    metric_strs = ", ".join(f"{k}={v}" for k, v in sorted(metrics.items()))
+    rationale = (
+        f"LibV2 packet integrity gate verdict={decision}, "
+        f"failure_code={code or 'none'}, metrics=({metric_strs})."
+    )
+    enriched = dict(metrics)
+    enriched["passed"] = bool(passed)
+    enriched["failure_code"] = code
+    try:
+        capture.log_decision(
+            decision_type="libv2_packet_integrity_check",
+            decision=decision,
+            rationale=rationale,
+            context=str(enriched),
+            metrics=enriched,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "DecisionCapture.log_decision raised on libv2_packet_integrity_check: %s",
+            exc,
+        )
+
+
 class PacketIntegrityValidator:
     """Validates a LibV2 archive's internal consistency.
 
@@ -396,6 +430,7 @@ class PacketIntegrityValidator:
         from MCP.hardening.validation_gates import GateIssue, GateResult
 
         gate_id = str(inputs.get("gate_id", "libv2_packet_integrity") or "libv2_packet_integrity")
+        capture = inputs.get("decision_capture")
 
         # Strict flags: either gate-config (merged into inputs by the
         # executor) or per-call inputs. ``strict`` is sugar for both.
@@ -420,6 +455,18 @@ class PacketIntegrityValidator:
             archive_root = Path(manifest_path_raw).parent
 
         if archive_root is None:
+            _emit_packet_integrity_decision(
+                capture,
+                passed=False,
+                code="MISSING_ARCHIVE_INPUTS",
+                metrics={
+                    "archive_root_str": None,
+                    "issue_count": 1,
+                    "rules_run": 0,
+                    "strict_coverage": bool(self.strict_coverage),
+                    "strict_typing": bool(self.strict_typing),
+                },
+            )
             return GateResult(
                 gate_id=gate_id,
                 validator_name=self.name,
@@ -449,9 +496,29 @@ class PacketIntegrityValidator:
             ))
 
         critical_count = sum(1 for i in gate_issues if i.severity == "critical")
+        warning_count = sum(1 for i in gate_issues if i.severity == "warning")
         passed = critical_count == 0
         score = max(0.0, 1.0 - len(gate_issues) * 0.05) if gate_issues else 1.0
 
+        first_critical_code = next(
+            (i.code for i in gate_issues if i.severity == "critical"), None
+        )
+        _emit_packet_integrity_decision(
+            capture,
+            passed=passed,
+            code=first_critical_code,
+            metrics={
+                "archive_root_str": str(archive_root),
+                "score": float(round(score, 4)),
+                "critical_count": int(critical_count),
+                "warning_count": int(warning_count),
+                "issue_count": len(gate_issues),
+                "rules_run": int(getattr(result, "rules_run", 0) or 0),
+                "rules_failed": int(getattr(result, "rules_failed", 0) or 0),
+                "strict_coverage": bool(self.strict_coverage),
+                "strict_typing": bool(self.strict_typing),
+            },
+        )
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,
