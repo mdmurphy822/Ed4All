@@ -171,14 +171,26 @@ class TestContentGroundedGeneration:
         for choice in question.choices:
             assert "Plausible distractor" not in choice["text"]
 
-    def test_mcq_without_chunks_falls_back(self):
-        question = self.generator._generate_multiple_choice(
+    def test_mcq_without_chunks_skips_emit(self):
+        """Worker W1: deterministic-template fallback path was killed.
+
+        When source_chunks is empty / None, the generator returns a
+        SkippedItem instead of a placeholder QuestionData. This is the
+        behavior change that closes the silent-placeholder regression
+        class (placeholder strings used to land in the corpus and bias
+        the trained adapter).
+        """
+        from Trainforge.generators.assessment_generator import SkippedItem
+
+        result = self.generator._generate_multiple_choice(
             "Q-test-2", "LO-001", "remember",
             {"verbs": ["define"], "patterns": ["What is...?"],
              "question_types": ["multiple_choice"]},
             None,
         )
-        assert "TEMPLATE_FALLBACK" in (question.generation_rationale or "")
+        assert isinstance(result, SkippedItem)
+        assert result.reason == "no_source_chunks"
+        assert result.question_type == "multiple_choice"
 
     def test_true_false_with_chunks_uses_content(self):
         question = self.generator._generate_true_false(

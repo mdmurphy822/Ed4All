@@ -5815,10 +5815,19 @@ def _build_tool_registry() -> dict:
                 _os.getenv("TRAINFORGE_VALIDATE_CHUNKS", "").lower() == "true"
             )
 
+            # Worker W1: surface skipped-item count from the killed
+            # template-fallback path so the workflow phase output keeps
+            # visibility on slots the generator refused to fill.
+            skipped_total = len(getattr(assessment, "skipped_items", []) or [])
+            skipped_summary = [
+                s.to_dict() for s in (getattr(assessment, "skipped_items", []) or [])[:3]
+            ]
             return json.dumps({
                 "success": True,
                 "assessment_id": assessment.assessment_id,
                 "question_count": len(assessment.questions),
+                "skipped_items_count": skipped_total,
+                "skipped_items_summary": skipped_summary,
                 "output_path": str(assessments_path),
                 "assessments_path": str(assessments_path),
                 "chunks_path": str(chunks_path),

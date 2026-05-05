@@ -71,6 +71,7 @@
         "assessment_design",
         "assessment_generation",
         "assessment_planning",
+        "assessment_template_skip",
         "base_model_selection",
         "bert_ensemble_disagreement",
         "bert_ensemble_dispersion_high",
