@@ -68,6 +68,10 @@ from blocks import (  # noqa: E402
 from Courseforge.generators._base import (  # noqa: E402
     _BaseLLMProvider,
 )
+from MCP.hardening.error_classifier import (  # noqa: E402
+    ErrorClass,
+    classify_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +106,15 @@ SUPPORTED_PROVIDERS: Tuple[str, ...] = (
 # providers in :mod:`Trainforge.generators._local_provider`.
 MAX_PARSE_RETRIES = 3
 
+# Worker W6: per-block transient-retry budget for dispatch-side
+# failures (Ollama 503 / connection reset / read timeout). Transient
+# retries do NOT advance ``MAX_PARSE_RETRIES`` so a flaky local server
+# can't burn the parse budget before any parse attempt completes.
+# Permanent errors (auth failure, bad request) re-raise immediately.
+# UNKNOWN-class errors fall through to the legacy parse-retry path so
+# semantic regressions don't change behavior on unclassified errors.
+_TRANSIENT_RETRY_BUDGET = 3
+
 
 # ---------------------------------------------------------------------------
 # Errors
@@ -118,6 +131,12 @@ class OutlineProviderError(RuntimeError):
 
     - ``outline_exhausted`` — every parse + remediation retry failed
       Schema validation; the outline tier returned no usable JSON.
+    - ``outline_transient_exhausted`` — Worker W6: the transient-retry
+      budget (``_TRANSIENT_RETRY_BUDGET``) was exhausted on dispatch-
+      side failures (Ollama 503 / connection reset / read timeout)
+      without any parse attempt completing. Distinct from
+      ``outline_exhausted`` so the router can branch on the failure
+      mode.
     """
 
     def __init__(self, message: str, *, code: str) -> None:
@@ -718,8 +737,15 @@ class OutlineProvider(_BaseLLMProvider):
         last_raw: str = ""
         parsed: Optional[Dict[str, Any]] = None
         total_retries = 0
+        # Worker W6: transient retries (Ollama 503 / connection reset /
+        # read timeout) are counted separately from MAX_PARSE_RETRIES so
+        # they do NOT burn the parse budget. Permanent errors re-raise
+        # immediately. UNKNOWN-class errors preserve legacy semantics
+        # (advance the parse retry loop).
+        transient_retries = 0
+        attempt = 0
 
-        for attempt in range(MAX_PARSE_RETRIES):
+        while attempt < MAX_PARSE_RETRIES:
             user_prompt = base_user_prompt
             if attempt > 0 and last_error:
                 schema_hint = (
@@ -746,9 +772,42 @@ class OutlineProvider(_BaseLLMProvider):
                     user_prompt,
                     extra_payload=extra_payload or None,
                 )
-            except Exception as exc:  # pragma: no cover — defensive
-                last_error = f"dispatch failure: {exc}"
+            except Exception as exc:
+                # Worker W6: classify the dispatch-side failure so a
+                # transient (Ollama 503 / connection reset / read
+                # timeout) doesn't burn the parse-retry budget. Permanent
+                # errors (auth failure, bad request) surface immediately;
+                # UNKNOWN-class errors preserve the legacy parse-retry
+                # path so semantic regressions don't shift behavior on
+                # unclassified errors.
+                classified = classify_error(exc, task_id=block.block_id)
+                if classified.error_class is ErrorClass.TRANSIENT:
+                    if transient_retries < _TRANSIENT_RETRY_BUDGET:
+                        transient_retries += 1
+                        # Do NOT advance attempt — re-dispatch under the
+                        # same parse-retry slot.
+                        continue
+                    raise OutlineProviderError(
+                        f"Outline tier exhausted transient-retry budget "
+                        f"({_TRANSIENT_RETRY_BUDGET}) for block "
+                        f"{block.block_id!r} (last_error={exc!r})",
+                        code="outline_transient_exhausted",
+                    ) from exc
+                if classified.error_class is ErrorClass.PERMANENT:
+                    # Re-raise immediately — no retry on permanent
+                    # errors (validation_error, missing_input,
+                    # 401/403/404, etc.).
+                    raise
+                # UNKNOWN / POISON_PILL → fall through to legacy
+                # parse-retry path. POISON_PILL is treated like UNKNOWN
+                # at the per-call site; batch-level poison-pill detection
+                # is the orchestrator's responsibility.
+                last_error = (
+                    f"dispatch failure ({classified.error_class.value}): "
+                    f"{exc}"
+                )
                 last_raw = ""
+                attempt += 1
                 continue
 
             total_retries += int(retry_count)
@@ -757,6 +816,7 @@ class OutlineProvider(_BaseLLMProvider):
             candidate = OpenAICompatibleClient._extract_json_lenient(raw_text)
             if candidate is None:
                 last_error = "lenient JSON parse returned None"
+                attempt += 1
                 continue
             if schema is not None:
                 try:
@@ -766,6 +826,7 @@ class OutlineProvider(_BaseLLMProvider):
                     # remediation hint stays inside the model's
                     # context window.
                     last_error = str(exc.message)[:300]
+                    attempt += 1
                     continue
 
             parsed = candidate
