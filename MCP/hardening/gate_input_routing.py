@@ -1130,6 +1130,16 @@ def default_router() -> GateInputRouter:
         "Courseforge.router.inter_tier_gates.BlockSourceRefValidator",
         _build_block_input_rewrite,
     )
+    # Worker W7: assessment_item payload-shape gate. Same Block-input
+    # surface as the four Block*Validators above (filters to
+    # block_type == "assessment_item" internally), so it reuses the
+    # rewrite-tier shim — the inter_tier_validation seam falls through
+    # to the outline-tier path inside ``_build_block_input`` when only
+    # blocks_outline_path is present.
+    r.register(
+        "lib.validators.assessment_item_payload.BlockAssessmentItemPayloadValidator",
+        _build_block_input_rewrite,
+    )
 
     # Group B — Rewrite-emit shape + sentence-grounding gates. Reuse
     # the rewrite-tier Block surface and additionally surface

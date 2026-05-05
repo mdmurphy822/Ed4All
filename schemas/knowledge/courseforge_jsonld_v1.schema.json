@@ -333,6 +333,52 @@
         }
       }
     },
+    "AssessmentItem": {
+      "type": "object",
+      "required": ["stem", "answer_key", "distractors", "correct_answer_index"],
+      "additionalProperties": false,
+      "description": "Worker W7: canonical assessment_item payload shape. Mirrors $defs.Misconception's positioning — a discrete sub-shape referenced by the outline-tier provider's per-block JSON Schema and validated end-to-end by lib.validators.assessment_item_payload.BlockAssessmentItemPayloadValidator. Pre-W7 the outline tier required only stem + answer_key, so a model could ship a 'valid' assessment_item with one (or zero) distractor(s) and ship it; W7 mints distractors[] (>=2 entries) + correct_answer_index (0-based pointer into the distractors[] array) so the structural-tier seam catches the failure. distractors[].misconception_ref is FORWARD-COMPAT only — a separate plan grounds distractor → Misconception linkage post-W9; today the field is OPTIONAL and validators only check pattern when present.",
+      "properties": {
+        "stem": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Question stem the learner reads. Single-line or multi-line prose; the rewrite tier turns it into the question prompt in the published HTML."
+        },
+        "answer_key": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Canonical correct-answer text. Surfaces verbatim as the matching distractors[correct_answer_index].text in a well-formed item, but the redundancy is intentional during the W7 transition window (Block-payload validator cross-checks alignment in a follow-up; today they're independent fields)."
+        },
+        "distractors": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 5,
+          "description": "Multiple-choice option list. minItems=2 closes the W7 'one distractor' regression class; maxItems=5 caps emit size (typical MCQ stays at 4). Each entry's misconception_ref is OPTIONAL — when present it MUST match ^[A-Z]{2,}-\\d{2,}#m\\d+$ (Misconception inventory CURIE). The chunk → misconception linkage that populates this field is upstream and lands in a separate plan after W9; today it's a forward-compat slot.",
+          "items": {
+            "type": "object",
+            "required": ["text"],
+            "additionalProperties": false,
+            "properties": {
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The distractor's surface text the learner sees."
+              },
+              "misconception_ref": {
+                "type": "string",
+                "pattern": "^[A-Z]{2,}-\\d{2,}#m\\d+$",
+                "description": "Forward-compat: CURIE pointing at the misconception this distractor probes. Pattern: ^[A-Z]{2,}-\\d{2,}#m\\d+$ (e.g., TO-01#m1). OPTIONAL today — the chunk → misconception linkage upstream of the outline tier is deferred to a separate plan post-W9."
+              }
+            }
+          }
+        },
+        "correct_answer_index": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "0-based index into distractors[] pointing at the correct option. The W7 Block-payload validator additionally enforces correct_answer_index < len(distractors) (the schema can't bind the upper end without coupling to the array's length)."
+        }
+      }
+    },
     "Touch": {
       "type": "object",
       "required": ["model", "provider", "tier", "timestamp", "decisionCaptureId", "purpose"],
