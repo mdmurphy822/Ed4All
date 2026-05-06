@@ -1646,6 +1646,29 @@ workflows:
               on_error: warn
             description: Wave 1.7 W1.7.C — tri-axis post-rewrite per-block-per-objective delivery check. Mirrors the outline seam against rewrite-tier Blocks.
 
+          # GPT Feedback v2 Wave 2 W2.F: per-block-per-claim NLI
+          # entailment gate. Fans out every key_claims[] entry against
+          # the block's cited source chunks (Wave 1.5 W1.5.A structured
+          # List[{claim, source_chunk_ids[]}] shape with back-compat for
+          # the legacy List[str] shape). Skips assessment_item /
+          # objective / chrome / recap (per-stem cosine + chrome
+          # scaffolding skip set). Graceful-degrade contract: when the
+          # NLI loader (MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli)
+          # is unavailable, emits warning NLI_DEPS_MISSING with
+          # passed=True; strict mode via TRAINFORGE_REQUIRE_EMBEDDINGS
+          # =true flips to fail-closed. Day-1 severity warning per
+          # plan §6.1; promotion to critical deferred to Wave 3
+          # calibration.
+          - gate_id: claim_support
+            validator: lib.validators.claim_support.ClaimSupportValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: fail_closed
+            description: Wave 2 W2.F — per-block-per-claim NLI entailment check against cited source chunks. Fires UNSUPPORTED_CLAIM (>20% unsupported rate) and CONTRADICTED_CLAIM (>5% contradicted rate).
+
           # GPT-feedback W2-W7 wave: post-rewrite mirror of the five
           # outline-seam gates. Same Block-shape inputs; the validators'
           # internal shape-dispatch handles rewrite-tier HTML-string
