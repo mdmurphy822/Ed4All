@@ -983,6 +983,19 @@ class SLMEvalHarness:
         # without filename-sniffing. False on a real eval run.
         out_dict["smoke_mode"] = bool(self.smoke_mode)
 
+        # Worker W3.B: training_corpus_promotion pass-through. When the
+        # course tree carries a freshly-built
+        # ``<course>/quality/trainforge_assessment_quality_report.json``
+        # (W2.B aggregator output), mirror its
+        # ``phase_results.synthesis.promotion_ladder`` block onto the
+        # eval report's top-level ``training_corpus_promotion`` field.
+        # Strict pass-through: this surface re-projects the same
+        # numbers; never re-computes them. Best-effort — a missing /
+        # malformed report logs a warning and skips, never raises.
+        promotion_ladder = self._read_training_corpus_promotion_ladder()
+        if promotion_ladder is not None:
+            out_dict["training_corpus_promotion"] = promotion_ladder
+
         # Audit 2026-04-30 / A8: prefix-bigram diversity. Surfaces
         # template collapse (the cc07cc76 run had top-3 bigrams covering
         # 25.2% of generations and 52.1% of outputs reusing a single
@@ -1011,6 +1024,53 @@ class SLMEvalHarness:
         ):
             self.eval_stage_checkpoint_path.unlink()
         return output_path
+
+    def _read_training_corpus_promotion_ladder(self) -> Optional[Dict[str, Any]]:
+        """Worker W3.B: read promotion-ladder pass-through from W2.B aggregator.
+
+        Looks at ``<course>/quality/trainforge_assessment_quality_report.json``
+        and returns its ``phase_results.synthesis.promotion_ladder``
+        block when present. Returns ``None`` (caller skips emit) when:
+
+        * the report file does not exist (no aggregator run yet);
+        * the file is unreadable or not valid JSON (logs a warning);
+        * the ``phase_results.synthesis.promotion_ladder`` path is
+          missing or wrong-shape.
+
+        Strict pass-through: the dict is copied through unchanged. The
+        eval-side surface never re-computes the numbers — by design.
+        """
+        report_path = (
+            self.course_path
+            / "quality"
+            / "trainforge_assessment_quality_report.json"
+        )
+        if not report_path.exists():
+            return None
+        try:
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "slm_eval_harness: cannot read training_corpus_promotion "
+                "from %s: %s",
+                report_path, exc,
+            )
+            return None
+        if not isinstance(payload, dict):
+            return None
+        phase_results = payload.get("phase_results")
+        if not isinstance(phase_results, dict):
+            return None
+        synthesis = phase_results.get("synthesis")
+        if not isinstance(synthesis, dict):
+            return None
+        ladder = synthesis.get("promotion_ladder")
+        if not isinstance(ladder, dict):
+            return None
+        # Defensive copy so a downstream mutation of the eval report's
+        # in-memory dict cannot leak back into the cached aggregator
+        # payload via shared reference.
+        return dict(ladder)
 
     def _run_baseline_compare(
         self,
