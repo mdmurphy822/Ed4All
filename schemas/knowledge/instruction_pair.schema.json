@@ -69,6 +69,50 @@
     "schema_version": {
       "type": "string",
       "const": "v1"
+    },
+    "promotion_status": {
+      "type": "string",
+      "enum": ["pending", "candidate", "validated", "trainable", "rejected"],
+      "description": "GPT Feedback v2 P0c Fix 7a — training-pair promotion ladder. Optional on first land; emitter assigns 'pending' on first emit, then upgrades through candidate / validated / trainable / rejected per the TrainingPairPromotionValidator (Wave 2)."
+    },
+    "rejection_reason": {
+      "type": ["string", "null"],
+      "description": "Free-string rejection rationale. Populated only when promotion_status == 'rejected'."
+    },
+    "observed_bloom": {
+      "type": ["string", "null"],
+      "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create", null],
+      "description": "BERT-ensemble classification of the emitted prompt+completion. Null when classifier didn't run."
+    },
+    "bloom_alignment": {
+      "type": ["boolean", "null"],
+      "description": "True iff observed_bloom == bloom_level. Null when observed_bloom is unset."
+    },
+    "answer_support_score": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Cosine similarity (or per-pair entailment score) between completion and the cited source chunk text. Null when the score wasn't computed."
+    },
+    "rationale_richness_score": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Heuristic semantic-richness score over the rationale string. Null when not computed."
+    },
+    "source_chunk_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable id of the source chunk this pair was synthesized from. Optional in general; required when promotion_status == 'trainable' (see if/then clause). Closes the source-free-generation hole at the schema layer."
     }
+  },
+  "if": {
+    "properties": {
+      "promotion_status": {"const": "trainable"}
+    },
+    "required": ["promotion_status"]
+  },
+  "then": {
+    "required": ["source_chunk_id"]
   }
 }
