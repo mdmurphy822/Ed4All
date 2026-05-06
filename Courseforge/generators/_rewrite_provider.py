@@ -177,6 +177,14 @@ _REWRITE_SYSTEM_PROMPT = (
     "examples, voice. DO NOT add facts not in the outline's key_claims "
     "or in the source chunks."
     "\n\n"
+    "When the outline carries per-claim source attribution "
+    "(`key_claims[].source_chunk_ids[]`), the rendered HTML SHOULD "
+    "group the prose for each claim near a `<cite>` or "
+    "`data-cf-source-ids` reference scoped to that claim's chunks. "
+    "Block-level `source_refs` remains the gate-enforced superset; "
+    "the per-claim attribution is for finer-grained pedagogical "
+    "context."
+    "\n\n"
     "Every block MUST carry the per-block-type ``data-cf-*`` "
     "attributes enumerated in the user prompt's `Required attributes` "
     "line (the post-rewrite gate fails closed when any are missing). "
@@ -422,6 +430,56 @@ def _safe_json_dumps(content: Any) -> str:
         # readable repr instead so postmortem still has the data.
         logger.warning("Outline payload not JSON-serialisable: %s", exc)
         return repr(content)
+
+
+def _format_per_claim_citations(content: Any) -> str:
+    """Render the per-claim source-attribution map for the rewrite prompt.
+
+    Wave 1.5 W1.5.D: surface the structured ``key_claims[].source_chunk_ids[]``
+    attribution as a distinct, prompt-level signal so the rewrite-tier
+    author has the citation map salient (instead of buried inside the
+    serialised outline JSON blob). The block is sandwiched between the
+    "Outline (...)" and "Source chunks (cite via source_refs)" sections
+    in both the regular and escalated user prompts.
+
+    Branches:
+
+    - ``content`` is not a dict → returns the single-line placeholder
+      ``"(none — outline content not a dict)"`` (legacy Phase 1 path
+      where the rewrite tier consumes a content=html Block directly).
+    - ``content["key_claims"]`` missing or empty → returns ``"(no
+      claims)"``.
+    - structured shape (each claim is a dict with ``claim`` +
+      ``source_chunk_ids[]``) → renders one line per claim with the
+      claim text truncated at 80 chars and a comma-separated chunk_id
+      list.
+    - legacy List[str] shape (each claim is a bare string) → renders
+      the claim with a ``(legacy shape — no per-claim citation)``
+      annotation so the rewrite tier knows the citation map is absent
+      for that claim.
+
+    Per-claim text is truncated at 80 chars (with ``"..."`` ellipsis
+    above that bound) to keep the prompt-size growth bounded — the
+    plan §6.3 prompt-size risk budget caps the total addition at
+    < 500 chars on a 5-claim block.
+    """
+    if not isinstance(content, dict):
+        return "(none — outline content not a dict)"
+    claims = content.get("key_claims") or []
+    lines: List[str] = []
+    for idx, c in enumerate(claims, start=1):
+        if isinstance(c, dict):
+            claim_text = c.get("claim", "")
+            chunk_ids = c.get("source_chunk_ids") or []
+            ids_str = ", ".join(chunk_ids) if chunk_ids else "(none)"
+            short = claim_text if len(claim_text) <= 80 else claim_text[:77] + "..."
+            lines.append(f"  - claim {idx}: \"{short}\" cites chunk(s) [{ids_str}]")
+        elif isinstance(c, str):
+            short = c if len(c) <= 80 else c[:77] + "..."
+            lines.append(
+                f"  - claim {idx}: \"{short}\" (legacy shape — no per-claim citation)"
+            )
+    return "\n".join(lines) if lines else "(no claims)"
 
 
 def _format_source_chunks(chunks: Sequence[Any]) -> str:
@@ -1020,6 +1078,7 @@ class RewriteProvider(_BaseLLMProvider):
         attempts = block.validation_attempts
 
         outline_payload = _safe_json_dumps(block.content)
+        per_claim_block = _format_per_claim_citations(block.content)
         source_block = _format_source_chunks(source_chunks or [])
         objectives_block = _format_objectives(objectives or [])
         output_contract = _block_type_output_contract(block.block_type)
@@ -1045,6 +1104,11 @@ class RewriteProvider(_BaseLLMProvider):
             "\n"
             "Outline (best-effort partial; may be empty or invalid):\n"
             f"{outline_payload}\n"
+            "\n"
+            "Per-claim source attribution (use these to cite specific "
+            "chunks inline next to the claim's prose in the rendered "
+            "HTML):\n"
+            f"{per_claim_block}\n"
             "\n"
             "Source chunks (the authoritative grounding):\n"
             f"{source_block}\n"
@@ -1096,6 +1160,7 @@ class RewriteProvider(_BaseLLMProvider):
           fences / commentary.
         """
         outline_payload = _safe_json_dumps(block.content)
+        per_claim_block = _format_per_claim_citations(block.content)
         source_block = _format_source_chunks(source_chunks or [])
         objectives_block = _format_objectives(objectives or [])
         output_contract = _block_type_output_contract(block.block_type)
@@ -1110,6 +1175,11 @@ class RewriteProvider(_BaseLLMProvider):
             "\n"
             "Outline (structurally correct, pedagogical-depth missing):\n"
             f"{outline_payload}\n"
+            "\n"
+            "Per-claim source attribution (use these to cite specific "
+            "chunks inline next to the claim's prose in the rendered "
+            "HTML):\n"
+            f"{per_claim_block}\n"
             "\n"
             "Source chunks (cite via source_refs):\n"
             f"{source_block}\n"
