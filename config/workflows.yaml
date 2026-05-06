@@ -1264,6 +1264,16 @@ workflows:
               on_error: warn
             description: W3a — embedding-gated alignment between distractor text and the declared misconception_ref (cosine when extras loaded; Jaccard fallback otherwise).
 
+          - gate_id: outline_distractor_structural
+            validator: lib.validators.distractor_structural.DistractorStructuralValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: W2.C — exactly-one-correct check on Trainforge ``choices[]`` shape + distractor-not-entailed-by-source Jaccard floor (default 0.70). Symmetric to AssessmentRetrievalGroundingValidator's correct-answer-grounding gate.
+
           - gate_id: outline_instructional_depth
             validator: lib.validators.instructional_depth.InstructionalDepthValidator
             severity: warning
@@ -1593,6 +1603,16 @@ workflows:
               on_fail: warn
               on_error: warn
             description: W3a — post-rewrite distractor / misconception alignment (no-op on rewrite-tier HTML when misconception_ref slot isn't carried; surfaces unresolved refs symmetrically when present).
+
+          - gate_id: rewrite_distractor_structural
+            validator: lib.validators.distractor_structural.DistractorStructuralValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: W2.C — post-rewrite exactly-one-correct + distractor-not-entailed-by-source check. Mirrors the inter_tier_validation seam against the rewrite-tier Block batch.
 
           - gate_id: rewrite_instructional_depth
             validator: lib.validators.instructional_depth.InstructionalDepthValidator
