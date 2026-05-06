@@ -684,6 +684,118 @@ def _update_dataset_config(
 
 
 # ---------------------------------------------------------------------------
+# W3.H sub-task H5: synthesis_summary.json sidecar
+# ---------------------------------------------------------------------------
+
+_SYNTHESIS_SUMMARY_SCHEMA_VERSION = "v1"
+
+
+def _emit_synthesis_summary_sidecar(
+    sidecar_path: Path,
+    *,
+    stats: "SynthesisStats",
+    provider: str,
+    course_code: str,
+) -> None:
+    """Write the W3.H H5 ``training_specs/synthesis_summary.json`` sidecar.
+
+    Sibling to ``dataset_config.json`` carrying the canonical
+    ``source_coverage`` block for the assessment-items → training-pairs
+    arrow. The sidecar is canonical (W3.G master aggregator consumes
+    it); ``dataset_config.json::statistics.promotion_ladder`` carries
+    the same numbers but in a less aggregator-friendly shape.
+
+    Atomic write via tmpfile + rename so a partial sidecar never
+    exists on disk. Schema: ``schemas/training/synthesis_summary.schema.json``.
+    """
+    from lib.governance.source_coverage import build_source_coverage
+
+    # items_consumed: every chunk eligible for paraphrase synthesis
+    # (the actual upstream-item denominator for this stage). Note the
+    # plan §W3.H phrasing "items_consumed / pairs_emitted" treats
+    # items as the denominator, not pairs as the numerator divided
+    # by items — items are 1:N to pairs by construction.
+    items_consumed = max(0, int(stats.chunks_eligible))
+
+    # pairs_emitted: ALL pair surfaces summed. Deterministic
+    # generators (kg_metadata / violation / abstention /
+    # schema_translation) are independent of the chunk loop so they
+    # contribute to the emitted count even when chunks_eligible is
+    # zero (which would push coverage_pct above 1.0; bounded by the
+    # build helper).
+    pairs_emitted = (
+        int(stats.instruction_pairs_emitted)
+        + int(stats.preference_pairs_emitted)
+        + int(stats.misconception_dpo_pairs_emitted)
+        + int(stats.kg_metadata_pairs_emitted)
+        + int(stats.violation_pairs_emitted)
+        + int(stats.abstention_pairs_emitted)
+        + int(stats.schema_translation_pairs_emitted)
+    )
+
+    # Drop reasons: union of the W2.E promotion rejection histogram
+    # (post-W3.B, lives in stats.promotion_rejection_reasons) and the
+    # legacy per-pair rejection histogram. Both keys are alphabetised
+    # by build_source_coverage on emit so a byte-diff between runs is
+    # stable regardless of insertion order.
+    drop_reasons: Dict[str, int] = {}
+    for k, v in (stats.promotion_rejection_reasons or {}).items():
+        try:
+            drop_reasons[str(k)] = drop_reasons.get(str(k), 0) + int(v)
+        except (TypeError, ValueError):
+            continue
+    for k, v in (stats.rejected_reasons or {}).items():
+        try:
+            drop_reasons[str(k)] = drop_reasons.get(str(k), 0) + int(v)
+        except (TypeError, ValueError):
+            continue
+
+    # Total drops: W2.E rejected_promotion_pairs + legacy
+    # instruction_pairs_rejected + preference_pairs_rejected. The
+    # build helper handles the silent-gaming check (drops attributed
+    # without a reason fire INTERNAL_DROP_REASON_MISSING).
+    dropped_count = (
+        int(stats.rejected_promotion_pairs)
+        + int(stats.instruction_pairs_rejected)
+        + int(stats.preference_pairs_rejected)
+    )
+
+    coverage_block = build_source_coverage(
+        consumed_count=items_consumed,
+        emitted_count=pairs_emitted,
+        drop_reasons=drop_reasons,
+        dropped_count=dropped_count,
+        label=f"synthesis_summary:{course_code}",
+    )
+
+    summary = {
+        "schema_version": _SYNTHESIS_SUMMARY_SCHEMA_VERSION,
+        "course_code": course_code,
+        "provider": str(provider),
+        "instruction_pairs_emitted": int(stats.instruction_pairs_emitted),
+        "preference_pairs_emitted": int(stats.preference_pairs_emitted),
+        "misconception_dpo_pairs_emitted": int(stats.misconception_dpo_pairs_emitted),
+        "kg_metadata_pairs_emitted": int(stats.kg_metadata_pairs_emitted),
+        "violation_pairs_emitted": int(stats.violation_pairs_emitted),
+        "abstention_pairs_emitted": int(stats.abstention_pairs_emitted),
+        "schema_translation_pairs_emitted": int(stats.schema_translation_pairs_emitted),
+        "chunks_total": int(stats.chunks_total),
+        "chunks_eligible": int(stats.chunks_eligible),
+        "candidate_pairs_total": int(stats.candidate_pairs_total),
+        "validated_pairs_total": int(stats.validated_pairs_total),
+        "trainable_pairs_total": int(stats.trainable_pairs_total),
+        "rejected_promotion_pairs": int(stats.rejected_promotion_pairs),
+        "source_coverage": coverage_block,
+    }
+
+    sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = sidecar_path.with_suffix(sidecar_path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        json.dump(summary, fh, indent=2, ensure_ascii=False, sort_keys=True)
+    tmp.replace(sidecar_path)
+
+
+# ---------------------------------------------------------------------------
 # Decision-capture helpers
 # ---------------------------------------------------------------------------
 
@@ -2418,6 +2530,30 @@ def run_synthesis(
         _write_jsonl(instruction_out, instruction_records)
         _write_jsonl(preference_out, preference_records)
         _update_dataset_config(dataset_config_path, stats)
+        # W3.H sub-task H5: emit ``training_specs/synthesis_summary.json``
+        # sidecar carrying the canonical source_coverage block. items_consumed
+        # = chunks_eligible (the upstream item denominator); pairs_emitted
+        # = instruction_pairs_emitted + preference_pairs_emitted +
+        # misconception_dpo_pairs_emitted + the four deterministic
+        # generators (kg_metadata / violation / abstention /
+        # schema_translation). Drop reasons pull from
+        # SynthesisStats.promotion_rejection_reasons (W2.E
+        # TrainingPairPromotionValidator counts) and from the legacy
+        # rejected_reasons histogram. Best-effort write — failure logs
+        # but doesn't abort the run (the JSONL artifacts are the
+        # source of truth).
+        try:
+            _emit_synthesis_summary_sidecar(
+                training_specs_dir / "synthesis_summary.json",
+                stats=stats,
+                provider=provider,
+                course_code=course_code,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "W3.H H5: synthesis_summary sidecar emit failed (non-fatal): %s",
+                exc,
+            )
         if manifest_doc is not None:
             manifest_path = training_specs_dir / "curriculum_manifest.json"
             _tmp = manifest_path.with_suffix(manifest_path.suffix + ".tmp")

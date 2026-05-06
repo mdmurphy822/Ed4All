@@ -5248,6 +5248,11 @@ def _build_tool_registry() -> dict:
             skip_validation = bool(kwargs.get("skip_validation", False))
 
             package_path = final_dir / f"{course_name}.imscc"
+            # W3.H sub-task H3: emit a sibling packaging_report.json
+            # carrying the canonical source_coverage block. Lives at
+            # ``<project_root>/05_final_package/packaging_report.json``
+            # (next to the .imscc archive) per plan §W3.H.
+            packaging_report_path = final_dir / "packaging_report.json"
 
             # Import the mature packager. The module lives under
             # ``Courseforge/scripts/`` (no ``__init__.py``) so we prepend
@@ -5284,6 +5289,7 @@ def _build_tool_registry() -> dict:
                     course_title,
                     objectives_path=objectives_path,
                     skip_validation=skip_validation,
+                    coverage_sidecar_path=packaging_report_path,
                 )
             except SystemExit as exc:
                 return json.dumps({
@@ -5296,6 +5302,8 @@ def _build_tool_registry() -> dict:
                         exc.code if isinstance(exc.code, int) else 2
                     ),
                     "project_id": project_id,
+                    "packaging_report_path": str(packaging_report_path)
+                    if packaging_report_path.exists() else None,
                 })
             except Exception as exc:  # noqa: BLE001
                 logger.exception(
@@ -5322,6 +5330,8 @@ def _build_tool_registry() -> dict:
                 "content_dir": str(content_dir),
                 "html_modules": len(html_files),
                 "package_size_bytes": package_path.stat().st_size,
+                "packaging_report_path": str(packaging_report_path)
+                if packaging_report_path.exists() else None,
             })
 
         registry["package_imscc"] = _package_imscc
@@ -7546,6 +7556,62 @@ def _build_tool_registry() -> dict:
                 "word_count": word_count,
             }
 
+        # W3.H sub-task H1: count blocks_seen + per-reason drops BEFORE
+        # dispatching to the chunker so we can emit the canonical
+        # source_coverage block in the manifest. Walk parsed_items and
+        # tally one "block" per ContentSection (or one per item when
+        # the item has no sections); attribute drops via lightweight
+        # heuristics applied to the same fields the chunker reads
+        # (text content + section html). The numbers are conservative:
+        # the chunker may also collapse short adjacent sections via
+        # merge_small_sections, which is captured under the `dedup`
+        # bucket below as the difference between attributable drops
+        # and total dropped blocks.
+        import re as _re
+        blocks_seen = 0
+        drop_boilerplate = 0
+        drop_image_only = 0
+        for _it in parsed_items:
+            sections_list = _it.get("sections") or []
+            if not sections_list:
+                # Item with no sections counts as a single block emitted
+                # via the unsectioned chunk_text_block path.
+                blocks_seen += 1
+                _raw_html = (_it.get("raw_html") or "").strip()
+                _text_probe = _raw_html
+                # Strip tags for a coarse "is there any text" probe.
+                _text_probe = _re.sub(r"<[^>]+>", " ", _text_probe).strip()
+                if _raw_html and not _text_probe and (
+                    "<img" in _raw_html.lower()
+                    or "<figure" in _raw_html.lower()
+                ):
+                    drop_image_only += 1
+                continue
+            for section in sections_list:
+                blocks_seen += 1
+                _content = (
+                    getattr(section, "content", None)
+                    if not isinstance(section, dict)
+                    else section.get("content")
+                ) or ""
+                _wc = (
+                    getattr(section, "word_count", None)
+                    if not isinstance(section, dict)
+                    else section.get("word_count")
+                ) or 0
+                _components = (
+                    getattr(section, "components", None)
+                    if not isinstance(section, dict)
+                    else section.get("components")
+                ) or []
+                _content_str = str(_content).strip()
+                if not _content_str and _components:
+                    # Section that carries only an interactive component
+                    # (image / figure / flip-card) without textual prose:
+                    # the chunker's `if not text.strip(): continue` drops
+                    # it.
+                    drop_image_only += 1
+
         # Dispatch to the canonical chunker. ``chunk_content`` is
         # fail-soft on empty input (returns empty result, no ctx
         # required); for non-empty input it requires ``ctx`` per the
@@ -7603,11 +7669,40 @@ def _build_tool_registry() -> dict:
                 chunks_sha.update(line)
         chunks_sha256 = chunks_sha.hexdigest()
 
+        # W3.H sub-task H1: build the canonical source_coverage block.
+        # consumed_count = blocks_seen, emitted_count = len(chunks).
+        # Per-reason histogram pulls from the heuristics tracked above
+        # (boilerplate / image_only). Any remaining drop delta —
+        # blocks merged into adjacent sections via merge_small_sections,
+        # or empty after sentence-splitting — falls into the `dedup`
+        # bucket. The build_source_coverage helper enforces the
+        # dropped_count == sum(drop_reasons.values()) invariant and
+        # fires INTERNAL_DROP_REASON_MISSING when the math doesn't
+        # balance (silent-gaming check).
+        from lib.governance.source_coverage import build_source_coverage
+        _attributable_drops = drop_boilerplate + drop_image_only
+        _dropped_total = max(0, blocks_seen - len(chunks))
+        _drop_reasons: Dict[str, int] = {}
+        if drop_boilerplate:
+            _drop_reasons["boilerplate"] = drop_boilerplate
+        if drop_image_only:
+            _drop_reasons["image_only"] = drop_image_only
+        _dedup_delta = max(0, _dropped_total - _attributable_drops)
+        if _dedup_delta:
+            _drop_reasons["dedup"] = _dedup_delta
+        source_coverage_block = build_source_coverage(
+            consumed_count=blocks_seen,
+            emitted_count=len(chunks),
+            drop_reasons=_drop_reasons,
+            dropped_count=_dropped_total,
+            label="dart_chunking",
+        )
+
         # Sibling manifest.json — must validate against
         # ``schemas/library/chunkset_manifest.schema.json`` per ST 12.
         # Required: chunks_sha256, chunker_version, chunkset_kind,
         # source_dart_html_sha256 (conditional on chunkset_kind=dart).
-        # Optional: chunks_count, generated_at.
+        # Optional: chunks_count, generated_at, source_coverage (W3.H H1).
         manifest = {
             "chunks_sha256": chunks_sha256,
             "chunker_version": chunker_version,
@@ -7615,6 +7710,7 @@ def _build_tool_registry() -> dict:
             "source_dart_html_sha256": source_dart_html_sha256,
             "chunks_count": len(chunks),
             "generated_at": datetime.utcnow().isoformat() + "Z",
+            "source_coverage": source_coverage_block,
         }
         manifest_path = chunks_dir / "manifest.json"
         manifest_path.write_text(
@@ -7933,11 +8029,71 @@ def _build_tool_registry() -> dict:
                 chunks_sha.update(line)
         chunks_sha256 = chunks_sha.hexdigest()
 
+        # W3.H sub-task H1 (mirrored to IMSCC chunkset for symmetry):
+        # build the canonical source_coverage block. Same heuristics
+        # as the DART path — count one block per ContentSection (or
+        # one block per item with no sections) and attribute drops via
+        # boilerplate / image_only checks; remaining drop delta lands
+        # in the `dedup` bucket. Symmetric so a downstream consumer
+        # (W3.G master aggregator) sees the same shape regardless of
+        # chunkset_kind.
+        import re as _re_imscc
+        from lib.governance.source_coverage import (
+            build_source_coverage as _build_source_coverage_imscc,
+        )
+        _imscc_blocks_seen = 0
+        _imscc_drop_boilerplate = 0
+        _imscc_drop_image_only = 0
+        for _it in parsed_items:
+            sections_list = _it.get("sections") or []
+            if not sections_list:
+                _imscc_blocks_seen += 1
+                _raw_html = (_it.get("raw_html") or "").strip()
+                _text_probe = _re_imscc.sub(r"<[^>]+>", " ", _raw_html).strip()
+                if _raw_html and not _text_probe and (
+                    "<img" in _raw_html.lower()
+                    or "<figure" in _raw_html.lower()
+                ):
+                    _imscc_drop_image_only += 1
+                continue
+            for section in sections_list:
+                _imscc_blocks_seen += 1
+                _content = (
+                    getattr(section, "content", None)
+                    if not isinstance(section, dict)
+                    else section.get("content")
+                ) or ""
+                _components = (
+                    getattr(section, "components", None)
+                    if not isinstance(section, dict)
+                    else section.get("components")
+                ) or []
+                if not str(_content).strip() and _components:
+                    _imscc_drop_image_only += 1
+        _imscc_attributable = _imscc_drop_boilerplate + _imscc_drop_image_only
+        _imscc_dropped_total = max(0, _imscc_blocks_seen - len(chunks))
+        _imscc_drop_reasons: Dict[str, int] = {}
+        if _imscc_drop_boilerplate:
+            _imscc_drop_reasons["boilerplate"] = _imscc_drop_boilerplate
+        if _imscc_drop_image_only:
+            _imscc_drop_reasons["image_only"] = _imscc_drop_image_only
+        _imscc_dedup_delta = max(0, _imscc_dropped_total - _imscc_attributable)
+        if _imscc_dedup_delta:
+            _imscc_drop_reasons["dedup"] = _imscc_dedup_delta
+        _imscc_source_coverage = _build_source_coverage_imscc(
+            consumed_count=_imscc_blocks_seen,
+            emitted_count=len(chunks),
+            drop_reasons=_imscc_drop_reasons,
+            dropped_count=_imscc_dropped_total,
+            label="imscc_chunking",
+        )
+
         # Sibling manifest.json — must validate against
         # ``schemas/library/chunkset_manifest.schema.json`` per Phase
         # 7b ST 12 (symmetric across DART + IMSCC). Required:
         # chunks_sha256, chunker_version, chunkset_kind,
         # source_imscc_sha256 (conditional on chunkset_kind=imscc).
+        # Optional: chunks_count, generated_at, source_coverage (W3.H H1).
         manifest = {
             "chunks_sha256": chunks_sha256,
             "chunker_version": chunker_version,
@@ -7945,6 +8101,7 @@ def _build_tool_registry() -> dict:
             "source_imscc_sha256": source_imscc_sha256,
             "chunks_count": len(chunks),
             "generated_at": datetime.utcnow().isoformat() + "Z",
+            "source_coverage": _imscc_source_coverage,
         }
         manifest_path = chunks_dir / "manifest.json"
         manifest_path.write_text(

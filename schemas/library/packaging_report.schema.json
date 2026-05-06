@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://libv2.local/schema/packaging_report.schema.json",
+  "title": "IMSCC Packaging Report",
+  "description": "W3.H sub-task H3: per-build sidecar emitted by `Courseforge/scripts/package_multifile_imscc.py::package_imscc` next to the IMSCC archive (default `<project_root>/05_final_package/packaging_report.json`). Records pages_authored vs pages_packaged plus the per-reason exclusion histogram so the W3.G master promotion-chain aggregator can attribute every dropped page. Optional artifact — absence is interpreted as a legacy build (pre-W3.H) by the master aggregator.",
+  "type": "object",
+  "required": ["schema_version", "course_code", "package_path", "source_coverage"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "pattern": "^v\\d+$",
+      "description": "Schema-contract version. Bumped only when the emit shape changes."
+    },
+    "course_code": {
+      "type": "string",
+      "description": "Canonical course code (`COURSE_NAME`-style identifier passed into the packager)."
+    },
+    "course_title": {
+      "type": "string",
+      "description": "Human-readable course title (best-effort — derived from project_config.json upstream)."
+    },
+    "package_path": {
+      "type": "string",
+      "description": "Absolute path to the emitted `.imscc` archive."
+    },
+    "outline_only": {
+      "type": "boolean",
+      "description": "True when the build was packaged with `--outline-only` (drops content/example/assessment pages from the zip). Lets the master aggregator tell intentional outline pruning from quality failures."
+    },
+    "source_coverage": {
+      "type": "object",
+      "description": "Canonical W3.H source_coverage block. Drop reason codes for the H3 packaging arrow: `missing_lo` (page lacked any learningObjectives JSON-LD), `gate_block` (page violated per-week LO contract or another critical gate), `outline_filter` (page excluded by the `--outline-only` filter — intentional pruning, not a quality failure). The `internal_drop_reason_missing` bucket fires when the silent-gaming check trips.",
+      "required": ["consumed_count", "emitted_count", "dropped_count", "drop_reasons", "coverage_pct"],
+      "additionalProperties": false,
+      "properties": {
+        "consumed_count": {"type": "integer", "minimum": 0},
+        "emitted_count": {"type": "integer", "minimum": 0},
+        "dropped_count": {"type": "integer", "minimum": 0},
+        "drop_reasons": {
+          "type": "object",
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        },
+        "coverage_pct": {"type": "number", "minimum": 0, "maximum": 1}
+      }
+    }
+  }
+}
