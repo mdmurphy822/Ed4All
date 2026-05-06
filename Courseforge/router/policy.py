@@ -70,6 +70,117 @@ _SCHEMA_PATH: Path = (
 
 
 # ---------------------------------------------------------------------------
+# Hardcoded fallback table (GPT Feedback v2 Wave 3 W3.C)
+# ---------------------------------------------------------------------------
+#
+# Per-block-type validator-matrix defaults. Mirrors the canonical YAML
+# at ``Courseforge/config/block_routing.yaml`` so a clean checkout that
+# runs the router with NO YAML overrides still has a per-block-type
+# matrix populated for every entry in
+# ``Courseforge.scripts.blocks.BLOCK_TYPES``. The completeness
+# regression at
+# ``Courseforge/router/tests/test_block_type_gate_matrix.py`` asserts
+# that this table covers every BLOCK_TYPES entry.
+#
+# Resolution priority (high → low) consumed by
+# :meth:`CourseforgeRouter._dispatch_validation_chain`:
+#   per-block-id override (YAML overrides[]) >
+#   per-block-type validators block (YAML blocks[type].validators) >
+#   tier env defaults (existing) >
+#   this DEFAULT_BLOCK_ROUTING table.
+#
+# Shape per entry: ``{"required": [gate_id, ...],
+# "optional": [gate_id, ...], "fail_action": str}``.
+
+DEFAULT_BLOCK_ROUTING: Dict[str, Dict[str, Any]] = {
+    "objective": {
+        "required": ["curie_anchoring", "source_ref"],
+        "optional": [],
+        "fail_action": "regenerate",
+    },
+    "concept": {
+        "required": ["source_ref", "content_type", "similarity"],
+        "optional": ["curie_anchoring"],
+        "fail_action": "regenerate",
+    },
+    "example": {
+        "required": ["concept_example_similarity", "source_ref"],
+        "optional": ["bloom_classifier_disagreement"],
+        "fail_action": "regenerate",
+    },
+    "assessment_item": {
+        "required": [
+            "objective_assessment_similarity",
+            "bloom_alignment",
+            "answerability",
+        ],
+        "optional": ["distractor_entropy"],
+        "fail_action": "escalate",
+    },
+    "explanation": {
+        "required": ["source_ref", "content_type"],
+        "optional": ["similarity"],
+        "fail_action": "regenerate",
+    },
+    "prereq_set": {
+        "required": ["source_ref"],
+        "optional": [],
+        "fail_action": "regenerate",
+    },
+    "activity": {
+        "required": ["objective_ref", "source_ref"],
+        "optional": ["accessibility"],
+        "fail_action": "regenerate",
+    },
+    "misconception": {
+        "required": ["source_ref", "distractor_misconception_alignment"],
+        "optional": [],
+        "fail_action": "regenerate",
+    },
+    "callout": {
+        "required": ["source_ref"],
+        "optional": [],
+        "fail_action": "regenerate",
+    },
+    "flip_card_grid": {
+        "required": ["source_ref", "content_type"],
+        "optional": [],
+        "fail_action": "regenerate",
+    },
+    "self_check_question": {
+        "required": ["objective_ref", "answerability"],
+        "optional": ["bloom_classifier_disagreement"],
+        "fail_action": "escalate",
+    },
+    "summary_takeaway": {
+        "required": ["source_ref"],
+        "optional": [],
+        "fail_action": "regenerate",
+    },
+    "reflection_prompt": {
+        "required": ["objective_ref"],
+        "optional": [],
+        "fail_action": "regenerate",
+    },
+    "discussion_prompt": {
+        "required": ["objective_ref"],
+        "optional": [],
+        "fail_action": "regenerate",
+    },
+    "chrome": {
+        "required": [],
+        "optional": [],
+        "fail_action": "regenerate",
+    },
+    "recap": {
+        "required": ["source_ref"],
+        "optional": [],
+        "fail_action": "regenerate",
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # BlockRoutingPolicy dataclass
 # ---------------------------------------------------------------------------
 
@@ -146,11 +257,31 @@ class BlockRoutingPolicy:
     capability_tier_chain_by_default_tier: Dict[
         str, List[str]
     ] = field(default_factory=dict)
+    # GPT Feedback v2 Wave 3 W3.C — per-block-type validator matrix.
+    # Keys: block_type (entries from ``BLOCK_TYPES``). Values: dict
+    # carrying ``{"required": [gate_id, ...],
+    # "optional": [gate_id, ...], "fail_action": str}``. Consumed by
+    # :meth:`Courseforge.router.router.CourseforgeRouter._dispatch_validation_chain`
+    # to filter the global validation_gates list down to the block's
+    # allowed set; required-gate failures stamp ``fail_action`` onto
+    # the resulting GateResult, optional-gate failures emit warnings
+    # only, and gates not in either array are skipped silently for
+    # that block_type. Backward-compat: a block_type with no entry
+    # falls through to the legacy "all gates run" behavior.
+    validators_by_block_type: Dict[str, Dict[str, Any]] = field(
+        default_factory=dict
+    )
 
     def is_empty(self) -> bool:
         """Return True when the policy carries no defaults / blocks /
         overrides — i.e. the caller should fall straight through to
-        the next resolver layer."""
+        the next resolver layer.
+
+        Note: ``validators_by_block_type`` is intentionally NOT
+        considered here. The validator-matrix surface is orthogonal to
+        the provider/model dispatch chain and a YAML carrying ONLY
+        validator entries should still register as "empty" for the
+        legacy provider-resolution chain."""
         return (
             not self.defaults
             and not self.blocks
@@ -368,6 +499,18 @@ def _policy_from_dict(raw: Dict[str, Any]) -> BlockRoutingPolicy:
     regen_budget_map: Dict[str, int] = {}
     # Phase 3.5 Subtask 21: rewrite-tier regen budget map.
     regen_budget_rewrite_map: Dict[str, int] = {}
+    # GPT Feedback v2 Wave 3 W3.C: per-block-type validator matrix.
+    # Initialised from the hardcoded ``DEFAULT_BLOCK_ROUTING`` table so
+    # every block_type has a baseline; the YAML walk below overlays
+    # operator-explicit entries onto the table.
+    validators_map: Dict[str, Dict[str, Any]] = {
+        block_type: {
+            "required": list(entry.get("required", [])),
+            "optional": list(entry.get("optional", [])),
+            "fail_action": entry.get("fail_action", "regenerate"),
+        }
+        for block_type, entry in DEFAULT_BLOCK_ROUTING.items()
+    }
     for block_type, entry in (raw.get("blocks") or {}).items():
         if not isinstance(entry, dict):
             continue
@@ -402,6 +545,17 @@ def _policy_from_dict(raw: Dict[str, Any]) -> BlockRoutingPolicy:
         regen_budget_rewrite = entry.get("regen_budget_rewrite")
         if isinstance(regen_budget_rewrite, int):
             regen_budget_rewrite_map[block_type] = regen_budget_rewrite
+        # GPT Feedback v2 Wave 3 W3.C: per-block-type validator matrix.
+        # Operator-explicit YAML entry overlays the hardcoded default.
+        validators_entry = entry.get("validators")
+        if isinstance(validators_entry, dict):
+            validators_map[block_type] = {
+                "required": list(validators_entry.get("required", [])),
+                "optional": list(validators_entry.get("optional", [])),
+                "fail_action": validators_entry.get(
+                    "fail_action", "regenerate"
+                ),
+            }
 
     overrides: List[Dict[str, Any]] = list(raw.get("overrides") or [])
 
@@ -416,6 +570,7 @@ def _policy_from_dict(raw: Dict[str, Any]) -> BlockRoutingPolicy:
         capability_tiers=capability_tiers,
         capability_tier_chain_by_block_type=capability_tier_chain_by_block_type,
         capability_tier_chain_by_default_tier=capability_tier_chain_by_default_tier,
+        validators_by_block_type=validators_map,
     )
 
 
@@ -640,6 +795,7 @@ def _spec_from_dict(
 
 __all__ = [
     "BlockRoutingPolicy",
+    "DEFAULT_BLOCK_ROUTING",
     "load_block_routing_policy",
     "match_block_id_glob",
 ]

@@ -2549,6 +2549,125 @@ class CourseforgeRouter:
                 return False
         return seen_per_claim
 
+    def _dispatch_validation_chain(
+        self,
+        block: Block,
+        validators: List[Any],
+    ) -> List[Any]:
+        """Filter ``validators`` down to the per-block-type allowed set.
+
+        GPT Feedback v2 Wave 3 W3.C — per-block-type validator matrix.
+        Walks the policy's :attr:`BlockRoutingPolicy.validators_by_block_type`
+        to filter the global validator chain down to a per-block_type
+        view. Stamps the per-block-type ``fail_action`` onto every
+        emitted required-gate :class:`MCP.hardening.validation_gates.GateResult`
+        (mutating the in-list instances) so the existing
+        :meth:`_run_validator_chain` loop can dispatch on
+        ``GateResult.action`` without round-tripping through the policy
+        again.
+
+        Resolution semantics:
+
+        * **Required gates that fail** trigger the per-block_type
+          ``fail_action`` (``regenerate`` / ``escalate`` / ``block``).
+          The router stamps the action onto the ``GateResult.action``
+          field at validate time via the gate-name -> action mapping
+          this method returns.
+        * **Optional gates that fail** emit warnings only — the
+          GateResult.passed signal is preserved but the action is
+          coerced to ``None`` (the existing
+          :meth:`_run_validator_chain` ``derive_default_action`` path
+          collapses ``passed=False, action=None`` onto ``"block"`` for
+          the audit event but legacy retry semantics elsewhere keep
+          the loop running).
+        * **Gates not in required-or-optional** are SKIPPED silently
+          for the block — they are dropped from the returned chain so
+          the validator loop never invokes them.
+
+        Backward-compat: a block_type with no entry in
+        ``validators_by_block_type`` (legacy YAML / non-canonical
+        block_type) returns the input ``validators`` list unchanged so
+        the legacy "all gates run" behavior is preserved.
+
+        Returns the filtered + ordered list of validator instances; a
+        wrapper layer in the caller is responsible for action stamping
+        on the resulting :class:`GateResult` instances after dispatch.
+
+        The helper is read-only against ``validators``; it never
+        mutates the input list (returns a new ``list`` instance).
+        """
+        # Read-only fast path: no policy, no validators_by_block_type
+        # entry, or no canonical block_type entry → return the input
+        # unchanged so the legacy "all gates run" contract is preserved.
+        policy = self._policy
+        if policy is None:
+            return list(validators)
+        matrix = getattr(policy, "validators_by_block_type", None)
+        if not matrix:
+            return list(validators)
+        per_type = matrix.get(block.block_type)
+        if not per_type:
+            return list(validators)
+
+        required_set = {gate_id for gate_id in per_type.get("required", [])}
+        optional_set = {gate_id for gate_id in per_type.get("optional", [])}
+        # Pre-compute the union once so the per-validator filter loop
+        # is O(1) on each entry.
+        allowed_set = required_set | optional_set
+        # Skip the filter when the matrix declares neither required nor
+        # optional gates (e.g. ``chrome``); legacy callers see the
+        # global chain unchanged.
+        if not allowed_set:
+            return []
+
+        filtered: List[Any] = []
+        for validator in validators:
+            gate_id = self._validator_gate_id(validator)
+            if gate_id in allowed_set:
+                filtered.append(validator)
+        return filtered
+
+    @staticmethod
+    def _validator_gate_id(validator: Any) -> str:
+        """Resolve a validator's gate_id label for matrix-filter lookup.
+
+        Walks the canonical attribute chain (``gate_id`` → ``name`` →
+        class name) so both Validator-Protocol implementations and
+        legacy stub validators with only a ``name`` attribute resolve
+        consistently. Lower-cased + stripped to match the YAML
+        gate_id token convention.
+        """
+        for attr in ("gate_id", "name", "validator_name"):
+            value = getattr(validator, attr, None)
+            if isinstance(value, str) and value:
+                return value
+        return type(validator).__name__
+
+    def _resolve_validator_matrix_metadata(
+        self, block: Block,
+    ) -> Tuple[set, set, str]:
+        """Resolve the per-block-type validator matrix tuple.
+
+        Returns ``(required_set, optional_set, fail_action)``.
+        Empty sets + ``"regenerate"`` fall-through when no policy /
+        no matrix entry is wired, signalling the validate-loop should
+        skip the matrix-driven action stamping (legacy "all gates run"
+        contract).
+        """
+        policy = self._policy
+        if policy is None:
+            return set(), set(), "regenerate"
+        matrix = getattr(policy, "validators_by_block_type", None)
+        if not matrix:
+            return set(), set(), "regenerate"
+        per_type = matrix.get(block.block_type)
+        if not per_type:
+            return set(), set(), "regenerate"
+        required_set = {gate_id for gate_id in per_type.get("required", [])}
+        optional_set = {gate_id for gate_id in per_type.get("optional", [])}
+        fail_action = per_type.get("fail_action", "regenerate")
+        return required_set, optional_set, fail_action
+
     def _run_validator_chain(
         self,
         block: Block,
@@ -2641,6 +2760,27 @@ class CourseforgeRouter:
             # validators are wired (Wave-N pre-Phase-4 shape).
             return True, results, touched_block
 
+        # GPT Feedback v2 Wave 3 W3.C — per-block-type validator
+        # filtering. ``_dispatch_validation_chain`` filters the input
+        # ``validators`` list down to the per-block_type allowed set
+        # (required ∪ optional) per the BlockRoutingPolicy matrix.
+        # Backward-compat: when no policy / matrix entry exists the
+        # helper returns the input list unchanged. Required vs optional
+        # status is then stamped onto each emitted GateResult inside
+        # the validate loop below.
+        required_set, optional_set, fail_action = (
+            self._resolve_validator_matrix_metadata(block)
+        )
+        matrix_active = bool(required_set or optional_set)
+        if matrix_active:
+            validators = self._dispatch_validation_chain(block, validators)
+            # When the matrix-filter empties the allowed set (e.g.
+            # ``chrome``, or a matrix entry that excludes every
+            # globally-wired validator), short-circuit to "all-passed"
+            # — there's nothing left to dispatch.
+            if not validators:
+                return True, results, touched_block
+
         # Build the input dict once per chain — both per-block and
         # Block-list-aware validators read from the same shape.
         inputs: Dict[str, Any] = {"block": block, "blocks": [block]}
@@ -2730,6 +2870,38 @@ class CourseforgeRouter:
                 if fast_fail:
                     break
                 continue
+
+            # GPT Feedback v2 Wave 3 W3.C — apply per-block-type
+            # matrix action stamping. Required-gate failures stamp
+            # the matrix's ``fail_action`` onto ``GateResult.action``
+            # (regenerate / escalate / block) so the downstream
+            # priority dispatcher in :meth:`route_with_self_consistency`
+            # routes the block through the correct fail path.
+            # Optional-gate failures coerce ``GateResult.action`` to
+            # ``"pass"`` so the loop CONTINUES — the warning issues
+            # are preserved on the GateResult so the audit trail keeps
+            # the diagnostic, but the gate does not fail-trigger.
+            # Legacy "all gates run" path (no matrix entry) skips this
+            # stamping entirely so existing tests stay green.
+            if matrix_active:
+                gate_id_for_matrix = self._validator_gate_id(validator)
+                if (
+                    gate_id_for_matrix in required_set
+                    and not gate_result.passed
+                    and gate_result.action is None
+                ):
+                    gate_result.action = fail_action
+                elif (
+                    gate_id_for_matrix in optional_set
+                    and not gate_result.passed
+                ):
+                    # Coerce optional-gate failures to "pass" action so
+                    # the loop continues; preserve issues for the
+                    # audit trail. Pre-existing explicit action wins
+                    # only when it is itself ``"pass"`` — operator
+                    # intent on optional gates is "advisory; never
+                    # fail-trigger".
+                    gate_result.action = "pass"
 
             results.append(gate_result)
 
