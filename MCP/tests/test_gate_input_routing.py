@@ -667,6 +667,23 @@ _W4_OUTLINE_LIB_VALIDATORS_ALLOWLIST = frozenset({
     # statistical-tier surface as the four Phase 4 PoC validators above
     # — wired symmetrically at outline + rewrite seams.
     "lib.validators.block_objective_delivery.BlockObjectiveDeliveryValidator",
+    # Pre-Wave-1.5 statistical-tier outline-seam validators — emit
+    # warning-severity GateIssues against the assessment_item /
+    # distractor / instructional-depth / Bloom-structural surfaces.
+    # Wired in textbook_to_course::inter_tier_validation only;
+    # course_generation::inter_tier_validation does not carry these.
+    # Allow-list extended (silent-drift audit 2026-05-06, Class 7).
+    "lib.validators.assessment_retrieval_grounding.AssessmentRetrievalGroundingValidator",
+    "lib.validators.distractor_plausibility.DistractorPlausibilityValidator",
+    "lib.validators.distractor_misconception_alignment.DistractorMisconceptionAlignmentValidator",
+    "lib.validators.instructional_depth.InstructionalDepthValidator",
+    "lib.validators.bloom_structural_enforcement.BloomStructuralEnforcementValidator",
+    # Wave 2 W2.C: structural distractor sanity gate (length / repetition
+    # / negation). Wired symmetrically at outline + rewrite seams.
+    "lib.validators.distractor_structural.DistractorStructuralValidator",
+    # Wave 2 W2.D: critical-severity padded-distractor gate. Wired
+    # symmetrically at outline + rewrite + trainforge_assessment seams.
+    "lib.validators.padded_distractor.PaddedDistractorValidator",
 })
 
 
