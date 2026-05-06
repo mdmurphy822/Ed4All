@@ -85,6 +85,7 @@
         "block_content_type_check",
         "block_curie_anchoring_check",
         "block_escalation",
+        "block_objective_delivery_check",
         "block_outline_call",
         "block_packaging_skipped",
         "block_page_objectives_check",

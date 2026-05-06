@@ -1271,6 +1271,7 @@ class CourseforgeRouter:
             all_passed, gate_results, candidate = self._run_validator_chain(
                 candidate, validator_list, fast_fail=fast_fail,
                 validator_tier="outline_val",
+                objectives=objectives,
             )
             last_candidate = candidate
             if all_passed:
@@ -1704,6 +1705,7 @@ class CourseforgeRouter:
             all_passed, gate_results, candidate = self._run_validator_chain(
                 candidate, validator_list, fast_fail=fast_fail,
                 validator_tier="rewrite_val",
+                objectives=objectives,
             )
             last_candidate = candidate
             if all_passed:
@@ -2380,6 +2382,7 @@ class CourseforgeRouter:
         *,
         fast_fail: bool = True,
         validator_tier: Literal["outline_val", "rewrite_val"] = "outline_val",
+        objectives: Optional[List[Any]] = None,
     ) -> Tuple[bool, List[Any], Block]:
         """Run an ordered chain of validators against ``block``.
 
@@ -2466,7 +2469,54 @@ class CourseforgeRouter:
 
         # Build the input dict once per chain — both per-block and
         # Block-list-aware validators read from the same shape.
-        inputs = {"block": block, "blocks": [block]}
+        inputs: Dict[str, Any] = {"block": block, "blocks": [block]}
+
+        # GPT Feedback v2 Wave 1.7 W1.7.C — Drift A fix. Pre-Wave-1.7
+        # the inputs dict only carried ``{block, blocks}``; the existing
+        # ``ObjectiveAssessmentSimilarityValidator`` and the new
+        # ``BlockObjectiveDeliveryValidator`` silently degraded to
+        # ``OBJECTIVE_STATEMENT_UNRESOLVED`` warnings on every block at
+        # the inter-tier seam because ``inputs.get("objective_statements")``
+        # resolved to an empty dict. Threading the LO list through here
+        # gives both validators the populated maps they need to actually
+        # fire. Same dict shape as the ``_build_block_statistical_input``
+        # gate-input-routing builder so both seams see consistent inputs.
+        if objectives:
+            statements_map: Dict[str, str] = {}
+            full_dicts: Dict[str, Dict[str, Any]] = {}
+            for lo in objectives:
+                if isinstance(lo, dict):
+                    lo_id = lo.get("id") or lo.get("objective_id")
+                    if isinstance(lo_id, str) and lo_id:
+                        stmt = lo.get("statement") or lo.get("text")
+                        if isinstance(stmt, str) and stmt.strip():
+                            statements_map[lo_id] = stmt.strip()
+                        full_dicts[lo_id] = dict(lo)
+                else:
+                    # Tolerate object-shaped LOs (e.g. dataclass with
+                    # ``id`` / ``statement`` / ``bloom_level`` /
+                    # ``bloom_verb`` attrs). Best-effort coerce to dict.
+                    lo_id = getattr(lo, "id", None) or getattr(
+                        lo, "objective_id", None,
+                    )
+                    if isinstance(lo_id, str) and lo_id:
+                        stmt = getattr(lo, "statement", None) or getattr(
+                            lo, "text", None,
+                        )
+                        if isinstance(stmt, str) and stmt.strip():
+                            statements_map[lo_id] = stmt.strip()
+                        full_dicts[lo_id] = {
+                            "id": lo_id,
+                            "statement": stmt
+                            if isinstance(stmt, str)
+                            else None,
+                            "bloom_level": getattr(lo, "bloom_level", None),
+                            "bloom_verb": getattr(lo, "bloom_verb", None),
+                        }
+            if statements_map:
+                inputs["objective_statements"] = statements_map
+            if full_dicts:
+                inputs["objectives"] = full_dicts
 
         # Lazy-import the canonical action helper so the router module
         # itself can be imported without pulling MCP.hardening when

@@ -903,14 +903,36 @@ def _build_block_statistical_input(
 ) -> BuilderResult:
     """Group D — Phase-4 statistical-tier builder.
 
-    Surfaces ``{blocks, objectives_path}``. The executor merges
-    ``gate.config`` (and therefore ``gate.config.thresholds``) into
-    the inputs dict at ``executor.py:1442`` so the per-validator
-    threshold dial flows through unchanged. Each validator additionally
-    accepts ``objective_statements`` / ``concept_definitions`` /
+    Surfaces ``{blocks, objectives_path, objective_statements?,
+    objectives?}``. The executor merges ``gate.config`` (and therefore
+    ``gate.config.thresholds``) into the inputs dict at
+    ``executor.py:1442`` so the per-validator threshold dial flows
+    through unchanged. Each validator additionally accepts
+    ``objective_statements`` / ``concept_definitions`` /
     ``paraphrase_fn`` / ``embedder`` overrides via ``inputs.*``; the
     Phase 4 PoC contract degrades to ``passed=True`` warnings when
     those auxiliaries aren't wired.
+
+    GPT Feedback v2 Wave 1.7 W1.7.C — Drift B fix: pre-Wave-1.7 the
+    builder only emitted ``{blocks, objectives_path}``, so the existing
+    ``ObjectiveAssessmentSimilarityValidator`` silently degraded to
+    ``OBJECTIVE_STATEMENT_UNRESOLVED`` warnings on every block since
+    Phase 4 PoC. Wave 1.7 fixes this by loading
+    ``synthesized_objectives.json`` from ``objectives_path``,
+    flattening via :func:`lib.validators.abcd_objective._flatten_objectives`,
+    and surfacing both:
+
+    * ``objective_statements: Dict[str, str]`` — convenience map
+      ``{lo.id: lo.statement}`` consumed by the Wave-N2 similarity
+      validators.
+    * ``objectives: Dict[str, Dict[str, Any]]`` — full LO dicts keyed
+      by id (with ``bloom_level`` / ``bloom_verb`` / ``statement``)
+      consumed by the new
+      :class:`lib.validators.block_objective_delivery.BlockObjectiveDeliveryValidator`.
+
+    Best-effort: any failure to read / parse the objectives JSON is
+    logged at debug and falls through to the legacy two-key shape so
+    the gate path stays alive even on a malformed objectives surface.
     """
     inputs, missing = _build_block_input(
         phase_outputs, workflow_params, gate_id="rewrite_",
@@ -922,12 +944,51 @@ def _build_block_statistical_input(
         if missing:
             return {}, missing
     # Statistical-tier validators consume only ``blocks`` +
-    # ``objectives_path`` + the threshold inputs the executor merges
-    # in via gate.config. Drop manifest/staging so the validator
-    # doesn't see unrelated keys.
+    # ``objectives_path`` + ``objective_statements`` + ``objectives``
+    # + the threshold inputs the executor merges in via gate.config.
+    # Drop manifest/staging so the validator doesn't see unrelated keys.
     pruned: Dict[str, Any] = {"blocks": inputs.get("blocks", [])}
-    if inputs.get("objectives_path"):
-        pruned["objectives_path"] = inputs["objectives_path"]
+    objectives_path_raw = inputs.get("objectives_path")
+    if objectives_path_raw:
+        pruned["objectives_path"] = objectives_path_raw
+        # Wave 1.7 W1.7.C — Drift B fix. Load + flatten + surface the
+        # objective_statements + objectives maps so every statistical-
+        # tier validator (and the new BlockObjectiveDeliveryValidator)
+        # sees populated inputs.
+        try:
+            import json as _json
+            from lib.validators.abcd_objective import (
+                _flatten_objectives,
+            )
+
+            objectives_path = Path(objectives_path_raw)
+            if objectives_path.exists():
+                payload = _json.loads(
+                    objectives_path.read_text(encoding="utf-8")
+                )
+                flat = _flatten_objectives(payload)
+                statements: Dict[str, str] = {}
+                full_dicts: Dict[str, Dict[str, Any]] = {}
+                for lo in flat:
+                    if not isinstance(lo, dict):
+                        continue
+                    lo_id_raw = lo.get("id") or lo.get("objective_id")
+                    if not isinstance(lo_id_raw, str) or not lo_id_raw:
+                        continue
+                    statement_raw = lo.get("statement") or lo.get("text")
+                    if isinstance(statement_raw, str) and statement_raw.strip():
+                        statements[lo_id_raw] = statement_raw.strip()
+                    full_dicts[lo_id_raw] = dict(lo)
+                if statements:
+                    pruned["objective_statements"] = statements
+                if full_dicts:
+                    pruned["objectives"] = full_dicts
+        except (OSError, ValueError, TypeError, ImportError) as exc:
+            logger.debug(
+                "block_statistical_input: failed to populate "
+                "objective_statements/objectives from %s: %s",
+                objectives_path_raw, exc,
+            )
     return pruned, []
 
 
@@ -1249,6 +1310,14 @@ def default_router() -> GateInputRouter:
     )
     r.register(
         "lib.validators.bloom_classifier_disagreement.BloomClassifierDisagreementValidator",
+        _build_block_statistical_input,
+    )
+    # GPT Feedback v2 Wave 1.7 W1.7.C — tri-axis per-block-per-objective
+    # delivery gate. Reuses the statistical-tier builder so the Drift B
+    # fix (objective_statements + objectives surfacing from
+    # synthesized_objectives.json) flows through unchanged.
+    r.register(
+        "lib.validators.block_objective_delivery.BlockObjectiveDeliveryValidator",
         _build_block_statistical_input,
     )
 
