@@ -96,6 +96,13 @@ class PhaseOutput:
     - ``ok``: phase succeeded and all gates passed
     - ``warn``: phase succeeded but at least one non-critical gate flagged issues
     - ``fail``: phase or critical gate failed; orchestrator should halt (or retry)
+
+    ``promotion_decision`` is the per-phase promotion verdict consumed by the
+    Wave 3 promotion-chain aggregator (Governance G1). One of ``pass`` |
+    ``warn`` | ``fail`` | ``escalate``, or ``None`` when no derivation has
+    fired yet. Wave 1 ships only the field declaration + canonical schema at
+    ``schemas/governance/phase_output.schema.json``; Wave 3 wires the field at
+    emit time via ``derive_promotion_decision(status, gate_results)``.
     """
 
     run_id: str
@@ -105,6 +112,7 @@ class PhaseOutput:
     gate_results: Dict[str, GateResult] = field(default_factory=dict)
     decision_captures_path: Optional[Path] = None
     status: Literal["ok", "warn", "fail"] = "ok"
+    promotion_decision: Optional[Literal["pass", "warn", "fail", "escalate"]] = None
     error: Optional[str] = None
     metrics: Dict[str, Any] = field(default_factory=dict)
 
@@ -124,6 +132,7 @@ class PhaseOutput:
                 else None
             ),
             "status": self.status,
+            "promotion_decision": self.promotion_decision,
             "error": self.error,
             "metrics": self.metrics,
         }
@@ -157,6 +166,7 @@ class PhaseOutput:
             gate_results=gate_results,
             decision_captures_path=Path(captures) if captures else None,
             status=data.get("status", "ok"),
+            promotion_decision=data.get("promotion_decision"),
             error=data.get("error"),
             metrics=data.get("metrics", {}) or {},
         )
