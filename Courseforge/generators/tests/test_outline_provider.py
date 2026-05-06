@@ -60,6 +60,8 @@ from Courseforge.generators._outline_provider import (  # noqa: E402
     SUPPORTED_PROVIDERS,
     _BLOCK_TYPE_JSON_SCHEMAS,
     _OUTLINE_KIND_BOUNDS,
+    _OUTLINE_SYSTEM_PROMPT,
+    _match_retry_directive,
 )
 from blocks import BLOCK_TYPES, Block, Touch  # noqa: E402
 
@@ -502,3 +504,89 @@ def test_outline_success_emits_decision_event(monkeypatch):
     assert "success=True" in rationale
     assert f"model={p._model}" in rationale
     assert "retry_count=" in rationale
+
+
+# ---------------------------------------------------------------------------
+# Wave 1.5 W1.5.B — per-claim source attribution prompt directives
+# ---------------------------------------------------------------------------
+
+
+def test_outline_system_prompt_carries_structured_key_claims_directive():
+    """Wave 1.5 W1.5.B golden-output regression — system prompt sentinel.
+
+    The new authoring directive lands as a literal substring in the
+    system prompt so downstream model traffic is steered toward the
+    structured ``List[{claim, source_chunk_ids[]}]`` shape. Snapshot-
+    style substring assertion (not full string equality) so the
+    surrounding prompt text can evolve."""
+    assert "key_claims MUST be a list of objects" in _OUTLINE_SYSTEM_PROMPT
+    # Cross-check that the structured-shape signature is enumerated
+    # verbatim — catches a regression that keeps the sentinel but
+    # drops the actual contract paragraph.
+    assert "source_chunk_ids" in _OUTLINE_SYSTEM_PROMPT
+    assert "source_refs[]" in _OUTLINE_SYSTEM_PROMPT
+
+
+def test_outline_system_prompt_drops_legacy_string_shape_as_primary():
+    """Wave 1.5 W1.5.B negative regression — the system prompt's
+    ``key_claims`` paragraph names the structured shape as the
+    contract and only references the legacy flat-string shape under
+    a PROHIBITED clause. Ensures we don't accidentally reintroduce
+    the legacy shape as authoritative."""
+    prompt = _OUTLINE_SYSTEM_PROMPT
+    # Locate the key_claims paragraph by its sentinel.
+    idx = prompt.index("key_claims MUST be a list of objects")
+    # Tail of the prompt from the sentinel onward.
+    tail = prompt[idx:]
+    # The tail MUST flag the flat-string shape as PROHIBITED, not
+    # describe it as the primary shape.
+    assert "PROHIBITED" in tail
+    assert "flat array of strings" in tail
+
+
+def test_outline_user_prompt_carries_per_claim_attribution_clause(monkeypatch):
+    """Wave 1.5 W1.5.B golden-output regression — user-prompt sentinel.
+
+    The closing clause that names the supplied source_chunks as the
+    universe ``source_chunk_ids`` may draw from MUST appear in every
+    rendered user prompt so the outline-tier model has a concrete
+    chunk-id universe bound."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    p = OutlineProvider(provider="local")
+    block = _stub_block(block_type="concept")
+    chunks = [
+        {"id": "dart:slug-a#blk1", "body": "First chunk body."},
+        {"id": "dart:slug-b#blk2", "body": "Second chunk body."},
+    ]
+    objectives = [
+        {"id": "TO-01", "statement": "Define the central concept."},
+    ]
+    rendered = p._render_user_prompt(
+        block=block, source_chunks=chunks, objectives=objectives
+    )
+    assert "source_chunk_ids MUST be a non-empty subset" in rendered
+    # The closing clause references the "Source chunks" section
+    # already enumerated above so the universe is unambiguous.
+    assert "Source chunks" in rendered
+
+
+def test_outline_retry_directive_matches_oneof_validation_error():
+    """Wave 1.5 W1.5.B retry-directive regression — when the validator
+    surfaces ``is not valid under any of the given schemas`` (the
+    canonical ``oneOf`` rejection error), ``_match_retry_directive``
+    returns the new per-claim attribution recovery directive."""
+    err = (
+        "[\"flat string claim\", \"another flat string\"] is not valid "
+        "under any of the given schemas"
+    )
+    directive = _match_retry_directive(err)
+    assert directive is not None
+    # The new directive names the structured shape verbatim so the
+    # next parse-retry sees the contract.
+    assert "key_claims MUST be a list of objects" in directive
+    assert "source_chunk_ids" in directive
+    assert "Do NOT emit key_claims as flat strings" in directive
+    # The directive cross-references the block-level source_refs[]
+    # superset constraint.
+    assert "source_refs[]" in directive
