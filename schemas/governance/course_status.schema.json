@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/governance/v1/course_status.schema.json",
+  "title": "Course final status",
+  "description": "Course-level final-status enum produced by the promotion-chain aggregator (Wave 3 G1) and stamped onto LibV2/courses/<slug>/manifest.json::quality_metadata.final_status. The enum is compositional: each value declares progressively stricter coverage requirements (accessible ⊂ instructional ⊂ trainable). 'failed' and 'non_certified_archive' are terminal.",
+  "type": "string",
+  "enum": [
+    "certified_accessible",
+    "certified_instructional",
+    "certified_trainable",
+    "non_certified_archive",
+    "failed"
+  ]
+}
