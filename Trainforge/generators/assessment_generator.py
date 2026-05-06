@@ -174,6 +174,26 @@ class AssessmentData:
     skipped_items: List[SkippedItem] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
+        # W3.H sub-task H4: build the canonical source_coverage block
+        # for the assessment-items arrow. items_attempted = questions
+        # + skipped_items (every slot the generator tried to fill);
+        # items_emitted = len(questions). Drop reasons pull from the
+        # SkippedItem.reason field (existing post-W2.D enum:
+        # ``no_source_chunks``, ``no_extractable_content``,
+        # ``padded_distractor_fallback_eliminated``, ...).
+        from lib.governance.source_coverage import build_source_coverage
+        _drop_histogram: Dict[str, int] = {}
+        for _s in self.skipped_items:
+            _key = (_s.reason or "unknown").strip() or "unknown"
+            _drop_histogram[_key] = _drop_histogram.get(_key, 0) + 1
+        _items_attempted = len(self.questions) + len(self.skipped_items)
+        source_coverage_block = build_source_coverage(
+            consumed_count=_items_attempted,
+            emitted_count=len(self.questions),
+            drop_reasons=_drop_histogram,
+            dropped_count=len(self.skipped_items),
+            label=f"assessment_data:{self.assessment_id}",
+        )
         return {
             "assessment_id": self.assessment_id,
             "title": self.title,
@@ -187,6 +207,7 @@ class AssessmentData:
             "total_points": sum(q.points for q in self.questions),
             "skipped_items_count": len(self.skipped_items),
             "skipped_items_summary": [s.to_dict() for s in self.skipped_items[:3]],
+            "source_coverage": source_coverage_block,
         }
 
 

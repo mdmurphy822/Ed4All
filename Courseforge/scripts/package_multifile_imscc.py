@@ -290,6 +290,7 @@ def package_imscc(
     objectives_path: Optional[Path] = None,
     skip_validation: bool = False,
     outline_only: bool = False,
+    coverage_sidecar_path: Optional[Path] = None,
 ):
     """Create the IMSCC zip package.
 
@@ -314,13 +315,92 @@ def package_imscc(
         The companion ``course_metadata.json`` augmentation is upstream
         (``generate_course.py --emit-mode outline``); this packager only
         consumes / surfaces the marker.
+
+    W3.H sub-task H3:
+      * ``coverage_sidecar_path`` — when provided, write a canonical
+        ``packaging_report.json`` sidecar (per
+        ``schemas/library/packaging_report.schema.json``) carrying the
+        ``source_coverage`` block that records pages_authored vs
+        pages_packaged plus the per-reason exclusion histogram
+        (``missing_lo`` / ``gate_block`` / ``outline_filter``). When the
+        per-week LO contract validator fails (``SystemExit(2)``), the
+        sidecar is still emitted before raising so a downstream
+        consumer (W3.G master aggregator) sees the failure attribution.
     """
+    # Coverage tracking — initialised pre-validation so a hard-fail
+    # path can still emit the sidecar with attribution.
+    _coverage_pages_authored = 0
+    _coverage_drop_missing_lo = 0
+    _coverage_drop_gate_block = 0
+    _coverage_drop_outline_filter = 0
+
+    def _emit_coverage_sidecar(*, pages_packaged: int) -> None:
+        """Best-effort write of the W3.H H3 packaging_report sidecar.
+
+        Failure path: log + continue. The sidecar is observability,
+        not a build gate; the package_path itself is the source of
+        truth for IMSCC integrity.
+        """
+        if coverage_sidecar_path is None:
+            return
+        try:
+            from lib.governance.source_coverage import build_source_coverage
+        except Exception as exc:  # noqa: BLE001
+            print(f"[coverage] WARN: source_coverage helper unavailable: {exc}")
+            return
+        drops: dict = {}
+        if _coverage_drop_missing_lo:
+            drops["missing_lo"] = _coverage_drop_missing_lo
+        if _coverage_drop_gate_block:
+            drops["gate_block"] = _coverage_drop_gate_block
+        if _coverage_drop_outline_filter:
+            drops["outline_filter"] = _coverage_drop_outline_filter
+        block = build_source_coverage(
+            consumed_count=_coverage_pages_authored,
+            emitted_count=pages_packaged,
+            drop_reasons=drops,
+            dropped_count=max(0, _coverage_pages_authored - pages_packaged),
+            label="package_imscc",
+        )
+        report = {
+            "schema_version": "v1",
+            "course_code": course_code,
+            "course_title": course_title,
+            "package_path": str(output_path),
+            "outline_only": outline_only,
+            "source_coverage": block,
+        }
+        try:
+            coverage_sidecar_path.parent.mkdir(parents=True, exist_ok=True)
+            import json as _json
+            coverage_sidecar_path.write_text(
+                _json.dumps(report, indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            print(
+                f"[coverage] WARN: failed to write packaging_report sidecar "
+                f"{coverage_sidecar_path}: {exc}"
+            )
     # Auto-discover objectives if not explicitly provided (default-on behavior).
     if objectives_path is None and not skip_validation:
         candidate = content_dir / "course.json"
         if candidate.exists():
             objectives_path = candidate
             print(f"[validate] Auto-discovered objectives at {candidate}")
+
+    # W3.H H3: count pages_authored = every week_*/*.html page on disk
+    # BEFORE any filtering. This is the upstream denominator for the
+    # source_coverage block; pages_packaged (computed below) is the
+    # numerator. Running this scan here means the validator-failure
+    # short-circuit below still gets attribution.
+    _pre_walk_pages = []
+    for _wd in sorted(content_dir.glob("week_*")):
+        if not _wd.is_dir():
+            continue
+        for _hf in sorted(_wd.glob("*.html")):
+            _pre_walk_pages.append(_hf)
+    _coverage_pages_authored = len(_pre_walk_pages)
 
     if skip_validation:
         print("[validate] SKIPPED (per --skip-validation) — build will not be gated on LO correctness.")
@@ -338,6 +418,20 @@ def package_imscc(
                 print(f"  - {msg}")
             print("Fix the offending pages (or re-run generate_course.py with --objectives) then retry.")
             print("Override with --skip-validation if you really know what you're doing.")
+            # W3.H H3: classify each failure. A failure message that
+            # mentions "no learningObjectives" / "missing learning"
+            # buckets to ``missing_lo``; everything else (out-of-week
+            # IDs, malformed JSON-LD) buckets to ``gate_block``.
+            for _msg in failures:
+                _lower = _msg.lower()
+                if "no learningobjectives" in _lower or "missing learning" in _lower:
+                    _coverage_drop_missing_lo += 1
+                else:
+                    _coverage_drop_gate_block += 1
+            # On hard-fail, no pages get packaged — emit the coverage
+            # sidecar with pages_packaged=0 so the master aggregator
+            # sees the attribution before SystemExit propagates.
+            _emit_coverage_sidecar(pages_packaged=0)
             raise SystemExit(2)
         print("[validate] All week pages pass per-week LO contract.")
 
@@ -373,6 +467,12 @@ def package_imscc(
                     html_file.name.endswith("overview.html")
                     or html_file.name.endswith("summary.html")
                 ):
+                    # W3.H H3: outline-only filtering is a known
+                    # exclusion class — track separately from
+                    # gate-driven drops so the master aggregator can
+                    # tell intentional outline pruning from quality
+                    # failures.
+                    _coverage_drop_outline_filter += 1
                     continue
                 zf.write(html_file, f"{week_dir.name}/{html_file.name}")
                 file_count += 1
@@ -388,6 +488,12 @@ def package_imscc(
         total = file_count + 1
         print(f"  Files: {file_count} HTML + 1 manifest = {total} total")
     print(f"  Size: {output_path.stat().st_size / 1024:.1f} KB")
+
+    # W3.H H3: emit the canonical packaging_report sidecar (no-op
+    # when ``coverage_sidecar_path`` was not provided). pages_packaged
+    # = file_count after all filters; pages_authored was captured
+    # pre-validation; drop_reasons accumulated during the walk.
+    _emit_coverage_sidecar(pages_packaged=file_count)
 
 
 def build_parser() -> argparse.ArgumentParser:

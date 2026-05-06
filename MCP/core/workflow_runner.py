@@ -3035,6 +3035,61 @@ class WorkflowRunner:
         for entry in failed_blocks:
             _record_block(entry, "failed")
 
+        # W3.H sub-task H2: build the canonical source_coverage block.
+        # The arrow is "blocks attempted -> blocks passing the rewrite
+        # tier"; consumed_count = total_blocks (blocks attempted),
+        # emitted_count = passed_count (blocks that passed validation).
+        # Drop reasons walk the per_block array and bucket each
+        # non-passing block by its escalation_marker:
+        #   - validator_consensus_fail: every regen candidate failed
+        #     validation (canonical marker minted by the router).
+        #   - regen_budget: outline_budget_exhausted marker (regen cap
+        #     hit with no validator-consensus-fail short-circuit).
+        #   - escalate_immediately: per-block-type policy short-circuit
+        #     (block.touched_by carries the escalate_immediately
+        #     purpose tag — surfaced via Touch.purpose in the
+        #     courseforge router contract; absence implies the block
+        #     went through normal regen).
+        # Plain-failed blocks (escalation_marker is None) fall into a
+        # generic `validation_failed` bucket so the dropped_count ==
+        # sum(drop_reasons.values()) invariant holds.
+        from lib.governance.source_coverage import build_source_coverage
+        _v_drop_reasons: Dict[str, int] = {}
+        for blk in per_block:
+            status = blk.get("status")
+            if status == "passed":
+                continue
+            esc = blk.get("escalation_marker")
+            if esc == "validator_consensus_fail":
+                key = "validator_consensus_fail"
+            elif esc == "outline_budget_exhausted":
+                key = "regen_budget"
+            elif esc == "rewrite_dispatch_error" or esc == "outline_dispatch_error":
+                # Per-tier dispatch errors get their own bucket so
+                # the master aggregator can disambiguate dispatch
+                # failures from semantic exhaustion.
+                key = "dispatch_error"
+            elif esc == "structural_unfixable":
+                key = "structural_unfixable"
+            elif esc == "per_claim_attribution_unfixable":
+                key = "per_claim_attribution_unfixable"
+            elif esc:
+                # Any other minted marker (escalate_immediately /
+                # custom future markers) falls under the canonical
+                # escalate_immediately key per plan §W3.H.
+                key = "escalate_immediately"
+            else:
+                key = "validation_failed"
+            _v_drop_reasons[key] = _v_drop_reasons.get(key, 0) + 1
+        _v_total = passed_count + failed_count + escalated_count
+        source_coverage_block = build_source_coverage(
+            consumed_count=_v_total,
+            emitted_count=passed_count,
+            drop_reasons=_v_drop_reasons,
+            dropped_count=_v_total - passed_count,
+            label=f"two_pass_{phase_name}",
+        )
+
         report = {
             "run_id": workflow_id,
             "phase": phase_name,
@@ -3044,6 +3099,7 @@ class WorkflowRunner:
             "failed": failed_count,
             "escalated": escalated_count,
             "per_block": per_block,
+            "source_coverage": source_coverage_block,
         }
 
         report_path = report_dir / "report.json"

@@ -40,6 +40,40 @@
       "type": "string",
       "format": "date-time",
       "description": "ISO 8601 timestamp (UTC) recording when the chunkset was emitted. Optional. Mirrors the import_timestamp / export_timestamp shape used elsewhere in the LibV2 manifest family."
+    },
+    "source_coverage": {
+      "type": "object",
+      "description": "W3.H sub-task H1: per-stage source-coverage telemetry for the DART (or IMSCC) blocks-to-chunks transformation. Records how many upstream blocks were seen, how many chunks were emitted, and the per-reason breakdown of dropped blocks. Optional for back-compat with pre-W3.H manifests; W3.G's master promotion-chain aggregator consumes this field when present and falls back to a `coverage_pct: null` arrow when absent. Canonical shape: lib/governance/source_coverage.py::build_source_coverage. Drop reason codes for DART chunkset: boilerplate, dedup, image_only. The `internal_drop_reason_missing` bucket fires when the silent-gaming check trips (drops attributed without a reason code).",
+      "required": ["consumed_count", "emitted_count", "dropped_count", "drop_reasons", "coverage_pct"],
+      "properties": {
+        "consumed_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of upstream blocks (DART HTML sections / IMSCC sections) the chunker consumed."
+        },
+        "emitted_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of chunks the chunker emitted to chunks.jsonl."
+        },
+        "dropped_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of blocks dropped pre-emit. Invariant: dropped_count == sum(drop_reasons.values())."
+        },
+        "drop_reasons": {
+          "type": "object",
+          "description": "Histogram of {reason_code: count} attributing every dropped block. Keys are alphabetised on emit.",
+          "additionalProperties": {"type": "integer", "minimum": 0}
+        },
+        "coverage_pct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Coverage ratio: emitted_count / consumed_count (0.0 when consumed_count == 0)."
+        }
+      },
+      "additionalProperties": false
     }
   },
   "additionalProperties": false,

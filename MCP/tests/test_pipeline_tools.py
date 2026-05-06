@@ -611,6 +611,10 @@ class TestRunDartChunkingEmitsChunksJsonl:
         assert isinstance(manifest["chunker_version"], str)
         assert manifest["chunks_count"] == payload["chunks_count"]
         # additionalProperties: false — only the canonical keys.
+        # W3.H sub-task H1 added the optional ``source_coverage`` block
+        # to the chunkset_manifest schema; the field surfaces on every
+        # emit but stays back-compat with legacy manifests (the
+        # ChunksetManifestValidator still passes when it's absent).
         assert set(manifest.keys()).issubset({
             "chunks_sha256",
             "chunker_version",
@@ -619,6 +623,7 @@ class TestRunDartChunkingEmitsChunksJsonl:
             "source_imscc_sha256",
             "chunks_count",
             "generated_at",
+            "source_coverage",
         })
 
         # Validator round-trip: the emitted manifest must pass the
@@ -836,6 +841,8 @@ class TestRunImsccChunkingEmitsChunksJsonl:
         assert isinstance(manifest["chunker_version"], str)
         assert manifest["chunks_count"] == payload["chunks_count"]
         # additionalProperties: false — only the canonical keys.
+        # W3.H sub-task H1 added the optional ``source_coverage`` block
+        # symmetrically to both DART + IMSCC manifests.
         assert set(manifest.keys()).issubset({
             "chunks_sha256",
             "chunker_version",
@@ -844,6 +851,7 @@ class TestRunImsccChunkingEmitsChunksJsonl:
             "source_imscc_sha256",
             "chunks_count",
             "generated_at",
+            "source_coverage",
         })
         # ``source_dart_html_sha256`` MUST be absent on imscc-branch manifests
         # (the schema's allOf branch only requires source_imscc_sha256 when
