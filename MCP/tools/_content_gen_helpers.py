@@ -1378,6 +1378,62 @@ def load_objectives_json(
     return (terminal, chapter)
 
 
+def _topic_objective_source_ref(
+    topic: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Build a single structured ``source_refs`` entry for an objective
+    derived from ``topic``.
+
+    Wave 1.6 W1.6.B: per-objective source attribution. Returns a single
+    ``{ref, chunk_ids[]}`` dict when the topic carries enough provenance
+    (``source_file`` + ``dart_block_ids``) to build at least one
+    ``dart:{slug}#{block_id}`` chunk-id. Returns ``None`` when the topic
+    is non-attributable (legacy fixtures predating Wave 12 DART output;
+    no ``dart_block_ids`` ever set).
+
+    Resolution rules (mirrors the plan §2 Fix 1.6.B contract):
+
+    * ``ref`` — ``chapter_id`` from ``<article role="doc-chapter">`` when
+      DART tagged it (Wave 24+); else falls back to a section heading
+      slug derived from the topic heading via :func:`canonical_slug`.
+      The synthesizer cannot reach ``textbook_structure.json`` from
+      this layer, so the slugified heading is the best available
+      section-id stand-in.
+    * ``chunk_ids[]`` — every ``dart_block_ids`` entry projected to the
+      canonical ``dart:{slug}#{block_id}`` form, mirroring
+      :func:`_topic_source_references` so chunk-ids resolve against
+      the same universe the per-section ``sourceReferences[]`` use.
+    """
+    block_ids_raw = topic.get("dart_block_ids") or []
+    block_ids = [
+        bid.strip() for bid in block_ids_raw
+        if isinstance(bid, str) and bid.strip()
+    ]
+    if not block_ids:
+        return None
+    stem = topic.get("source_file") or ""
+    if not stem:
+        return None
+    slug = stem.lower().replace(" ", "-")
+    chunk_ids: List[str] = []
+    for block_id in block_ids:
+        block_slug = re.sub(r"[^a-z0-9_-]+", "", block_id.lower())
+        if not block_slug:
+            continue
+        chunk_ids.append(f"dart:{slug}#{block_slug}")
+    if not chunk_ids:
+        return None
+    chapter_id = topic.get("chapter_id")
+    if isinstance(chapter_id, str) and chapter_id.strip():
+        ref = chapter_id.strip()
+    else:
+        heading = topic.get("heading") or ""
+        ref = canonical_slug(heading) or slug
+    if not ref:
+        return None
+    return {"ref": ref, "chunk_ids": chunk_ids}
+
+
 def synthesize_objectives_from_topics(
     topics: List[Dict[str, Any]],
     duration_weeks: int,
@@ -1422,11 +1478,14 @@ def synthesize_objectives_from_topics(
     # First: harvest all real LO statements extracted by parse_dart_html_files.
     # A single textbook section may emit multiple LOs; we round-robin assign
     # them across weeks below.
-    all_extracted_los: List[Tuple[str, List[str]]] = []  # (heading, [statements])
+    # Wave 1.6 W1.6.B: carry the originating topic dict alongside the
+    # heading + statements so Path A emit can build the structured
+    # ``source_refs[]`` from the topic's ``source_file`` + ``dart_block_ids``.
+    all_extracted_los: List[Tuple[str, List[str], Dict[str, Any]]] = []
     for topic in topics:
         statements = topic.get("extracted_lo_statements") or []
         if statements:
-            all_extracted_los.append((topic["heading"], statements))
+            all_extracted_los.append((topic["heading"], statements, topic))
 
     terminal: List[Dict[str, Any]] = []
     chapter: List[Dict[str, Any]] = []
@@ -1436,8 +1495,15 @@ def synthesize_objectives_from_topics(
 
     # Path A: real LOs were extracted. Emit those verbatim.
     if all_extracted_los:
-        for heading, statements in all_extracted_los:
+        for heading, statements, source_topic in all_extracted_los:
             primary_term_slug = canonical_slug(heading) or ""
+            # Wave 1.6 W1.6.B: every Path A LO from this topic shares the
+            # same source attribution — single-element structured
+            # ``source_refs[]`` derived from the topic's DART provenance.
+            # ``None`` when the topic carries no ``dart_block_ids`` (legacy
+            # pre-Wave-12 DART output); the validator wired in W1.6.C
+            # surfaces the empty case without failing closed.
+            topic_ref = _topic_objective_source_ref(source_topic)
             for statement in statements:
                 level, verb = detect_bloom_level(statement)
                 key_concepts = [primary_term_slug] if primary_term_slug else []
@@ -1460,6 +1526,10 @@ def synthesize_objectives_from_topics(
                 )
                 if abcd is not None:
                     entry["abcd"] = abcd
+                # Wave 1.6 W1.6.B: structured source_refs[] (single entry
+                # per topic; multi-entry aggregation happens on the
+                # Path B secondary-heading rollup).
+                entry["source_refs"] = [dict(topic_ref)] if topic_ref else []
                 # First ``max_terminal`` go to terminal; the rest are COs.
                 if to_counter <= max_terminal:
                     entry["id"] = mint_lo_id("terminal", to_counter)
@@ -1486,6 +1556,36 @@ def synthesize_objectives_from_topics(
         primary_key_concepts = [
             canonical_slug(t) for t in primary_terms[:3] if canonical_slug(t)
         ]
+        # Wave 1.6 W1.6.B: primary heading carries a single-element
+        # structured source_refs entry (its own topic's DART chunk-ids).
+        primary_ref = _topic_objective_source_ref(primary)
+        primary_source_refs: List[Dict[str, Any]] = (
+            [dict(primary_ref)] if primary_ref else []
+        )
+        # Wave 1.6 W1.6.B: a terminal outcome synthesizes across an
+        # entire week's worth of topics (the plan's worked example —
+        # to-07 "Integrate RDF, SPARQL, SHACL, and OWL 2 into an
+        # end-to-end semantic web solution" cites four different
+        # textbooks). Aggregate per-topic source_refs into a multi-entry
+        # list (one entry per distinct heading) so the structured shape
+        # captures the multi-source synthesis explicitly.
+        aggregated_terminal_refs: List[Dict[str, Any]] = list(primary_source_refs)
+        seen_refs: set = {
+            (entry.get("ref"), tuple(entry.get("chunk_ids") or []))
+            for entry in aggregated_terminal_refs
+        }
+        for secondary in week_topics[1:]:
+            sec_topic_ref = _topic_objective_source_ref(secondary)
+            if sec_topic_ref is None:
+                continue
+            key = (
+                sec_topic_ref.get("ref"),
+                tuple(sec_topic_ref.get("chunk_ids") or []),
+            )
+            if key in seen_refs:
+                continue
+            seen_refs.add(key)
+            aggregated_terminal_refs.append(dict(sec_topic_ref))
         # Terminals capped at max_terminal; overflow primaries become COs.
         if to_counter <= max_terminal:
             terminal_entry: Dict[str, Any] = {
@@ -1503,6 +1603,9 @@ def synthesize_objectives_from_topics(
             )
             if abcd is not None:
                 terminal_entry["abcd"] = abcd
+            # Wave 1.6 W1.6.B: aggregated structured source_refs[]
+            # (one entry per topic the terminal synthesizes across).
+            terminal_entry["source_refs"] = [dict(r) for r in aggregated_terminal_refs]
             terminal.append(terminal_entry)
             to_counter += 1
         else:
@@ -1521,11 +1624,22 @@ def synthesize_objectives_from_topics(
             )
             if abcd is not None:
                 primary_entry["abcd"] = abcd
+            # Wave 1.6 W1.6.B: COs are bound to a single heading;
+            # single-element structured source_refs[] (no aggregation).
+            primary_entry["source_refs"] = [dict(r) for r in primary_source_refs]
             chapter.append(primary_entry)
             co_counter += 1
 
         # One CO per additional heading in the week (chapter-level
         # objectives bind to the secondary sections the week covers).
+        # Wave 1.6 W1.6.B: when MULTIPLE secondary headings roll up in
+        # this week, each emitted CO is a STANDALONE objective bound to
+        # ONE secondary heading — single-entry source_refs[] per CO. The
+        # multi-entry aggregation case fires when a secondary heading's
+        # own topic carries multiple ``dart_block_ids`` (rare; future
+        # multi-block-merged topics) — those projects to multiple
+        # ``chunk_ids[]`` inside ONE source_refs[] entry, not multiple
+        # entries.
         for secondary in week_topics[1:]:
             sec_heading = secondary["heading"]
             sec_terms = secondary.get("key_terms") or [sec_heading]
@@ -1548,6 +1662,10 @@ def synthesize_objectives_from_topics(
             )
             if sec_abcd is not None:
                 chapter_entry["abcd"] = sec_abcd
+            # Wave 1.6 W1.6.B: structured source_refs[] for the
+            # secondary heading's own topic.
+            sec_ref = _topic_objective_source_ref(secondary)
+            chapter_entry["source_refs"] = [dict(sec_ref)] if sec_ref else []
             chapter.append(chapter_entry)
             co_counter += 1
 
