@@ -924,6 +924,21 @@ def register_trainforge_tools(mcp):
                 },
                 "in_flight_checkpoints": [],
                 "role_alignment": [],
+                # GPT Feedback v2 Wave 2 W2.B — sibling surface to the
+                # eval_report.json read above. The aggregator at
+                # ``lib/aggregators/trainforge_assessment_quality_report.py``
+                # writes
+                # ``LibV2/courses/<slug>/quality/trainforge_assessment_quality_report.json``
+                # at workflow-end (with a ``<trainforge_dir>/...`` fallback when
+                # archival hasn't run). Surfacing the report's
+                # ``promotion_decision`` + ``summary`` here means an operator
+                # can see "is this corpus trainable?" in the same status dump
+                # as the role-alignment signal — closes the silent-success
+                # class where the aggregator writes a report no surface ever
+                # reads. Cross-link: root CLAUDE.md § "Aggregators" + the W2
+                # wave-end gate at
+                # ``schemas/tests/test_wave2_validators_aggregators_contract.py``.
+                "trainforge_assessment_quality": [],
             }
 
             # Count statistics from the training-captures tree
@@ -1098,6 +1113,52 @@ def register_trainforge_tools(mcp):
                                 ),
                                 "report_path": str(latest["path"]),
                             })
+
+                    # GPT Feedback v2 Wave 2 W2.B sibling read — surface the
+                    # workflow-aggregator output for this course so an
+                    # operator sees the 3-way ``promotion_decision`` (failed
+                    # | non_certified_archive | trainable) plus the summary
+                    # signals (answerable_rate, single_correct_rate, etc.)
+                    # alongside role-alignment. Best-effort: a missing report
+                    # is the common case (archival hasn't run for this
+                    # course) and is silently skipped. A malformed report
+                    # surfaces an explicit ``error`` field so the operator
+                    # sees the breakage instead of a silent skip.
+                    quality_report_path = (
+                        course_dir
+                        / "quality"
+                        / "trainforge_assessment_quality_report.json"
+                    )
+                    if quality_report_path.is_file():
+                        try:
+                            payload = json.loads(
+                                quality_report_path.read_text(
+                                    encoding="utf-8"
+                                )
+                            )
+                        except (OSError, json.JSONDecodeError) as exc:
+                            status["trainforge_assessment_quality"].append({
+                                "course_slug": course_slug,
+                                "report_path": str(quality_report_path),
+                                "error": (
+                                    "failed to load "
+                                    f"trainforge_assessment_quality_report.json: {exc}"
+                                ),
+                            })
+                        else:
+                            entry = {
+                                "course_slug": course_slug,
+                                "report_path": str(quality_report_path),
+                                "promotion_decision": payload.get(
+                                    "promotion_decision"
+                                ),
+                            }
+                            summary = payload.get("summary")
+                            if isinstance(summary, dict):
+                                entry["summary"] = summary
+                            status["trainforge_assessment_quality"].append(
+                                entry
+                            )
 
             return json.dumps(status)
 
