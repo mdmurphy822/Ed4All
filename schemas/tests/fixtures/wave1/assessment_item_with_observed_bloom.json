@@ -1,0 +1,14 @@
+{
+  "stem": "Which SHACL constraint enforces a literal datatype on a property's object?",
+  "answer_key": "sh:datatype",
+  "distractors": [
+    {"text": "sh:datatype"},
+    {"text": "sh:class"},
+    {"text": "sh:nodeKind"},
+    {"text": "sh:minCount"}
+  ],
+  "correct_answer_index": 0,
+  "bloomLevel": "apply",
+  "observedBloomLevel": "apply",
+  "bloomAlignment": true
+}
