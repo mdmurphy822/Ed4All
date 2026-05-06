@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/library/chunkset_drift_report.schema.json",
+  "title": "ChunksetDriftReport v1.0",
+  "description": "Sidecar artifact emitted by lib.validators.chunkset_drift.ChunksetDriftValidator at <LibV2 course root>/drift_report.json. Records drift between the DART evidence chunkset (dart_chunks/chunks.jsonl) and the IMSCC packaged chunkset (imscc_chunks/chunks.jsonl): which DART block ids were never cited (DART_EVIDENCE_DROPPED) and which IMSCC chunks have no traceable origin (IMSCC_CLAIM_NOT_IN_DART). Wave 3 W3.D — schema 1.0.",
+  "type": "object",
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0"},
+    "dart_chunk_count": {"type": "integer", "minimum": 0},
+    "imscc_chunk_count": {"type": "integer", "minimum": 0},
+    "dart_block_ids_dropped": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "imscc_chunks_unsourced": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "drift_rate_in": {"type": "number", "minimum": 0, "maximum": 1},
+    "drift_rate_out": {"type": "number", "minimum": 0, "maximum": 1},
+    "generated_at": {"type": "string", "format": "date-time"}
+  },
+  "required": [
+    "schema_version",
+    "dart_chunk_count",
+    "imscc_chunk_count",
+    "dart_block_ids_dropped",
+    "imscc_chunks_unsourced",
+    "drift_rate_in",
+    "drift_rate_out"
+  ],
+  "additionalProperties": false
+}

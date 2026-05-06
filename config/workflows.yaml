@@ -2318,6 +2318,27 @@ workflows:
               on_error: fail_closed
             description: KG-quality metric surface (completeness / consistency / accuracy / coverage)
 
+          # Wave 3 W3.D — DART vs. IMSCC chunkset drift detector.
+          # Surfaces (a) DART_EVIDENCE_DROPPED when the IMSCC packager
+          # cited <50% of the DART block-id universe; (b)
+          # IMSCC_CLAIM_NOT_IN_DART when >5% of IMSCC chunks lack any
+          # source.source_references[]. Warning-severity / on_fail:
+          # warn on day-1 because legitimate IMSCC restructuring can
+          # synthesize prose across multiple DART blocks; default is
+          # observability, not enforcement. Sidecar artifact emitted
+          # to <course_dir>/drift_report.json per
+          # schemas/library/chunkset_drift_report.schema.json. Future
+          # Wave 4 promotion to critical requires only a YAML flip.
+          - gate_id: chunkset_drift
+            validator: lib.validators.chunkset_drift.ChunksetDriftValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Wave 3 W3.D — drift detector across DART vs. IMSCC chunksets
+
       - name: finalization
         agents: [brightspace-packager]
         parallel: false

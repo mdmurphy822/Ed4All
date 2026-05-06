@@ -649,6 +649,94 @@ def _resolve_staging_manifest_path(
     return None
 
 
+def _build_chunkset_drift(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Wave 3 W3.D — input builder for ChunksetDriftValidator.
+
+    Surfaces ``{dart_chunks_path, imscc_chunks_path, course_path}``.
+    The validator compares two chunksets emitted by the chunking +
+    imscc_chunking phases respectively, then writes a sidecar
+    ``drift_report.json`` next to the LibV2 course root.
+
+    Resolution chain (high → low):
+
+    * Explicit ``dart_chunks_path`` / ``imscc_chunks_path`` keys in
+      phase outputs (the chunking / imscc_chunking phases emit these).
+    * Derive both from the libv2_archival ``course_dir`` (Wave 23
+      contract). Canonical post-Phase-7c layout:
+      ``<course_dir>/dart_chunks/chunks.jsonl`` +
+      ``<course_dir>/imscc_chunks/chunks.jsonl``.
+    * Fall back to the Phase-7c shim ``<course_dir>/corpus/chunks.jsonl``
+      for the IMSCC side on legacy archives the
+      ``backfill_dart_chunks.py`` migration hasn't touched yet
+      (lib.libv2_storage.resolve_imscc_chunks_path handles the
+      shim warning + fallback).
+
+    The validator's ``MISSING_CHUNKSET`` arm fires when either path
+    fails to resolve to an extant file — that's the validator's
+    responsibility, not the router's. We surface non-existent
+    candidate paths so the validator can emit a structured warning
+    rather than letting the router silently skip the gate.
+    """
+    inputs: Dict[str, Any] = {}
+
+    # Course-path preference order: libv2_archival.course_dir > any
+    # explicit course_dir key in phase outputs > workflow_params.
+    course_dir_str = _locate(phase_outputs, "course_dir")
+    if not course_dir_str:
+        course_dir_str = workflow_params.get("course_dir")
+    course_dir = Path(course_dir_str) if course_dir_str else None
+    if course_dir is not None:
+        inputs["course_path"] = str(course_dir)
+
+    # DART chunkset resolution.
+    dart_chunks_path: Optional[str] = None
+    chunking = phase_outputs.get("chunking") or {}
+    candidate = chunking.get("dart_chunks_path")
+    if isinstance(candidate, str) and candidate:
+        dart_chunks_path = candidate
+    if not dart_chunks_path and course_dir is not None:
+        derived = course_dir / "dart_chunks" / "chunks.jsonl"
+        dart_chunks_path = str(derived)
+
+    # IMSCC chunkset resolution.
+    imscc_chunks_path: Optional[str] = None
+    imscc_chunking = phase_outputs.get("imscc_chunking") or {}
+    candidate = imscc_chunking.get("imscc_chunks_path")
+    if isinstance(candidate, str) and candidate:
+        imscc_chunks_path = candidate
+    if not imscc_chunks_path:
+        # Fall back to chunks_path emitted by other phases.
+        located = _locate(phase_outputs, "imscc_chunks_path")
+        if located:
+            imscc_chunks_path = located
+    if not imscc_chunks_path and course_dir is not None:
+        try:
+            from lib.libv2_storage import resolve_imscc_chunks_path
+            imscc_chunks_path = str(
+                resolve_imscc_chunks_path(course_dir, "chunks.jsonl")
+            )
+        except (ImportError, OSError, ValueError, TypeError):
+            # Fall through to the canonical post-Phase-7c path.
+            imscc_chunks_path = str(
+                course_dir / "imscc_chunks" / "chunks.jsonl"
+            )
+
+    missing: List[str] = []
+    if dart_chunks_path:
+        inputs["dart_chunks_path"] = dart_chunks_path
+    else:
+        missing.append("dart_chunks_path")
+    if imscc_chunks_path:
+        inputs["imscc_chunks_path"] = imscc_chunks_path
+    else:
+        missing.append("imscc_chunks_path")
+
+    return inputs, missing
+
+
 def _build_objective_source_refs(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
@@ -1346,6 +1434,19 @@ def default_router() -> GateInputRouter:
     r.register(
         "lib.validators.objective_source_refs.ObjectiveSourceRefValidator",
         _build_objective_source_refs,
+    )
+
+    # Wave 3 W3.D — DART vs. IMSCC chunkset drift detector at
+    # libv2_archival. Builder resolves dart_chunks_path /
+    # imscc_chunks_path from the chunking + imscc_chunking phase
+    # outputs (when present); falls back to deterministic LibV2 paths
+    # under <course_dir>/dart_chunks/chunks.jsonl and
+    # <course_dir>/imscc_chunks/chunks.jsonl (or the Phase-7c-shim
+    # legacy <course_dir>/corpus/chunks.jsonl) when the phase outputs
+    # don't surface them directly.
+    r.register(
+        "lib.validators.chunkset_drift.ChunksetDriftValidator",
+        _build_chunkset_drift,
     )
 
     return r
