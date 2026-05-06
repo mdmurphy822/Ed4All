@@ -569,6 +569,32 @@ Here `evaluate` belongs to `BLOOMS_VERBS["evaluate"]`, not `BLOOMS_VERBS["rememb
 
 Legacy LOs in pre-Phase-6 corpora (`synthesized_objectives.json` fixtures predating this contract) MAY omit `abcd`; `LearningObjective.properties.abcd` is optional in the schema. The validator emits a warning-severity `ABCD_MISSING` GateIssue in this case but does NOT regenerate — it only regenerates on verb-Bloom mismatch within an explicitly-supplied `abcd` block. New authoring runs (Phase 6+) MUST emit `abcd` per the contract above.
 
+### **Per-objective source attribution (Phase / Wave 1.6)**
+
+Phase / Wave 1.6 amends the objective-synthesis output contract: every newly authored learning objective (TO-NN AND CO-NN) MUST carry a `source_refs[]` array attesting which textbook section / DART chunk grounds the claim. The structured shape:
+
+```json
+{
+  "id": "TO-04",
+  "statement": "Develop SHACL shape graphs that validate RDF data...",
+  "source_refs": [
+    {
+      "ref": "ch7",
+      "chunk_ids": ["dart:shacl-spec_accessible#sec3-1-targets"]
+    },
+    {
+      "ref": "ch8",
+      "chunk_ids": [
+        "dart:shacl-spec_accessible#sec4-1-core-constraints",
+        "dart:shacl-spec_accessible#sec4-2-property-shapes"
+      ]
+    }
+  ]
+}
+```
+
+`ref` MUST be either a chapter id from the supplied `textbook_structure.json::chapters[].id` (e.g. `ch7`) OR a section heading id (`chapters[*].sections[].id`). `chunk_ids[]` MUST be a non-empty subset of the chunk IDs in `LibV2/courses/<slug>/dart_chunks/manifest.json` (when the chunkset has been emitted) OR the DART staging slugs in the form `dart:{slug}#{section_id}`. PROHIBITED: emitting `source_refs` as a flat list of strings; that is the legacy shape and the new validator regenerates against it for new authoring. PROHIBITED: emitting an LO with zero `source_refs[]` entries — every synthesized objective MUST attest its grounding, even when synthesis-from-headings spans a single section.
+
 ## Validation and Quality Gates
 
 ### **Template Compliance Validation**
