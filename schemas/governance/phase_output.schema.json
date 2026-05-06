@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/governance/v1/phase_output.schema.json",
+  "title": "PhaseOutput",
+  "description": "Canonical contract for the JSON form of MCP/orchestrator/worker_contracts.py::PhaseOutput. Mirrors the dataclass shape so downstream phase-output report writers (inter-tier 02_validation_report, post-rewrite 02_validation_report, imscc_chunks manifest, eval report) can validate against a single shared schema. Wave 1 authors the schema only; no consumer wires against it yet — Wave 3 (Governance G1) consumes promotion_decision via the promotion-chain aggregator.",
+  "type": "object",
+  "required": [
+    "run_id",
+    "phase_name"
+  ],
+  "additionalProperties": true,
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "description": "Workflow run identifier the phase output belongs to."
+    },
+    "phase_name": {
+      "type": "string",
+      "description": "Phase identifier (e.g. content_generation_outline, post_rewrite_validation)."
+    },
+    "outputs": {
+      "type": "object",
+      "description": "Free-form per-phase output payload; consumers parse by phase_name.",
+      "additionalProperties": true
+    },
+    "artifacts": {
+      "type": "array",
+      "description": "Filesystem paths (as strings) of artifacts produced by the phase.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "gate_results": {
+      "type": "object",
+      "description": "Map of gate_id -> GateResult emitted by lib.validators against this phase output.",
+      "additionalProperties": {
+        "type": "object",
+        "required": [
+          "gate_id",
+          "severity",
+          "passed"
+        ],
+        "additionalProperties": true,
+        "properties": {
+          "gate_id": {
+            "type": "string"
+          },
+          "severity": {
+            "type": "string",
+            "enum": [
+              "critical",
+              "warning"
+            ]
+          },
+          "passed": {
+            "type": "boolean"
+          },
+          "issues": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "details": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    "decision_captures_path": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Filesystem path to this phase's decision-capture JSONL, or null when no captures were emitted."
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "ok",
+        "warn",
+        "fail"
+      ],
+      "description": "Phase-level execution outcome (orthogonal to gate-level pass/fail)."
+    },
+    "promotion_decision": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "pass",
+        "warn",
+        "fail",
+        "escalate",
+        null
+      ],
+      "description": "Per-phase promotion verdict consumed by the Wave 3 promotion-chain aggregator (Governance G1). OPTIONAL — registered in properties but NOT in required[]. Wave 1 leaves the field unset on every emit; Wave 3 derives the value at emit time via derive_promotion_decision(status, gate_results)."
+    },
+    "error": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Error message when status='fail'; null otherwise."
+    },
+    "metrics": {
+      "type": "object",
+      "description": "Per-phase numeric / structured metrics (timings, counts, scores).",
+      "additionalProperties": true
+    }
+  }
+}
