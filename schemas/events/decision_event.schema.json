@@ -121,6 +121,7 @@
         "dart_markers_check",
         "distractor_generation",
         "distractor_misconception_alignment_check",
+        "distractor_padding_skipped",
         "distractor_plausibility_check",
         "distractor_structural_check",
         "error_handling",

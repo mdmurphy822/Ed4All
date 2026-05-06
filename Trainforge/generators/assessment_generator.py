@@ -674,10 +674,51 @@ class AssessmentGenerator:
                             d_text = d_text[:197] + "..."
                         distractors.append(d_text)
 
-                # Pad if still not enough
-                while len(distractors) < 3:
-                    distractors.append(
-                        f"A concept unrelated to {target.term} in this context"
+                # Worker W2.D — kill the padded-distractor fallback. The
+                # pre-W2.D path emitted f"A concept unrelated to {target.term}
+                # in this context" template strings into the choices[] when
+                # misconception/distractor synthesis exhausted plausible
+                # options. The pad text trivially passed structural validators
+                # (string + non-duplicate of the correct answer) and got
+                # baked into training pairs. Replace with SkippedItem +
+                # ``distractor_padding_skipped`` decision-capture event so
+                # the count of insufficient-distractor questions surfaces
+                # in the audit log instead of silently corrupting the corpus.
+                if len(distractors) < 3:
+                    if self.capture is not None:
+                        try:
+                            self.capture.log_decision(
+                                decision_type="distractor_padding_skipped",
+                                decision=(
+                                    f"Skipped MCQ {question_id} (target term "
+                                    f"'{target.term}'): only "
+                                    f"{len(distractors)} plausible distractors "
+                                    f"resolved (need 3); padded-fallback path "
+                                    f"eliminated in W2.D."
+                                ),
+                                rationale=(
+                                    f"distractor_padding_skipped on "
+                                    f"question_id={question_id!r}, "
+                                    f"target_term={target.term!r}, "
+                                    f"objective_id={objective_id!r}, "
+                                    f"bloom_level={bloom_level!r}, "
+                                    f"resolved_distractors={len(distractors)}, "
+                                    f"required=3, "
+                                    f"reason=padded_distractor_fallback_eliminated."
+                                ),
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.debug(
+                                "DecisionCapture.log_decision raised on "
+                                "distractor_padding_skipped: %s",
+                                exc,
+                            )
+                    return SkippedItem(
+                        question_id=question_id,
+                        question_type="multiple_choice",
+                        bloom_level=bloom_level,
+                        objective_id=objective_id,
+                        reason="padded_distractor_fallback_eliminated",
                     )
 
                 choices = [
