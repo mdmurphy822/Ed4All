@@ -177,6 +177,24 @@ _REWRITE_SYSTEM_PROMPT = (
     "examples, voice. DO NOT add facts not in the outline's key_claims "
     "or in the source chunks."
     "\n\n"
+    # Wave 1.7 W1.7.B: behavioral-outcome directive. Each block declares
+    # one or more `objective_refs`; the rewrite-tier prose MUST teach
+    # the behavioral outcome at or above the declared Bloom level. The
+    # objective render in the user prompt now surfaces the Bloom triple
+    # `[Bloom: {level}, verb: {verb}]` so the model sees the declared
+    # cognitive demand inline.
+    "Each block declares one or more `objective_refs`. The block's "
+    "prose MUST teach the BEHAVIORAL OUTCOME described in those "
+    "objectives' statements, at or above the declared Bloom level. A "
+    "block whose objective is at `apply` or `analyze` MUST contain "
+    "scaffolded reasoning, worked examples, or guided practice — not "
+    "definitions alone. A block whose objective is at `evaluate` or "
+    "`create` MUST contain comparison / synthesis / construction "
+    "prose. The objective's `bloom_verb` (e.g. `develop`, `evaluate`, "
+    "`construct`) SHOULD appear at least once in the block's prose or "
+    "assessment stems; synonyms within the same Bloom level satisfy "
+    "this requirement."
+    "\n\n"
     "When the outline carries per-claim source attribution "
     "(`key_claims[].source_chunk_ids[]`), the rendered HTML SHOULD "
     "group the prose for each claim near a `<cite>` or "
@@ -870,9 +888,19 @@ def _apply_rewrite_touch(
 def _format_objectives(objectives: Sequence[Any]) -> str:
     """Format the objectives list into a readable prompt block.
 
-    Accepts either dict shape (``{"id": ..., "statement": ...}``) or
-    object with ``id`` + ``statement`` attributes. Empty input renders
+    Accepts either dict shape (``{"id": ..., "statement": ..., "bloom_level":
+    ..., "bloom_verb": ...}``) or object with ``id`` / ``statement`` /
+    ``bloom_level`` / ``bloom_verb`` attributes. Empty input renders
     ``"(none)"``.
+
+    Wave 1.7 W1.7.B: when either ``bloom_level`` or ``bloom_verb`` is
+    present on the objective, surface them via the verbatim Bloom triple
+    ``- {oid} [Bloom: {level}, verb: {verb}]: {statement}`` so the
+    rewrite-tier model has the declared cognitive demand pinned next to
+    the behavioral outcome it must teach. When both Bloom fields are
+    empty (legacy fixtures that don't carry Bloom on the objective
+    dict), fall back to the legacy ``- {oid}: {statement}`` shape so
+    pre-Wave-1.7 corpora still render unambiguously.
     """
     if not objectives:
         return "(none)"
@@ -881,10 +909,20 @@ def _format_objectives(objectives: Sequence[Any]) -> str:
         if isinstance(o, dict):
             oid = o.get("id") or "<unknown>"
             statement = o.get("statement") or ""
+            bloom_level = o.get("bloom_level") or ""
+            bloom_verb = o.get("bloom_verb") or ""
         else:
             oid = getattr(o, "id", "<unknown>")
             statement = getattr(o, "statement", "")
-        parts.append(f"- {oid}: {statement}")
+            bloom_level = getattr(o, "bloom_level", "")
+            bloom_verb = getattr(o, "bloom_verb", "")
+        if bloom_level or bloom_verb:
+            parts.append(
+                f"- {oid} [Bloom: {bloom_level}, verb: {bloom_verb}]: "
+                f"{statement}"
+            )
+        else:
+            parts.append(f"- {oid}: {statement}")
     return "\n".join(parts)
 
 

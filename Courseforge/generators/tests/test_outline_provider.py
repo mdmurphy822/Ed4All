@@ -590,3 +590,96 @@ def test_outline_retry_directive_matches_oneof_validation_error():
     # The directive cross-references the block-level source_refs[]
     # superset constraint.
     assert "source_refs[]" in directive
+
+
+# ---------------------------------------------------------------------------
+# Wave 1.7 W1.7.B — Bloom-triple objective rendering, behavioral-outcome
+# system-prompt floor, and BLOCK_OBJECTIVE_BLOOM_UNDERMET retry directive
+# ---------------------------------------------------------------------------
+
+
+def test_outline_user_prompt_surfaces_bloom_triple_for_dict_shape(monkeypatch):
+    """Wave 1.7 W1.7.B golden-output regression (outline-tier): the
+    rendered user prompt for a fixed (block, source_chunks, objectives)
+    triple includes the Bloom triple ``[Bloom: <level>, verb: <verb>]``
+    verbatim for at least one objective when ``bloom_level`` /
+    ``bloom_verb`` are present on the objective dict."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    p = OutlineProvider(provider="local")
+    block = _stub_block(block_type="concept")
+    chunks = [
+        {"id": "dart:slug-a#blk1", "body": "First chunk body."},
+    ]
+    objectives = [
+        {
+            "id": "CO-08",
+            "statement": "Construct subclass and subproperty hierarchies in Turtle.",
+            "bloom_level": "create",
+            "bloom_verb": "construct",
+        },
+    ]
+    rendered = p._render_user_prompt(
+        block=block, source_chunks=chunks, objectives=objectives
+    )
+    assert "CO-08" in rendered
+    assert "[Bloom: create, verb: construct]" in rendered
+    assert "Construct subclass and subproperty hierarchies in Turtle." in rendered
+
+
+def test_outline_user_prompt_falls_back_to_legacy_shape_when_bloom_absent(monkeypatch):
+    """Back-compat: legacy fixtures that don't carry ``bloom_level`` /
+    ``bloom_verb`` on the objective dict still render unambiguously
+    via the legacy ``- {oid}: {stmt}`` shape (no bracketed Bloom
+    triple). Pre-Wave-1.7 corpora must not see a regression."""
+    monkeypatch.delenv(ENV_PROVIDER, raising=False)
+    monkeypatch.delenv("LOCAL_SYNTHESIS_API_KEY", raising=False)
+    p = OutlineProvider(provider="local")
+    block = _stub_block(block_type="concept")
+    chunks = [
+        {"id": "dart:slug-a#blk1", "body": "First chunk body."},
+    ]
+    objectives = [
+        {"id": "TO-01", "statement": "Define the central concept."},
+    ]
+    rendered = p._render_user_prompt(
+        block=block, source_chunks=chunks, objectives=objectives
+    )
+    # Legacy shape rendered verbatim; no bracketed Bloom triple emitted.
+    assert "- TO-01: Define the central concept." in rendered
+    assert "[Bloom:" not in rendered
+
+
+def test_outline_system_prompt_carries_bloom_floor_directive():
+    """Wave 1.7 W1.7.B system-prompt sentinel: ``_OUTLINE_SYSTEM_PROMPT``
+    must carry the ``MUST be at or above the declared Bloom`` substring
+    so the outline-tier model is steered toward emitting a
+    ``bloom_level`` at or above the declared Bloom level of the
+    objective(s) listed in ``objective_refs``."""
+    assert "MUST be at or above the declared Bloom" in _OUTLINE_SYSTEM_PROMPT
+    # Cross-checks: the directive paragraph names the ``create``-level
+    # explicit prohibition so the model has a concrete enum example.
+    assert "create" in _OUTLINE_SYSTEM_PROMPT
+    # The distribute-across-blocks clause names the canonical
+    # `concept` / `example` / `assessment_item` Bloom-tier ladder.
+    assert "distribute the Bloom levels" in _OUTLINE_SYSTEM_PROMPT
+
+
+def test_outline_retry_directive_matches_block_objective_bloom_undermet():
+    """Wave 1.7 W1.7.B retry-directive regression — when the validator
+    (lands in W1.7.C) surfaces ``BLOCK_OBJECTIVE_BLOOM_UNDERMET`` as
+    the GateIssue code, ``_match_retry_directive`` returns the new
+    Bloom-floor recovery directive so the next outline-tier prompt
+    suffix steers the model up to the declared cognitive demand."""
+    err = (
+        "BLOCK_OBJECTIVE_BLOOM_UNDERMET: block bloom_level 'remember' "
+        "is below objective TO-04 declared level 'create'."
+    )
+    directive = _match_retry_directive(err)
+    assert directive is not None
+    # The new directive names the bloom_level surface verbatim so the
+    # next parse-retry sees the contract.
+    assert "bloom_level is below the declared Bloom level" in directive
+    assert "Re-emit with bloom_level at or above" in directive
+    # The directive references the prose-side scaffolding obligation.
+    assert "scaffold up" in directive

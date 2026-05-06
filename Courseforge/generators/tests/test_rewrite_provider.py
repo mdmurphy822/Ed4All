@@ -45,7 +45,9 @@ from Courseforge.generators._rewrite_provider import (  # noqa: E402
     RewriteProvider,
     RewriteProviderError,
     SUPPORTED_PROVIDERS,
+    _REWRITE_SYSTEM_PROMPT,
     _escape_orphan_placeholder_tags,
+    _format_objectives,
 )
 from blocks import Block, Touch  # noqa: E402  (Phase 2 intermediate format)
 
@@ -624,3 +626,64 @@ def test_supported_providers_includes_anthropic_together_local():
     pass and may or may not be present."""
     s = set(SUPPORTED_PROVIDERS)
     assert {"anthropic", "together", "local"}.issubset(s)
+
+
+# ---------------------------------------------------------------------------
+# Wave 1.7 W1.7.B — Bloom-triple objective rendering + behavioral-outcome
+# rewrite-tier system-prompt directive
+# ---------------------------------------------------------------------------
+
+
+def test_format_objectives_surfaces_bloom_triple_for_dict_shape():
+    """Wave 1.7 W1.7.B golden-output regression: dict-shape objective
+    carrying ``bloom_level`` + ``bloom_verb`` is rendered with the
+    verbatim ``[Bloom: <level>, verb: <verb>]`` triple inline so the
+    rewrite-tier model sees the declared cognitive demand pinned next
+    to the behavioral outcome it must teach."""
+    objs = [
+        {
+            "id": "TO-04",
+            "statement": "Construct an OWL ontology in Turtle.",
+            "bloom_level": "create",
+            "bloom_verb": "construct",
+        }
+    ]
+    rendered = _format_objectives(objs)
+    assert "TO-04" in rendered
+    assert "[Bloom: create, verb: construct]" in rendered
+    assert "Construct an OWL ontology in Turtle." in rendered
+    # The structured shape MUST line up as a single dash-prefixed entry.
+    assert rendered.startswith("- TO-04 ")
+
+
+def test_format_objectives_falls_back_to_legacy_shape_when_bloom_absent():
+    """Back-compat: legacy fixtures that don't carry ``bloom_level`` /
+    ``bloom_verb`` on the objective dict still render unambiguously
+    via the legacy ``- {oid}: {statement}`` shape (no bracketed Bloom
+    triple). Pre-Wave-1.7 corpora must not see a regression."""
+    objs = [
+        {
+            "id": "CO-01",
+            "statement": "Define the central concept.",
+        }
+    ]
+    rendered = _format_objectives(objs)
+    assert rendered == "- CO-01: Define the central concept."
+    # No bracketed Bloom triple emitted when both fields are absent.
+    assert "[Bloom:" not in rendered
+
+
+def test_rewrite_system_prompt_carries_behavioral_outcome_directive():
+    """Wave 1.7 W1.7.B system-prompt sentinel: ``_REWRITE_SYSTEM_PROMPT``
+    must carry the ``MUST teach the BEHAVIORAL OUTCOME`` substring so
+    the rewrite-tier model is steered toward delivering pedagogy at or
+    above the declared Bloom level of each block's
+    ``objective_refs``."""
+    assert "MUST teach the BEHAVIORAL OUTCOME" in _REWRITE_SYSTEM_PROMPT
+    # Cross-checks: the directive paragraph names the ``bloom_verb``
+    # field explicitly so the model knows what surface form to deliver.
+    assert "bloom_verb" in _REWRITE_SYSTEM_PROMPT
+    # The directive references the per-Bloom-tier obligations
+    # (apply / analyze → scaffolded reasoning; evaluate / create →
+    # comparison / synthesis / construction prose).
+    assert "scaffolded reasoning" in _REWRITE_SYSTEM_PROMPT
