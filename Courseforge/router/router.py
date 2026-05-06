@@ -1211,6 +1211,19 @@ class CourseforgeRouter:
         # each failed validator chain so the next candidate sees what
         # went wrong on the previous attempt and the directive to fix it.
         remediation_suffix: Optional[str] = None
+        # Wave 1.7 W1.7.D: precompute the {objective_id: statement} map
+        # once so the per-issue dispatch in
+        # ``_append_remediation_for_gates`` can interpolate the failing
+        # objective's behavioral-outcome statement on
+        # ``BLOCK_OBJECTIVE_STATEMENT_UNDERSUPPORTED`` directives. The
+        # outline-tier validator chain may emit the Wave 1.7 codes too
+        # (the inter_tier_validation seam runs the same
+        # ``BlockObjectiveDeliveryValidator`` as the post_rewrite_validation
+        # seam), so the symmetric thread-through here matches the
+        # rewrite-tier path.
+        objective_statements_map = self._objective_statements_from_objectives(
+            objectives,
+        )
 
         # Capability-tier chain bookkeeping. ``tier_index`` walks the
         # chain on per-tier sub-budget exhaustion; ``tier_attempts``
@@ -1467,7 +1480,11 @@ class CourseforgeRouter:
                 from Courseforge.router.remediation import (  # noqa: PLC0415
                     _append_remediation_for_gates,
                 )
-                built_suffix = _append_remediation_for_gates("", gate_results)
+                built_suffix = _append_remediation_for_gates(
+                    "",
+                    gate_results,
+                    objective_statements=objective_statements_map,
+                )
                 remediation_suffix = (
                     built_suffix.lstrip("\n") if built_suffix else None
                 )
@@ -1520,7 +1537,11 @@ class CourseforgeRouter:
             from Courseforge.router.remediation import (  # noqa: PLC0415
                 _append_remediation_for_gates,
             )
-            built_suffix = _append_remediation_for_gates("", gate_results)
+            built_suffix = _append_remediation_for_gates(
+                "",
+                gate_results,
+                objective_statements=objective_statements_map,
+            )
             # ``_append_remediation_for_gates`` returns "" unchanged when
             # no actionable failures exist; lstrip to drop the leading
             # "\n\n" the helper inserts so the OutlineProvider's
@@ -1663,6 +1684,12 @@ class CourseforgeRouter:
         blocked: Optional[Block] = None
         cumulative_attempts = block.validation_attempts
         remediation_suffix: Optional[str] = None
+        # Wave 1.7 W1.7.D: precompute the {objective_id: statement} map
+        # once so each remediation-suffix build sees the same map the
+        # validator chain saw at validation time.
+        objective_statements_map = self._objective_statements_from_objectives(
+            objectives,
+        )
 
         # Capability-tier chain bookkeeping (mirrors the outline-tier
         # loop in :meth:`route_with_self_consistency`).
@@ -1836,7 +1863,11 @@ class CourseforgeRouter:
                 from Courseforge.router.remediation import (  # noqa: PLC0415
                     _append_remediation_for_gates,
                 )
-                built_suffix = _append_remediation_for_gates("", gate_results)
+                built_suffix = _append_remediation_for_gates(
+                    "",
+                    gate_results,
+                    objective_statements=objective_statements_map,
+                )
                 remediation_suffix = (
                     built_suffix.lstrip("\n") if built_suffix else None
                 )
@@ -1845,14 +1876,40 @@ class CourseforgeRouter:
             # Budget check — when exhausted, stamp the rewrite-side
             # symmetric ``validator_consensus_fail`` marker and break.
             # The capability chain is exhausted at this point.
+            #
+            # Wave 1.7 W1.7.D: when the budget exhausted PURELY on
+            # Wave-1.7 block-objective delivery misses (the most
+            # recent ``BlockObjectiveDeliveryValidator`` chain carried
+            # only ``BLOCK_OBJECTIVE_*`` codes — no upstream structural
+            # miss), stamp the dedicated
+            # ``block_objective_undelivered`` marker instead. The
+            # rewrite-tier prompt-builder
+            # (``_ESCALATION_MARKER_CONTEXT``) treats this marker as
+            # "block prose is best-effort; objective_alignment[*].status
+            # is unverifiable" so a postmortem reader sees the
+            # pedagogical-delivery exhaustion path apart from the
+            # generic consensus-failure path. The surviving best-effort
+            # candidate also carries
+            # ``objective_alignment[*].status="unverifiable"`` so the
+            # JSON-LD audit trail records the unverifiable delivery
+            # state for every declared objective_id.
             if cumulative_attempts >= resolved_budget:
+                marker_choice = "validator_consensus_fail"
+                if self._gate_results_only_block_objective_failures(
+                    gate_results
+                ):
+                    marker_choice = "block_objective_undelivered"
                 escalated = dataclasses.replace(
                     last_candidate,
-                    escalation_marker="validator_consensus_fail",
+                    escalation_marker=marker_choice,
                 )
+                if marker_choice == "block_objective_undelivered":
+                    escalated = self._stamp_objective_alignment_unverifiable(
+                        escalated,
+                    )
                 self._emit_block_escalation(
                     escalated,
-                    marker="validator_consensus_fail",
+                    marker=marker_choice,
                     attempts=escalated.validation_attempts,
                     n_candidates=i + 1,
                 )
@@ -1865,7 +1922,11 @@ class CourseforgeRouter:
             from Courseforge.router.remediation import (  # noqa: PLC0415
                 _append_remediation_for_gates,
             )
-            built_suffix = _append_remediation_for_gates("", gate_results)
+            built_suffix = _append_remediation_for_gates(
+                "",
+                gate_results,
+                objective_statements=objective_statements_map,
+            )
             remediation_suffix = (
                 built_suffix.lstrip("\n") if built_suffix else None
             )
@@ -2326,6 +2387,119 @@ class CourseforgeRouter:
         return None
 
     @staticmethod
+    def _objective_statements_from_objectives(
+        objectives: Optional[List[Any]],
+    ) -> Dict[str, str]:
+        """Extract a ``{objective_id: statement}`` map from an LO list.
+
+        Wave 1.7 W1.7.D enrichment helper. Mirrors the LO-coercion loop
+        in :meth:`_run_validator_chain` (line 2484-2519) so the
+        ``objective_statements`` map the router threads into the
+        remediation suffix builder is byte-identical to the map the
+        ``BlockObjectiveDeliveryValidator`` saw at validation time.
+        Accepts both dict-shaped LOs (``{id, statement}``) and
+        object-shaped LOs (dataclass with ``id`` / ``statement`` attrs).
+        Returns an empty dict when ``objectives`` is None or empty —
+        the per-issue Wave 1.7 dispatch falls through to
+        ``"<unavailable>"`` rendering, which is still actionable.
+        """
+        statements_map: Dict[str, str] = {}
+        if not objectives:
+            return statements_map
+        for lo in objectives:
+            if isinstance(lo, dict):
+                lo_id = lo.get("id") or lo.get("objective_id")
+                if isinstance(lo_id, str) and lo_id:
+                    stmt = lo.get("statement") or lo.get("text")
+                    if isinstance(stmt, str) and stmt.strip():
+                        statements_map[lo_id] = stmt.strip()
+            else:
+                lo_id = getattr(lo, "id", None) or getattr(
+                    lo, "objective_id", None,
+                )
+                if isinstance(lo_id, str) and lo_id:
+                    stmt = getattr(lo, "statement", None) or getattr(
+                        lo, "text", None,
+                    )
+                    if isinstance(stmt, str) and stmt.strip():
+                        statements_map[lo_id] = stmt.strip()
+        return statements_map
+
+    @staticmethod
+    def _gate_results_only_block_objective_failures(
+        gate_results: List[Any],
+    ) -> bool:
+        """Return True iff failing issue codes are exclusively Wave-1.7
+        block-objective delivery misses.
+
+        Wave 1.7 W1.7.D escalation-marker fallback (mirrors
+        :meth:`_gate_results_only_per_claim_failures` for the W1.5.C
+        per-claim attribution path). When the rewrite-tier regen budget
+        exhausts, the standard marker is ``validator_consensus_fail``.
+        But when the ONLY failures across the most recent validator
+        chain were Wave 1.7 block-objective delivery codes
+        (``BLOCK_OBJECTIVE_STATEMENT_UNDERSUPPORTED`` /
+        ``BLOCK_OBJECTIVE_BLOOM_UNDERMET`` /
+        ``BLOCK_OBJECTIVE_VERB_ABSENT``), the router stamps the dedicated
+        ``block_objective_undelivered`` marker so the rewrite-tier
+        prompt-builder reads the marker-specific context paragraph in
+        ``_ESCALATION_MARKER_CONTEXT`` and a postmortem reader can tell
+        the pedagogical-delivery-exhaustion path apart from a generic
+        consensus-failure path.
+
+        Returns True only when at least one issue with a Wave 1.7 code
+        is present AND every non-passing issue (across all non-passing
+        gate_results) carries a Wave 1.7 code OR an info-only severity.
+        Empty issue lists / no-failure paths return False (defensive —
+        falls through to the standard marker).
+
+        Mirror of :meth:`_gate_results_only_per_claim_failures`; the
+        Wave 1.7 set lives in
+        :data:`Courseforge.router.remediation._WAVE17_OBJECTIVE_DELIVERY_CODES`
+        as the canonical source for both the per-issue dispatch and the
+        escalation-marker fallback.
+        """
+        from Courseforge.router.remediation import (  # noqa: PLC0415
+            _WAVE17_OBJECTIVE_DELIVERY_CODES,
+        )
+        seen_wave17 = False
+        for gate_result in gate_results:
+            # Wave 1.7 BlockObjectiveDeliveryValidator emits all issues
+            # at warning-severity (Day-1 contract per
+            # ``lib/validators/block_objective_delivery.py:894``);
+            # ``passed=True`` is set but ``action="regenerate"`` carries
+            # the actionable signal. Treat any non-pass action as
+            # "actionable failure" — a result with no issues + no
+            # action="regenerate"/"block"/"escalate" is the only true
+            # passed-state to skip.
+            action = getattr(gate_result, "action", None)
+            passed = getattr(gate_result, "passed", True)
+            if action == "pass" or (action is None and passed):
+                continue
+            issues = getattr(gate_result, "issues", None) or []
+            for issue in issues:
+                code = (
+                    getattr(issue, "code", None)
+                    if not isinstance(issue, dict)
+                    else issue.get("code")
+                )
+                # Skip info-only issues so they don't taint the
+                # block-objective-only determination.
+                severity = (
+                    getattr(issue, "severity", None)
+                    if not isinstance(issue, dict)
+                    else issue.get("severity")
+                )
+                if severity == "info":
+                    continue
+                if code in _WAVE17_OBJECTIVE_DELIVERY_CODES:
+                    seen_wave17 = True
+                    continue
+                # Any other failure code → not pure Wave-1.7.
+                return False
+        return seen_wave17
+
+    @staticmethod
     def _gate_results_only_per_claim_failures(gate_results: List[Any]) -> bool:
         """Return True iff the failing gate results' issue codes are
         exclusively per-claim attribution misses.
@@ -2694,6 +2868,63 @@ class CourseforgeRouter:
             logger.warning(
                 "router self-consistency decision-capture emit failed: %s", exc
             )
+
+    @staticmethod
+    def _stamp_objective_alignment_unverifiable(block: Block) -> Block:
+        """Stamp ``objective_alignment[*].status="unverifiable"`` on a block.
+
+        Wave 1.7 W1.7.D escalation-path companion to the
+        ``block_objective_undelivered`` marker. When the rewrite-tier
+        regen budget exhausts purely on Wave-1.7 codes, the surviving
+        best-effort block ships — but its declared objective_refs MUST
+        carry an ``unverifiable`` alignment status so a postmortem
+        reader (and the JSON-LD audit trail consumed by Trainforge)
+        sees the gate failure even though the rendered HTML lands in
+        the IMSCC.
+
+        Behaviour:
+
+        * When ``block.objective_alignment`` is non-empty, replace each
+          entry's ``status`` field with ``"unverifiable"`` while
+          preserving every other field (scores, gaps, threshold).
+        * When ``block.objective_alignment`` is empty, synthesize one
+          entry per declared ``objective_id`` carrying
+          ``status="unverifiable"`` and the per-axis score / gap fields
+          set to ``None`` (signalling the validator chain never
+          recorded scores onto this block via
+          ``return_touched_blocks=True``).
+        * When ``block.objective_ids`` is also empty, returns the
+          block unchanged — there's nothing to mark as unverifiable.
+
+        Returns a new ``Block`` instance via ``dataclasses.replace``;
+        the input block is unchanged.
+        """
+        existing = list(block.objective_alignment or ())
+        if existing:
+            updated_entries = [
+                {**entry, "status": "unverifiable"} for entry in existing
+            ]
+            return dataclasses.replace(
+                block, objective_alignment=tuple(updated_entries),
+            )
+        obj_ids = list(block.objective_ids or ())
+        if not obj_ids:
+            return block
+        synthesized = tuple(
+            {
+                "objective_id": obj_id,
+                "status": "unverifiable",
+                "statement_entailment_score": None,
+                "contradiction_score": None,
+                "bloom_gap": None,
+                "verb_match_count": None,
+                "declared_bloom": None,
+                "observed_bloom": None,
+                "entailment_threshold": None,
+            }
+            for obj_id in obj_ids
+        )
+        return dataclasses.replace(block, objective_alignment=synthesized)
 
     # ------------------------------------------------------------------
     # Decision-capture helpers

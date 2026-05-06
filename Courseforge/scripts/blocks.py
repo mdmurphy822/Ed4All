@@ -140,6 +140,20 @@ _ESCALATION_MARKERS: frozenset = frozenset(
         # ``_ESCALATION_MARKER_CONTEXT`` and treats the per-claim
         # citation map as advisory rather than authoritative.
         "per_claim_attribution_unfixable",
+        # Wave 1.7 W1.7.D: block-objective delivery unfixable. Fires
+        # when the rewrite-tier regen budget is exhausted PURELY on
+        # Wave-1.7 block-objective delivery misses (the
+        # ``BlockObjectiveDeliveryValidator`` warning codes
+        # ``BLOCK_OBJECTIVE_STATEMENT_UNDERSUPPORTED`` /
+        # ``BLOCK_OBJECTIVE_BLOOM_UNDERMET`` /
+        # ``BLOCK_OBJECTIVE_VERB_ABSENT``) with no upstream structural
+        # miss across the regen chain. The rewrite-tier prompt-builder
+        # reads this marker via ``_ESCALATION_MARKER_CONTEXT`` so a
+        # postmortem reader sees the gate failure even though the
+        # rendered block ships; the surviving block also carries
+        # ``objective_alignment[*].status="unverifiable"`` so the
+        # JSON-LD audit trail records the unverifiable delivery state.
+        "block_objective_undelivered",
     }
 )
 

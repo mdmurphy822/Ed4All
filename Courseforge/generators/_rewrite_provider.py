@@ -565,6 +565,23 @@ _ESCALATION_MARKER_CONTEXT: Dict[str, str] = {
         "as advisory rather than authoritative; preserve block-level "
         "`source_refs[]` grounding instead."
     ),
+    # Wave 1.7 W1.7.D: block-objective delivery unfixable. Fires when
+    # the rewrite-tier regen budget exhausted purely on Wave-1.7
+    # block-objective delivery misses (no upstream structural miss).
+    # The rewrite-tier prompt-builder treats the prior prose as
+    # best-effort; the surviving block ships with
+    # ``objective_alignment[*].status="unverifiable"`` so a postmortem
+    # reader sees the gate failure even though the rendered block
+    # ships.
+    "block_objective_undelivered": (
+        "Block could not be brought into pedagogical alignment with "
+        "its declared objective_refs after the regen budget. Treat "
+        "the existing prose as best-effort; preserve the structural "
+        "grounding signals (source_refs, observed_bloom) but flag "
+        "objective_alignment[*].status as unverifiable so a postmortem "
+        "reader sees the gate failure even though the rendered block "
+        "ships."
+    ),
 }
 
 
