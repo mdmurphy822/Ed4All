@@ -668,6 +668,7 @@ Source of truth: `config/workflows.yaml::validation_gates`. Phase column below s
 | `batch_dart` | `multi_source_synthesis` | `dart_markers` | DartMarkersValidator |
 | `batch_dart` | `validation` | `wcag_aa_compliance` | WCAGValidator |
 | `textbook_to_course` | `dart_conversion` | `dart_markers` | DartMarkersValidator |
+| `textbook_to_course` | `course_planning` | `objective_source_refs` | ObjectiveSourceRefValidator (warning — Wave 1.6 W1.6.C; resolves each synthesized LO's `source_refs[]` against the union of `textbook_structure.chapters[*].id` ∪ `chapters[*].sections[*].id` ∪ DART chunkset universe; `require_to_attribution=false` day-1) |
 | `textbook_to_course` | `content_generation` | `content_structure` | ContentStructureValidator (warning) |
 | `textbook_to_course` | `content_generation` | `source_refs` | PageSourceRefValidator |
 | `textbook_to_course` | `content_generation` | `content_grounding` | ContentGroundingValidator |

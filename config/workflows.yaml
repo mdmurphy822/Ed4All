@@ -911,6 +911,31 @@ workflows:
             behavior:
               on_fail: warn
               on_error: warn
+          # Wave 1.6 W1.6.C: per-objective source-attribution
+          # consistency walk. Resolves each LO's source_refs against
+          # the dual universe of (textbook_structure chapter / section
+          # IDs) ∪ (DART chunkset chunk-id universe). Wave 1.6 ships
+          # warning-severity day-1 to preserve back-compat with the
+          # rdf-shacl-551-2 calibration corpus's existing emit;
+          # promotion to CRITICAL waits for future-wave calibration
+          # data per plan §6.3 risk note. Day-1 default
+          # ``require_to_attribution=false`` keeps TOs from firing
+          # OBJECTIVE_MISSING_SOURCE_REFS so legacy archives where TOs
+          # have no source_refs continue to validate.
+          # Inputs are resolved by the gate-input router builder
+          # registered against this validator path in
+          # MCP/hardening/gate_input_routing.py — the meta-schema
+          # forbids gate-level inputs blocks.
+          - gate_id: objective_source_refs
+            validator: lib.validators.objective_source_refs.ObjectiveSourceRefValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            config:
+              require_to_attribution: false
 
       - name: content_generation
         agents: [content-generator]
