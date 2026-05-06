@@ -66,6 +66,30 @@
         "weeks": {
           "type": "array",
           "items": {"type": "integer", "minimum": 1}
+        },
+        "source_refs": {
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1}
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "ref": {"type": "string", "minLength": 1},
+                  "chunk_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "minItems": 1
+                  }
+                },
+                "required": ["ref", "chunk_ids"],
+                "additionalProperties": false
+              }
+            }
+          ]
         }
       }
     },
@@ -91,8 +115,28 @@
         "cognitive_domain": {"type": "string"},
         "week": {"type": ["integer", "null"], "minimum": 1},
         "source_refs": {
-          "type": "array",
-          "items": {"type": "string"}
+          "oneOf": [
+            {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1}
+            },
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "ref": {"type": "string", "minLength": 1},
+                  "chunk_ids": {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "minItems": 1
+                  }
+                },
+                "required": ["ref", "chunk_ids"],
+                "additionalProperties": false
+              }
+            }
+          ]
         }
       }
     }

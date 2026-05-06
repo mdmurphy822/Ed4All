@@ -4760,7 +4760,34 @@ class CourseProcessor:
                 if obj.get("week") is not None:
                     entry["week"] = obj["week"]
                 if obj.get("source_refs"):
-                    entry["source_refs"] = list(obj["source_refs"])
+                    # Wave 1.6 W1.6.A: shape-preserving copy. The legacy
+                    # ``list(obj["source_refs"])`` cast destroys structured
+                    # ``{ref, chunk_ids[]}`` entries by shallow-copying the
+                    # outer list while keeping the inner dict references —
+                    # which is correct for legacy List[str] but not for
+                    # the Wave-1.6 structured arm. Per-entry dispatch:
+                    # strings pass through unchanged; dicts are deep-
+                    # copied so a downstream mutator can't accidentally
+                    # cross-contaminate two objective entries that share
+                    # a ref dict by reference.
+                    preserved_refs: List[Any] = []
+                    for ref in obj["source_refs"]:
+                        if isinstance(ref, str):
+                            preserved_refs.append(ref)
+                        elif isinstance(ref, dict):
+                            ref_field = ref.get("ref")
+                            chunk_ids = ref.get("chunk_ids")
+                            if isinstance(chunk_ids, list):
+                                chunk_ids = list(chunk_ids)
+                            preserved_refs.append(
+                                {"ref": ref_field, "chunk_ids": chunk_ids}
+                            )
+                        else:
+                            # Mixed-shape entries are theoretically
+                            # rejected by the schema's oneOf; stay
+                            # defensive here.
+                            preserved_refs.append(ref)
+                    entry["source_refs"] = preserved_refs
                 component_objectives.append(entry)
 
         objectives_data: Dict[str, Any] = {
