@@ -306,7 +306,23 @@ _OUTLINE_SYSTEM_PROMPT: str = (
     "curies MUST be either the empty list [] when no CURIE tokens are "
     "in the source chunks, or a list of strict prefix:local CURIE "
     "strings (e.g. rdf:type, sh:NodeShape). NEVER emit a full IRI as "
-    "a CURIE value. NEVER invent a CURIE prefix from a chunk slug."
+    "a CURIE value. NEVER invent a CURIE prefix from a chunk slug. "
+    # Wave 1.5 W1.5.B: per-claim source attribution directive. The
+    # outline-tier schema's ``key_claims`` field admits a back-compat
+    # ``oneOf`` (legacy List[str] vs structured List[{claim,
+    # source_chunk_ids[]}]) for existing fixtures, but new authoring
+    # under this prompt MUST emit the structured shape so Wave 2 W2.F
+    # NLI scoring can fan out per-claim instead of against the union of
+    # block-level source_refs[].
+    "key_claims MUST be a list of objects, each "
+    "{\"claim\": \"<short prose statement>\", "
+    "\"source_chunk_ids\": [\"<chunk_id>\", ...]}. The "
+    "source_chunk_ids array carries the IDs of the supplied "
+    "source_chunks the claim is derived from — at least 1, more when "
+    "the claim synthesizes across chunks. Every chunk_id MUST appear "
+    "in the block's top-level source_refs[]. PROHIBITED: emitting "
+    "key_claims as a flat array of strings; that is the legacy shape "
+    "and the new schema rejects it for new authoring."
 )
 # Per-block-type GBNF grammar strings for llama.cpp / vLLM constrained
 # decoding. Each grammar accepts a JSON object with at least the
@@ -571,6 +587,20 @@ for _bt in BLOCK_TYPES:
 # the suffix size.
 
 _RETRY_DIRECTIVE_PATTERNS: List[Tuple["re.Pattern[str]", str]] = [
+    # Wave 1.5 W1.5.B: per-claim source attribution recovery directive.
+    # Fires when the model emits the legacy ``List[str]`` shape under
+    # the new ``oneOf`` schema — the validator surfaces "is not valid
+    # under any of the given schemas" as the canonical error. The
+    # directive points the model at the new shape contract on the next
+    # parse-retry. Placed FIRST so it takes precedence over the more
+    # generic patterns below.
+    (
+        re.compile(r"is not valid under any of the given schemas"),
+        "key_claims MUST be a list of objects each containing "
+        "{\"claim\": \"<text>\", \"source_chunk_ids\": [\"<chunk_id>\"]}. "
+        "Do NOT emit key_claims as flat strings. Every source_chunk_id "
+        "MUST also appear in the block's source_refs[].",
+    ),
     (
         re.compile(r"is not one of \['remember'"),
         "bloom_level MUST be the lowercase string label, not a numeric "
@@ -1068,7 +1098,20 @@ class OutlineProvider(_BaseLLMProvider):
             "block_type, content_type, bloom_level, objective_refs, "
             "curies, key_claims, section_skeleton, source_refs, "
             "structural_warnings. No preamble, no markdown, no "
-            "commentary."
+            "commentary. "
+            # Wave 1.5 W1.5.B: per-claim source attribution closing
+            # clause. Names the supplied source_chunks list as the
+            # universe ``source_chunk_ids`` may draw from, so the
+            # outline-tier model doesn't fabricate chunk IDs absent
+            # from the prompt. Symmetric with the system-prompt
+            # directive that mandates the structured ``key_claims``
+            # shape; without this clause the model has the shape but
+            # no reminder of the chunk-id universe bound.
+            "For each key_claims[] entry, source_chunk_ids MUST be a "
+            "non-empty subset of the chunk IDs listed in the \"Source "
+            "chunks\" section above. A claim that synthesizes "
+            "information from N chunks carries N IDs; a single-chunk "
+            "claim carries 1 ID."
         )
         # Phase 3.5 Subtask 18: append the remediation suffix when
         # supplied. The suffix is the canonical
