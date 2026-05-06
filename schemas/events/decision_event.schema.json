@@ -118,6 +118,7 @@
         "content_structure_check",
         "courseforge_outline_shacl_check",
         "courseforge_validation_aggregated",
+        "coverage_map_aggregated",
         "curie_anchoring_check",
         "curriculum_alignment_call",
         "dart_markers_check",

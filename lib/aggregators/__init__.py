@@ -18,10 +18,19 @@ Worker W2.B (GPT Feedback v2 Wave 2):
       aggregates synthesis-pair quality, KG quality, eval-gating,
       leakage, anchoring outputs into a single canonical
       ``<libv2_course>/quality/trainforge_assessment_quality_report.json``.
+
+Worker W3.E (GPT Feedback v2 Wave 3):
+    - :class:`coverage_map.CoverageMapAggregator` builds an objective-
+      keyed coverage table linking objectives -> chunks -> questions ->
+      training_pairs and surfaces orphan objectives / chunks / questions
+      to operators via ``<libv2_course>/coverage_map.json``.
 """
 
 from .courseforge_validation_report import (  # noqa: F401
     CourseforgeValidationReport,
+)
+from .coverage_map import (  # noqa: F401
+    CoverageMapAggregator,
 )
 from .trainforge_assessment_quality_report import (  # noqa: F401
     TrainforgeAssessmentQualityReport,

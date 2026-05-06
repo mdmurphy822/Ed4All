@@ -1,0 +1,134 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/aggregators/v1/coverage_map.schema.json",
+  "title": "Ed4All coverage_map.json",
+  "description": "Top-level objective-keyed coverage table linking objectives -> chunks -> questions -> training_pairs across the full pipeline. Built by lib/aggregators/coverage_map.py::CoverageMapAggregator post-workflow and emitted at <libv2_course>/coverage_map.json (or <trainforge_dir>/coverage_map.json when archival hasn't run). Worker W3.E.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "course_code",
+    "run_id",
+    "generated_at",
+    "objectives",
+    "summary"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Schema version. 1.0 == Wave 3 W3.E land."
+    },
+    "course_code": {
+      "type": "string",
+      "description": "Operator-facing course code so cross-run diffs key cleanly."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Workflow ID."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp of the build call."
+    },
+    "objectives": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ObjectiveCoverageRow" },
+      "description": "Per-objective coverage rows, sorted by objective_id."
+    },
+    "summary": {
+      "$ref": "#/$defs/Summary"
+    }
+  },
+  "$defs": {
+    "ObjectiveCoverageRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "objective_id",
+        "statement",
+        "chunks",
+        "questions",
+        "answers_grounded_in_chunks",
+        "training_pairs"
+      ],
+      "properties": {
+        "objective_id": {
+          "type": "string",
+          "description": "Canonical objective id (TO-NN / CO-NN)."
+        },
+        "statement": {
+          "type": "string",
+          "description": "Plain-text objective statement."
+        },
+        "chunks": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Chunk ids whose learning_outcome_refs[] cite this objective."
+        },
+        "questions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Question ids whose objective_id / objective_ids[] cite this objective."
+        },
+        "answers_grounded_in_chunks": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Subset of questions[] whose source_chunks[] intersect this objective's chunks[] list (questions that BOTH cite the objective AND ground their answer in a chunk that itself cites the same objective). Day-1 grounding signal; Wave 4 candidate replaces this with per-objective cosine similarity."
+        },
+        "training_pairs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Instruction + preference pair ids whose lo_refs[] cite this objective."
+        }
+      }
+    },
+    "Summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total_objectives",
+        "objectives_with_chunks",
+        "objectives_with_questions",
+        "objectives_with_training_pairs",
+        "orphan_objectives",
+        "orphan_chunks",
+        "orphan_questions"
+      ],
+      "properties": {
+        "total_objectives": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "objectives_with_chunks": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "objectives_with_questions": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "objectives_with_training_pairs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "orphan_objectives": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Objective ids whose chunks[] AND questions[] AND training_pairs[] are all empty."
+        },
+        "orphan_chunks": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Chunk ids whose learning_outcome_refs[] is empty OR cites no extant objective."
+        },
+        "orphan_questions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Question ids whose objective_id / objective_ids[] is empty OR cites no extant objective."
+        }
+      }
+    }
+  }
+}
