@@ -12,8 +12,17 @@ Worker W5 (GPT-feedback follow-up):
       walks every per-phase ``report.json`` plus in-memory gate results
       and writes a single top-level
       ``courseforge_validation_report.json`` at the project root.
+
+Worker W2.B (GPT Feedback v2 Wave 2):
+    - :class:`trainforge_assessment_quality_report.TrainforgeAssessmentQualityReport`
+      aggregates synthesis-pair quality, KG quality, eval-gating,
+      leakage, anchoring outputs into a single canonical
+      ``<libv2_course>/quality/trainforge_assessment_quality_report.json``.
 """
 
 from .courseforge_validation_report import (  # noqa: F401
     CourseforgeValidationReport,
+)
+from .trainforge_assessment_quality_report import (  # noqa: F401
+    TrainforgeAssessmentQualityReport,
 )

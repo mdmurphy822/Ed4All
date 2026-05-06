@@ -620,6 +620,13 @@ All errors logged to:
 
 ---
 
+## Aggregators
+
+Top-level workflow aggregators run post-loop in `WorkflowRunner.run_workflow` and roll up per-phase signals into a single operator-facing JSON. Best-effort: aggregator failure logs a warning but does not change `final_status` (per-phase reports remain authoritative). Live aggregators:
+
+- `lib/aggregators/courseforge_validation_report.py::CourseforgeValidationReport` — walks every per-phase `report.json` (inter_tier_validation, post_rewrite_validation) plus in-memory `_gate_results` chains and writes `<project_path>/courseforge_validation_report.json` (schema 1.1). Carries `per_block_results[]`, `source_grounding_results`, `accessibility_results`, `statistical_semantic_results`, `manifest_hash_results`, plus the `final_promotion_decision` enum (`failed | non_certified_archive | certified_accessible | certified_instructional | certified_trainable`). Emits `courseforge_validation_aggregated` decision per build.
+- `lib/aggregators/trainforge_assessment_quality_report.py::TrainforgeAssessmentQualityReport` — aggregates `training_synthesis` / `trainforge_assessment` / `libv2_archival` `_gate_results`, the `<trainforge_dir>/quality/quality_report.json::assessments` dimension, and (when an adapter is imported) `LibV2/courses/<slug>/models/<id>/eval/eval_report.json` into a single `<libv2_course>/quality/trainforge_assessment_quality_report.json` (schema 1.0). Falls back to `<trainforge_dir>/trainforge_assessment_quality_report.json` when archival hasn't run. Carries `summary` (total_questions, answerable_rate, single_correct_rate, bloom_alignment_rate, placeholder_rate, source_support_rate), `synthesis_quality`, `kg_quality`, `eval_summary`, `per_question_issues`, plus a 3-way `promotion_decision` enum (`failed | non_certified_archive | trainable`). Emits `trainforge_quality_aggregated` decision per build. Heuristic replaced by Wave 3 G1's master promotion-chain compose.
+
 ## Validation Gates
 
 Validation gates run after workflow phases to enforce quality:

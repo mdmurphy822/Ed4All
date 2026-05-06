@@ -1217,6 +1217,23 @@ class WorkflowRunner:
             phase_outputs=phase_outputs,
         )
 
+        # GPT Feedback v2 Wave 2 (W2.B): post-loop TrainForge assessment-
+        # quality aggregator. Walks ``phase_outputs`` for the
+        # ``training_synthesis`` / ``trainforge_assessment`` /
+        # ``libv2_archival`` ``_gate_results`` chains plus the
+        # ``quality_report.json::assessments`` dimension and writes a
+        # single top-level
+        # ``<libv2_course>/quality/trainforge_assessment_quality_report.json``.
+        # Best-effort — aggregator failure does NOT alter
+        # ``final_status``; the per-phase reports remain authoritative.
+        trainforge_aggregator_path = (
+            self._maybe_write_trainforge_assessment_quality_report(
+                workflow_id=workflow_id,
+                workflow_params=workflow_params,
+                phase_outputs=phase_outputs,
+            )
+        )
+
         return {
             "workflow_id": workflow_id,
             "status": final_status,
@@ -1227,6 +1244,11 @@ class WorkflowRunner:
             },
             "courseforge_validation_report_path": (
                 str(aggregator_path) if aggregator_path else None
+            ),
+            "trainforge_assessment_quality_report_path": (
+                str(trainforge_aggregator_path)
+                if trainforge_aggregator_path
+                else None
             ),
         }
 
@@ -1308,6 +1330,106 @@ class WorkflowRunner:
         if project_id:
             return PROJECT_ROOT / "Courseforge" / "exports" / project_id
         return None
+
+    def _maybe_write_trainforge_assessment_quality_report(
+        self,
+        *,
+        workflow_id: str,
+        workflow_params: Dict[str, Any],
+        phase_outputs: Dict[str, Dict],
+    ) -> Optional[Path]:
+        """Worker W2.B helper — write the Trainforge assessment-quality JSON.
+
+        Path resolution priority:
+
+        1. ``phase_outputs.libv2_archival.course_dir`` — the canonical
+           LibV2 course root. Output lands at
+           ``<course_dir>/quality/trainforge_assessment_quality_report.json``.
+        2. Fallback to
+           ``phase_outputs.trainforge_assessment.trainforge_dir`` /
+           ``phase_outputs.training_synthesis.corpus_dir`` — emit at the
+           Trainforge workspace root when LibV2 archival hasn't yet
+           completed (e.g. partial textbook_to_course run that stops
+           before ``libv2_archival``).
+
+        Returns ``None`` when neither resolves (no Trainforge surfaces
+        ran) or when the aggregator raises during build/write. Best-
+        effort posture matches the courseforge aggregator: failure
+        logs a warning and never fails the workflow.
+        """
+        try:
+            # Local import to keep the workflow_runner import-time
+            # dependency surface unchanged for non-Trainforge runs.
+            from lib.aggregators.trainforge_assessment_quality_report import (
+                TrainforgeAssessmentQualityReport,
+            )
+
+            archival = phase_outputs.get("libv2_archival") or {}
+            course_dir_str = archival.get("course_dir")
+            output_path: Optional[Path] = None
+            libv2_course_path: Optional[Path] = None
+            trainforge_dir: Optional[Path] = None
+
+            if course_dir_str:
+                libv2_course_path = Path(course_dir_str)
+                output_path = (
+                    libv2_course_path
+                    / "quality"
+                    / "trainforge_assessment_quality_report.json"
+                )
+
+            # Resolve trainforge_dir from any contributing surface so
+            # the aggregator can read quality_report.json::assessments
+            # even when libv2_archival ran (the trainforge_dir may have
+            # been wiped post-archival).
+            ta = phase_outputs.get("trainforge_assessment") or {}
+            tdir_str = ta.get("trainforge_dir")
+            if not tdir_str:
+                ts = phase_outputs.get("training_synthesis") or {}
+                tdir_str = ts.get("corpus_dir") or ts.get("trainforge_dir")
+            if tdir_str:
+                trainforge_dir = Path(tdir_str)
+
+            # Fallback: write to <trainforge_dir>/trainforge_assessment_quality_report.json
+            # when libv2_archival didn't run.
+            if output_path is None and trainforge_dir is not None:
+                output_path = (
+                    trainforge_dir
+                    / "trainforge_assessment_quality_report.json"
+                )
+
+            if output_path is None:
+                logger.warning(
+                    "trainforge_assessment_quality_report: no "
+                    "libv2_archival.course_dir / training_synthesis."
+                    "corpus_dir / trainforge_assessment.trainforge_dir "
+                    "resolvable; skipping aggregator (run_id=%s)",
+                    workflow_id,
+                )
+                return None
+
+            course_code = (workflow_params or {}).get("course_name") or ""
+            aggregator = TrainforgeAssessmentQualityReport(
+                phase_outputs=phase_outputs,
+                course_code=course_code,
+                run_id=workflow_id,
+                libv2_course_path=libv2_course_path,
+                trainforge_dir=trainforge_dir,
+            )
+            aggregator.write(output_path)
+            logger.info(
+                "trainforge_assessment_quality_report: wrote %s "
+                "(run_id=%s, course_code=%s)",
+                output_path, workflow_id, course_code,
+            )
+            return output_path
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "trainforge_assessment_quality_report aggregator failed "
+                "(non-fatal, run_id=%s): %s",
+                workflow_id, exc,
+            )
+            return None
 
     def _route_params(
         self,
