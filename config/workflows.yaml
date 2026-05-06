@@ -1283,6 +1283,19 @@ workflows:
           # in a follow-up commit once alignment-rate signal stabilises
           # in CI. All five operate on Block-shape inputs so both seams
           # carry symmetric coverage.
+          #
+          # Wave-3 W3.A note: ``outline_assessment_retrieval_grounding``
+          # carries a calibration-gated severity flip implemented
+          # validator-side (see
+          # ``lib/governance/calibration_gate.py::resolve_severity_flip``
+          # + ``lib/validators/assessment_retrieval_grounding.py``).
+          # The YAML severity stays ``warning`` so this file stays
+          # static + auditable; the validator dynamically lifts the
+          # ``NO_SOURCE_ATTRIBUTION`` GateIssue to ``critical`` when the
+          # ``answerability_alignment_rate`` calibration signal clears
+          # the 0.85 floor on the most recent W2.B calibration report.
+          # Captured per build via the ``severity_flip_applied`` /
+          # ``severity_flip_deferred`` decision events.
           - gate_id: outline_assessment_retrieval_grounding
             validator: lib.validators.assessment_retrieval_grounding.AssessmentRetrievalGroundingValidator
             severity: warning
@@ -1673,6 +1686,11 @@ workflows:
           # outline-seam gates. Same Block-shape inputs; the validators'
           # internal shape-dispatch handles rewrite-tier HTML-string
           # content vs. outline-tier dict content via isinstance checks.
+          #
+          # Wave-3 W3.A note: same calibration-gated severity flip as
+          # the inter-tier gate above — see
+          # ``lib/governance/calibration_gate.py::resolve_severity_flip``.
+          # Severity flip is applied validator-side; YAML stays at warning.
           - gate_id: rewrite_assessment_retrieval_grounding
             validator: lib.validators.assessment_retrieval_grounding.AssessmentRetrievalGroundingValidator
             severity: warning

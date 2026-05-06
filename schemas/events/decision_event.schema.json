@@ -192,6 +192,8 @@
         "rewrite_source_grounding_check",
         "schema_translation_generation",
         "semantic_graph_rule_output_check",
+        "severity_flip_applied",
+        "severity_flip_deferred",
         "source_interpretation",
         "source_selection",
         "source_usage",

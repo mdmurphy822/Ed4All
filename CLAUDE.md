@@ -698,7 +698,7 @@ Source of truth: `config/workflows.yaml::validation_gates`. Phase column below s
 | `textbook_to_course` | `inter_tier_validation` | `outline_objective_roundtrip_similarity` | ObjectiveRoundtripSimilarityValidator (warning) |
 | `textbook_to_course` | `inter_tier_validation` | `outline_bloom_classifier_disagreement` | BloomClassifierDisagreementValidator (warning) |
 | `textbook_to_course` | `inter_tier_validation` | `outline_block_objective_delivery` | BlockObjectiveDeliveryValidator (warning — Wave 1.7 W1.7.C tri-axis NLI / Bloom-gap / verb check) |
-| `textbook_to_course` | `inter_tier_validation` | `outline_assessment_retrieval_grounding` | AssessmentRetrievalGroundingValidator (warning) |
+| `textbook_to_course` | `inter_tier_validation` | `outline_assessment_retrieval_grounding` | AssessmentRetrievalGroundingValidator (warning; calibration-gated severity flip — see `lib/governance/calibration_gate.py::resolve_severity_flip`) |
 | `textbook_to_course` | `inter_tier_validation` | `outline_distractor_plausibility` | DistractorPlausibilityValidator (warning) |
 | `textbook_to_course` | `inter_tier_validation` | `outline_distractor_misconception_alignment` | DistractorMisconceptionAlignmentValidator (warning) |
 | `textbook_to_course` | `inter_tier_validation` | `outline_distractor_structural` | DistractorStructuralValidator (warning) |
@@ -720,7 +720,7 @@ Source of truth: `config/workflows.yaml::validation_gates`. Phase column below s
 | `textbook_to_course` | `post_rewrite_validation` | `rewrite_bloom_classifier_disagreement` | BloomClassifierDisagreementValidator (warning) |
 | `textbook_to_course` | `post_rewrite_validation` | `rewrite_block_objective_delivery` | BlockObjectiveDeliveryValidator (warning — Wave 1.7 W1.7.C tri-axis post-rewrite mirror) |
 | `textbook_to_course` | `post_rewrite_validation` | `claim_support` | ClaimSupportValidator (warning — Wave 2 W2.F per-claim NLI entailment vs cited chunks; fires UNSUPPORTED_CLAIM >20% and CONTRADICTED_CLAIM >5%) |
-| `textbook_to_course` | `post_rewrite_validation` | `rewrite_assessment_retrieval_grounding` | AssessmentRetrievalGroundingValidator (warning) |
+| `textbook_to_course` | `post_rewrite_validation` | `rewrite_assessment_retrieval_grounding` | AssessmentRetrievalGroundingValidator (warning; calibration-gated severity flip — see `lib/governance/calibration_gate.py::resolve_severity_flip`) |
 | `textbook_to_course` | `post_rewrite_validation` | `rewrite_distractor_plausibility` | DistractorPlausibilityValidator (warning) |
 | `textbook_to_course` | `post_rewrite_validation` | `rewrite_distractor_misconception_alignment` | DistractorMisconceptionAlignmentValidator (warning) |
 | `textbook_to_course` | `post_rewrite_validation` | `rewrite_distractor_structural` | DistractorStructuralValidator (warning) |
