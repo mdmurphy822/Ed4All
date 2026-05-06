@@ -1274,6 +1274,16 @@ workflows:
               on_error: warn
             description: W2.C — exactly-one-correct check on Trainforge ``choices[]`` shape + distractor-not-entailed-by-source Jaccard floor (default 0.70). Symmetric to AssessmentRetrievalGroundingValidator's correct-answer-grounding gate.
 
+          - gate_id: outline_padded_distractor
+            validator: lib.validators.padded_distractor.PaddedDistractorValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: W2.D — regression-net regex gate against the canonical pre-W2.D padded-distractor fallback ('A concept unrelated to ...'). Critical-from-start; outline-tier action=regenerate so the rewrite tier re-rolls the block before publication.
+
           - gate_id: outline_instructional_depth
             validator: lib.validators.instructional_depth.InstructionalDepthValidator
             severity: warning
@@ -1614,6 +1624,16 @@ workflows:
               on_error: warn
             description: W2.C — post-rewrite exactly-one-correct + distractor-not-entailed-by-source check. Mirrors the inter_tier_validation seam against the rewrite-tier Block batch.
 
+          - gate_id: rewrite_padded_distractor
+            validator: lib.validators.padded_distractor.PaddedDistractorValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: W2.D — post-rewrite regression-net regex gate. Padded distractors in canonical-published HTML are a structural unfixable; phase resolves action=block instead of regenerate (rewrite-tier is too late in the pipeline to re-roll).
+
           - gate_id: rewrite_instructional_depth
             validator: lib.validators.instructional_depth.InstructionalDepthValidator
             severity: warning
@@ -1863,6 +1883,16 @@ workflows:
               on_fail: block
               on_error: fail_closed
             description: Every assessment question's objective_id must appear in at least one chunk's learning_outcome_refs (Wave 24)
+
+          - gate_id: trainforge_padded_distractor
+            validator: lib.validators.padded_distractor.PaddedDistractorValidator
+            severity: critical
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: W2.D — regression-net regex gate against padded-distractor patterns in IMSCC assessment items. Post-publication seam → action=block (re-rolling at this seam is too late). Pairs with the outline_/rewrite_ siblings on the Courseforge two-pass seams.
 
       # Wave 30 Gap 3: training-pair synthesis. Pre-Wave-30,
       # Trainforge/synthesize_training.py was never wired into any
