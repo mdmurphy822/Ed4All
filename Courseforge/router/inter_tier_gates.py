@@ -941,10 +941,23 @@ class BlockSourceRefValidator:
     the Block references a ``sourceId`` that doesn't exist in the
     staging manifest, so the rewrite tier has nothing to ground on.
     → ``action="block"``.
+
+    Wave 1.5 W1.5.C extension: when ``block.content`` is the outline-
+    tier dict shape carrying the structured ``key_claims`` shape
+    (``List[{claim, source_chunk_ids[]}]``), every chunk_id listed in
+    ``claim.source_chunk_ids[]`` MUST also appear in the block's
+    top-level resolved ``source_refs[]``. Per-claim misses fire
+    ``OUTLINE_CLAIM_SOURCE_NOT_IN_BLOCK_REFS`` (severity=warning) and
+    map to ``action="regenerate"`` — semantically the model can re-
+    roll and pick the right chunk. Block-level structural misses
+    still dominate: when both fire, ``action="block"`` wins.
+
+    Legacy ``List[str]`` ``key_claims`` shape skips the per-claim walk
+    (back-compat preserved per Wave 1.5 §6.1).
     """
 
     name = "outline_source_refs"
-    version = "1.1.0"
+    version = "1.2.0"
 
     def validate(self, inputs: Dict[str, Any]) -> GateResult:
         gate_id = inputs.get("gate_id", self.name)
@@ -1018,9 +1031,16 @@ class BlockSourceRefValidator:
             block_passed = True
             unresolved_count = 0
             failure_code: Optional[str] = None
+            # W1.5.C: track block-level vs claim-level misses separately
+            # so the action resolver can prefer "block" when ANY block-
+            # level structural miss fired (block-level dominates).
+            block_level_miss = False
+            claim_unresolved = False
+            claim_misses_count = 0
             for sid in block_ids:
                 if not _SOURCE_ID_RE.match(sid):
                     block_passed = False
+                    block_level_miss = True
                     unresolved_count += 1
                     failure_code = "OUTLINE_BLOCK_INVALID_SOURCE_ID_SHAPE"
                     if len(issues) < _ISSUE_LIST_CAP:
@@ -1038,6 +1058,7 @@ class BlockSourceRefValidator:
                     continue
                 if valid_ids and sid not in valid_ids:
                     block_passed = False
+                    block_level_miss = True
                     unresolved_count += 1
                     if failure_code is None:
                         failure_code = "OUTLINE_BLOCK_UNRESOLVED_SOURCE_ID"
@@ -1058,6 +1079,77 @@ class BlockSourceRefValidator:
                                 "binding upstream."
                             ),
                         ))
+
+            # W1.5.C per-claim attribution consistency walk. Operates on
+            # the outline-tier dict shape only; rewrite-tier (str)
+            # blocks are skipped — their per-claim attribution lives
+            # in the rewrite-tier per-claim citation map (W1.5.D).
+            # Legacy ``List[str]`` claim shape silently skips the per-
+            # claim walk (back-compat preserved per Wave 1.5 §6.1).
+            claims_total_count = 0
+            claims_with_attribution_count = 0
+            if isinstance(content, dict):
+                claims_raw = content.get("key_claims") or []
+                if isinstance(claims_raw, list):
+                    claims_total_count = len(claims_raw)
+                    block_sids_set = set(block_ids)
+                    for idx, c in enumerate(claims_raw):
+                        if not isinstance(c, dict):
+                            # legacy str entry — skip (back-compat).
+                            continue
+                        claim_sids_raw = c.get("source_chunk_ids") or []
+                        if not isinstance(claim_sids_raw, list):
+                            continue
+                        claims_with_attribution_count += 1
+                        for sid in claim_sids_raw:
+                            if not isinstance(sid, str) or not sid:
+                                continue
+                            if sid not in block_sids_set:
+                                block_passed = False
+                                claim_unresolved = True
+                                claim_misses_count += 1
+                                if failure_code is None:
+                                    failure_code = (
+                                        "OUTLINE_CLAIM_SOURCE_NOT_IN_BLOCK_REFS"
+                                    )
+                                if len(issues) < _ISSUE_LIST_CAP:
+                                    issues.append(GateIssue(
+                                        severity="warning",
+                                        code=(
+                                            "OUTLINE_CLAIM_SOURCE_NOT_IN_BLOCK_REFS"
+                                        ),
+                                        message=(
+                                            f"Block {block.block_id!r} "
+                                            f"key_claims[{idx}] cites "
+                                            f"source_chunk_id {sid!r} which is "
+                                            f"not in the block's top-level "
+                                            f"source_refs[]."
+                                        ),
+                                        location=block.block_id,
+                                        suggestion=(
+                                            "Re-roll the outline tier so "
+                                            "every claim cites a chunk_id "
+                                            "already declared in the block's "
+                                            "source_refs[], or extend "
+                                            "source_refs[] to cover the "
+                                            "claim's chunk universe."
+                                        ),
+                                    ))
+
+            # Per-block decision-capture emit. W1.5.C surfaces three new
+            # claim-level signals so the audit trail records per-claim
+            # attribution health alongside the existing block-level
+            # source-ref counts. Legacy ``List[str]`` shape contributes
+            # ``claims_with_attribution_count=0``.
+            block_signals = {
+                "declared_source_ids_count": len(block_ids),
+                "unresolved_count": unresolved_count,
+                "staging_dir": staging_dir,
+                "valid_ids_universe_size": len(valid_ids),
+                "claim_misses_count": claim_misses_count,
+                "claims_with_attribution_count": claims_with_attribution_count,
+                "claims_total_count": claims_total_count,
+            }
             if block_passed:
                 passed_count += 1
                 _emit_block_decision(
@@ -1066,12 +1158,7 @@ class BlockSourceRefValidator:
                     block=block,
                     passed=True,
                     code=None,
-                    signals={
-                        "declared_source_ids_count": len(block_ids),
-                        "unresolved_count": 0,
-                        "staging_dir": staging_dir,
-                        "valid_ids_universe_size": len(valid_ids),
-                    },
+                    signals=block_signals,
                 )
             else:
                 _emit_block_decision(
@@ -1080,12 +1167,7 @@ class BlockSourceRefValidator:
                     block=block,
                     passed=False,
                     code=failure_code,
-                    signals={
-                        "declared_source_ids_count": len(block_ids),
-                        "unresolved_count": unresolved_count,
-                        "staging_dir": staging_dir,
-                        "valid_ids_universe_size": len(valid_ids),
-                    },
+                    signals=block_signals,
                 )
 
         # Empty-manifest path: when the manifest is empty / missing
@@ -1112,6 +1194,26 @@ class BlockSourceRefValidator:
 
         passed = len(issues) == 0
         score = 1.0 if audited == 0 else round(passed_count / audited, 4)
+
+        # W1.5.C action resolution: block-level structural misses
+        # dominate over claim-level semantic misses. Inspect the
+        # collected issue codes:
+        # - any OUTLINE_BLOCK_INVALID_SOURCE_ID_SHAPE /
+        #   OUTLINE_BLOCK_UNRESOLVED_SOURCE_ID  → action="block"
+        # - only OUTLINE_CLAIM_SOURCE_NOT_IN_BLOCK_REFS  → "regenerate"
+        # - no failures                                  → action=None
+        if passed:
+            action: Optional[str] = None
+        else:
+            block_level_codes = {
+                "OUTLINE_BLOCK_INVALID_SOURCE_ID_SHAPE",
+                "OUTLINE_BLOCK_UNRESOLVED_SOURCE_ID",
+            }
+            has_block_level = any(
+                i.code in block_level_codes for i in issues
+            )
+            action = "block" if has_block_level else "regenerate"
+
         return GateResult(
             gate_id=gate_id,
             validator_name=self.name,
@@ -1119,7 +1221,7 @@ class BlockSourceRefValidator:
             passed=passed,
             score=score,
             issues=issues,
-            action=None if passed else "block",
+            action=action,
         )
 
 

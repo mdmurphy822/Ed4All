@@ -480,6 +480,15 @@ _ESCALATION_MARKER_CONTEXT: Dict[str, str] = {
         "BlockProviderSpec.escalate_immediately). Create the block "
         "from scratch using the supplied source chunks and objectives."
     ),
+    # Wave 1.5 W1.5.C: per-claim attribution unfixable. Fires when the
+    # outline-tier regen budget exhausted purely on per-claim source-
+    # attribution misses (no block-level structural miss).
+    "per_claim_attribution_unfixable": (
+        "outline tier could not consistently attribute claims to "
+        "specific source chunks; treat the per-claim citation map "
+        "as advisory rather than authoritative; preserve block-level "
+        "`source_refs[]` grounding instead."
+    ),
 }
 
 

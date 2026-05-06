@@ -131,6 +131,15 @@ _ESCALATION_MARKERS: frozenset = frozenset(
         # W5 filter / ESCALATED_BLOCK_IN_IMSCC gate.
         "outline_dispatch_error",
         "rewrite_dispatch_error",
+        # Wave 1.5 W1.5.C: per-claim attribution unfixable. Fires when
+        # the outline-tier regen budget is exhausted PURELY on per-
+        # claim source-attribution misses (the ``BlockSourceRefValidator``
+        # ``OUTLINE_CLAIM_SOURCE_NOT_IN_BLOCK_REFS`` warning code) with
+        # no block-level structural miss across the regen chain. The
+        # rewrite-tier prompt-builder reads this marker via
+        # ``_ESCALATION_MARKER_CONTEXT`` and treats the per-claim
+        # citation map as advisory rather than authoritative.
+        "per_claim_attribution_unfixable",
     }
 )
 
