@@ -161,6 +161,7 @@
         "objective_assessment",
         "objective_assessment_similarity_check",
         "objective_roundtrip_similarity_check",
+        "objective_source_ref_check",
         "oscqr_score_check",
         "outcome_signal",
         "padded_distractor_check",

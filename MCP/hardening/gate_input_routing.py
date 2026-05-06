@@ -649,6 +649,76 @@ def _resolve_staging_manifest_path(
     return None
 
 
+def _build_objective_source_refs(
+    phase_outputs: Dict[str, Any],
+    workflow_params: Dict[str, Any],
+) -> BuilderResult:
+    """Wave 1.6 W1.6.C — input builder for ObjectiveSourceRefValidator.
+
+    Surfaces ``{synthesized_objectives_path, textbook_structure_path?,
+    dart_chunks_manifest_path?, require_to_attribution?}`` so the
+    validator's ``validate()`` path sees the inputs the per-objective
+    walk consults.
+
+    Resolution chain:
+
+    * ``synthesized_objectives_path`` — required. Pulls from
+      ``phase_outputs.course_planning.synthesized_objectives_path``
+      (or ``workflow_params.objectives_path`` as the override) via
+      :func:`_resolve_objectives_path`. Missing → builder returns the
+      structured ``synthesized_objectives_path`` missing-key marker so
+      the executor surfaces a GATE_SKIPPED_MISSING_INPUTS skip rather
+      than crashing the validator.
+    * ``textbook_structure_path`` — optional. Pulls from
+      ``phase_outputs.objective_extraction.textbook_structure_path``;
+      absent → graceful-degrade arm of the validator engages
+      (``OBJECTIVE_SOURCE_REFS_NO_UNIVERSE`` warning when chunks
+      universe is also absent).
+    * ``dart_chunks_manifest_path`` — optional. The chunking phase
+      emits ``dart_chunks_path`` (the path to ``chunks.jsonl``); the
+      validator's contract is the SIBLING ``manifest.json`` in the
+      same directory, so we derive that from the chunks-jsonl parent.
+      Absent / unreadable → chunks-id resolution skipped on a per-LO
+      basis (the validator handles this gracefully).
+    * ``require_to_attribution`` — optional, default false. Surfaces
+      from gate config (the meta-schema accepts a ``config:`` block at
+      the gate level which the executor merges into inputs at
+      ``MCP/core/executor.py:1442``). Wave 1.6 day-1 default keeps TOs
+      from firing OBJECTIVE_MISSING_SOURCE_REFS.
+    """
+    inputs: Dict[str, Any] = {}
+
+    objectives_path = _resolve_objectives_path(phase_outputs, workflow_params)
+    if not objectives_path:
+        # Mark structured-skip so the executor surfaces the missing
+        # path through GATE_SKIPPED_MISSING_INPUTS rather than letting
+        # the validator return a critical-severity miss against an
+        # empty input.
+        return {}, ["synthesized_objectives_path"]
+    inputs["synthesized_objectives_path"] = objectives_path
+
+    # textbook_structure_path — pulled directly from objective_extraction.
+    oe = phase_outputs.get("objective_extraction") or {}
+    ts_path = oe.get("textbook_structure_path")
+    if isinstance(ts_path, str) and ts_path:
+        inputs["textbook_structure_path"] = ts_path
+
+    # dart_chunks_manifest_path — derive from chunking.dart_chunks_path
+    # (the validator wants the manifest sidecar; chunks.jsonl sits in
+    # the same dir).
+    chunking = phase_outputs.get("chunking") or {}
+    chunks_jsonl_raw = chunking.get("dart_chunks_path")
+    if isinstance(chunks_jsonl_raw, str) and chunks_jsonl_raw:
+        try:
+            chunks_jsonl_path = Path(chunks_jsonl_raw)
+            manifest_candidate = chunks_jsonl_path.parent / "manifest.json"
+            inputs["dart_chunks_manifest_path"] = str(manifest_candidate)
+        except (TypeError, ValueError):
+            pass
+
+    return inputs, []
+
+
 def _build_block_input(
     phase_outputs: Dict[str, Any],
     workflow_params: Dict[str, Any],
@@ -1197,6 +1267,16 @@ def default_router() -> GateInputRouter:
     r.register(
         "lib.validators.content_type.ContentTypeValidator",
         _build_degraded_chunk_input,
+    )
+
+    # Wave 1.6 W1.6.C — per-objective source-attribution gate at
+    # course_planning. Builder resolves synthesized_objectives_path,
+    # textbook_structure_path, and the DART chunkset manifest sidecar
+    # from upstream phase outputs. ``require_to_attribution`` surfaces
+    # via gate ``config:`` block.
+    r.register(
+        "lib.validators.objective_source_refs.ObjectiveSourceRefValidator",
+        _build_objective_source_refs,
     )
 
     return r
