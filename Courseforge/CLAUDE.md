@@ -356,10 +356,12 @@ blocks:
 ### Block fields driving the router
 
 - `validation_attempts: int` — incremented every time the validator chain fires `action="regenerate"`. The router caps the loop at `COURSEFORGE_OUTLINE_REGEN_BUDGET` / `COURSEFORGE_REWRITE_REGEN_BUDGET` (defaults `10` / `10`); per-block-type override via `regen_budget_rewrite` in `block_routing.yaml`.
-- `escalation_marker: Optional[str]` — one of three values (`_ESCALATION_MARKERS` frozenset):
+- `escalation_marker: Optional[str]` — one of the canonical values in the `_ESCALATION_MARKERS` frozenset:
   - `outline_budget_exhausted` — regen budget hit OR `escalate_immediately: true` policy short-circuit fired (provenance carried via `Touch.purpose="escalate_immediately"`).
   - `structural_unfixable` — a validator returned `action="block"`.
   - `validator_consensus_fail` — every self-consistency candidate failed validation; surviving best-effort candidate carries this marker. Reused at the rewrite seam when the rewrite-tier regen budget runs out.
+  - `outline_dispatch_error` / `rewrite_dispatch_error` — outline / rewrite tier dispatch raised an exception (network / provider raise / unhandled exception). Block is preserved at its original index so the IMSCC W5 filter catches the marker; postmortems can tell dispatch failures apart from semantic exhaustion.
+  - `per_claim_attribution_unfixable` — Wave 1.5 W1.5.C: outline-tier regen budget exhausted purely on per-claim source-attribution misses (`OUTLINE_CLAIM_SOURCE_NOT_IN_BLOCK_REFS`) with no block-level structural miss across the regen chain. The rewrite-tier prompt-builder reads this marker via `_ESCALATION_MARKER_CONTEXT` and treats the per-claim citation map as advisory rather than authoritative; preserve block-level `source_refs[]` grounding instead.
 
 Legacy validators returning `action=None, passed=False` retain regenerate-loop semantics; only EXPLICIT `action="block"` / `action="escalate"` triggers a short-circuit.
 

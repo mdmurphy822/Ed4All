@@ -1480,14 +1480,29 @@ class CourseforgeRouter:
             # chain is exhausted at this point (either the chain has
             # length 1, or the highest-capability tier still couldn't
             # converge).
+            #
+            # Wave 1.5 W1.5.C: when the budget exhausted PURELY on per-
+            # claim source-attribution misses (the most recent
+            # ``BlockSourceRefValidator`` failure carried only
+            # ``OUTLINE_CLAIM_SOURCE_NOT_IN_BLOCK_REFS`` codes — no
+            # block-level structural miss codes), stamp the dedicated
+            # ``per_claim_attribution_unfixable`` marker instead. The
+            # rewrite-tier prompt-builder (`_ESCALATION_MARKER_CONTEXT`)
+            # treats this marker as "treat the per-claim citation map
+            # as advisory rather than authoritative" so the rewrite
+            # tier doesn't blindly re-author against the noisy
+            # outline-tier attribution.
             if cumulative_attempts >= resolved_budget:
+                marker_choice = "outline_budget_exhausted"
+                if self._gate_results_only_per_claim_failures(gate_results):
+                    marker_choice = "per_claim_attribution_unfixable"
                 escalated = dataclasses.replace(
                     last_candidate,
-                    escalation_marker="outline_budget_exhausted",
+                    escalation_marker=marker_choice,
                 )
                 self._emit_block_escalation(
                     escalated,
-                    marker="outline_budget_exhausted",
+                    marker=marker_choice,
                     attempts=escalated.validation_attempts,
                     n_candidates=i + 1,
                 )
@@ -2307,6 +2322,56 @@ class CourseforgeRouter:
             if gate_id:
                 return f"gate_failed:{gate_id}"
         return None
+
+    @staticmethod
+    def _gate_results_only_per_claim_failures(gate_results: List[Any]) -> bool:
+        """Return True iff the failing gate results' issue codes are
+        exclusively per-claim attribution misses.
+
+        Wave 1.5 W1.5.C escalation-marker fallback: when the outline-tier
+        regen budget exhausts, the standard marker is
+        ``outline_budget_exhausted``. But when the ONLY failures across
+        the most recent validator chain were per-claim attribution
+        misses (``OUTLINE_CLAIM_SOURCE_NOT_IN_BLOCK_REFS``), the router
+        stamps the dedicated ``per_claim_attribution_unfixable`` marker
+        so the rewrite tier sees the marker-specific context paragraph
+        in ``_ESCALATION_MARKER_CONTEXT`` and degrades the per-claim
+        signal to advisory rather than authoritative.
+
+        Returns True only when at least one issue with the per-claim
+        code is present AND every non-passing issue (across all
+        non-passing gate_results) carries that code. Empty issue lists
+        / no-failure paths return False (defensive — falls through to
+        the standard marker).
+        """
+        per_claim_code = "OUTLINE_CLAIM_SOURCE_NOT_IN_BLOCK_REFS"
+        seen_per_claim = False
+        for gate_result in gate_results:
+            passed = getattr(gate_result, "passed", True)
+            if passed:
+                continue
+            issues = getattr(gate_result, "issues", None) or []
+            for issue in issues:
+                code = (
+                    getattr(issue, "code", None)
+                    if not isinstance(issue, dict)
+                    else issue.get("code")
+                )
+                # Skip info-only issues (e.g. EMPTY_STAGING_MANIFEST) so
+                # they don't taint the per-claim-only determination.
+                severity = (
+                    getattr(issue, "severity", None)
+                    if not isinstance(issue, dict)
+                    else issue.get("severity")
+                )
+                if severity == "info":
+                    continue
+                if code == per_claim_code:
+                    seen_per_claim = True
+                    continue
+                # Any other failure code → not pure-per-claim.
+                return False
+        return seen_per_claim
 
     def _run_validator_chain(
         self,
