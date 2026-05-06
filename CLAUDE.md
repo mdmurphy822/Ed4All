@@ -746,6 +746,7 @@ Source of truth: `config/workflows.yaml::validation_gates`. Phase column below s
 | `textbook_to_course` | `libv2_archival` | `packet_integrity_strict` | PacketIntegrityValidator |
 | `textbook_to_course` | `libv2_archival` | `semantic_graph_rule_output` | SemanticGraphRuleOutputValidator (warning) |
 | `textbook_to_course` | `libv2_archival` | `kg_quality_report` | KGQualityValidator (critical, thresholds 0.95/0.95/0.95/0.5) |
+| `textbook_to_course` | `libv2_archival` | `chunkset_drift` | ChunksetDriftValidator (warning — DART vs. IMSCC chunkset drift; sidecar `drift_report.json`) |
 | `rag_training` | `assessment_generation` | `assessment_quality` | AssessmentQualityValidator |
 | `rag_training` | `assessment_generation` | `bloom_alignment` | BloomAlignmentValidator (warning) |
 | `rag_training` | `assessment_generation` | `leak_check` | LeakCheckValidator |

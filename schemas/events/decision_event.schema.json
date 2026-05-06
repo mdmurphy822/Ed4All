@@ -101,6 +101,7 @@
         "chunk_retrieval",
         "chunk_selection",
         "chunk_serialization",
+        "chunkset_drift_check",
         "chunkset_manifest_check",
         "claim_support_check",
         "component_selection",
