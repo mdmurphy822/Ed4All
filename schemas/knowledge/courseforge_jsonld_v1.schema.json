@@ -376,6 +376,24 @@
           "type": "integer",
           "minimum": 0,
           "description": "0-based index into distractors[] pointing at the correct option. The W7 Block-payload validator additionally enforces correct_answer_index < len(distractors) (the schema can't bind the upper end without coupling to the array's length)."
+        },
+        "bloomLevel": {
+          "oneOf": [
+            { "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel" },
+            { "type": "null" }
+          ],
+          "description": "GPT Feedback v2 Wave 1 / W1.A: declared TARGET Bloom level for the assessment item. Mirrors $defs.LearningObjective.properties.bloomLevel shape (oneOf BloomLevel-enum-or-null). Optional — pre-Wave-1 AssessmentItem dicts validate untouched. Populated at outline-tier emit when the rewrite tier authors the item against a Bloom target (Wave 2 router work)."
+        },
+        "observedBloomLevel": {
+          "oneOf": [
+            { "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel" },
+            { "type": "null" }
+          ],
+          "description": "GPT Feedback v2 Wave 1 / W1.A: observed (BERT-classified) Bloom level for the assessment item. Same shape as bloomLevel. Optional; null when the BERT-ensemble classifier didn't run (legacy / pre-Wave-2 emits)."
+        },
+        "bloomAlignment": {
+          "type": ["boolean", "null"],
+          "description": "GPT Feedback v2 Wave 1 / W1.A: boolean alignment signal — true iff observedBloomLevel == bloomLevel. Optional; null when the classifier didn't run. Carried alongside observedBloomLevel so downstream consumers don't recompute the comparison."
         }
       }
     },
@@ -473,6 +491,17 @@
             { "type": "null" }
           ],
           "description": "Bloom's taxonomy level for the block (when applicable to the block_type)."
+        },
+        "observedBloomLevel": {
+          "oneOf": [
+            { "$ref": "https://ed4all.dev/ns/taxonomies/v1/bloom_verbs.schema.json#/$defs/BloomLevel" },
+            { "type": "null" }
+          ],
+          "description": "GPT Feedback v2 Wave 1 / W1.A: observed (BERT-classified) Bloom level for the block. Same shape as bloomLevel. Optional; null when the BERT-ensemble classifier didn't run (legacy / pre-Wave-2 emits). Populated at validation time by Wave 2's bloom_classifier_disagreement gate alongside the existing bloomLevel target."
+        },
+        "bloomAlignment": {
+          "type": ["boolean", "null"],
+          "description": "GPT Feedback v2 Wave 1 / W1.A: boolean alignment signal — true iff observedBloomLevel == bloomLevel. Optional; null when the classifier didn't run. Carried alongside observedBloomLevel so downstream consumers don't recompute the comparison."
         },
         "contentTypeLabel": {
           "type": "string",
