@@ -922,6 +922,64 @@ class SLMEvalHarness:
                     "correct": r.get("outcome") == "match",
                 })
 
+        # --- Wave 3 W3.F: 6 per-question metrics ----------------- #
+        # Pure post-emit scoring against the assessments.json + chunk
+        # corpus already on disk in the course tree. No model dispatch
+        # for 5 of 6 (only bloom_alignment_rate + source_support_rate
+        # touch the BERT / NLI ensembles, both gated on optional
+        # pyproject extras with graceful-degrade returns).
+        prompts = self._load_prompts_for_metrics()
+        chunk_corpus = self._load_chunk_corpus_for_metrics()
+        rendered_html_blocks = self._load_rendered_html_for_metrics(prompts)
+
+        answerable_rate_result: Optional[Dict[str, Any]] = None
+        if evaluators.get("answerable_rate") and prompts:
+            answerable_rate_result = _run_stage(
+                "answerable_rate",
+                len(prompts),
+                lambda: self._run_answerable_rate(prompts, chunk_corpus),
+            )
+
+        single_correct_rate_result: Optional[Dict[str, Any]] = None
+        if evaluators.get("single_correct_rate") and rendered_html_blocks:
+            single_correct_rate_result = _run_stage(
+                "single_correct_rate",
+                len(rendered_html_blocks),
+                lambda: self._run_single_correct_rate(rendered_html_blocks),
+            )
+
+        distractor_entropy_result: Optional[Dict[str, Any]] = None
+        if evaluators.get("distractor_entropy") and prompts:
+            distractor_entropy_result = _run_stage(
+                "distractor_entropy",
+                len(prompts),
+                lambda: self._run_distractor_entropy(prompts),
+            )
+
+        bloom_alignment_rate_result: Optional[Dict[str, Any]] = None
+        if evaluators.get("bloom_alignment_rate") and prompts:
+            bloom_alignment_rate_result = _run_stage(
+                "bloom_alignment_rate",
+                len(prompts),
+                lambda: self._run_bloom_alignment_rate(prompts),
+            )
+
+        placeholder_rate_result: Optional[Dict[str, Any]] = None
+        if evaluators.get("placeholder_rate") and prompts:
+            placeholder_rate_result = _run_stage(
+                "placeholder_rate",
+                len(prompts),
+                lambda: self._run_placeholder_rate(prompts),
+            )
+
+        source_support_rate_result: Optional[Dict[str, Any]] = None
+        if evaluators.get("source_support_rate") and prompts:
+            source_support_rate_result = _run_stage(
+                "source_support_rate",
+                len(prompts),
+                lambda: self._run_source_support_rate(prompts, chunk_corpus),
+            )
+
         # Recompute coverage proxy with the Tier-3 contributions
         if invariant_pass_rates:
             avg_invariant_pass = sum(invariant_pass_rates) / len(invariant_pass_rates)
@@ -965,6 +1023,22 @@ class SLMEvalHarness:
         mean_latency = getattr(model_callable, "mean_latency_ms", None)
 
         out_dict = report.to_dict()
+        # Wave 3 W3.F: fold the 6 per-question metrics into the
+        # report's top level. Each carries its full per-question
+        # breakdown so an audit can replay why a metric is below
+        # threshold.
+        if answerable_rate_result is not None:
+            out_dict["answerable_rate"] = answerable_rate_result
+        if single_correct_rate_result is not None:
+            out_dict["single_correct_rate"] = single_correct_rate_result
+        if distractor_entropy_result is not None:
+            out_dict["distractor_entropy"] = distractor_entropy_result
+        if bloom_alignment_rate_result is not None:
+            out_dict["bloom_alignment_rate"] = bloom_alignment_rate_result
+        if placeholder_rate_result is not None:
+            out_dict["placeholder_rate"] = placeholder_rate_result
+        if source_support_rate_result is not None:
+            out_dict["source_support_rate"] = source_support_rate_result
         if per_question_all:
             out_dict["per_question"] = per_question_all
         if faithfulness_per_question:
@@ -1024,6 +1098,186 @@ class SLMEvalHarness:
         ):
             self.eval_stage_checkpoint_path.unlink()
         return output_path
+
+    # ------------------------------------------------------------------ #
+    # Wave 3 W3.F: per-question metrics — assessment + chunk loaders + #
+    # 6 _run_<metric> dispatchers.                                      #
+    # ------------------------------------------------------------------ #
+
+    def _load_prompts_for_metrics(self) -> List[Dict[str, Any]]:
+        """Load assessment questions in the prompt-dict shape the W3.F
+        evaluators expect.
+
+        Resolves ``<course>/assessments.json`` (the canonical Trainforge
+        emit). Each ``question`` is normalised to the
+        ``{question_id, stem, correct_answer, distractors,
+        source_chunks, bloom_level, feedback}`` shape; missing fields
+        degrade to empty strings / lists.
+
+        Returns an empty list when the file is absent / unreadable so
+        the harness short-circuits the metric stages cleanly. Best-
+        effort — never raises into the caller.
+        """
+        candidate = self.course_path / "assessments.json"
+        if not candidate.exists():
+            return []
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.warning(
+                "SLMEvalHarness: cannot read assessments.json at %s "
+                "(%s); skipping W3.F per-question metrics.",
+                candidate, exc,
+            )
+            return []
+        questions = (payload or {}).get("questions") or []
+        prompts: List[Dict[str, Any]] = []
+        for idx, q in enumerate(questions):
+            if not isinstance(q, dict):
+                continue
+            # correct_answer can live at the top level or inside the
+            # is_correct=True choice. Distractors are the inverse.
+            ca = q.get("correct_answer") or ""
+            distractors: List[str] = list(q.get("distractors") or [])
+            if (not ca or not distractors) and isinstance(q.get("choices"), list):
+                for c in q["choices"]:
+                    if not isinstance(c, dict):
+                        continue
+                    txt = c.get("text") or ""
+                    if c.get("is_correct"):
+                        if not ca:
+                            ca = txt
+                    else:
+                        if txt:
+                            distractors.append(txt)
+            prompts.append({
+                "question_id": q.get("question_id") or f"q-{idx}",
+                "stem": q.get("stem") or "",
+                "correct_answer": ca,
+                "distractors": distractors,
+                "source_chunks": list(q.get("source_chunks") or []),
+                "bloom_level": q.get("bloom_level") or "",
+                "feedback": q.get("feedback") or "",
+                "rendered_html": q.get("rendered_html") or q.get("html") or "",
+            })
+        return prompts
+
+    def _load_chunk_corpus_for_metrics(self) -> Dict[str, str]:
+        """Load the IMSCC chunk corpus as ``chunk_id -> text``.
+
+        Reads from the canonical
+        ``LibV2/courses/<slug>/imscc_chunks/chunks.jsonl`` (or the
+        legacy ``corpus/chunks.jsonl`` via the Phase 7c shim). Best-
+        effort — returns ``{}`` on any read / parse error so the
+        metric stages degrade rather than crash.
+        """
+        try:
+            from lib.libv2_storage import resolve_imscc_chunks_path
+            chunks_path = resolve_imscc_chunks_path(
+                self.course_path, "chunks.jsonl"
+            )
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "SLMEvalHarness: cannot resolve chunks path (%s); "
+                "skipping W3.F chunk-corpus load.", exc,
+            )
+            return {}
+        if not chunks_path.exists():
+            return {}
+        corpus: Dict[str, str] = {}
+        try:
+            with chunks_path.open(encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(obj, dict):
+                        continue
+                    cid = obj.get("chunk_id") or obj.get("id")
+                    text = obj.get("text") or obj.get("content") or ""
+                    if cid and isinstance(text, str):
+                        corpus[str(cid)] = text
+        except OSError as exc:
+            logger.warning(
+                "SLMEvalHarness: cannot read chunks.jsonl at %s (%s); "
+                "skipping W3.F chunk-corpus load.",
+                chunks_path, exc,
+            )
+            return {}
+        return corpus
+
+    def _load_rendered_html_for_metrics(
+        self, prompts: List[Dict[str, Any]],
+    ) -> List[str]:
+        """Extract per-question rendered HTML for ``single_correct_rate``.
+
+        Sources the HTML from the assessment dict's ``rendered_html`` /
+        ``html`` field (populated by the assessment generator's
+        IMSCC-render step). Returns an empty list when no question
+        carries any HTML so the metric short-circuits cleanly.
+        """
+        blocks: List[str] = []
+        for p in prompts:
+            html = p.get("rendered_html") or ""
+            if html:
+                blocks.append(str(html))
+        return blocks
+
+    def _run_answerable_rate(
+        self,
+        prompts: List[Dict[str, Any]],
+        chunk_corpus: Dict[str, str],
+    ) -> Dict[str, Any]:
+        from Trainforge.eval.answerable_rate import AnswerableRateEvaluator
+        return AnswerableRateEvaluator().evaluate(prompts, chunk_corpus)
+
+    def _run_single_correct_rate(
+        self,
+        rendered_html_blocks: List[str],
+    ) -> Dict[str, Any]:
+        from Trainforge.eval.single_correct_rate import (
+            SingleCorrectRateEvaluator,
+        )
+        return SingleCorrectRateEvaluator().evaluate(rendered_html_blocks)
+
+    def _run_distractor_entropy(
+        self,
+        prompts: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        from Trainforge.eval.distractor_entropy import (
+            DistractorEntropyEvaluator,
+        )
+        return DistractorEntropyEvaluator().evaluate(prompts)
+
+    def _run_bloom_alignment_rate(
+        self,
+        prompts: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        from Trainforge.eval.bloom_alignment_rate import (
+            BloomAlignmentRateEvaluator,
+        )
+        return BloomAlignmentRateEvaluator().evaluate(prompts)
+
+    def _run_placeholder_rate(
+        self,
+        prompts: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        from Trainforge.eval.placeholder_rate import PlaceholderRateEvaluator
+        return PlaceholderRateEvaluator().evaluate(prompts)
+
+    def _run_source_support_rate(
+        self,
+        prompts: List[Dict[str, Any]],
+        chunk_corpus: Dict[str, str],
+    ) -> Dict[str, Any]:
+        from Trainforge.eval.source_support_rate import (
+            SourceSupportRateEvaluator,
+        )
+        return SourceSupportRateEvaluator().evaluate(prompts, chunk_corpus)
 
     def _read_training_corpus_promotion_ladder(self) -> Optional[Dict[str, Any]]:
         """Worker W3.B: read promotion-ladder pass-through from W2.B aggregator.

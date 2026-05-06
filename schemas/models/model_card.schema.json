@@ -335,6 +335,36 @@
           "type": "object",
           "additionalProperties": true,
           "description": "Per-content-type-label teaching_role distribution + expected-mode mismatches. Tier-2 corpus-derived; no LLM dispatch. Surfaced so an audit can replay why an alignment warning fired."
+        },
+        "answerable_rate": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Wave 3 W3.F-F1: per-question Jaccard answerable-rate. Object carrying answerable_rate (float [0,1]), total_questions (int), answerable_count (int), threshold (float), per_question (list)."
+        },
+        "single_correct_rate": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Wave 3 W3.F-F2: rendered-HTML single-correct rate. Object carrying single_correct_rate (float [0,1]), total_questions (int), multi_correct_count (int), no_correct_count (int), per_question (list)."
+        },
+        "distractor_entropy": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Wave 3 W3.F-F3: mean Shannon entropy of distractor token-set sizes. Object carrying mean_distractor_entropy (float), low_entropy_count (int), total_questions (int), low_entropy_threshold (float), per_question (list)."
+        },
+        "bloom_alignment_rate": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Wave 3 W3.F-F4: per-question Bloom alignment via BloomBertEnsemble. Object carrying bloom_alignment_rate (float [0,1] or null when deps missing), total_questions (int), aligned_count (int), mismatched_count (int), skipped_count (int), deps_missing (bool)."
+        },
+        "placeholder_rate": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Wave 3 W3.F-F5: per-question scan against ASSESSMENT_PLACEHOLDER_PATTERNS catalog. Object carrying placeholder_rate (float [0,1]), total_questions (int), contaminated_count (int), hit_pattern_histogram (object), per_question (list)."
+        },
+        "source_support_rate": {
+          "type": "object",
+          "additionalProperties": true,
+          "description": "Wave 3 W3.F-F6: NLI entailment of stem + correct_answer against cited chunks via NliClassifier. Object carrying source_support_rate (float [0,1] or null when deps missing), total_questions (int), supported_count (int), contradicted_count (int), skipped_count (int), deps_missing (bool)."
         }
       }
     },

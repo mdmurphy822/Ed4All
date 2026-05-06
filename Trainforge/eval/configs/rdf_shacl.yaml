@@ -27,6 +27,15 @@ evaluators:
   # closes the gap so the precision-of-citation column lights up
   # alongside faithfulness in eval_report.json.
   source_match: true
+  # Wave 3 W3.F — 6 per-question metrics (mirrors generic.yaml). The
+  # two ML-driven metrics gate on optional pyproject extras at runtime
+  # and degrade gracefully when absent.
+  answerable_rate: true
+  single_correct_rate: true
+  distractor_entropy: true
+  bloom_alignment_rate: true
+  placeholder_rate: true
+  source_support_rate: true
 
 caps:
   max_holdout_questions: 100
