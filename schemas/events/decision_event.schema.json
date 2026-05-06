@@ -202,6 +202,7 @@
         "synthesis_quota_check",
         "teaching_role_heuristic_extended",
         "textbook_integration",
+        "trainforge_quality_aggregated",
         "training_pair_promotion_check",
         "training_run_planning",
         "typed_edge_inference",
