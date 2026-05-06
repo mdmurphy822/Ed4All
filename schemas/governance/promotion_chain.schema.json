@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/governance/v1/promotion_chain.schema.json",
+  "title": "Courseforge Promotion Chain Report",
+  "description": "Master governance aggregator output (Worker W3.G). Walks all 9 arrows of the DART -> eval-report chain, reads each per-stage report best-effort, and produces a single canonical promotion-chain report. Per-arrow rows carry input/output hashes, the gate validator set that fired against the arrow, the W3.H source_coverage block, and a 4-value promotion_decision. Top-level chain_hash is a deterministic SHA-256 over the canonicalised arrow rows in chain order; course_status references the Wave 1 G2 5-value enum.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "course_code",
+    "run_id",
+    "generated_at",
+    "arrows",
+    "chain_hash",
+    "course_status"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Schema version. 1.0 == Wave 3 W3.G land."
+    },
+    "course_code": {
+      "type": "string",
+      "description": "Operator-facing course code so cross-run diffs key cleanly."
+    },
+    "run_id": {
+      "type": "string",
+      "description": "Workflow run ID."
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 UTC timestamp of the build call."
+    },
+    "arrows": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ArrowRow" },
+      "minItems": 9,
+      "maxItems": 9,
+      "description": "9-arrow chain row array, ordered DART -> eval (arrow_id 1..9)."
+    },
+    "chain_hash": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Deterministic SHA-256 over the canonicalised arrows[] payload (in chain order). Cross-run diff key for the chain."
+    },
+    "course_status": {
+      "$ref": "https://ed4all.dev/ns/governance/v1/course_status.schema.json",
+      "description": "5-value Wave 1 G2 enum referencing schemas/governance/course_status.schema.json. Driven by lib.governance.course_status.derive_course_status."
+    }
+  },
+  "$defs": {
+    "ArrowRow": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "arrow_id",
+        "name",
+        "input_hash",
+        "output_hash",
+        "validator_set",
+        "passed",
+        "warnings_count",
+        "source_coverage",
+        "promotion_decision"
+      ],
+      "properties": {
+        "arrow_id": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9,
+          "description": "Per-arrow ordinal (1..9 along the chain)."
+        },
+        "name": {
+          "type": "string",
+          "description": "Canonical human-readable arrow name (e.g. 'dart_source_to_dart_html', 'imscc_chunks_to_assessment_items')."
+        },
+        "input_hash": {
+          "type": ["string", "null"],
+          "description": "Upstream artifact hash. SHA-256 hex when known; null when the per-stage report didn't carry one."
+        },
+        "output_hash": {
+          "type": ["string", "null"],
+          "description": "Downstream artifact hash. SHA-256 hex when known; null when the per-stage report didn't carry one."
+        },
+        "validator_set": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Gate IDs that fired against this arrow's emit. Anti-silent-degradation contract: when the per-stage report is missing, this MUST contain 'missing_stage_report' so an operator can see the silent-skip class."
+        },
+        "passed": {
+          "type": ["boolean", "null"],
+          "description": "Whether all critical gates passed for this arrow. Null when the per-stage report is missing OR when the arrow is not gated."
+        },
+        "warnings_count": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Count of warning-severity gate failures attributed to this arrow."
+        },
+        "source_coverage": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/SourceCoverage" }
+          ],
+          "description": "Canonical W3.H source_coverage block when emitted by the per-stage report; null when the stage doesn't track coverage (e.g. arrow 8 / 9)."
+        },
+        "promotion_decision": {
+          "type": "string",
+          "enum": ["pass", "warn", "fail", "escalate"],
+          "description": "Per-arrow verdict consumed by the course_status decision logic."
+        }
+      }
+    },
+    "SourceCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "consumed_count",
+        "emitted_count",
+        "dropped_count",
+        "drop_reasons",
+        "coverage_pct"
+      ],
+      "properties": {
+        "consumed_count": { "type": "integer", "minimum": 0 },
+        "emitted_count": { "type": "integer", "minimum": 0 },
+        "dropped_count": { "type": "integer", "minimum": 0 },
+        "drop_reasons": {
+          "type": "object",
+          "additionalProperties": { "type": "integer", "minimum": 0 }
+        },
+        "coverage_pct": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+      }
+    }
+  }
+}

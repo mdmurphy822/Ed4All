@@ -1246,9 +1246,21 @@ class WorkflowRunner:
             phase_outputs=phase_outputs,
         )
 
-        # TODO(Wave 3 G1): wire `_maybe_write_promotion_chain_report` here
-        # (the master promotion-chain aggregator that supersedes the
-        # per-aggregator promotion-decision heuristics above).
+        # GPT Feedback v2 Wave 3 (W3.G): post-loop master promotion-chain
+        # aggregator (governance G1). Walks all 9 arrows of the
+        # DART -> eval-report chain, reads each per-stage report best-
+        # effort, and writes a single canonical
+        # ``<libv2_course>/courseforge_promotion_chain_report.json``.
+        # Anti-silent-degradation contract: missing per-stage reports
+        # surface as fail-promotion-decision rows so an operator can see
+        # the silent-skip class. Best-effort — aggregator failure does
+        # NOT alter ``final_status``; the per-stage reports remain the
+        # source of truth.
+        promotion_chain_path = self._maybe_write_promotion_chain_report(
+            workflow_id=workflow_id,
+            workflow_params=workflow_params,
+            phase_outputs=phase_outputs,
+        )
 
         return {
             "workflow_id": workflow_id,
@@ -1268,6 +1280,9 @@ class WorkflowRunner:
             ),
             "coverage_map_path": (
                 str(coverage_map_path) if coverage_map_path else None
+            ),
+            "promotion_chain_report_path": (
+                str(promotion_chain_path) if promotion_chain_path else None
             ),
         }
 
@@ -1530,6 +1545,103 @@ class WorkflowRunner:
         except Exception as exc:  # noqa: BLE001 — best-effort
             logger.warning(
                 "coverage_map aggregator failed (non-fatal, run_id=%s): %s",
+                workflow_id, exc,
+            )
+            return None
+
+    def _maybe_write_promotion_chain_report(
+        self,
+        *,
+        workflow_id: str,
+        workflow_params: Dict[str, Any],
+        phase_outputs: Dict[str, Dict],
+    ) -> Optional[Path]:
+        """Worker W3.G helper — write top-level promotion_chain_report if possible.
+
+        Resolution priority for the LibV2 course root (the canonical emit
+        location):
+
+        1. ``phase_outputs.libv2_archival.course_dir`` — post-archival
+           canonical surface. Output lands at
+           ``<course_dir>/courseforge_promotion_chain_report.json``.
+        2. Fallback to
+           ``phase_outputs.training_synthesis.corpus_dir`` /
+           ``phase_outputs.trainforge_assessment.trainforge_dir`` — the
+           Trainforge workspace root when LibV2 archival hasn't run.
+
+        The aggregator itself is best-effort over individual arrow reads
+        (each missing per-stage report becomes a missing-stage-report
+        row), so this wrapper only fails closed when no LibV2 / Trainforge
+        root can be resolved at all. Best-effort posture matches the
+        courseforge / trainforge / coverage-map aggregators: failure
+        logs a warning and never fails the workflow.
+        """
+        try:
+            from lib.aggregators.promotion_chain_report import (
+                PromotionChainAggregator,
+            )
+
+            archival = phase_outputs.get("libv2_archival") or {}
+            course_dir_str = archival.get("course_dir")
+            output_path: Optional[Path] = None
+            course_path: Optional[Path] = None
+            trainforge_dir: Optional[Path] = None
+
+            if course_dir_str:
+                course_path = Path(course_dir_str)
+                output_path = (
+                    course_path
+                    / "courseforge_promotion_chain_report.json"
+                )
+
+            ta = phase_outputs.get("trainforge_assessment") or {}
+            tdir_str = ta.get("trainforge_dir")
+            if not tdir_str:
+                ts = phase_outputs.get("training_synthesis") or {}
+                tdir_str = ts.get("corpus_dir") or ts.get("trainforge_dir")
+            if tdir_str:
+                trainforge_dir = Path(tdir_str)
+
+            if output_path is None and trainforge_dir is not None:
+                output_path = (
+                    trainforge_dir
+                    / "courseforge_promotion_chain_report.json"
+                )
+
+            if output_path is None:
+                logger.debug(
+                    "promotion_chain_report: no libv2_archival.course_dir "
+                    "/ training_synthesis.corpus_dir / trainforge_assessment."
+                    "trainforge_dir resolvable; skipping aggregator "
+                    "(run_id=%s)",
+                    workflow_id,
+                )
+                return None
+
+            project_path = self._resolve_courseforge_project_path(
+                phase_outputs
+            )
+
+            course_code = (workflow_params or {}).get("course_name") or ""
+            aggregator = PromotionChainAggregator(
+                course_path=course_path,
+                project_path=project_path,
+                trainforge_dir=trainforge_dir,
+                course_code=course_code,
+                run_id=workflow_id,
+                phase_outputs=phase_outputs,
+            )
+            aggregator.write(output_path)
+            logger.info(
+                "promotion_chain_report: wrote %s "
+                "(run_id=%s, course_code=%s)",
+                output_path, workflow_id, course_code,
+            )
+            return output_path
+        except Exception as exc:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "promotion_chain_report aggregator failed "
+                "(non-fatal, run_id=%s): %s",
                 workflow_id, exc,
             )
             return None

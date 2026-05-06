@@ -178,6 +178,7 @@
         "pipeline_run_attribution",
         "post_rewrite_validator_import_failed",
         "preference_pair_generation",
+        "promotion_chain_aggregated",
         "prompt_response",
         "property_coverage_check",
         "quality_judgment",
