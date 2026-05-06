@@ -198,3 +198,288 @@ def test_block_hash_excludes_observed_bloom_fields_when_misaligned():
         bloom_alignment=False,
     )
     assert base.compute_content_hash() == extended.compute_content_hash()
+
+
+# ---------------------------------------------------------------------- #
+# GPT Feedback v2 Wave 1.7 / W1.7.A — objective_alignment field
+# ---------------------------------------------------------------------- #
+
+
+def _alignment_entry(
+    *,
+    objective_id: str = "TO-01",
+    declared_bloom: str = "apply",
+    observed_bloom=None,
+    statement_entailment_score=None,
+    action_verb_present: bool = True,
+    status: str = "delivered",
+):
+    """Build a canonical-shape ObjectiveAlignment entry for tests."""
+    return {
+        "objective_id": objective_id,
+        "declared_bloom": declared_bloom,
+        "observed_bloom": observed_bloom,
+        "statement_entailment_score": statement_entailment_score,
+        "action_verb_present": action_verb_present,
+        "status": status,
+    }
+
+
+def test_block_objective_alignment_default_empty():
+    """Default empty tuple, no JSON-LD emit when empty."""
+    block = Block(
+        block_id="week_01_overview#prereq_set_x_0",
+        block_type="prereq_set",
+        page_id="week_01_overview",
+        sequence=0,
+        content="x",
+    )
+    assert block.objective_alignment == ()
+    entry = block.to_jsonld_entry()
+    assert "objectiveAlignment" not in entry
+
+
+def test_block_objective_alignment_emits_when_populated():
+    """Round-trip through to_jsonld_entry() produces the camelCase array."""
+    alignments = (
+        _alignment_entry(
+            objective_id="CO-08",
+            declared_bloom="create",
+            observed_bloom="remember",
+            statement_entailment_score=0.32,
+            action_verb_present=False,
+            status="underdelivered",
+        ),
+        _alignment_entry(
+            objective_id="TO-02",
+            declared_bloom="analyze",
+            observed_bloom="analyze",
+            statement_entailment_score=0.91,
+            action_verb_present=True,
+            status="delivered",
+        ),
+    )
+    block = Block(
+        block_id="week_01_overview#prereq_set_intro_0",
+        block_type="prereq_set",
+        page_id="week_01_overview",
+        sequence=0,
+        content="content",
+        objective_ids=("CO-08", "TO-02"),
+        objective_alignment=alignments,
+    )
+    entry = block.to_jsonld_entry()
+    assert "objectiveAlignment" in entry
+    assert isinstance(entry["objectiveAlignment"], list)
+    assert len(entry["objectiveAlignment"]) == 2
+    assert entry["objectiveAlignment"][0]["objective_id"] == "CO-08"
+    assert entry["objectiveAlignment"][0]["status"] == "underdelivered"
+    assert entry["objectiveAlignment"][1]["status"] == "delivered"
+    # Round-trip JSON serialisation works (no tuples, no non-JSON values).
+    json.dumps(entry)
+
+
+def test_block_objective_alignment_excluded_from_hash():
+    """Same Block with and without objective_alignment produces identical
+    compute_content_hash().
+
+    Wave 1.7 will populate objective_alignment at validation time — this
+    test guarantees that retro-fit doesn't drift every existing block's
+    content hash on rebuild.
+    """
+    base = Block(
+        block_id="week_01_overview#prereq_set_intro_0",
+        block_type="prereq_set",
+        page_id="week_01_overview",
+        sequence=0,
+        content="Prereq set content.",
+        bloom_level="apply",
+        objective_ids=("TO-01",),
+    )
+    extended = Block(
+        block_id="week_01_overview#prereq_set_intro_0",
+        block_type="prereq_set",
+        page_id="week_01_overview",
+        sequence=0,
+        content="Prereq set content.",
+        bloom_level="apply",
+        objective_ids=("TO-01",),
+        objective_alignment=(
+            _alignment_entry(
+                objective_id="TO-01",
+                declared_bloom="apply",
+                observed_bloom="remember",
+                statement_entailment_score=0.41,
+                action_verb_present=False,
+                status="underdelivered",
+            ),
+        ),
+    )
+    assert base.compute_content_hash() == extended.compute_content_hash()
+
+
+def test_block_objective_alignment_status_enum_validates():
+    """An entry with non-canonical status (e.g. "unknown") FAILS the
+    JSON-LD schema's enum constraint."""
+    pytest.importorskip("jsonschema")
+    pytest.importorskip("referencing")
+    from jsonschema import Draft202012Validator
+    from referencing import Registry, Resource
+    from referencing.jsonschema import DRAFT202012
+
+    page = json.loads(PAGE_SCHEMA_PATH.read_text())
+    id_to_schema = {}
+    for p in SCHEMAS_DIR.rglob("*.json"):
+        try:
+            s = json.loads(p.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        sid = s.get("$id")
+        if sid:
+            id_to_schema[sid] = s
+    resources = [
+        (sid, Resource.from_contents(s, default_specification=DRAFT202012))
+        for sid, s in id_to_schema.items()
+    ]
+    registry = Registry().with_resources(resources)
+    sub_schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$ref": page["$id"] + "#/$defs/ObjectiveAlignment",
+    }
+    validator = Draft202012Validator(sub_schema, registry=registry)
+
+    invalid_entry = {
+        "objective_id": "TO-01",
+        "declared_bloom": "apply",
+        "status": "unknown",
+    }
+    errors = list(validator.iter_errors(invalid_entry))
+    assert errors, "expected schema validation to fail on non-canonical status"
+    assert any("status" in str(e.absolute_path) or "unknown" in e.message for e in errors)
+
+
+def test_block_objective_alignment_min_required_fields():
+    """An entry missing 'status' FAILS schema validation; an entry with
+    only the 3 required fields PASSES."""
+    pytest.importorskip("jsonschema")
+    pytest.importorskip("referencing")
+    from jsonschema import Draft202012Validator
+    from referencing import Registry, Resource
+    from referencing.jsonschema import DRAFT202012
+
+    page = json.loads(PAGE_SCHEMA_PATH.read_text())
+    id_to_schema = {}
+    for p in SCHEMAS_DIR.rglob("*.json"):
+        try:
+            s = json.loads(p.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        sid = s.get("$id")
+        if sid:
+            id_to_schema[sid] = s
+    resources = [
+        (sid, Resource.from_contents(s, default_specification=DRAFT202012))
+        for sid, s in id_to_schema.items()
+    ]
+    registry = Registry().with_resources(resources)
+    sub_schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$ref": page["$id"] + "#/$defs/ObjectiveAlignment",
+    }
+    validator = Draft202012Validator(sub_schema, registry=registry)
+
+    # Missing 'status' fails.
+    missing_status = {
+        "objective_id": "TO-01",
+        "declared_bloom": "apply",
+    }
+    errors = list(validator.iter_errors(missing_status))
+    assert errors, "expected schema validation to fail when 'status' is missing"
+
+    # Three required fields only — passes.
+    minimal_valid = {
+        "objective_id": "TO-01",
+        "declared_bloom": "apply",
+        "status": "unverifiable",
+    }
+    errors = list(validator.iter_errors(minimal_valid))
+    assert errors == [], (
+        f"unexpected errors on minimal-valid entry: "
+        f"{[(e.absolute_path, e.message) for e in errors]}"
+    )
+
+
+def test_block_objective_alignment_observed_bloom_nullable():
+    """observed_bloom: null is valid (it's nullable in the enum)."""
+    pytest.importorskip("jsonschema")
+    pytest.importorskip("referencing")
+    from jsonschema import Draft202012Validator
+    from referencing import Registry, Resource
+    from referencing.jsonschema import DRAFT202012
+
+    page = json.loads(PAGE_SCHEMA_PATH.read_text())
+    id_to_schema = {}
+    for p in SCHEMAS_DIR.rglob("*.json"):
+        try:
+            s = json.loads(p.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        sid = s.get("$id")
+        if sid:
+            id_to_schema[sid] = s
+    resources = [
+        (sid, Resource.from_contents(s, default_specification=DRAFT202012))
+        for sid, s in id_to_schema.items()
+    ]
+    registry = Registry().with_resources(resources)
+    sub_schema = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$ref": page["$id"] + "#/$defs/ObjectiveAlignment",
+    }
+    validator = Draft202012Validator(sub_schema, registry=registry)
+
+    null_observed = {
+        "objective_id": "TO-01",
+        "declared_bloom": "apply",
+        "observed_bloom": None,
+        "statement_entailment_score": None,
+        "action_verb_present": False,
+        "status": "unverifiable",
+    }
+    errors = list(validator.iter_errors(null_observed))
+    assert errors == [], (
+        f"unexpected errors on null observed_bloom: "
+        f"{[(e.absolute_path, e.message) for e in errors]}"
+    )
+
+
+def test_block_legacy_load_round_trip_clean():
+    """Legacy blocks (no objective_alignment field on disk) still load
+    and round-trip clean. Pin the back-compat invariant: a Block
+    constructor call from a pre-Wave-1.7 corpus that doesn't pass
+    objective_alignment defaults it to an empty tuple, and JSON-LD emit
+    omits the key — byte-stable with pre-Wave-1.7 emit shape."""
+    block = Block(
+        block_id="week_01_overview#concept_intro_0",
+        block_type="concept",
+        page_id="week_01_overview",
+        sequence=0,
+        content="concept text",
+        bloom_level="understand",
+        objective_ids=("TO-01",),
+    )
+    assert block.objective_alignment == ()
+    entry = block.to_jsonld_entry()
+    assert "objectiveAlignment" not in entry
+    # Hash matches a Block where the field is explicitly defaulted.
+    explicit_default = Block(
+        block_id="week_01_overview#concept_intro_0",
+        block_type="concept",
+        page_id="week_01_overview",
+        sequence=0,
+        content="concept text",
+        bloom_level="understand",
+        objective_ids=("TO-01",),
+        objective_alignment=(),
+    )
+    assert block.compute_content_hash() == explicit_default.compute_content_hash()

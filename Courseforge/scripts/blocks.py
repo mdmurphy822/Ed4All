@@ -305,6 +305,13 @@ class Block:
     # every existing block hash on rebuild.
     observed_bloom_level: Optional[str] = None
     bloom_alignment: Optional[bool] = None
+    # GPT Feedback v2 Wave 1.7 / W1.7.A — per-objective-ref delivery
+    # alignment, populated by the BlockObjectiveDeliveryValidator at the
+    # inter_tier_validation + post_rewrite_validation seams. Stays default
+    # empty tuple for blocks emitted before Wave 1.7 wires in. Audit-only
+    # — INTENTIONALLY excluded from ``compute_content_hash()`` so a
+    # validator retro-fit doesn't drift every existing block hash.
+    objective_alignment: Tuple[Dict[str, Any], ...] = ()
 
     def __post_init__(self) -> None:
         if self.block_type not in BLOCK_TYPES:
@@ -354,10 +361,14 @@ class Block:
         """SHA-256 hex of the canonical Block payload.
 
         Excludes ``touched_by``, ``sequence``, ``validation_attempts``,
-        and ``escalation_marker`` so a touch-only or budget-only
-        revision keeps a stable hash. The hash exists for re-execution
-        drift detection — same content → same hash regardless of
-        which tier authored it or how many times it was retried.
+        ``escalation_marker``, ``observed_bloom_level``,
+        ``bloom_alignment``, and ``objective_alignment`` so a
+        touch-only / budget-only / classifier-retrofit / objective-
+        delivery-retrofit revision keeps a stable hash. The hash exists
+        for re-execution drift detection — same content → same hash
+        regardless of which tier authored it or how many times it was
+        retried, and regardless of which audit-only signals were
+        attached after the fact.
         """
         payload = {
             "content": self.content,
@@ -656,6 +667,13 @@ class Block:
             entry["observedBloomLevel"] = self.observed_bloom_level
         if self.bloom_alignment is not None:
             entry["bloomAlignment"] = self.bloom_alignment
+        # GPT Feedback v2 Wave 1.7 / W1.7.A — emit per-objective-ref
+        # delivery alignment only when non-empty so legacy emits stay
+        # byte-stable. camelCase keys mirror schemas/knowledge/
+        # courseforge_jsonld_v1.schema.json::$defs.Block.properties.
+        # objectiveAlignment + $defs.ObjectiveAlignment.
+        if self.objective_alignment:
+            entry["objectiveAlignment"] = [dict(a) for a in self.objective_alignment]
         return entry
 
     def _render_touched_by(self) -> List[Dict[str, Any]]:

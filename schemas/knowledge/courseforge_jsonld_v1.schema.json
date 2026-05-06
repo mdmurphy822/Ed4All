@@ -558,8 +558,39 @@
             "validator_consensus_fail"
           ],
           "description": "Phase-3 escalation tag; set to a non-null marker when the block was escalated to the rewrite tier."
+        },
+        "objectiveAlignment": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ObjectiveAlignment" },
+          "description": "GPT Feedback v2 Wave 1.7 / W1.7.A: per-objective-ref delivery alignment populated by the BlockObjectiveDeliveryValidator at the inter_tier_validation + post_rewrite_validation seams. One entry per objective_id the block claims to teach / assess. Optional; absent when the validator hasn't run (legacy / pre-Wave-1.7 emits). Audit-only — excluded from contentHash so a validator retro-fit doesn't drift every existing block hash."
         }
       }
+    },
+    "ObjectiveAlignment": {
+      "type": "object",
+      "properties": {
+        "objective_id": { "type": "string", "minLength": 1 },
+        "declared_bloom": {
+          "type": "string",
+          "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create"]
+        },
+        "observed_bloom": {
+          "type": ["string", "null"],
+          "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create", null]
+        },
+        "statement_entailment_score": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "action_verb_present": { "type": "boolean" },
+        "status": {
+          "type": "string",
+          "enum": ["delivered", "underdelivered", "verb_only", "unverifiable"]
+        }
+      },
+      "required": ["objective_id", "declared_bloom", "status"],
+      "additionalProperties": false
     }
   }
 }
