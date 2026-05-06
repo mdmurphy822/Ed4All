@@ -54,7 +54,8 @@
             "escalate_immediately": {
               "type": "boolean",
               "description": "When true, skip outline dispatch entirely for this block_type and short-circuit to the rewrite tier with escalation_marker='outline_skipped_by_policy'."
-            }
+            },
+            "validators": {"$ref": "#/$defs/ValidatorMatrix"}
           }
         }
       }
@@ -82,6 +83,29 @@
     }
   },
   "$defs": {
+    "ValidatorMatrix": {
+      "type": "object",
+      "description": "Per-block-type validator matrix (GPT Feedback v2 Wave 3 W3.C). Filters the global validation_gates list down to the block's allowed set: required gates fail-trigger fail_action; optional gates emit warnings; gates not in either array are skipped silently for this block_type. Backward-compat: a block_type with no validators block in YAML falls through to the legacy 'all gates run' behavior.",
+      "additionalProperties": false,
+      "required": ["required", "fail_action"],
+      "properties": {
+        "required": {
+          "type": "array",
+          "description": "Validator gate_ids that must pass for this block_type. Failure triggers fail_action.",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "optional": {
+          "type": "array",
+          "description": "Validator gate_ids that are advisory. Failure emits a warning-severity GateResult issue but never triggers fail_action.",
+          "items": {"type": "string", "minLength": 1}
+        },
+        "fail_action": {
+          "type": "string",
+          "description": "Router action stamped onto every required-gate GateResult on failure. Mirrors the BlockRouting fail_action semantics consumed by CourseforgeRouter.",
+          "enum": ["regenerate", "escalate", "block"]
+        }
+      }
+    },
     "Spec": {
       "type": "object",
       "description": "Provider/model spec for a single (block_type, tier) cell. Fields mirror Courseforge.router.router.BlockProviderSpec; the loader projects this dict into a frozen BlockProviderSpec at policy load time.",
