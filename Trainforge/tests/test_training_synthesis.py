@@ -493,24 +493,40 @@ def test_run_synthesis_routes_claude_session_provider_through_dispatcher(tmp_pat
     )
 
     async def agent_tool(*, task_params, **_kw):
+        # Fake response uses tokens drawn from the mini_course chunks
+        # (cognitive load / working memory / instructional design / UDL
+        # / Bloom / learners) so the per-pair promotion validator
+        # (Wave 2 W2.E) treats the response as grounded. The test's
+        # contract is provider-plumbing — it only cares that the
+        # claude_session route fires; we just need the response to
+        # survive the post-emit gate.
         if task_params["kind"] == "instruction":
             return make_instruction_response(
-                prompt="Paraphrased: explain a key concept from the chunk.",
+                prompt=(
+                    "Explain how cognitive load and working memory shape "
+                    "instructional design choices for learners."
+                ),
                 completion=(
-                    "RDFS describes vocabulary semantics — class hierarchy and property "
-                    "domains — in a way that downstream RDF processors can reason about. "
+                    "Cognitive load theory frames instructional design as a "
+                    "balance against working-memory limits; UDL and "
+                    "Bloom-level scaffolds steer learners toward retention. "
                     "[" + str(task_params.get("chunk_id", "")) + "]"
                 ),
             )
         return make_preference_response(
-            prompt="Which option is correct about the chunk topic?",
+            prompt=(
+                "Which option correctly explains cognitive load for "
+                "instructional design?"
+            ),
             chosen=(
-                "RDFS describes vocabulary semantics; SHACL validates RDF graphs against "
-                "shape constraints. They are complementary, not interchangeable."
+                "Cognitive load describes working-memory demand on learners; "
+                "instructional design that respects the limit improves "
+                "retention and lowers extraneous load."
             ),
             rejected=(
-                "RDFS validates RDF graphs against shape constraints; SHACL describes "
-                "vocabulary semantics. They are complementary, not interchangeable."
+                "Cognitive load only matters for advanced learners; simple "
+                "instructional material imposes no working-memory cost and "
+                "needs no design consideration."
             ),
         )
 

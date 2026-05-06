@@ -70,27 +70,40 @@ def test_full_synthesis_with_claude_session_emits_provider_tag_and_capture(
     async def agent_tool(*, task_params, **_kw) -> dict:
         kind = task_params["kind"]
         chunk_id = task_params.get("chunk_id", "")
+        # Wave 2 W2.E: fake responses use mini_course-grounded vocabulary
+        # (cognitive load / instructional design / UDL / Bloom /
+        # learners) so the post-emit promotion validator recognises the
+        # response as grounded. Preference distractor is structurally
+        # distinct from chosen (semantic-distinctness > 0.40) per the
+        # weak_distractor criterion in
+        # lib/validators/training_pair_promotion.py.
         if kind == "instruction":
             return make_instruction_response(
                 prompt=(
-                    "Explain the role of the topic from chunk_id="
-                    f"{chunk_id} for an RDF/SHACL learner."
+                    "Explain how cognitive load and working memory shape "
+                    f"instructional design choices for the chunk_id={chunk_id}."
                 ),
                 completion=(
-                    "RDFS describes vocabulary semantics — class hierarchy and "
-                    "property domains — in a way downstream RDF processors can "
-                    f"reason about. [{chunk_id}]"
+                    "Cognitive load theory frames instructional design as a "
+                    "balance against working-memory limits; UDL and Bloom-"
+                    "level scaffolds steer learners toward retention. "
+                    f"[{chunk_id}]"
                 ),
             )
         return make_preference_response(
-            prompt="Which option is correct about the chunk topic?",
+            prompt=(
+                "Which option correctly explains cognitive load for "
+                "instructional design?"
+            ),
             chosen=(
-                "RDFS describes vocabulary semantics; SHACL validates RDF "
-                "graphs against shape constraints."
+                "Cognitive load describes working-memory demand on learners; "
+                "instructional design that respects the limit improves "
+                "retention and lowers extraneous load."
             ),
             rejected=(
-                "RDFS validates RDF graphs against shape constraints; SHACL "
-                "describes vocabulary semantics."
+                "Cognitive load only matters for advanced learners; simple "
+                "instructional material imposes no working-memory cost and "
+                "needs no design consideration."
             ),
         )
 

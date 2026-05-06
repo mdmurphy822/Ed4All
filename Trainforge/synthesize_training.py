@@ -92,6 +92,15 @@ class SynthesisStats:
     preference_pairs_emitted: int = 0
     preference_pairs_rejected: int = 0
     rejected_reasons: Dict[str, int] = field(default_factory=dict)
+    # Worker W2.E: per-pair promotion-validator filter count. Increments
+    # on every pair that the TrainingPairPromotionValidator rejects
+    # before write — surfaces silently-dropped pairs in the audit trail.
+    # See lib/validators/training_pair_promotion.py for the rejection
+    # criteria. Distinct from instruction_pairs_rejected /
+    # preference_pairs_rejected because those counters cover earlier
+    # gate failures (template-recognizer, content-type, duplicate-prompt,
+    # etc.) — dropped_count is the post-emit pre-write filter delta.
+    dropped_count: int = 0
     # Wave 77: stratified-sampling additions. None when stratification
     # not active, so legacy callers keep the same payload shape.
     misconception_dpo_pairs_emitted: int = 0
@@ -135,6 +144,7 @@ class SynthesisStats:
             "preference_pairs_emitted": self.preference_pairs_emitted,
             "preference_pairs_rejected": self.preference_pairs_rejected,
             "rejected_reasons": dict(self.rejected_reasons),
+            "dropped_count": self.dropped_count,
             "misconception_dpo_pairs_emitted": self.misconception_dpo_pairs_emitted,
             "stratify_dimensions": list(self.stratify_dimensions),
             "stratify_distribution": {
@@ -1495,6 +1505,18 @@ def run_synthesis(
                     manifest_for_st.family,
                 )
 
+        # Worker W2.E: instantiate the per-pair promotion validator once.
+        # Filters every accepted pair through the 7-criterion hard-
+        # rejection chain (placeholder residue, unsupported answer,
+        # weak distractor, unanswerable stem, source-free generation,
+        # low Bloom alignment, generic rationale). Lazy-loads the
+        # embedder + BERT ensemble on first use; degrades gracefully
+        # to Jaccard when [embedding] extras are absent.
+        from lib.validators.training_pair_promotion import (
+            TrainingPairPromotionValidator,
+        )
+        _promotion_validator = TrainingPairPromotionValidator()
+
         for idx, chunk in iter_chunks:
             if _budget_exhausted_exc is not None:
                 break
@@ -1711,6 +1733,33 @@ def run_synthesis(
                     inst_result.pair["decision_capture_id"] = _last_event_id(capture)
                     if _attach_source_grounding(inst_result.pair, chunk):
                         stats.source_grounded_pairs += 1
+                    # Worker W2.E: per-pair, post-emit, pre-write filter.
+                    # Stamps audit fields on the pair regardless of
+                    # outcome; on reject, skips append + sidecar +
+                    # checkpoint so a rejected pair never lands on disk
+                    # and is not re-emitted on resume.
+                    _promo_status, _promo_reason, _promo_fields = (
+                        _promotion_validator.validate_pair(
+                            inst_result.pair,
+                            kind="instruction",
+                            chunk=chunk,
+                            decision_capture=capture,
+                        )
+                    )
+                    inst_result.pair.update(_promo_fields)
+                    if _promo_status == "rejected":
+                        inst_result.pair["promotion_status"] = "rejected"
+                        inst_result.pair["rejection_reason"] = _promo_reason
+                        stats.instruction_pairs_rejected += 1
+                        _key = (
+                            f"instruction:promotion:{_promo_reason}"
+                        )
+                        stats.rejected_reasons[_key] = (
+                            stats.rejected_reasons.get(_key, 0) + 1
+                        )
+                        stats.dropped_count += 1
+                        continue
+                    inst_result.pair["promotion_status"] = _promo_status
                     instruction_records.append(inst_result.pair)
                     emitted_inst_prompts.add(final_prompt)
                     stats.instruction_pairs_emitted += 1
@@ -1860,32 +1909,63 @@ def run_synthesis(
                         pref_result.pair["decision_capture_id"] = _last_event_id(capture)
                         if _attach_source_grounding(pref_result.pair, chunk):
                             stats.source_grounded_pairs += 1
-                        preference_records.append(pref_result.pair)
-                        emitted_pref_prompts.add(final_pref_prompt)
-                        stats.preference_pairs_emitted += 1
-                        # Wave 116: mirror to .in_progress sidecar.
-                        pref_progress_fh.write(
-                            json.dumps(
+                        # Worker W2.E: per-pair promotion filter on the
+                        # preference branch. Mirrors the instruction
+                        # branch exactly. Nested if/else (rather than
+                        # continue) so the outer chunk loop still falls
+                        # through to the pilot_report progress block —
+                        # matches the surrounding control-flow
+                        # convention for the preference branch.
+                        _pref_promo_status, _pref_promo_reason, _pref_promo_fields = (
+                            _promotion_validator.validate_pair(
                                 pref_result.pair,
-                                ensure_ascii=False,
-                                sort_keys=True,
+                                kind="preference",
+                                chunk=chunk,
+                                decision_capture=capture,
                             )
-                            + "\n"
                         )
-                        pref_progress_fh.flush()
-                        # Worker A: append the accepted preference
-                        # pair to the resume checkpoint.
-                        _append_synthesis_pairs_checkpoint(
-                            checkpoint_fh,
-                            chunk_id=str(
-                                pref_result.pair.get("chunk_id", "")
-                            ),
-                            kind="preference",
-                            variant_index=0,
-                            pair=pref_result.pair,
-                            provider=provider,
-                            seed=pair_seed,
-                        )
+                        pref_result.pair.update(_pref_promo_fields)
+                        if _pref_promo_status == "rejected":
+                            pref_result.pair["promotion_status"] = "rejected"
+                            pref_result.pair["rejection_reason"] = _pref_promo_reason
+                            stats.preference_pairs_rejected += 1
+                            _pref_key = (
+                                f"preference:promotion:{_pref_promo_reason}"
+                            )
+                            stats.rejected_reasons[_pref_key] = (
+                                stats.rejected_reasons.get(_pref_key, 0) + 1
+                            )
+                            stats.dropped_count += 1
+                        else:
+                            pref_result.pair["promotion_status"] = (
+                                _pref_promo_status
+                            )
+                            preference_records.append(pref_result.pair)
+                            emitted_pref_prompts.add(final_pref_prompt)
+                            stats.preference_pairs_emitted += 1
+                            # Wave 116: mirror to .in_progress sidecar.
+                            pref_progress_fh.write(
+                                json.dumps(
+                                    pref_result.pair,
+                                    ensure_ascii=False,
+                                    sort_keys=True,
+                                )
+                                + "\n"
+                            )
+                            pref_progress_fh.flush()
+                            # Worker A: append the accepted preference
+                            # pair to the resume checkpoint.
+                            _append_synthesis_pairs_checkpoint(
+                                checkpoint_fh,
+                                chunk_id=str(
+                                    pref_result.pair.get("chunk_id", "")
+                                ),
+                                kind="preference",
+                                variant_index=0,
+                                pair=pref_result.pair,
+                                provider=provider,
+                                seed=pair_seed,
+                            )
 
             # Wave 117: every N processed chunks, regenerate the
             # in-flight pilot_report.md so the operator running a
