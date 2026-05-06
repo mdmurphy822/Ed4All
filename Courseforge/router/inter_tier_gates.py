@@ -406,10 +406,24 @@ class BlockCurieAnchoringValidator:
             if isinstance(content, dict):
                 audited += 1
                 curies = _extract_curies_from_block(block)
-                claims = content.get("key_claims") or []
-                text_blob = "\n".join(
-                    str(c) for c in claims if isinstance(c, str)
-                )
+                # Wave 1.5 W1.5.A: ``key_claims`` is now a back-compat
+                # ``oneOf``: legacy ``List[str]`` OR structured
+                # ``List[{claim, source_chunk_ids[]}]``. Pull the
+                # surface text via shape-dispatch so both arms feed
+                # the CURIE-anchoring extractor identically. Defensive:
+                # ignore non-str / non-dict entries (the schema rejects
+                # them upstream, but the validator never crashes on a
+                # malformed Block).
+                claims_raw = content.get("key_claims") or []
+                text_blob_parts: List[str] = []
+                for c in claims_raw:
+                    if isinstance(c, str):
+                        text_blob_parts.append(c)
+                    elif isinstance(c, dict):
+                        claim_text = c.get("claim", "")
+                        if isinstance(claim_text, str):
+                            text_blob_parts.append(claim_text)
+                text_blob = "\n".join(text_blob_parts)
                 surface_curies = _extract_curies(text_blob)
             elif isinstance(content, str):
                 audited += 1
