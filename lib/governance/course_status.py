@@ -1,6 +1,6 @@
 """GPT Feedback v2 Wave 1 (W1.C) — course-level final-status helpers.
 
-Two pure helpers, no production callers in Wave 1:
+Wave 1 (this module's original scope):
 
   * :func:`load_course_status_schema` — loads
     ``schemas/governance/course_status.schema.json`` and returns the JSON-Schema
@@ -11,8 +11,32 @@ Two pure helpers, no production callers in Wave 1:
     a mapping of ``{arrow_name: promotion_decision}`` and returns one of the
     five GPT 5-value enum members. Wave 1 implements only the ``failed`` and
     ``non_certified_archive`` branches; the three ``certified_*`` branches
-    raise :class:`NotImplementedError` until Wave 3 wires the gate-by-gate
-    compositional decision logic against the live promotion-chain aggregator.
+    raise :class:`NotImplementedError` (now bridged through to the Wave 3
+    helper below by callers that want full enum routing).
+
+Wave 3 W3.G addition:
+
+  * :func:`derive_course_status` — full 5-branch composer that walks the
+    9-arrow promotion-chain rows produced by
+    :class:`lib.aggregators.promotion_chain_report.PromotionChainAggregator`
+    and returns the canonical ``course_status`` enum value. Implements the
+    decision logic pinned in plan §"Worker W3.G":
+
+      - ``failed`` — any arrow ``promotion_decision == "fail"`` AND the
+        contributing gate set carries any critical-severity gate (the
+        Wave 1 G2 / G4 schema's ``critical`` flag).
+      - ``non_certified_archive`` — every arrow up to arrow 5 (IMSCC
+        chunks) landed cleanly, but arrow 6+ (assessment / training)
+        skipped or non-blocking-fail.
+      - ``certified_accessible`` — the WCAG arrow row passes; the
+        instructional + trainable cohorts may be partial.
+      - ``certified_instructional`` — WCAG passes AND every gate in the
+        instructional cohort (``content_grounding`` / ``oscqr_score`` /
+        ``page_objectives`` / ``source_refs``) passes.
+      - ``certified_trainable`` — ``certified_instructional`` AND every
+        gate in the trainable cohort (``min_edge_count`` /
+        ``synthesis_diversity`` / ``eval_gating`` /
+        ``family_completeness``) passes.
 
 The enum values are the five members of
 ``schemas/governance/course_status.schema.json``:
@@ -23,9 +47,10 @@ The enum values are the five members of
     non_certified_archive
     failed
 
-See ``plans/gpt-feedback-2-wave1-schemas-2026-05.md`` § "Worker W1.C" for the
-authoring rationale and ``schemas/ONTOLOGY.md`` for the broader governance
-posture.
+See ``plans/gpt-feedback-2-wave1-schemas-2026-05.md`` § "Worker W1.C" and
+``plans/gpt-feedback-2-wave3-wiring-telemetry-2026-05.md`` § "Worker W3.G"
+for the authoring rationale; ``schemas/ONTOLOGY.md`` for the broader
+governance posture.
 """
 
 from __future__ import annotations
@@ -34,11 +59,15 @@ import copy
 import json
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set
 
 __all__ = [
     "load_course_status_schema",
     "compose_course_status",
+    "derive_course_status",
+    "ACCESSIBILITY_GATE_IDS",
+    "INSTRUCTIONAL_GATE_IDS",
+    "TRAINABLE_GATE_IDS",
 ]
 
 
@@ -204,3 +233,221 @@ def compose_course_status(per_arrow_decisions: Mapping[str, str]) -> str:
         "plans/gpt-feedback-2-wave1-schemas-2026-05.md § 'Worker W1.C' for "
         "the deferral rationale."
     )
+
+
+# ---------------------------------------------------------------------------
+# Wave 3 W3.G — full 5-branch composer wired against the promotion-chain
+# aggregator's per-arrow rows.
+# ---------------------------------------------------------------------------
+
+
+# Canonical gate cohorts pinned by plan §"Worker W3.G". The composer walks
+# every arrow row's ``validator_set[]`` looking for these gate IDs to decide
+# the certified_* tier. Naming cohorts at the helper level (rather than
+# inline) gives test code a single import surface and makes drift between
+# the plan and code visible at edit time.
+
+#: Gates whose pass status promotes a course past arrow 5 (IMSCC chunks)
+#: into the ``certified_accessible`` tier. This is the WCAG / accessibility
+#: floor — without it a course can only land in ``non_certified_archive``.
+ACCESSIBILITY_GATE_IDS: frozenset = frozenset({
+    "wcag_compliance",
+    "wcag_aa_compliance",
+})
+
+#: Gates whose joint pass status promotes ``certified_accessible`` to
+#: ``certified_instructional``. Surfaces the four content-quality dimensions
+#: that make a course teach something coherently: source grounding, OSCQR
+#: course-quality scoring, per-page LO coverage, and per-emit source-ref
+#: integrity.
+INSTRUCTIONAL_GATE_IDS: frozenset = frozenset({
+    "content_grounding",
+    "oscqr_score",
+    "page_objectives",
+    "source_refs",
+})
+
+#: Gates whose joint pass status promotes ``certified_instructional`` to
+#: ``certified_trainable``. Surfaces the four training-corpus quality
+#: dimensions: KG edge density, synthesis-template diversity, post-training
+#: eval-gating thresholds, and per-family CURIE-coverage symmetry.
+TRAINABLE_GATE_IDS: frozenset = frozenset({
+    "min_edge_count",
+    "synthesis_diversity",
+    "eval_gating",
+    "family_completeness",
+})
+
+# Pre-arrow-5 boundary used by the ``failed`` / ``non_certified_archive``
+# decision branches (mirrors the canonical 9-arrow chain rather than the
+# Wave 1 5-arrow boundary).
+_NON_CERTIFIED_ARCHIVE_BOUNDARY_ARROW = 5
+
+# Promotion-decision values that signal a hard failure at the arrow level.
+_HARD_FAIL_DECISIONS = frozenset({"fail"})
+
+# Promotion-decision values that count as "not blocking" (the arrow's gates
+# either passed or only fired warnings). Used by every cohort-pass check.
+_NON_BLOCKING_DECISIONS = frozenset({"pass", "warn"})
+
+
+def _arrow_passes(arrow: Mapping[str, Any]) -> bool:
+    """Return True when an arrow's per-row promotion_decision is non-blocking."""
+    return arrow.get("promotion_decision") in _NON_BLOCKING_DECISIONS
+
+
+def _validator_set(arrow: Mapping[str, Any]) -> Set[str]:
+    """Coerce an arrow's ``validator_set`` field to a set of gate IDs."""
+    raw = arrow.get("validator_set") or []
+    if not isinstance(raw, (list, tuple, set, frozenset)):
+        return set()
+    out: Set[str] = set()
+    for item in raw:
+        if isinstance(item, str) and item.strip():
+            out.add(item.strip())
+    return out
+
+
+def _arrows_in_chain_order(arrows: Iterable[Mapping[str, Any]]) -> List[Mapping[str, Any]]:
+    """Sort arrows by arrow_id so the helper is order-stable across callers."""
+    out: List[Mapping[str, Any]] = []
+    for a in arrows or []:
+        if isinstance(a, Mapping):
+            out.append(a)
+    out.sort(key=lambda a: int(a.get("arrow_id") or 0))
+    return out
+
+
+def _cohort_passes(
+    arrows: Sequence[Mapping[str, Any]],
+    cohort_gate_ids: frozenset,
+) -> bool:
+    """Return True when the cohort's gate evidence supports certification.
+
+    A gate ID "passes" when at least one arrow row carries the gate ID in
+    its ``validator_set`` AND that arrow's ``promotion_decision`` is
+    non-blocking (``"pass"`` or ``"warn"``); it "fails" when at least one
+    arrow row carries the gate ID AND that arrow's promotion_decision is
+    ``"fail"``.
+
+    Cohort-pass rule:
+
+    * **Any failure disqualifies the cohort.** A single fail attached to
+      ANY cohort gate flips the cohort to non-certifying. This closes the
+      silent-degradation class where a partial pass + a single fail still
+      certifies.
+    * **At least one cohort gate must pass.** A cohort with zero
+      passing-gate evidence in the chain cannot certify — silently
+      crediting an empty cohort would also be a silent-degradation class.
+    * Cohort gates that NEVER appear in the chain are treated as "not
+      asserted": they don't count as failures (the composer can't
+      penalise a phase that didn't run), but they also don't count as
+      passes. The cohort certifies as long as the asserted gates all pass
+      AND at least one gate is asserted.
+    """
+    any_pass = False
+    any_fail = False
+    for gate_id in cohort_gate_ids:
+        for arrow in arrows:
+            if gate_id not in _validator_set(arrow):
+                continue
+            if _arrow_passes(arrow):
+                any_pass = True
+            else:
+                any_fail = True
+    if any_fail:
+        return False
+    return any_pass
+
+
+def derive_course_status(
+    arrows: Iterable[Mapping[str, Any]],
+    *,
+    critical_gate_ids: Optional[Iterable[str]] = None,
+) -> str:
+    """Walk the per-arrow rows and return the canonical course_status enum.
+
+    Decision logic per plan §"Worker W3.G" (the 5-branch tree):
+
+      1. ``failed`` — any arrow's ``promotion_decision == "fail"`` AND the
+         arrow's failure attaches to a critical-cohort gate. Critical
+         cohort defaults to :data:`ACCESSIBILITY_GATE_IDS` plus the
+         ``"missing_stage_report"`` sentinel — the two cohorts that
+         legitimately gate the entire chain (a WCAG fail makes the
+         course unshippable; a missing per-stage report breaks the audit
+         trail). Failures attached only to instructional / trainable
+         cohort gates do NOT short-circuit to ``failed`` — they just
+         prevent the corresponding tier from certifying. Callers that
+         want broader critical membership pass ``critical_gate_ids=``.
+         A failing arrow with NO validator_set rows is treated as
+         critical (the composer can't otherwise tell which gate fired).
+      2. ``non_certified_archive`` — every arrow up to arrow 5 (IMSCC
+         chunks) lands cleanly (no fail), but every arrow 6+ either
+         skipped or non-blocking-failed. This is the "the course is
+         archivable but never reached the assessment / training cohort"
+         tier.
+      3. ``certified_accessible`` — :data:`ACCESSIBILITY_GATE_IDS`
+         passes; the instructional + trainable cohorts may be partial.
+      4. ``certified_instructional`` — :data:`ACCESSIBILITY_GATE_IDS`
+         AND :data:`INSTRUCTIONAL_GATE_IDS` both pass.
+      5. ``certified_trainable`` — all three cohorts
+         (:data:`ACCESSIBILITY_GATE_IDS` + :data:`INSTRUCTIONAL_GATE_IDS`
+         + :data:`TRAINABLE_GATE_IDS`) pass.
+
+    Anti-silent-degradation: a course with NO matching cohort gates in
+    the chain falls through to ``non_certified_archive`` (when arrows
+    1-5 pass) OR ``failed`` (when any arrow has hard-failed). The
+    helper never returns ``None`` — every input maps to one of the five
+    enum values.
+    """
+    rows = _arrows_in_chain_order(arrows)
+    critical_set: Set[str] = set(critical_gate_ids or []) | (
+        ACCESSIBILITY_GATE_IDS | {"missing_stage_report"}
+    )
+
+    # --- Branch 1: any hard fail attached to a critical gate -> failed ---
+    for arrow in rows:
+        if arrow.get("promotion_decision") not in _HARD_FAIL_DECISIONS:
+            continue
+        vs = _validator_set(arrow)
+        # A failing arrow with no validator_set rows is treated as
+        # critical by construction (the missing-stage-report sentinel
+        # falls into this bucket because the composer can't tell which
+        # gate would have fired). Otherwise the failing arrow is critical
+        # iff at least one of its validator_set entries appears in the
+        # critical cohort.
+        if not vs or vs & critical_set:
+            return "failed"
+
+    # --- Branch 5 candidate: full trainable cohort passes ----------------
+    accessibility_ok = _cohort_passes(rows, ACCESSIBILITY_GATE_IDS)
+    instructional_ok = _cohort_passes(rows, INSTRUCTIONAL_GATE_IDS)
+    trainable_ok = _cohort_passes(rows, TRAINABLE_GATE_IDS)
+
+    if accessibility_ok and instructional_ok and trainable_ok:
+        return "certified_trainable"
+
+    # --- Branch 4: certified_instructional -------------------------------
+    if accessibility_ok and instructional_ok:
+        return "certified_instructional"
+
+    # --- Branch 3: certified_accessible ----------------------------------
+    if accessibility_ok:
+        return "certified_accessible"
+
+    # --- Branch 2: non_certified_archive ---------------------------------
+    # Every arrow up to and including arrow 5 must pass for a course to
+    # earn the archive tier. Below arrow 5 (i.e. arrows 6/7/8/9) is
+    # allowed to be missing or non-blocking-failed.
+    archive_slice = [
+        a for a in rows
+        if int(a.get("arrow_id") or 0) <= _NON_CERTIFIED_ARCHIVE_BOUNDARY_ARROW
+    ]
+    if archive_slice and all(_arrow_passes(a) for a in archive_slice):
+        return "non_certified_archive"
+
+    # --- Fallback: the chain is messy enough that none of the strict
+    # branches matched, and no critical fail was raised. Treat as
+    # ``failed`` so the composer never silently downgrades a degraded
+    # chain to a certified tier.
+    return "failed"

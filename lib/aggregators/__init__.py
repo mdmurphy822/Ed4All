@@ -24,6 +24,13 @@ Worker W3.E (GPT Feedback v2 Wave 3):
       keyed coverage table linking objectives -> chunks -> questions ->
       training_pairs and surfaces orphan objectives / chunks / questions
       to operators via ``<libv2_course>/coverage_map.json``.
+
+Worker W3.G (GPT Feedback v2 Wave 3 — governance G1):
+    - :class:`promotion_chain_report.PromotionChainAggregator` is the
+      master aggregator. Walks all 9 arrows of the DART -> eval-report
+      chain, reads each per-stage report best-effort, and produces
+      ``<libv2_course>/courseforge_promotion_chain_report.json`` with
+      a top-level ``course_status`` enum + ``chain_hash``.
 """
 
 from .courseforge_validation_report import (  # noqa: F401
@@ -31,6 +38,9 @@ from .courseforge_validation_report import (  # noqa: F401
 )
 from .coverage_map import (  # noqa: F401
     CoverageMapAggregator,
+)
+from .promotion_chain_report import (  # noqa: F401
+    PromotionChainAggregator,
 )
 from .trainforge_assessment_quality_report import (  # noqa: F401
     TrainforgeAssessmentQualityReport,
