@@ -873,3 +873,148 @@ class TestWorkflowRunnerWiring:
             phase_outputs={},  # no archival, no training_synthesis, nothing
         )
         assert result is None
+
+
+# --------------------------------------------------------------------------
+# Worker W3.B — promotion-ladder pass-through tests
+# --------------------------------------------------------------------------
+
+
+def _seed_promotion_ladder_dataset_config(
+    trainforge_dir: Path,
+    *,
+    candidate: int = 12,
+    validated: int = 9,
+    trainable: int = 9,
+    rejected: int = 3,
+    rejection_reasons: Optional[Dict[str, int]] = None,
+) -> Path:
+    """Write a dataset_config.json carrying a statistics.promotion_ladder block."""
+    if rejection_reasons is None:
+        rejection_reasons = {
+            "placeholder_residue": 1,
+            "weak_distractor": 2,
+        }
+    ts = trainforge_dir / "training_specs"
+    ts.mkdir(parents=True, exist_ok=True)
+    config_path = ts / "dataset_config.json"
+    config_path.write_text(
+        json.dumps({
+            "format": "instruction-following",
+            "statistics": {
+                "instruction_pairs": validated,
+                "preference_pairs": 0,
+                "promotion_ladder": {
+                    "candidate_pairs_total": candidate,
+                    "validated_pairs_total": validated,
+                    "trainable_pairs_total": trainable,
+                    "rejected_promotion_pairs": rejected,
+                    "promotion_rejection_reasons": dict(rejection_reasons),
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+    return config_path
+
+
+class TestPromotionLadderPassthrough:
+    """Worker W3.B — phase_results.synthesis.promotion_ladder copy-through."""
+
+    def test_promotion_ladder_copied_from_dataset_config(self, tmp_path):
+        tdir = tmp_path / "trainforge"
+        tdir.mkdir()
+        _seed_promotion_ladder_dataset_config(
+            tdir,
+            candidate=20,
+            validated=14,
+            trainable=14,
+            rejected=6,
+            rejection_reasons={
+                "placeholder_residue": 2,
+                "unsupported_answer": 1,
+                "weak_distractor": 1,
+                "unanswerable_stem": 1,
+                "source_free_generation": 1,
+            },
+        )
+
+        agg = TrainforgeAssessmentQualityReport(
+            phase_outputs={},
+            course_code="C", run_id="WF-PL",
+            trainforge_dir=tdir,
+        )
+        report = agg.build()
+
+        # phase_results bucket present + carries the synthesis sub-dict.
+        assert "phase_results" in report
+        assert "synthesis" in report["phase_results"]
+        ladder = report["phase_results"]["synthesis"]["promotion_ladder"]
+        assert ladder["candidate_pairs_total"] == 20
+        assert ladder["validated_pairs_total"] == 14
+        assert ladder["trainable_pairs_total"] == 14
+        assert ladder["rejected_promotion_pairs"] == 6
+        # Histogram alphabetised on read-back regardless of source order.
+        assert list(ladder["promotion_rejection_reasons"].keys()) == [
+            "placeholder_residue",
+            "source_free_generation",
+            "unanswerable_stem",
+            "unsupported_answer",
+            "weak_distractor",
+        ]
+
+    def test_missing_dataset_config_emits_empty_ladder_placeholder(
+        self, tmp_path,
+    ):
+        # Legacy run: trainforge_dir resolved but no dataset_config.
+        tdir = tmp_path / "trainforge"
+        tdir.mkdir()
+
+        agg = TrainforgeAssessmentQualityReport(
+            phase_outputs={},
+            course_code="C", run_id="WF-LEGACY",
+            trainforge_dir=tdir,
+        )
+        report = agg.build()
+
+        # Aggregator MUST NOT crash; the empty-shape placeholder ships.
+        ladder = report["phase_results"]["synthesis"]["promotion_ladder"]
+        assert ladder == {
+            "candidate_pairs_total": 0,
+            "validated_pairs_total": 0,
+            "trainable_pairs_total": 0,
+            "rejected_promotion_pairs": 0,
+            "promotion_rejection_reasons": {},
+        }
+
+    def test_dataset_config_without_promotion_ladder_block(self, tmp_path):
+        # Pre-W3.B dataset_config (no promotion_ladder under statistics):
+        # the aggregator emits the empty-shape placeholder, not None.
+        tdir = tmp_path / "trainforge"
+        ts = tdir / "training_specs"
+        ts.mkdir(parents=True)
+        (ts / "dataset_config.json").write_text(
+            json.dumps({
+                "format": "instruction-following",
+                "statistics": {
+                    "instruction_pairs": 5,
+                    "preference_pairs": 2,
+                },
+            }),
+            encoding="utf-8",
+        )
+
+        agg = TrainforgeAssessmentQualityReport(
+            phase_outputs={},
+            course_code="C", run_id="WF-PRE-W3B",
+            trainforge_dir=tdir,
+        )
+        report = agg.build()
+        ladder = report["phase_results"]["synthesis"]["promotion_ladder"]
+        assert ladder == {
+            "candidate_pairs_total": 0,
+            "validated_pairs_total": 0,
+            "trainable_pairs_total": 0,
+            "rejected_promotion_pairs": 0,
+            "promotion_rejection_reasons": {},
+        }

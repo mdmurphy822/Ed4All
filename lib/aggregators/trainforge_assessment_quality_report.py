@@ -280,6 +280,13 @@ class TrainforgeAssessmentQualityReport:
         # course has an imported adapter with eval_report.json.
         eval_summary = self._read_eval_report()
 
+        # 6b. Worker W3.B: phase_results.synthesis.promotion_ladder
+        # passthrough from dataset_config.json::statistics.promotion_ladder.
+        # Empty-shape placeholder when the dataset_config is missing the
+        # block entirely (legacy run / pre-W3.B) so a downstream
+        # consumer always sees the same key shape.
+        promotion_ladder = self._read_promotion_ladder()
+
         # 7. per_question_issues passthrough.
         per_question_issues: List[Any] = []
         if assessment_dim:
@@ -344,6 +351,18 @@ class TrainforgeAssessmentQualityReport:
             "blocking_failures": blocking_failures,
             "warnings": warnings,
             "promotion_decision": promotion_decision,
+            # Worker W3.B: phase_results carries per-phase mirrored
+            # blocks for downstream consumers (eval_report.json
+            # ``training_corpus_promotion`` pass-through, future
+            # per-phase widening). The synthesis sub-dict mirrors the
+            # promotion-ladder telemetry from
+            # dataset_config.json::statistics.promotion_ladder so the
+            # eval-side pass-through can copy through unchanged.
+            "phase_results": {
+                "synthesis": {
+                    "promotion_ladder": promotion_ladder,
+                },
+            },
         }
 
         # Best-effort decision-capture emit; never raises into the
@@ -487,6 +506,67 @@ class TrainforgeAssessmentQualityReport:
         if course_dir:
             return Path(course_dir)
         return None
+
+    def _read_promotion_ladder(self) -> Dict[str, Any]:
+        """Read ``<trainforge_dir>/training_specs/dataset_config.json::statistics.promotion_ladder``.
+
+        Worker W3.B mirror surface. Returns the empty-shape placeholder
+        (zeros + empty histogram) when the dataset_config is missing
+        the block entirely (legacy / pre-W3.B run) so the wire-shape
+        downstream consumers see is invariant. Reason histogram keys
+        are alphabetised on emit so a run-vs-run diff is byte-stable.
+        """
+        empty_ladder: Dict[str, Any] = {
+            "candidate_pairs_total": 0,
+            "validated_pairs_total": 0,
+            "trainable_pairs_total": 0,
+            "rejected_promotion_pairs": 0,
+            "promotion_rejection_reasons": {},
+        }
+        tdir = self._resolve_trainforge_dir()
+        if tdir is None:
+            return empty_ladder
+        config_path = tdir / "training_specs" / "dataset_config.json"
+        if not config_path.exists():
+            return empty_ladder
+        try:
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "trainforge_assessment_quality_report: cannot read "
+                "promotion_ladder from %s: %s",
+                config_path, exc,
+            )
+            return empty_ladder
+        statistics = payload.get("statistics") if isinstance(payload, Mapping) else None
+        if not isinstance(statistics, Mapping):
+            return empty_ladder
+        ladder = statistics.get("promotion_ladder")
+        if not isinstance(ladder, Mapping):
+            return empty_ladder
+        # Project canonical fields with defaults so a partially-emitted
+        # block (e.g. mid-migration corpus) still produces a uniform
+        # wire shape.
+        reasons = ladder.get("promotion_rejection_reasons") or {}
+        if not isinstance(reasons, Mapping):
+            reasons = {}
+        return {
+            "candidate_pairs_total": int(
+                ladder.get("candidate_pairs_total") or 0
+            ),
+            "validated_pairs_total": int(
+                ladder.get("validated_pairs_total") or 0
+            ),
+            "trainable_pairs_total": int(
+                ladder.get("trainable_pairs_total") or 0
+            ),
+            "rejected_promotion_pairs": int(
+                ladder.get("rejected_promotion_pairs") or 0
+            ),
+            "promotion_rejection_reasons": {
+                k: int(reasons[k] or 0) for k in sorted(reasons)
+            },
+        }
 
     def _read_assessment_dimension(self) -> Optional[Dict[str, Any]]:
         """Read ``<trainforge_dir>/quality/quality_report.json::assessments``."""

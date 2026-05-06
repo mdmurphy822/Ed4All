@@ -101,6 +101,32 @@ class SynthesisStats:
     # gate failures (template-recognizer, content-type, duplicate-prompt,
     # etc.) — dropped_count is the post-emit pre-write filter delta.
     dropped_count: int = 0
+    # Worker W3.B: promotion-ladder counters surfaced into operator
+    # telemetry. The same per-pair filter site that drives
+    # ``dropped_count`` populates these counters too. Three monotonic
+    # ladder steps + a parallel rejection-reason histogram so an
+    # operator reading dataset_config.json::statistics.promotion_ladder
+    # (and the W2.B aggregator's mirrored block) sees the funnel
+    # candidate -> validated -> trainable + the per-reason histogram
+    # without parsing decision-capture JSONL. The 7 canonical reason
+    # keys mirror lib/validators/training_pair_promotion.py:
+    # placeholder_residue, unsupported_answer, weak_distractor,
+    # unanswerable_stem, source_free_generation, low_bloom_alignment,
+    # generic_rationale. Invariant:
+    #   rejected_promotion_pairs == sum(promotion_rejection_reasons.values())
+    # and:
+    #   candidate_pairs_total == validated_pairs_total + rejected_promotion_pairs
+    # and (current pipeline shape):
+    #   trainable_pairs_total == validated_pairs_total
+    # (promotion validation IS the pre-write gate; no post-validation
+    # write loss exists today, but trainable_pairs_total is a separate
+    # counter so future write-side losses surface without conflating
+    # the two ladder steps).
+    candidate_pairs_total: int = 0
+    validated_pairs_total: int = 0
+    trainable_pairs_total: int = 0
+    rejected_promotion_pairs: int = 0
+    promotion_rejection_reasons: Dict[str, int] = field(default_factory=dict)
     # Wave 77: stratified-sampling additions. None when stratification
     # not active, so legacy callers keep the same payload shape.
     misconception_dpo_pairs_emitted: int = 0
@@ -145,6 +171,20 @@ class SynthesisStats:
             "preference_pairs_rejected": self.preference_pairs_rejected,
             "rejected_reasons": dict(self.rejected_reasons),
             "dropped_count": self.dropped_count,
+            # Worker W3.B: promotion-ladder counters projected into the
+            # ``synthesis.last_run`` block of dataset_config.json so the
+            # W2.B aggregator + the eval_report.json pass-through both
+            # have a stable wire-shape to copy through. Reason histogram
+            # keys are alphabetised on emit so a future histogram diff
+            # (run-vs-run) is byte-stable regardless of insertion order.
+            "candidate_pairs_total": self.candidate_pairs_total,
+            "validated_pairs_total": self.validated_pairs_total,
+            "trainable_pairs_total": self.trainable_pairs_total,
+            "rejected_promotion_pairs": self.rejected_promotion_pairs,
+            "promotion_rejection_reasons": {
+                k: self.promotion_rejection_reasons[k]
+                for k in sorted(self.promotion_rejection_reasons)
+            },
             "misconception_dpo_pairs_emitted": self.misconception_dpo_pairs_emitted,
             "stratify_dimensions": list(self.stratify_dimensions),
             "stratify_distribution": {
@@ -614,6 +654,25 @@ def _update_dataset_config(
     config.setdefault("statistics", {})
     config["statistics"]["instruction_pairs"] = stats.instruction_pairs_emitted
     config["statistics"]["preference_pairs"] = stats.preference_pairs_emitted
+    # Worker W3.B: surface the promotion-ladder counters into a
+    # dedicated, operator-readable block under ``statistics`` so
+    # downstream readers (W2.B aggregator, eval_report.json
+    # pass-through) have a stable wire-shape independent of the
+    # ``synthesis.last_run`` payload (which carries the full SynthesisStats
+    # dump). Reason histogram keys are alphabetised on emit so a
+    # run-vs-run diff is byte-stable. Always present (zeros on a
+    # legacy / empty run) so a missing block is unambiguously a
+    # legacy-corpus signal in downstream consumers.
+    config["statistics"]["promotion_ladder"] = {
+        "candidate_pairs_total": stats.candidate_pairs_total,
+        "validated_pairs_total": stats.validated_pairs_total,
+        "trainable_pairs_total": stats.trainable_pairs_total,
+        "rejected_promotion_pairs": stats.rejected_promotion_pairs,
+        "promotion_rejection_reasons": {
+            k: stats.promotion_rejection_reasons[k]
+            for k in sorted(stats.promotion_rejection_reasons)
+        },
+    }
     config.setdefault("synthesis", {})
     config["synthesis"]["last_run"] = stats.as_dict()
 
@@ -1738,6 +1797,11 @@ def run_synthesis(
                     # outcome; on reject, skips append + sidecar +
                     # checkpoint so a rejected pair never lands on disk
                     # and is not re-emitted on resume.
+                    # Worker W3.B: increment candidate counter BEFORE
+                    # the validator call — every factory-output pair
+                    # that survived the per-template quality gate AND
+                    # the cross-chunk dedupe is a candidate.
+                    stats.candidate_pairs_total += 1
                     _promo_status, _promo_reason, _promo_fields = (
                         _promotion_validator.validate_pair(
                             inst_result.pair,
@@ -1758,11 +1822,29 @@ def run_synthesis(
                             stats.rejected_reasons.get(_key, 0) + 1
                         )
                         stats.dropped_count += 1
+                        # Worker W3.B: promotion-ladder rejection counters.
+                        stats.rejected_promotion_pairs += 1
+                        _reason_key = _promo_reason or "unknown"
+                        stats.promotion_rejection_reasons[_reason_key] = (
+                            stats.promotion_rejection_reasons.get(
+                                _reason_key, 0
+                            ) + 1
+                        )
                         continue
                     inst_result.pair["promotion_status"] = _promo_status
+                    # Worker W3.B: validated counter increments on
+                    # promotion_status != "rejected".
+                    stats.validated_pairs_total += 1
                     instruction_records.append(inst_result.pair)
                     emitted_inst_prompts.add(final_prompt)
                     stats.instruction_pairs_emitted += 1
+                    # Worker W3.B: trainable counter — incremented after
+                    # the pair lands in the in-memory records list (which
+                    # is byte-equivalent to the JSONL emit a few lines
+                    # below). Distinct counter from validated so a future
+                    # post-validation write loss surfaces here without
+                    # conflating the two ladder steps.
+                    stats.trainable_pairs_total += 1
                     # Wave 116: mirror to .in_progress sidecar with
                     # flush() so ``tail -f`` and post-kill inspection
                     # see this pair without waiting on OS buffers.
@@ -1916,6 +1998,12 @@ def run_synthesis(
                         # through to the pilot_report progress block —
                         # matches the surrounding control-flow
                         # convention for the preference branch.
+                        # Worker W3.B: candidate counter increments
+                        # BEFORE the validator dispatch, matching the
+                        # instruction-branch semantics — every pair that
+                        # survived the per-template quality gate AND the
+                        # cross-chunk dedupe is a candidate.
+                        stats.candidate_pairs_total += 1
                         _pref_promo_status, _pref_promo_reason, _pref_promo_fields = (
                             _promotion_validator.validate_pair(
                                 pref_result.pair,
@@ -1936,13 +2024,32 @@ def run_synthesis(
                                 stats.rejected_reasons.get(_pref_key, 0) + 1
                             )
                             stats.dropped_count += 1
+                            # Worker W3.B: promotion-ladder rejection
+                            # counters mirror the instruction branch.
+                            stats.rejected_promotion_pairs += 1
+                            _pref_reason_key = (
+                                _pref_promo_reason or "unknown"
+                            )
+                            stats.promotion_rejection_reasons[_pref_reason_key] = (
+                                stats.promotion_rejection_reasons.get(
+                                    _pref_reason_key, 0
+                                ) + 1
+                            )
                         else:
                             pref_result.pair["promotion_status"] = (
                                 _pref_promo_status
                             )
+                            # Worker W3.B: validated counter increments
+                            # on promotion_status != "rejected".
+                            stats.validated_pairs_total += 1
                             preference_records.append(pref_result.pair)
                             emitted_pref_prompts.add(final_pref_prompt)
                             stats.preference_pairs_emitted += 1
+                            # Worker W3.B: trainable counter — pair has
+                            # landed in the in-memory records list and
+                            # will be flushed to JSONL via _write_jsonl
+                            # at end of run.
+                            stats.trainable_pairs_total += 1
                             # Wave 116: mirror to .in_progress sidecar.
                             pref_progress_fh.write(
                                 json.dumps(
