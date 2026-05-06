@@ -323,6 +323,24 @@ _OUTLINE_SYSTEM_PROMPT: str = (
     "in the block's top-level source_refs[]. PROHIBITED: emitting "
     "key_claims as a flat array of strings; that is the legacy shape "
     "and the new schema rejects it for new authoring."
+    # Wave 1.7 W1.7.B: behavioral-outcome / Bloom-floor directive.
+    # The objectives list in the user prompt surfaces the declared
+    # Bloom triple `[Bloom: {level}, verb: {verb}]` per objective; the
+    # outline-tier `bloom_level` MUST be at or above the declared
+    # level so the rewrite tier authors prose at the correct cognitive
+    # demand. Pairs with the symmetric rewrite-tier
+    # `MUST teach the BEHAVIORAL OUTCOME` directive in
+    # `_REWRITE_SYSTEM_PROMPT`.
+    " "
+    "`bloom_level` MUST be at or above the declared Bloom level of "
+    "the objective(s) listed in `objective_refs`. A block whose "
+    "`objective_refs` cites a `create`-level objective MUST NOT emit "
+    "`bloom_level: remember` or `bloom_level: understand` — the "
+    "block's pedagogy must climb to the objective's level. When a "
+    "single page carries multiple `objective_refs`, distribute the "
+    "Bloom levels across blocks (e.g. one `concept` at `understand` "
+    "scaffolding the foundation, one `example` at `apply`, one "
+    "`assessment_item` at the full declared level)."
 )
 # Per-block-type GBNF grammar strings for llama.cpp / vLLM constrained
 # decoding. Each grammar accepts a JSON object with at least the
@@ -600,6 +618,21 @@ _RETRY_DIRECTIVE_PATTERNS: List[Tuple["re.Pattern[str]", str]] = [
         "{\"claim\": \"<text>\", \"source_chunk_ids\": [\"<chunk_id>\"]}. "
         "Do NOT emit key_claims as flat strings. Every source_chunk_id "
         "MUST also appear in the block's source_refs[].",
+    ),
+    # Wave 1.7 W1.7.B: BLOCK_OBJECTIVE_BLOOM_UNDERMET retry directive.
+    # The validator class itself lands in W1.7.C; this tuple prepares
+    # the prompt-side recovery surface so when W1.7.C wires the
+    # validator into the inter-tier seam, the regenerate-loop already
+    # has a directive to splice into the next outline-tier prompt.
+    # Placed immediately AFTER the W1.5.B `oneOf` directive so the
+    # most-specific patterns retain priority under
+    # `_match_retry_directive`'s first-match semantics.
+    (
+        re.compile(r"BLOCK_OBJECTIVE_BLOOM_UNDERMET"),
+        "The block's bloom_level is below the declared Bloom level "
+        "of its objective_refs. Re-emit with bloom_level at or above "
+        "the objective's declared level. Adjust prose to scaffold up "
+        "to the higher cognitive demand.",
     ),
     (
         re.compile(r"is not one of \['remember'"),
@@ -1039,11 +1072,27 @@ class OutlineProvider(_BaseLLMProvider):
             chunk_lines.append(f"  - [{cid}] {body}")
         chunks_block = "\n".join(chunk_lines) if chunk_lines else "  (none)"
 
+        # Wave 1.7 W1.7.B: surface the Bloom triple
+        # `[Bloom: {level}, verb: {verb}]` inline next to each
+        # objective render so the outline-tier model has the declared
+        # cognitive demand pinned next to the behavioral outcome it
+        # must shape the block around. Symmetric with the rewrite-tier
+        # `_format_objectives` widening. Falls back to the legacy
+        # `- {oid}: {stmt}` shape when both Bloom fields are absent
+        # (back-compat with legacy fixtures).
         objective_lines: List[str] = []
         for obj in objectives or []:
             oid = str(obj.get("id") or obj.get("objective_id") or "")
             stmt = str(obj.get("statement") or obj.get("text") or "")
-            objective_lines.append(f"  - {oid}: {stmt}")
+            bloom_level = str(obj.get("bloom_level") or "")
+            bloom_verb = str(obj.get("bloom_verb") or "")
+            if bloom_level or bloom_verb:
+                objective_lines.append(
+                    f"  - {oid} [Bloom: {bloom_level}, verb: {bloom_verb}]: "
+                    f"{stmt}"
+                )
+            else:
+                objective_lines.append(f"  - {oid}: {stmt}")
         objectives_block = (
             "\n".join(objective_lines) if objective_lines else "  (none)"
         )
