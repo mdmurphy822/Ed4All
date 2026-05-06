@@ -287,6 +287,15 @@ class Block:
     content_hash: Optional[str] = None
     validation_attempts: int = 0
     escalation_marker: Optional[str] = None
+    # GPT Feedback v2 Wave 1 / W1.A — observed Bloom level as classified
+    # by the BERT ensemble at validation time, plus the boolean alignment
+    # signal (``observed_bloom_level == bloom_level``). Both stay default
+    # ``None`` for blocks emitted before the BERT classifier wires in
+    # (Wave 2 router work). Audit-only — INTENTIONALLY excluded from
+    # ``compute_content_hash()`` so a classifier retro-fit doesn't drift
+    # every existing block hash on rebuild.
+    observed_bloom_level: Optional[str] = None
+    bloom_alignment: Optional[bool] = None
 
     def __post_init__(self) -> None:
         if self.block_type not in BLOCK_TYPES:
@@ -629,6 +638,15 @@ class Block:
             entry["touchedBy"] = self._render_touched_by()
         if self.content_hash:
             entry["contentHash"] = self.content_hash
+        # GPT Feedback v2 Wave 1 / W1.A — emit observed Bloom + alignment
+        # signals only when non-None so legacy emits stay byte-stable.
+        # camelCase keys mirror schemas/knowledge/courseforge_jsonld_v1
+        # .schema.json::$defs.Block.properties.{observedBloomLevel,
+        # bloomAlignment}.
+        if self.observed_bloom_level is not None:
+            entry["observedBloomLevel"] = self.observed_bloom_level
+        if self.bloom_alignment is not None:
+            entry["bloomAlignment"] = self.bloom_alignment
         return entry
 
     def _render_touched_by(self) -> List[Dict[str, Any]]:

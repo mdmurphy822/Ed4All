@@ -108,6 +108,13 @@ class QuestionData:
     feedback: Optional[str] = None
     source_chunks: List[str] = field(default_factory=list)
     generation_rationale: Optional[str] = None
+    # GPT Feedback v2 Wave 1 / W1.A — observed Bloom level as classified
+    # by the BERT ensemble + boolean alignment signal (observed ==
+    # declared). Both stay default ``None`` until the Wave 2 classifier
+    # wires in. Round-tripped unconditionally through to_dict() — None is
+    # an acceptable shape for a not-yet-classified question.
+    observed_bloom_level: Optional[str] = None
+    bloom_alignment: Optional[bool] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -122,6 +129,8 @@ class QuestionData:
             "feedback": self.feedback,
             "source_chunks": self.source_chunks,
             "generation_rationale": self.generation_rationale,
+            "observed_bloom_level": self.observed_bloom_level,
+            "bloom_alignment": self.bloom_alignment,
         }
 
 
