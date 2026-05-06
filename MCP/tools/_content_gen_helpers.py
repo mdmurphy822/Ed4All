@@ -1302,6 +1302,35 @@ def _normalize_objective_entry(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     abcd = raw.get("abcd")
     if isinstance(abcd, dict):
         entry["abcd"] = dict(abcd)
+    # Wave 1.6 W1.6.A: preserve ``source_refs`` verbatim regardless of
+    # shape (legacy ``List[str]`` OR Wave-1.6 structured
+    # ``List[{ref, chunk_ids[]}]``). Pre-Wave-1.6 this field was dropped
+    # entirely on ``--reuse-objectives`` round-trips, destroying
+    # per-objective attribution carried by user-supplied payloads. The
+    # field is shape-tolerant pass-through here; the canonical schema
+    # ``schemas/knowledge/objectives_v1.schema.json`` carries the
+    # back-compat ``oneOf`` that gate-checks the shape downstream.
+    source_refs = raw.get("source_refs") or raw.get("sourceRefs")
+    if source_refs is not None and isinstance(source_refs, list):
+        preserved: List[Any] = []
+        for ref in source_refs:
+            if isinstance(ref, str):
+                preserved.append(ref)
+            elif isinstance(ref, dict):
+                # Build a fresh dict with only the canonical keys so the
+                # round-trip output matches the schema's
+                # ``additionalProperties: false`` arm. Preserve chunk_ids
+                # as a fresh list (defensive shallow copy).
+                ref_field = ref.get("ref")
+                chunk_ids = ref.get("chunk_ids")
+                if isinstance(chunk_ids, list):
+                    chunk_ids = list(chunk_ids)
+                preserved.append({"ref": ref_field, "chunk_ids": chunk_ids})
+            else:
+                # Mixed-shape entries are rejected at the schema layer;
+                # stay defensive here and pass through unchanged.
+                preserved.append(ref)
+        entry["source_refs"] = preserved
     return entry
 
 
