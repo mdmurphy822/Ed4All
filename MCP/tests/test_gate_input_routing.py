@@ -524,6 +524,8 @@ def test_group_d_statistical_input_keeps_blocks_and_objectives(
         "lib.validators.concept_example_similarity.ConceptExampleSimilarityValidator",
         "lib.validators.objective_roundtrip_similarity.ObjectiveRoundtripSimilarityValidator",
         "lib.validators.bloom_classifier_disagreement.BloomClassifierDisagreementValidator",
+        # GPT Feedback v2 Wave 1.7 W1.7.C — same statistical-tier surface.
+        "lib.validators.block_objective_delivery.BlockObjectiveDeliveryValidator",
     ):
         inputs, missing = r.build(
             dotted,
@@ -536,8 +538,78 @@ def test_group_d_statistical_input_keeps_blocks_and_objectives(
         assert "blocks" in inputs
         assert inputs.get("objectives_path") == str(objectives)
         # Statistical-tier surface is intentionally pruned: no
-        # manifest_path / staging_dir / valid_*_ids leakage.
-        assert set(inputs.keys()) <= {"blocks", "objectives_path"}
+        # manifest_path / staging_dir / valid_*_ids leakage. Wave 1.7
+        # W1.7.C Drift B fix may add ``objective_statements`` +
+        # ``objectives`` when the JSON has LO entries; the empty ``{}``
+        # fixture flattens to zero entries so the legacy two-key shape
+        # still holds here.
+        assert set(inputs.keys()) <= {
+            "blocks", "objectives_path",
+            "objective_statements", "objectives",
+        }
+
+
+def test_group_d_statistical_input_drift_b_fix_populates_objective_maps(
+    tmp_path: Path,
+) -> None:
+    """Wave 1.7 W1.7.C — Drift B: builder loads + flattens
+    ``synthesized_objectives.json`` and surfaces ``objective_statements``
+    + ``objectives`` for the statistical-tier validators.
+
+    Pre-Wave-1.7 the builder only emitted ``{blocks, objectives_path}``,
+    so ``ObjectiveAssessmentSimilarityValidator`` silently degraded to
+    ``OBJECTIVE_STATEMENT_UNRESOLVED`` warnings on every block. This
+    test pins the fix.
+    """
+    import json as _json
+
+    blocks_path = _write_blocks_jsonl(
+        tmp_path / "blocks_final.jsonl",
+        [_minimal_block_entry()],
+    )
+    objectives = tmp_path / "synthesized_objectives.json"
+    payload = {
+        "terminal_objectives": [
+            {
+                "id": "TO-01",
+                "bloom_level": "analyze",
+                "bloom_verb": "analyze",
+                "statement": "Analyze RDF data models.",
+            },
+        ],
+        "chapter_objectives": [
+            {
+                "id": "CO-08",
+                "bloom_level": "create",
+                "bloom_verb": "construct",
+                "statement": "Construct subclass hierarchies in Turtle.",
+            },
+        ],
+    }
+    objectives.write_text(_json.dumps(payload), encoding="utf-8")
+
+    r = default_router()
+    inputs, missing = r.build(
+        "lib.validators.objective_assessment_similarity.ObjectiveAssessmentSimilarityValidator",
+        _make_rewrite_phase_outputs(
+            blocks_path, objectives_path=str(objectives),
+        ),
+        {},
+    )
+    assert missing == []
+    assert inputs.get("objectives_path") == str(objectives)
+    # Drift B fix lands these two new keys.
+    statements = inputs.get("objective_statements")
+    assert isinstance(statements, dict)
+    assert statements.get("TO-01") == "Analyze RDF data models."
+    assert statements.get("CO-08") == (
+        "Construct subclass hierarchies in Turtle."
+    )
+
+    full = inputs.get("objectives")
+    assert isinstance(full, dict)
+    assert full.get("TO-01", {}).get("bloom_level") == "analyze"
+    assert full.get("CO-08", {}).get("bloom_verb") == "construct"
 
 
 def test_group_e_degraded_chunk_input_returns_wrong_validator_class() -> None:
@@ -590,6 +662,11 @@ _W4_OUTLINE_LIB_VALIDATORS_ALLOWLIST = frozenset({
     # lives under lib.validators.* because it's a payload-shape gate
     # rather than a structural-reference gate.
     "lib.validators.assessment_item_payload.BlockAssessmentItemPayloadValidator",
+    # GPT Feedback v2 Wave 1.7 W1.7.C: tri-axis per-block-per-objective
+    # delivery gate (NLI entailment / Bloom-gap / verb synonym). Same
+    # statistical-tier surface as the four Phase 4 PoC validators above
+    # — wired symmetrically at outline + rewrite seams.
+    "lib.validators.block_objective_delivery.BlockObjectiveDeliveryValidator",
 })
 
 

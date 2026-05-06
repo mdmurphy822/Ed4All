@@ -677,6 +677,7 @@ Source of truth: `config/workflows.yaml::validation_gates`. Phase column below s
 | `textbook_to_course` | `inter_tier_validation` | `outline_distractor_misconception_alignment` | DistractorMisconceptionAlignmentValidator (warning) |
 | `textbook_to_course` | `inter_tier_validation` | `outline_instructional_depth` | InstructionalDepthValidator (warning) |
 | `textbook_to_course` | `inter_tier_validation` | `outline_bloom_structural_enforcement` | BloomStructuralEnforcementValidator (warning) |
+| `textbook_to_course` | `inter_tier_validation` | `outline_block_objective_delivery` | BlockObjectiveDeliveryValidator (warning — Wave 1.7 W1.7.C tri-axis NLI / Bloom-gap / verb check) |
 | `textbook_to_course` | `post_rewrite_validation` | `rewrite_html_shape` | RewriteHtmlShapeValidator |
 | `textbook_to_course` | `post_rewrite_validation` | `rewrite_source_grounding` | RewriteSourceGroundingValidator |
 | `textbook_to_course` | `post_rewrite_validation` | `rewrite_assessment_retrieval_grounding` | AssessmentRetrievalGroundingValidator (warning) |
@@ -684,6 +685,7 @@ Source of truth: `config/workflows.yaml::validation_gates`. Phase column below s
 | `textbook_to_course` | `post_rewrite_validation` | `rewrite_distractor_misconception_alignment` | DistractorMisconceptionAlignmentValidator (warning) |
 | `textbook_to_course` | `post_rewrite_validation` | `rewrite_instructional_depth` | InstructionalDepthValidator (warning) |
 | `textbook_to_course` | `post_rewrite_validation` | `rewrite_bloom_structural_enforcement` | BloomStructuralEnforcementValidator (warning) |
+| `textbook_to_course` | `post_rewrite_validation` | `rewrite_block_objective_delivery` | BlockObjectiveDeliveryValidator (warning — Wave 1.7 W1.7.C tri-axis post-rewrite mirror) |
 | `textbook_to_course` | `packaging` | `imscc_structure` | IMSCCValidator (warning) |
 | `textbook_to_course` | `packaging` | `page_objectives` | PageObjectivesValidator |
 | `textbook_to_course` | `trainforge_assessment` | `imscc_input_valid` | IMSCCValidator (pre-assessment) |

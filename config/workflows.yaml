@@ -1254,6 +1254,30 @@ workflows:
               on_error: warn
             description: Phase 4 PoC BERT-ensemble disagreement check on outline-tier objective / assessment_item Blocks. Informational; structural gates remain authoritative.
 
+          # GPT Feedback v2 Wave 1.7 W1.7.C: tri-axis (NLI statement
+          # entailment / Bloom-gap≥2 / action-verb synonym presence)
+          # per-block-per-objective delivery gate. Fires across 6 of
+          # 16 block_types (concept / example / explanation /
+          # assessment_item / activity / self_check_question). Each
+          # block_type has its own entailment threshold (see
+          # ``_PER_BLOCK_TYPE_ENTAILMENT_FLOOR`` in the validator
+          # module) — the 0.55 floor on assessment_item matches the
+          # existing ``outline_objective_assessment_similarity`` gate
+          # for symmetry. Day-1 severity warning; promotion to critical
+          # deferred until per-block-type calibration data lands
+          # (Wave 3 follow-up). Graceful-degrades to a warning issue
+          # ``passed=True`` when the NLI loader (W2.F prerequisite)
+          # returns None, so CPU-only dev boxes don't fail closed.
+          - gate_id: outline_block_objective_delivery
+            validator: lib.validators.block_objective_delivery.BlockObjectiveDeliveryValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Wave 1.7 W1.7.C — tri-axis (NLI entailment / Bloom-gap≥2 / action-verb synonym) per-block-per-objective delivery check on outline-tier Blocks. Informational; structural gates remain authoritative.
+
           # GPT-feedback W2-W7 wave: five new gates wired warning-only at
           # both seams (inter_tier + post_rewrite). Promoted to critical
           # in a follow-up commit once alignment-rate signal stabilises
@@ -1604,6 +1628,23 @@ workflows:
               on_fail: warn
               on_error: warn
             description: Phase 4 PoC BERT-ensemble disagreement check on rewrite-tier objective / assessment_item Blocks. Informational; structural gates remain authoritative.
+
+          # GPT Feedback v2 Wave 1.7 W1.7.C: post-rewrite mirror of the
+          # outline-seam tri-axis gate. Same shape-dispatch handles
+          # rewrite-tier HTML-string content vs. outline-tier dict
+          # content. Severity warning per the Day-1 contract; W1.7.D
+          # will wire the per-axis remediation suffix into the
+          # rewrite-tier regen loop so a Wave-1.7 failure on attempt N
+          # injects a per-axis directive on attempt N+1.
+          - gate_id: rewrite_block_objective_delivery
+            validator: lib.validators.block_objective_delivery.BlockObjectiveDeliveryValidator
+            severity: warning
+            threshold:
+              max_critical_issues: 0
+            behavior:
+              on_fail: warn
+              on_error: warn
+            description: Wave 1.7 W1.7.C — tri-axis post-rewrite per-block-per-objective delivery check. Mirrors the outline seam against rewrite-tier Blocks.
 
           # GPT-feedback W2-W7 wave: post-rewrite mirror of the five
           # outline-seam gates. Same Block-shape inputs; the validators'
