@@ -26,6 +26,20 @@ evaluators:
   regression: true
   key_term_precision: true
   disambiguation: true
+  # Wave 3 W3.F — 6 per-question metrics. Default true for the cheap
+  # signals; the two ML-driven metrics (bloom_alignment_rate +
+  # source_support_rate) gate on the optional [embedding] / [bert]
+  # pyproject extras at runtime via NliClassifier.get_or_load /
+  # BloomBertEnsemble._load_members and degrade gracefully (returning
+  # rate=None, deps_missing=True) when the extras are absent. Mirrors
+  # the [embedding] flag pattern used by the existing 4 statistical-
+  # tier validators.
+  answerable_rate: true
+  single_correct_rate: true
+  distractor_entropy: true
+  bloom_alignment_rate: true
+  placeholder_rate: true
+  source_support_rate: true
 
 caps:
   max_holdout_questions: 100
