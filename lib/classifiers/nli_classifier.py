@@ -1,42 +1,103 @@
 """Singleton-load NLI classifier wrapping
 ``MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli``.
 
-Wave 2 W2.F authors the real implementation; Wave 1.7 W1.7.C ships
-this stub so :class:`lib.validators.block_objective_delivery.
-BlockObjectiveDeliveryValidator`'s import path is stable across the
-W2.F swap.
+GPT Feedback v2 Wave 2 W2.F lands the real loader; the prior W1.7.C
+stub returned ``None`` from :meth:`NliClassifier.get_or_load` so
+:class:`lib.validators.block_objective_delivery.
+BlockObjectiveDeliveryValidator`'s graceful-degrade path was the only
+exercised arm. Wave 2 W2.F lands the real DeBERTa-v3-mnli-fever-anli
+loader; the surface contract is unchanged so the W1.7.C consumer
+keeps working without modification.
 
-Surface contract (frozen for W2.F):
+Surface contract (frozen for downstream consumers):
 
 * :meth:`NliClassifier.get_or_load` is the singleton accessor — returns
-  the process-wide instance, lazy-loaded on first access. Until W2.F
-  lands the real loader, returns ``None`` so the validator's
-  graceful-degrade path (``BLOCK_OBJECTIVE_NLI_DEPS_MISSING`` warning,
-  ``passed=True, action=None``) is exercised.
+  the process-wide instance, lazy-loaded on first access. When
+  ``transformers`` / ``torch`` extras are absent (or the model load
+  fails for any reason), returns ``None`` so the validator's
+  graceful-degrade path (warning-severity GateIssue with
+  ``passed=True, action=None``) fires.
 * :meth:`NliClassifier.score_pair` returns one :class:`NliScore` for a
   ``(premise, hypothesis)`` pair.
 * :meth:`NliClassifier.score_batch` returns a list of scores for a list
-  of pairs (for fan-out batching across many block / objective pairs).
+  of pairs (batched forward pass for fan-out across many block /
+  objective / claim pairs).
 
-Callers MUST handle the ``None`` return from ``get_or_load`` via the
-graceful-degrade contract — the validator emits a warning-severity
-GateIssue with ``passed=True, action=None`` so CPU-only dev boxes don't
-fail closed.
+Three downstream consumers fan out to this surface:
+
+1. :class:`lib.validators.claim_support.ClaimSupportValidator`
+   (Wave 2 W2.F primary brief — claim ↔ chunks).
+2. :class:`lib.validators.block_objective_delivery.
+   BlockObjectiveDeliveryValidator` (Wave 1.7 W1.7.C — block ↔
+   objective; statement-entailment axis only).
+3. ``ObjectiveClaimSupportValidator`` (post-Wave-1.6 sibling —
+   objective ↔ chunks; deferred to a Wave 4 follow-up because the
+   structural seam is sufficient day-1).
+
+The pinned HuggingFace revision is imported from
+:data:`lib.classifiers.bloom_bert_ensemble._DEFAULT_ENSEMBLE_MEMBERS`
+(the third entry, the same DeBERTa-v3-mnli-fever-anli model used as
+the BERT ensemble's zero-shot member) so the NLI loader and the BERT
+ensemble can never drift apart on the underlying model commit SHA.
+
+Graceful degrade is the default behavior: missing extras OR a load
+failure of any kind returns ``None`` from :meth:`get_or_load`. There
+is no strict-mode flag at the loader layer — strict mode lives at the
+validator layer (``TRAINFORGE_REQUIRE_EMBEDDINGS``) so a CPU-only dev
+box stays usable for everything except the strict-mode validator
+runs.
+
+Performance notes:
+
+* Singleton-load — every consumer that imports this module shares the
+  same in-memory model. The ~750 MB DeBERTa-v3-base load happens once
+  per process; subsequent ``get_or_load()`` calls are O(1).
+* Batched scoring — :meth:`score_batch` runs a single forward pass
+  for up to :data:`_DEFAULT_BATCH_SIZE` (8) pairs at a time. Block ×
+  objective and per-claim × per-chunk fan-outs emit dozens of pairs
+  per ``validate()`` call, so the batch path keeps wall-time bounded.
+* Inference uses ``torch.no_grad()`` context — no gradients are
+  accumulated since this is pure inference.
 """
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
+import logging
+import threading
+from typing import Any, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
+
+
+#: Default batch size for :meth:`NliClassifier.score_batch`. Sized to
+#: keep memory bounded on CPU-only inference; consumers that need
+#: bigger batches can override via the ``batch_size`` kwarg.
+_DEFAULT_BATCH_SIZE: int = 8
+
+#: Maximum tokenized sequence length. DeBERTa-v3-base is trained on
+#: 512-token sequences; longer (premise, hypothesis) pairs get
+#: truncated.
+_MAX_SEQUENCE_LENGTH: int = 512
 
 
 class NliScore:
-    """Three-way NLI score.
+    """Three-way NLI score (post-softmax probabilities).
 
-    The MNLI / FEVER / ANLI heads emit logits over the
-    ``(entailment, neutral, contradiction)`` triple; this dataclass-like
-    container exposes the post-softmax probabilities so the
-    Wave-1.7 validator can apply per-axis thresholds without coupling
-    to the underlying transformer's logits API.
+    The DeBERTa-v3-mnli-fever-anli head emits logits over the
+    ``(entailment, neutral, contradiction)`` triple; this container
+    exposes the post-softmax probabilities so consumers can apply
+    per-axis thresholds without coupling to the underlying transformer's
+    logits API.
+
+    Wave 2 W2.F validators threshold at:
+
+    * ``entailment >= 0.7`` — claim is "entailed" by the cited chunks.
+    * ``contradiction >= 0.5`` — claim is "contradicted" by the cited
+      chunks (a stronger signal than mere "unsupported").
+
+    The Wave 1.7 W1.7.C consumer (BlockObjectiveDeliveryValidator)
+    thresholds entailment at a per-block-type table (default 0.40);
+    same NliScore shape, different consumer-side thresholds.
     """
 
     def __init__(
@@ -46,32 +107,197 @@ class NliScore:
         neutral: float,
         contradiction: float,
     ) -> None:
-        self.entailment = entailment
-        self.neutral = neutral
-        self.contradiction = contradiction
+        self.entailment = float(entailment)
+        self.neutral = float(neutral)
+        self.contradiction = float(contradiction)
+
+    def __repr__(self) -> str:
+        return (
+            f"NliScore(entailment={self.entailment:.4f}, "
+            f"neutral={self.neutral:.4f}, "
+            f"contradiction={self.contradiction:.4f})"
+        )
 
 
 class NliClassifier:
     """Process-singleton NLI classifier.
 
-    Wave 1.7 ships this STUB; Wave 2 W2.F wires the real loader against
-    ``MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli`` (the same model
-    used as the third member of the BERT ensemble in
-    :mod:`lib.classifiers.bloom_bert_ensemble`).
+    Wraps ``MoritzLaurer/DeBERTa-v3-base-mnli-fever-anli`` (the same
+    DeBERTa-v3-base-mnli-fever-anli model used as the third member of
+    the BERT ensemble in :mod:`lib.classifiers.bloom_bert_ensemble`).
+
+    Singleton-load via :meth:`get_or_load`; the in-memory model is
+    shared across every validator that calls into this surface so the
+    ~750 MB load cost is paid once per process.
     """
+
+    # Module-level singleton state. The ``_INSTANCE`` field caches the
+    # loaded classifier; ``_LOAD_FAILED`` caches the negative result so
+    # subsequent ``get_or_load()`` calls don't re-attempt the (slow)
+    # import probe on a CPU-only dev box. The lock prevents two threads
+    # from racing the model load.
+    _INSTANCE: Optional["NliClassifier"] = None
+    _LOAD_FAILED: bool = False
+    _LOAD_LOCK: threading.Lock = threading.Lock()
+
+    def __init__(
+        self,
+        *,
+        model: Any,
+        tokenizer: Any,
+        torch_module: Any,
+        revision: str,
+        id2label: dict,
+    ) -> None:
+        """Direct constructor — prefer :meth:`get_or_load` from consumer code."""
+        self._model = model
+        self._tokenizer = tokenizer
+        self._torch = torch_module
+        self._revision = revision
+        # Build a label -> index map so we can read the three scores
+        # back from the model output regardless of the canonical
+        # (entailment / neutral / contradiction) ordering. The
+        # MoritzLaurer DeBERTa-v3-mnli-fever-anli model card documents
+        # ``{0: "entailment", 1: "neutral", 2: "contradiction"}`` but
+        # we resolve it from the model's own id2label config to defend
+        # against silent revision-change drift.
+        normalized = {str(v).strip().lower(): int(k) for k, v in id2label.items()}
+        self._idx_entailment = normalized.get("entailment")
+        self._idx_neutral = normalized.get("neutral")
+        self._idx_contradiction = normalized.get("contradiction")
+        if (
+            self._idx_entailment is None
+            or self._idx_neutral is None
+            or self._idx_contradiction is None
+        ):
+            raise RuntimeError(
+                f"NliClassifier could not resolve (entailment, neutral, "
+                f"contradiction) from id2label={id2label!r}; "
+                f"normalized={normalized!r}. The pinned revision "
+                f"{revision!r} may have shifted its label set."
+            )
 
     @classmethod
     def get_or_load(cls) -> Optional["NliClassifier"]:
-        """Return the process-singleton instance.
+        """Return the process-singleton instance; lazy-load on first call.
 
-        STUB: returns ``None`` until W2.F lands the real loader.
+        Returns ``None`` permanently if either:
 
-        Callers MUST handle the ``None`` return via the graceful-degrade
-        contract: emit a warning-severity GateIssue with ``passed=True,
-        action=None``. Strict-mode opt-in (``TRAINFORGE_REQUIRE_NLI=true``)
-        is the W2.F follow-up — Wave 1.7 always graceful-degrades.
+        * ``transformers`` / ``torch`` extras are not installed, or
+        * the model load fails for any reason (network error, missing
+          revision, deleted repo, OOM, ...).
+
+        The negative result is cached so subsequent calls are O(1) and
+        don't re-attempt the (slow) import probe. Callers MUST handle
+        the ``None`` return via the graceful-degrade contract: emit a
+        warning-severity GateIssue with ``passed=True, action=None``.
+
+        Mirrors :meth:`lib.classifiers.bloom_bert_ensemble.
+        BloomBertEnsemble._load_members`'s probe-then-load contract,
+        with the difference that NLI is a single model (not three) so
+        the loader returns the classifier instance directly rather than
+        a list of members.
         """
-        return None
+        if cls._INSTANCE is not None:
+            return cls._INSTANCE
+        if cls._LOAD_FAILED:
+            return None
+
+        with cls._LOAD_LOCK:
+            # Re-check inside the lock — another thread may have
+            # finished the load while we were waiting.
+            if cls._INSTANCE is not None:
+                return cls._INSTANCE
+            if cls._LOAD_FAILED:
+                return None
+
+            # Pull the pinned revision SHA from the BERT ensemble's
+            # registry so the NLI loader and the BERT ensemble can
+            # never drift apart on the underlying model commit SHA.
+            try:
+                from lib.classifiers.bloom_bert_ensemble import (
+                    _DEFAULT_ENSEMBLE_MEMBERS,
+                )
+                deberta_entry = _DEFAULT_ENSEMBLE_MEMBERS[2]
+                model_name = deberta_entry["name"]
+                revision = deberta_entry.get("revision", "main")
+            except Exception as exc:  # noqa: BLE001 — best-effort
+                logger.warning(
+                    "NliClassifier could not import the pinned revision "
+                    "from bloom_bert_ensemble: %s; aborting load.",
+                    exc,
+                )
+                cls._LOAD_FAILED = True
+                return None
+
+            # Probe-import the heavy ML stack. Either missing extras
+            # is a graceful-degrade path; both are caught the same way.
+            try:
+                import torch  # type: ignore
+                from transformers import (  # type: ignore
+                    AutoModelForSequenceClassification,
+                    AutoTokenizer,
+                )
+            except ImportError as exc:
+                logger.debug(
+                    "NliClassifier deps missing (%s); get_or_load returning None",
+                    exc,
+                )
+                cls._LOAD_FAILED = True
+                return None
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "NliClassifier import raised unexpected error: %s; "
+                    "get_or_load returning None.",
+                    exc,
+                )
+                cls._LOAD_FAILED = True
+                return None
+
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    model_name,
+                    revision=revision,
+                )
+                model = AutoModelForSequenceClassification.from_pretrained(
+                    model_name,
+                    revision=revision,
+                )
+                model.eval()
+                # Resolve label ordering from the model's own config so
+                # a silent revision shift in id2label is caught at
+                # construction time (raises RuntimeError) instead of
+                # silently emitting wrong-axis scores.
+                id2label = getattr(model.config, "id2label", None) or {}
+                instance = cls(
+                    model=model,
+                    tokenizer=tokenizer,
+                    torch_module=torch,
+                    revision=revision,
+                    id2label=id2label,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "NliClassifier model load failed for %s@%s: %s; "
+                    "get_or_load returning None.",
+                    model_name, revision, exc,
+                )
+                cls._LOAD_FAILED = True
+                return None
+
+            cls._INSTANCE = instance
+            return instance
+
+    @classmethod
+    def _reset_for_tests(cls) -> None:
+        """Test-only seam: clear the singleton state so a test can
+        re-exercise the load path with a different mock.
+
+        Production code MUST NOT call this; the singleton is
+        process-stable by design.
+        """
+        cls._INSTANCE = None
+        cls._LOAD_FAILED = False
 
     def score_pair(
         self,
@@ -79,20 +305,76 @@ class NliClassifier:
         premise: str,
         hypothesis: str,
     ) -> NliScore:
-        raise NotImplementedError(
-            "W2.F lands the real implementation; the W1.7 stub returns "
-            "None from get_or_load() so callers never reach this path."
-        )
+        """Score a single ``(premise, hypothesis)`` pair.
+
+        Premise = the source / chunk / block-text we ground against.
+        Hypothesis = the candidate claim / objective / statement under
+        test. The Wave 2 W2.F primary use is
+        ``score_pair(premise=chunk_text, hypothesis=claim_text)``;
+        Wave 1.7 W1.7.C uses
+        ``score_pair(premise=block_text, hypothesis=objective_statement)``.
+        """
+        scores = self.score_batch(pairs=[(premise, hypothesis)])
+        return scores[0]
 
     def score_batch(
         self,
         *,
         pairs: List[Tuple[str, str]],
+        batch_size: Optional[int] = None,
     ) -> List[NliScore]:
-        raise NotImplementedError(
-            "W2.F lands the real implementation; the W1.7 stub returns "
-            "None from get_or_load() so callers never reach this path."
-        )
+        """Batched ``(premise, hypothesis)`` scoring.
+
+        Splits ``pairs`` into chunks of ``batch_size`` (default
+        :data:`_DEFAULT_BATCH_SIZE`), runs one forward pass per
+        chunk, and softmaxes the per-pair logits into the
+        ``(entailment, neutral, contradiction)`` triple.
+
+        Returns a list of :class:`NliScore` of the same length as
+        ``pairs``. Empty input is a no-op pass that returns an empty
+        list.
+        """
+        if not pairs:
+            return []
+
+        size = int(batch_size) if batch_size and batch_size > 0 else _DEFAULT_BATCH_SIZE
+        results: List[NliScore] = []
+        torch = self._torch
+
+        with torch.no_grad():
+            for batch_start in range(0, len(pairs), size):
+                batch = pairs[batch_start : batch_start + size]
+                premises = [str(p) for p, _ in batch]
+                hypotheses = [str(h) for _, h in batch]
+                # ``return_tensors="pt"`` returns torch tensors; the
+                # tokenizer handles padding + truncation automatically.
+                encoded = self._tokenizer(
+                    premises,
+                    hypotheses,
+                    padding=True,
+                    truncation=True,
+                    max_length=_MAX_SEQUENCE_LENGTH,
+                    return_tensors="pt",
+                )
+                outputs = self._model(**encoded)
+                logits = outputs.logits  # shape: (batch, 3)
+                # Softmax along the label axis -> per-class probabilities.
+                probs = torch.softmax(logits, dim=-1)
+                # ``probs`` shape: (batch, 3); each row is one pair.
+                for i in range(probs.shape[0]):
+                    row = probs[i]
+                    ent = float(row[self._idx_entailment].item())
+                    neu = float(row[self._idx_neutral].item())
+                    con = float(row[self._idx_contradiction].item())
+                    results.append(
+                        NliScore(
+                            entailment=ent,
+                            neutral=neu,
+                            contradiction=con,
+                        )
+                    )
+
+        return results
 
 
 __all__ = ["NliClassifier", "NliScore"]
