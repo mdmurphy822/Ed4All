@@ -1,0 +1,20 @@
+{
+  "run_id": "WF-20260506-wave1test",
+  "phase_name": "content_generation_outline",
+  "outputs": {"blocks_emitted": 12},
+  "artifacts": ["/tmp/run_id/01_outline/page_001.json"],
+  "gate_results": {
+    "content_structure": {
+      "gate_id": "content_structure",
+      "severity": "critical",
+      "passed": true,
+      "issues": [],
+      "details": {}
+    }
+  },
+  "decision_captures_path": "/tmp/run_id/captures/decisions.jsonl",
+  "status": "ok",
+  "promotion_decision": "pass",
+  "error": null,
+  "metrics": {"duration_seconds": 12.4, "blocks_validated": 12}
+}
