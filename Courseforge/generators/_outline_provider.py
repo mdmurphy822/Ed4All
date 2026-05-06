@@ -390,11 +390,43 @@ def _build_block_outline_schema(
             "type": "array",
             "items": {"type": "string", "pattern": _CURIE_PATTERN},
         },
+        # Wave 1.5 W1.5.A: back-compat oneOf admitting both shapes.
+        # - legacy: List[str] (every existing fixture + every existing
+        #   corpus emit; preserved so the schema bump is non-breaking).
+        # - structured: List[{claim, source_chunk_ids[]}] (new authoring;
+        #   per-claim attribution drives Wave 2 W2.F NLI scoring).
+        # Mixed-shape arrays (one string + one object) are rejected by
+        # ``oneOf`` semantics — the desired contract per plan §6.1.
+        # Each arm preserves the per-block-type ``minItems`` /
+        # ``maxItems`` bounds resolved above so the bound enforcement
+        # is shape-symmetric.
         "key_claims": {
-            "type": "array",
-            "items": {"type": "string", "minLength": 1},
-            "minItems": key_claim_min,
-            "maxItems": key_claim_max,
+            "oneOf": [
+                {
+                    "type": "array",
+                    "items": {"type": "string", "minLength": 1},
+                    "minItems": key_claim_min,
+                    "maxItems": key_claim_max,
+                },
+                {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "claim": {"type": "string", "minLength": 1},
+                            "source_chunk_ids": {
+                                "type": "array",
+                                "items": {"type": "string", "minLength": 1},
+                                "minItems": 1,
+                            },
+                        },
+                        "required": ["claim", "source_chunk_ids"],
+                        "additionalProperties": False,
+                    },
+                    "minItems": key_claim_min,
+                    "maxItems": key_claim_max,
+                },
+            ],
         },
         "section_skeleton": {
             "type": "array",

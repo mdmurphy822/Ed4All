@@ -71,11 +71,14 @@ def _outline_block(
     *,
     block_id: str,
     curies: Tuple[str, ...] = ("ed4all:Foo",),
-    key_claims: Optional[List[str]] = None,
+    key_claims: Optional[List[Any]] = None,
     content_type: str = "definition",
     objective_ids: Tuple[str, ...] = ("TO-01",),
     source_ids: Tuple[str, ...] = (),
 ) -> Block:
+    """Wave 1.5 W1.5.A: ``key_claims`` accepts either the legacy
+    ``List[str]`` shape (default) OR the structured
+    ``List[{claim, source_chunk_ids[]}]`` shape."""
     return Block(
         block_id=block_id,
         block_type="concept",

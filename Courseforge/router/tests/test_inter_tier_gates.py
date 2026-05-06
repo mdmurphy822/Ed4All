@@ -49,7 +49,7 @@ def _outline_block(
     page_id: str = "page_01",
     sequence: int = 0,
     curies: Tuple[str, ...] = ("ed4all:Foo",),
-    key_claims: Optional[List[str]] = None,
+    key_claims: Optional[List[Any]] = None,
     content_type: str = "definition",
     objective_ids: Tuple[str, ...] = ("TO-01",),
     source_references: Tuple[Dict[str, Any], ...] = (),
@@ -61,6 +61,13 @@ def _outline_block(
     key_claims + content_type. Phase-3 inter-tier adapters audit this
     shape only; rewrite-tier (HTML string) blocks are silently
     skipped per Phase 3.5 scope split.
+
+    Wave 1.5 W1.5.A: ``key_claims`` accepts either the legacy
+    ``List[str]`` shape (default — preserves every existing call-site)
+    OR the structured ``List[{claim, source_chunk_ids[]}]`` shape
+    (new authoring under the Wave 1.5 schema bump). The helper does
+    NOT enforce shape — callers pass whichever shape the test
+    fixture needs.
     """
     return Block(
         block_id=block_id,
