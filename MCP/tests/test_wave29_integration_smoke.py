@@ -133,6 +133,132 @@ def test_smoke_all_defect2_gates_resolve(tmp_path: Path):
 
 
 # --------------------------------------------------------------------- #
+# (2b) Wave 6 W6.C — assessment_quality gate sites carry per-type config
+# --------------------------------------------------------------------- #
+
+
+def test_assessment_quality_gate_carries_per_type_config():
+    """Both ``assessment_quality`` gate sites in ``config/workflows.yaml``
+    carry a ``config.per_question_type_thresholds`` block populated with
+    the canonical 5-type table (multiple_choice / true_false /
+    short_answer / essay / fill_in_blank), each with the four-axis
+    sub-thresholds the W6.A AssessmentQualityValidator's
+    ``_resolve_per_type_thresholds`` consumes.
+
+    The Wave 78 setdefault-merge at
+    ``MCP/hardening/validation_gates.py:266-271`` flows
+    ``gate.config.per_question_type_thresholds`` into validator inputs;
+    this test pins the operator-overlay surface so a regression in the
+    YAML wiring is caught before the validator silently falls back to
+    its hardcoded defaults.
+    """
+    import yaml
+
+    repo_root = Path(__file__).resolve().parents[2]
+    workflows = yaml.safe_load((repo_root / "config" / "workflows.yaml").read_text())
+
+    expected_types = {
+        "multiple_choice",
+        "true_false",
+        "short_answer",
+        "essay",
+        "fill_in_blank",
+    }
+    expected_axes = {
+        "stem_diversity",
+        "correct_answer_diversity",
+        "distractor_template_max_ratio",
+        "min_stem_chars",
+    }
+    # Subset of the canonical W6.A table (axis values that diverge from
+    # the legacy module-level constants — pinning these guards against a
+    # silent revert to the day-0 single-table defaults).
+    expected_values = {
+        "multiple_choice": {
+            "stem_diversity": 0.75,
+            "correct_answer_diversity": 0.65,
+            "distractor_template_max_ratio": 0.25,
+            "min_stem_chars": 12,
+        },
+        "true_false": {
+            "stem_diversity": 0.50,
+            "correct_answer_diversity": 0.40,
+            "distractor_template_max_ratio": 1.0,
+            "min_stem_chars": 10,
+        },
+        "essay": {
+            "stem_diversity": 0.55,
+            "correct_answer_diversity": 0.50,
+            "distractor_template_max_ratio": 1.0,
+            "min_stem_chars": 15,
+        },
+    }
+
+    gate_sites: list[tuple[str, str, dict]] = []
+    for wf_name, wf in workflows.get("workflows", {}).items():
+        for phase in wf.get("phases", []):
+            for gate in phase.get("validation_gates", []) or []:
+                if gate.get("gate_id") == "assessment_quality":
+                    gate_sites.append((wf_name, phase.get("name", "?"), gate))
+
+    # Both known sites: rag_training::assessment_generation and
+    # textbook_to_course::trainforge_assessment.
+    assert len(gate_sites) == 2, (
+        f"Expected exactly 2 assessment_quality gate sites; got "
+        f"{[(w, p) for w, p, _ in gate_sites]}"
+    )
+
+    for wf_name, phase_name, gate in gate_sites:
+        cfg = gate.get("config")
+        assert isinstance(cfg, dict), (
+            f"{wf_name}::{phase_name}::assessment_quality missing "
+            f"config block (W6.C regression)"
+        )
+        per_type = cfg.get("per_question_type_thresholds")
+        assert isinstance(per_type, dict), (
+            f"{wf_name}::{phase_name}::assessment_quality "
+            f"config.per_question_type_thresholds must be a dict; got "
+            f"{type(per_type).__name__}"
+        )
+        # All 5 canonical types present.
+        assert set(per_type.keys()) == expected_types, (
+            f"{wf_name}::{phase_name} per_question_type_thresholds keys "
+            f"= {sorted(per_type.keys())}; expected {sorted(expected_types)}"
+        )
+        # Each type carries the full 4-axis sub-table with numeric values.
+        for qt, axes in per_type.items():
+            assert isinstance(axes, dict), (
+                f"{wf_name}::{phase_name}::{qt} sub-table must be dict"
+            )
+            assert set(axes.keys()) == expected_axes, (
+                f"{wf_name}::{phase_name}::{qt} axis keys "
+                f"= {sorted(axes.keys())}; expected {sorted(expected_axes)}"
+            )
+            for axis, value in axes.items():
+                assert isinstance(value, (int, float)), (
+                    f"{wf_name}::{phase_name}::{qt}::{axis} must be numeric; "
+                    f"got {type(value).__name__}"
+                )
+        # Pin the canonical W6.A values for the three types that diverge
+        # most sharply from the legacy single-table defaults.
+        for qt, expected_axis_map in expected_values.items():
+            for axis, expected_value in expected_axis_map.items():
+                actual = per_type[qt][axis]
+                assert actual == expected_value, (
+                    f"{wf_name}::{phase_name}::{qt}::{axis} = {actual}; "
+                    f"expected {expected_value} (W6.A canonical value)"
+                )
+
+        # Day-1 severity contract: gate stays critical; per-type
+        # warnings emit at warning severity from inside the validator.
+        assert gate.get("severity") == "critical", (
+            f"{wf_name}::{phase_name}::assessment_quality severity must "
+            f"stay 'critical' day-1 (W6.C back-compat); got "
+            f"{gate.get('severity')!r}"
+        )
+
+
+# --------------------------------------------------------------------- #
 # (3) CLI exit-code: gate failure → non-zero
 # --------------------------------------------------------------------- #
 
