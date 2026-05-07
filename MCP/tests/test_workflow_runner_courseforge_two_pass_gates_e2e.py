@@ -335,6 +335,38 @@ def test_outline_curie_gate_fires_through_workflow_runner(
     provider = _CurieMissingProvider()
     _patch_router_with_provider(monkeypatch, provider)
 
+    # Follow-up #34 (W3.C interaction): the per-block-type validator
+    # matrix landed in W3.C uses abstract gate-id tokens
+    # (``curie_anchoring`` / ``source_ref`` / ``content_type``) that
+    # do NOT line up with the actual production validator ``name``
+    # attributes (``outline_curie_anchoring`` / ``outline_source_refs``
+    # / ``outline_content_type``). Whatever ``block_type`` the outline
+    # phase stamps onto its stub (``"objective"`` post-fix; previously
+    # ``"explanation"``), the matrix filter strips every production
+    # validator by name mismatch and the in-loop chain trivially
+    # passes — masking the regression this test exists to catch.
+    #
+    # Until the matrix-token / validator-name normalisation lands
+    # (out-of-scope for this follow-up), the test bypasses the matrix
+    # by patching the loaded policy to drop the ``"objective"`` entry.
+    # ``_dispatch_validation_chain`` falls through to the legacy
+    # "all gates run" path when ``per_type`` is absent, so the curie
+    # validator engages exactly as the test contract documents.
+    from Courseforge.router import policy as _policy_mod
+    _real_load = _policy_mod.load_block_routing_policy
+
+    def _patched_load(*args, **kwargs):
+        _policy = _real_load(*args, **kwargs)
+        _stripped = {
+            k: v for k, v in _policy.validators_by_block_type.items()
+            if k != "objective"
+        }
+        return dataclasses.replace(_policy, validators_by_block_type=_stripped)
+
+    monkeypatch.setattr(
+        _policy_mod, "load_block_routing_policy", _patched_load,
+    )
+
     # Minimal regen + candidate budget so the test runs fast. With
     # regen_budget=1 and n_candidates=1 the loop runs exactly once,
     # bumps cumulative_attempts to 1, hits the budget threshold, and

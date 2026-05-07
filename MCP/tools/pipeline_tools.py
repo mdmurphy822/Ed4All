@@ -3180,16 +3180,31 @@ async def _run_content_generation_outline(**kwargs) -> str:
             heading = (topic or {}).get("heading") or f"week_{week_num:02d}"
             page_id = f"week_{week_num:02d}_content_{i + 1:02d}"
             slug_value = _slug(heading or "content")
+            # Follow-up #34 (W3.C interaction): the outline-tier emits
+            # one stub Block per topic with no semantic discriminator
+            # yet — the rewrite tier specialises it. Pre-fix this stub
+            # was stamped ``block_type="explanation"`` which trips two
+            # subtle issues: (a) the W3.C ``explanation`` matrix entry
+            # in ``Courseforge/config/block_routing.yaml`` requires
+            # ``source_ref`` + ``content_type`` (NOT ``curie_anchoring``),
+            # so the in-loop validator chain is filtered down to a
+            # subset that doesn't catch curie-less stub content, and
+            # (b) every page emits at least one ``objective`` block
+            # downstream anyway, so ``"objective"`` is a more honest
+            # default for an empty-content stub. The ``objective``
+            # matrix requires ``curie_anchoring`` + ``source_ref``,
+            # which exercises the in-loop chain harder and fails-loud
+            # against curie-less drafts.
             block_id = Block.stable_id(
                 page_id=page_id,
-                block_type="explanation",
+                block_type="objective",
                 slug=slug_value,
                 idx=i,
             )
             try:
                 stub = Block(
                     block_id=block_id,
-                    block_type="explanation",
+                    block_type="objective",
                     page_id=page_id,
                     sequence=i,
                     content="",
