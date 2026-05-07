@@ -256,6 +256,7 @@ def _build_pair(
         "kg_metadata_relation": relation,
         "kg_metadata_target": target,
         "kg_metadata_polarity": polarity,
+        "question_type": "true_false",
     }
     return pair
 

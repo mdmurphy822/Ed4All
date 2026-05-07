@@ -302,6 +302,25 @@ def test_pair_carries_abstention_marker_fields() -> None:
         assert pair["chunk_id"]
 
 
+def test_abstention_pair_carries_question_type_true_false() -> None:
+    """Wave 8 Worker B — every abstention pair stamps the canonical
+    `question_type="true_false"` so the W6.B / W7.A-C per-question-type
+    segmentation buckets the does-the-chunk-address-X yes/no probes into
+    the `true_false` bucket instead of the empty-string bucket."""
+    capture = _FakeCapture()
+    pairs, _ = generate_abstention_pairs(
+        _five_concept_graph(),
+        capture=capture,
+        max_pairs=20,
+    )
+    assert pairs, "fixture concept graph must yield at least one pair"
+    for pair in pairs:
+        assert pair["question_type"] == "true_false", (
+            f"abstention pair must stamp question_type='true_false'; got "
+            f"{pair.get('question_type')!r}"
+        )
+
+
 def test_empty_graph_emits_no_pairs() -> None:
     capture = _FakeCapture()
     pairs, stats = generate_abstention_pairs(

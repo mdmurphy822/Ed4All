@@ -1431,6 +1431,7 @@ def _build_pair(
         "shape_kind": fixture.kind,
         "shape_curie": fixture.curie,
         "expected_validity": validity,
+        "question_type": "true_false",
     }
     return pair
 

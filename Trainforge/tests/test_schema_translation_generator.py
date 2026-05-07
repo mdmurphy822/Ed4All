@@ -479,6 +479,29 @@ def test_pair_carries_marker_fields() -> None:
         assert ":" in pair["concept_tags"][0]
 
 
+def test_schema_translation_pair_carries_question_type_short_answer() -> None:
+    """Wave 8 Worker B — every schema_translation pair stamps the canonical
+    `question_type="short_answer"` so the W6.B / W7.A-C per-question-type
+    segmentation buckets the 1-3 sentence definition / usage / pitfall /
+    comparison / reasoning paragraphs into the `short_answer` bucket
+    instead of the empty-string bucket. Conservative mapping: deterministic
+    completions are NOT MCQs (no distractor list, no single_correct_marker),
+    and the schema_translation family emits paragraph-shaped completions
+    rather than binary verdicts."""
+    capture = _FakeCapture()
+    pairs, _ = generate_schema_translation_pairs(
+        _rdf_shacl_manifest(),
+        capture=capture,
+        max_pairs=10000,
+    )
+    assert pairs, "rdf-shacl catalog must yield pairs"
+    for pair in pairs:
+        assert pair["question_type"] == "short_answer", (
+            f"schema_translation pair must stamp question_type='short_answer'; "
+            f"got {pair.get('question_type')!r}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Wave 133d: loader-pattern + RDF/SHACL fallback (Plan-2 P1#7)
 # ---------------------------------------------------------------------------
