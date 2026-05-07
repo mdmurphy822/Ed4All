@@ -1981,6 +1981,25 @@ workflows:
           # Wave 24, two disjoint LO schemes coexisted; if that failure
           # mode ever resurfaces, this gate stops the pipeline before
           # 896 phantom refs land in the training corpus.
+          #
+          # Wave 5 W5.E: validator's resolution surface is now the UNION
+          # of chunks-side ``learning_outcome_refs[]`` ∪ the synthesized
+          # objectives' ``id`` set. Closes Finding F: a chunks-side
+          # empty ``learning_outcome_refs`` used to trigger phantom-ref
+          # criticality even when the assessment objective IS in the
+          # synthesized objectives. The synthesized_objectives_path
+          # input is routed via the gate input builder
+          # (``MCP/hardening/gate_input_routing.py::_build_assessment_objective_alignment``)
+          # which pulls from
+          # ``phase_outputs.course_planning.synthesized_objectives_path``
+          # via the canonical ``_resolve_objectives_path`` helper. Other
+          # workflows (``rag_training``) leave the path unset →
+          # validator falls back byte-identically to the chunks-only
+          # surface. The meta-schema does not permit a per-gate
+          # ``inputs_from`` block (see ``schemas/config/workflows_meta.schema.json``);
+          # the wiring lives in the gate input router (mirrors the
+          # ``pair_objective_delivery`` precedent at the
+          # ``training_synthesis`` phase).
           - gate_id: assessment_objective_alignment
             validator: lib.validators.assessment_objective_alignment.AssessmentObjectiveAlignmentValidator
             severity: critical
@@ -1989,7 +2008,7 @@ workflows:
             behavior:
               on_fail: block
               on_error: fail_closed
-            description: Every assessment question's objective_id must appear in at least one chunk's learning_outcome_refs (Wave 24)
+            description: Every assessment question's objective_id must appear in at least one chunk's learning_outcome_refs OR the synthesized objectives' id set (Wave 24 + Wave 5 W5.E union surface)
 
           - gate_id: trainforge_padded_distractor
             validator: lib.validators.padded_distractor.PaddedDistractorValidator

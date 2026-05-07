@@ -1109,6 +1109,24 @@ def _build_assessment_objective_alignment(
     and produces ``chunks.jsonl`` under ``{trainforge_dir}/corpus/``.
     The trainforge_dir is the parent of the IMSCC's project dir —
     derive it conservatively from the assessments output path.
+
+    **Wave 5 W5.E**: also surface
+    ``phase_outputs.course_planning.synthesized_objectives_path`` (or
+    any other phase that emits the canonical synthesized objectives) so
+    the validator can union the synthesized objectives' ``id`` set into
+    the chunks-side ``learning_outcome_refs`` resolution surface.
+    Closes Finding F: a chunks-side empty ``learning_outcome_refs``
+    used to trigger phantom-ref criticality even when the assessment
+    objective IS in the synthesized objectives. Routed via the
+    canonical ``_resolve_objectives_path`` helper so the resolution
+    chain matches the rest of the synthesized-objectives consumers
+    (course_planning emit > workflow_params override > derived from
+    objective_extraction.project_path).
+
+    The path is surfaced as ``inputs["synthesized_objectives_path"]``
+    when resolvable; absent when the workflow doesn't emit it
+    (``rag_training`` legacy workflow), preserving byte-identical
+    pre-W5.E behaviour.
     """
     assessments = _locate(
         phase_outputs, "assessments_path", "assessment_path", "output_path",
@@ -1117,6 +1135,14 @@ def _build_assessment_objective_alignment(
         return {}, ["assessments_path"]
 
     inputs: Dict[str, Any] = {"assessments_path": assessments}
+
+    # Wave 5 W5.E: surface synthesized_objectives_path when available.
+    # Optional input — missing is fine; the validator falls back to the
+    # chunks-only resolution surface byte-identically with the pre-W5.E
+    # behaviour.
+    synthesized = _resolve_objectives_path(phase_outputs, workflow_params)
+    if synthesized:
+        inputs["synthesized_objectives_path"] = synthesized
 
     # Chunks live at ``{trainforge_dir}/imscc_chunks/chunks.jsonl``
     # (Phase 7c rename of the legacy ``corpus/`` directory). If the

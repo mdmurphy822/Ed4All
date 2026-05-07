@@ -44,12 +44,21 @@ def _emit_alignment_decision(
     n_chunks_searched: int,
     passed: bool,
     code: Optional[str],
+    resolved_via_synthesized_objectives: bool = False,
 ) -> None:
     """Emit one ``assessment_objective_alignment_check`` decision per question.
 
     Per H3 W5 contract: per-question cardinality. Dynamic signals:
     question_id, declared_objective_id(s), resolved_in_chunk,
     n_chunks_searched.
+
+    Wave 5 W5.E extension: ``resolved_via_synthesized_objectives``
+    surfaces whether the union resolution surface was active for this
+    audit (i.e. ``synthesized_objectives_path`` was provided + extant
+    and contributed objective ids to the resolution set). Per-question
+    rationale + metrics carry the flag so post-hoc replay can attribute
+    a passing question to the chunks-side refs OR to the synthesized
+    objectives' ``id`` set.
     """
     if capture is None:
         return
@@ -59,6 +68,7 @@ def _emit_alignment_decision(
         f"{question_id!r}: declared_objective_ids={declared_objective_ids!r}, "
         f"resolved_in_chunk={resolved_in_chunk}, "
         f"n_chunks_searched={n_chunks_searched}, "
+        f"resolved_via_synthesized_objectives={resolved_via_synthesized_objectives}, "
         f"failure_code={code or 'none'}."
     )
     metrics: Dict[str, Any] = {
@@ -66,6 +76,9 @@ def _emit_alignment_decision(
         "declared_objective_ids": list(declared_objective_ids),
         "resolved_in_chunk": bool(resolved_in_chunk),
         "n_chunks_searched": int(n_chunks_searched),
+        "resolved_via_synthesized_objectives": bool(
+            resolved_via_synthesized_objectives
+        ),
         "passed": bool(passed),
         "failure_code": code,
     }
@@ -100,6 +113,27 @@ class AssessmentObjectiveAlignmentValidator:
                               Required.
             chunks_path: Path to chunks.jsonl (Trainforge corpus output).
                          Required.
+            synthesized_objectives_path: Optional path to the
+                ``synthesized_objectives.json`` emitted by the
+                Wave 1.6 / Wave 24 ``course_planning`` phase.
+                **Wave 5 W5.E resolution-surface union** — when this
+                kwarg is provided AND the file exists, the resolution
+                set against which ``question.objective_id`` is matched
+                becomes ``chunk.learning_outcome_refs[]`` ∪ ``{lo["id"]
+                for lo in flatten(synthesized_objectives)}``. This
+                closes Finding F: a chunks-side empty
+                ``learning_outcome_refs`` triggers phantom-ref
+                criticality even when the assessment objective IS in
+                the synthesized objectives. Loaded via
+                :func:`lib.validators.abcd_objective._flatten_objectives`,
+                which is the canonical loader handling both the
+                Courseforge synthesized form
+                (``terminal_objectives`` / ``chapter_objectives``) and
+                the LibV2 archive form (``terminal_outcomes`` /
+                ``component_objectives``). Back-compat: when unset OR
+                the file does not exist (legacy corpora /
+                ``rag_training`` workflow), behaviour is byte-identical
+                to the pre-W5.E chunks-only resolution surface.
         """
         gate_id = inputs.get("gate_id", "assessment_objective_alignment")
         issues: List[GateIssue] = []
@@ -107,6 +141,7 @@ class AssessmentObjectiveAlignmentValidator:
 
         assessments_raw = inputs.get("assessments_path") or inputs.get("assessment_path")
         chunks_raw = inputs.get("chunks_path")
+        synthesized_objectives_raw = inputs.get("synthesized_objectives_path")
 
         # Missing inputs → critical fail (the gate skips entirely when
         # the builder couldn't resolve them, so reaching here means the
@@ -153,7 +188,35 @@ class AssessmentObjectiveAlignmentValidator:
                 location=str(assessments_path),
             )
 
-        chunk_refs = self._collect_chunk_refs(chunks_path)
+        # Resolve the synthesized-objectives path (W5.E union arm).
+        # When provided AND the file exists, _collect_chunk_refs loads
+        # the LO ids and unions them into the resolution surface. When
+        # provided but missing, emit a warning-severity GateIssue and
+        # fall back to the chunks-only surface (graceful-degrade — the
+        # validator stays usable on legacy corpora that don't co-locate
+        # the synthesized objectives next to the chunks).
+        synthesized_path: Optional[Path] = None
+        synthesized_objectives_present = False
+        if synthesized_objectives_raw:
+            candidate = Path(synthesized_objectives_raw)
+            if candidate.exists():
+                synthesized_path = candidate
+                synthesized_objectives_present = True
+            else:
+                issues.append(GateIssue(
+                    severity="warning",
+                    code="SYNTHESIZED_OBJECTIVES_NOT_FOUND",
+                    message=(
+                        f"synthesized_objectives_path {candidate!s} does not "
+                        "exist; falling back to chunks-only resolution surface."
+                    ),
+                    location=str(candidate),
+                ))
+
+        chunk_refs = self._collect_chunk_refs(
+            chunks_path,
+            synthesized_objectives_path=synthesized_path,
+        )
         if chunk_refs is None:
             return self._fail(
                 gate_id,
@@ -172,13 +235,21 @@ class AssessmentObjectiveAlignmentValidator:
         # downstream as 100% phantom refs rather than as the upstream
         # chunking failure it actually is. Fail closed here with a
         # named code so operators know to inspect imscc_chunking.
+        #
+        # W5.E exception: when synthesized_objectives_path was provided
+        # AND parsed successfully AND contributed refs to the union, an
+        # empty chunks-side surface is no longer a silent-degradation
+        # signal — the synthesized objectives are the structural source
+        # of truth here. The check is whether the UNION resolution set
+        # is empty.
         if not chunk_refs:
             return self._fail(
                 gate_id,
                 "ASSESSMENT_ALIGNMENT_NO_CHUNKS",
                 (
                     f"Chunks file at {chunks_path} contained zero "
-                    "learning_outcome_refs across all chunks. "
+                    "learning_outcome_refs across all chunks "
+                    f"(synthesized_objectives_path={synthesized_objectives_raw!r}). "
                     "Did the imscc_chunking / trainforge_assessment "
                     "phase run successfully? Without chunk refs every "
                     "assessment objective_id is vacuously phantom; "
@@ -246,6 +317,9 @@ class AssessmentObjectiveAlignmentValidator:
                     n_chunks_searched=n_chunks_searched,
                     passed=False,
                     code="QUESTION_MISSING_OBJECTIVE",
+                    resolved_via_synthesized_objectives=(
+                        synthesized_objectives_present
+                    ),
                 )
                 continue
             q_unresolved: List[str] = []
@@ -266,6 +340,9 @@ class AssessmentObjectiveAlignmentValidator:
                 n_chunks_searched=n_chunks_searched,
                 passed=q_resolved,
                 code=None if q_resolved else "PHANTOM_OBJECTIVE_REFS",
+                resolved_via_synthesized_objectives=(
+                    synthesized_objectives_present
+                ),
             )
 
         if mismatches:
@@ -339,12 +416,34 @@ class AssessmentObjectiveAlignmentValidator:
         )
 
     @staticmethod
-    def _collect_chunk_refs(chunks_path: Path) -> Optional[Set[str]]:
+    def _collect_chunk_refs(
+        chunks_path: Path,
+        *,
+        synthesized_objectives_path: Optional[Path] = None,
+    ) -> Optional[Set[str]]:
         """Collect every learning_outcome_ref across chunks.jsonl.
 
-        Returns None on parse error. Empty set means no refs — which
-        means all assessment objective_ids will be flagged as phantoms
-        (correct failure mode).
+        When ``synthesized_objectives_path`` is provided AND the file
+        exists, additionally load the canonical synthesized objectives
+        via :func:`lib.validators.abcd_objective._flatten_objectives`
+        (handles both the Courseforge synthesized form
+        ``terminal_objectives`` / ``chapter_objectives`` AND the LibV2
+        archive form ``terminal_outcomes`` / ``component_objectives``)
+        and union every ``obj["id"]`` (lower-cased) into the resolution
+        set. This is the W5.E union surface — closes Finding F where
+        an empty chunks-side ``learning_outcome_refs`` triggered
+        phantom-ref criticality even when the assessment objective IS
+        in the synthesized objectives.
+
+        When ``synthesized_objectives_path`` is unset OR the file does
+        not exist, behaviour is byte-identical to the pre-W5.E
+        chunks-only resolution surface (caller is responsible for
+        emitting the warning when the path was provided but the file
+        was missing).
+
+        Returns ``None`` on chunks-side parse error. An empty set means
+        no refs across either input — the caller's downstream check
+        treats that as silent-degradation (per ``ASSESSMENT_ALIGNMENT_NO_CHUNKS``).
         """
         refs: Set[str] = set()
         try:
@@ -366,6 +465,38 @@ class AssessmentObjectiveAlignmentValidator:
                                 refs.add(lo)
         except OSError:
             return None
+
+        # W5.E: union the synthesized objectives' id set into the
+        # resolution surface when the path is provided + extant.
+        if (
+            synthesized_objectives_path is not None
+            and synthesized_objectives_path.exists()
+        ):
+            try:
+                # Local import to avoid a hard module-load coupling
+                # between this validator and abcd_objective; the
+                # canonical loader stays in one place.
+                from lib.validators.abcd_objective import _flatten_objectives
+
+                payload = json.loads(
+                    synthesized_objectives_path.read_text(encoding="utf-8")
+                )
+            except (OSError, ValueError) as exc:
+                logger.warning(
+                    "Failed to load synthesized_objectives_path %r for "
+                    "AssessmentObjectiveAlignmentValidator W5.E union: %s",
+                    str(synthesized_objectives_path),
+                    exc,
+                )
+                return refs
+
+            for lo in _flatten_objectives(payload):
+                lo_id_raw = lo.get("id") or lo.get("objective_id")
+                if isinstance(lo_id_raw, str):
+                    lo_id = lo_id_raw.strip()
+                    if lo_id:
+                        refs.add(lo_id)
+
         return refs
 
     @staticmethod
