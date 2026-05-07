@@ -138,3 +138,200 @@ cfshapes:TypedEdgeShape
   sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#cooccurrenceWeight> ; sh:message "CW-EDGE-13: cooccurrenceWeight admitted under closed-world." ] ;
   sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#order> ; sh:message "CW-EDGE-14: order admitted under closed-world." ] ;
   sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#pattern> ; sh:message "CW-EDGE-15: pattern admitted under closed-world." ] .
+
+# ===========================================================================
+# Wave W-D8 — closure overlays for the remaining 8 base shapes
+# ===========================================================================
+# The base file (courseforge_v1.shacl.ttl) declares CourseModuleShape,
+# LearningObjectiveShape, SectionShape, TargetedConceptShape,
+# MisconceptionShape, BloomDistributionShape, BlockShape, and TouchShape
+# without sh:closed clauses. Wave W-D8 adds the closure overlay for each
+# so an unminted predicate on any of those shapes' focus nodes fires a
+# sh:ClosedConstraintComponent violation under
+# TRAINFORGE_SHACL_CLOSED_WORLD=true.
+#
+# Predicates already declared via sh:property blocks on each base shape
+# in courseforge_v1.shacl.ttl are auto-admitted under closure (pyshacl
+# walks the union of base + overlay sh:property declarations). Only
+# predicates the base shape leaves open (carried in the JSON-LD payload
+# but not constrained in the base file) need an explicit no-op admission
+# below.
+#
+# Calibration posture: closure surfaces violations only when the
+# operator opts in via TRAINFORGE_SHACL_CLOSED_WORLD=true; the default
+# off-state preserves byte-identical behavior on every existing run.
+# A follow-up wave (W-D8.1) wires courseforge_jsonld_closed_world as a
+# warning-severity validation_gates row once a real corpus rebuild
+# confirms zero violations.
+
+# ---------------------------------------------------------------------------
+# T8.1 — CourseModuleShape closure (Wave W-D8)
+# ---------------------------------------------------------------------------
+# Base predicates auto-admitted: schema:courseCode, schema:position,
+# schema:learningResourceType, schema:identifier, schema:teaches,
+# schema:hasPart, ed4all:hasMisconception, ed4all:bloomDistribution.
+# Overlay admissions: predicates carried in the JSON-LD payload but not
+# constrained in the base shape (suggestedAssessmentTypes,
+# prerequisitePages, page-level sourceReferences, blocks[], provenance,
+# contentHash).
+
+cfshapes:CourseModuleShape
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  sh:message "CW-COURSEMOD-01: Closed-world: cfshapes:CourseModuleShape declares an authoritative predicate set per courseforge_jsonld_v1.schema.json top-level. Predicates outside that set are violations — extend the @context first." ;
+
+  sh:property [ sh:path <http://schema.org/coursePrerequisites> ; sh:message "CW-COURSEMOD-02: schema:coursePrerequisites (prerequisitePages) admitted under closed-world." ] ;
+  sh:property [ sh:path <http://schema.org/isBasedOn> ; sh:message "CW-COURSEMOD-03: schema:isBasedOn (page-level sourceReferences) admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#suggestedAssessmentType> ; sh:message "CW-COURSEMOD-04: ed4all:suggestedAssessmentType admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#hasBlock> ; sh:message "CW-COURSEMOD-05: ed4all:hasBlock (blocks[]) admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#provenance> ; sh:message "CW-COURSEMOD-06: ed4all:provenance admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#contentHash> ; sh:message "CW-COURSEMOD-07: ed4all:contentHash admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#classification> ; sh:message "CW-COURSEMOD-08: ed4all:classification (course-level taxonomy block) admitted under closed-world." ] .
+
+# ---------------------------------------------------------------------------
+# T8.2 — LearningObjectiveShape closure (Wave W-D8)
+# ---------------------------------------------------------------------------
+# Base predicates auto-admitted: schema:description, ed4all:bloomLevel,
+# ed4all:cognitiveDomain, ed4all:hierarchyLevel, ed4all:parentObjective,
+# ed4all:targetsConcept. Overlay admissions per
+# $defs.LearningObjective: bloomVerb, keyConcepts (schema:keywords),
+# assessmentSuggestions (ed4all:suggestedAssessmentType),
+# prerequisiteObjectives (schema:competencyRequired). The `abcd` field
+# is intentionally NOT admitted yet — JSON-LD context aliasing for the
+# Phase 6 ABCD shape is deferred to a follow-up wave.
+
+cfshapes:LearningObjectiveShape
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  sh:message "CW-LO-01: Closed-world: cfshapes:LearningObjectiveShape declares an authoritative predicate set per courseforge_jsonld_v1.schema.json $defs.LearningObjective. Predicates outside that set are violations — extend the @context first." ;
+
+  sh:property [ sh:path <http://schema.org/keywords> ; sh:message "CW-LO-02: schema:keywords (keyConcepts) admitted under closed-world." ] ;
+  sh:property [ sh:path <http://schema.org/competencyRequired> ; sh:message "CW-LO-03: schema:competencyRequired (prerequisiteObjectives) admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#bloomVerb> ; sh:message "CW-LO-04: ed4all:bloomVerb admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#suggestedAssessmentType> ; sh:message "CW-LO-05: ed4all:suggestedAssessmentType (assessmentSuggestions) admitted under closed-world." ] .
+
+# ---------------------------------------------------------------------------
+# T8.3 — SectionShape closure (Wave W-D8)
+# ---------------------------------------------------------------------------
+# Base predicates auto-admitted: schema:name, ed4all:bloomRange.
+# Overlay admissions per $defs.Section: contentType
+# (schema:learningResourceType — same IRI as moduleType but on a
+# different focus class, intentional dual-use under per-NodeShape
+# closure semantics), keyTerms (schema:keywords), section-level
+# sourceReferences (schema:isBasedOn). teachingRole is also carried by
+# section JSON-LD via the existing alias in courseforge_v1.jsonld.
+
+cfshapes:SectionShape
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  sh:message "CW-SECTION-01: Closed-world: cfshapes:SectionShape declares an authoritative predicate set per courseforge_jsonld_v1.schema.json $defs.Section. Predicates outside that set are violations — extend the @context first." ;
+
+  sh:property [ sh:path <http://schema.org/learningResourceType> ; sh:message "CW-SECTION-02: schema:learningResourceType (contentType) admitted under closed-world." ] ;
+  sh:property [ sh:path <http://schema.org/keywords> ; sh:message "CW-SECTION-03: schema:keywords (keyTerms) admitted under closed-world." ] ;
+  sh:property [ sh:path <http://schema.org/isBasedOn> ; sh:message "CW-SECTION-04: schema:isBasedOn (section-level sourceReferences) admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#teachingRole> ; sh:message "CW-SECTION-05: ed4all:teachingRole (section-level) admitted under closed-world." ] .
+
+# ---------------------------------------------------------------------------
+# T8.4 — TargetedConceptShape closure (Wave W-D8)
+# ---------------------------------------------------------------------------
+# Base predicates auto-admitted: schema:about (concept), ed4all:bloomLevel.
+# JSON-Schema declares additionalProperties: false over {concept, bloomLevel};
+# both predicates are constrained on the base shape, so the closure clause
+# itself is sufficient — no additional sh:property admissions needed.
+
+cfshapes:TargetedConceptShape
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  sh:message "CW-TC-01: Closed-world: cfshapes:TargetedConceptShape declares an authoritative two-predicate set ({schema:about, ed4all:bloomLevel}) per courseforge_jsonld_v1.schema.json LearningObjective.targetedConcepts[].items. Predicates outside that set are violations — extend the @context first." .
+
+# ---------------------------------------------------------------------------
+# T8.5 — MisconceptionShape closure (Wave W-D8)
+# ---------------------------------------------------------------------------
+# Base predicates auto-admitted: schema:description (misconception),
+# ed4all:correction, ed4all:bloomLevel, ed4all:cognitiveDomain. JSON-Schema
+# declares additionalProperties: false over the four-key flat shape per
+# $defs.Misconception, so the closure clause is sufficient. Note: the
+# standalone Misconception entity (corpus/misconceptions.json) carries
+# additional fields (id, concept_id, lo_id) that the JSON-LD projection
+# does NOT emit — this closure scopes to the JSON-LD shape only; a
+# follow-up wave can mint cfshapes:MisconceptionEntityShape if the
+# standalone entity needs RDF closure.
+
+cfshapes:MisconceptionShape
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  sh:message "CW-MISC-01: Closed-world: cfshapes:MisconceptionShape declares an authoritative four-predicate set ({schema:description, ed4all:correction, ed4all:bloomLevel, ed4all:cognitiveDomain}) per courseforge_jsonld_v1.schema.json $defs.Misconception. Predicates outside that set are violations — extend the @context first." .
+
+# ---------------------------------------------------------------------------
+# T8.6 — BloomDistributionShape closure (Wave W-D8)
+# ---------------------------------------------------------------------------
+# Base predicates auto-admitted: ed4all:total. Overlay admissions per
+# $defs.BloomDistribution: ed4all:byLevel, ed4all:byCognitiveDomain.
+# Both inner objects (`{remember: 3, understand: 4, ...}` etc.) project
+# as opaque literal slots in pyld's RDF projection (no @container, no
+# @type in the @context); the closure validates the predicate-set, not
+# the inner-dict shape.
+
+cfshapes:BloomDistributionShape
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  sh:message "CW-BLOOMDIST-01: Closed-world: cfshapes:BloomDistributionShape declares an authoritative predicate set ({ed4all:total, ed4all:byLevel, ed4all:byCognitiveDomain}) per courseforge_jsonld_v1.schema.json $defs.BloomDistribution. Predicates outside that set are violations — extend the @context first." ;
+
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#byLevel> ; sh:message "CW-BLOOMDIST-02: ed4all:byLevel admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#byCognitiveDomain> ; sh:message "CW-BLOOMDIST-03: ed4all:byCognitiveDomain admitted under closed-world." ] .
+
+# ---------------------------------------------------------------------------
+# T8.7 — BlockShape closure with Wave 1.5+ field map (Wave W-D8)
+# ---------------------------------------------------------------------------
+# Highest-leverage closure of W-D8. The Phase 2 Block intermediate
+# carries 21 distinct JSON keys per $defs.Block; the base shape constrains
+# only 7 (blockId, blockType, sequence, contentHash, touchedBy,
+# validationAttempts, escalationMarker). The remaining 14 keys
+# project into RDF via the 12 Phase A JSON-LD aliases minted in commit fd548cd
+# plus the pre-existing aliases (bloomLevel, keyTerms via schema:keywords,
+# teachingRole, pageId via schema:identifier). The matching ed4all:
+# vocabulary stubs land in the Wave W-D8 Block / Touch predicate-stubs
+# block at the end of courseforge_v1.vocabulary.ttl so the projection
+# is non-trivial.
+
+cfshapes:BlockShape
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  sh:message "CW-BLOCK-01: Closed-world: cfshapes:BlockShape declares an authoritative predicate set per courseforge_jsonld_v1.schema.json $defs.Block. Wave 1.5+ fields (objectiveAlignment, observedBloomLevel, bloomAlignment) are explicitly admitted per commit fd548cd's Phase A @context aliases; predicates outside the set are violations — extend the @context first." ;
+
+  sh:property [ sh:path <http://schema.org/identifier> ; sh:message "CW-BLOCK-02: schema:identifier (Block.pageId — reuses CourseModule's pageId alias) admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#bloomLevel> ; sh:message "CW-BLOCK-03: ed4all:bloomLevel admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#observedBloomLevel> ; sh:message "CW-BLOCK-04: ed4all:observedBloomLevel (Wave 1.A) admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#bloomAlignment> ; sh:message "CW-BLOCK-05: ed4all:bloomAlignment (Wave 1.A) admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#contentTypeLabel> ; sh:message "CW-BLOCK-06: ed4all:contentTypeLabel admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#objectiveId> ; sh:message "CW-BLOCK-07: ed4all:objectiveId (objectiveIds[]) admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#sourceId> ; sh:message "CW-BLOCK-08: ed4all:sourceId (block-level sourceIds[]) admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#sourcePrimary> ; sh:message "CW-BLOCK-09: ed4all:sourcePrimary admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#templateType> ; sh:message "CW-BLOCK-10: ed4all:templateType admitted under closed-world." ] ;
+  sh:property [ sh:path <http://schema.org/keywords> ; sh:message "CW-BLOCK-11: schema:keywords (block-level keyTerms[]) admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#teachingRole> ; sh:message "CW-BLOCK-12: ed4all:teachingRole admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#purpose> ; sh:message "CW-BLOCK-13: ed4all:purpose admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#component> ; sh:message "CW-BLOCK-14: ed4all:component admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#objectiveAlignment> ; sh:message "CW-BLOCK-15: ed4all:objectiveAlignment (Wave 1.7.A) admitted under closed-world." ] .
+
+# ---------------------------------------------------------------------------
+# T8.8 — TouchShape closure (Wave W-D8)
+# ---------------------------------------------------------------------------
+# Base predicates auto-admitted: ed4all:tier, ed4all:provider,
+# ed4all:decisionCaptureId. Phase A landed the @context aliases for
+# Touch.model + Touch.timestamp + Touch.purpose (the 12-alias batch in
+# commit fd548cd), so the closure overlay admits all six Touch
+# predicates from day 1.
+#
+# Note: Block.purpose and Touch.purpose share the same ed4all:purpose
+# IRI; SHACL closure is per-NodeShape, not per-predicate, so dual-use
+# across two focus-node classes is intentional and correct.
+
+cfshapes:TouchShape
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  sh:message "CW-TOUCH-01: Closed-world: cfshapes:TouchShape declares an authoritative six-predicate set ({tier, provider, decisionCaptureId, model, timestamp, purpose}) per courseforge_jsonld_v1.schema.json $defs.Touch. Predicates outside that set are violations — extend the @context first." ;
+
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#model> ; sh:message "CW-TOUCH-02: ed4all:model (Touch-level) admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#timestamp> ; sh:message "CW-TOUCH-03: ed4all:timestamp (Touch-level) admitted under closed-world." ] ;
+  sh:property [ sh:path <https://ed4all.dev/ns/courseforge/v1#purpose> ; sh:message "CW-TOUCH-04: ed4all:purpose (Touch-level — shares IRI with Block.purpose by design; closure is per-NodeShape) admitted under closed-world." ] .

@@ -849,3 +849,111 @@ hierarchy:
 
 hierarchy:terminal  a skos:Concept ; skos:prefLabel "Terminal" ; skos:inScheme hierarchy: ; skos:narrower hierarchy:chapter .
 hierarchy:chapter   a skos:Concept ; skos:prefLabel "Chapter" ; skos:inScheme hierarchy: ; skos:broader hierarchy:terminal .
+
+# ---------------------------------------------------------------------------
+# Wave W-D8 — Block / Touch Wave 1.5+ predicate stubs
+# ---------------------------------------------------------------------------
+#
+# Owl property declarations paired 1:1 with the 12 Phase A JSON-LD context
+# aliases minted in `courseforge_v1.jsonld` (Block + Touch Wave 1.5+ field map).
+# Without these stubs, the Wave W-D8 closure overlay's `sh:property [ sh:path ed4all:<X> ]`
+# admissions on `cfshapes:BlockShape` / `cfshapes:TouchShape` would silently no-op
+# because pyld's RDF projection drops un-aliased JSON keys. These declarations
+# unblock closure on the 12 Wave 1.5+ predicates without imposing semantics
+# beyond rdfs:label + rdfs:comment + a basic range hint. Tighter ranges (e.g.
+# binding `objectiveAlignment` to a structured object shape) land in a later wave.
+
+ed4all:observedBloomLevel
+  a owl:ObjectProperty ;
+  rdfs:label "observed Bloom level" ;
+  rdfs:comment "Wave 1.A — Bloom level the BERT ensemble observed for a Block versus the declared bloomLevel. Range: a SKOS Concept in the bloom: scheme. Used by the Wave 1 W1.A bloom-alignment audit on rewrite-tier output." ;
+  rdfs:domain ed4all:Block ;
+  rdfs:range skos:Concept ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:bloomAlignment
+  a owl:DatatypeProperty ;
+  rdfs:label "Bloom alignment flag" ;
+  rdfs:comment "Wave 1.A — boolean flag: did the BERT ensemble's observedBloomLevel match the declared Block.bloomLevel? True when the levels agree (or are within the configured tolerance), false otherwise." ;
+  rdfs:domain ed4all:Block ;
+  rdfs:range xsd:boolean ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:objectiveAlignment
+  a owl:ObjectProperty ;
+  rdfs:label "objective alignment audit" ;
+  rdfs:comment "Wave 1.7.A — per-objective tri-axis (NLI entailment + Bloom-gap + verb cooccurrence) delivery audit attached to a Block. Each value is a structured node with objective_id + status + entailment / contradiction / bloom_gap / verb_match scores. A future wave can mint cfshapes:ObjectiveAlignmentShape to validate the inner structure; for now Block-level closure admits the predicate as opaque." ;
+  rdfs:domain ed4all:Block ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:contentTypeLabel
+  a owl:DatatypeProperty ;
+  rdfs:label "content-type label" ;
+  rdfs:comment "Phase 2 — canonical content-type label for a Block (overview / explanation / example / procedure / assessment_item / etc). Free string at the JSON-LD layer; the canonical 8-value enum is enforced by the per-corpus TRAINFORGE_ENFORCE_CONTENT_TYPE flag at the chunk surface, not at the Block surface." ;
+  rdfs:domain ed4all:Block ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:objectiveId
+  a owl:DatatypeProperty ;
+  rdfs:label "objective ID" ;
+  rdfs:comment "Phase 2 — set-valued canonical learning-objective IDs (TO-NN / CO-NN) the Block teaches or assesses. Mirrors Block.objectiveIds[] from the Phase 2 Block JSON-Schema; the @container:@set in the JSON-LD context maps each array entry to a separate triple." ;
+  rdfs:domain ed4all:Block ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:sourceId
+  a owl:DatatypeProperty ;
+  rdfs:label "source ID" ;
+  rdfs:comment "Phase 2 — set-valued DART staging-manifest source IDs the Block is grounded in. Mirrors Block.sourceIds[]; resolved against the staging manifest by the source_refs validator gate." ;
+  rdfs:domain ed4all:Block ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:sourcePrimary
+  a owl:DatatypeProperty ;
+  rdfs:label "primary source ID" ;
+  rdfs:comment "Phase 2 — single primary DART source ID a Block was authored against (the canonical attribution; `sourceIds[]` is the union including contributing / corroborating sources)." ;
+  rdfs:domain ed4all:Block ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:templateType
+  a owl:DatatypeProperty ;
+  rdfs:label "template type" ;
+  rdfs:comment "Phase 2 — Courseforge template family identifier (e.g. flip-card-grid, callout-with-figure) the Block was authored under. Used by the rewrite tier to preserve template-specific structural invariants across regeneration." ;
+  rdfs:domain ed4all:Block ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:purpose
+  a owl:DatatypeProperty ;
+  rdfs:label "purpose" ;
+  rdfs:comment "Phase 2 — pedagogical purpose annotation on a Block (e.g. introduce, formalize, practice, assess). Pairs with ed4all:component to derive the canonical teaching role per lib/ontology/teaching_roles.py. Free string today; a SKOS scheme for purposes is a future wave." ;
+  rdfs:domain ed4all:Block ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:component
+  a owl:DatatypeProperty ;
+  rdfs:label "component" ;
+  rdfs:comment "Phase 2 — UI / template component family the Block renders as (e.g. callout, table, flip-card-grid). Pairs with ed4all:purpose to derive the canonical teaching role." ;
+  rdfs:domain ed4all:Block ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:model
+  a owl:DatatypeProperty ;
+  rdfs:label "model" ;
+  rdfs:comment "Phase 2 — model identifier the LLM call site used to author a Touch (e.g. claude-sonnet-4-6, qwen2.5:14b-instruct-q4_K_M). Captured per Touch so the audit trail records which teacher produced each tier of the two-pass pipeline." ;
+  rdfs:domain ed4all:Touch ;
+  rdfs:range xsd:string ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .
+
+ed4all:timestamp
+  a owl:DatatypeProperty ;
+  rdfs:label "timestamp" ;
+  rdfs:comment "Phase 2 — ISO 8601 timestamp the Touch was emitted. Provides per-Touch wall-clock provenance distinct from the Block-level run_id / generated_at fields." ;
+  rdfs:domain ed4all:Touch ;
+  rdfs:range xsd:dateTime ;
+  rdfs:isDefinedBy <https://ed4all.dev/ns/courseforge/v1> .

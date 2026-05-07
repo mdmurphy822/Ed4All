@@ -1,0 +1,583 @@
+# Trainforge Training-Pair SHACL shapes — Wave W-D8 Part B
+#
+# Validates the Trainforge instruction + preference training-pair emit
+# (training_specs/instruction_pairs.jsonl + preference_pairs.jsonl) as
+# RDF graphs. Companion to:
+#
+#   * schemas/knowledge/instruction_pair.schema.json
+#   * schemas/knowledge/instruction_pair.strict.schema.json
+#   * schemas/knowledge/preference_pair.schema.json
+#
+# These shapes target NEW classes minted in courseforge_v1.vocabulary.ttl:
+#
+#   * ed4all:InstructionPair  — SFT instruction pair
+#   * ed4all:PreferencePair   — DPO preference pair
+#   * ed4all:TrainingPair     — abstract umbrella class (T8.12, optional)
+#
+# Architectural choice (per W-D8 plan §3.1): keep the training-pair
+# shapes namespace-separate from the courseforge-emit shapes. The two
+# graphs target different RDF classes and are loaded by different
+# consumers; mixing them in courseforge_v1.shacl.ttl conflates emit
+# surfaces. The Phase 7 governance test
+# (schemas/tests/test_shacl_governance.py) auto-discovers this file via
+# the `schemas/context/*.shacl*.ttl` glob; every shape below carries
+# `sh:message` (shape-level OR per-property) so the test stays green.
+#
+# Loader: lib/validators/shacl_runner.py::run_shacl already accepts a
+# `shapes_path` argument — a future PairShaclValidator points at this
+# file directly without merging with courseforge_v1.shacl.ttl. W-D8
+# does NOT wire the validator gate; this file is shape-scaffolding only.
+#
+# Code prefix conventions (per W-D8 plan §3 / §3.4 / §3.6 / §3.8):
+#   TP-IP-NN   InstructionPairShape
+#   TP-IPS-NN  InstructionPairStrictShape
+#   TP-PP-NN   PreferencePairShape
+#   TP-TP-NN   TrainingPairShape (umbrella, optional)
+#   TP-SUB-NN  Sub-shapes (PerClaimSupport, DartSourceCheck,
+#              PairLoResolution, PairObjectiveAlignment,
+#              PairDistractorQuality)
+
+@prefix sh:       <http://www.w3.org/ns/shacl#> .
+@prefix rdf:      <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs:     <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:      <http://www.w3.org/2001/XMLSchema#> .
+@prefix ed4all:   <https://ed4all.dev/ns/courseforge/v1#> .
+@prefix bloom:    <https://ed4all.dev/vocab/bloom#> .
+@prefix cfshapes: <https://ed4all.dev/ns/courseforge/v1/shapes#> .
+
+# ---------------------------------------------------------------------------
+# T8.9 — InstructionPairShape (SFT instruction pair)
+# ---------------------------------------------------------------------------
+# Validates the canonical instruction-pair shape per
+# schemas/knowledge/instruction_pair.schema.json.
+#
+# Required fields (per JSON-Schema): prompt, completion, chunk_id,
+# lo_refs, bloom_level, content_type, seed, decision_capture_id.
+# Optional fields cover the Wave 4 / Wave 5 audit-trail surface.
+#
+# Closed-world by construction — JSON-Schema is `additionalProperties:
+# true` for forward-compat, so SHACL is the structurally-discriminating
+# second surface. New JSON keys land via a deliberate shape extension,
+# not silent admission.
+
+cfshapes:InstructionPairShape
+  a sh:NodeShape ;
+  sh:targetClass ed4all:InstructionPair ;
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  rdfs:label "Instruction Pair Shape (SFT)" ;
+  rdfs:comment "Wave W-D8 T8.9: validates Trainforge SFT instruction pairs (training_specs/instruction_pairs.jsonl). Companion to schemas/knowledge/instruction_pair.schema.json. Closed-world by construction — JSON-Schema's additionalProperties:true permits forward-compat, so SHACL is the structurally-discriminating second surface." ;
+  sh:message "TP-IP-01: Closed-world: cfshapes:InstructionPairShape declares an authoritative predicate set per instruction_pair.schema.json. Predicates outside that set are violations — extend the @context first." ;
+
+  # Required fields ---------------------------------------------------------
+  sh:property [
+    sh:path ed4all:pairPrompt ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+    sh:datatype xsd:string ;
+    sh:minLength 40 ; sh:maxLength 400 ;
+    sh:message "TP-IP-02: pair.prompt is required, single, 40 <= len <= 400." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairCompletion ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+    sh:datatype xsd:string ;
+    sh:minLength 50 ; sh:maxLength 600 ;
+    sh:message "TP-IP-03: pair.completion is required, single, 50 <= len <= 600." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairChunkId ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+    sh:datatype xsd:string ;
+    sh:minLength 1 ;
+    sh:message "TP-IP-04: pair.chunk_id is required, single, non-empty." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairLoRef ;
+    sh:minCount 1 ;
+    sh:datatype xsd:string ;
+    sh:minLength 1 ;
+    sh:message "TP-IP-05: pair.lo_refs[] is required, >= 1 entry, each non-empty (set-valued in RDF)." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairBloomLevel ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+    sh:datatype xsd:string ;
+    sh:in ( "remember" "understand" "apply" "analyze" "evaluate" "create" ) ;
+    sh:message "TP-IP-06: pair.bloom_level is required, single, member of canonical 6-value Bloom enum." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairContentType ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+    sh:datatype xsd:string ;
+    sh:minLength 1 ;
+    sh:message "TP-IP-07: pair.content_type is required, single, non-empty (lenient; strict variant constrains to 10-value enum — see cfshapes:InstructionPairStrictShape)." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairSeed ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+    sh:datatype xsd:integer ;
+    sh:message "TP-IP-08: pair.seed is required, single, integer." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairDecisionCaptureId ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+    sh:datatype xsd:string ;
+    sh:minLength 1 ;
+    sh:message "TP-IP-09: pair.decision_capture_id is required, single, non-empty." ;
+  ] ;
+
+  # Optional fields ---------------------------------------------------------
+  sh:property [
+    sh:path ed4all:pairTemplateId ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:string ;
+    sh:message "TP-IP-10: pair.template_id when present must be single, string." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairProvider ;
+    sh:maxCount 1 ;
+    sh:in ( "mock" "anthropic" "claude_session" "together" "local" ) ;
+    sh:message "TP-IP-11: pair.provider when present must be one of the 5 canonical providers." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairQuestionType ;
+    sh:maxCount 1 ;
+    sh:in ( "multiple_choice" "true_false" "short_answer" "essay" "fill_in_blank" ) ;
+    sh:message "TP-IP-12: pair.question_type when present must be one of the 5 canonical question types." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairSchemaVersion ;
+    sh:maxCount 1 ;
+    sh:in ( "v1" ) ;
+    sh:message "TP-IP-13: pair.schema_version must be the constant 'v1'." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairPromotionStatus ;
+    sh:maxCount 1 ;
+    sh:in ( "pending" "candidate" "validated" "trainable" "rejected" ) ;
+    sh:message "TP-IP-14: pair.promotion_status when present must be one of the 5 ladder values." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairRejectionReason ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:string ;
+    sh:message "TP-IP-15: pair.rejection_reason when present must be single, string (or absent for null)." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairObservedBloom ;
+    sh:maxCount 1 ;
+    sh:in ( "remember" "understand" "apply" "analyze" "evaluate" "create" ) ;
+    sh:message "TP-IP-16: pair.observed_bloom when present must be a canonical Bloom enum member (or absent for null)." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairBloomAlignment ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:boolean ;
+    sh:message "TP-IP-17: pair.bloom_alignment when present must be a single boolean (or absent for null)." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairAnswerSupportScore ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:decimal ;
+    sh:minInclusive 0.0 ; sh:maxInclusive 1.0 ;
+    sh:message "TP-IP-18: pair.answer_support_score when present must be in [0, 1]." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairRationaleRichness ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:decimal ;
+    sh:minInclusive 0.0 ; sh:maxInclusive 1.0 ;
+    sh:message "TP-IP-19: pair.rationale_richness_score when present must be in [0, 1]." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairSourceChunkId ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:string ;
+    sh:minLength 1 ;
+    sh:message "TP-IP-20: pair.source_chunk_id when present must be single, non-empty (required when promotion_status='trainable' — JSON-Schema if/then; SHACL conditional is a follow-up shape)." ;
+  ] ;
+
+  # Wave 4 audit-trail fields ----------------------------------------------
+  sh:property [
+    sh:path ed4all:pairPerClaimSupport ;
+    sh:nodeKind sh:BlankNodeOrIRI ;
+    sh:node cfshapes:PerClaimSupportShape ;
+    sh:message "TP-IP-21: pair.per_claim_support[] when present, each item must conform to cfshapes:PerClaimSupportShape (W4.A)." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairClaimSupportRate ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:decimal ;
+    sh:minInclusive 0.0 ; sh:maxInclusive 1.0 ;
+    sh:message "TP-IP-22: pair.claim_support_rate when present must be in [0, 1] (W4.A)." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairClaimContradictedRate ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:decimal ;
+    sh:minInclusive 0.0 ; sh:maxInclusive 1.0 ;
+    sh:message "TP-IP-23: pair.claim_contradicted_rate when present must be in [0, 1] (W4.A)." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairLoResolution ;
+    sh:maxCount 1 ;
+    sh:nodeKind sh:BlankNodeOrIRI ;
+    sh:node cfshapes:PairLoResolutionShape ;
+    sh:message "TP-IP-24: pair.pair_lo_resolution when present must be single, conforming to cfshapes:PairLoResolutionShape (W4.B)." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairObjectiveAlignment ;
+    sh:nodeKind sh:BlankNodeOrIRI ;
+    sh:node cfshapes:PairObjectiveAlignmentShape ;
+    sh:message "TP-IP-25: pair.pair_objective_alignment[] each item must conform to cfshapes:PairObjectiveAlignmentShape (W4.C)." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairObjectiveAlignmentPassRate ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:decimal ;
+    sh:minInclusive 0.0 ; sh:maxInclusive 1.0 ;
+    sh:message "TP-IP-26: pair.pair_objective_alignment_pass_rate when present must be in [0, 1] (W4.C)." ;
+  ] .
+
+# ---------------------------------------------------------------------------
+# T8.10 — InstructionPairStrictShape (content-type strict variant)
+# ---------------------------------------------------------------------------
+# Tightens cfshapes:InstructionPairShape's content_type predicate to the
+# canonical 10-value ChunkType enum. Targets the same RDF class as the
+# base shape (both fire on every InstructionPair); the consumer-side
+# loader gates activation behind TRAINFORGE_ENFORCE_CONTENT_TYPE=true,
+# so operators not running strict mode don't see false positives.
+#
+# Note (per W-D8 plan §3.5): the legacy 2-value provider enum drift in
+# instruction_pair.strict.schema.json is intentionally NOT mirrored here.
+# Strict variant carries the same 5-value provider enum as the base shape.
+
+cfshapes:InstructionPairStrictShape
+  a sh:NodeShape ;
+  sh:targetClass ed4all:InstructionPair ;
+  rdfs:label "Instruction Pair Shape (strict, content-type enum)" ;
+  rdfs:comment "Wave W-D8 T8.10: tightens cfshapes:InstructionPairShape's content_type predicate to the 10-value ChunkType enum. Activated only when TRAINFORGE_ENFORCE_CONTENT_TYPE=true (semantically — SHACL has no flag-gated activation, but the consumer-side gate carries this guard). The provider-enum drift between base (5-value) and legacy strict (2-value) is intentionally NOT mirrored here per consolidation roadmap §4 P2.5; strict variant carries the same 5-value provider enum as base." ;
+  sh:message "TP-IPS-01: Strict content-type enforcement: pair.content_type must be a member of the 10-value canonical ChunkType enum." ;
+
+  sh:property [
+    sh:path ed4all:pairContentType ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+    sh:in (
+      "assessment_item" "overview" "summary" "exercise"
+      "explanation" "example" "procedure" "real_world_scenario"
+      "common_pitfall" "problem_solution"
+    ) ;
+    sh:message "TP-IPS-02: pair.content_type (strict) must be one of the 10 canonical ChunkType enum values." ;
+  ] .
+
+# ---------------------------------------------------------------------------
+# T8.11 — PreferencePairShape (DPO preference pair)
+# ---------------------------------------------------------------------------
+# Validates the canonical preference-pair shape per
+# schemas/knowledge/preference_pair.schema.json.
+#
+# Required fields (per JSON-Schema): prompt, chosen, rejected, chunk_id,
+# lo_refs, seed, decision_capture_id. Optional fields cover the
+# preference-pair-specific surface (misconception_id, rejected_source,
+# distractor_quality) plus the shared Wave 4 / 5 audit-trail surface.
+
+cfshapes:PreferencePairShape
+  a sh:NodeShape ;
+  sh:targetClass ed4all:PreferencePair ;
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  rdfs:label "Preference Pair Shape (DPO)" ;
+  rdfs:comment "Wave W-D8 T8.11: validates Trainforge DPO preference pairs (training_specs/preference_pairs.jsonl). Companion to schemas/knowledge/preference_pair.schema.json." ;
+  sh:message "TP-PP-01: Closed-world: cfshapes:PreferencePairShape declares an authoritative predicate set per preference_pair.schema.json. Predicates outside that set are violations — extend the @context first." ;
+
+  # Required: prompt, chosen, rejected, chunk_id, lo_refs, seed, decision_capture_id
+  sh:property [
+    sh:path ed4all:pairPrompt ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+    sh:datatype xsd:string ;
+    sh:minLength 40 ; sh:maxLength 400 ;
+    sh:message "TP-PP-02: pair.prompt is required, single, 40 <= len <= 400." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairChosen ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+    sh:datatype xsd:string ;
+    sh:minLength 50 ; sh:maxLength 600 ;
+    sh:message "TP-PP-03: pair.chosen is required, single, 50 <= len <= 600." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairRejected ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+    sh:datatype xsd:string ;
+    sh:minLength 50 ; sh:maxLength 600 ;
+    sh:message "TP-PP-04: pair.rejected is required, single, 50 <= len <= 600." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairChunkId ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+    sh:datatype xsd:string ;
+    sh:minLength 1 ;
+    sh:message "TP-PP-05: pair.chunk_id is required, single, non-empty." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairLoRef ;
+    sh:minCount 1 ;
+    sh:datatype xsd:string ;
+    sh:minLength 1 ;
+    sh:message "TP-PP-06: pair.lo_refs[] is required, >= 1 entry, each non-empty." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairSeed ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+    sh:datatype xsd:integer ;
+    sh:message "TP-PP-07: pair.seed is required, single, integer." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairDecisionCaptureId ;
+    sh:minCount 1 ; sh:maxCount 1 ;
+    sh:datatype xsd:string ;
+    sh:minLength 1 ;
+    sh:message "TP-PP-08: pair.decision_capture_id is required, single, non-empty." ;
+  ] ;
+
+  # Preference-pair-specific optional fields -------------------------------
+  sh:property [
+    sh:path ed4all:pairMisconceptionId ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:string ;
+    sh:message "TP-PP-09: pair.misconception_id when present must be single, string (or absent for null)." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairRejectedSource ;
+    sh:maxCount 1 ;
+    sh:in ( "misconception" "rule_synthesized" ) ;
+    sh:message "TP-PP-10: pair.rejected_source when present must be one of {misconception, rule_synthesized}." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairDistractorQuality ;
+    sh:maxCount 1 ;
+    sh:nodeKind sh:BlankNodeOrIRI ;
+    sh:node cfshapes:PairDistractorQualityShape ;
+    sh:message "TP-PP-11: pair.distractor_quality when present must conform to cfshapes:PairDistractorQualityShape." ;
+  ] ;
+
+  # Optional fields shared with InstructionPairShape -----------------------
+  sh:property [
+    sh:path ed4all:pairProvider ;
+    sh:maxCount 1 ;
+    sh:in ( "mock" "anthropic" "claude_session" "together" "local" ) ;
+    sh:message "TP-PP-12: pair.provider when present must be one of the 5 canonical providers." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairQuestionType ;
+    sh:maxCount 1 ;
+    sh:in ( "multiple_choice" "true_false" "short_answer" "essay" "fill_in_blank" ) ;
+    sh:message "TP-PP-13: pair.question_type when present must be one of the 5 canonical types." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairSchemaVersion ;
+    sh:maxCount 1 ;
+    sh:in ( "v1" ) ;
+    sh:message "TP-PP-14: pair.schema_version must be 'v1'." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairPromotionStatus ;
+    sh:maxCount 1 ;
+    sh:in ( "pending" "candidate" "validated" "trainable" "rejected" ) ;
+    sh:message "TP-PP-15: pair.promotion_status when present must be one of the 5 ladder values." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairRejectionReason ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:string ;
+    sh:message "TP-PP-16: pair.rejection_reason when present must be single, string." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairObservedBloom ;
+    sh:maxCount 1 ;
+    sh:in ( "remember" "understand" "apply" "analyze" "evaluate" "create" ) ;
+    sh:message "TP-PP-17: pair.observed_bloom when present must be a canonical Bloom level." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairBloomAlignment ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:boolean ;
+    sh:message "TP-PP-18: pair.bloom_alignment when present must be a single boolean." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairAnswerSupportScore ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:decimal ;
+    sh:minInclusive 0.0 ; sh:maxInclusive 1.0 ;
+    sh:message "TP-PP-19: pair.answer_support_score when present must be in [0, 1]." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairRationaleRichness ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:decimal ;
+    sh:minInclusive 0.0 ; sh:maxInclusive 1.0 ;
+    sh:message "TP-PP-20: pair.rationale_richness_score when present must be in [0, 1]." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairSourceChunkId ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:string ;
+    sh:minLength 1 ;
+    sh:message "TP-PP-21: pair.source_chunk_id when present must be single, non-empty." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairPerClaimSupport ;
+    sh:nodeKind sh:BlankNodeOrIRI ;
+    sh:node cfshapes:PerClaimSupportShape ;
+    sh:message "TP-PP-22: pair.per_claim_support[] each item must conform to cfshapes:PerClaimSupportShape (W4.A)." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairClaimSupportRate ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:decimal ;
+    sh:minInclusive 0.0 ; sh:maxInclusive 1.0 ;
+    sh:message "TP-PP-23: pair.claim_support_rate when present must be in [0, 1] (W4.A)." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairClaimContradictedRate ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:decimal ;
+    sh:minInclusive 0.0 ; sh:maxInclusive 1.0 ;
+    sh:message "TP-PP-24: pair.claim_contradicted_rate when present must be in [0, 1] (W4.A)." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairLoResolution ;
+    sh:maxCount 1 ;
+    sh:nodeKind sh:BlankNodeOrIRI ;
+    sh:node cfshapes:PairLoResolutionShape ;
+    sh:message "TP-PP-25: pair.pair_lo_resolution when present must conform to cfshapes:PairLoResolutionShape (W4.B)." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairObjectiveAlignment ;
+    sh:nodeKind sh:BlankNodeOrIRI ;
+    sh:node cfshapes:PairObjectiveAlignmentShape ;
+    sh:message "TP-PP-26: pair.pair_objective_alignment[] each item must conform to cfshapes:PairObjectiveAlignmentShape (W4.C)." ;
+  ] ;
+  sh:property [
+    sh:path ed4all:pairObjectiveAlignmentPassRate ;
+    sh:maxCount 1 ;
+    sh:datatype xsd:decimal ;
+    sh:minInclusive 0.0 ; sh:maxInclusive 1.0 ;
+    sh:message "TP-PP-27: pair.pair_objective_alignment_pass_rate when present must be in [0, 1] (W4.C)." ;
+  ] .
+
+# ---------------------------------------------------------------------------
+# T8.12 — TrainingPairShape (umbrella shape, sh:or composition)
+# ---------------------------------------------------------------------------
+# Optional umbrella: a graph carrying both InstructionPair and
+# PreferencePair instances can use this shape as a single-entry-point
+# "must be one or the other" validator. Per W-D8 plan §3.7, the
+# per-class shapes already cover any pair-bearing graph via class
+# targeting; this shape is shipped for forward compatibility but is
+# not strictly required. Future consumer-side wiring may dispatch on
+# ed4all:TrainingPair instead of class-by-class.
+
+cfshapes:TrainingPairShape
+  a sh:NodeShape ;
+  sh:targetClass ed4all:TrainingPair ;
+  rdfs:label "Training Pair Shape (umbrella, sh:or composition)" ;
+  rdfs:comment "Wave W-D8 T8.12: optional umbrella that asserts every TrainingPair instance conforms to either InstructionPairShape or PreferencePairShape. The per-class shapes (T8.9 / T8.11) cover any pair-bearing graph independently via sh:targetClass; this shape is forward-compat scaffolding for consumers that prefer a single dispatch point." ;
+  sh:or (
+    [ sh:node cfshapes:InstructionPairShape ]
+    [ sh:node cfshapes:PreferencePairShape ]
+  ) ;
+  sh:message "TP-TP-01: Every ed4all:TrainingPair instance must conform to either cfshapes:InstructionPairShape (SFT) or cfshapes:PreferencePairShape (DPO)." .
+
+# ---------------------------------------------------------------------------
+# Sub-shape — PerClaimSupportShape (W4.A per-claim entailment audit)
+# ---------------------------------------------------------------------------
+
+cfshapes:PerClaimSupportShape
+  a sh:NodeShape ;
+  sh:targetClass ed4all:PerClaimSupport ;
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  rdfs:label "Per-Claim Support Shape (W4.A)" ;
+  rdfs:comment "Wave W-D8 T8.9 sub-shape: validates one entry of pair.per_claim_support[] (W4.A audit array). Each entry holds the NLI entailment + contradiction scores for a single sentence in the pair completion, plus the canonical 4-value outcome enum and an optional source_chunk_ids[] array (W5.D) and dart_source_check object (W9 TIGHT)." ;
+  sh:message "TP-SUB-01: Closed-world: cfshapes:PerClaimSupportShape declares an authoritative predicate set per the W4.A per-claim audit shape. Predicates outside that set are violations." ;
+
+  sh:property [ sh:path ed4all:claimSentence ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ; sh:message "TP-SUB-02: claim.sentence required, single, non-empty." ] ;
+  sh:property [ sh:path ed4all:claimEntailment ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:decimal ; sh:minInclusive 0.0 ; sh:maxInclusive 1.0 ; sh:message "TP-SUB-03: claim.entailment required, single, in [0, 1]." ] ;
+  sh:property [ sh:path ed4all:claimContradiction ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:decimal ; sh:minInclusive 0.0 ; sh:maxInclusive 1.0 ; sh:message "TP-SUB-04: claim.contradiction required, single, in [0, 1]." ] ;
+  sh:property [ sh:path ed4all:claimOutcome ; sh:minCount 1 ; sh:maxCount 1 ; sh:in ( "entailed" "unsupported" "contradicted" "dart_disagreement" ) ; sh:message "TP-SUB-05: claim.outcome required, must be one of the 4 canonical outcomes (entailed / unsupported / contradicted / dart_disagreement)." ] ;
+  sh:property [ sh:path ed4all:claimSourceChunkId ; sh:datatype xsd:string ; sh:minLength 1 ; sh:message "TP-SUB-06: claim.source_chunk_ids[] each non-empty (W5.D)." ] ;
+  sh:property [ sh:path ed4all:claimDartSourceCheck ; sh:maxCount 1 ; sh:nodeKind sh:BlankNodeOrIRI ; sh:node cfshapes:DartSourceCheckShape ; sh:message "TP-SUB-07: claim.dart_source_check when present must conform to cfshapes:DartSourceCheckShape (W9 TIGHT)." ] .
+
+# ---------------------------------------------------------------------------
+# Sub-shape — DartSourceCheckShape (W9 TIGHT dual-source DART check)
+# ---------------------------------------------------------------------------
+
+cfshapes:DartSourceCheckShape
+  a sh:NodeShape ;
+  sh:targetClass ed4all:DartSourceCheck ;
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  rdfs:label "DART Source-Check Shape (W9 TIGHT)" ;
+  rdfs:comment "Wave W-D8 T8.9 sub-shape: validates the per-claim DART source-check sub-object (W9 TIGHT dual-source audit). Augments the chunk-level claim outcome with a parallel check against the DART source the chunk was derived from; outcome enum is 3-value (entailed / unsupported / dart_disagreement — there's no contradicted bucket because DART is the upstream source)." ;
+  sh:message "TP-SUB-08: Closed-world: cfshapes:DartSourceCheckShape declares an authoritative three-predicate set per the W9 TIGHT dual-source audit shape." ;
+
+  sh:property [ sh:path ed4all:dartEntailment ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:decimal ; sh:minInclusive 0.0 ; sh:maxInclusive 1.0 ; sh:message "TP-SUB-09: dart_source_check.entailment required, single, in [0, 1]." ] ;
+  sh:property [ sh:path ed4all:dartContradiction ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:decimal ; sh:minInclusive 0.0 ; sh:maxInclusive 1.0 ; sh:message "TP-SUB-10: dart_source_check.contradiction required, single, in [0, 1]." ] ;
+  sh:property [ sh:path ed4all:dartOutcome ; sh:minCount 1 ; sh:maxCount 1 ; sh:in ( "entailed" "unsupported" "dart_disagreement" ) ; sh:message "TP-SUB-11: dart_source_check.outcome required, must be one of the 3 canonical outcomes (entailed / unsupported / dart_disagreement)." ] .
+
+# ---------------------------------------------------------------------------
+# Sub-shape — PairLoResolutionShape (W4.B phantom-LO resolution)
+# ---------------------------------------------------------------------------
+
+cfshapes:PairLoResolutionShape
+  a sh:NodeShape ;
+  sh:targetClass ed4all:PairLoResolution ;
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  rdfs:label "Pair LO Resolution Shape (W4.B)" ;
+  rdfs:comment "Wave W-D8 T8.9 sub-shape: validates pair.pair_lo_resolution (W4.B phantom-LO audit). Compares the pair's declared lo_refs[] against the chunk's learning_outcome_refs[] and surfaces phantom_los[] (declared LOs that don't exist on the chunk). Future P0.1 widening admits a `skipped` boolean for Wave 8 deterministic-template pairs that bypass the resolution check." ;
+  sh:message "TP-SUB-12: Closed-world: cfshapes:PairLoResolutionShape declares an authoritative predicate set per the W4.B phantom-LO resolution audit shape." ;
+
+  sh:property [ sh:path ed4all:resolutionDeclaredLo ; sh:datatype xsd:string ; sh:minLength 1 ; sh:message "TP-SUB-13: pair_lo_resolution.declared_los[] each non-empty." ] ;
+  sh:property [ sh:path ed4all:resolutionChunkLo ; sh:datatype xsd:string ; sh:minLength 1 ; sh:message "TP-SUB-14: pair_lo_resolution.chunk_los[] each non-empty." ] ;
+  sh:property [ sh:path ed4all:resolutionPhantomLo ; sh:datatype xsd:string ; sh:minLength 1 ; sh:message "TP-SUB-15: pair_lo_resolution.phantom_los[] each non-empty." ] .
+
+# ---------------------------------------------------------------------------
+# Sub-shape — PairObjectiveAlignmentShape (W4.C tri-axis pair audit)
+# ---------------------------------------------------------------------------
+
+cfshapes:PairObjectiveAlignmentShape
+  a sh:NodeShape ;
+  sh:targetClass ed4all:PairObjectiveAlignment ;
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  rdfs:label "Pair Objective Alignment Shape (W4.C)" ;
+  rdfs:comment "Wave W-D8 T8.9 sub-shape: validates one entry of pair.pair_objective_alignment[] (W4.C tri-axis NLI entailment + Bloom-gap + verb-cooccurrence audit on the pair surface). Mirrors the BlockObjectiveDeliveryValidator output shape on the pair surface; status enum is the canonical 4-value (delivered / underdelivered / verb_only / unverifiable)." ;
+  sh:message "TP-SUB-16: Closed-world: cfshapes:PairObjectiveAlignmentShape declares an authoritative predicate set per the W4.C tri-axis per-pair-per-objective delivery audit shape." ;
+
+  sh:property [ sh:path ed4all:alignmentObjectiveId ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ; sh:minLength 1 ; sh:message "TP-SUB-17: alignment.objective_id required, single, non-empty." ] ;
+  sh:property [ sh:path ed4all:alignmentStatus ; sh:minCount 1 ; sh:maxCount 1 ; sh:in ( "delivered" "underdelivered" "verb_only" "unverifiable" ) ; sh:message "TP-SUB-18: alignment.status required, must be one of the 4 canonical delivery statuses." ] ;
+  sh:property [ sh:path ed4all:alignmentEntailmentScore ; sh:maxCount 1 ; sh:datatype xsd:decimal ; sh:minInclusive 0.0 ; sh:maxInclusive 1.0 ; sh:message "TP-SUB-19: alignment.statement_entailment_score when present must be in [0, 1]." ] ;
+  sh:property [ sh:path ed4all:alignmentContradictionScore ; sh:maxCount 1 ; sh:datatype xsd:decimal ; sh:minInclusive 0.0 ; sh:maxInclusive 1.0 ; sh:message "TP-SUB-20: alignment.contradiction_score when present must be in [0, 1]." ] ;
+  sh:property [ sh:path ed4all:alignmentBloomGap ; sh:maxCount 1 ; sh:datatype xsd:integer ; sh:message "TP-SUB-21: alignment.bloom_gap when present must be a single integer." ] ;
+  sh:property [ sh:path ed4all:alignmentVerbMatchCount ; sh:maxCount 1 ; sh:datatype xsd:integer ; sh:minInclusive 0 ; sh:message "TP-SUB-22: alignment.verb_match_count when present must be a single non-negative integer." ] ;
+  sh:property [ sh:path ed4all:alignmentDeclaredBloom ; sh:maxCount 1 ; sh:in ( "remember" "understand" "apply" "analyze" "evaluate" "create" ) ; sh:message "TP-SUB-23: alignment.declared_bloom when present must be a canonical Bloom level." ] ;
+  sh:property [ sh:path ed4all:alignmentObservedBloom ; sh:maxCount 1 ; sh:in ( "remember" "understand" "apply" "analyze" "evaluate" "create" ) ; sh:message "TP-SUB-24: alignment.observed_bloom when present must be a canonical Bloom level." ] ;
+  sh:property [ sh:path ed4all:alignmentEntailmentThreshold ; sh:maxCount 1 ; sh:datatype xsd:decimal ; sh:minInclusive 0.0 ; sh:maxInclusive 1.0 ; sh:message "TP-SUB-25: alignment.entailment_threshold when present must be in [0, 1]." ] .
+
+# ---------------------------------------------------------------------------
+# Sub-shape — PairDistractorQualityShape (preference-pair-only)
+# ---------------------------------------------------------------------------
+
+cfshapes:PairDistractorQualityShape
+  a sh:NodeShape ;
+  sh:targetClass ed4all:PairDistractorQuality ;
+  sh:closed true ;
+  sh:ignoredProperties ( rdf:type ) ;
+  rdfs:label "Pair Distractor Quality Shape (preference-pair only)" ;
+  rdfs:comment "Wave W-D8 T8.11 sub-shape: validates pair.distractor_quality on a preference pair (DPO). Captures the misconception-alignment flag + semantic-distinctness + plausibility scores for the rejected-side distractor. Used by the post-rewrite distractor-quality validator chain to gate trainable-promotion of preference pairs." ;
+  sh:message "TP-SUB-26: Closed-world: cfshapes:PairDistractorQualityShape declares an authoritative three-predicate set per the preference-pair distractor-quality sub-object." ;
+
+  sh:property [ sh:path ed4all:distractorMisconceptionAligned ; sh:maxCount 1 ; sh:datatype xsd:boolean ; sh:message "TP-SUB-27: distractor_quality.misconception_aligned when present must be a single boolean." ] ;
+  sh:property [ sh:path ed4all:distractorSemanticDistinctness ; sh:maxCount 1 ; sh:datatype xsd:decimal ; sh:minInclusive 0.0 ; sh:maxInclusive 1.0 ; sh:message "TP-SUB-28: distractor_quality.semantic_distinctness when present must be in [0, 1]." ] ;
+  sh:property [ sh:path ed4all:distractorPlausibility ; sh:maxCount 1 ; sh:datatype xsd:decimal ; sh:minInclusive 0.0 ; sh:maxInclusive 1.0 ; sh:message "TP-SUB-29: distractor_quality.plausibility when present must be in [0, 1]." ] .
