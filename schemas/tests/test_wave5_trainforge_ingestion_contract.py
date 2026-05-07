@@ -807,6 +807,7 @@ def test_pair_claim_support_uses_per_claim_attribution_when_chunk_carries_key_cl
     scoring (the W4.A pre-W5.D behaviour stays byte-identical).
     """
     from lib.validators import pair_claim_support as pcs_mod
+    from lib.validators.pair import claim_support as canonical_pcs_mod
     from lib.validators.pair_claim_support import PairClaimSupportValidator
 
     # ---- Stub the embedder + cosine helpers so the per-claim
@@ -814,13 +815,19 @@ def test_pair_claim_support_uses_per_claim_attribution_when_chunk_carries_key_cl
     # ``[embedding]`` extras. The W5.D path calls
     # ``_try_load_embedder_safe`` and ``_cosine_safe`` from inside
     # ``validate_pair`` so we monkey-patch the module-level helpers.
-    monkeypatch.setattr(
-        pcs_mod, "_try_load_embedder_safe", lambda: _StubEmbedder()
-    )
-    monkeypatch.setattr(
-        pcs_mod, "_cosine_safe",
-        lambda a, b: _stub_cosine_similarity(a, b),
-    )
+    # Post-W-D10 reorg: validate_pair lives in
+    # ``lib.validators.pair.claim_support`` (the canonical path); the
+    # legacy ``lib.validators.pair_claim_support`` is now a deprecation
+    # shim. Patch both surfaces so the test is robust regardless of
+    # which path future call sites resolve through.
+    for _mod in (pcs_mod, canonical_pcs_mod):
+        monkeypatch.setattr(
+            _mod, "_try_load_embedder_safe", lambda: _StubEmbedder()
+        )
+        monkeypatch.setattr(
+            _mod, "_cosine_safe",
+            lambda a, b: _stub_cosine_similarity(a, b),
+        )
 
     # Two-sentence completion mapped 1-to-1 against two structured
     # claim entries; each claim cites a distinct DART chunk ID. Each
