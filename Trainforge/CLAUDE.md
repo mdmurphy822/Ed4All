@@ -501,11 +501,29 @@ Alongside per-gate validation, `CourseProcessor._write_metadata` folds an `asses
     "objective_coverage_ratio": 0.9,
     "per_question_issues": [
         {"question_id": "q-001", "issues": ["TOC_FRAGMENT_ANSWER"]}
-    ]
+    ],
+    "per_question_type_summary": {
+        "multiple_choice": {
+            "question_count": 8,
+            "issue_count": 2,
+            "top_codes": [["TEMPLATED_DISTRACTORS_MULTIPLE_CHOICE", 2]],
+            "distinct_stem_ratio": 0.78,
+            "distinct_correct_answer_ratio": 0.71
+        },
+        "essay": {
+            "question_count": 2,
+            "issue_count": 1,
+            "top_codes": [["LOW_STEM_DIVERSITY_ESSAY", 1]],
+            "distinct_stem_ratio": 0.50,
+            "distinct_correct_answer_ratio": 0.50
+        }
+    }
 }
 ```
 
 `per_question_issues` surfaces: TOC fragments reported as answers, verb-less stems, templated distractors, stem near-duplicates, Bloom-level misalignment.
+
+`per_question_type_summary` (W6.B) buckets questions by `lib.validators.assessment._normalize_question_type(q)` and is emitted by `Trainforge/generators/assessment_quality_report.py::build_assessment_dimension`. Each bucket carries the W6.A per-type warning signals (typed-coded issue counts via `top_codes`, plus per-type `distinct_stem_ratio` / `distinct_correct_answer_ratio`) so a reviewer can see WHICH question-type's diversity floor a corpus is failing without parsing the corpus-wide `per_question_issues[]` array. Contributes to the dimension's per-question issue stream and rolls into the top-level `summary` carried by `lib/aggregators/trainforge_assessment_quality_report.py`.
 
 ---
 

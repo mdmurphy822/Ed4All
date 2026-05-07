@@ -743,7 +743,7 @@ Source of truth: `config/workflows.yaml::validation_gates`. Phase column below s
 | `textbook_to_course` | `packaging` | `page_objectives_shacl` | PageObjectivesShaclValidator (warning) |
 | `textbook_to_course` | `imscc_chunking` | `chunkset_manifest` | ChunksetManifestValidator (warning) |
 | `textbook_to_course` | `trainforge_assessment` | `imscc_input_valid` | IMSCCValidator (pre-assessment) |
-| `textbook_to_course` | `trainforge_assessment` | `assessment_quality` | AssessmentQualityValidator |
+| `textbook_to_course` | `trainforge_assessment` | `assessment_quality` | AssessmentQualityValidator (critical at corpus-wide level for back-compat; per-question-type diversity sub-checks fire warning-severity day-1 via `_PER_QUESTION_TYPE_THRESHOLDS` in `lib/validators/assessment.py`. Calibration plan: rebuild rdf-shacl-551-2 with W5 fields → tune per-type thresholds → flip warning → critical in a micro-wave. Mirrors W1.7.C `_PER_BLOCK_TYPE_ENTAILMENT_FLOOR` + W4.C `_PER_PAIR_KIND_ENTAILMENT_FLOOR` patterns.) |
 | `textbook_to_course` | `trainforge_assessment` | `assessment_objective_alignment` | AssessmentObjectiveAlignmentValidator |
 | `textbook_to_course` | `trainforge_assessment` | `trainforge_padded_distractor` | PaddedDistractorValidator |
 | `textbook_to_course` | `training_synthesis` | `synthesis_quota` | SynthesisQuotaValidator (warning) |
@@ -761,7 +761,7 @@ Source of truth: `config/workflows.yaml::validation_gates`. Phase column below s
 | `textbook_to_course` | `libv2_archival` | `semantic_graph_rule_output` | SemanticGraphRuleOutputValidator (warning) |
 | `textbook_to_course` | `libv2_archival` | `kg_quality_report` | KGQualityValidator (critical, thresholds 0.95/0.95/0.95/0.5) |
 | `textbook_to_course` | `libv2_archival` | `chunkset_drift` | ChunksetDriftValidator (warning — DART vs. IMSCC chunkset drift; sidecar `drift_report.json`) |
-| `rag_training` | `assessment_generation` | `assessment_quality` | AssessmentQualityValidator |
+| `rag_training` | `assessment_generation` | `assessment_quality` | AssessmentQualityValidator (critical at corpus-wide level for back-compat; per-question-type diversity sub-checks fire warning-severity day-1 via `_PER_QUESTION_TYPE_THRESHOLDS` in `lib/validators/assessment.py`. Calibration plan: rebuild rdf-shacl-551-2 with W5 fields → tune per-type thresholds → flip warning → critical in a micro-wave. Mirrors W1.7.C `_PER_BLOCK_TYPE_ENTAILMENT_FLOOR` + W4.C `_PER_PAIR_KIND_ENTAILMENT_FLOOR` patterns.) |
 | `rag_training` | `assessment_generation` | `bloom_alignment` | BloomAlignmentValidator (warning) |
 | `rag_training` | `assessment_generation` | `leak_check` | LeakCheckValidator |
 | `rag_training` | `assessment_generation` | `outcome_ref_integrity` | LeakCheckValidator (warning) |
