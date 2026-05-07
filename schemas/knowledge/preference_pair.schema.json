@@ -64,8 +64,19 @@
     },
     "question_type": {
       "type": "string",
-      "enum": ["multiple_choice", "true_false", "short_answer", "essay", "fill_in_blank"],
-      "description": "Optional canonical question-type discriminator consumed by the W6.B per-question-type summary and W7.A-C per-metric segmentation. Optional so legacy corpora pre-Wave-8 stay schema-valid."
+      "enum": [
+        "multiple_choice",
+        "multiple_response",
+        "true_false",
+        "short_answer",
+        "essay",
+        "matching",
+        "fill_in_blank",
+        "ordering",
+        "hotspot"
+      ],
+      "$comment": "9-value canonical enum mirrored from schemas/taxonomies/question_type.json#/$defs/QuestionType. Inlined (not $ref'd) until P2.5 migrates this schema to Draft 2020-12; cross-draft $ref resolution is implementation-specific. Drift between this enum and the canonical taxonomy is a documentation bug — see plans/wave-D1-p0-fixes-2026-05-07.md § T1.2.",
+      "description": "Canonical question-type discriminator consumed by the W6.B per-question-type summary and W7.A-C per-metric segmentation. Optional so legacy corpora pre-Wave-8 stay schema-valid."
     },
     "schema_version": {
       "type": "string",
@@ -223,6 +234,10 @@
           "type": "array",
           "items": {"type": "string"},
           "description": "LO refs declared by the pair that the cited chunk does NOT carry (case-insensitive set difference). Empty on pass; non-empty triggers W4.B 'phantom_pair_lo_refs' rejection."
+        },
+        "skipped": {
+          "type": "string",
+          "enum": ["deterministic_template"]
         }
       },
       "description": "GPT Feedback v2 Wave 4 W4.B — audit-trail surface for the per-pair LO-resolution check. Null when the validator hasn't run on this pair (legacy / pre-Wave-4 corpora)."
