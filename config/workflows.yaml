@@ -2170,6 +2170,36 @@ workflows:
           # somewhere and a silent-degrade happened. Embedding-extras
           # absent: warning-severity EMBEDDING_DEPS_MISSING fallback per
           # the Wave N1 graceful-degrade contract.
+          # Wave 4 W4.A: per-claim NLI entailment check on every
+          # emitted training pair. Day-1 warning severity per the
+          # Wave 1.5 / 1.6 / 1.7 calibration contract — NLI confidence
+          # is fuzzy on a fresh corpus, so the gate surfaces the rate
+          # without blocking promotion. Operator flips to critical via
+          # gate ``inputs.thresholds`` once the per-corpus baseline is
+          # calibrated.
+          - gate_id: pair_claim_support
+            validator: lib.validators.pair_claim_support.PairClaimSupportValidator
+            severity: warning
+            behavior:
+              on_fail: warn
+              on_error: fail_closed
+            description: Wave 4 W4.A — per-claim NLI entailment vs cited chunks. Warning day-1 (NLI fuzzy on fresh corpora); flips to critical once the per-corpus baseline is calibrated.
+
+          # Wave 4 W4.B: per-pair learning-outcome refs subset check.
+          # Asserts every pair's ``learning_outcome_refs[]`` is a
+          # subset of the cited chunk's ``learning_outcome_refs[]``.
+          # Critical day-1 because phantom-LO is a structural mismatch
+          # (mirrors AssessmentObjectiveAlignmentValidator severity in
+          # the trainforge_assessment phase — same regression class,
+          # same fail-closed posture).
+          - gate_id: pair_lo_refs
+            validator: lib.validators.pair_lo_refs.PairLearningOutcomeRefsValidator
+            severity: critical
+            behavior:
+              on_fail: block
+              on_error: fail_closed
+            description: Wave 4 W4.B — per-pair learning-outcome refs subset check. Critical because phantom-LO refs are a structural mismatch; mirrors AssessmentObjectiveAlignmentValidator severity.
+
           - gate_id: pair_promotion
             validator: lib.validators.training_pair_promotion.TrainingPairPromotionValidator
             severity: critical

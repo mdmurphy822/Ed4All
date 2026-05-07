@@ -104,6 +104,74 @@
       "type": "string",
       "minLength": 1,
       "description": "Stable id of the source chunk this pair was synthesized from. Optional in general; required when promotion_status == 'trainable' (see if/then clause). Closes the source-free-generation hole at the schema layer."
+    },
+    "per_claim_support": {
+      "type": ["array", "null"],
+      "description": "GPT Feedback v2 Wave 4 W4.A — per-sentence NLI entailment audit of the completion against the cited chunk text. One entry per sentence the claim-support validator scored. Null when NLI deps are missing (graceful-degrade) or when the validator hasn't run on this pair yet (legacy / pre-Wave-4 corpora). Mirrors the W2.E promotion_status migration shape: optional day-1, may upgrade to required-conditional once the validator has rolled across every active corpus.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sentence", "entailment", "contradiction", "outcome"],
+        "properties": {
+          "sentence": {
+            "type": "string",
+            "minLength": 1,
+            "description": "The verbatim sentence extracted from the completion that was scored by the NLI classifier."
+          },
+          "entailment": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Post-softmax NLI entailment probability for (premise=chunk_text, hypothesis=sentence)."
+          },
+          "contradiction": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Post-softmax NLI contradiction probability for the same (premise, hypothesis) pair."
+          },
+          "outcome": {
+            "type": "string",
+            "enum": ["entailed", "unsupported", "contradicted"],
+            "description": "Bucketed verdict per the W4.A thresholds — entailment_floor (default 0.70) and contradiction_floor (default 0.50)."
+          }
+        }
+      }
+    },
+    "claim_support_rate": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1,
+      "description": "GPT Feedback v2 Wave 4 W4.A — fraction of scored sentences whose outcome was 'entailed'. Null when NLI deps are missing or the validator hasn't run on this pair."
+    },
+    "claim_contradicted_rate": {
+      "type": ["number", "null"],
+      "minimum": 0,
+      "maximum": 1,
+      "description": "GPT Feedback v2 Wave 4 W4.A — fraction of scored sentences whose outcome was 'contradicted'. Null when NLI deps are missing or the validator hasn't run on this pair."
+    },
+    "pair_lo_resolution": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["declared_los", "chunk_los", "phantom_los"],
+      "properties": {
+        "declared_los": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Pair's declared learning_outcome_refs[] (preserves emit case)."
+        },
+        "chunk_los": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Cited chunk's learning_outcome_refs[] (preserves emit case)."
+        },
+        "phantom_los": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "LO refs declared by the pair that the cited chunk does NOT carry (case-insensitive set difference). Empty on pass; non-empty triggers W4.B 'phantom_pair_lo_refs' rejection."
+        }
+      },
+      "description": "GPT Feedback v2 Wave 4 W4.B — audit-trail surface for the per-pair LO-resolution check. Null when the validator hasn't run on this pair (legacy / pre-Wave-4 corpora)."
     }
   },
   "if": {
