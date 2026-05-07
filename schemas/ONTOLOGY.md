@@ -190,7 +190,7 @@ Each describes an inline HTML component produced by Courseforge (accordions for 
 | `statement` | string | ≥10 chars |
 | `bloomLevel` | enum | `{remember, understand, apply, analyze, evaluate, create}` |
 
-**Optional fields:** `bloomVerb`, `keyConcepts[]`, `sourceReference` (`{headingId, headingText, pageNumber, elementPath}`), `assessmentSuggestions[]` (9-value enum), `prerequisiteObjectives[]` (string IDs), `extractionSource` (7-value enum).
+**Optional fields:** `bloomVerb`, `keyConcepts[]`, `sourceReference` (`{headingId, headingText, pageNumber, elementPath}`), `assessmentSuggestions[]` (9-value enum), `prerequisiteObjectives[]` (string IDs), `extractionSource` (enum: `explicit`, `definition`, `concept`, `procedure`, `example`, `summary`, `inferred`).
 
 **Discriminators / subtype signaling:** ID prefix:
 - `TO-NN` — Terminal Objective (course-level).
@@ -304,7 +304,7 @@ Two closely-related representations exist:
 **Instance production:** `QuestionFactory.create_*` methods (with Bloom-alignment enforcement, line 103); `AssessmentGenerator.generate()`.
 **Instance consumption:** brightspace-packager QTI emit; validators (bloom, question_quality, leak_check).
 
-**Required fields (Question):** `question_id`, `question_type` (enum, 7 values — see § 4), `stem`, `bloom_level`, `objective_id`.
+**Required fields (Question):** `question_id`, `question_type` (canonical 9-value enum — see `schemas/taxonomies/question_type.json`; the Trainforge factory's `VALID_TYPES` is the 7-of-9 subset that excludes `ordering` + `hotspot`), `stem`, `bloom_level`, `objective_id`.
 **Optional fields:** `points` (default 1.0), `feedback`, `choices[]` (QuestionChoice), `correct_answers[]` (for fill-in/matching), `case_sensitive` (bool).
 
 **QuestionData additional fields:** `source_chunks[]`, `generation_rationale`.
@@ -426,7 +426,7 @@ Tool-local; describes the transformation contract used when upgrading older Boot
 
 **Extra properties over DecisionEvent:**
 - `assessment_context` — required `imscc_source`, optional `learning_objective_id`, `bloom_target` (6-level enum), `source_chunks[]` {`chunk_id`, `content_hash`, `relevance_score`, `token_count`, `source_file`}, `domain`, `domain_weight` (0–100).
-- `question_data` — `question_id`, `question_type` (8-value enum — see § 4), `question_stem`, `correct_answer`, `distractors[]` (see Distractor), `explanation`, `difficulty ∈ {easy, medium, hard}`, `points` (≥1), `time_estimate_seconds`, `rubric` (criteria with weight/levels).
+- `question_data` — `question_id`, `question_type` (canonical 9-value enum — see `schemas/taxonomies/question_type.json`; trainforge_decision's local enum is the 9-value superset), `question_stem`, `correct_answer`, `distractors[]` (see Distractor), `explanation`, `difficulty ∈ {easy, medium, hard}`, `points` (≥1), `time_estimate_seconds`, `rubric` (criteria with weight/levels).
 - `rag_metrics` — `chunks_retrieved`, `chunks_used`, `retrieval_latency_ms`, `generation_latency_ms`, `context_token_count`, `embedding_model`, `similarity_threshold`.
 - `alignment_check` — `lo_coverage_score`, `bloom_alignment_score`, `content_alignment_score` (all 0–1), `passed` (bool), `issues[]`.
 - `revision_chain[]` — ordered `{revision_number, timestamp, reason, changes_made[], validator_feedback}`.
@@ -933,18 +933,27 @@ See the full table in § 4. Emit sites: `Courseforge/scripts/generate_course.py`
 
 ### 6.3 JSON Schema (draft-07) files
 
-16 files across `schemas/`, loaded via `lib/validation.py:104` (`SCHEMAS_DIR.rglob("*.json")`). Full index in § 10.
+61 files across `schemas/`, loaded via `lib/validation.py:104` (`SCHEMAS_DIR.rglob("*.json")`). Full per-file index in § 10.
 
-Sizes (lines):
+Sizes (file count + total lines per subfolder, regenerated 2026-05-07):
 
-| Subfolder | Files | Total lines |
-|---|---|---|
-| academic/ | 3 | 1,395 |
-| compliance/ | 1 | 1,131 |
-| events/ | 6 | 1,108 |
-| knowledge/ | 3 | 214 |
-| library/ | 2 | 276 |
-| taxonomies/ | 2 | 1,339 (json+yaml) |
+| Subfolder      | Files | Total lines | Notes |
+|----------------|-------|-------------|-------|
+| `academic/`     |  4 |  1,416 | course / page-types / LOs / textbook |
+| `aggregators/`  |  1 |    134 | coverage_map.schema.json |
+| `compliance/`   |  1 |  1,131 | wcag22_compliance.schema.json |
+| `config/`       |  1 |    188 | workflows_meta.schema.json |
+| `context/`      |  5 |  1,954 | 4 SHACL TTL + aliases.ttl |
+| `courseforge/`  |  1 |    159 | block_routing.schema.json |
+| `eval/`         |  2 |     43 | yaml + md (default_eval_config + rubric) |
+| `events/`       |  6 |  1,229 | unchanged from prior gen |
+| `governance/`   |  3 |    265 | course_status / phase_output / promotion_chain |
+| `knowledge/`    | 11 |  2,637 | chunk_v4 + JSON-LD + 4 pair-related + concept_graph_semantic + course + course_metadata + misconception + objectives_v1 + source_reference |
+| `library/`      |  5 |    488 | catalog_entry + course_manifest + chunkset_drift + chunkset_manifest + packaging_report |
+| `models/`       |  2 |    431 | model_card + model_pointers (Wave 89 + Wave 93) |
+| `taxonomies/`   | 10 |  1,733 | bloom_verbs / question_type / cognitive_domain / content_type / module_type / teaching_role / assessment_method / lo_hierarchy / taxonomy + pedagogy_framework.yaml |
+| `training/`     |  9 |  3,330 | family_map + property_manifest + schema_translation_catalog + semantic_profiles + synthesis_summary (each as schema + yaml fixture pair where applicable) |
+| **Total**       | 61 | 15,138 | |
 
 ### 6.4 Python dataclasses
 
@@ -1119,23 +1128,52 @@ Every version counter currently in use:
 | `schemas/knowledge/chunk_v4.schema.json` | Chunk | Trainforge chunk contract (gated by `TRAINFORGE_VALIDATE_CHUNKS`) |
 | `schemas/knowledge/concept_graph_semantic.schema.json` | Concept, TypedEdge, rule_versions | Typed-edge concept graph (8 edge types, per-rule evidence discriminator) |
 | `schemas/knowledge/course.schema.json` | Course (course.json) | Canonical shape for Trainforge-emitted `course.json`, consumed by LibV2 retrieval |
-| `schemas/knowledge/courseforge_jsonld_v1.schema.json` | CourseforgePage | JSON-LD block emitted per Courseforge HTML page |
+| `schemas/knowledge/courseforge_jsonld_v1.schema.json` | CourseforgePage | JSON-LD block emit shape (Block dataclass; Wave 1.5 + 1.7 fields wired) |
+| `schemas/knowledge/course_metadata.schema.json` | CourseMetadata (Trainforge-emitted) | Course-level metadata produced by `Trainforge/process_course.py` |
 | `schemas/knowledge/instruction_pair.schema.json` | InstructionPair | SFT training pair (prompt/completion) |
 | `schemas/knowledge/instruction_pair.strict.schema.json` | InstructionPair (strict) | Opt-in strict variant of the SFT pair schema |
 | `schemas/knowledge/misconception.schema.json` | Misconception | First-class misconception entity (content-hash IDs) |
+| `schemas/knowledge/objectives_v1.schema.json` | Objectives (synthesis) | Synthesised objectives shape (Wave 1.6 W1.6.A canonical projection) |
 | `schemas/knowledge/preference_pair.schema.json` | PreferencePair | DPO training pair (chosen/rejected) |
 | `schemas/knowledge/source_reference.schema.json` | SourceReference | Canonical `{sourceId, role, weight?, confidence?, pages?, extractor?}` shape shared across DART / Courseforge / Trainforge |
+| `schemas/aggregators/coverage_map.schema.json` | CoverageMap | Aggregator: objective→chunk→question→pair coverage map (Wave 3 G1) |
+| `schemas/context/aliases.ttl` | (RDF alias bridges) | Cross-namespace `owl:equivalentProperty` / `owl:equivalentClass` mappings (Phase 2.5) |
+| `schemas/context/courseforge_v1.shacl-closed.ttl` | (SHACL closed-world overlay) | Optional `sh:closed true` overlay (gated by `TRAINFORGE_SHACL_CLOSED_WORLD`) |
+| `schemas/context/courseforge_v1.shacl-rules.ttl` | (SHACL inference rules) | Advanced-mode SHACL rules (gated by `TRAINFORGE_USE_SHACL_RULES`) |
+| `schemas/context/courseforge_v1.shacl.ttl` | (SHACL shapes) | Canonical Courseforge SHACL shape set |
+| `schemas/context/courseforge_v1.vocabulary.ttl` | (RDF vocabulary) | `cf:` namespace vocabulary; Wave 87 minted 33 predicates + 2 anchor classes |
+| `schemas/courseforge/block_routing.schema.json` | BlockRoutingPolicy | Per-block-type provider/model + validators matrix routing policy (`COURSEFORGE_TWO_PASS=true`) |
+| `schemas/eval/default_eval_config.yaml` | (eval config) | Default `Trainforge.eval.slm_eval_harness` config (5×3 stage matrix) |
+| `schemas/eval/default_rubric.md` | (eval rubric) | Default LLM-as-judge rubric (free-form) |
+| `schemas/governance/course_status.schema.json` | CourseStatus | 5-value enum (`failed | non_certified_archive | certified_accessible | certified_instructional | certified_trainable`) |
+| `schemas/governance/phase_output.schema.json` | PhaseOutput | Canonical phase output envelope (`status`, `outputs`, `_gate_results[]`) |
+| `schemas/governance/promotion_chain.schema.json` | PromotionChain | 9-arrow promotion-chain shape (DART → eval-report) |
 | `schemas/library/catalog_entry.schema.json` | CatalogEntry | LibV2 master-catalog row |
+| `schemas/library/chunkset_drift_report.schema.json` | ChunksetDriftReport | Output of `ChunksetDriftValidator` (DART vs IMSCC chunk drift sidecar) |
+| `schemas/library/chunkset_manifest.schema.json` | ChunksetManifest | Per-`*_chunks/manifest.json` shape (chunker_version, chunks_sha256, source_sha256) |
 | `schemas/library/course_manifest.schema.json` | CourseManifest | LibV2 extended course metadata (validated by `LibV2ManifestValidator`) |
+| `schemas/library/packaging_report.schema.json` | PackagingReport | IMSCC packaging report sidecar shape |
+| `schemas/models/model_card.schema.json` | ModelCard | Adapter `model_card.json` shape (Wave 89 + 92 holdout_graph_hash) |
+| `schemas/models/model_pointers.schema.json` | ModelPointers | Promotion-ledger pointer file shape (Wave 93) |
 | `schemas/taxonomies/taxonomy.json` | (STEM/ARTS data; not a schema) | Division/domain/subdomain/topic hierarchy |
 | `schemas/taxonomies/pedagogy_framework.yaml` | (pedagogy framework data) | 12-tier pedagogy gap-analysis framework |
 | `schemas/taxonomies/bloom_verbs.json` | (taxonomy) | 60-verb / 6-level authoritative Bloom's list |
-| `schemas/taxonomies/question_type.json` | (taxonomy) | 7-value question-factory enum |
+| `schemas/taxonomies/question_type.json` | (taxonomy) | Canonical 9-value question-type enum (union of Trainforge factory's 7 values + `ordering` + `hotspot` from `trainforge_decision`) |
+| `schemas/taxonomies/lo_hierarchy.json` | (LO hierarchy taxonomy) | Canonical TO/CO/SubCO hierarchy enum + parent rules |
 | `schemas/taxonomies/assessment_method.json` | (taxonomy) | formative / summative / diagnostic |
 | `schemas/taxonomies/content_type.json` | (taxonomy) | 8-value section classification enum |
 | `schemas/taxonomies/cognitive_domain.json` | (taxonomy) | factual / conceptual / procedural / metacognitive |
 | `schemas/taxonomies/teaching_role.json` | (taxonomy) | (component, purpose) → role mapping |
 | `schemas/taxonomies/module_type.json` | (taxonomy) | 6-value moduleType enum |
+| `schemas/training/family_map.rdf_shacl.yaml` | (family map fixture) | Per-family CURIE clusters consumed by `FamilyCompletenessValidator` |
+| `schemas/training/family_map.schema.json` | FamilyMap | Schema for `family_map.<family>.yaml` fixture files |
+| `schemas/training/property_manifest.rdf_shacl.yaml` | (property manifest fixture) | Per-corpus property manifest fixture |
+| `schemas/training/property_manifest.schema.json` | PropertyManifest | Schema for `property_manifest.<family>.yaml` fixture files |
+| `schemas/training/schema_translation_catalog.rdf_shacl.yaml` | (schema translation fixture) | Per-corpus schema-translation catalog fixture |
+| `schemas/training/schema_translation_catalog.schema.json` | SchemaTranslationCatalog | Schema for translation-catalog fixtures (Wave 8+ deterministic-pair stamps) |
+| `schemas/training/semantic_profiles.schema.json` | SemanticProfiles | Per-domain semantic profile shape (Wave 5 W5.x) |
+| `schemas/training/semantic_profiles.yaml` | (semantic profiles data) | Default semantic profiles fixture |
+| `schemas/training/synthesis_summary.schema.json` | SynthesisSummary | Per-corpus synthesis-summary sidecar shape |
 
 Tool-local schemas (NOT under `/schemas/`):
 
@@ -1188,7 +1226,7 @@ Exact file:line anchors to key emit/consume sites. Grep-verified against the tre
 ### Question generation
 
 - **`BLOOM_QUESTION_MAP`:** `Trainforge/generators/question_factory.py:91-98`.
-- **`VALID_TYPES` (7-value factory enum):** `question_factory.py:81-89`.
+- **`VALID_TYPES` (factory subset, 7 of the canonical 9-value enum):** `question_factory.py:81-89`. Canonical 9-value enum lives at `schemas/taxonomies/question_type.json`; factory excludes `ordering` + `hotspot` (those types ship via the trainforge_decision schema and the courseforge JSON-LD path).
 - **`QuestionChoice` / `Question` dataclasses:** `question_factory.py:28, 36`.
 - **`QuestionData` / `AssessmentData` dataclasses:** `Trainforge/generators/assessment_generator.py:81, 112`.
 - **Misconception ID generator:** `Trainforge/generators/preference_factory.py:140-143`.
@@ -1229,7 +1267,7 @@ Additive section. Descriptive snapshot of what Waves 1–6 (commits `fea48f8` �
 Eight canonical taxonomy files ship under `schemas/taxonomies/` — all loadable via `lib/ontology/taxonomy.py::load_taxonomy(name)`:
 
 - `bloom_verbs.json` — 60-verb / 6-level authoritative list (loader: `lib/ontology/bloom.py`).
-- `question_type.json` — 7-value factory enum for assessments (MCQ, TF, short-answer, essay, fill-in-blank, matching, numeric).
+- `question_type.json` — canonical 9-value enum (`multiple_choice`, `multiple_response`, `true_false`, `short_answer`, `essay`, `matching`, `fill_in_blank`, `ordering`, `hotspot`). Superset of the Trainforge factory's 7-type list and the trainforge_decision schema's 8-type local enum (W-D1 P0.2 reconciliation target).
 - `assessment_method.json` — formative / summative / diagnostic split.
 - `content_type.json` — 8-value section classification (explanation, example, procedure, definition, callout, assessment, summary, introduction).
 - `cognitive_domain.json` — factual / conceptual / procedural / metacognitive (Anderson-Krathwohl).
@@ -1426,6 +1464,100 @@ Not landed in v0.2.0 (tracked for future waves):
 - Concept aliases / cross-course equivalence edges (would add a new edge sub-type and touch the Worker O scoped-ID path).
 - Flipping any opt-in flag default to "on" (waits on a regeneration cycle of legacy LibV2 corpora).
 - `SectionContentType` enforcement (companion to `TRAINFORGE_ENFORCE_CONTENT_TYPE` — Worker T addressed ChunkType only).
+
+---
+
+## § 13 Wave 1.5 → 9 changes (GPT Feedback v2 series)
+
+Additive section. Documents the on-disk schema fields landed by the
+GPT Feedback v2 wave series (Waves 1.5 through 9 TIGHT) — the post-§12
+schema/code surface that wave-grouped sections did not yet cover. No
+goal-setting; descriptive snapshot of fields visible on disk in
+`dev-v0.3.0` at the W-D2 docs-regen wave.
+
+### Wave-by-wave headline
+
+| Wave | Scope | Headline change | KG impact |
+| ---- | ----- | --------------- | --------- |
+| 1.5 (W1.5.A/B/C) | Per-block emit-side migration | `key_claims` shape widened; `objective_alignment[]` minted; merge-aware concatenation; `learning_outcome_source_refs` reverse map | Per-claim attribution surface admits structured form; legacy `List[str]` preserved via `oneOf`. |
+| 1.7 (W1.7.A/B/C) | Per-block per-objective tri-axis delivery | `objectiveAlignment[]` minted on Block JSON-LD; tri-axis (NLI / Bloom-gap / verb cooccurrence) status recorded per LO | Block-level objective-delivery audit trail materialised on disk. |
+| 1.8 | Objective-driven dynamic week count | `WAVE18_COS_PER_WEEK` env flag; `_plan_course_structure` re-scales `duration_weeks` post-objective synthesis | No KG impact; pacing-only. |
+| 1 (W1.A) | BERT-classified observed Bloom | `observed_bloom_level` + `bloom_alignment` on chunks AND blocks; null when classifier didn't run | Bloom-classification audit trail symmetric across emit + chunk surfaces. |
+| 4 (W4.A/B/C) | Per-pair claim/LO/objective audits | `per_claim_support[]`, `pair_lo_resolution`, `pair_objective_alignment[]` minted on instruction + preference pairs | Per-pair audit trail mirrors block-level Wave 1.7 surface. |
+| 5 (W5.C/G) | Per-block per-claim attribution carried into chunks | `key_claims`, `objective_alignment[]`, `learning_outcome_source_refs` propagated chunk → pair surface | Wave 1.5/1.7 emit fields cross the chunk boundary into Trainforge. |
+| 9 (TIGHT) | Dual-source DART cross-check | `dart_disagreement` outcome bucket + `dart_source_check` sub-stamp on `per_claim_support[]` | Per-claim verdicts admit a 4th outcome value (`entailed | unsupported | contradicted | dart_disagreement`); audit-only signal. |
+| 8 | Deterministic-pair audit metadata | `pair_lo_resolution.skipped: "deterministic_template"` on Wave 8 paths | (Active drift; W-D1 P0.1 lands the schema fix.) |
+| Block phase 3 | Regeneration-budget primitive | `validationAttempts`, `escalationMarker`, `touchedBy[]` on Block JSON-LD | Per-block regen audit-trail; `escalationMarker` enum surfaces consensus-fail / budget-exhaustion / `escalate_immediately`. |
+
+### chunk_v4 fields (Wave 1, 1.5, 5)
+
+Field-by-field documentation. Source-of-truth schema:
+`schemas/knowledge/chunk_v4.schema.json`.
+
+| Field | Shape | Wave | SoT line | Description |
+|-------|-------|------|----------|-------------|
+| `key_claims` | `oneOf[List[str], List[{claim, source_chunk_ids?}]]` | Wave 1.5 W1.5.A / Wave 5 W5.C | 163-187 | Per-block per-claim attribution. Legacy `List[str]` preserved via `oneOf` for back-compat (Wave 1.5 W1.5.A migration contract). Carried through `merge_small_sections` via concatenation. Optional; absent on chunks built from sections without an emitting block. |
+| `objective_alignment[]` | `array<ObjectiveAlignment>` (`$ref` `courseforge_v1` `$defs.ObjectiveAlignment`) | Wave 1.7 W1.7.A / Wave 5 W5.C | 189-193 | Per-block per-objective tri-axis delivery alignment; mirrors `$defs.ObjectiveAlignment` from `courseforge_jsonld_v1.schema.json`. Merge-aware: dedupes by `objective_id` first-seen-wins. |
+| `learning_outcome_source_refs` | `Dict[lo_id_str, List[chunk_id_str]]` | Wave 5 W5.G | 194-200 | Reverse map from `learning_outcome_refs[]` to DART/Courseforge chunk IDs. Built from `item.courseforge_metadata.learningObjectives[].sourceReferences[]`. Keys preserve emit case (`TO-05`, not `to-05`). |
+| `observed_bloom_level` | `BloomLevel \| null` | Wave 1 W1.A | 85-90 | BERT-classified Bloom level for the chunk. Null when ensemble classifier didn't run (legacy / pre-Wave-2 corpora). Populated at corpus emit time when source block carries `observedBloomLevel` JSON-LD. |
+| `bloom_alignment` | `boolean \| null` | Wave 1 W1.A | 92-94 | True iff `observed_bloom_level == bloom_level`. Carried alongside `observed_bloom_level` so consumers don't recompute. |
+
+### Pair fields (Wave 4, 5, 9 TIGHT)
+
+Source-of-truth schemas: `schemas/knowledge/instruction_pair.schema.json`,
+`schemas/knowledge/instruction_pair.strict.schema.json`,
+`schemas/knowledge/preference_pair.schema.json`. (Three schemas inline
+identical 60-line blocks per field; W-D4 P1.3 canonicalises to
+`$defs.PairObjectiveAlignment` / `$defs.PairLoResolution`.)
+
+| Field | Shape | Wave | SoT line (instruction_pair) | Description |
+|-------|-------|------|-----------------------------|-------------|
+| `per_claim_support[]` | `array<{claim, score, outcome, source_chunk_ids[], dart_source_check?}>` | Wave 4 W4.A + Wave 9 TIGHT | 113-187 | Per-claim NLI entailment vs cited chunks. `outcome` ∈ `{entailed, unsupported, contradicted, dart_disagreement}`. Wave 9 TIGHT extends `outcome` enum with `dart_disagreement` (audit-only; gate emits aggregate-rate `DART_DISAGREEMENT_RATE_HIGH` warning at >5%). |
+| `per_claim_support[].dart_source_check` | `{bucket, score, contradiction_floor}` (Wave 9 TIGHT sub-stamp) | Wave 9 TIGHT | 148-187 | DART-side dual-source NLI re-check. `bucket` ∈ `{entailed, unsupported, dart_disagreement}` (note: `contradicted` collapses to `dart_disagreement` at >= contradiction_floor). Audit-only — does NOT reject the pair. |
+| `pair_lo_resolution` | `{declared_los[], chunk_los[], phantom_los[]}` (Wave 4 W4.B base) + `{skipped}` (Wave 8) | Wave 4 W4.B + Wave 8 | 188-209 | Per-pair LO subset check. Wave 8 added `skipped: "deterministic_template"` for Wave-8 deterministic-template pair paths (`--with-kg-metadata` / `--with-violation-detection`). **Active drift today**: `additionalProperties: false` rejects `skipped`; W-D1 P0.1 closes the gap. |
+| `pair_objective_alignment[]` | `array<{objective_id, status, nli_score?, bloom_gap?, verb_cooccurrence?}>` | Wave 4 W4.C MEDIUM | 211-268 | Per-pair per-objective tri-axis NLI / Bloom-gap / verb-cooccurrence delivery audit. `status` ∈ `{delivered, partial, missing}`. Mirrors block-level Wave 1.7 surface on the pair surface. |
+| `pair_objective_alignment_pass_rate` | `float \| null` | Wave 4 W4.C | 269-273 | Fraction of `pair_objective_alignment[]` entries with `status == "delivered"`. Null when array is null/empty. |
+
+### JSON-LD Block fields (Wave 1, 1.7, Block phase 3)
+
+Source-of-truth schema:
+`schemas/knowledge/courseforge_jsonld_v1.schema.json` (`$defs.Block`
++ `$defs.Touch` + page-level extensions). Block dataclass
+companion: `Courseforge/scripts/blocks.py::Block`.
+
+| Field | Shape | Wave | SoT line | Description |
+|-------|-------|------|----------|-------------|
+| `objectiveAlignment[]` | `array<ObjectiveAlignment>` | Wave 1.7 W1.7.A | 562 | Per-block per-objective tri-axis delivery audit at JSON-LD layer. Mirrors `chunk_v4.objective_alignment` at the emit side. |
+| `observedBloomLevel` | `BloomLevel \| null` | Wave 1 W1.A | 387, 495 | Block-level observed Bloom (BERT classifier output). Mirrors `chunk_v4.observed_bloom_level`. |
+| `bloomAlignment` | `boolean \| null` | Wave 1 W1.A | 394, 502 | Block-level Bloom alignment boolean. Mirrors `chunk_v4.bloom_alignment`. |
+| `escalationMarker` | `enum["validator_consensus_fail", "outline_budget_exhausted", "escalate_immediately"] \| null` | Block phase 3 | 553 | Per-block regeneration-budget escalation marker. `validator_consensus_fail` = consensus-fail across all N candidates; `outline_budget_exhausted` = `COURSEFORGE_OUTLINE_REGEN_BUDGET` exhausted; `escalate_immediately` = per-block-type YAML short-circuit. |
+| `validationAttempts` | `non-negative integer` | Block phase 3 | 548 | Per-block regen counter. Increments each time validator chain returns `action="regenerate"`. Pinned against `COURSEFORGE_OUTLINE_REGEN_BUDGET` / `COURSEFORGE_REWRITE_REGEN_BUDGET`. |
+| `touchedBy[]` | `array<Touch>` (Touch = `{tier, provider, model, purpose?, attempt}`) | Block phase 3 | 478 | Per-block dispatch trail — one entry per outline / rewrite / remediation / `escalate_immediately` touch. `purpose="escalate_immediately"` disambiguates the YAML short-circuit path from `escalation_marker="outline_budget_exhausted"`. |
+
+### Cross-references
+
+- Wave 1.5 / 1.7 emit-side migration contract: `Courseforge/CLAUDE.md`
+  § "Phase 3: outline-rewrite two-pass router".
+- Wave 4 pair-validator entrypoints: `lib/validators/pair_claim_support.py`
+  (W4.A + Wave 9 TIGHT), `lib/validators/pair_lo_refs.py` (W4.B),
+  `lib/validators/pair_objective_delivery.py` (W4.C MEDIUM).
+- Wave 5 W5.C / W5.G chunk-emit propagation: `Trainforge/process_course.py::_create_chunk`.
+- Wave 9 TIGHT DART cross-check rule: see `pair_claim_support.py`
+  dual-source path (1461 LOC; W-D7 P2.3 splits this file).
+- Block phase 3 regen-budget primitive: `Courseforge/router/router.py::CourseforgeRouter`.
+
+### Active drift (W-D1 scope)
+
+`pair_lo_resolution.skipped` (Wave 8) is rejected by all three pair
+schemas today because each carries `additionalProperties: false`
+with only the 3 W4.B base properties (`declared_los`, `chunk_los`,
+`phantom_los`). W-D1 P0.1 lands a 10-LOC fix per schema (3 schemas)
+to add `"skipped": {"type": "string", "enum":
+["deterministic_template"]}` to `pair_lo_resolution.properties`.
+Schema gates fire only on full-corpus rebuild + strict validation,
+which is why the drift escaped detection in the original Wave 8 PR.
+Until W-D1 P0.1 lands, treat `pair_lo_resolution.skipped` as a
+known-strict-validation-failure on Wave-8 deterministic paths.
 
 ---
 

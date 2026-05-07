@@ -280,61 +280,38 @@ script continues and produces the rows that DO have data.
 
 ## Decision Capture Protocol
 
-**CRITICAL**: All LLM decisions MUST be captured for training data.
+All Trainforge LLM call sites follow the canonical decision-capture
+contract documented in root `CLAUDE.md`:
 
-> **Strict-mode opt-in.** Set `DECISION_VALIDATION_STRICT=true` to fail-closed on unknown `decision_type` values. The canonical enum lives at `schemas/events/decision_event.schema.json` (52 values as of the current tree). Default remains lenient (unknown values pass with a warning).
->
-> Canonical `decision_type` values for Trainforge call sites: `assessment_planning`, `question_type_selection`, `question_generation`, `distractor_generation`, `assessment_generation`. `assessment_planning` + `question_type_selection` are the per-run planning decisions; `question_generation` / `distractor_generation` fire per question; `assessment_generation` fires per assembled assessment.
+- **Contract:** `CLAUDE.md` § "Decision Capture" (rationale ≥20 chars,
+  required fields, output locations).
+- **Per-call instrumentation:** `CLAUDE.md` § "LLM call-site
+  instrumentation" — every LLM call site MUST emit at least one
+  decision per call (per-batch when batched). The Trainforge
+  precedents enumerated in that section: `Trainforge/generators/_anthropic_provider.py`,
+  `Trainforge/generators/_curriculum_provider.py`,
+  `Trainforge/generators/_openai_compatible_client.py`.
 
-### Required Captures
+**Trainforge-specific surfaces:**
 
-1. **Content Selection**
-   - Which chunks retrieved from RAG index
-   - Relevance scores and rejection reasons
-   - Query refinement decisions
-
-2. **Question Generation**
-   - Question type selection rationale
-   - Bloom's level targeting decisions
-   - Stem formulation choices
-
-3. **Distractor Generation**
-   - Misconception targeting rationale
-   - Plausibility assessment
-   - Rejection reasons for alternatives
-
-4. **Validation Decisions**
-   - Alignment check results
-   - Quality scoring rationale
-   - Pass/fail decisions with reasons
-
-### Using Decision Capture
-
-```python
-from lib.trainforge_capture import create_trainforge_capture
-
-with create_trainforge_capture("INT_101", "/path/to/INT_101.imscc") as capture:
-    # Set learning objective context
-    capture.set_learning_objective_context(
-        lo_id="TO-01",
-        bloom_target="understand"
-    )
-
-    # Log question generation decision
-    capture.log_question_generation(
-        question=question_data,
-        source_chunks=["chunk_1", "chunk_2"],
-        generation_rationale="Selected MCQ format to assess understanding of core concept"
-    )
-
-    # Log distractor rationale
-    capture.log_distractor_rationale(
-        question_id="Q001",
-        distractor_text="...",
-        misconception_targeted="common_confusion_x",
-        rationale="Students often confuse X with Y because..."
-    )
-```
+- Canonical `decision_type` values for Trainforge call sites:
+  `assessment_planning`, `question_type_selection`,
+  `question_generation`, `distractor_generation`,
+  `assessment_generation`. `assessment_planning` +
+  `question_type_selection` are per-run planning decisions;
+  `question_generation` / `distractor_generation` fire per question;
+  `assessment_generation` fires per assembled assessment.
+- Strict-mode opt-in: set `DECISION_VALIDATION_STRICT=true` to
+  fail-closed on unknown `decision_type` values. The canonical enum
+  lives at `schemas/events/decision_event.schema.json` (52 values as
+  of the current tree). Default remains lenient (unknown values pass
+  with a warning).
+- Convenience helper: `lib.trainforge_capture.create_trainforge_capture`
+  is a context-manager wrapper over `DecisionCapture` that pre-binds
+  the `course_code` + `imscc_source` fields and exposes
+  `set_learning_objective_context()` / `log_question_generation()` /
+  `log_distractor_rationale()` shortcuts. See
+  `Trainforge/lib/trainforge_capture.py` for the full surface.
 
 ---
 
