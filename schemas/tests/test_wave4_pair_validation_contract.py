@@ -1454,3 +1454,437 @@ def test_resolve_chunk_key_claims_with_attribution_helper() -> None:
         [],
         False,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Wave 9 TIGHT — dual-source DART cross-check (chunker-drift slice)
+# --------------------------------------------------------------------------- #
+
+
+def _w9_chunk_with_source_refs(
+    *,
+    text: str,
+    source_ids: List[str],
+    role: str = "primary",
+) -> Dict[str, Any]:
+    """Build a chunk dict carrying ``source.source_references[]`` so
+    the Wave 9 dual-source check resolves DART block texts via the
+    canonical ``sourceId`` chain.
+    """
+    return {
+        "text": text,
+        "source": {
+            "source_references": [
+                {"sourceId": sid, "role": role} for sid in source_ids
+            ],
+        },
+    }
+
+
+def test_pair_claim_support_dual_source_off_by_default() -> None:
+    """Wave 9 TIGHT — legacy call site without the new kwargs MUST
+    skip the DART cross-check. Validates back-compat: the W4.A / W5.D
+    surface contract is preserved byte-for-byte for callers that
+    haven't yet wired ``dart_block_text_map`` / ``dual_source_severity``
+    through.
+    """
+    from lib.validators.pair_claim_support import PairClaimSupportValidator
+
+    completion = (
+        "RDF triples are the smallest unit of structured knowledge. "
+        "Each triple links a subject to an object via a predicate."
+    )
+    pair = _instruction_pair(completion=completion, chunk_id="ch1#legacy")
+    chunk = _w9_chunk_with_source_refs(
+        text=_CHUNK_TEXT_THREE_FACT,
+        source_ids=["dart:doc1#blk_001"],
+    )
+
+    seen_premises: List[str] = []
+
+    def _score(premise, hypothesis):
+        seen_premises.append(premise)
+        return (0.85, 0.10, 0.05)
+
+    stub = _StubNliClassifier(score_fn=_score)
+    validator = PairClaimSupportValidator(nli=stub)
+
+    status, reason, new_fields = validator.validate_pair(
+        pair, kind="instruction", chunk=chunk,
+        # No dart_block_text_map, no dual_source_severity — defaults.
+    )
+
+    assert (status, reason) == ("validated", None)
+    pcs = new_fields["per_claim_support"]
+    assert isinstance(pcs, list) and len(pcs) == 2
+    # Wave 9 audit field MUST NOT be stamped on legacy callers.
+    for entry in pcs:
+        assert "dart_source_check" not in entry, (
+            "Legacy call without dual-source kwargs MUST NOT stamp "
+            f"dart_source_check; got entry={entry!r}"
+        )
+    # Outcome stays in the canonical 3-value set.
+    outcomes = {entry["outcome"] for entry in pcs}
+    assert outcomes <= {"entailed", "unsupported", "contradicted"}, (
+        f"legacy outcome set MUST stay 3-value; got {outcomes!r}"
+    )
+    # No NLI premise was the DART block text — the only premise was
+    # the IMSCC chunk text (W4.A path).
+    assert all(p == _CHUNK_TEXT_THREE_FACT for p in seen_premises), (
+        f"legacy path MUST score against the IMSCC chunk text only; "
+        f"got premises={seen_premises!r}"
+    )
+
+
+def test_pair_claim_support_dual_source_passes_when_dart_entails() -> None:
+    """Wave 9 TIGHT positive — IMSCC entails AND DART entails; the
+    audit field is stamped, outcome stays ``"entailed"``.
+
+    Asserts:
+
+    1. ``dart_source_check`` is stamped on every per-claim entry that
+       was ``entailed`` after the IMSCC pass.
+    2. The DART NLI premise was the resolved DART block text (NOT the
+       IMSCC chunk text).
+    3. ``per_claim_support[*].outcome`` stays ``"entailed"`` because
+       the DART check did not contradict.
+    4. Decision-capture rationale interpolates
+       ``dart_check_fired_count=2`` and ``dart_disagreement_count=0``.
+    """
+    from lib.validators.pair_claim_support import PairClaimSupportValidator
+
+    completion = (
+        "RDF triples are the smallest unit of structured knowledge. "
+        "Each triple links a subject to an object via a predicate."
+    )
+    pair = _instruction_pair(completion=completion, chunk_id="ch1#w9_pass")
+    chunk = _w9_chunk_with_source_refs(
+        text=_CHUNK_TEXT_THREE_FACT,
+        source_ids=["dart:doc1#blk_001"],
+    )
+    dart_premise_sentinel = "DART_W9_PASS_BLOCK_TEXT_SENTINEL_001"
+    dart_block_text_map = {"dart:doc1#blk_001": dart_premise_sentinel}
+
+    seen_premises: List[str] = []
+
+    def _score(premise, hypothesis):
+        seen_premises.append(premise)
+        return (0.85, 0.10, 0.05)  # entailed everywhere
+
+    stub = _StubNliClassifier(score_fn=_score)
+    validator = PairClaimSupportValidator(nli=stub)
+    capture = _RecordingCapture()
+
+    status, reason, new_fields = validator.validate_pair(
+        pair,
+        kind="instruction",
+        chunk=chunk,
+        decision_capture=capture,
+        dart_block_text_map=dart_block_text_map,
+        dual_source_severity="warning",
+    )
+
+    assert (status, reason) == ("validated", None)
+    pcs = new_fields["per_claim_support"]
+    assert isinstance(pcs, list) and len(pcs) == 2
+
+    # ---- Sub-clause 1: dart_source_check stamped on each entry. ---- #
+    for entry in pcs:
+        assert "dart_source_check" in entry, (
+            f"DART check MUST stamp dart_source_check on entailed "
+            f"entries; got entry={entry!r}"
+        )
+        ds = entry["dart_source_check"]
+        assert ds["entailment"] == pytest.approx(0.85)
+        assert ds["contradiction"] == pytest.approx(0.05)
+        assert ds["outcome"] == "entailed"
+        # IMSCC outcome stays "entailed" because DART agreed.
+        assert entry["outcome"] == "entailed"
+
+    # ---- Sub-clause 2: DART premise was the sentinel. ---- #
+    assert dart_premise_sentinel in seen_premises, (
+        f"dual-source check MUST score against the DART block text; "
+        f"got premises={seen_premises!r}"
+    )
+
+    # ---- Sub-clause 3: rationale interpolates W9 signals. ---- #
+    assert len(capture.events) == 1
+    rationale = str(capture.events[0]["rationale"])
+    assert "dart_check_fired_count=2" in rationale, (
+        "W9 rationale MUST interpolate dart_check_fired_count=<n>; "
+        f"got rationale={rationale!r}"
+    )
+    assert "dart_disagreement_count=0" in rationale, (
+        "W9 rationale MUST interpolate dart_disagreement_count=<n>; "
+        f"got rationale={rationale!r}"
+    )
+
+
+def test_pair_claim_support_dual_source_stamps_dart_disagreement_on_contradiction() -> None:
+    """Wave 9 TIGHT negative — IMSCC entails BUT DART contradicts at
+    >= 0.50; outcome bumps to ``"dart_disagreement"`` and the pair is
+    NOT rejected (warning severity).
+
+    Asserts:
+
+    1. ``per_claim_support[*].outcome`` is ``"dart_disagreement"`` for
+       the entry the DART pass contradicted.
+    2. ``dart_source_check.outcome`` is ``"dart_disagreement"``.
+    3. The pair is NOT rejected — ``(status, reason) == ("validated",
+       None)`` because dual-source severity is warning-only.
+    4. ``dart_disagreement_count=1`` interpolated in rationale.
+    """
+    from lib.validators.pair_claim_support import (
+        PairClaimSupportValidator,
+        _DEFAULT_DART_CONTRADICTION_FLOOR,
+    )
+
+    completion = (
+        "RDF triples are the smallest unit of structured knowledge. "
+        "Each triple links a subject to an object via a predicate."
+    )
+    pair = _instruction_pair(
+        completion=completion, chunk_id="ch1#w9_disagree",
+    )
+    chunk = _w9_chunk_with_source_refs(
+        text=_CHUNK_TEXT_THREE_FACT,
+        source_ids=["dart:doc1#blk_002"],
+    )
+    dart_premise = "DART_W9_DISAGREE_BLOCK_TEXT"
+    dart_block_text_map = {"dart:doc1#blk_002": dart_premise}
+
+    def _score(premise, hypothesis):
+        # IMSCC pass: every sentence entailed.
+        # DART pass: first sentence contradicted (>= 0.50).
+        if premise == dart_premise:
+            if "smallest unit" in hypothesis:
+                return (0.05, 0.10, 0.85)  # contradicted
+            return (0.85, 0.10, 0.05)  # entailed (DART)
+        return (0.85, 0.10, 0.05)  # IMSCC entailed
+
+    stub = _StubNliClassifier(score_fn=_score)
+    validator = PairClaimSupportValidator(nli=stub)
+    capture = _RecordingCapture()
+
+    status, reason, new_fields = validator.validate_pair(
+        pair,
+        kind="instruction",
+        chunk=chunk,
+        decision_capture=capture,
+        dart_block_text_map=dart_block_text_map,
+        dual_source_severity="warning",
+    )
+
+    # ---- Sub-clause 3 (eager): warning-only — pair NOT rejected. ---- #
+    assert (status, reason) == ("validated", None), (
+        f"Wave 9 dual-source disagreement MUST NOT reject the pair "
+        f"(warning severity); got ({status!r}, {reason!r})"
+    )
+
+    pcs = new_fields["per_claim_support"]
+    assert len(pcs) == 2
+    # First entry: DART contradicted → outcome bumped + dart_source_check
+    # carries the disagreement bucket.
+    first = pcs[0]
+    assert first["outcome"] == "dart_disagreement", (
+        f"DART contradiction MUST bump outcome to dart_disagreement; "
+        f"got entry={first!r}"
+    )
+    assert "dart_source_check" in first
+    ds = first["dart_source_check"]
+    assert ds["outcome"] == "dart_disagreement"
+    assert ds["contradiction"] >= _DEFAULT_DART_CONTRADICTION_FLOOR
+    # Second entry: DART agreed → outcome stays entailed.
+    second = pcs[1]
+    assert second["outcome"] == "entailed"
+    assert second["dart_source_check"]["outcome"] == "entailed"
+
+    # ---- Sub-clause 4: rationale carries dart_disagreement_count=1. ---- #
+    rationale = str(capture.events[0]["rationale"])
+    assert "dart_disagreement_count=1" in rationale, (
+        "W9 rationale MUST interpolate dart_disagreement_count on the "
+        f"disagreement path; got rationale={rationale!r}"
+    )
+    assert "dart_check_fired_count=2" in rationale
+
+
+def test_pair_claim_support_dual_source_skips_deterministic_pairs() -> None:
+    """Wave 9 TIGHT × W8 precedence — pairs carrying
+    ``pair_lo_resolution.skipped == "deterministic_template"`` (W8
+    Worker A audit-stamp helper) MUST NOT trigger the dual-source
+    check.
+
+    Deterministic pairs don't go through the LLM paraphrase path so a
+    DART / IMSCC drift signal is meaningless on them. Skipping cleanly
+    (no ``dart_source_check`` field, no ``dart_disagreement`` outcome
+    bump) preserves the W8 audit stamp as the only resolution stamped
+    on the pair.
+    """
+    from lib.validators.pair_claim_support import PairClaimSupportValidator
+
+    completion = (
+        "RDF triples are the smallest unit of structured knowledge. "
+        "Each triple links a subject to an object via a predicate."
+    )
+    pair = _instruction_pair(
+        completion=completion, chunk_id="ch1#w9_w8_skip",
+    )
+    # W8 deterministic-template marker.
+    pair["pair_lo_resolution"] = {
+        "declared_los": ["kg-metadata"],
+        "chunk_los": ["kg-metadata"],
+        "phantom_los": [],
+        "resolved": True,
+        "skipped": "deterministic_template",
+    }
+    chunk = _w9_chunk_with_source_refs(
+        text=_CHUNK_TEXT_THREE_FACT,
+        source_ids=["dart:doc1#blk_w8"],
+    )
+    # Even a contradicting DART text would be irrelevant — the dual-
+    # source check MUST short-circuit BEFORE the DART NLI fan-out.
+    dart_premise = "DART_W8_SKIP_BLOCK_TEXT_CONTRADICTS"
+    dart_block_text_map = {"dart:doc1#blk_w8": dart_premise}
+
+    seen_premises: List[str] = []
+
+    def _score(premise, hypothesis):
+        seen_premises.append(premise)
+        if premise == dart_premise:
+            return (0.05, 0.05, 0.90)  # would contradict if scored
+        return (0.85, 0.10, 0.05)  # IMSCC entailed
+
+    stub = _StubNliClassifier(score_fn=_score)
+    validator = PairClaimSupportValidator(nli=stub)
+    capture = _RecordingCapture()
+
+    status, reason, new_fields = validator.validate_pair(
+        pair,
+        kind="instruction",
+        chunk=chunk,
+        decision_capture=capture,
+        dart_block_text_map=dart_block_text_map,
+        dual_source_severity="warning",
+    )
+
+    assert (status, reason) == ("validated", None)
+    pcs = new_fields["per_claim_support"]
+    assert isinstance(pcs, list) and len(pcs) == 2
+    # No entry MUST carry a dart_source_check — deterministic pairs are
+    # skipped before the DART NLI pass fires.
+    for entry in pcs:
+        assert "dart_source_check" not in entry, (
+            "Deterministic-template pair MUST NOT receive "
+            f"dart_source_check stamp; got entry={entry!r}"
+        )
+        # Outcome stays in the legacy 3-value set.
+        assert entry["outcome"] in {
+            "entailed", "unsupported", "contradicted",
+        }, f"deterministic pair outcome stayed legacy; got {entry!r}"
+    # No DART premise leaked into NLI scoring.
+    assert dart_premise not in seen_premises, (
+        f"deterministic-pair short-circuit MUST skip DART NLI; got "
+        f"premises={seen_premises!r}"
+    )
+    # Rationale records dart_check_fired_count=0 — the audit trail
+    # surfaces the skip.
+    rationale = str(capture.events[0]["rationale"])
+    assert "dart_check_fired_count=0" in rationale, (
+        "deterministic-pair rationale MUST surface "
+        f"dart_check_fired_count=0; got rationale={rationale!r}"
+    )
+
+
+def test_validate_walk_emits_dart_disagreement_rate_high_warning(
+    tmp_path,
+) -> None:
+    """Wave 9 TIGHT gate-runner walk — when > 5% of pairs on disk
+    carry a per-claim ``"dart_disagreement"`` outcome, the validator
+    MUST emit a warning-severity ``DART_DISAGREEMENT_RATE_HIGH``
+    GateIssue with the rate + total count interpolated into the
+    message.
+
+    Day-1 contract: warning severity does not block the gate; the
+    overall ``passed`` flag stays True so promotion is unaffected.
+    """
+    from lib.validators.pair_claim_support import (
+        PairClaimSupportValidator,
+        _CODE_DART_DISAGREEMENT_RATE_HIGH,
+        _DART_DISAGREEMENT_RATE_WARN_CEILING,
+    )
+
+    # Build 10 pairs: 2 carry dart_disagreement (20%) — well above the
+    # 5% ceiling so the warning MUST fire.
+    pairs_path = tmp_path / "instruction_pairs.jsonl"
+    rows: List[Dict[str, Any]] = []
+    for i in range(8):
+        rows.append({
+            "prompt": "x" * 50,
+            "completion": "y" * 100,
+            "chunk_id": f"ch{i}",
+            "per_claim_support": [
+                {
+                    "sentence": "Filler sentence content.",
+                    "entailment": 0.85,
+                    "contradiction": 0.05,
+                    "outcome": "entailed",
+                },
+            ],
+            "claim_support_rate": 1.0,
+        })
+    for i in range(2):
+        rows.append({
+            "prompt": "x" * 50,
+            "completion": "y" * 100,
+            "chunk_id": f"ch_w9_{i}",
+            "per_claim_support": [
+                {
+                    "sentence": "Filler with dart disagreement.",
+                    "entailment": 0.85,
+                    "contradiction": 0.05,
+                    "outcome": "dart_disagreement",
+                    "dart_source_check": {
+                        "entailment": 0.05,
+                        "contradiction": 0.85,
+                        "outcome": "dart_disagreement",
+                    },
+                },
+            ],
+            "claim_support_rate": 0.0,
+        })
+    with pairs_path.open("w", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row) + "\n")
+
+    validator = PairClaimSupportValidator()
+    result = validator.validate({
+        "instruction_pairs_path": str(pairs_path),
+    })
+
+    # Day-1 contract: warning severity → passed stays True (no
+    # critical issue raised).
+    assert result.passed, (
+        "Wave 9 day-1 contract: aggregate-rate warning MUST NOT block "
+        f"the gate; got result={result!r}"
+    )
+    # Find the warning issue.
+    warn_issues = [
+        i for i in result.issues
+        if i.code == _CODE_DART_DISAGREEMENT_RATE_HIGH
+    ]
+    assert len(warn_issues) == 1, (
+        f"expected exactly one DART_DISAGREEMENT_RATE_HIGH issue; "
+        f"got issues={result.issues!r}"
+    )
+    issue = warn_issues[0]
+    assert issue.severity == "warning"
+    # Message interpolates the rate + count.
+    msg = issue.message
+    assert "2 of 10 pair(s)" in msg, (
+        f"warning MUST interpolate count; got msg={msg!r}"
+    )
+    assert "20.0%" in msg, (
+        f"warning MUST interpolate rate; got msg={msg!r}"
+    )
+    # Sanity — the ceiling default really is 5%.
+    assert _DART_DISAGREEMENT_RATE_WARN_CEILING == 0.05

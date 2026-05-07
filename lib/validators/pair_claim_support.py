@@ -108,7 +108,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
 from lib.classifiers.nli_classifier import NliClassifier, NliScore
@@ -228,6 +228,40 @@ def _decompose_sentences(text: str) -> List[str]:
 #: — the same asymmetry holds between a synthesized completion sentence
 #: and the structured claim it expounds).
 _PER_CLAIM_MATCH_COSINE_FLOOR: float = 0.50
+
+
+# --------------------------------------------------------------------- #
+# Wave 9 TIGHT — dual-source DART cross-check (chunker-drift slice)
+# --------------------------------------------------------------------- #
+
+
+#: DART-side per-claim contradiction floor for the dual-source check.
+#: Mirrors :data:`_DEFAULT_CONTRADICTION_FLOOR` (0.50) — the W2.F sibling
+#: at ``lib/validators/claim_support.py`` uses 0.50 against the same
+#: DeBERTa-v3 NLI classifier, and §3 (lines 248-255) of
+#: ``plans/dual-source-investigation-2026-05.md`` calls out that a
+#: separate floor calibration on the pair-side DART check is a future
+#: wave. Day-1 we reuse the IMSCC-side floor so a sentence the IMSCC
+#: chunk entails but the DART block contradicts at ≥ 0.50 stamps
+#: ``dart_disagreement`` on the audit field. Warning-severity at the
+#: gate-runner walk; no per-pair reject.
+_DEFAULT_DART_CONTRADICTION_FLOOR: float = 0.50
+
+#: Aggregate-rate ceiling for the gate-runner walk's
+#: ``DART_DISAGREEMENT_RATE_HIGH`` warning. When > 5% of pairs on disk
+#: carry a ``dart_disagreement`` outcome on any per-claim entry, fire a
+#: warning-severity GateIssue. Day-1 surfaces operator signal without
+#: blocking promotion — calibration on a real corpus may flip to
+#: critical.
+_DART_DISAGREEMENT_RATE_WARN_CEILING: float = 0.05
+
+#: GateIssue code for the gate-runner walk's aggregate warning.
+_CODE_DART_DISAGREEMENT_RATE_HIGH: str = "DART_DISAGREEMENT_RATE_HIGH"
+
+#: New per-claim outcome value added by Wave 9. Used when the IMSCC NLI
+#: pass scored ``"entailed"`` but the dual-source DART NLI re-score
+#: contradicted at >= :data:`_DEFAULT_DART_CONTRADICTION_FLOOR`.
+_OUTCOME_DART_DISAGREEMENT: str = "dart_disagreement"
 
 
 def _resolve_chunk_key_claims_with_attribution(
@@ -367,6 +401,58 @@ def _match_sentence_to_claim(
     return best_idx
 
 
+def _resolve_dart_block_texts_for_chunk(
+    *,
+    chunk: Optional[Dict[str, Any]],
+    dart_block_text_map: Dict[str, str],
+) -> List[str]:
+    """Wave 9 TIGHT — resolve the union of DART block texts cited by a
+    chunk via its ``source.source_references[].sourceId`` list.
+
+    Returns the deduped list of DART block texts (preserves first-seen
+    order). Empty list when:
+
+    - ``chunk`` is None or non-dict.
+    - ``chunk["source"]["source_references"]`` is missing / empty / not
+      a list (legacy / non-Courseforge corpora — the dual-source check
+      no-ops cleanly).
+    - None of the resolved ``sourceId`` values are present in
+      ``dart_block_text_map`` (chunker-drift slice on a chunk whose
+      source IDs renamed post-DART; the caller's audit field will read
+      "DART check did not fire" rather than "disagreement").
+
+    The multi-block union path is the resolution called out in §2 of
+    the dual-source plan: when ``merge_small_sections`` collapses
+    multiple DART blocks into one IMSCC chunk, the DART premise pool
+    is the union of ALL named blocks, so a sentence backed by ANY one
+    of them is entailed (mirrors the W2.F max-over-candidates
+    aggregation at the IMSCC layer).
+    """
+    if not isinstance(chunk, dict):
+        return []
+    source = chunk.get("source")
+    if not isinstance(source, dict):
+        return []
+    refs = source.get("source_references")
+    if not isinstance(refs, list) or not refs:
+        return []
+    seen: Dict[str, None] = {}
+    texts: List[str] = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        source_id = ref.get("sourceId")
+        if not isinstance(source_id, str) or not source_id:
+            continue
+        if source_id in seen:
+            continue
+        seen[source_id] = None
+        block_text = dart_block_text_map.get(source_id)
+        if isinstance(block_text, str) and block_text.strip():
+            texts.append(block_text)
+    return texts
+
+
 def _emit_decision(
     capture: Any,
     *,
@@ -384,6 +470,8 @@ def _emit_decision(
     deps_missing: bool,
     structured_attribution_used: bool = False,
     per_claim_match_count: int = 0,
+    dart_check_fired_count: int = 0,
+    dart_disagreement_count: int = 0,
 ) -> None:
     """Emit one ``pair_claim_support_check`` decision per
     :meth:`PairClaimSupportValidator.validate_pair` invocation.
@@ -424,6 +512,8 @@ def _emit_decision(
         f"nli_loaded={nli_loaded}, deps_missing={deps_missing}, "
         f"structured_attribution_used={structured_attribution_used}, "
         f"per_claim_match_count={per_claim_match_count}, "
+        f"dart_check_fired_count={dart_check_fired_count}, "
+        f"dart_disagreement_count={dart_disagreement_count}, "
         f"promotion_status={promotion_status}, "
         f"rejection_reason={rejection_reason or 'none'}."
     )
@@ -525,6 +615,8 @@ class PairClaimSupportValidator:
         chunk: Optional[Dict[str, Any]] = None,
         chunk_id_to_text_map: Optional[Dict[str, str]] = None,
         decision_capture: Any = None,
+        dart_block_text_map: Optional[Dict[str, str]] = None,
+        dual_source_severity: Literal["off", "warning"] = "off",
     ) -> Tuple[str, Optional[str], Dict[str, Any]]:
         """Audit one pair against the per-claim NLI support criteria.
 
@@ -559,6 +651,37 @@ class PairClaimSupportValidator:
             decision_capture: Optional :class:`DecisionCapture`
                 instance. When wired, one
                 ``pair_claim_support_check`` event per call.
+            dart_block_text_map: Optional Wave 9 TIGHT dual-source
+                cross-check map keyed by ``dart:<slug>#<block_id>``.
+                When non-empty AND ``dual_source_severity != "off"``,
+                every IMSCC-NLI ``"entailed"`` outcome triggers a
+                second NLI pass against the union of DART block texts
+                resolved from the cited IMSCC chunk's
+                ``source.source_references[].sourceId``. The DART pass
+                stamps ``per_claim_support[].dart_source_check =
+                {entailment, contradiction, outcome}`` on the audit
+                field, and bumps the per-claim ``outcome`` from
+                ``"entailed"`` to ``"dart_disagreement"`` when DART
+                contradicts at >=
+                :data:`_DEFAULT_DART_CONTRADICTION_FLOOR`. **Day-1
+                contract**: warning-severity only — does NOT reject the
+                pair, no ``(status, reason)`` tuple change for
+                ``dart_disagreement``. The gate-runner walk surfaces
+                the aggregate :data:`_CODE_DART_DISAGREEMENT_RATE_HIGH`
+                warning when > 5% of pairs carry the new outcome.
+                Closes the chunker-drift slice (Finding 5 from
+                ``plans/dual-source-investigation-2026-05.md``) — the
+                W2.F seam fires before IMSCC chunking, so it can't see
+                ``merge_small_sections`` / sentence-split sub-chunking
+                drift introduced post-Courseforge.
+            dual_source_severity: Wave 9 TIGHT severity dial. Values:
+                ``"off"`` (default — legacy corpora bypass, no DART
+                cross-check fires) or ``"warning"`` (audit-stamp only;
+                no per-pair reject). A future calibration wave may
+                introduce ``"critical"`` once the DART-side
+                contradiction floor is calibrated against the
+                rdf-shacl-551-2 corpus per §3 of the dual-source
+                investigation plan.
 
         Returns:
             ``(promotion_status, rejection_reason, new_fields)``:
@@ -870,6 +993,140 @@ class PairClaimSupportValidator:
                 "source_chunk_ids": sentence_attributions[s_idx],
             })
 
+        # ---- Wave 9 TIGHT: dual-source DART cross-check ---- #
+        # AFTER the IMSCC NLI fan-out scores a sentence as ``entailed``,
+        # AND ``dual_source_severity != "off"``, AND
+        # ``dart_block_text_map`` is non-empty: re-score each entailed
+        # sentence against the union of DART block text(s) resolved
+        # from the cited IMSCC chunk's
+        # ``source.source_references[].sourceId``. Stamp the result on
+        # ``per_claim_support[].dart_source_check`` and bump the
+        # per-claim ``outcome`` from ``"entailed"`` to
+        # ``"dart_disagreement"`` when DART contradicts at >=
+        # :data:`_DEFAULT_DART_CONTRADICTION_FLOOR`.
+        #
+        # **Worker A precedence (W8)**: deterministic-template pairs
+        # carry ``pair_lo_resolution.skipped == "deterministic_template"``
+        # and MUST NOT trigger the dual-source check — those pairs
+        # don't go through the LLM paraphrase path so a DART /
+        # IMSCC drift signal is meaningless on them. Skip cleanly so
+        # the W8 audit stamp is the only resolution stamped on the
+        # pair.
+        #
+        # **Reject contract**: warning-severity only. The audit field
+        # is stamped, the per-claim ``outcome`` is bumped, but no
+        # ``(status, reason)`` tuple change. The aggregate-rate
+        # warning fires at the gate-runner walk via
+        # :data:`_CODE_DART_DISAGREEMENT_RATE_HIGH`.
+        dart_check_fired_count = 0
+        dart_disagreement_count = 0
+        _is_deterministic_template = False
+        _plr = pair.get("pair_lo_resolution")
+        if (
+            isinstance(_plr, dict)
+            and _plr.get("skipped") == "deterministic_template"
+        ):
+            _is_deterministic_template = True
+        if (
+            dual_source_severity != "off"
+            and dart_block_text_map
+            and not _is_deterministic_template
+        ):
+            dart_premise_texts = _resolve_dart_block_texts_for_chunk(
+                chunk=chunk,
+                dart_block_text_map=dart_block_text_map,
+            )
+            if dart_premise_texts:
+                # Build (premise, hypothesis) pairs for every
+                # currently-``entailed`` sentence × every resolved DART
+                # block text. Aggregation mirrors the IMSCC fan-out
+                # above: max-entailment / max-contradiction so a
+                # sentence backed by ANY DART block text is entailed,
+                # contradicted by ANY DART block text is contradicted.
+                dart_nli_pairs: List[Tuple[str, str]] = []
+                dart_pair_index_ranges: List[Optional[Tuple[int, int]]] = (
+                    []
+                )
+                for entry in per_claim_support:
+                    if entry["outcome"] != "entailed":
+                        dart_pair_index_ranges.append(None)
+                        continue
+                    start = len(dart_nli_pairs)
+                    for premise in dart_premise_texts:
+                        dart_nli_pairs.append((premise, entry["sentence"]))
+                    end = len(dart_nli_pairs)
+                    dart_pair_index_ranges.append((start, end))
+                if dart_nli_pairs:
+                    try:
+                        dart_scores: List[NliScore] = nli.score_batch(
+                            pairs=dart_nli_pairs,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        # Defensive: a transient NLI error on the DART
+                        # pass MUST NOT poison the IMSCC verdict.
+                        # Stamp nothing and continue — the audit field
+                        # remains absent on every per_claim entry,
+                        # which the gate-runner walk reads as "DART
+                        # check did not fire" rather than
+                        # "disagreement".
+                        logger.warning(
+                            "Wave 9 TIGHT: NliClassifier.score_batch "
+                            "raised on dual-source DART cross-check "
+                            "(chunk_id=%r, kind=%r): %s — DART check "
+                            "skipped for this pair.",
+                            chunk_id, kind, exc,
+                        )
+                        dart_scores = []
+                    if dart_scores:
+                        for s_idx, idx_range in enumerate(
+                            dart_pair_index_ranges
+                        ):
+                            if idx_range is None:
+                                continue
+                            d_start, d_end = idx_range
+                            sub = dart_scores[d_start:d_end]
+                            if not sub:
+                                continue
+                            d_entailment = max(
+                                float(s.entailment) for s in sub
+                            )
+                            d_contradiction = max(
+                                float(s.contradiction) for s in sub
+                            )
+                            if (
+                                d_contradiction
+                                >= _DEFAULT_DART_CONTRADICTION_FLOOR
+                            ):
+                                d_outcome = _OUTCOME_DART_DISAGREEMENT
+                                # Bump the per-claim outcome on the
+                                # IMSCC audit field. The IMSCC entailed
+                                # bucket count is NOT decremented —
+                                # ``claim_support_rate`` retains its
+                                # IMSCC-anchored meaning ("how much of
+                                # this pair did the IMSCC chunk
+                                # entail?"); the DART disagreement is
+                                # surfaced separately via
+                                # ``dart_source_check`` + the
+                                # gate-runner aggregate-rate warning.
+                                per_claim_support[s_idx]["outcome"] = (
+                                    _OUTCOME_DART_DISAGREEMENT
+                                )
+                                dart_disagreement_count += 1
+                            elif (
+                                d_entailment >= self._entailment_floor
+                            ):
+                                d_outcome = "entailed"
+                            else:
+                                d_outcome = "unsupported"
+                            per_claim_support[s_idx][
+                                "dart_source_check"
+                            ] = {
+                                "entailment": d_entailment,
+                                "contradiction": d_contradiction,
+                                "outcome": d_outcome,
+                            }
+                            dart_check_fired_count += 1
+
         total_claims = (
             entailed_count + unsupported_count + contradicted_count
         )
@@ -932,6 +1189,8 @@ class PairClaimSupportValidator:
             deps_missing=False,
             structured_attribution_used=structured_attribution_used,
             per_claim_match_count=per_claim_match_count,
+            dart_check_fired_count=dart_check_fired_count,
+            dart_disagreement_count=dart_disagreement_count,
         )
 
         return promotion_status, rejection_reason, new_fields
@@ -1023,6 +1282,13 @@ class PairClaimSupportValidator:
         issues: List[GateIssue] = []
         audited = 0
         missing_field_count = 0
+        # Wave 9 TIGHT: count pairs whose ``per_claim_support[*].outcome
+        # == "dart_disagreement"``. Aggregate-rate warning fires when
+        # the rate exceeds :data:`_DART_DISAGREEMENT_RATE_WARN_CEILING`
+        # — operator-visible signal without per-pair reject. A pair
+        # counts at most once toward the disagreement count regardless
+        # of how many of its per-claim entries flipped.
+        dart_disagreement_pairs = 0
         for path in (inst_path, pref_path):
             if path is None or not path.exists():
                 continue
@@ -1073,6 +1339,17 @@ class PairClaimSupportValidator:
                                     ),
                                     location=str(path),
                                 ))
+                        # Wave 9 TIGHT — DART disagreement rate.
+                        pcs = row.get("per_claim_support")
+                        if isinstance(pcs, list):
+                            for entry in pcs:
+                                if (
+                                    isinstance(entry, dict)
+                                    and entry.get("outcome")
+                                    == _OUTCOME_DART_DISAGREEMENT
+                                ):
+                                    dart_disagreement_pairs += 1
+                                    break
             except OSError as exc:
                 issues.append(GateIssue(
                     severity="critical",
@@ -1082,6 +1359,35 @@ class PairClaimSupportValidator:
                     ),
                     location=str(path),
                 ))
+
+        # Wave 9 TIGHT — aggregate DART-disagreement rate warning.
+        dart_disagreement_rate: float = (
+            dart_disagreement_pairs / audited if audited > 0 else 0.0
+        )
+        if (
+            audited > 0
+            and dart_disagreement_rate
+            > _DART_DISAGREEMENT_RATE_WARN_CEILING
+        ):
+            issues.append(GateIssue(
+                severity="warning",
+                code=_CODE_DART_DISAGREEMENT_RATE_HIGH,
+                message=(
+                    f"Wave 9 TIGHT dual-source DART cross-check: "
+                    f"{dart_disagreement_pairs} of {audited} pair(s) "
+                    f"({dart_disagreement_rate:.1%}) carry a "
+                    f"per-claim outcome of "
+                    f"'{_OUTCOME_DART_DISAGREEMENT}' — exceeds the "
+                    f"day-1 warning ceiling of "
+                    f"{_DART_DISAGREEMENT_RATE_WARN_CEILING:.0%}. "
+                    f"Indicates chunker-drift slice (Finding 5): the "
+                    f"IMSCC chunk entails the pair-side claim but at "
+                    f"least one DART block contradicts at >= the "
+                    f"DART-side contradiction floor. Review "
+                    f"merge_small_sections / sentence-split sub-"
+                    f"chunking on the affected chunks."
+                ),
+            ))
 
         passed = missing_field_count == 0 and not any(
             i.severity == "critical" for i in issues
@@ -1101,7 +1407,11 @@ class PairClaimSupportValidator:
                         f"On-disk audit: {audited} pair(s) audited, "
                         f"{missing_field_count} missing "
                         f"per_claim_support / claim_support_rate "
-                        f"fields. inst_path="
+                        f"fields, dart_disagreement_pairs="
+                        f"{dart_disagreement_pairs} "
+                        f"(rate={dart_disagreement_rate:.4f}, ceiling="
+                        f"{_DART_DISAGREEMENT_RATE_WARN_CEILING}). "
+                        f"inst_path="
                         f"{inst_path.name if inst_path else 'n/a'}, "
                         f"pref_path="
                         f"{pref_path.name if pref_path else 'n/a'}."
@@ -1135,6 +1445,8 @@ __all__ = [
     "_DEFAULT_CONTRADICTION_FLOOR",
     "_DEFAULT_MAX_UNSUPPORTED_RATE",
     "_DEFAULT_MAX_CONTRADICTED_RATE",
+    "_DEFAULT_DART_CONTRADICTION_FLOOR",
+    "_DART_DISAGREEMENT_RATE_WARN_CEILING",
     "_MIN_SENTENCE_TOKENS",
     "_PER_CLAIM_MATCH_COSINE_FLOOR",
     "_REASON_UNSUPPORTED_CLAIM",
@@ -1142,5 +1454,8 @@ __all__ = [
     "_CODE_NLI_DEPS_MISSING",
     "_CODE_MISSING_PER_CLAIM_SUPPORT",
     "_CODE_MISSING_CLAIM_SUPPORT_RATE",
+    "_CODE_DART_DISAGREEMENT_RATE_HIGH",
+    "_OUTCOME_DART_DISAGREEMENT",
     "_resolve_chunk_key_claims_with_attribution",
+    "_resolve_dart_block_texts_for_chunk",
 ]
