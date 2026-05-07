@@ -655,6 +655,8 @@ _W4_OUTLINE_LIB_VALIDATORS_ALLOWLIST = frozenset({
     "lib.validators.concept_example_similarity.ConceptExampleSimilarityValidator",
     "lib.validators.objective_roundtrip_similarity.ObjectiveRoundtripSimilarityValidator",
     "lib.validators.bloom_classifier_disagreement.BloomClassifierDisagreementValidator",
+    # W-D10 T10.1: subpackage-canonical alias for the path above.
+    "lib.validators.bloom.classifier_disagreement.BloomClassifierDisagreementValidator",
     "lib.validators.courseforge_outline_shacl.CourseforgeOutlineShaclValidator",
     # Worker W7: Block-input payload validator gating assessment_item
     # distractors[] / correct_answer_index. Same Block-input shape as
@@ -678,6 +680,8 @@ _W4_OUTLINE_LIB_VALIDATORS_ALLOWLIST = frozenset({
     "lib.validators.distractor_misconception_alignment.DistractorMisconceptionAlignmentValidator",
     "lib.validators.instructional_depth.InstructionalDepthValidator",
     "lib.validators.bloom_structural_enforcement.BloomStructuralEnforcementValidator",
+    # W-D10 T10.1: subpackage-canonical alias for the path above.
+    "lib.validators.bloom.structural_enforcement.BloomStructuralEnforcementValidator",
     # Wave 2 W2.C: structural distractor sanity gate (length / repetition
     # / negation). Wired symmetrically at outline + rewrite seams.
     "lib.validators.distractor_structural.DistractorStructuralValidator",

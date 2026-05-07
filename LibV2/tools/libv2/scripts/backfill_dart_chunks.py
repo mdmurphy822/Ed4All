@@ -35,7 +35,8 @@ Design decisions:
   is skipped by default. ``--force`` bypasses the skip.
 - **Layout heuristics.** DART HTML on a real LibV2 course lives at
   ``<slug>/source/html/`` (per ``MCP/tools/pipeline_tools.py::5371-5378``
-  and ``lib/validators/libv2_manifest.py::_EXPECTED_SUBDIRS``). The
+  and ``lib/validators/libv2/manifest.py::_EXPECTED_SUBDIRS`` —
+  moved from ``lib/validators/libv2_manifest.py`` in W-D10 T10.1). The
   Phase 7b helper expects a ``staging_dir`` that contains the HTML
   files; we point it at ``<slug>/source/html/`` directly.
 - **Fail-soft per course.** A chunker error (malformed HTML, parser
@@ -106,7 +107,8 @@ DEFAULT_LIBV2_COURSES_ROOT = _PROJECT_ROOT / "LibV2" / "courses"
 
 # DART HTML lives at ``source/html/`` on archived courses (see
 # ``MCP/tools/pipeline_tools.py::_archive_to_libv2`` line 5376 and
-# ``lib/validators/libv2_manifest.py::_EXPECTED_SUBDIRS`` line 45).
+# ``lib/validators/libv2/manifest.py::_EXPECTED_SUBDIRS`` — moved from
+# ``lib/validators/libv2_manifest.py`` in W-D10 T10.1).
 # Older courses with non-standard layouts can be supported by passing
 # ``--html-subdir`` directly (e.g. ``--html-subdir source/dart_html``).
 DEFAULT_HTML_SUBDIR = "source/html"

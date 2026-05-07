@@ -89,7 +89,7 @@ from lib.ontology.bloom import BLOOM_LEVELS, get_verbs
 # contract is documented in
 # ``bloom_classifier_disagreement.py:182-211``'s docstring and shared
 # across the two validator surfaces by design.
-from lib.validators.bloom_classifier_disagreement import (
+from lib.validators.bloom.classifier_disagreement import (
     _extract_text_for_classification,
 )
 

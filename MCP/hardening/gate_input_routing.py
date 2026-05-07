@@ -1305,6 +1305,14 @@ def default_router() -> GateInputRouter:
         _build_final_quality,
     )
     r.register(
+        "lib.validators.bloom.alignment.BloomAlignmentValidator",
+        _build_bloom_alignment,
+    )
+    # W-D10 T10.1 back-compat: re-register under the legacy flat path so
+    # any caller still passing the pre-subpackage dotted path resolves
+    # to the same builder. Drop alongside the shim removal in the next
+    # minor version.
+    r.register(
         "lib.validators.bloom.BloomAlignmentValidator",
         _build_bloom_alignment,
     )
@@ -1321,6 +1329,11 @@ def default_router() -> GateInputRouter:
         _build_question_quality,
     )
     r.register(
+        "lib.validators.libv2.manifest.LibV2ManifestValidator",
+        _build_libv2_manifest,
+    )
+    # W-D10 T10.1 back-compat alias for the pre-subpackage flat path.
+    r.register(
         "lib.validators.libv2_manifest.LibV2ManifestValidator",
         _build_libv2_manifest,
     )
@@ -1328,6 +1341,11 @@ def default_router() -> GateInputRouter:
     # phase fail-closed). Reuses the same input shape as the manifest
     # validator (course_dir + manifest_path) — the validator's gate
     # adapter resolves archive_root from either.
+    r.register(
+        "lib.validators.libv2.packet_integrity.PacketIntegrityValidator",
+        _build_libv2_manifest,
+    )
+    # W-D10 T10.1 back-compat alias for the pre-subpackage flat path.
     r.register(
         "lib.validators.libv2_packet_integrity.PacketIntegrityValidator",
         _build_libv2_manifest,
@@ -1422,6 +1440,11 @@ def default_router() -> GateInputRouter:
         "lib.validators.objective_roundtrip_similarity.ObjectiveRoundtripSimilarityValidator",
         _build_block_statistical_input,
     )
+    r.register(
+        "lib.validators.bloom.classifier_disagreement.BloomClassifierDisagreementValidator",
+        _build_block_statistical_input,
+    )
+    # W-D10 T10.1 back-compat alias for the pre-subpackage flat path.
     r.register(
         "lib.validators.bloom_classifier_disagreement.BloomClassifierDisagreementValidator",
         _build_block_statistical_input,
