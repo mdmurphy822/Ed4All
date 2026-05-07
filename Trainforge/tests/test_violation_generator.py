@@ -335,6 +335,22 @@ def test_pair_carries_violation_marker_fields() -> None:
             assert pair["completion"].lower().startswith("yes.")
 
 
+def test_violation_pair_carries_question_type_true_false() -> None:
+    """Wave 8 Worker B — every violation_detection pair stamps the
+    canonical `question_type="true_false"` so the W6.B / W7.A-C
+    per-question-type segmentation buckets the valid?/invalid? verdict
+    pairs into the `true_false` bucket instead of the empty-string
+    bucket."""
+    capture = _FakeCapture()
+    pairs, _ = generate_violation_pairs(capture=capture)
+    assert pairs, "built-in fixture catalog must yield pairs"
+    for pair in pairs:
+        assert pair["question_type"] == "true_false", (
+            f"violation pair must stamp question_type='true_false'; got "
+            f"{pair.get('question_type')!r}"
+        )
+
+
 def test_invalid_completion_carries_pyshacl_reason() -> None:
     """Invalid pairs must include the oracle's actual violation
     message — the corpus teaches the model to give a real reason, not

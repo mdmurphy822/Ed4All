@@ -246,6 +246,7 @@ def _build_pair(
         "expected_response": "No.",
         "concept_tags": [silent_id],
         "abstention_polarity": "absent",
+        "question_type": "true_false",
     }
     return pair
 

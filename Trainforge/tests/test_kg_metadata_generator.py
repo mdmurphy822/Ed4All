@@ -272,6 +272,26 @@ def test_pair_carries_kg_metadata_marker_fields() -> None:
         assert pair["chunk_id"]
 
 
+def test_kg_metadata_pair_carries_question_type_true_false() -> None:
+    """Wave 8 Worker B — every kg_metadata pair stamps the canonical
+    `question_type="true_false"` so the W6.B / W7.A-C per-question-type
+    segmentation buckets deterministic-template pairs into the
+    `true_false` bucket instead of the empty-string bucket."""
+    capture = _FakeCapture()
+    pairs, _ = generate_kg_metadata_pairs(
+        _five_triple_graph(),
+        capture=capture,
+        max_pairs=20,
+        negatives_per_positive=1,
+    )
+    assert pairs, "fixture graph must yield at least one pair"
+    for pair in pairs:
+        assert pair["question_type"] == "true_false", (
+            f"kg_metadata pair must stamp question_type='true_false'; got "
+            f"{pair.get('question_type')!r}"
+        )
+
+
 def test_deterministic_under_same_seed() -> None:
     """Same graph + same seed -> byte-identical pair list."""
     g = _five_triple_graph()

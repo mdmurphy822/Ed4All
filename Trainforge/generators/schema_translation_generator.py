@@ -2384,6 +2384,7 @@ def _make_pair(
         "schema_version": "v1",
         "requires_source_citation": False,
         "concept_tags": concept_tags,
+        "question_type": "short_answer",
     }
 
 
