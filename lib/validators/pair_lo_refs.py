@@ -461,6 +461,30 @@ class PairLearningOutcomeRefsValidator:
                                 ))
                             continue
 
+                        # Wave 8 Worker A: deterministic-template pairs
+                        # (kg_metadata, violation, abstention,
+                        # schema_translation) carry synthetic chunk_ids
+                        # that don't resolve against chunks.jsonl by
+                        # construction. The per-pair filter (W4.B's
+                        # `filter_pair`) stamps
+                        # ``pair_lo_resolution.skipped =
+                        # "deterministic_template"`` on these pairs
+                        # before emit so this walk knows the chunk-id
+                        # resolution was intentionally bypassed —
+                        # bypassing because the four deterministic
+                        # generators are oracle-grounded by construction
+                        # (pyshacl / graph-membership / fixture-pinned /
+                        # concept-absence). Skip these pairs before the
+                        # ``chunk_lo_lower is None`` branch fires
+                        # ``PAIR_CHUNK_NOT_FOUND``.
+                        pair_lo_resolution = pair.get("pair_lo_resolution")
+                        if (
+                            isinstance(pair_lo_resolution, dict)
+                            and pair_lo_resolution.get("skipped")
+                            == "deterministic_template"
+                        ):
+                            continue
+
                         # Resolve cited chunk's LO set.
                         chunk_lo_lower = chunk_lo_map.get(chunk_id)
                         if chunk_lo_lower is None:
