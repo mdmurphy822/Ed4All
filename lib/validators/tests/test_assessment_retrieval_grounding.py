@@ -38,6 +38,11 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
+# Wave W-D10 T10.2: validator wraps the [embedding] sentence-transformers
+# extra; tests use Jaccard fallback today but the file is slow-marked so
+# the nightly extras-installed run picks them up via -m "slow".
+pytestmark = pytest.mark.slow
+
 # Block lives at Courseforge/scripts/blocks.py — mirror the import
 # bridge the validator uses internally.
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]

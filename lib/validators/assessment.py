@@ -38,6 +38,30 @@ from typing import Any, Dict, List, Optional, Set
 from lib.validators.bloom import detect_bloom_level
 from MCP.hardening.validation_gates import GateIssue, GateResult
 
+# W-D7 T7.4: thresholds + placeholder helpers extracted into the
+# ``_assessment_helpers`` private subpackage so the calibration table +
+# regex set live in one auditable file. Re-exported here so existing
+# cross-file imports (training_pair_promotion, assessment_objective_alignment,
+# schemas/tests/test_wave{6,7}*.py) keep resolving without change.
+from lib.validators._assessment_helpers.placeholders import (  # noqa: F401
+    ASSESSMENT_PLACEHOLDER_PATTERNS,
+    _CHAPTER_HEADING_RE,
+    _INTEGER_TOKEN_RE,
+    _TOC_THREE_INTS_RE,
+    _looks_like_toc_fragment,
+    _normalize_question_type,
+    _strip_html_text,
+)
+from lib.validators._assessment_helpers.thresholds import (  # noqa: F401
+    CORRECT_ANSWER_DIVERSITY_THRESHOLD,
+    DISTRACTOR_TEMPLATE_MAX_RATIO,
+    STEM_DIVERSITY_THRESHOLD,
+    _DEFAULT_QUESTION_TYPE_THRESHOLDS,
+    _PER_QUESTION_TYPE_THRESHOLDS,
+    _resolve_per_type_thresholds,
+    _thresholds_for_type,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -156,195 +180,19 @@ def _emit_final_quality_decision(
             exc,
         )
 
-ASSESSMENT_PLACEHOLDER_PATTERNS = [
-    re.compile(r"Correct answer based on content", re.IGNORECASE),
-    re.compile(r"Plausible distractor [A-C]", re.IGNORECASE),
-    re.compile(r"Statement about .+ content\.", re.IGNORECASE),
-    re.compile(r"The key concept from .+ is _______", re.IGNORECASE),
-    re.compile(r"the concept from (?:LO-|INT|[A-Z]{2,})", re.IGNORECASE),
-    re.compile(r"^Briefly \w+ the key points from ", re.IGNORECASE),
-    re.compile(r"concepts from .+ and provide examples\.", re.IGNORECASE),
-    re.compile(r"^concept term$", re.IGNORECASE),
-    re.compile(r"Review content for objective ", re.IGNORECASE),
-    re.compile(r"This statement is accurate based on ", re.IGNORECASE),
-    re.compile(r"The correct term is found in .+ content", re.IGNORECASE),
-    re.compile(r"A complete response should address all aspects of ", re.IGNORECASE),
-    re.compile(r"Your response should cover the main concepts from ", re.IGNORECASE),
-]
+# W-D7 T7.4: ASSESSMENT_PLACEHOLDER_PATTERNS, STEM_DIVERSITY_THRESHOLD,
+# CORRECT_ANSWER_DIVERSITY_THRESHOLD, DISTRACTOR_TEMPLATE_MAX_RATIO,
+# _TOC_THREE_INTS_RE, _CHAPTER_HEADING_RE, _INTEGER_TOKEN_RE moved to
+# lib.validators._assessment_helpers.{placeholders,thresholds}; imported
+# at the top of this file.
 
 
-# Wave 26 real-failure-mode thresholds
-STEM_DIVERSITY_THRESHOLD = 0.7
-CORRECT_ANSWER_DIVERSITY_THRESHOLD = 0.6
-DISTRACTOR_TEMPLATE_MAX_RATIO = 0.30
-# TOC fragment: three standalone integers inline ("1.1 Something 14 1.7 ...")
-_TOC_THREE_INTS_RE = re.compile(r"\b\d+\b\s+\S+.*\b\d+\b.*\b\d+\b", re.DOTALL)
-_CHAPTER_HEADING_RE = re.compile(r"\b\d+\.\d+\b")
-_INTEGER_TOKEN_RE = re.compile(r"\b\d+\b")
-
-
-#: Per-question-type quality thresholds (Wave 6 W6.A calibration).
-#: Day-1 starting points; calibrate against the rdf-shacl-551-2 corpus
-#: rebuild before promoting severity from warning to critical.
-#:
-#: Mirrors :data:`lib.validators.block_objective_delivery._PER_BLOCK_TYPE_ENTAILMENT_FLOOR`
-#: (W1.7.C) and :data:`lib.validators.pair_objective_delivery._PER_PAIR_KIND_ENTAILMENT_FLOOR`
-#: (W4.C MEDIUM) shape — closes the assessment-quality side of
-#: "validation reflects question shape, not aggregate noise".
-#:
-#: Rationale per type:
-#:   - multiple_choice: highest stem volume per assessment, MC has
-#:     well-formed stem grammar requirements (interrogative or
-#:     stem-completion form). Tightest distinct-stem floor.
-#:   - true_false: minimal stem complexity; relaxed distinct-stem
-#:     floor because legitimate T/F can repeat declarative shapes.
-#:     Allows verb-less stems (the existing single-exception rule
-#:     already accommodates this; per-type relaxation makes it
-#:     dispatch-clean).
-#:   - short_answer: free-response, moderate diversity required.
-#:   - essay: small-N per assessment (1-3 essay questions); diversity
-#:     ratio is meaningless on N<3, so the floor relaxes for low-N.
-#:   - fill_in_blank: term-recognition format, moderate diversity.
-_PER_QUESTION_TYPE_THRESHOLDS: Dict[str, Dict[str, float]] = {
-    "multiple_choice": {
-        "stem_diversity": 0.75,
-        "correct_answer_diversity": 0.65,
-        "distractor_template_max_ratio": 0.25,
-        "min_stem_chars": 12,
-    },
-    "true_false": {
-        "stem_diversity": 0.50,
-        "correct_answer_diversity": 0.40,
-        "distractor_template_max_ratio": 1.0,  # T/F has no real distractors
-        "min_stem_chars": 10,
-    },
-    "short_answer": {
-        "stem_diversity": 0.65,
-        "correct_answer_diversity": 0.55,
-        "distractor_template_max_ratio": 1.0,  # SA has no distractors
-        "min_stem_chars": 12,
-    },
-    "essay": {
-        "stem_diversity": 0.55,
-        "correct_answer_diversity": 0.50,
-        "distractor_template_max_ratio": 1.0,
-        "min_stem_chars": 15,
-    },
-    "fill_in_blank": {
-        "stem_diversity": 0.65,
-        "correct_answer_diversity": 0.55,
-        "distractor_template_max_ratio": 0.30,
-        "min_stem_chars": 10,
-    },
-}
-
-
-#: Default thresholds — used when a question_type is unknown
-#: (defensive against future type additions or QTI ``matching``).
-#: Same values as the existing module-level constants for back-compat.
-_DEFAULT_QUESTION_TYPE_THRESHOLDS: Dict[str, float] = {
-    "stem_diversity": STEM_DIVERSITY_THRESHOLD,           # 0.7
-    "correct_answer_diversity": CORRECT_ANSWER_DIVERSITY_THRESHOLD,  # 0.6
-    "distractor_template_max_ratio": DISTRACTOR_TEMPLATE_MAX_RATIO,  # 0.30
-    "min_stem_chars": 10,
-}
-
-
-def _normalize_question_type(q: Dict[str, Any]) -> str:
-    """Resolve question_type, tolerating QTI-parsed ``type`` field.
-
-    W4.B Lesson 1 (pair-schema field-name divergence):
-    ``Trainforge/parsers/qti_parser.py:24`` uses ``type:`` while
-    ``Trainforge/generators/assessment_generator.py:101`` uses
-    ``question_type:``. Mirrors W4.B's ``lo_refs`` resolution chain
-    (``pair.get("lo_refs") or pair.get("learning_outcome_refs")``).
-    Generator surface always emits ``question_type``; QTI surface
-    always emits ``type``. Day-1 only generator-emit reaches this
-    validator; this helper is defense-in-depth against a future
-    call site that routes QTI-parsed dicts directly.
-    """
-    if not isinstance(q, dict):
-        return ""
-    return str(q.get("question_type") or q.get("type") or "").lower()
-
-
-def _resolve_per_type_thresholds(
-    inputs: Dict[str, Any],
-) -> Dict[str, Dict[str, float]]:
-    """Resolve the per-question-type quality threshold table.
-
-    Operators can override per-gate via
-    ``gate.config.per_question_type_thresholds`` in ``config/workflows.yaml``;
-    the gate runner merges ``gate.config`` into the inputs dict at
-    ``MCP/hardening/validation_gates.py:266-271`` (Wave 78 setdefault-merge
-    pattern; existing precedent for ``outline_objective_assessment_similarity``
-    and similar warning gates).
-
-    Mirrors :func:`lib.validators.block_objective_delivery._resolve_threshold_table`
-    at ``block_objective_delivery.py:252-271``. Per-type overlay merges
-    on top of the canonical table; entries the operator omits keep the
-    day-1 default values.
-    """
-    raw = inputs.get("per_question_type_thresholds") if isinstance(inputs, dict) else None
-    merged: Dict[str, Dict[str, float]] = {
-        qt: dict(thresholds)
-        for qt, thresholds in _PER_QUESTION_TYPE_THRESHOLDS.items()
-    }
-    if isinstance(raw, dict):
-        for qt, override in raw.items():
-            if not isinstance(override, dict):
-                continue
-            qt_key = str(qt).lower()
-            if qt_key not in merged:
-                merged[qt_key] = dict(_DEFAULT_QUESTION_TYPE_THRESHOLDS)
-            for axis, value in override.items():
-                try:
-                    merged[qt_key][str(axis)] = float(value)
-                except (TypeError, ValueError):
-                    continue
-    return merged
-
-
-def _thresholds_for_type(
-    q_type: str,
-    table: Dict[str, Dict[str, float]],
-) -> Dict[str, float]:
-    """Return the per-type threshold dict, falling back to defaults.
-
-    A question_type not present in ``table`` (e.g. QTI's ``matching``,
-    or a future-added type the operator hasn't calibrated yet) routes
-    through :data:`_DEFAULT_QUESTION_TYPE_THRESHOLDS` so the per-type
-    matrix degrades gracefully on unknown types rather than KeyError'ing.
-    """
-    return table.get(q_type, dict(_DEFAULT_QUESTION_TYPE_THRESHOLDS))
-
-
-def _strip_html_text(s: str) -> str:
-    """Helper: strip HTML tags and normalize whitespace."""
-    if not s:
-        return ""
-    return re.sub(r"<[^>]+>", "", s).strip()
-
-
-def _looks_like_toc_fragment(answer_text: str) -> bool:
-    """Return True if answer_text looks like a raw TOC fragment.
-
-    Matches when the string contains either:
-      - Three standalone integers inline (page numbers), OR
-      - Is > 500 chars AND has >= 3 integers AND >= 2 dotted-numeric
-        headings like ``1.1`` / ``4.2``.
-    """
-    if not answer_text:
-        return False
-    text = _strip_html_text(answer_text)
-    if _TOC_THREE_INTS_RE.search(text):
-        return True
-    if len(text) > 500:
-        int_count = len(_INTEGER_TOKEN_RE.findall(text))
-        heading_count = len(_CHAPTER_HEADING_RE.findall(text))
-        if int_count >= 3 and heading_count >= 2:
-            return True
-    return False
+# W-D7 T7.4: _PER_QUESTION_TYPE_THRESHOLDS, _DEFAULT_QUESTION_TYPE_THRESHOLDS,
+# _normalize_question_type, _resolve_per_type_thresholds,
+# _thresholds_for_type, _strip_html_text, _looks_like_toc_fragment moved
+# to lib.validators._assessment_helpers.{placeholders,thresholds}; all
+# names imported at the top of this file so existing
+# ``from lib.validators.assessment import <name>`` calls keep resolving.
 
 
 class AssessmentQualityValidator:

@@ -93,6 +93,20 @@ from lib.validators.bloom.classifier_disagreement import (
     _extract_text_for_classification,
 )
 
+# W-D7 T7.8: route per-axis scoring through the shared
+# ``lib.utils.objective_delivery_axes`` package. Bodies of the three axes
+# now live in one module each, deduplicating the W4.C MEDIUM mirror in
+# ``lib/validators/pair/objective_delivery.py``. The validator below
+# stamps surface-specific GateIssues + alignment_entries from the shared
+# axes' tuple outputs.
+from lib.utils.objective_delivery_axes import (
+    BLOOM_INDEX as _SHARED_BLOOM_INDEX,
+    resolve_status as _shared_resolve_status,
+    score_bloom_gap_axis,
+    score_nli_axis,
+    score_verb_cooccurrence_axis,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -181,7 +195,10 @@ _STATUS_VERB_ONLY: str = "verb_only"
 _STATUS_UNVERIFIABLE: str = "unverifiable"
 
 
-_BLOOM_INDEX: Dict[str, int] = {level: idx for idx, level in enumerate(BLOOM_LEVELS)}
+# Re-export the canonical Bloom-level → index map from the shared axes
+# package so existing intra-module references (and any
+# back-compat-private callers) keep resolving.
+_BLOOM_INDEX: Dict[str, int] = _SHARED_BLOOM_INDEX
 
 
 def _block_attr(block: Any, key: str) -> Any:
@@ -349,43 +366,18 @@ def _resolve_status(
 ) -> str:
     """Map per-axis pass/skip flags to the canonical status enum.
 
-    Three-valued logic per axis: ``True`` (pass), ``False`` (fail),
-    ``None`` (skip — axis unverifiable due to missing inputs).
-
-    Status semantics:
-
-    * ``delivered`` — every running axis passed; no axis was unverifiable.
-    * ``underdelivered`` — entailment OR Bloom axis missed.
-    * ``verb_only`` — verb axis is the only one that passed
-      (entailment / Bloom both missed or were unverifiable while verb
-      passed).
-    * ``unverifiable`` — any required signal was unavailable AND
-      no axis fired a real miss; postmortem reader sees the gate ran
-      but couldn't draw a conclusion.
+    W-D7 T7.8: thin wrapper around
+    :func:`lib.utils.objective_delivery_axes.resolve_status`. Kept as a
+    back-compat shim for the cross-file import in
+    ``lib/validators/pair/objective_delivery.py:140``
+    (``from lib.validators.block_objective_delivery import _resolve_status``)
+    AND any test that imports the private symbol directly.
     """
-    axes = [entailment_passed, bloom_passed, verb_passed]
-    real_misses = [a is False for a in axes]
-    has_skip = any(a is None for a in axes)
-
-    # If at least one axis genuinely missed, the block is delivered
-    # under-spec or, when verb is the sole survivor, verb-only.
-    if any(real_misses):
-        # Special case: only verb_passed is True; entailment + bloom
-        # are misses (or one missed and the other was unverifiable).
-        if (
-            verb_passed is True
-            and entailment_passed is not True
-            and bloom_passed is not True
-        ):
-            return _STATUS_VERB_ONLY
-        return _STATUS_UNDERDELIVERED
-
-    # No real misses; all running axes passed. Report unverifiable
-    # only when at least one axis was skipped — pure all-pass means
-    # "delivered".
-    if has_skip:
-        return _STATUS_UNVERIFIABLE
-    return _STATUS_DELIVERED
+    return _shared_resolve_status(
+        entailment_passed=entailment_passed,
+        bloom_passed=bloom_passed,
+        verb_passed=verb_passed,
+    )
 
 
 class BlockObjectiveDeliveryValidator:

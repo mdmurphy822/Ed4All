@@ -1,0 +1,117 @@
+{
+  "version": "1.0.0",
+  "items": [
+    {
+      "item_id": "OV-1",
+      "category": "Course Overview",
+      "severity": "critical",
+      "check_function": "checks_overview.check_syllabus_present",
+      "message_pass_template": "Syllabus file found",
+      "message_fail_template": "No syllabus file found in course (syllabus.html / syllabus.md)",
+      "suggestion": "Add a syllabus page describing course purpose, outcomes, schedule, and policies."
+    },
+    {
+      "item_id": "OV-3",
+      "category": "Course Overview",
+      "severity": "warning",
+      "check_function": "checks_overview.check_syllabus_complete",
+      "message_pass_template": "Syllabus complete (mentions {required_count} required sections)",
+      "message_fail_template": "Syllabus missing sections: {missing_csv}",
+      "suggestion": "Add objectives, schedule, grading, and contact sections."
+    },
+    {
+      "item_id": "LS-1",
+      "category": "Learner Support",
+      "severity": "warning",
+      "check_function": "checks_overview.check_accessibility_statement",
+      "message_pass_template": "Accessibility statement detected",
+      "message_fail_template": "No accessibility or disability-services statement found in any page",
+      "suggestion": "Add an accessibility statement linking to institutional disability services."
+    },
+    {
+      "item_id": "CS-2",
+      "category": "Course Structure",
+      "severity": "critical",
+      "check_function": "checks_structure.check_weekly_modules_present",
+      "message_pass_template": "Weekly module structure detected",
+      "message_fail_template": "No weekly / module structure detected in course pages",
+      "suggestion": "Organize content into named weekly modules (Week 1 ... Week N)."
+    },
+    {
+      "item_id": "CS-3",
+      "category": "Course Structure",
+      "severity": "warning",
+      "check_function": "checks_structure.check_module_titles_unique",
+      "message_pass_template": "Module titles substantially unique",
+      "message_fail_template": "Module titles are insufficiently unique",
+      "suggestion": "Differentiate module titles to reflect distinct topics covered each week.",
+      "calibration_thresholds": {"min_unique_module_titles": 0.6}
+    },
+    {
+      "item_id": "CS-5",
+      "category": "Course Structure",
+      "severity": "critical",
+      "check_function": "checks_structure.check_page_objectives_populated",
+      "message_pass_template": "Page-level learning objectives populated",
+      "message_fail_template": "Some module pages missing learning objectives",
+      "suggestion": "Ensure every module page declares its learning objectives in metadata."
+    },
+    {
+      "item_id": "CLA-1",
+      "category": "Content / Learning Activities",
+      "severity": "critical",
+      "check_function": "checks_content.check_content_word_floor",
+      "message_pass_template": "Content meets word-floor threshold",
+      "message_fail_template": "Content below word-floor threshold on N pages",
+      "suggestion": "Expand thin pages with explanatory prose, examples, or visualisations.",
+      "calibration_thresholds": {"min_words_per_page": 80}
+    },
+    {
+      "item_id": "CLA-3",
+      "category": "Content / Learning Activities",
+      "severity": "warning",
+      "check_function": "checks_content.check_activity_prompt_variety",
+      "message_pass_template": "Activity prompts substantially varied",
+      "message_fail_template": "Activity prompts insufficiently varied",
+      "suggestion": "Vary activity prompts (reflection, application, discussion, problem-solving).",
+      "calibration_thresholds": {"min_distinct_activity_fraction": 0.75}
+    },
+    {
+      "item_id": "II-3",
+      "category": "Instructor Interaction",
+      "severity": "warning",
+      "check_function": "checks_content.check_interaction_prompts",
+      "message_pass_template": "Instructor / peer interaction prompts present",
+      "message_fail_template": "No instructor / peer interaction prompts detected",
+      "suggestion": "Add discussion prompts or office-hour / Q&A invitations to weekly modules."
+    },
+    {
+      "item_id": "AM-1",
+      "category": "Assessment & Measurement",
+      "severity": "warning",
+      "check_function": "checks_assessment.check_question_type_variety",
+      "message_pass_template": "Assessment uses multiple question types",
+      "message_fail_template": "Assessment uses too few question types",
+      "suggestion": "Mix multiple-choice, short-answer, true/false, and essay where appropriate.",
+      "calibration_thresholds": {"min_question_type_variety": 2}
+    },
+    {
+      "item_id": "AM-2",
+      "category": "Assessment & Measurement",
+      "severity": "critical",
+      "check_function": "checks_assessment.check_assessments_reference_objectives",
+      "message_pass_template": "Assessments reference learning objectives",
+      "message_fail_template": "Assessments missing objective references",
+      "suggestion": "Tag every assessment item with the learning objective(s) it measures."
+    },
+    {
+      "item_id": "AM-3",
+      "category": "Assessment & Measurement",
+      "severity": "critical",
+      "check_function": "checks_assessment.check_no_placeholder_assessments",
+      "message_pass_template": "No placeholder assessments detected",
+      "message_fail_template": "Placeholder assessment content detected",
+      "suggestion": "Replace placeholder questions / answers / feedback with real authored content."
+    }
+  ]
+}

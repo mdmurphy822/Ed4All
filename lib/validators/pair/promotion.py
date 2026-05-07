@@ -90,106 +90,27 @@ from lib.validators.bloom.classifier_disagreement import (
     _DISAGREEMENT_CONFIDENCE_FLOOR,
 )
 
+# W-D7 T7.6: thresholds + strict-mode helper extracted into the
+# ``_pair_promotion_stages`` private subpackage. Re-exported here so
+# existing ``from lib.validators.training_pair_promotion import
+# DEFAULT_*`` (and the canonical ``from lib.validators.pair.promotion
+# import DEFAULT_*``) keep resolving without change.
+from lib.validators._pair_promotion_stages.thresholds import (  # noqa: F401
+    DEFAULT_DPO_MIN_DISTRACTOR_DISTINCTNESS,
+    DEFAULT_MIN_ANSWER_SUPPORT_SCORE,
+    DEFAULT_MIN_PROMPT_CHUNK_JACCARD,
+    DEFAULT_MIN_RATIONALE_RICHNESS_SCORE,
+    _FALLBACK_DPO_MIN_DISTRACTOR_DISTINCTNESS,
+    _FALLBACK_MIN_ANSWER_SUPPORT_SCORE,
+    _FALLBACK_MIN_PROMPT_CHUNK_JACCARD,
+    _RATIONALE_MIN_TOKENS_FOR_AUDIT,
+    _RATIONALE_TOKEN_RE,
+    _STRICT_EMBEDDINGS_ENV_VAR,
+    _TRUTHY_VALUES,
+    _is_strict_embeddings_mode,
+)
+
 logger = logging.getLogger(__name__)
-
-
-#: Default cosine-similarity floor between answer text and cited chunk.
-#: Calibrated looser than the 0.55 ``objective_assessment_similarity``
-#: floor because training-pair completions span every Bloom level
-#: (synthesis / evaluation / creation) and routinely paraphrase the
-#: source rather than restate it. 0.40 catches genuine drift (the
-#: completion was not derived from the cited chunk) while leaving
-#: headroom for legitimate paraphrase distance. Used when the
-#: embedder is loaded; the Jaccard-fallback equivalent is
-#: :data:`_FALLBACK_MIN_ANSWER_SUPPORT_SCORE` (looser, because
-#: Jaccard-overlap signal is sparser than cosine for short
-#: paraphrases).
-DEFAULT_MIN_ANSWER_SUPPORT_SCORE: float = 0.40
-
-#: Default cosine semantic-distinctness floor between ``chosen`` and
-#: ``rejected`` for preference pairs. Below this floor the two
-#: completions are paraphrases of each other and DPO has no learning
-#: signal. Symmetric to the answer-support floor on purpose: a
-#: distractor that's too close to the chosen answer is structurally
-#: indistinguishable from a "no preference" pair.
-DEFAULT_DPO_MIN_DISTRACTOR_DISTINCTNESS: float = 0.40
-
-#: Jaccard-fallback floor for answer-support when the [embedding]
-#: extras are absent. Set to a sentinel below any possible Jaccard
-#: value so the criterion is structurally deactivated in fallback
-#: mode. Rationale: Jaccard on paraphrased completions vs source
-#: chunk text is unreliable — a deterministic mock-generator
-#: completion built from chunk.summary + key_terms can legitimately
-#: hit J = 0 against the chunk text body when the summary tokens
-#: differ from the body's nominal vocabulary (mini_course /
-#: prereq_curriculum fixtures hit this case). Production runs with
-#: embeddings loaded keep the strict 0.40 cosine floor; the criterion
-#: still fires there. Fallback mode preserves the audit-trail signal
-#: (``answer_support_score`` is stamped on every pair) without
-#: false-positive rejection.
-_FALLBACK_MIN_ANSWER_SUPPORT_SCORE: float = -1.0
-
-#: Jaccard-fallback floor for distractor distinctness. Symmetric
-#: rationale: 1 - Jaccard overlap. A `chosen` and `rejected` that share
-#: most tokens land at distinctness ~0.0–0.20; legitimately distinct
-#: pairs land above 0.40. Reuses the cosine floor since the
-#: 1-Jaccard-overlap distribution is similar enough for the
-#: distractor-distinctness axis.
-_FALLBACK_DPO_MIN_DISTRACTOR_DISTINCTNESS: float = 0.40
-
-#: Jaccard-fallback floor for prompt↔chunk overlap. In fallback mode
-#: we deactivate criterion 4 (set the floor to a sentinel below any
-#: possible Jaccard value) because the criterion's intent — "the
-#: prompt is from a different chunk entirely" — is already covered by
-#: criterion 2 (answer-support) when running on Jaccard. Production
-#: cosine path keeps the 0.05 default floor.
-_FALLBACK_MIN_PROMPT_CHUNK_JACCARD: float = -1.0
-
-#: Default Jaccard floor between the prompt and the cited source chunk.
-#: A prompt with zero / near-zero overlap with the cited chunk is
-#: unanswerable from that chunk — the chunk wasn't actually the basis
-#: of the question. Calibrated very loose (0.05) because prompts are
-#: deliberately lexically distant from the source (the LLM paraphrases
-#: aggressively) AND short (≤10 content tokens typical) against a
-#: 20-50-token chunk: even a 3-of-5-token-overlap prompt yields
-#: J ≈ 0.094, so a 0.10 floor false-positives on legitimate
-#: paraphrase. The plan's initial 0.10 was guesswork; empirical pilot
-#: against the mini_course fixture clusters healthy prompts at
-#: J ∈ [0.05, 0.13]. 0.05 catches "totally unrelated chunk"
-#: (J ≈ 0.0 - 0.02) while letting short on-topic prompts through.
-DEFAULT_MIN_PROMPT_CHUNK_JACCARD: float = 0.05
-
-#: Default heuristic-richness floor on the rationale string. Computed
-#: as ``unique_content_tokens / total_content_tokens`` on the rationale
-#: text. Below 0.30 indicates the rationale is repetitive boilerplate
-#: ("the answer is correct because the answer is correct because ...")
-#: rather than an actual chain of reasoning.
-DEFAULT_MIN_RATIONALE_RICHNESS_SCORE: float = 0.30
-
-#: Strict-mode env var consumed by the embedding loader. Mirrors the
-#: pattern in :mod:`lib.embedding.sentence_embedder.is_strict_mode`.
-_STRICT_EMBEDDINGS_ENV_VAR = "TRAINFORGE_REQUIRE_EMBEDDINGS"
-_TRUTHY_VALUES = frozenset({"true", "1", "yes", "on"})
-
-
-def _is_strict_embeddings_mode() -> bool:
-    """True when ``TRAINFORGE_REQUIRE_EMBEDDINGS`` is truthy. Read once
-    per :meth:`validate_pair` invocation so test-time env mutation is
-    honoured."""
-    raw = os.environ.get(_STRICT_EMBEDDINGS_ENV_VAR, "").strip().lower()
-    return raw in _TRUTHY_VALUES
-
-
-# Word-token regex for the rationale-richness heuristic. Lowercase
-# alphabetic-only tokens; numbers and punctuation are dropped because
-# they don't carry semantic richness in a free-form rationale string.
-_RATIONALE_TOKEN_RE = re.compile(r"[a-zA-Z]{2,}", re.UNICODE)
-
-# Cap at which we call a rationale "long enough to be evaluated". A
-# rationale below this length (in content tokens) is structurally too
-# short to discriminate richness; treat it as passing the gate so we
-# don't false-positive on legitimately terse rationales.
-_RATIONALE_MIN_TOKENS_FOR_AUDIT: int = 5
 
 
 def _emit_decision(
