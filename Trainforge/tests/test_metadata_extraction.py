@@ -397,3 +397,315 @@ class TestBackwardCompatibility:
         assert result.misconceptions == []
         assert result.prerequisite_pages == []
         assert result.suggested_assessment_types == []
+
+
+# ---------------------------------------------------------------------------
+# Wave 5 W5.B — chunker ingestion mirror for W1.5 key_claims + W1.7
+# objective_alignment audit fields
+# ---------------------------------------------------------------------------
+
+class TestExtractSectionMetadataW5B:
+    """W5.B chunker-side mirror of W5.A. ``_extract_section_metadata``
+    bumped from a 4-tuple to a 5-tuple so the chunker can stamp the
+    optional ``key_claims`` / ``objective_alignment`` audit arrays onto
+    every chunk dict whose originating JSON-LD ``blocks[]`` entry
+    declares them. Fixtures mirror the W5.A test patterns under
+    ``test_html_content_parser.py``."""
+
+    def _bare_processor(self):
+        from Trainforge.process_course import CourseProcessor
+
+        proc = CourseProcessor.__new__(CourseProcessor)
+        proc.MIN_CHUNK_SIZE = 100
+        proc.MAX_CHUNK_SIZE = 800
+        return proc
+
+    def _item_with_jsonld_blocks(self, *blocks):
+        """Build an item whose courseforge_metadata has a JSON-LD
+        ``blocks[]`` array of the given shape."""
+        return {
+            "title": "Page Title",
+            "courseforge_metadata": {"blocks": list(blocks)},
+            "sections": [],
+        }
+
+    def test_extract_section_metadata_carries_key_claims_from_jsonld_blocks(self):
+        """When a JSON-LD ``blocks[]`` entry matches the section heading and
+        carries ``keyClaims``, the 4th tuple element (section_metadata_extras)
+        carries them under the snake_case key ``key_claims``."""
+        proc = self._bare_processor()
+        block = {
+            "heading": "Constructivist Theory",
+            "contentType": "explanation",
+            "keyClaims": [
+                {
+                    "claim": "Knowledge is actively constructed by learners.",
+                    "source_chunk_ids": ["chunk_001", "chunk_002"],
+                },
+                {"claim": "Scaffolding fades as expertise grows."},
+            ],
+        }
+        item = self._item_with_jsonld_blocks(block)
+        bloom, ctype, kt, extras, trace = proc._extract_section_metadata(
+            item, "Constructivist Theory"
+        )
+        assert ctype == "explanation"
+        assert extras["key_claims"] == [
+            {
+                "claim": "Knowledge is actively constructed by learners.",
+                "source_chunk_ids": ["chunk_001", "chunk_002"],
+            },
+            {"claim": "Scaffolding fades as expertise grows."},
+        ]
+        # Trace pins which path populated the field.
+        assert trace["key_claims"] == "jsonld_blocks_match"
+        # objective_alignment was absent on the block — extras default to [].
+        assert extras["objective_alignment"] == []
+        assert trace["objective_alignment"] == "none"
+
+    def test_extract_section_metadata_carries_objective_alignment_from_jsonld_blocks(self):
+        """Same shape as key_claims — when a matched block carries
+        ``objectiveAlignment``, the extras dict surfaces it under the
+        snake_case key ``objective_alignment``."""
+        proc = self._bare_processor()
+        block = {
+            "heading": "ADDIE Model",
+            "contentType": "comparison",
+            "objectiveAlignment": [
+                {
+                    "objective_id": "CO-01",
+                    "status": "delivered",
+                    "declared_bloom": "analyze",
+                },
+                {
+                    "objective_id": "CO-02",
+                    "status": "partial",
+                    "declared_bloom": "apply",
+                },
+            ],
+        }
+        item = self._item_with_jsonld_blocks(block)
+        _, _, _, extras, trace = proc._extract_section_metadata(item, "ADDIE Model")
+        assert extras["objective_alignment"] == [
+            {
+                "objective_id": "CO-01",
+                "status": "delivered",
+                "declared_bloom": "analyze",
+            },
+            {
+                "objective_id": "CO-02",
+                "status": "partial",
+                "declared_bloom": "apply",
+            },
+        ]
+        assert trace["objective_alignment"] == "jsonld_blocks_match"
+        # key_claims absent on the block.
+        assert extras["key_claims"] == []
+        assert trace["key_claims"] == "none"
+
+    def test_extract_section_metadata_omits_extras_when_block_lacks_fields(self):
+        """Back-compat: a matched block with no keyClaims / objectiveAlignment
+        leaves the extras dict at its default empty-list shape."""
+        proc = self._bare_processor()
+        block = {
+            "heading": "Legacy Block",
+            "contentType": "example",
+            "keyTerms": [{"term": "alpha", "definition": "first letter"}],
+        }
+        item = self._item_with_jsonld_blocks(block)
+        _, ctype, kt, extras, trace = proc._extract_section_metadata(
+            item, "Legacy Block"
+        )
+        # Pre-W5 fields populated as before.
+        assert ctype == "example"
+        assert kt[0]["term"] == "alpha"
+        # New fields default to empty lists, traces to "none".
+        assert extras == {"key_claims": [], "objective_alignment": []}
+        assert trace["key_claims"] == "none"
+        assert trace["objective_alignment"] == "none"
+
+    def test_extract_section_metadata_filters_non_dict_audit_entries(self):
+        """Defensive filter — payloads that slip past schema validation
+        (string entries in keyClaims / objectiveAlignment arrays) are
+        silently dropped, not propagated. Mirrors the dict-only filter
+        in ``html_content_parser._content_sections_from_blocks``."""
+        proc = self._bare_processor()
+        block = {
+            "heading": "Defensive Block",
+            "contentType": "explanation",
+            "keyClaims": [
+                {"claim": "valid claim"},
+                "string entry that should be filtered",
+                None,
+            ],
+            "objectiveAlignment": [
+                {"objective_id": "TO-01", "status": "delivered"},
+                42,
+            ],
+        }
+        item = self._item_with_jsonld_blocks(block)
+        _, _, _, extras, _ = proc._extract_section_metadata(item, "Defensive Block")
+        assert extras["key_claims"] == [{"claim": "valid claim"}]
+        assert extras["objective_alignment"] == [
+            {"objective_id": "TO-01", "status": "delivered"},
+        ]
+
+
+def _create_chunk_processor():
+    """Stand up a CourseProcessor minimally enough for ``_create_chunk``
+    to run end-to-end. Mirrors the pattern in
+    ``test_targeted_concepts_end_to_end.py::test_chunk_level_targeted_concepts_propagation``."""
+    from collections import defaultdict
+
+    from Trainforge.process_course import CourseProcessor
+
+    proc = CourseProcessor.__new__(CourseProcessor)
+    proc.course_code = "TST_101"
+    proc.MIN_CHUNK_SIZE = 100
+    proc.MAX_CHUNK_SIZE = 800
+    proc.stats = {
+        "total_words": 0,
+        "total_tokens_estimate": 0,
+        "chunk_types": defaultdict(int),
+        "difficulty_distribution": defaultdict(int),
+    }
+    proc._all_concept_tags = set()
+    proc._valid_outcome_ids = set()
+    proc.domain_concept_seeds = []
+    # ``__init__`` would have set these; the bare-processor pattern bypasses
+    # __init__ so we stub the minimum surface ``_create_chunk`` touches.
+    proc.objectives = None
+    proc._lo_parent_map = {}
+    return proc
+
+
+def _item_for_create_chunk(blocks=None, sections=None):
+    """Minimal item dict shape that ``_create_chunk`` will accept."""
+    cf_meta = {"blocks": blocks} if blocks is not None else None
+    return {
+        "item_id": "lesson-1",
+        "item_path": "lesson-1.html",
+        "module_id": "m1",
+        "module_title": "Module 1",
+        "title": "Page Title",
+        "resource_type": "page",
+        "raw_html": "",
+        "sections": sections or [],
+        "learning_objectives": [],
+        "courseforge_metadata": cf_meta,
+        "misconceptions": [],
+        "_jsonld_tag_present": cf_meta is not None,
+        "_jsonld_parse_failed": False,
+    }
+
+
+class TestCreateChunkW5BStamp:
+    """End-to-end: ContentSection -> JSON-LD blocks -> metadata extraction
+    -> chunk dict carries the W5.B audit fields. Conditional on truthy —
+    empty lists are absent (preserves back-compat)."""
+
+    def test_create_chunk_stamps_key_claims_when_present(self):
+        proc = _create_chunk_processor()
+        block = {
+            "heading": "Constructivist Theory",
+            "contentType": "explanation",
+            "keyClaims": [
+                {
+                    "claim": "Knowledge is actively constructed by learners.",
+                    "source_chunk_ids": ["chunk_001"],
+                },
+                {"claim": "Scaffolding fades as expertise grows."},
+            ],
+        }
+        item = _item_for_create_chunk(blocks=[block])
+
+        chunk = proc._create_chunk(
+            chunk_id="tst_101_chunk_00001",
+            text=(
+                "Constructivism holds that learners actively build knowledge "
+                "through direct experience and scaffolded reflection."
+            ),
+            html="<p>Constructivism holds that learners actively build knowledge.</p>",
+            item=item,
+            section_heading="Constructivist Theory",
+            chunk_type="explanation",
+        )
+        assert chunk["key_claims"] == [
+            {
+                "claim": "Knowledge is actively constructed by learners.",
+                "source_chunk_ids": ["chunk_001"],
+            },
+            {"claim": "Scaffolding fades as expertise grows."},
+        ]
+        # _metadata_trace surfaces the W5.B trace entry.
+        assert chunk["_metadata_trace"]["key_claims"] == "jsonld_blocks_match"
+        # objective_alignment absent on the source block — chunk should
+        # NOT carry the key at all (back-compat: not even as []).
+        assert "objective_alignment" not in chunk
+        assert chunk["_metadata_trace"]["objective_alignment"] == "none"
+
+    def test_create_chunk_stamps_objective_alignment_when_present(self):
+        proc = _create_chunk_processor()
+        block = {
+            "heading": "ADDIE Model",
+            "contentType": "comparison",
+            "objectiveAlignment": [
+                {
+                    "objective_id": "CO-01",
+                    "status": "delivered",
+                    "declared_bloom": "analyze",
+                },
+            ],
+        }
+        item = _item_for_create_chunk(blocks=[block])
+
+        chunk = proc._create_chunk(
+            chunk_id="tst_101_chunk_00002",
+            text=(
+                "The ADDIE model decomposes instructional design into five "
+                "phases: analyze, design, develop, implement, and evaluate."
+            ),
+            html="<p>The ADDIE model decomposes instructional design.</p>",
+            item=item,
+            section_heading="ADDIE Model",
+            chunk_type="explanation",
+        )
+        assert chunk["objective_alignment"] == [
+            {
+                "objective_id": "CO-01",
+                "status": "delivered",
+                "declared_bloom": "analyze",
+            },
+        ]
+        assert chunk["_metadata_trace"]["objective_alignment"] == "jsonld_blocks_match"
+        # key_claims absent on the source block.
+        assert "key_claims" not in chunk
+        assert chunk["_metadata_trace"]["key_claims"] == "none"
+
+    def test_create_chunk_omits_new_fields_when_absent(self):
+        """Back-compat: a chunk derived from a section / block with NO
+        key_claims and NO objective_alignment must not carry the new keys
+        at all (not even as []). Legacy-corpus chunks stay byte-identical."""
+        proc = _create_chunk_processor()
+        # No blocks[] at all → the JSON-LD blocks-walk doesn't enter; the
+        # data-cf-* fallback returns a section with no audit arrays.
+        item = _item_for_create_chunk(blocks=None, sections=[])
+
+        chunk = proc._create_chunk(
+            chunk_id="tst_101_chunk_00003",
+            text=(
+                "This passage carries no Wave-1.5 key-claim audit and no "
+                "Wave-1.7 objective-alignment audit; the chunker should "
+                "elide both keys entirely from the resulting chunk dict."
+            ),
+            html="<p>This passage carries no audit metadata.</p>",
+            item=item,
+            section_heading="Some Section",
+            chunk_type="explanation",
+        )
+        assert "key_claims" not in chunk
+        assert "objective_alignment" not in chunk
+        # _metadata_trace still carries the trace entries (set to "none")
+        # so a downstream observability surface can attribute the absence.
+        assert chunk["_metadata_trace"]["key_claims"] == "none"
+        assert chunk["_metadata_trace"]["objective_alignment"] == "none"

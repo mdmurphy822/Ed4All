@@ -1851,7 +1851,13 @@ class CourseProcessor:
         # text verb heuristic → hardcoded default. Every chunk ends up with
         # a bloom_level; bloom_level_source records where it came from so
         # downstream consumers can weight low-confidence sources.
-        bloom_level, content_type_label, key_terms, section_trace = self._extract_section_metadata(
+        (
+            bloom_level,
+            content_type_label,
+            key_terms,
+            section_metadata_extras,
+            section_trace,
+        ) = self._extract_section_metadata(
             item, section_heading, merged_headings=merged_headings,
         )
         bloom_source = "section_jsonld" if bloom_level else None
@@ -1965,6 +1971,19 @@ class CourseProcessor:
             if key_terms:
                 chunk["key_terms"] = key_terms
 
+        # Wave 5 (W5.B): stamp the per-block audit arrays harvested by
+        # ``_extract_section_metadata`` from the matched JSON-LD
+        # ``blocks[]`` entry. Conditional on truthy — empty list / None
+        # means absent, preserving the back-compat contract that legacy
+        # chunks (built from blocks without the audit arrays, or via the
+        # data-cf-* fallback path) don't carry the new keys at all (not
+        # even as ``[]``). The chunk_v4 schema admits both fields as
+        # optional (W5.C) so strict validation is unaffected when absent.
+        if section_metadata_extras.get("key_claims"):
+            chunk["key_claims"] = section_metadata_extras["key_claims"]
+        if section_metadata_extras.get("objective_alignment"):
+            chunk["objective_alignment"] = section_metadata_extras["objective_alignment"]
+
         # Page-level metadata
         misconceptions = item.get("misconceptions", [])
         if misconceptions:
@@ -2075,6 +2094,12 @@ class CourseProcessor:
             "misconceptions": "jsonld_page_misconceptions" if chunk.get("misconceptions") else (
                 "none_jsonld_parse_failed" if item.get("_jsonld_parse_failed") else "none"
             ),
+            # Wave 5 (W5.B): trace entries for the new audit fields.
+            # Values: ``"jsonld_blocks_match"`` when the matched JSON-LD
+            # block populated the field, ``"none"`` otherwise. Mirrors
+            # the trace keys set in ``_extract_section_metadata``.
+            "key_claims": section_trace.get("key_claims", "none"),
+            "objective_alignment": section_trace.get("objective_alignment", "none"),
         }
 
         # Stamp the chunk schema version on every chunk so downstream
@@ -2207,7 +2232,13 @@ class CourseProcessor:
         self, item: Dict[str, Any], section_heading: str,
         *,
         merged_headings: Optional[List[str]] = None,
-    ) -> Tuple[Optional[str], Optional[str], List[Dict[str, str]], Dict[str, str]]:
+    ) -> Tuple[
+        Optional[str],
+        Optional[str],
+        List[Dict[str, str]],
+        Dict[str, Any],
+        Dict[str, str],
+    ]:
         """Extract bloom_level, content_type_label, and key_terms for a section.
 
         Checks JSON-LD sections metadata first, then falls back to
@@ -2221,10 +2252,35 @@ class CourseProcessor:
         their metadata. Falls back to the single ``section_heading`` when
         ``merged_headings`` is empty (back-compat).
 
-        Returns a 4-tuple: (bloom_level, content_type_label, key_terms, trace).
+        Returns a 5-tuple:
+            ``(bloom_level, content_type_label, key_terms,
+               section_metadata_extras, trace)``.
+
+        Wave 5 (W5.B — ingestion mirror for W1.5 + W1.7):
+        ``section_metadata_extras`` carries the optional per-block audit
+        arrays harvested from the JSON-LD ``blocks[]`` projection so the
+        chunker can stamp them onto the emitted chunk dict without
+        re-walking ``courseforge_metadata`` downstream. Shape:
+
+          ``{
+                "key_claims":         List[Dict[str, Any]],   # W1.5 / W5.A
+                "objective_alignment": List[Dict[str, Any]],  # W1.7 / W5.A
+            }``
+
+        Empty lists when the matched block didn't carry the field, when
+        no block matched, or when ``blocks[]`` is absent entirely. The
+        chunker stamps each field onto the chunk dict only when truthy,
+        preserving the back-compat contract that legacy chunks don't
+        carry the new keys at all (not even as ``[]``).
+
         ``trace`` is a Worker M1 diagnostic (VERSIONING.md §4.4a) naming the
         source path for each field. Values:
 
+          - ``jsonld_blocks_match``         — JSON-LD ``blocks[]`` matched +
+                                              populated (W5.B for the new
+                                              ``key_claims`` / ``objective_alignment``
+                                              entries; pre-existing usage on
+                                              content_type_label / key_terms)
           - ``jsonld_section_match``        — JSON-LD section matched + populated
           - ``jsonld_section_match_empty``  — JSON-LD section matched but that
                                               specific field was empty on it
@@ -2249,9 +2305,25 @@ class CourseProcessor:
         bloom_level: Optional[str] = None
         content_type_label: Optional[str] = None
         key_terms: List[Dict[str, str]] = []
+        # Wave 5 (W5.B): per-block audit arrays harvested from the matched
+        # JSON-LD block. Empty lists by default — populated below when a
+        # ``blocks[]`` entry matches the section heading and carries the
+        # field, or via the data-cf-* fallback path (no-op day-1 — see
+        # comment at the fallback site).
+        section_metadata_extras: Dict[str, Any] = {
+            "key_claims": [],
+            "objective_alignment": [],
+        }
         trace: Dict[str, str] = {
             "content_type_label": "none",
             "key_terms": "none",
+            # Wave 5 (W5.B): trace entries for the new audit fields.
+            # Values: "jsonld_blocks_match" when the matched block populated
+            # the field, "none" otherwise. data-cf-* fallback never sets
+            # these (no current attribute carries them) — symmetric path
+            # left in place for future use.
+            "key_claims": "none",
+            "objective_alignment": "none",
         }
 
         # Normalize heading: strip "(part N)" suffix added by _chunk_text_block
@@ -2333,6 +2405,32 @@ class CourseProcessor:
                     trace["key_terms"] = "jsonld_blocks_match"
                 elif content_type_label:
                     trace["key_terms"] = "jsonld_blocks_match"
+                # Wave 5 (W5.B): harvest the W1.5 ``keyClaims`` and W1.7
+                # ``objectiveAlignment`` audit arrays from the matched
+                # block. camelCase ↔ snake_case translation: JSON-LD wire
+                # keys are camelCase, snake_case on the chunker side.
+                # Defensive dict-only filter mirrors the posture in
+                # ``html_content_parser.HTMLContentParser._content_sections_from_blocks``
+                # so a malformed payload that slipped past schema
+                # validation can't poison the chunker.
+                raw_key_claims = matched_block.get("keyClaims") or []
+                blk_key_claims: List[Dict[str, Any]] = [
+                    kc for kc in raw_key_claims if isinstance(kc, dict)
+                ]
+                if blk_key_claims:
+                    section_metadata_extras["key_claims"] = blk_key_claims
+                    trace["key_claims"] = "jsonld_blocks_match"
+                raw_objective_alignment = (
+                    matched_block.get("objectiveAlignment") or []
+                )
+                blk_objective_alignment: List[Dict[str, Any]] = [
+                    oa for oa in raw_objective_alignment if isinstance(oa, dict)
+                ]
+                if blk_objective_alignment:
+                    section_metadata_extras["objective_alignment"] = (
+                        blk_objective_alignment
+                    )
+                    trace["objective_alignment"] = "jsonld_blocks_match"
                 break
 
         # Try JSON-LD sections metadata. Walk candidate headings in order —
@@ -2387,6 +2485,35 @@ class CourseProcessor:
                 if matched_section.key_terms:
                     key_terms = [{"term": t, "definition": ""} for t in matched_section.key_terms]
                     trace["key_terms"] = "data_cf_fallback"
+                # Wave 5 (W5.B): symmetric data-cf-* fallback for the new
+                # audit arrays. Day-1 NO-OP — no current data-cf-*
+                # attribute carries ``key_claims`` / ``objective_alignment``
+                # so ``ContentSection.key_claims`` / ``.objective_alignment``
+                # only ever populate via the JSON-LD ``blocks[]`` projection
+                # path in
+                # ``HTMLContentParser._content_sections_from_blocks``
+                # (W5.A). The fallback path is wired in for symmetry with
+                # the content_type / key_terms gates above so a future
+                # data-cf-* attribute (e.g. ``data-cf-key-claims-json``)
+                # would slot in cleanly. When the originating section
+                # carries the field via ``ContentSection`` it lifts here
+                # without further changes; back-compat preserved because
+                # the dataclass defaults to ``[]``.
+                section_key_claims = getattr(matched_section, "key_claims", None) or []
+                if section_key_claims and not section_metadata_extras["key_claims"]:
+                    section_metadata_extras["key_claims"] = section_key_claims
+                    trace["key_claims"] = "data_cf_attr_match"
+                section_objective_alignment = (
+                    getattr(matched_section, "objective_alignment", None) or []
+                )
+                if (
+                    section_objective_alignment
+                    and not section_metadata_extras["objective_alignment"]
+                ):
+                    section_metadata_extras["objective_alignment"] = (
+                        section_objective_alignment
+                    )
+                    trace["objective_alignment"] = "data_cf_attr_match"
                 break
 
         # Categorize remaining `none` values by hypothesis so the trace report
@@ -2420,7 +2547,7 @@ class CourseProcessor:
                     bloom_level = lo.bloom_level
                     break
 
-        return bloom_level, content_type_label, key_terms, trace
+        return bloom_level, content_type_label, key_terms, section_metadata_extras, trace
 
     @staticmethod
     def _fill_or_drop_empty_key_term_definitions(

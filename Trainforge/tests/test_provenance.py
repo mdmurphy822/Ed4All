@@ -256,7 +256,7 @@ def test_multipart_spans_are_disjoint_and_contiguous():
     proc._extract_concept_tags = lambda t, i: []  # type: ignore[method-assign]
     proc._determine_difficulty = lambda t, i: "foundational"  # type: ignore[method-assign]
     proc._extract_objective_refs = lambda i: []  # type: ignore[method-assign]
-    proc._extract_section_metadata = lambda i, h: (None, None, [])  # type: ignore[method-assign]
+    proc._extract_section_metadata = lambda i, h, **kw: (None, None, [], {"key_claims": [], "objective_alignment": []}, {"content_type_label": "none", "key_terms": "none", "key_claims": "none", "objective_alignment": "none"})  # type: ignore[method-assign]
     synthesized = proc._chunk_text_block(
         text=long_text,
         html="",
