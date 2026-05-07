@@ -24,6 +24,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+from Trainforge.eval._per_type_helpers import (
+    attach_relevance,
+    bucket_per_question_records,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -91,12 +96,16 @@ class BloomAlignmentRateEvaluator:
         """
         ensemble = self._get_ensemble()
         if ensemble is None:
+            # W7.B: deps-missing branch must emit per_question_type=None
+            # so the W7.D gate consumer can short-circuit cleanly without
+            # crashing on a missing key.
             return {
                 "bloom_alignment_rate": None,
                 "deps_missing": True,
                 "total_questions": len(prompts),
                 "aligned_count": 0,
                 "mismatched_count": 0,
+                "per_question_type": None,
             }
 
         # Probe ensemble members loadability before classifying — this
@@ -116,6 +125,7 @@ class BloomAlignmentRateEvaluator:
                 "total_questions": len(prompts),
                 "aligned_count": 0,
                 "mismatched_count": 0,
+                "per_question_type": None,
             }
         if not members:
             return {
@@ -124,6 +134,7 @@ class BloomAlignmentRateEvaluator:
                 "total_questions": len(prompts),
                 "aligned_count": 0,
                 "mismatched_count": 0,
+                "per_question_type": None,
             }
 
         aligned = 0
@@ -178,6 +189,40 @@ class BloomAlignmentRateEvaluator:
         rate: Optional[float] = (
             (aligned / denom) if denom > 0 else 0.0
         )
+
+        # W7.B: per-question-type segmentation. Bucket the per_question
+        # records (filtered to only those that produced an aligned /
+        # mismatched outcome — skipped records aren't counted in the
+        # rate denom and shouldn't pollute per-bucket rates either).
+        # Stamp `relevant: bool` per the canonical relevance table —
+        # bloom_alignment_rate is relevant across all 5 question types
+        # so every bucket emits relevant=True.
+        question_types = [str(p.get("question_type") or "") for p in prompts]
+        scored_records: List[Dict[str, Any]] = []
+        scored_types: List[str] = []
+        for record, qt in zip(per_question, question_types):
+            outcome = record.get("outcome")
+            if outcome in ("aligned", "mismatched"):
+                scored_records.append(record)
+                scored_types.append(qt)
+        buckets = bucket_per_question_records(
+            scored_records, question_types=scored_types
+        )
+        per_question_type: Dict[str, Dict[str, Any]] = {}
+        for qt_key, bucket in buckets.items():
+            if not qt_key:
+                continue  # skip the empty-string bucket from per-type emit
+            aligned_count = sum(1 for r in bucket if r.get("outcome") == "aligned")
+            bucket_total = len(bucket)
+            per_question_type[qt_key] = {
+                "bloom_alignment_rate": round(aligned_count / bucket_total, 4)
+                if bucket_total
+                else 0.0,
+                "total_questions": int(bucket_total),
+                "aligned_count": int(aligned_count),
+            }
+        attach_relevance(per_question_type, metric_name="bloom_alignment_rate")
+
         return {
             "bloom_alignment_rate": round(float(rate), 4),
             "total_questions": int(len(prompts)),
@@ -186,6 +231,7 @@ class BloomAlignmentRateEvaluator:
             "skipped_count": int(skipped),
             "deps_missing": False,
             "per_question": per_question,
+            "per_question_type": per_question_type,
         }
 
 

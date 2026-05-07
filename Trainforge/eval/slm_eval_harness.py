@@ -31,7 +31,7 @@ import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -1218,19 +1218,25 @@ class SLMEvalHarness:
 
     def _load_rendered_html_for_metrics(
         self, prompts: List[Dict[str, Any]],
-    ) -> List[str]:
+    ) -> List[Tuple[str, str]]:
         """Extract per-question rendered HTML for ``single_correct_rate``.
 
         Sources the HTML from the assessment dict's ``rendered_html`` /
         ``html`` field (populated by the assessment generator's
         IMSCC-render step). Returns an empty list when no question
         carries any HTML so the metric short-circuits cleanly.
+
+        Wave 7 W7.B: returns ``List[Tuple[str, str]]`` of
+        ``(html, question_type)`` so the parallel-index pairing for the
+        single_correct_rate per-question-type segmentation is built at
+        the loader, not at the call site.
         """
-        blocks: List[str] = []
+        blocks: List[Tuple[str, str]] = []
         for p in prompts:
             html = p.get("rendered_html") or ""
             if html:
-                blocks.append(str(html))
+                qt = str(p.get("question_type") or "").lower()
+                blocks.append((str(html), qt))
         return blocks
 
     def _run_answerable_rate(
@@ -1243,7 +1249,7 @@ class SLMEvalHarness:
 
     def _run_single_correct_rate(
         self,
-        rendered_html_blocks: List[str],
+        rendered_html_blocks: List[Tuple[str, str]],
     ) -> Dict[str, Any]:
         from Trainforge.eval.single_correct_rate import (
             SingleCorrectRateEvaluator,

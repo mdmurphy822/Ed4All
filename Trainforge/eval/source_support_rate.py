@@ -33,6 +33,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List, Optional
 
+from Trainforge.eval._per_type_helpers import (
+    attach_relevance,
+    bucket_per_question_records,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -128,12 +133,16 @@ class SourceSupportRateEvaluator:
         """
         classifier = self._get_classifier()
         if classifier is None:
+            # W7.B: deps-missing branch must emit per_question_type=None
+            # so the W7.D gate consumer can short-circuit cleanly without
+            # crashing on a missing key.
             return {
                 "source_support_rate": None,
                 "deps_missing": True,
                 "total_questions": len(prompts),
                 "supported_count": 0,
                 "contradicted_count": 0,
+                "per_question_type": None,
             }
 
         supported = 0
@@ -219,6 +228,44 @@ class SourceSupportRateEvaluator:
         rate: Optional[float] = (
             (supported / denom) if denom > 0 else 0.0
         )
+
+        # W7.B: per-question-type segmentation. Bucket only the records
+        # that produced a scored outcome (supported / contradicted /
+        # unsupported) — skipped records (no chunks, empty hypothesis,
+        # score errors) don't contribute to per-bucket rates because
+        # they aren't in the corpus-scope rate denom either.
+        # source_support_rate is relevant across all 5 question types so
+        # every emitted bucket carries relevant=True.
+        question_types = [str(p.get("question_type") or "") for p in prompts]
+        scored_records: List[Dict[str, Any]] = []
+        scored_types: List[str] = []
+        for record, qt in zip(per_question, question_types):
+            outcome = record.get("outcome")
+            if outcome in ("supported", "contradicted", "unsupported"):
+                scored_records.append(record)
+                scored_types.append(qt)
+        buckets = bucket_per_question_records(
+            scored_records, question_types=scored_types
+        )
+        per_question_type: Dict[str, Dict[str, Any]] = {}
+        for qt_key, bucket in buckets.items():
+            if not qt_key:
+                continue  # skip the empty-string bucket from per-type emit
+            supported_count = sum(
+                1 for r in bucket if r.get("outcome") == "supported"
+            )
+            bucket_total = len(bucket)
+            per_question_type[qt_key] = {
+                "source_support_rate": round(
+                    supported_count / bucket_total, 4
+                )
+                if bucket_total
+                else 0.0,
+                "total_questions": int(bucket_total),
+                "supported_count": int(supported_count),
+            }
+        attach_relevance(per_question_type, metric_name="source_support_rate")
+
         return {
             "source_support_rate": round(float(rate), 4),
             "total_questions": int(len(prompts)),
@@ -229,6 +276,7 @@ class SourceSupportRateEvaluator:
             "entailment_threshold": self._ent_threshold,
             "contradiction_threshold": self._con_threshold,
             "per_question": per_question,
+            "per_question_type": per_question_type,
         }
 
 

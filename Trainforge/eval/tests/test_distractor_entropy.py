@@ -66,3 +66,83 @@ def test_single_distractor_low_entropy_counted() -> None:
     import math
     assert abs(result["mean_distractor_entropy"] - math.log(3)) < 1e-3
     assert result["low_entropy_count"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Wave 7 W7.B — per-question-type segmentation tests.
+# ---------------------------------------------------------------------------
+
+
+def test_distractor_entropy_emits_per_question_type_block() -> None:
+    """4 prompts (2 MC w/ varied distractors + 2 essay w/ none) → bucket
+    rates carry the per-type entropy mean."""
+    prompts = [
+        {
+            "question_id": "mc-1",
+            "question_type": "multiple_choice",
+            "distractors": [
+                "RDFS describes vocabulary terms classes properties",
+                "SHACL validates constraints",
+                "OWL extends RDF Schema with rich axioms",
+            ],
+        },
+        {
+            "question_id": "mc-2",
+            "question_type": "multiple_choice",
+            "distractors": [
+                "alpha beta gamma delta",
+                "epsilon zeta",
+                "eta theta iota",
+            ],
+        },
+        {
+            "question_id": "essay-1",
+            "question_type": "essay",
+            "distractors": [],  # essays have no distractors
+        },
+        {
+            "question_id": "essay-2",
+            "question_type": "essay",
+            "distractors": [],
+        },
+    ]
+    result = DistractorEntropyEvaluator().evaluate(prompts)
+
+    pqt = result["per_question_type"]
+    assert set(pqt.keys()) == {"multiple_choice", "essay"}
+
+    # MC bucket has non-zero entropy mean.
+    assert pqt["multiple_choice"]["total_questions"] == 2
+    assert pqt["multiple_choice"]["distractor_entropy_mean"] > 0.5
+
+    # Essay bucket has zero entropy (no distractors).
+    assert pqt["essay"]["total_questions"] == 2
+    assert pqt["essay"]["distractor_entropy_mean"] == 0.0
+
+
+def test_distractor_entropy_marks_irrelevant_buckets_as_not_relevant() -> None:
+    """distractor_entropy is structurally MC-only — non-MC buckets get
+    relevant=False so the W7.D gate consumer can skip them cleanly."""
+    prompts = [
+        {
+            "question_id": "mc-1",
+            "question_type": "multiple_choice",
+            "distractors": ["alpha", "beta gamma", "delta epsilon zeta"],
+        },
+        {
+            "question_id": "essay-1",
+            "question_type": "essay",
+            "distractors": [],
+        },
+        {
+            "question_id": "tf-1",
+            "question_type": "true_false",
+            "distractors": ["False"],
+        },
+    ]
+    result = DistractorEntropyEvaluator().evaluate(prompts)
+    pqt = result["per_question_type"]
+
+    assert pqt["multiple_choice"]["relevant"] is True
+    assert pqt["essay"]["relevant"] is False
+    assert pqt["true_false"]["relevant"] is False

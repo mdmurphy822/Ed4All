@@ -107,3 +107,98 @@ def test_no_declared_bloom_skipped() -> None:
     assert result["skipped_count"] == 1
     # 0/0 → safe 0.0 fallback
     assert result["bloom_alignment_rate"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Wave 7 W7.B — per-question-type segmentation tests.
+# ---------------------------------------------------------------------------
+
+
+def test_bloom_alignment_rate_emits_per_question_type_block() -> None:
+    """3 prompts across 2 types — assert per-bucket alignment rates."""
+    # mc-1 aligned, mc-2 mismatched, essay-1 aligned.
+    stub = _make_stub_ensemble(["understand", "create", "evaluate"])
+    evaluator = BloomAlignmentRateEvaluator(ensemble=stub)
+    prompts = [
+        {
+            "question_id": "mc-1",
+            "question_type": "multiple_choice",
+            "stem": "Explain X.",
+            "bloom_level": "understand",
+        },
+        {
+            "question_id": "mc-2",
+            "question_type": "multiple_choice",
+            "stem": "Recall X.",
+            "bloom_level": "remember",
+        },
+        {
+            "question_id": "essay-1",
+            "question_type": "essay",
+            "stem": "Evaluate X.",
+            "bloom_level": "evaluate",
+        },
+    ]
+    result = evaluator.evaluate(prompts)
+    pqt = result["per_question_type"]
+    assert set(pqt.keys()) == {"multiple_choice", "essay"}
+
+    assert pqt["multiple_choice"]["total_questions"] == 2
+    assert pqt["multiple_choice"]["aligned_count"] == 1
+    assert pqt["multiple_choice"]["bloom_alignment_rate"] == 0.5
+    # bloom_alignment_rate is relevant across all 5 question types.
+    assert pqt["multiple_choice"]["relevant"] is True
+
+    assert pqt["essay"]["total_questions"] == 1
+    assert pqt["essay"]["aligned_count"] == 1
+    assert pqt["essay"]["bloom_alignment_rate"] == 1.0
+    assert pqt["essay"]["relevant"] is True
+
+
+def test_bloom_alignment_rate_deps_missing_returns_per_question_type_none() -> None:
+    """Deps-missing branch must emit per_question_type=None + deps_missing=True."""
+    stub = MagicMock()
+    stub._load_members.return_value = []
+    evaluator = BloomAlignmentRateEvaluator(ensemble=stub)
+    prompts = [
+        {
+            "question_id": "q-1",
+            "question_type": "multiple_choice",
+            "stem": "anything",
+            "bloom_level": "understand",
+        }
+    ]
+    result = evaluator.evaluate(prompts)
+    assert result["bloom_alignment_rate"] is None
+    assert result["deps_missing"] is True
+    assert "per_question_type" in result
+    assert result["per_question_type"] is None
+
+
+def test_bloom_alignment_rate_skipped_records_excluded_from_bucket() -> None:
+    """Records with no declared bloom_level (skipped) should not pollute
+    per-bucket rates."""
+    # Only aligned/mismatched records are counted; skipped records carry
+    # no declared level so they aren't bucketed.
+    stub = _make_stub_ensemble(["understand"])
+    evaluator = BloomAlignmentRateEvaluator(ensemble=stub)
+    prompts = [
+        {
+            "question_id": "mc-1",
+            "question_type": "multiple_choice",
+            "stem": "Explain X.",
+            "bloom_level": "understand",
+        },
+        {
+            # No bloom_level → skipped.
+            "question_id": "mc-2",
+            "question_type": "multiple_choice",
+            "stem": "Anything",
+        },
+    ]
+    result = evaluator.evaluate(prompts)
+    pqt = result["per_question_type"]
+    # MC bucket only counts the scored record.
+    assert pqt["multiple_choice"]["total_questions"] == 1
+    assert pqt["multiple_choice"]["aligned_count"] == 1
+    assert pqt["multiple_choice"]["bloom_alignment_rate"] == 1.0
