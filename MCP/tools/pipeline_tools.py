@@ -4619,6 +4619,48 @@ def _build_tool_registry() -> dict:
                 )
                 mint_method = "synthesize_objectives_from_topics"
 
+            # Wave 1.8 — objective-driven dynamic week count. The
+            # extractor phase auto-scaled ``duration_weeks`` to
+            # ``max(8, len(merged_chapters))`` based on chapter count
+            # (a structural proxy). After the synthesizer emits real
+            # CO-NN objectives we have the authoritative signal — the
+            # actual pedagogical surface area the course must teach.
+            # Re-scale to ``max(8, ceil(len(chapter) / _COS_PER_WEEK))``
+            # so a textbook with 6 chapters but 30 chapter objectives
+            # paces at 15 weeks (2 COs/week) instead of 8.
+            #
+            # ``_COS_PER_WEEK = 2`` is the typical CC course pace
+            # (calibrated against the rdf-shacl-551-2 archive: 30 COs
+            # / 15 weeks). Override via the ``WAVE18_COS_PER_WEEK``
+            # env var when calibrating against a different course
+            # family. ``not duration_explicit`` preserves operator
+            # intent — when ``--weeks N`` is passed, the synthesizer
+            # respects it regardless of objective count.
+            #
+            # Skipped for ``user_supplied_objectives_json``: the
+            # operator's hand-curated LO list pre-encodes pacing
+            # decisions that automatic re-scaling would clobber.
+            if not duration_explicit and mint_method != "user_supplied_objectives_json":
+                _COS_PER_WEEK = int(
+                    os.environ.get("WAVE18_COS_PER_WEEK", "2") or "2"
+                )
+                if _COS_PER_WEEK > 0 and chapter:
+                    objective_weeks = max(
+                        8,
+                        (len(chapter) + _COS_PER_WEEK - 1) // _COS_PER_WEEK,
+                    )
+                    if objective_weeks != duration_weeks:
+                        logger.info(
+                            "plan_course_structure: re-scaling "
+                            "duration_weeks from %d (chapter-driven) to "
+                            "%d (objective-driven; %d COs / %d per week)",
+                            duration_weeks,
+                            objective_weeks,
+                            len(chapter),
+                            _COS_PER_WEEK,
+                        )
+                        duration_weeks = objective_weeks
+
             # Detect textbook_structure_path to record provenance.
             structure_path = (
                 project_path / "01_learning_objectives" / "textbook_structure.json"
@@ -4754,6 +4796,7 @@ def _build_tool_registry() -> dict:
                 "terminal_count": len(terminal),
                 "chapter_count": len(chapter),
                 "mint_method": mint_method,
+                "duration_weeks": duration_weeks,
             })
 
         registry["plan_course_structure"] = _plan_course_structure

@@ -315,3 +315,86 @@ def test_explicit_duration_kwargs_wins(planner_fixture):
         Path(result["synthesized_objectives_path"]).read_text(encoding="utf-8")
     )
     assert objectives["duration_weeks"] == 12
+
+
+# Wave 1.8: objective-driven dynamic week count. After the synthesizer
+# emits real CO-NN objectives, re-scale duration_weeks to
+# max(8, ceil(len(chapter_objectives) / _COS_PER_WEEK)) when
+# duration_weeks_explicit=False. Replaces the chapter-driven pre-scale
+# from the extractor with the authoritative objective count.
+# ---------------------------------------------------------------------- #
+
+
+def test_wave18_rescales_duration_weeks_from_objective_count(planner_fixture):
+    """duration_weeks_explicit=False + many synthesized COs → re-scale.
+
+    With 30 source headings the synthesizer emits enough chapter
+    objectives that ``ceil(N / _COS_PER_WEEK)`` exceeds the 8-week
+    floor and the planner promotes ``duration_weeks`` accordingly.
+    """
+    fx = planner_fixture
+    _seed_autoscaled_config(fx["project_dir"], auto_weeks=8)
+    # 30 distinct headings — enough to push CO count past 16 so
+    # ceil(N/2) > 8 and the re-scale fires.
+    headings = [f"Topic {i:02d}" for i in range(1, 31)]
+    _write_dart_html(fx["staging_dir"] / "book.html", headings)
+
+    result = asyncio.run(_call(
+        project_id=fx["project_id"],
+        staging_dir=str(fx["staging_dir"]),
+        duration_weeks=8,
+        duration_weeks_explicit=False,
+    ))
+    assert result["success"]
+    co_count = int(result["chapter_count"])
+    expected_weeks = max(8, (co_count + 1) // 2)
+    # Re-scale must fire: produced more weeks than the extractor's 8.
+    assert expected_weeks > 8, (
+        f"test fixture didn't trigger re-scale; got {co_count} COs / "
+        f"expected_weeks={expected_weeks}"
+    )
+    assert result["duration_weeks"] == expected_weeks, (
+        f"expected re-scale to {expected_weeks} weeks for {co_count} COs "
+        f"(_COS_PER_WEEK=2); got {result['duration_weeks']}"
+    )
+
+    cfg = json.loads(
+        (fx["project_dir"] / "project_config.json").read_text(encoding="utf-8")
+    )
+    assert cfg["duration_weeks"] == expected_weeks
+
+
+def test_wave18_preserves_8week_floor_for_short_courses(planner_fixture):
+    """Short courses (≤16 COs) stay at the 8-week floor."""
+    fx = planner_fixture
+    _seed_autoscaled_config(fx["project_dir"], auto_weeks=8)
+    # 6 headings → 6 chapter objectives → ceil(6/2) = 3, max(8, 3) = 8.
+    headings = [f"Topic {i:02d}" for i in range(1, 7)]
+    _write_dart_html(fx["staging_dir"] / "book.html", headings)
+
+    result = asyncio.run(_call(
+        project_id=fx["project_id"],
+        staging_dir=str(fx["staging_dir"]),
+        duration_weeks=8,
+        duration_weeks_explicit=False,
+    ))
+    assert result["success"]
+    assert result["duration_weeks"] == 8
+
+
+def test_wave18_explicit_kwargs_skips_rescale(planner_fixture):
+    """duration_weeks_explicit=True → re-scale is skipped, kwargs win."""
+    fx = planner_fixture
+    _seed_autoscaled_config(fx["project_dir"], auto_weeks=8)
+    headings = [f"Topic {i:02d}" for i in range(1, 19)]  # would re-scale to 9
+    _write_dart_html(fx["staging_dir"] / "book.html", headings)
+
+    result = asyncio.run(_call(
+        project_id=fx["project_id"],
+        staging_dir=str(fx["staging_dir"]),
+        duration_weeks=12,
+        duration_weeks_explicit=True,
+    ))
+    assert result["success"]
+    # Operator's explicit 12 wins; no re-scale.
+    assert result["duration_weeks"] == 12
