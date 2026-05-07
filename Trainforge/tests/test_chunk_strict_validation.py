@@ -211,6 +211,40 @@ def test_chunk_with_malformed_key_claims_fails():
     )
 
 
+def test_chunk_with_learning_outcome_source_refs_validates():
+    """Wave 5 W5.G — strict-mode positive case for the new optional
+    ``learning_outcome_source_refs`` field. Each value MUST be a non-
+    empty array of non-empty strings; the field is wholly optional so
+    its absence on legacy chunks is unaffected (covered by the
+    ``test_legacy_chunk_without_new_fields_validates`` predecessor)."""
+    validator = _build_validator()
+    chunk = _base_chunk()
+    chunk["learning_outcome_source_refs"] = {
+        "TO-05": ["dart:rdf-primer-ch3#sec-2"],
+        "TO-06": ["dart:chunk_alpha", "dart:chunk_beta"],
+    }
+    errors = list(validator.iter_errors(chunk))
+    assert errors == [], (
+        f"learning_outcome_source_refs unexpectedly errored: "
+        f"{[(list(e.absolute_path), e.message) for e in errors]}"
+    )
+
+
+def test_chunk_with_malformed_learning_outcome_source_refs_fails():
+    """Empty-string source-chunk IDs MUST fail strict validation.
+    Closes the silent-drift class W5.G is built to catch."""
+    validator = _build_validator()
+    chunk = _base_chunk()
+    chunk["learning_outcome_source_refs"] = {
+        "TO-05": [""],  # empty string violates minLength: 1
+    }
+    errors = list(validator.iter_errors(chunk))
+    assert errors, (
+        "empty-string sourceId in learning_outcome_source_refs MUST fail "
+        "strict validation; minLength: 1 on the inner items must reject"
+    )
+
+
 def test_chunk_with_malformed_objective_alignment_fails():
     """A malformed objective_alignment entry (missing required
     objective_id) MUST fail strict validation via the cross-schema $ref

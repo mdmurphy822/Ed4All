@@ -191,6 +191,14 @@
       "type": "array",
       "items": {"$ref": "https://ed4all.dev/ns/courseforge/v1/CourseModule.schema.json#/$defs/ObjectiveAlignment"}
     },
+    "learning_outcome_source_refs": {
+      "description": "GPT Feedback v2 Wave 5 W5.G — per-chunk reverse map from learning_outcome_refs[] to the DART/Courseforge chunk-IDs that source each LO. Built from item.courseforge_metadata.learningObjectives[].sourceReferences[] at chunk-emit time. Optional; absent on chunks where the page-level JSON-LD doesn't declare sourceReferences for any of the chunk's claimed LOs (legacy / pre-Wave-1.6 corpora). Keys preserve emit case (e.g. 'TO-05' not 'to-05').",
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {"type": "string", "minLength": 1}
+      }
+    },
     "run_id": {
       "type": "string",
       "description": "Pipeline run that produced this chunk (REC-PRV-01, Worker P Wave 4.1). Matches decision_event.schema.json run_id format — sourced from the active DecisionCapture instance's run_id. Always populated on new runs; legacy chunks without this field still validate."
