@@ -754,6 +754,7 @@ Source of truth: `config/workflows.yaml::validation_gates`. Phase column below s
 | `textbook_to_course` | `training_synthesis` | `curie_anchoring` | CurieAnchoringValidator (binary per-pair anchoring sentinel, default min_pair_anchoring_rate=0.95; replaces curie_preservation) |
 | `textbook_to_course` | `training_synthesis` | `pair_claim_support` | PairClaimSupportValidator (warning — Wave 4 W4.A per-claim NLI entailment vs cited chunks; day-1 warning per Wave 1.5/1.6/1.7 contract, flips to critical once per-corpus baseline is calibrated) |
 | `textbook_to_course` | `training_synthesis` | `pair_lo_refs` | PairLearningOutcomeRefsValidator (Wave 4 W4.B — per-pair learning_outcome_refs subset check; critical because phantom-LO is structural; mirrors AssessmentObjectiveAlignmentValidator severity) |
+| `textbook_to_course` | `training_synthesis` | `pair_objective_delivery` | PairObjectiveDeliveryValidator (warning — Wave 4 W4.C MEDIUM per-pair-per-objective tri-axis NLI entailment + Bloom-gap + verb cooccurrence delivery audit; mirrors BlockObjectiveDeliveryValidator on the pair surface; day-1 warning per Wave 1.5/1.6/1.7 contract, flips to critical once per-corpus baseline is calibrated) |
 | `textbook_to_course` | `training_synthesis` | `pair_promotion` | TrainingPairPromotionValidator |
 | `textbook_to_course` | `libv2_archival` | `libv2_manifest` | LibV2ManifestValidator |
 | `textbook_to_course` | `libv2_archival` | `packet_integrity_strict` | PacketIntegrityValidator |

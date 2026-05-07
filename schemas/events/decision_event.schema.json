@@ -173,6 +173,7 @@
         "page_source_ref_check",
         "pair_claim_support_check",
         "pair_lo_refs_check",
+        "pair_objective_delivery_check",
         "paraphrase_used_deterministic_draft",
         "pedagogical_strategy",
         "phase_completion",
