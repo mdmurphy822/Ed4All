@@ -34,6 +34,12 @@ from unittest.mock import patch
 
 import pytest
 
+# Wave W-D10 T10.2: validator wraps the [embedding] NLI deps (DeBERTa-v3
+# via lib.classifiers.nli_classifier); tests stub the loader today but
+# the file is slow-marked so the nightly extras-installed run picks them
+# up via -m "slow".
+pytestmark = pytest.mark.slow
+
 # Repo root + scripts dir on path.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:

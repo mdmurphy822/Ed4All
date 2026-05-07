@@ -116,69 +116,35 @@ from lib.classifiers.nli_classifier import NliClassifier, NliScore
 logger = logging.getLogger(__name__)
 
 
-#: Per-claim entailment floor — sentences at or above this entailment
-#: score are considered "entailed" by the cited chunk. Mirrors the
-#: Wave 2 W2.F sibling default.
-_DEFAULT_ENTAILMENT_FLOOR: float = 0.70
-
-#: Per-claim contradiction floor — sentences at or above this
-#: contradiction score are considered "contradicted" by the cited
-#: chunk (a stronger negative signal than mere "unsupported"). Mirrors
-#: the Wave 2 W2.F sibling default.
-_DEFAULT_CONTRADICTION_FLOOR: float = 0.50
-
-#: Per-pair unsupported_claim_rate ceiling. Above this rate, the pair
-#: is rejected with ``rejection_reason="unsupported_claim"``.
-_DEFAULT_MAX_UNSUPPORTED_RATE: float = 0.20
-
-#: Per-pair contradicted-claim rate ceiling. Above this rate, the
-#: pair is rejected with ``rejection_reason="contradicted_claim"``
-#: regardless of total unsupported rate — contradicted alone is a
-#: hard signal.
-_DEFAULT_MAX_CONTRADICTED_RATE: float = 0.05
-
-#: Minimum content-token count for a sentence to be considered a
-#: pedagogical "claim" worth scoring. Sentences below this token
-#: count are filtered out before NLI fan-out — they're typically
-#: structural fragments ("Q:", "A.", numeric-only labels) that would
-#: false-positive under NLI's "premise → hypothesis" framing.
-_MIN_SENTENCE_TOKENS: int = 4
-
-#: Cap per-pair issue list (mirrors sibling validators).
-_ISSUE_LIST_CAP: int = 50
-
-#: Cap on number of audit-trail issues for the gate-runner walk path
-#: (per file). Keeps the GateResult JSON bounded on a 1000-pair corpus.
-_GATE_ISSUE_CAP: int = 50
-
-
-# --------------------------------------------------------------------- #
-# Canonical rejection reasons + GateIssue codes
-# --------------------------------------------------------------------- #
-
-_REASON_UNSUPPORTED_CLAIM: str = "unsupported_claim"
-_REASON_CONTRADICTED_CLAIM: str = "contradicted_claim"
-
-_CODE_NLI_DEPS_MISSING: str = "NLI_DEPS_MISSING"
-_CODE_MISSING_PER_CLAIM_SUPPORT: str = "MISSING_PER_CLAIM_SUPPORT"
-_CODE_MISSING_CLAIM_SUPPORT_RATE: str = "MISSING_CLAIM_SUPPORT_RATE"
-_CODE_PAIRS_FILE_READ_ERROR: str = "PAIRS_FILE_READ_ERROR"
-_CODE_MISSING_INPUTS: str = "MISSING_INPUTS"
-
-
-#: Sentence-split regex. Splits on terminal-punctuation followed by
-#: whitespace; preserves the punctuation on the preceding sentence via
-#: lookbehind. Zero-deps; sufficient for typical training-pair
-#: completions (1-4 short sentences). For pathological inputs (no
-#: terminal punctuation, all-caps, embedded URLs) the splitter
-#: degrades to "single sentence" — that's fine; one-sentence pairs
-#: still get scored.
-_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
-
-#: Word-token regex for sentence-length filtering. Lowercase
-#: alphabetic-only tokens of >= 2 chars; numbers and punctuation
-#: dropped.
-_CONTENT_TOKEN_RE = re.compile(r"[a-zA-Z]{2,}", re.UNICODE)
+# W-D7 T7.2: thresholds + GateIssue codes + sentence-split regex
+# extracted into the ``_claim_support_thresholds`` sibling module.
+# Re-exported here so existing
+# ``from lib.validators.pair.claim_support import _DEFAULT_ENTAILMENT_FLOOR``
+# (and the back-compat shim's re-export of the same name) keep
+# resolving without change.
+from lib.validators.pair._claim_support_thresholds import (  # noqa: F401
+    _CODE_DART_DISAGREEMENT_RATE_HIGH,
+    _CODE_MISSING_CLAIM_SUPPORT_RATE,
+    _CODE_MISSING_INPUTS,
+    _CODE_MISSING_PER_CLAIM_SUPPORT,
+    _CODE_NLI_DEPS_MISSING,
+    _CODE_PAIRS_FILE_READ_ERROR,
+    _CONTENT_TOKEN_RE,
+    _DART_DISAGREEMENT_RATE_WARN_CEILING,
+    _DEFAULT_CONTRADICTION_FLOOR,
+    _DEFAULT_DART_CONTRADICTION_FLOOR,
+    _DEFAULT_ENTAILMENT_FLOOR,
+    _DEFAULT_MAX_CONTRADICTED_RATE,
+    _DEFAULT_MAX_UNSUPPORTED_RATE,
+    _GATE_ISSUE_CAP,
+    _ISSUE_LIST_CAP,
+    _MIN_SENTENCE_TOKENS,
+    _OUTCOME_DART_DISAGREEMENT,
+    _PER_CLAIM_MATCH_COSINE_FLOOR,
+    _REASON_CONTRADICTED_CLAIM,
+    _REASON_UNSUPPORTED_CLAIM,
+    _SENTENCE_SPLIT_RE,
+)
 
 
 def _content_token_count(text: str) -> int:
@@ -211,57 +177,9 @@ def _decompose_sentences(text: str) -> List[str]:
     return sentences
 
 
-# --------------------------------------------------------------------- #
-# Wave 5 W5.D — per-claim attribution helpers
-# --------------------------------------------------------------------- #
-
-
-#: Cosine-similarity floor for declaring that a pair-side sentence
-#: "corresponds to" one of the cited chunk's structured ``key_claims``
-#: entries. Empirically calibrated against the embedder's intrinsic
-#: similarity floor (topically-related but not semantically-aligned
-#: pairs cluster well below 0.40); the 0.50 floor mirrors the Wave 1.7
-#: ``ConceptExampleSimilarityValidator`` precedent at
-#: ``lib/validators/concept_example_similarity.py`` (the looser of the
-#: three statistical-tier gates, because example-style language is
-#: intentionally more concrete than the abstract claim it instantiates
-#: — the same asymmetry holds between a synthesized completion sentence
-#: and the structured claim it expounds).
-_PER_CLAIM_MATCH_COSINE_FLOOR: float = 0.50
-
-
-# --------------------------------------------------------------------- #
-# Wave 9 TIGHT — dual-source DART cross-check (chunker-drift slice)
-# --------------------------------------------------------------------- #
-
-
-#: DART-side per-claim contradiction floor for the dual-source check.
-#: Mirrors :data:`_DEFAULT_CONTRADICTION_FLOOR` (0.50) — the W2.F sibling
-#: at ``lib/validators/claim_support.py`` uses 0.50 against the same
-#: DeBERTa-v3 NLI classifier, and §3 (lines 248-255) of
-#: ``plans/dual-source-investigation-2026-05.md`` calls out that a
-#: separate floor calibration on the pair-side DART check is a future
-#: wave. Day-1 we reuse the IMSCC-side floor so a sentence the IMSCC
-#: chunk entails but the DART block contradicts at ≥ 0.50 stamps
-#: ``dart_disagreement`` on the audit field. Warning-severity at the
-#: gate-runner walk; no per-pair reject.
-_DEFAULT_DART_CONTRADICTION_FLOOR: float = 0.50
-
-#: Aggregate-rate ceiling for the gate-runner walk's
-#: ``DART_DISAGREEMENT_RATE_HIGH`` warning. When > 5% of pairs on disk
-#: carry a ``dart_disagreement`` outcome on any per-claim entry, fire a
-#: warning-severity GateIssue. Day-1 surfaces operator signal without
-#: blocking promotion — calibration on a real corpus may flip to
-#: critical.
-_DART_DISAGREEMENT_RATE_WARN_CEILING: float = 0.05
-
-#: GateIssue code for the gate-runner walk's aggregate warning.
-_CODE_DART_DISAGREEMENT_RATE_HIGH: str = "DART_DISAGREEMENT_RATE_HIGH"
-
-#: New per-claim outcome value added by Wave 9. Used when the IMSCC NLI
-#: pass scored ``"entailed"`` but the dual-source DART NLI re-score
-#: contradicted at >= :data:`_DEFAULT_DART_CONTRADICTION_FLOOR`.
-_OUTCOME_DART_DISAGREEMENT: str = "dart_disagreement"
+# W-D7 T7.2: _PER_CLAIM_MATCH_COSINE_FLOOR + Wave 9 dual-source
+# constants moved to ``_claim_support_thresholds`` sibling module;
+# imported at the top of this file.
 
 
 def _resolve_chunk_key_claims_with_attribution(

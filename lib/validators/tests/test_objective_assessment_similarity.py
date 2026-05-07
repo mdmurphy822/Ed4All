@@ -21,6 +21,12 @@ from typing import Any, Dict, List, Tuple
 
 import pytest
 
+# Wave W-D10 T10.2: validator wraps the [embedding] sentence-transformers
+# extra; tests run with stubs today but the file is slow-marked so when
+# extras are installed (nightly CI), the slow segregation flips it into
+# the slow-only matrix.
+pytestmark = pytest.mark.slow
+
 # Repo root on path for sibling-module imports.
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:

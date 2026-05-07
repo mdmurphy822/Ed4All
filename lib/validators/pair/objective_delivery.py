@@ -132,13 +132,13 @@ from MCP.hardening.validation_gates import GateIssue, GateResult
 from lib.classifiers.nli_classifier import NliClassifier, NliScore
 from lib.ontology.bloom import BLOOM_LEVELS, get_verbs
 
-# Reuse the canonical status-resolution helper from the Wave 1.7 W1.7.C
-# block-side validator. The helper is shape-agnostic over the three
-# pass/skip axis flags — the same mapping logic applies on the pair
-# surface. Importing avoids a fork-and-drift hazard between the two
-# validators.
-from lib.validators.block_objective_delivery import (
-    _resolve_status as _resolve_block_objective_status,
+# W-D7 T7.3: route through the shared
+# ``lib.utils.objective_delivery_axes`` package. The status mapper
+# previously imported from ``lib.validators.block_objective_delivery``
+# (back-compat shim retained at the new canonical via the same module).
+from lib.utils.objective_delivery_axes import (
+    BLOOM_INDEX as _SHARED_BLOOM_INDEX,
+    resolve_status as _resolve_block_objective_status,
 )
 # Reuse the shared objective-flattener (Courseforge-form +
 # LibV2-archive-form tolerant). The W4.C.3 call-site loads the
@@ -273,9 +273,9 @@ _STATUS_VERB_ONLY: str = "verb_only"
 _STATUS_UNVERIFIABLE: str = "unverifiable"
 
 
-_BLOOM_INDEX: Dict[str, int] = {
-    level: idx for idx, level in enumerate(BLOOM_LEVELS)
-}
+# W-D7 T7.3: reuse the canonical Bloom-level → index map from the
+# shared axes package so both validators index the same way.
+_BLOOM_INDEX: Dict[str, int] = _SHARED_BLOOM_INDEX
 
 
 # --------------------------------------------------------------------- #

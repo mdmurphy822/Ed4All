@@ -87,190 +87,30 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+# W-D7 T7.1: result shape + severity tables extracted into sibling
+# private modules. Re-exported here so existing imports
+# (``from lib.validators.libv2.packet_integrity import ValidationIssue``,
+#  ``from lib.validators.libv2_packet_integrity import RULE_SEVERITY``)
+# keep resolving without change.
+from lib.validators.libv2._packet_integrity_result import (  # noqa: F401
+    ValidationIssue,
+    ValidationResult,
+)
+from lib.validators.libv2._packet_integrity_severity import (  # noqa: F401
+    ASSESSMENT_CHUNK_TYPE,
+    COVERAGE_RULES,
+    EDGE_CLASS_SYNONYMS,
+    EDGE_TYPING_CONTRACT,
+    PEDAGOGICAL_EDGE_TYPES,
+    RELAX_ENV_VAR,
+    RULE_SEVERITY,
+    SCAFFOLDING_CLASSES,
+    TEACHING_CHUNK_TYPES,
+    TYPING_RULES,
+    _env_relax,
+)
+
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------- #
-# Result shape
-# ---------------------------------------------------------------------- #
-
-
-@dataclass
-class ValidationIssue:
-    """One issue raised by a packet integrity rule."""
-
-    rule: str
-    severity: str  # "critical" | "warning"
-    issue_code: str
-    message: str
-    context: Dict[str, Any] = field(default_factory=dict)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "rule": self.rule,
-            "severity": self.severity,
-            "issue_code": self.issue_code,
-            "message": self.message,
-            "context": self.context,
-        }
-
-
-@dataclass
-class ValidationResult:
-    """Aggregate result for ``PacketIntegrityValidator.validate``."""
-
-    archive_root: str
-    rules_run: int = 0
-    rules_passed: int = 0
-    rules_failed: int = 0
-    issues: List[ValidationIssue] = field(default_factory=list)
-    summary: Dict[str, Any] = field(default_factory=dict)
-
-    @property
-    def critical_count(self) -> int:
-        return sum(1 for i in self.issues if i.severity == "critical")
-
-    @property
-    def warning_count(self) -> int:
-        return sum(1 for i in self.issues if i.severity == "warning")
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "archive_root": self.archive_root,
-            "rules_run": self.rules_run,
-            "rules_passed": self.rules_passed,
-            "rules_failed": self.rules_failed,
-            "critical_count": self.critical_count,
-            "warning_count": self.warning_count,
-            "issues": [i.to_dict() for i in self.issues],
-            "summary": self.summary,
-        }
-
-
-# ---------------------------------------------------------------------- #
-# Rule severity table
-# ---------------------------------------------------------------------- #
-#
-# Intentionally module-level + public so tests + the CLI can introspect
-# the catalog without instantiating the validator.
-
-RULE_SEVERITY: Dict[str, str] = {
-    "unique_chunk_ids": "critical",
-    "refs_resolve": "critical",
-    "co_has_parent": "critical",
-    "no_comma_refs": "critical",
-    "graph_edges_resolve": "critical",
-    "assessment_has_objective": "warning",
-    "to_has_teaching_and_assessment": "warning",
-    "domain_concept_has_chunk": "warning",
-    "scaffolding_not_assessed": "warning",
-    # Wave 78 — coverage rules (default warning, critical under
-    # --strict-coverage).
-    "every_objective_has_teaching": "warning",
-    "every_objective_has_assessment": "warning",
-    # Wave 78 — typing rule (default warning, critical under
-    # --strict-typing).
-    "edge_endpoint_typing": "warning",
-}
-
-# Wave 78 — rules promoted to critical when the caller passes
-# ``strict=True`` or the more granular flags. The CLI surfaces
-# ``--strict-coverage`` and ``--strict-typing``; ``--strict`` implies
-# both.
-COVERAGE_RULES: Set[str] = {
-    "to_has_teaching_and_assessment",
-    "every_objective_has_teaching",
-    "every_objective_has_assessment",
-    "domain_concept_has_chunk",
-}
-TYPING_RULES: Set[str] = {
-    "edge_endpoint_typing",
-}
-
-# Chunk types that *teach* their referenced LOs (vs. assess them or
-# scaffold them as exercise prompts).
-TEACHING_CHUNK_TYPES: Set[str] = {
-    "explanation",
-    "overview",
-    "summary",
-    "example",
-}
-ASSESSMENT_CHUNK_TYPE = "assessment_item"
-
-# Concept-graph node classes that scaffold rather than represent
-# domain content. ``scaffolding_not_assessed`` flags them when they
-# appear as edge targets of pedagogical edges.
-SCAFFOLDING_CLASSES: Set[str] = {
-    "PedagogicalMarker",
-    "AssessmentOption",
-    "LowSignal",
-    "InstructionalArtifact",
-}
-
-# Edge ``type`` values in concept_graph_semantic.json that should
-# point at *content* (DomainConcept / Misconception / LearningObjective)
-# rather than scaffolding.
-PEDAGOGICAL_EDGE_TYPES: Set[str] = {
-    "derived-from-objective",
-    "assesses",
-}
-
-
-# Wave 78 — typed-endpoint contract for ``edge_endpoint_typing``.
-# Maps edge.relation_type to (allowed_source_classes,
-# allowed_target_classes). Outcome covers terminal outcomes;
-# ComponentObjective covers component objectives. DomainConcept covers
-# both pedagogy_graph "Concept" nodes (synonym) and concept_graph
-# "DomainConcept" nodes — see ``EDGE_CLASS_SYNONYMS`` for the
-# normalisation map.
-EDGE_TYPING_CONTRACT: Dict[str, Tuple[Set[str], Set[str]]] = {
-    "teaches": ({"Chunk"}, {"Outcome", "ComponentObjective"}),
-    "assesses": ({"Chunk"}, {"Outcome", "ComponentObjective"}),
-    "practices": ({"Chunk"}, {"Outcome", "ComponentObjective"}),
-    "exemplifies": ({"Chunk"}, {"DomainConcept"}),
-    "supports_outcome": ({"ComponentObjective"}, {"Outcome"}),
-    "interferes_with": ({"Misconception"}, {"DomainConcept"}),
-    "prerequisite_of": ({"DomainConcept"}, {"DomainConcept"}),
-    "belongs_to_module": ({"Chunk"}, {"Module"}),
-    "at_bloom_level": (
-        {"Outcome", "ComponentObjective"},
-        {"BloomLevel"},
-    ),
-    "follows": ({"Module"}, {"Module"}),
-}
-
-# Class synonyms — pedagogy_graph emits ``Concept`` for what the
-# concept_graph emits as ``DomainConcept``; ``TerminalOutcome`` and
-# ``Outcome`` are synonyms in different worker emits. Map every
-# observed name to a canonical class so the typing contract is
-# strict but tolerant of legitimate naming drift.
-EDGE_CLASS_SYNONYMS: Dict[str, str] = {
-    "Concept": "DomainConcept",
-    "DomainConcept": "DomainConcept",
-    "TerminalOutcome": "Outcome",
-    "Outcome": "Outcome",
-    "LearningObjective": "Outcome",
-    "ComponentObjective": "ComponentObjective",
-    "Chunk": "Chunk",
-    "Module": "Module",
-    "BloomLevel": "BloomLevel",
-    "Misconception": "Misconception",
-}
-
-
-# Wave 78 — env var that downgrades all gated rules to warnings,
-# regardless of strict-mode flags. Legacy archives only.
-RELAX_ENV_VAR = "LIBV2_RELAX_PACKET_INTEGRITY"
-
-
-def _env_relax() -> bool:
-    """Return True iff ``LIBV2_RELAX_PACKET_INTEGRITY=true`` is set."""
-    return (os.getenv(RELAX_ENV_VAR, "") or "").strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
 
 
 # ---------------------------------------------------------------------- #
