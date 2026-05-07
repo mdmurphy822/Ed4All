@@ -160,6 +160,37 @@
       "type": "object",
       "description": "Worker M1 (VERSIONING.md §4.4a) diagnostic — records the source path for each enrichment field. Removed by a later fix PR; schema permits its presence to keep diagnostic runs valid."
     },
+    "key_claims": {
+      "description": "GPT Feedback v2 Wave 5 / W5.C — per-block per-claim attribution carried from Courseforge outline-tier emit (Wave 1.5 / W1.5.A migration contract). One entry per factual claim the originating block declared, with optional source_chunk_ids[] mapping each claim to specific DART/Courseforge chunk-ID(s). Legacy List[str] shape preserved as oneOf back-compat (Wave 1.5 W1.5.A migration contract — same shape declared at Courseforge/generators/_outline_provider.py per-block-type schema). Optional; absent on chunks built from sections without an emitting block (legacy / pre-Wave-1.5 corpora). Carried through merge_small_sections via concatenation (per-claim entries are independent).",
+      "oneOf": [
+        {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        },
+        {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["claim"],
+            "additionalProperties": false,
+            "properties": {
+              "claim": {"type": "string", "minLength": 1},
+              "source_chunk_ids": {
+                "oneOf": [
+                  {"type": "array", "items": {"type": "string", "minLength": 1}},
+                  {"type": "null"}
+                ]
+              }
+            }
+          }
+        }
+      ]
+    },
+    "objective_alignment": {
+      "description": "GPT Feedback v2 Wave 5 / W5.C — per-block per-objective tri-axis delivery alignment carried from Courseforge inter-tier / post-rewrite validators (Wave 1.7 / W1.7.A). One entry per objective_id the originating block claimed to teach / assess. Mirrors $defs.ObjectiveAlignment from courseforge_jsonld_v1.schema.json. Optional; absent on legacy / pre-Wave-1.7 corpora. Merge-aware: dedupes by objective_id across merged sections with first-seen-wins (mirrors merge_section_source_ids).",
+      "type": "array",
+      "items": {"$ref": "https://ed4all.dev/ns/courseforge/v1/CourseModule.schema.json#/$defs/ObjectiveAlignment"}
+    },
     "run_id": {
       "type": "string",
       "description": "Pipeline run that produced this chunk (REC-PRV-01, Worker P Wave 4.1). Matches decision_event.schema.json run_id format — sourced from the active DecisionCapture instance's run_id. Always populated on new runs; legacy chunks without this field still validate."
