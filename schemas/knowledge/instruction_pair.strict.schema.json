@@ -133,18 +133,23 @@
             "type": "number",
             "minimum": 0,
             "maximum": 1,
-            "description": "Post-softmax NLI entailment probability for (premise=chunk_text, hypothesis=sentence)."
+            "description": "Post-softmax NLI entailment probability for (premise=chunk_text, hypothesis=sentence). When Wave 5 W5.D per-claim attribution scoping fired (source_chunk_ids non-null), this is the max-over-cited-chunks entailment."
           },
           "contradiction": {
             "type": "number",
             "minimum": 0,
             "maximum": 1,
-            "description": "Post-softmax NLI contradiction probability for the same (premise, hypothesis) pair."
+            "description": "Post-softmax NLI contradiction probability for the same (premise, hypothesis) pair. When Wave 5 W5.D per-claim attribution scoping fired (source_chunk_ids non-null), this is the max-over-cited-chunks contradiction."
           },
           "outcome": {
             "type": "string",
             "enum": ["entailed", "unsupported", "contradicted"],
             "description": "Bucketed verdict per the W4.A thresholds — entailment_floor (default 0.70) and contradiction_floor (default 0.50)."
+          },
+          "source_chunk_ids": {
+            "type": ["array", "null"],
+            "items": {"type": "string", "minLength": 1},
+            "description": "GPT Feedback v2 Wave 5 W5.D — per-claim attribution scoping. List of DART/Courseforge chunk-IDs used as the NLI premise(s) for this sentence, copied from the matched ``key_claims[].source_chunk_ids[]`` entry on the cited chunk. Optional in strict mode (back-compat day-1); null when the validator fell back to whole-chunk-text scoring for this sentence (chunk lacks structured key_claims, no map threaded, or no cosine match)."
           }
         }
       }

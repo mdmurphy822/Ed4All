@@ -1751,6 +1751,24 @@ def run_synthesis(
         _claim_support_validator = PairClaimSupportValidator()
         _lo_refs_validator = PairLearningOutcomeRefsValidator()
 
+        # Wave 5 W5.D: pre-compute the chunk_id -> text lookup map
+        # consumed by ``PairClaimSupportValidator.validate_pair`` for
+        # the per-claim attribution scoping path. Built once outside
+        # the chunk loop so per-pair calls are O(1) lookups, not
+        # O(n_chunks) rebuilds. When ``chunks_by_id`` is empty
+        # (curriculum mode off — pedagogy graph not threaded), the
+        # lookup is None and the validator graceful-degrades to
+        # whole-chunk-text scoring (back-compat day-1; behaviour
+        # byte-identical to the W4.A pre-W5.D path).
+        _claim_support_chunk_text_map: Optional[Dict[str, str]] = (
+            {
+                cid: str(c.get("text") or "")
+                for cid, c in chunks_by_id.items()
+            }
+            if chunks_by_id
+            else None
+        )
+
         # Wave 4 W4.C MEDIUM: per-pair tri-axis objective-delivery
         # filter. Runs AFTER W4.A/W4.B return ``validated``. Rejects
         # increment ``objective_delivery_rejected`` and the matching
@@ -2074,11 +2092,23 @@ def run_synthesis(
                     # three validators pass, rather than incrementing
                     # at W2.E pass and decrementing on W4 reject.
                     if _promo_status == "validated":
+                        # Wave 5 W5.D: thread the precomputed
+                        # ``_claim_support_chunk_text_map`` so the
+                        # claim-support validator can scope NLI
+                        # premise per-claim when chunk["key_claims"]
+                        # carries the W1.5 / W5.A structured shape.
+                        # When the map is None (curriculum mode off —
+                        # ``chunks_by_id`` empty), the validator
+                        # graceful-degrades to whole-chunk-text
+                        # scoring (back-compat day-1).
                         _claim_status, _claim_reason, _claim_fields = (
                             _claim_support_validator.validate_pair(
                                 inst_result.pair,
                                 kind="instruction",
                                 chunk=chunk,
+                                chunk_id_to_text_map=(
+                                    _claim_support_chunk_text_map
+                                ),
                                 decision_capture=capture,
                             )
                         )
@@ -2401,11 +2431,19 @@ def run_synthesis(
                             # rejected pair to ``preference_records``.
                             _pref_w4_rejected = False
                             if _pref_promo_status == "validated":
+                                # Wave 5 W5.D: thread the precomputed
+                                # chunk_id -> text map (same as the
+                                # instruction-pair branch). Mirrors
+                                # the W4.A symmetric instruction /
+                                # preference handling.
                                 _pref_claim_status, _pref_claim_reason, _pref_claim_fields = (
                                     _claim_support_validator.validate_pair(
                                         pref_result.pair,
                                         kind="preference",
                                         chunk=chunk,
+                                        chunk_id_to_text_map=(
+                                            _claim_support_chunk_text_map
+                                        ),
                                         decision_capture=capture,
                                     )
                                 )

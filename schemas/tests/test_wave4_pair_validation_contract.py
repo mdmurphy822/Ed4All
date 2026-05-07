@@ -995,3 +995,462 @@ def test_pair_objective_alignment_rejects_missing_objective_id() -> None:
     pref_pair = _w4c_minimal_preference_pair()
     pref_pair["pair_objective_alignment"] = [dict(e) for e in typo_alignment]
     _w4c_assert_invalid(pref_pair, _W4C_PAIR_SCHEMA_PATHS[2])
+
+
+# --------------------------------------------------------------------------- #
+# Wave 5 W5.D — pair-side per-claim attribution scoping
+# --------------------------------------------------------------------------- #
+
+
+class _StubEmbedder:
+    """Stub :class:`SentenceEmbedder` returning canned vectors keyed
+    by a per-test text → vector dict.
+
+    Mirrors the in-tree precedent at
+    ``lib/validators/tests/test_concept_example_similarity.py``: tests
+    inject vectors keyed by text so cosine similarity is fully
+    deterministic and independent of the actual embedding model.
+    """
+
+    def __init__(self, *, text_to_vec: Dict[str, List[float]]) -> None:
+        self._table = dict(text_to_vec)
+
+    def encode(self, text: str, normalize: bool = True) -> List[float]:
+        # Return a unit-normalised vector so cosine-similarity is a
+        # plain dot product downstream.
+        vec = self._table.get(text)
+        if vec is None:
+            # Default to a constant orthogonal-to-everything vector
+            # so an unmapped text never matches a claim above the
+            # 0.50 floor.
+            return [0.0, 0.0, 0.0, 1.0]
+        # Normalise.
+        norm = sum(x * x for x in vec) ** 0.5
+        if norm == 0:
+            return list(vec)
+        return [x / norm for x in vec]
+
+
+def _patch_embedder(monkeypatch, embedder) -> None:
+    """Patch :func:`lib.embedding.sentence_embedder.try_load_embedder`
+    so the per-claim attribution path resolves to ``embedder``.
+
+    Mirrors the test idiom used elsewhere in the project (see
+    ``lib/validators/tests/test_objective_assessment_similarity.py``)
+    — patch the loader rather than the validator import so the
+    validator's lazy import inside
+    ``_try_load_embedder_safe`` resolves to the stub.
+    """
+    import lib.embedding.sentence_embedder as sem_mod
+
+    monkeypatch.setattr(
+        sem_mod, "try_load_embedder", lambda *_a, **_kw: embedder,
+    )
+
+
+def test_pair_claim_support_uses_per_claim_attribution_when_chunk_carries_key_claims(
+    monkeypatch,
+) -> None:
+    """Wave 5 W5.D — when the cited chunk carries the W1.5 / W5.A
+    structured ``key_claims=[{claim, source_chunk_ids[]}]`` shape AND
+    a ``chunk_id_to_text_map`` is threaded, the validator MUST scope
+    its NLI premise per-claim.
+
+    Assertions:
+
+    1. ``per_claim_support[].source_chunk_ids`` is populated for every
+       sentence that cosine-matched a structured claim (drawn from
+       the matched entry's ``source_chunk_ids[]``).
+    2. The decision-capture rationale interpolates
+       ``structured_attribution_used=True`` and
+       ``per_claim_match_count=N`` so an audit can replay whether the
+       per-claim attribution scoping path fired.
+    3. The NLI premise(s) for each matched sentence are the chunk
+       texts named in the matched entry's ``source_chunk_ids[]`` —
+       NOT the cited chunk's whole-text body. We verify by stamping
+       distinct sentinel strings into the lookup-map chunks and
+       asserting the stub NLI received those sentinels as the
+       premise.
+    """
+    from lib.validators.pair_claim_support import (
+        PairClaimSupportValidator,
+    )
+
+    # Two sentences in the completion. Each lines up 1:1 with one of
+    # the structured key_claims on the chunk.
+    completion = (
+        "Sentence aligning with the first structured claim verbatim. "
+        "Sentence aligning with the second structured claim verbatim."
+    )
+    pair = _instruction_pair(completion=completion, chunk_id="ch1#sec1")
+
+    # Cited chunk carries:
+    #   - whole-chunk text body (would be the legacy NLI premise).
+    #   - structured key_claims with attribution to two OTHER chunks
+    #     (ch:src_a, ch:src_b) — distinct from the cited chunk_id so
+    #     the test can prove the validator resolved attribution via
+    #     the lookup map rather than falling back to chunk["text"].
+    chunk = _chunk_payload(
+        text="Whole-chunk-text body that MUST NOT be the NLI premise.",
+    )
+    chunk["key_claims"] = [
+        {
+            "claim": "First structured claim text.",
+            "source_chunk_ids": ["ch:src_a"],
+        },
+        {
+            "claim": "Second structured claim text.",
+            "source_chunk_ids": ["ch:src_b"],
+        },
+    ]
+
+    # Sentinel strings — the stub NLI recognises these as the per-
+    # claim attribution premise. If the validator falls back to
+    # whole-chunk-text scoring, the stub will see the chunk["text"]
+    # body instead and the assertion below will fail.
+    chunk_id_to_text_map = {
+        "ch:src_a": "PREMISE_FROM_SRC_A_SENTINEL_STRING",
+        "ch:src_b": "PREMISE_FROM_SRC_B_SENTINEL_STRING",
+    }
+
+    # Embedder stub: each sentence vector aligns with its
+    # corresponding claim vector (cosine 1.0); cross-pairs have low
+    # cosine.
+    text_to_vec = {
+        "Sentence aligning with the first structured claim verbatim.":
+            [1.0, 0.0, 0.0, 0.0],
+        "Sentence aligning with the second structured claim verbatim.":
+            [0.0, 1.0, 0.0, 0.0],
+        "First structured claim text.": [1.0, 0.0, 0.0, 0.0],
+        "Second structured claim text.": [0.0, 1.0, 0.0, 0.0],
+    }
+    _patch_embedder(monkeypatch, _StubEmbedder(text_to_vec=text_to_vec))
+
+    # NLI stub: every (premise, hypothesis) pair entails. The premise
+    # text is recorded so we can assert the per-claim attribution
+    # path actually fed sentinel chunks (not whole-chunk-text).
+    seen_premises: List[str] = []
+
+    def _score(premise, hypothesis):
+        seen_premises.append(premise)
+        return (0.85, 0.10, 0.05)
+
+    stub_nli = _StubNliClassifier(score_fn=_score)
+    validator = PairClaimSupportValidator(nli=stub_nli)
+    capture = _RecordingCapture()
+
+    status, reason, new_fields = validator.validate_pair(
+        pair,
+        kind="instruction",
+        chunk=chunk,
+        chunk_id_to_text_map=chunk_id_to_text_map,
+        decision_capture=capture,
+    )
+
+    # Both sentences entail → validated.
+    assert (status, reason) == ("validated", None), (
+        f"expected (validated, None); got ({status!r}, {reason!r}); "
+        f"new_fields={new_fields!r}"
+    )
+
+    # ---- Sub-clause 1: source_chunk_ids populated per-sentence. ---- #
+    pcs = new_fields["per_claim_support"]
+    assert isinstance(pcs, list) and len(pcs) == 2, (
+        f"expected 2 per_claim_support entries; got {pcs!r}"
+    )
+    attribution = [entry.get("source_chunk_ids") for entry in pcs]
+    assert attribution == [["ch:src_a"], ["ch:src_b"]], (
+        f"expected per-sentence source_chunk_ids attribution to "
+        f"mirror the matched key_claims entries; got {attribution!r}"
+    )
+
+    # ---- Sub-clause 2: decision-capture interpolates W5.D signals. ---- #
+    assert len(capture.events) == 1, (
+        f"expected exactly 1 pair_claim_support_check event; "
+        f"got {len(capture.events)}"
+    )
+    rationale = str(capture.events[0]["rationale"])
+    assert "structured_attribution_used=True" in rationale, (
+        "W5.D rationale MUST interpolate structured_attribution_used=True; "
+        f"got rationale={rationale!r}"
+    )
+    assert "per_claim_match_count=2" in rationale, (
+        "W5.D rationale MUST interpolate per_claim_match_count=<n>; "
+        f"got rationale={rationale!r}"
+    )
+
+    # ---- Sub-clause 3: NLI premise was the sentinel, not chunk text. ---- #
+    # The whole-chunk-text body MUST NOT have been used as a premise.
+    assert all(
+        "Whole-chunk-text body" not in p for p in seen_premises
+    ), (
+        "Per-claim attribution scoping MUST replace the whole-chunk-text "
+        "premise with the per-claim source_chunk_ids[] texts; got "
+        f"premises={seen_premises!r}"
+    )
+    # Both sentinels appear in the recorded premises (one per sentence).
+    assert "PREMISE_FROM_SRC_A_SENTINEL_STRING" in seen_premises, (
+        f"expected ch:src_a sentinel in NLI premises; got {seen_premises!r}"
+    )
+    assert "PREMISE_FROM_SRC_B_SENTINEL_STRING" in seen_premises, (
+        f"expected ch:src_b sentinel in NLI premises; got {seen_premises!r}"
+    )
+
+
+def test_pair_claim_support_falls_back_to_whole_chunk_text_without_structured_key_claims(
+    monkeypatch,
+) -> None:
+    """Wave 5 W5.D negative — same pair + chunk WITHOUT a structured
+    ``key_claims`` field MUST fall back to whole-chunk-text NLI
+    scoring (byte-identical to the W4.A pre-W5.D path).
+
+    Assertions:
+
+    1. ``per_claim_support[].source_chunk_ids`` is ``None`` for every
+       sentence (no per-claim attribution applies).
+    2. The decision-capture rationale interpolates
+       ``structured_attribution_used=False`` AND
+       ``per_claim_match_count=0``.
+    3. The NLI premise was the chunk's whole-text body — NOT any
+       per-claim sentinel.
+    """
+    from lib.validators.pair_claim_support import (
+        PairClaimSupportValidator,
+    )
+
+    completion = (
+        "Sentence aligning with the first structured claim verbatim. "
+        "Sentence aligning with the second structured claim verbatim."
+    )
+    pair = _instruction_pair(completion=completion, chunk_id="ch1#sec1")
+
+    # Chunk does NOT carry structured key_claims.
+    whole_text = (
+        "Whole-chunk-text body that IS the NLI premise in this fallback path."
+    )
+    chunk = _chunk_payload(text=whole_text)
+    # No chunk["key_claims"] at all — the legacy / pre-W1.5 corpus arm.
+
+    # Lookup map is irrelevant in this arm — but provide one anyway
+    # to demonstrate that the validator's structured_flag check
+    # short-circuits the per-claim path BEFORE attempting any
+    # lookups.
+    chunk_id_to_text_map = {
+        "ch:src_a": "SHOULD_NEVER_APPEAR_AS_PREMISE",
+    }
+
+    # Embedder stub — should never be consulted in the fallback arm.
+    embedder_called = []
+
+    class _FailIfCalledEmbedder:
+        def encode(self, text, normalize=True):
+            embedder_called.append(text)
+            return [1.0, 0.0, 0.0, 0.0]
+
+    _patch_embedder(monkeypatch, _FailIfCalledEmbedder())
+
+    seen_premises: List[str] = []
+
+    def _score(premise, hypothesis):
+        seen_premises.append(premise)
+        return (0.85, 0.10, 0.05)
+
+    stub_nli = _StubNliClassifier(score_fn=_score)
+    validator = PairClaimSupportValidator(nli=stub_nli)
+    capture = _RecordingCapture()
+
+    status, reason, new_fields = validator.validate_pair(
+        pair,
+        kind="instruction",
+        chunk=chunk,
+        chunk_id_to_text_map=chunk_id_to_text_map,
+        decision_capture=capture,
+    )
+
+    assert (status, reason) == ("validated", None), (
+        f"expected (validated, None); got ({status!r}, {reason!r})"
+    )
+
+    # ---- Sub-clause 1: every per_claim_support entry has source_chunk_ids=None. ---- #
+    pcs = new_fields["per_claim_support"]
+    assert isinstance(pcs, list) and len(pcs) == 2, (
+        f"expected 2 per_claim_support entries; got {pcs!r}"
+    )
+    attribution = [entry.get("source_chunk_ids") for entry in pcs]
+    assert attribution == [None, None], (
+        f"expected source_chunk_ids=None on every entry in fallback "
+        f"path; got {attribution!r}"
+    )
+
+    # ---- Sub-clause 2: rationale interpolates the fallback-path signals. ---- #
+    assert len(capture.events) == 1
+    rationale = str(capture.events[0]["rationale"])
+    assert "structured_attribution_used=False" in rationale, (
+        "W5.D rationale MUST interpolate structured_attribution_used=False "
+        f"in the legacy / fallback arm; got rationale={rationale!r}"
+    )
+    assert "per_claim_match_count=0" in rationale, (
+        "W5.D rationale MUST interpolate per_claim_match_count=0 in the "
+        f"legacy / fallback arm; got rationale={rationale!r}"
+    )
+
+    # ---- Sub-clause 3: NLI premise == whole chunk text. ---- #
+    assert all(p == whole_text for p in seen_premises), (
+        "Fallback path MUST use whole chunk text as NLI premise for "
+        f"every sentence; got premises={seen_premises!r}"
+    )
+    assert all(
+        "SHOULD_NEVER_APPEAR_AS_PREMISE" not in p for p in seen_premises
+    ), (
+        f"lookup-map text leaked into fallback-path NLI premise; "
+        f"premises={seen_premises!r}"
+    )
+    # Embedder MUST NOT have been consulted (structured_flag was False).
+    assert embedder_called == [], (
+        "Fallback path MUST short-circuit the embedder load; "
+        f"got encoder calls={embedder_called!r}"
+    )
+
+
+def test_pair_claim_support_falls_back_to_whole_chunk_text_when_no_chunk_id_to_text_map(
+    monkeypatch,
+) -> None:
+    """Wave 5 W5.D second negative — chunk DOES carry structured
+    ``key_claims`` BUT the call site did not thread a
+    ``chunk_id_to_text_map`` lookup. Validator MUST graceful-degrade
+    to whole-chunk-text scoring (back-compat day-1 — the
+    ``chunks_by_id`` map can be empty in legacy synthesize_training
+    code paths).
+
+    Assertions: identical shape to the no-structured-key_claims case
+    (source_chunk_ids=None, structured_attribution_used=False,
+    per_claim_match_count=0).
+    """
+    from lib.validators.pair_claim_support import (
+        PairClaimSupportValidator,
+    )
+
+    completion = (
+        "First sentence in the completion body for testing. "
+        "Second sentence in the completion body for testing."
+    )
+    pair = _instruction_pair(completion=completion, chunk_id="ch1#sec1")
+
+    whole_text = "Whole chunk body used as the fallback NLI premise."
+    chunk = _chunk_payload(text=whole_text)
+    chunk["key_claims"] = [
+        {
+            "claim": "First structured claim text.",
+            "source_chunk_ids": ["ch:src_a"],
+        },
+    ]
+
+    seen_premises: List[str] = []
+
+    def _score(premise, hypothesis):
+        seen_premises.append(premise)
+        return (0.85, 0.10, 0.05)
+
+    stub_nli = _StubNliClassifier(score_fn=_score)
+    validator = PairClaimSupportValidator(nli=stub_nli)
+    capture = _RecordingCapture()
+
+    status, _reason, new_fields = validator.validate_pair(
+        pair,
+        kind="instruction",
+        chunk=chunk,
+        # Note: chunk_id_to_text_map intentionally omitted (defaults
+        # to None) — the back-compat-no-map arm.
+        decision_capture=capture,
+    )
+
+    assert status == "validated"
+    pcs = new_fields["per_claim_support"]
+    attribution = [entry.get("source_chunk_ids") for entry in pcs]
+    assert attribution == [None, None], (
+        f"expected source_chunk_ids=None when chunk_id_to_text_map "
+        f"is absent; got {attribution!r}"
+    )
+    rationale = str(capture.events[0]["rationale"])
+    assert "structured_attribution_used=False" in rationale
+    assert "per_claim_match_count=0" in rationale
+    assert all(p == whole_text for p in seen_premises)
+
+
+def test_resolve_chunk_key_claims_with_attribution_helper() -> None:
+    """Wave 5 W5.D unit — the resolution helper distinguishes the
+    structured / legacy / malformed shapes per the W5.A migration
+    contract. Closes the regression class where a future schema
+    author tightens or loosens the chunk-side key_claims shape
+    without re-validating against the validator's resolution helper.
+    """
+    from lib.validators.pair_claim_support import (
+        _resolve_chunk_key_claims_with_attribution,
+    )
+
+    # ---- Case 1: structured shape with usable attribution. ---- #
+    structured_chunk = {
+        "key_claims": [
+            {"claim": "X", "source_chunk_ids": ["ch:src_a"]},
+            {"claim": "Y", "source_chunk_ids": ["ch:src_b", "ch:src_c"]},
+        ],
+    }
+    entries, structured = _resolve_chunk_key_claims_with_attribution(
+        structured_chunk
+    )
+    assert structured is True, (
+        "structured key_claims MUST set structured_flag=True"
+    )
+    assert len(entries) == 2
+    assert entries[0]["source_chunk_ids"] == ["ch:src_a"]
+    assert entries[1]["source_chunk_ids"] == ["ch:src_b", "ch:src_c"]
+
+    # ---- Case 2: legacy List[str] shape. ---- #
+    legacy_chunk = {"key_claims": ["bare claim 1", "bare claim 2"]}
+    entries, structured = _resolve_chunk_key_claims_with_attribution(
+        legacy_chunk
+    )
+    assert structured is False, (
+        "legacy List[str] key_claims MUST yield structured_flag=False"
+    )
+    # Bare strings are dropped (per-claim attribution scoping is a
+    # no-op on legacy corpora — block-level fallback applies elsewhere).
+    assert entries == []
+
+    # ---- Case 3: absent key_claims. ---- #
+    bare_chunk = {"text": "some chunk body"}
+    assert _resolve_chunk_key_claims_with_attribution(bare_chunk) == (
+        [],
+        False,
+    )
+
+    # ---- Case 4: malformed entries. ---- #
+    malformed_chunk = {
+        "key_claims": [
+            "bare string in a structured-mixed list",  # dropped
+            {"claim": ""},  # empty claim → dropped
+            {"claim": "no attribution"},  # no source_chunk_ids → dropped
+            {"claim": "empty list", "source_chunk_ids": []},  # empty → dropped
+            {
+                "claim": "valid",
+                "source_chunk_ids": ["ch:src_a", 42, "", "ch:src_b"],
+            },
+            42,  # not a dict → dropped
+        ],
+    }
+    entries, structured = _resolve_chunk_key_claims_with_attribution(
+        malformed_chunk
+    )
+    assert structured is True, (
+        "the one valid structured entry MUST set structured_flag=True"
+    )
+    assert len(entries) == 1
+    # Non-string IDs filtered.
+    assert entries[0]["source_chunk_ids"] == ["ch:src_a", "ch:src_b"]
+
+    # ---- Case 5: chunk is not a dict. ---- #
+    assert _resolve_chunk_key_claims_with_attribution(None) == ([], False)
+    assert _resolve_chunk_key_claims_with_attribution("not a dict") == (
+        [],
+        False,
+    )
