@@ -930,4 +930,4 @@ def test_wave4_medium_strict_pair_schema_round_trip() -> None:
     for schema_path in schema_paths:
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         # Should not raise.
-        jsonschema.Draft7Validator(schema).validate(base_pair)
+        jsonschema.Draft202012Validator(schema).validate(base_pair)

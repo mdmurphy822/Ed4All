@@ -1,6 +1,6 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "urn:ed4all:schemas:instruction_pair_strict",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/knowledge/v1/instruction_pair.strict.schema.json",
   "title": "Instruction Pair (SFT, strict)",
   "description": "Strict variant of instruction_pair.schema.json — identical shape except `content_type` must be a member of the ChunkType enum from schemas/taxonomies/content_type.json. REC-VOC-03 Phase 2. Gated at runtime by TRAINFORGE_ENFORCE_CONTENT_TYPE=true; the default (lenient) schema is preserved at instruction_pair.schema.json for backward-compat with free-string consumers.",
   "type": "object",
@@ -74,7 +74,7 @@
     },
     "provider": {
       "type": "string",
-      "enum": ["mock", "anthropic"],
+      "enum": ["mock", "anthropic", "claude_session", "together", "local"],
       "description": "Which synthesis provider produced the pair."
     },
     "question_type": {

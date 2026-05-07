@@ -1,6 +1,6 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "urn:ed4all:schemas:preference_pair",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/knowledge/v1/preference_pair.schema.json",
   "title": "Preference Pair (DPO)",
   "description": "Single preference training example (chosen vs rejected) emitted by Trainforge's synthesize_training stage. One JSONL line per pair. Rejected responses are drawn from explicit misconceptions in the chunk when present, or synthesized from a deterministic distractor rule otherwise.",
   "type": "object",

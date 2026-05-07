@@ -1,6 +1,6 @@
 {
-  "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "urn:ed4all:schemas:instruction_pair",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/knowledge/v1/instruction_pair.schema.json",
   "title": "Instruction Pair (SFT)",
   "description": "Single instruction-following training example emitted by Trainforge's synthesize_training stage. One JSONL line per pair. Shapes are intentionally flat so downstream SFT trainers (Alpaca/OpenAI) can remap with a single projection.",
   "type": "object",

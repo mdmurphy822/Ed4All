@@ -794,7 +794,7 @@ def test_wave4_strict_pair_schema_round_trip() -> None:
     for schema_path in schema_paths:
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
         # Should not raise.
-        jsonschema.Draft7Validator(schema).validate(base_pair)
+        jsonschema.Draft202012Validator(schema).validate(base_pair)
 
 
 # --------------------------------------------------------------------------- #
@@ -843,7 +843,7 @@ def _w4c_validate(pair: Dict[str, Any], schema_rel_path: str) -> None:
     jsonschema = pytest.importorskip("jsonschema")
     schema_path = PROJECT_ROOT / schema_rel_path
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    jsonschema.Draft7Validator(schema).validate(pair)
+    jsonschema.Draft202012Validator(schema).validate(pair)
 
 
 def _w4c_assert_invalid(pair: Dict[str, Any], schema_rel_path: str) -> None:
@@ -853,7 +853,7 @@ def _w4c_assert_invalid(pair: Dict[str, Any], schema_rel_path: str) -> None:
     schema_path = PROJECT_ROOT / schema_rel_path
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
     with pytest.raises(jsonschema.ValidationError):
-        jsonschema.Draft7Validator(schema).validate(pair)
+        jsonschema.Draft202012Validator(schema).validate(pair)
 
 
 def test_pair_objective_alignment_populated_passes_all_three_schemas() -> None:
