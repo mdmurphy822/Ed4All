@@ -1705,6 +1705,8 @@ class CourseProcessor:
         position_in_module: int = 0,
         section_source_ids: Optional[List[str]] = None,
         merged_headings: Optional[List[str]] = None,
+        merged_key_claims: Optional[List[Dict[str, Any]]] = None,
+        merged_objective_alignment: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """Split a text block into one or more chunks (xpath/char-span provenance preserved).
 
@@ -1715,6 +1717,11 @@ class CourseProcessor:
         ``self``-state) and threads ``self.MAX_CHUNK_SIZE`` /
         ``self.TARGET_CHUNK_SIZE``. Kept for the direct test caller at
         ``Trainforge/tests/test_provenance.py``.
+
+        Wave 5 W5.F: passes ``merged_key_claims`` /
+        ``merged_objective_alignment`` through to the chunker so chunks
+        emitted from a merge boundary carry the union'd audit fields
+        ``_create_chunk`` then stamps onto the chunk dict.
 
         See docs/compliance/audit-trail.md for the round-trip contract
         on ``source.html_xpath`` / ``source.char_span``.
@@ -1733,6 +1740,8 @@ class CourseProcessor:
             position_in_module=position_in_module,
             section_source_ids=section_source_ids,
             merged_headings=merged_headings,
+            merged_key_claims=merged_key_claims,
+            merged_objective_alignment=merged_objective_alignment,
             max_chunk_size=self.MAX_CHUNK_SIZE,
             target_chunk_size=self.TARGET_CHUNK_SIZE,
         )
@@ -1746,6 +1755,8 @@ class CourseProcessor:
         char_span: Optional[List[int]] = None,
         section_source_ids: Optional[List[str]] = None,
         merged_headings: Optional[List[str]] = None,
+        merged_key_claims: Optional[List[Dict[str, Any]]] = None,
+        merged_objective_alignment: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         words = text.split()
         word_count = len(words)
@@ -1983,6 +1994,20 @@ class CourseProcessor:
             chunk["key_claims"] = section_metadata_extras["key_claims"]
         if section_metadata_extras.get("objective_alignment"):
             chunk["objective_alignment"] = section_metadata_extras["objective_alignment"]
+
+        # Wave 5 (W5.F): when the chunk was emitted from a merge_small_sections
+        # boundary, the merged audit arrays passed in via the chunker callback
+        # take precedence (or supplement) the per-section JSON-LD harvest.
+        # ``merge_small_sections`` collapses multiple ContentSections into one
+        # text body; each section may carry its own per-block audit arrays
+        # that the merge collects (concat for key_claims; first-seen-wins
+        # dedupe for objective_alignment). Without this stamp, chunks emitted
+        # from a merge boundary silently drop the audit arrays even when the
+        # source sections carried them.
+        if merged_key_claims:
+            chunk["key_claims"] = list(merged_key_claims)
+        if merged_objective_alignment:
+            chunk["objective_alignment"] = list(merged_objective_alignment)
 
         # Page-level metadata
         misconceptions = item.get("misconceptions", [])

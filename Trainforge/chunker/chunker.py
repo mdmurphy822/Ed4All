@@ -110,6 +110,7 @@ __all__ = [
     "CANONICAL_CHUNK_TYPES",
     "ChunkerContext",
     "ChunkerContextRequired",
+    "MergedSectionResult",
     "chunk_content",
     "chunk_text_block",
     "merge_small_sections",
@@ -276,6 +277,109 @@ def merge_section_source_ids(
     return accumulated
 
 
+def _merge_objective_alignment_dedup(
+    accumulated: List[Dict[str, Any]],
+    section_objective_alignment: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Union two ``objective_alignment`` lists, dedupe by ``objective_id``.
+
+    Wave 5 (W5.F — chunker merge-path provenance preservation). Mirrors
+    :func:`merge_section_source_ids` (`:260-276`) — first-seen-wins
+    dedupe; mutates ``accumulated`` in place AND returns it for chaining.
+
+    Per-objective entries carry tri-axis status (`status`,
+    `declared_bloom`, `observed_bloom`, `statement_entailment_score`,
+    `action_verb_present`) per W1.7 emit. Two adjacent merged sections
+    that both teach the same objective_id can each declare an entry —
+    we keep the FIRST declaration so the merged chunk's reading of "did
+    this section deliver objective TO-05?" is anchored to the first
+    block in document order, mirroring the chunk-buffer's anchor-heading
+    semantics. Non-dict entries are silently dropped (defensive against
+    malformed payloads that slipped past schema validation).
+    """
+
+    seen = {
+        entry.get("objective_id")
+        for entry in accumulated
+        if isinstance(entry, dict) and entry.get("objective_id")
+    }
+    for entry in section_objective_alignment:
+        if not isinstance(entry, dict):
+            continue
+        oid = entry.get("objective_id")
+        if not oid or oid in seen:
+            continue
+        seen.add(oid)
+        accumulated.append(entry)
+    return accumulated
+
+
+# ---------------------------------------------------------------------------
+# MergedSectionResult — return shape from ``merge_small_sections``
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class MergedSectionResult:
+    """One merged-section result emitted by :func:`merge_small_sections`.
+
+    Wave 5 (W5.F) bumped the legacy 5-tuple return to a dataclass so the
+    new W1.5 ``key_claims`` and W1.7 ``objective_alignment`` audit fields
+    can ride alongside the legacy ``merged_source_ids`` /
+    ``merged_headings`` without forcing every caller to switch to a
+    7-element tuple destructure.
+
+    Back-compat contract: ``__iter__`` yields exactly the legacy
+    5-element shape ``(heading, combined_text, chunk_type,
+    merged_source_ids, merged_headings)``. Every existing destructure
+    site (``chunk_content`` internal loop, ``test_merge_small_sections_*``
+    test sites) keeps working byte-identical to pre-W5.F.
+
+    New consumers access ``merged_key_claims`` /
+    ``merged_objective_alignment`` via attribute. The two new fields
+    default to ``[]`` (NOT ``None``) so a legacy ContentSection without
+    the W1.5 / W1.7 fields produces a result whose new positions are
+    safely empty lists — downstream stamp sites can no-op on
+    ``if merged.merged_key_claims:`` without a ``None``-check guard.
+
+    Indexing also routes through ``__iter__`` for back-compat —
+    ``result[3]`` yields ``merged_source_ids`` (legacy index 3) so
+    existing tests at ``test_merge_small_sections_source_refs.py:104``
+    keep working.
+    """
+
+    heading: str
+    combined_text: str
+    chunk_type: str
+    merged_source_ids: List[str] = field(default_factory=list)
+    merged_headings: List[str] = field(default_factory=list)
+    merged_key_claims: List[Dict[str, Any]] = field(default_factory=list)
+    merged_objective_alignment: List[Dict[str, Any]] = field(default_factory=list)
+
+    def __iter__(self):
+        # Permit legacy 5-tuple destructure ergonomics:
+        #   ``heading, text, chunk_type, source_ids, merged_headings = result``
+        # New consumers reach the W5.F audit fields via attribute access
+        # (``.merged_key_claims`` / ``.merged_objective_alignment``)
+        # rather than positional unpacking, so the destructure arity
+        # stays at 5 forever even if more audit fields land later.
+        yield self.heading
+        yield self.combined_text
+        yield self.chunk_type
+        yield self.merged_source_ids
+        yield self.merged_headings
+
+    def __len__(self) -> int:
+        # Legacy ``len(result) == 5`` invariant — see ``__iter__`` docstring.
+        return 5
+
+    def __getitem__(self, index):
+        # Back-compat positional access for tests that index by integer
+        # (``result[3]`` for ``merged_source_ids``). Mirrors ``__iter__``
+        # so the legacy 5-element shape is the canonical positional view.
+        return tuple(self)[index]
+
+
 # ---------------------------------------------------------------------------
 # merge_small_sections — adjacent-section merger up to MAX_CHUNK_SIZE
 # ---------------------------------------------------------------------------
@@ -286,7 +390,7 @@ def merge_small_sections(
     *,
     max_chunk_size: int = MAX_CHUNK_SIZE,
     type_from_heading_fn: Optional[Callable[[str], str]] = None,
-) -> List[Tuple[str, str, str, List[str], List[str]]]:
+) -> List[MergedSectionResult]:
     """Merge adjacent sections under MIN_CHUNK_SIZE into combined blocks.
 
     Mirrors ``CourseProcessor._merge_small_sections`` at
@@ -296,22 +400,39 @@ def merge_small_sections(
 
     Each ``section`` is expected to be a ``ContentSection``-like object
     with ``.heading``, ``.content``, ``.word_count``, and optionally
-    ``.source_references`` and ``.template_type`` attributes. The
-    chunker doesn't import ``ContentSection`` directly — it duck-types
-    the attributes so the same orchestrator works against any
-    section-like model (Trainforge / DART / future Courseforge).
+    ``.source_references``, ``.template_type``, ``.key_claims``, and
+    ``.objective_alignment`` attributes. The chunker doesn't import
+    ``ContentSection`` directly — it duck-types the attributes so the
+    same orchestrator works against any section-like model (Trainforge
+    / DART / future Courseforge).
 
-    Returns a list of
-    ``(heading, combined_text, chunk_type, merged_source_ids, merged_headings)``
-    tuples, where ``merged_source_ids`` is the union of every section's
-    ``data-cf-source-ids`` attribute (Wave 10) and ``merged_headings``
-    is the ordered list of every heading that collapsed into the
-    buffer (Wave 84 Bug 1 fix).
+    Returns a list of :class:`MergedSectionResult` instances. Each
+    result tuple-unpacks to the legacy 5-element shape
+    ``(heading, combined_text, chunk_type, merged_source_ids,
+    merged_headings)`` for back-compat, AND exposes the new W5.F audit
+    fields via attribute access:
+
+    * ``merged_source_ids`` — union of every section's
+      ``data-cf-source-ids`` attribute (Wave 10), deduped first-seen.
+    * ``merged_headings`` — ordered list of every heading that
+      collapsed into the buffer (Wave 84 Bug 1 fix).
+    * ``merged_key_claims`` — concatenation of every section's
+      ``key_claims`` array (W1.5 per-claim attribution; per-claim
+      entries are independent, so concat is safe — see W5.F brief).
+    * ``merged_objective_alignment`` — union of every section's
+      ``objective_alignment`` array, deduped by ``objective_id`` with
+      first-seen-wins (W1.7 per-objective tri-axis audit; mirrors the
+      ``merge_section_source_ids`` first-seen policy).
+
+    Without the W5.F merge-path carry, ~30-50% of chunks (every chunk
+    built from a merge boundary on small-section corpora like
+    rdf-shacl-551-2) would silently drop the W1.5 / W1.7 audit signals
+    that the W5.A parser-side carry just landed on the section objects.
     """
 
     fn = type_from_heading_fn or type_from_heading
 
-    merged: List[Tuple[str, str, str, List[str], List[str]]] = []
+    merged: List[MergedSectionResult] = []
     buffer_heading = ""
     buffer_text = ""
     buffer_wc = 0
@@ -319,6 +440,8 @@ def merge_small_sections(
     buffer_template_type: Optional[str] = None
     buffer_source_ids: List[str] = []
     buffer_headings: List[str] = []
+    buffer_key_claims: List[Dict[str, Any]] = []
+    buffer_objective_alignment: List[Dict[str, Any]] = []
     buffer_started = False
 
     def _resolve_buffer_type() -> str:
@@ -327,10 +450,31 @@ def merge_small_sections(
             return buffer_template_type
         return buffer_type
 
+    def _flush() -> MergedSectionResult:
+        return MergedSectionResult(
+            heading=buffer_heading,
+            combined_text=buffer_text,
+            chunk_type=_resolve_buffer_type(),
+            merged_source_ids=buffer_source_ids,
+            merged_headings=list(buffer_headings),
+            merged_key_claims=list(buffer_key_claims),
+            merged_objective_alignment=list(buffer_objective_alignment),
+        )
+
     for section in sections:
         section_type = fn(section.heading)
         section_src = list(getattr(section, "source_references", []) or [])
         section_template = getattr(section, "template_type", None)
+        # W5.F: harvest the W5.A per-section audit fields. ``getattr``
+        # with default ``[]`` so a duck-typed section without the new
+        # attrs (legacy DART-side ContentSection-likes, pre-W5.A
+        # parsers) doesn't trip an AttributeError.
+        section_key_claims = list(
+            getattr(section, "key_claims", []) or []
+        )
+        section_objective_alignment = list(
+            getattr(section, "objective_alignment", []) or []
+        )
 
         if not buffer_started:
             buffer_heading = section.heading
@@ -340,6 +484,11 @@ def merge_small_sections(
             buffer_template_type = section_template
             buffer_source_ids = list(section_src)
             buffer_headings = [section.heading]
+            buffer_key_claims = list(section_key_claims)
+            buffer_objective_alignment = []
+            _merge_objective_alignment_dedup(
+                buffer_objective_alignment, section_objective_alignment
+            )
             buffer_started = True
         elif buffer_wc + section.word_count <= max_chunk_size:
             buffer_text += "\n\n" + section.content
@@ -350,14 +499,18 @@ def merge_small_sections(
                 buffer_template_type = section_template
             merge_section_source_ids(buffer_source_ids, section_src)
             buffer_headings.append(section.heading)
+            # W5.F: per-claim entries are independent, so concat is
+            # safe (no semantic collision between two adjacent blocks
+            # that each declared their own claims). Per-objective
+            # entries dedupe by ``objective_id`` with first-seen-wins
+            # so the merged chunk's tri-axis status anchors to the
+            # earliest declaration in document order.
+            buffer_key_claims.extend(section_key_claims)
+            _merge_objective_alignment_dedup(
+                buffer_objective_alignment, section_objective_alignment
+            )
         else:
-            merged.append((
-                buffer_heading,
-                buffer_text,
-                _resolve_buffer_type(),
-                buffer_source_ids,
-                list(buffer_headings),
-            ))
+            merged.append(_flush())
             buffer_heading = section.heading
             buffer_text = section.content
             buffer_wc = section.word_count
@@ -365,15 +518,14 @@ def merge_small_sections(
             buffer_template_type = section_template
             buffer_source_ids = list(section_src)
             buffer_headings = [section.heading]
+            buffer_key_claims = list(section_key_claims)
+            buffer_objective_alignment = []
+            _merge_objective_alignment_dedup(
+                buffer_objective_alignment, section_objective_alignment
+            )
 
     if buffer_text.strip():
-        merged.append((
-            buffer_heading,
-            buffer_text,
-            _resolve_buffer_type(),
-            buffer_source_ids,
-            list(buffer_headings),
-        ))
+        merged.append(_flush())
 
     return merged
 
@@ -397,6 +549,8 @@ def chunk_text_block(
     position_in_module: int = 0,
     section_source_ids: Optional[List[str]] = None,
     merged_headings: Optional[List[str]] = None,
+    merged_key_claims: Optional[List[Dict[str, Any]]] = None,
+    merged_objective_alignment: Optional[List[Dict[str, Any]]] = None,
     max_chunk_size: int = MAX_CHUNK_SIZE,
     target_chunk_size: int = TARGET_CHUNK_SIZE,
 ) -> List[Dict[str, Any]]:
@@ -414,6 +568,20 @@ def chunk_text_block(
     is responsible for the rest of the chunk dict (concept tags,
     objective refs, bloom level, etc.) — see the module docstring for
     the architectural rationale.
+
+    Wave 5 (W5.F): accepts ``merged_key_claims`` /
+    ``merged_objective_alignment`` kwargs threaded from
+    :func:`merge_small_sections` and forwards them to the
+    ``ctx.create_chunk`` callback. The callback (W5.B's
+    ``_create_chunk`` stamp site) reads these to materialize the
+    ``chunk["key_claims"]`` / ``chunk["objective_alignment"]`` audit
+    fields. When the chunk gets sentence-split into multiple sub-chunks
+    (the ``word_count > max_chunk_size`` branch), every sub-chunk
+    receives the same merged audit arrays — there's no per-sub-chunk
+    attribution because the W1.5 / W1.7 emit is per-section, not
+    per-sentence. Downstream consumers that want per-sentence
+    attribution use the existing per-claim NLI fan-out path
+    (W4.A / W5.D).
     """
 
     word_count = len(text.split())
@@ -447,9 +615,53 @@ def chunk_text_block(
     # Worker N (REC-ID-01): stable per-source locator for content-hash IDs.
     source_locator = item.get("item_path") or f"{item['module_id']}/{item['item_id']}"
 
+    # W5.F: build the create_chunk kwargs once. The callback contract
+    # adds two new kwargs (``merged_key_claims`` /
+    # ``merged_objective_alignment``); but a legacy callback (e.g. a
+    # downstream consumer that wraps ``CourseProcessor._create_chunk``
+    # before the W5.B stamp site lands) won't accept them. We pass the
+    # extras only when at least one is non-empty, AND fall back to the
+    # legacy kwarg set on TypeError so the callback contract stays
+    # additive — pre-W5.B callbacks keep working byte-identical.
+    base_kwargs: Dict[str, Any] = {
+        "section_source_ids": section_source_ids,
+        "merged_headings": merged_headings,
+    }
+    extra_kwargs: Dict[str, Any] = {}
+    if merged_key_claims:
+        extra_kwargs["merged_key_claims"] = merged_key_claims
+    if merged_objective_alignment:
+        extra_kwargs["merged_objective_alignment"] = merged_objective_alignment
+
+    def _dispatch_create_chunk(**call_kwargs: Any) -> Dict[str, Any]:
+        """Invoke the create_chunk callback with W5.F extras when accepted.
+
+        Tries the full kwarg set first (post-W5.B callback). Falls back
+        to the legacy kwarg set on ``TypeError: unexpected keyword
+        argument`` so a pre-W5.B caller (e.g. a test that bound a
+        custom callback before this brief landed) keeps working without
+        modification. The fallback is silent — the audit fields are
+        simply not stamped on the chunk in that path, which matches
+        the pre-W5.F baseline behavior.
+        """
+
+        merged_kwargs = {**call_kwargs, **base_kwargs, **extra_kwargs}
+        try:
+            return ctx.create_chunk(**merged_kwargs)
+        except TypeError as exc:
+            # Defensive back-compat: only swallow the specific
+            # "unexpected keyword argument" error that maps to a legacy
+            # callback signature. Re-raise on other TypeErrors so a
+            # genuine callback bug isn't masked.
+            msg = str(exc)
+            if not extra_kwargs or "unexpected keyword argument" not in msg:
+                raise
+            legacy_kwargs = {**call_kwargs, **base_kwargs}
+            return ctx.create_chunk(**legacy_kwargs)
+
     if word_count <= max_chunk_size:
         char_span = _locate(text, search_from=0)
-        chunks.append(ctx.create_chunk(
+        chunks.append(_dispatch_create_chunk(
             chunk_id=_generate_chunk_id(prefix, start_id, text, source_locator),
             text=text,
             html=html,
@@ -460,8 +672,6 @@ def chunk_text_block(
             position_in_module=position_in_module,
             html_xpath=container_xpath,
             char_span=char_span,
-            section_source_ids=section_source_ids,
-            merged_headings=merged_headings,
         ))
     else:
         sub_texts = split_by_sentences(text, target_chunk_size)
@@ -479,7 +689,7 @@ def chunk_text_block(
             if char_span[0] < prev_end:
                 char_span = [prev_end, prev_end + (char_span[1] - char_span[0])]
             prev_end = char_span[1]
-            chunks.append(ctx.create_chunk(
+            chunks.append(_dispatch_create_chunk(
                 chunk_id=this_chunk_id,
                 text=sub_text,
                 html="" if i > 0 else html,
@@ -490,8 +700,6 @@ def chunk_text_block(
                 position_in_module=position_in_module + i,
                 html_xpath=container_xpath,
                 char_span=char_span,
-                section_source_ids=section_source_ids,
-                merged_headings=merged_headings,
             ))
             last_chunk_id = this_chunk_id
 
@@ -666,7 +874,17 @@ def chunk_content(
             type_from_heading_fn=ctx.type_from_heading_fn if ctx else None,
         )
 
-        for heading, text, chunk_type, section_source_ids, merged_headings in merged:
+        for merged_result in merged:
+            # W5.F: legacy 5-element destructure preserved via
+            # ``MergedSectionResult.__iter__``; new W1.5 / W1.7 audit
+            # fields read off the dataclass via attribute access. Keeps
+            # this internal loop byte-compatible with pre-W5.F while
+            # threading the new fields through to ``chunk_text_block``.
+            heading, text, chunk_type, section_source_ids, merged_headings = (
+                merged_result
+            )
+            merged_key_claims = merged_result.merged_key_claims
+            merged_objective_alignment = merged_result.merged_objective_alignment
             if not text.strip():
                 continue
             if item["resource_type"] == "quiz":
@@ -688,6 +906,8 @@ def chunk_content(
                 position_in_module=position_in_module,
                 section_source_ids=section_source_ids,
                 merged_headings=merged_headings,
+                merged_key_claims=merged_key_claims,
+                merged_objective_alignment=merged_objective_alignment,
                 ctx=ctx,
                 max_chunk_size=max_chunk_size,
                 target_chunk_size=target_chunk_size,
