@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from lib.utils import read_jsonl as _utils_read_jsonl
+
 
 logger = logging.getLogger(__name__)
 
@@ -238,19 +240,12 @@ class RunPodBackend(ComputeBackend):
 
 
 def _read_jsonl(path: Path) -> list:
-    """Tiny JSONL reader — local to compute_backend so we don't pull
-    a heavy dataset library in until the trainer actually fits."""
-    import json
-    out = []
-    if not path.exists():
-        return out
-    with path.open("r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            out.append(json.loads(line))
-    return out
+    """Thin wrapper around :func:`lib.utils.read_jsonl` (W-D6).
+
+    Preserves the historical signature so existing call sites in this
+    module (``_filter_dpo_pairs`` etc.) continue to work unchanged.
+    """
+    return _utils_read_jsonl(path)
 
 
 def _filter_dpo_pairs(records: list, mode: str) -> list:

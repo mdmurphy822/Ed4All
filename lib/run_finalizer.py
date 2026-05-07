@@ -10,13 +10,14 @@ Provides finalization enforcement for workflow runs:
 Phase 0.5 Enhancement: Critical Enforcement (A1)
 """
 
-import hashlib
 import json
 import os
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from lib.utils import sha256_file
 
 from .hash_chain import HashChainedLog
 
@@ -252,20 +253,18 @@ class RunFinalizer:
                         )
 
     def _compute_file_checksum(self, file_path: Path) -> ArtifactChecksum:
-        """Compute checksum for a single file."""
-        hasher = hashlib.sha256()
-        size = 0
+        """Compute checksum for a single file.
 
-        with open(file_path, 'rb') as f:
-            while chunk := f.read(8192):
-                hasher.update(chunk)
-                size += len(chunk)
-
+        Two-pass: hash via :func:`lib.utils.sha256_file`, then ``stat()``
+        for size. Equivalent to the legacy single-pass loop -- ``stat()``
+        is a microsecond syscall versus the dominant disk-IO cost of the
+        full file read.
+        """
         return ArtifactChecksum(
             path=str(file_path.relative_to(self.run_path)),
             hash_algorithm="sha256",
-            hash_value=hasher.hexdigest(),
-            size_bytes=size,
+            hash_value=sha256_file(file_path),
+            size_bytes=file_path.stat().st_size,
         )
 
     def _count_events(self, report: FinalizationReport) -> None:

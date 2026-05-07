@@ -32,6 +32,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from lib.utils import read_jsonl as _utils_read_jsonl
+
 logger = logging.getLogger(__name__)
 
 
@@ -116,12 +118,7 @@ def _load_chunks_jsonl(course_path: Path) -> List[Dict[str, Any]]:
     p = resolve_imscc_chunks_path(course_path, "chunks.jsonl")
     if not p.exists():
         raise FileNotFoundError(f"chunks.jsonl not found: {p}")
-    out: List[Dict[str, Any]] = []
-    for line in p.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line:
-            out.append(json.loads(line))
-    return out
+    return _utils_read_jsonl(p)
 
 
 def _harvest_key_terms(

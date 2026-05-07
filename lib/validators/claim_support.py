@@ -92,9 +92,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from MCP.hardening.validation_gates import GateIssue, GateResult
 from lib.classifiers.nli_classifier import NliClassifier, NliScore
 from lib.embedding.sentence_embedder import is_strict_mode
+from lib.utils import strip_html_to_text as _strip_html_to_text  # W-D6 canonical
 from lib.validators.rewrite_source_grounding import (
     _resolve_block_source_chunks,
-    _strip_html_to_text,
 )
 
 # Block lives at Courseforge/scripts/blocks.py — same import bridge

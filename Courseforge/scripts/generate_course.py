@@ -236,30 +236,23 @@ def _build_jsonld_validator():
     ``$ref``s used by ``courseforge_jsonld_v1.schema.json`` (taxonomies +
     source_reference). Returns ``None`` if ``jsonschema`` / ``referencing``
     aren't importable (the module still loads, but emit-time validation
-    becomes a no-op — tests cover this path).
+    becomes a no-op -- tests cover this path).
+
+    Thin wrapper around :func:`lib.utils.build_validator` (W-D6); the
+    explicit taxonomy + source_reference list is the curated-extras
+    pattern the canonical helper supports via ``extra_schemas``.
     """
-    try:
-        from jsonschema import Draft202012Validator
-        from referencing import Registry, Resource
-    except ImportError:
-        return None
+    from lib.utils import build_validator
 
-    with open(_JSONLD_SCHEMA_PATH, encoding="utf-8") as f:
-        page_schema = json.load(f)
-    with open(_JSONLD_SOURCE_REF_SCHEMA_PATH, encoding="utf-8") as f:
-        srcref_schema = json.load(f)
-
-    resources = [
-        (page_schema["$id"], Resource.from_contents(page_schema)),
-        (srcref_schema["$id"], Resource.from_contents(srcref_schema)),
-    ]
     tax_dir = _PROJECT_ROOT / "schemas" / "taxonomies"
-    for name in _JSONLD_TAXONOMY_FILES:
-        with open(tax_dir / name, encoding="utf-8") as f:
-            tax = json.load(f)
-        resources.append((tax["$id"], Resource.from_contents(tax)))
-    registry = Registry().with_resources(resources)
-    return Draft202012Validator(page_schema, registry=registry), page_schema
+    extras = [_JSONLD_SOURCE_REF_SCHEMA_PATH] + [
+        tax_dir / name for name in _JSONLD_TAXONOMY_FILES
+    ]
+    return build_validator(
+        _JSONLD_SCHEMA_PATH,
+        extra_schemas=extras,
+        return_schema=True,
+    )
 
 
 # Import-time load: the schema must exist and parse. We deliberately fail

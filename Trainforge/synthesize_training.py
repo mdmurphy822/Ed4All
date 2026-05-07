@@ -52,6 +52,9 @@ if str(PROJECT_ROOT) not in sys.path:
 from lib.decision_capture import DecisionCapture  # noqa: E402
 from lib.ontology.curie_extraction import extract_curies  # noqa: E402
 from lib.ontology.slugs import deslugify_concept  # noqa: E402
+from lib.utils import append_jsonl as _utils_append_jsonl  # noqa: E402
+from lib.utils import read_jsonl as _utils_read_jsonl  # noqa: E402
+from lib.utils import write_jsonl as _utils_write_jsonl  # noqa: E402
 from lib.ontology.template_prefixes import (  # noqa: E402
     DETERMINISTIC_TEMPLATE_PREFIXES as _DETERMINISTIC_TEMPLATE_PREFIXES,
 )
@@ -254,26 +257,15 @@ class SynthesisStats:
 def _read_chunks(chunks_path: Path) -> List[Dict[str, Any]]:
     if not chunks_path.exists():
         raise FileNotFoundError(f"chunks.jsonl not found at {chunks_path}")
-    chunks: List[Dict[str, Any]] = []
-    with chunks_path.open("r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            chunks.append(json.loads(line))
-    return chunks
+    return _utils_read_jsonl(chunks_path)
 
 
 def _write_jsonl(path: Path, records: Iterable[Dict[str, Any]]) -> int:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    count = 0
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        for rec in records:
-            fh.write(json.dumps(rec, ensure_ascii=False, sort_keys=True) + "\n")
-            count += 1
-    tmp.replace(path)
-    return count
+    """Atomic JSONL writer (W-D6: thin wrapper around
+    :func:`lib.utils.write_jsonl`). Defaults preserved:
+    ``ensure_ascii=False, sort_keys=True``, atomic tmp+rename.
+    """
+    return _utils_write_jsonl(path, records)
 
 
 def _eligible(chunk: Dict[str, Any]) -> bool:
@@ -1177,8 +1169,7 @@ def _append_synthesis_pairs_checkpoint(
         "provider": provider,
         "seed": seed,
     }
-    fh.write(json.dumps(record, ensure_ascii=False) + "\n")
-    fh.flush()
+    _utils_append_jsonl(fh, record, sort_keys=False)
 
 
 def run_synthesis(
@@ -1721,9 +1712,7 @@ def run_synthesis(
                 stats.instruction_pairs_emitted += kg_stats.pairs_emitted
                 # Wave 127: mirror to .in_progress sidecar.
                 for _p in kg_pairs:
-                    inst_progress_fh.write(
-                        json.dumps(_p, ensure_ascii=False, sort_keys=True) + "\n"
-                    )
+                    _utils_append_jsonl(inst_progress_fh, _p, flush=False)
                 inst_progress_fh.flush()
                 logger.info(
                     "Audit 2026-04-30: appended %d KG-metadata pairs "
@@ -1805,9 +1794,7 @@ def run_synthesis(
                 stats.instruction_pairs_emitted += vio_stats.pairs_emitted
                 # Wave 127: mirror to .in_progress sidecar.
                 for _p in vio_pairs:
-                    inst_progress_fh.write(
-                        json.dumps(_p, ensure_ascii=False, sort_keys=True) + "\n"
-                    )
+                    _utils_append_jsonl(inst_progress_fh, _p, flush=False)
                 inst_progress_fh.flush()
                 logger.info(
                     "Audit 2026-04-30: appended %d violation-detection "
@@ -1855,9 +1842,7 @@ def run_synthesis(
                 stats.instruction_pairs_emitted += ab_stats.pairs_emitted
                 # Wave 127: mirror to .in_progress sidecar.
                 for _p in ab_pairs:
-                    inst_progress_fh.write(
-                        json.dumps(_p, ensure_ascii=False, sort_keys=True) + "\n"
-                    )
+                    _utils_append_jsonl(inst_progress_fh, _p, flush=False)
                 inst_progress_fh.flush()
                 logger.info(
                     "Wave 124: appended %d abstention pairs (chunks_with_silent=%d, "
@@ -1905,9 +1890,7 @@ def run_synthesis(
                 stats.instruction_pairs_emitted += st_stats.pairs_emitted
                 # Wave 127: mirror to .in_progress sidecar.
                 for _p in st_pairs:
-                    inst_progress_fh.write(
-                        json.dumps(_p, ensure_ascii=False, sort_keys=True) + "\n"
-                    )
+                    _utils_append_jsonl(inst_progress_fh, _p, flush=False)
                 inst_progress_fh.flush()
                 logger.info(
                     "Wave 124: appended %d schema-translation pairs "
@@ -2148,15 +2131,7 @@ def run_synthesis(
                         # so ``tail -f`` continues to surface every
                         # accepted pair, regardless of whether it came
                         # from the LLM or the resume cache.
-                        inst_progress_fh.write(
-                            json.dumps(
-                                cached_pair,
-                                ensure_ascii=False,
-                                sort_keys=True,
-                            )
-                            + "\n"
-                        )
-                        inst_progress_fh.flush()
+                        _utils_append_jsonl(inst_progress_fh, cached_pair)
                         continue
                 try:
                     inst_result = synthesize_instruction_pair(
@@ -2465,15 +2440,7 @@ def run_synthesis(
                     # Wave 116: mirror to .in_progress sidecar with
                     # flush() so ``tail -f`` and post-kill inspection
                     # see this pair without waiting on OS buffers.
-                    inst_progress_fh.write(
-                        json.dumps(
-                            inst_result.pair,
-                            ensure_ascii=False,
-                            sort_keys=True,
-                        )
-                        + "\n"
-                    )
-                    inst_progress_fh.flush()
+                    _utils_append_jsonl(inst_progress_fh, inst_result.pair)
                     # Worker A: append the accepted pair to the resume
                     # checkpoint. A subsequent run that loads this
                     # sidecar will skip the LLM dispatch for this
@@ -2529,15 +2496,7 @@ def run_synthesis(
                         preference_records.append(cached_pair)
                         emitted_pref_prompts.add(cached_prompt)
                         stats.preference_pairs_emitted += 1
-                        pref_progress_fh.write(
-                            json.dumps(
-                                cached_pair,
-                                ensure_ascii=False,
-                                sort_keys=True,
-                            )
-                            + "\n"
-                        )
-                        pref_progress_fh.flush()
+                        _utils_append_jsonl(pref_progress_fh, cached_pair)
             if pref_capped:
                 stats.capped_at_max_pairs = True
             elif _pref_cache_hit:
@@ -2838,15 +2797,7 @@ def run_synthesis(
                                 # _write_jsonl at end of run.
                                 stats.trainable_pairs_total += 1
                                 # Wave 116: mirror to .in_progress sidecar.
-                                pref_progress_fh.write(
-                                    json.dumps(
-                                        pref_result.pair,
-                                        ensure_ascii=False,
-                                        sort_keys=True,
-                                    )
-                                    + "\n"
-                                )
-                                pref_progress_fh.flush()
+                                _utils_append_jsonl(pref_progress_fh, pref_result.pair)
                                 # Worker A: append the accepted preference
                                 # pair to the resume checkpoint.
                                 _append_synthesis_pairs_checkpoint(
@@ -2957,11 +2908,7 @@ def run_synthesis(
                     stats.preference_pairs_emitted += 1
                     stats.misconception_dpo_pairs_emitted += 1
                     # Wave 116: mirror to .in_progress sidecar.
-                    pref_progress_fh.write(
-                        json.dumps(pair, ensure_ascii=False, sort_keys=True)
-                        + "\n"
-                    )
-                    pref_progress_fh.flush()
+                    _utils_append_jsonl(pref_progress_fh, pair)
 
         # Wave 111 / Phase E: surface budget telemetry on stats whether
         # the loop completed normally OR hit the dispatch cap.

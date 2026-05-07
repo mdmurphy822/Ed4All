@@ -12,6 +12,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping
 
+from lib.utils import read_jsonl as _utils_read_jsonl
+
 # Avoid a hard dep on PropertyManifest at import time so Trainforge
 # code paths that don't use the helpers don't pay the import cost.
 # Type-only via TYPE_CHECKING is fine here.
@@ -130,30 +132,12 @@ def count_property_coverage_from_jsonl(
 ) -> Dict[str, int]:
     if not inst_path.exists():
         return {p.id: 0 for p in manifest.properties}
-    records = []
-    with inst_path.open("r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+    records = _utils_read_jsonl(inst_path, skip_invalid=True)
     return count_property_coverage_from_records(records, manifest)
 
 
 def template_distribution_from_jsonl(inst_path: Path) -> Counter:
     if not inst_path.exists():
         return Counter()
-    records = []
-    with inst_path.open("r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
+    records = _utils_read_jsonl(inst_path, skip_invalid=True)
     return template_distribution_from_records(records)

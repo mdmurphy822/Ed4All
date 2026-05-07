@@ -54,11 +54,11 @@ from __future__ import annotations
 import logging
 import re
 import sys
-from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
+from lib.utils import strip_html_to_text
 from lib.embedding._math import cosine_similarity
 from lib.embedding.sentence_embedder import (
     EmbeddingDepsMissing,
@@ -129,42 +129,6 @@ _STOPWORDS: frozenset = frozenset(
         "these", "those",
     }
 )
-
-
-class _TextExtractor(HTMLParser):
-    """Stdlib HTML parser that accumulates text from data events.
-
-    Mirrors the lightweight strip-via-regex helper at
-    ``Courseforge/router/inter_tier_gates.py:130-139`` but uses the
-    parser proper so embedded entities (``&amp;`` etc.) are decoded
-    correctly. ``convert_charrefs=True`` (default in py3.5+) handles
-    that.
-    """
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self._fragments: List[str] = []
-
-    def handle_data(self, data: str) -> None:
-        if data.strip():
-            self._fragments.append(data)
-
-    def text(self) -> str:
-        return " ".join(self._fragments).strip()
-
-
-def _strip_html_to_text(html: str) -> str:
-    """Strip HTML to plain text via stdlib parser."""
-    if not html:
-        return ""
-    extractor = _TextExtractor()
-    try:
-        extractor.feed(html)
-        extractor.close()
-    except Exception as exc:  # noqa: BLE001 — defensive; the shape gate is upstream
-        logger.debug("HTML strip raised: %s", exc)
-        return ""
-    return extractor.text()
 
 
 def _segment_sentences(text: str) -> List[str]:
@@ -466,7 +430,7 @@ class RewriteSourceGroundingValidator:
             outline_claims = _resolve_outline_key_claims(block)
             grounding_surfaces: List[str] = chunk_texts + outline_claims
 
-            text = _strip_html_to_text(content)
+            text = strip_html_to_text(content)
             sentences = _segment_sentences(text)
             non_trivial = [s for s in sentences if _is_non_trivial(s)]
 

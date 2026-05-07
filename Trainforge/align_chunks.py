@@ -24,6 +24,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
+from lib.utils import append_jsonl as _utils_append_jsonl
+from lib.utils import read_jsonl as _utils_read_jsonl
+from lib.utils import write_jsonl as _utils_write_jsonl
+
 if TYPE_CHECKING:
     from MCP.orchestrator.llm_backend import LLMBackend
     from Trainforge.generators._curriculum_provider import (
@@ -163,12 +167,7 @@ def load_corpus(corpus_dir: Path) -> Tuple[List[Dict], Dict]:
     if not graph_path.exists():
         raise FileNotFoundError(f"concept_graph.json not found: {graph_path}")
 
-    chunks = []
-    with open(chunks_path) as f:
-        for line in f:
-            line = line.strip()
-            if line:
-                chunks.append(json.loads(line))
+    chunks = _utils_read_jsonl(chunks_path)
 
     with open(graph_path) as f:
         concept_graph = json.load(f)
@@ -186,9 +185,10 @@ def write_corpus(corpus_dir: Path, chunks: List[Dict]) -> None:
     jsonl_path = chunkset_dir / "chunks.jsonl"
     json_path = chunkset_dir / "chunks.json"
 
-    with open(jsonl_path, "w") as f:
-        for chunk in chunks:
-            f.write(json.dumps(chunk) + "\n")
+    # W-D6: legacy non-atomic streaming write preserved (atomic=False);
+    # sort_keys=False preserves emit-order semantics of the original
+    # ``json.dumps(chunk)`` call.
+    _utils_write_jsonl(jsonl_path, chunks, sort_keys=False, atomic=False)
 
     with open(json_path, "w") as f:
         json.dump(chunks, f, indent=2)
@@ -934,8 +934,7 @@ def _append_teaching_role_checkpoint(
     failure = chunk.get("teaching_role_failure")
     if failure is not None:
         record["teaching_role_failure"] = failure
-    checkpoint_fh.write(json.dumps(record) + "\n")
-    checkpoint_fh.flush()
+    _utils_append_jsonl(checkpoint_fh, record, sort_keys=False)
 
 
 def _classify_with_curriculum_provider(

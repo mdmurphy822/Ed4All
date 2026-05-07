@@ -62,6 +62,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from lib.decision_capture import DecisionCapture  # noqa: E402
 from lib.ontology.slugs import deslugify_concept  # noqa: E402
+from lib.utils import read_jsonl as _utils_read_jsonl  # noqa: E402
+from lib.utils import write_jsonl as _utils_write_jsonl  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -1173,26 +1175,13 @@ def _shape_dpo_pair(
 
 
 def _read_chunks(path: Path) -> List[Dict[str, Any]]:
-    chunks: List[Dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            chunks.append(json.loads(line))
-    return chunks
+    """Thin wrapper around :func:`lib.utils.read_jsonl` (W-D6)."""
+    return _utils_read_jsonl(path)
 
 
 def _write_jsonl(path: Path, records: Iterable[Dict[str, Any]]) -> int:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    n = 0
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        for rec in records:
-            fh.write(json.dumps(rec, ensure_ascii=False, sort_keys=True) + "\n")
-            n += 1
-    tmp.replace(path)
-    return n
+    """Thin wrapper around :func:`lib.utils.write_jsonl` (W-D6)."""
+    return _utils_write_jsonl(path, records)
 
 
 def _resolve_corpus_path(slug: str, libv2_root: Optional[Path] = None) -> Path:

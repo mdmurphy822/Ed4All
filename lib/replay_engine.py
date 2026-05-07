@@ -9,7 +9,6 @@ Phase 0.5 Enhancement: Deterministic Replay Support (E1)
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from dataclasses import asdict, dataclass, field
@@ -18,6 +17,8 @@ from difflib import unified_diff
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
+
+from lib.utils import sha256_file, sha256_text
 
 if TYPE_CHECKING:
     pass
@@ -567,12 +568,14 @@ class ReplayEngine:
         return diff
 
     def _hash_file(self, path: Path) -> str:
-        """Compute SHA-256 hash of file."""
-        sha256 = hashlib.sha256()
-        with open(path, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
-                sha256.update(chunk)
-        return sha256.hexdigest()[:16]
+        """Compute SHA-256 hash of file (truncated to 16 chars).
+
+        Truncation is intentional -- the replay engine uses short
+        prev-hash IDs in its hash-chain log. The canonical helper
+        :func:`lib.utils.sha256_file` returns the full 64-char digest;
+        slicing happens here.
+        """
+        return sha256_file(path)[:16]
 
     # ========================================================================
     # VERIFICATION
@@ -687,7 +690,7 @@ class ReplayEngine:
                     entry_copy = entry.copy()
                     entry_copy.pop("entry_hash", None)
                     content = json.dumps(entry_copy, sort_keys=True)
-                    prev_hash = hashlib.sha256(content.encode()).hexdigest()[:16]
+                    prev_hash = sha256_text(content)[:16]
 
                 except (json.JSONDecodeError, KeyError) as e:
                     logger.error(

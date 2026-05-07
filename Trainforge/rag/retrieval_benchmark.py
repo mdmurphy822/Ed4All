@@ -36,6 +36,8 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from lib.utils import read_jsonl as _utils_read_jsonl
+
 __all__ = [
     "build_question_set",
     "run_benchmark",
@@ -63,17 +65,7 @@ def _import_lazybm25():
 
 def _load_chunks(chunks_path: Path) -> List[Dict[str, Any]]:
     """Load chunks.jsonl into a list of dicts. Skips blank / malformed lines."""
-    chunks: List[Dict[str, Any]] = []
-    with open(chunks_path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                chunks.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return chunks
+    return _utils_read_jsonl(chunks_path, skip_invalid=True)
 
 
 def _load_course(course_path: Path) -> Dict[str, Any]:
