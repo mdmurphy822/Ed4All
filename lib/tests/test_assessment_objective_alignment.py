@@ -411,6 +411,112 @@ def test_assessment_alignment_handles_missing_synthesized_objectives_file(
     assert not critical_codes
 
 
+# --------------------------------------------------------------------- #
+# Wave 6 W6.E: per-question-type metrics on the alignment decision.
+# --------------------------------------------------------------------- #
+
+
+def test_decision_metrics_carry_question_type(tmp_path):
+    """W6.E: every per-question alignment decision metrics dict carries
+    ``question_type`` AND the rationale string interpolates the value.
+
+    Pair an assessment q with ``question_type="multiple_choice"`` and a
+    phantom objective_id; assert (a) the captured event's
+    ``metrics["question_type"] == "multiple_choice"`` and (b) the
+    rationale string contains ``"multiple_choice"`` so post-hoc replay
+    can segment phantom-objective failures by question shape.
+    """
+    assessments = tmp_path / "assessments.json"
+    chunks = tmp_path / "chunks.jsonl"
+    _write_json(assessments, {
+        "questions": [
+            {
+                "question_id": "Q1",
+                "objective_id": "PHANTOM_OBJ_1",
+                "question_type": "multiple_choice",
+            },
+        ],
+    })
+    _write_chunks(chunks, [
+        {"id": "c1", "learning_outcome_refs": ["to-01"]},
+    ])
+    capture = _StubCapture()
+    result = AssessmentObjectiveAlignmentValidator().validate({
+        "assessments_path": str(assessments),
+        "chunks_path": str(chunks),
+        "decision_capture": capture,
+    })
+    assert not result.passed
+    assert len(capture.calls) == 1
+    call = capture.calls[0]
+    metrics = call["kwargs"].get("metrics") or {}
+    assert metrics.get("question_type") == "multiple_choice"
+    assert "multiple_choice" in call["rationale"]
+
+
+def test_decision_metrics_question_type_empty_for_legacy_q(tmp_path):
+    """W6.E defensive contract: a question with NO ``question_type``
+    field (legacy / malformed) still stamps ``question_type=""`` in
+    the metrics dict — empty string, NOT a missing key. Keeps the
+    metrics dict shape invariant across all per-question events so
+    post-hoc replay can rely on the field always being present.
+    """
+    assessments = tmp_path / "assessments.json"
+    chunks = tmp_path / "chunks.jsonl"
+    _write_json(assessments, {
+        "questions": [
+            # Legacy q: no question_type (and no QTI ``type`` field).
+            {"question_id": "Q1", "objective_id": "TO-01"},
+        ],
+    })
+    _write_chunks(chunks, [
+        {"id": "c1", "learning_outcome_refs": ["to-01"]},
+    ])
+    capture = _StubCapture()
+    result = AssessmentObjectiveAlignmentValidator().validate({
+        "assessments_path": str(assessments),
+        "chunks_path": str(chunks),
+        "decision_capture": capture,
+    })
+    assert result.passed
+    assert len(capture.calls) == 1
+    metrics = capture.calls[0]["kwargs"].get("metrics") or {}
+    # Key MUST be present; value MUST be the empty string (not None).
+    assert "question_type" in metrics
+    assert metrics["question_type"] == ""
+    assert metrics["question_type"] is not None
+
+
+def test_decision_metrics_question_type_normalizes_qti_field(tmp_path):
+    """W6.E + W4.B field-name resolution chain inheritance: a question
+    carrying ``type="multiple_choice"`` (QTI shape, NOT the generator's
+    ``question_type``) still resolves to ``"multiple_choice"`` in the
+    metrics dict because ``_normalize_question_type`` falls back to
+    the QTI ``type`` field when ``question_type`` is absent.
+    """
+    assessments = tmp_path / "assessments.json"
+    chunks = tmp_path / "chunks.jsonl"
+    _write_json(assessments, {
+        "questions": [
+            # QTI-parsed shape: ``type`` not ``question_type``.
+            {"question_id": "Q1", "objective_id": "TO-01", "type": "multiple_choice"},
+        ],
+    })
+    _write_chunks(chunks, [
+        {"id": "c1", "learning_outcome_refs": ["to-01"]},
+    ])
+    capture = _StubCapture()
+    result = AssessmentObjectiveAlignmentValidator().validate({
+        "assessments_path": str(assessments),
+        "chunks_path": str(chunks),
+        "decision_capture": capture,
+    })
+    assert result.passed
+    assert len(capture.calls) == 1
+    metrics = capture.calls[0]["kwargs"].get("metrics") or {}
+    assert metrics.get("question_type") == "multiple_choice"
+
+
 def test_assessment_alignment_union_surface_does_not_mask_real_phantoms(
     tmp_path,
 ):
