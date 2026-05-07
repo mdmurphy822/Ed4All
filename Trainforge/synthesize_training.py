@@ -325,6 +325,92 @@ def _resolve_libv2_corpus_dir(slug: str, libv2_root: Optional[Path] = None) -> P
     )
 
 
+# --------------------------------------------------------------------------- #
+# Wave 9 TIGHT — dual-source DART block-text resolver
+# --------------------------------------------------------------------------- #
+
+
+import re as _w9_re  # local alias so Wave 9 helpers don't shadow re imports
+
+
+# Mirrors :data:`lib.validators.content_grounding._DART_BLOCK_ID_RE`.
+# Single source of truth would be a re-export from content_grounding,
+# but the pattern is two lines + the import topology there is heavier
+# than this module wants — copy is the smaller blast radius.
+_W9_DART_BLOCK_ID_RE = _w9_re.compile(
+    r'data-dart-block-id\s*=\s*(["\'])([^"\']+)\1',
+    _w9_re.IGNORECASE,
+)
+# Captures the body of a <section ...> wrapper; used to scope each
+# block_id's text extraction to JUST that section. <section> wrappers
+# are the canonical DART-block boundary per
+# ``DART/CLAUDE.md`` § "Source provenance".
+_W9_DART_SECTION_RE = _w9_re.compile(
+    r"<section\b([^>]*)>(.*?)</section>",
+    _w9_re.IGNORECASE | _w9_re.DOTALL,
+)
+_W9_HTML_TAG_RE = _w9_re.compile(r"<[^>]+>")
+_W9_WHITESPACE_RE = _w9_re.compile(r"\s+")
+
+
+def _resolve_dart_block_text_map(
+    staging_dir: Optional[Path],
+) -> Dict[str, str]:
+    """Wave 9 TIGHT — build the ``dart:<slug>#<block_id> -> text`` map.
+
+    Mirrors the staging-DART HTML walk at
+    ``lib/validators/content_grounding.py:343`` (the precedent the W9
+    plan called out at §2 lines 195-200) but extracts per-section text
+    in addition to the block_id. Returns ``{}`` when ``staging_dir`` is
+    None or doesn't exist (legacy / non-textbook-to-course corpora —
+    the dual-source check no-ops cleanly via the empty-map arm in
+    :meth:`PairClaimSupportValidator.validate_pair`).
+
+    The helper is intentionally regex-based rather than BeautifulSoup-
+    based: we don't want to add a soft dependency to the synthesis path
+    (parsers are already heavy enough), and the staging DART HTML is
+    machine-emitted so the regex shape is stable. When the regex misses
+    a block (malformed nesting, etc.), the dual-source check no-ops on
+    that block — no false-positive disagreement signal can fire from a
+    malformed parse.
+    """
+    if staging_dir is None:
+        return {}
+    staging_path = Path(staging_dir)
+    if not staging_path.exists():
+        return {}
+
+    block_text_map: Dict[str, str] = {}
+    for html_path in staging_path.rglob("*.html"):
+        try:
+            content = html_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        slug = html_path.stem.lower().replace(" ", "-")
+        # Walk every <section> body. The block_id lives in the opening
+        # tag's attributes (data-dart-block-id="...").
+        for match in _W9_DART_SECTION_RE.finditer(content):
+            attrs = match.group(1)
+            body = match.group(2)
+            id_match = _W9_DART_BLOCK_ID_RE.search(attrs)
+            if id_match is None:
+                continue
+            raw_block_id = id_match.group(2).strip()
+            # Strip nested HTML tags + collapse whitespace.
+            text = _W9_HTML_TAG_RE.sub(" ", body)
+            text = _W9_WHITESPACE_RE.sub(" ", text).strip()
+            if not text:
+                continue
+            key = f"dart:{slug}#{raw_block_id}"
+            # First-write-wins on duplicate keys — mirrors the W2.F /
+            # source_module_map.json precedent. Duplicates inside one
+            # staging dir are typically the same block_id reused
+            # across re-staged HTML files, so first-seen is fine.
+            if key not in block_text_map:
+                block_text_map[key] = text
+    return block_text_map
+
+
 def _stratify_key(chunk: Dict[str, Any], dimension: str) -> str:
     """Extract the stratification bucket key for one chunk on one dimension.
 
@@ -1129,6 +1215,7 @@ def run_synthesis(
     abstention_max_pairs: int = 1000,
     with_schema_translation: bool = False,
     schema_translation_max_pairs: int = 50,
+    staging_dir: Optional[Path] = None,
 ) -> SynthesisStats:
     """Run the full synthesis stage for one course output directory.
 
@@ -1884,6 +1971,32 @@ def run_synthesis(
             else None
         )
 
+        # Wave 9 TIGHT: pre-compute the dart:<slug>#<block_id> -> text
+        # lookup map consumed by ``PairClaimSupportValidator.validate_pair``
+        # for the dual-source DART cross-check (chunker-drift slice).
+        # Built once outside the chunk loop — per-pair calls are O(1)
+        # lookups in the helper. When ``staging_dir`` is None or has no
+        # extant DART HTML, the map is empty and the validator no-ops
+        # cleanly via the empty-map arm in ``validate_pair`` (back-compat
+        # day-1 — legacy / non-textbook-to-course corpora keep their
+        # current behaviour). The severity dial flips to ``"warning"``
+        # only when the map is non-empty so the per-pair LLM-cost
+        # arithmetic in §3 of the dual-source plan stays accurate (the
+        # extra NLI calls only fire when there's a DART universe to
+        # check against).
+        _dart_block_text_map: Dict[str, str] = (
+            _resolve_dart_block_text_map(staging_dir)
+        )
+        _dual_source_severity: str = (
+            "warning" if _dart_block_text_map else "off"
+        )
+        if _dart_block_text_map:
+            logger.info(
+                "Wave 9 TIGHT: dual-source DART cross-check enabled "
+                "(staging_dir=%s, %d block-text entries loaded).",
+                staging_dir, len(_dart_block_text_map),
+            )
+
         # Wave 4 W4.C MEDIUM: per-pair tri-axis objective-delivery
         # filter. Runs AFTER W4.A/W4.B return ``validated``. Rejects
         # increment ``objective_delivery_rejected`` and the matching
@@ -2216,6 +2329,11 @@ def run_synthesis(
                         # ``chunks_by_id`` empty), the validator
                         # graceful-degrades to whole-chunk-text
                         # scoring (back-compat day-1).
+                        # Wave 9 TIGHT: thread the dual-source DART
+                        # cross-check map + severity dial. When the
+                        # map is empty (no staging_dir / non-textbook-
+                        # to-course corpus), severity is "off" so the
+                        # validator skips the DART pass entirely.
                         _claim_status, _claim_reason, _claim_fields = (
                             _claim_support_validator.validate_pair(
                                 inst_result.pair,
@@ -2225,6 +2343,10 @@ def run_synthesis(
                                     _claim_support_chunk_text_map
                                 ),
                                 decision_capture=capture,
+                                dart_block_text_map=(
+                                    _dart_block_text_map or None
+                                ),
+                                dual_source_severity=_dual_source_severity,
                             )
                         )
                         inst_result.pair.update(_claim_fields)
@@ -2551,6 +2673,9 @@ def run_synthesis(
                                 # instruction-pair branch). Mirrors
                                 # the W4.A symmetric instruction /
                                 # preference handling.
+                                # Wave 9 TIGHT: thread the dual-source
+                                # DART cross-check map + severity dial.
+                                # Mirrors the instruction-pair branch.
                                 _pref_claim_status, _pref_claim_reason, _pref_claim_fields = (
                                     _claim_support_validator.validate_pair(
                                         pref_result.pair,
@@ -2560,6 +2685,10 @@ def run_synthesis(
                                             _claim_support_chunk_text_map
                                         ),
                                         decision_capture=capture,
+                                        dart_block_text_map=(
+                                            _dart_block_text_map or None
+                                        ),
+                                        dual_source_severity=_dual_source_severity,
                                     )
                                 )
                                 pref_result.pair.update(_pref_claim_fields)
@@ -3207,6 +3336,7 @@ def run_synthesis_from_libv2(
     with_schema_translation: bool = False,
     schema_translation_max_pairs: int = 50,
     synthesis_pairs_checkpoint_path: Optional[Path] = None,
+    staging_dir: Optional[Path] = None,
 ) -> SynthesisStats:
     """Run synthesis directly against a LibV2 course archive.
 
@@ -3275,6 +3405,7 @@ def run_synthesis_from_libv2(
         with_schema_translation=with_schema_translation,
         schema_translation_max_pairs=schema_translation_max_pairs,
         synthesis_pairs_checkpoint_path=synthesis_pairs_checkpoint_path,
+        staging_dir=staging_dir,
     )
 
 
