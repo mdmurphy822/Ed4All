@@ -21,6 +21,10 @@ import math
 from typing import Any, Dict, List
 
 from lib.validators.distractor_plausibility import _tokenise
+from Trainforge.eval._per_type_helpers import (
+    attach_relevance,
+    bucket_per_question_records,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,12 +118,40 @@ class DistractorEntropyEvaluator:
         mean_entropy = (
             sum(entropies) / len(entropies) if entropies else 0.0
         )
+
+        # W7.B: per-question-type segmentation. Bucket the parallel-
+        # indexed per_question records by question_type, drop the
+        # empty-string ("type unknown") bucket from the per-type emit,
+        # and stamp `relevant: bool` per the canonical relevance table.
+        # distractor_entropy is structurally MC-only — non-MC buckets
+        # have entropy=0 (single distractor or none), and `attach_relevance`
+        # marks them not relevant so the W7.D gate can skip them.
+        question_types = [str(p.get("question_type") or "") for p in prompts]
+        buckets = bucket_per_question_records(
+            per_question, question_types=question_types
+        )
+        per_question_type: Dict[str, Dict[str, Any]] = {}
+        for qt, bucket in buckets.items():
+            if not qt:
+                continue  # skip the empty-string bucket from per-type emit
+            bucket_total = len(bucket)
+            entropy_sum = sum(float(r.get("entropy") or 0.0) for r in bucket)
+            mean_bucket_entropy = (
+                entropy_sum / bucket_total if bucket_total else 0.0
+            )
+            per_question_type[qt] = {
+                "distractor_entropy_mean": round(float(mean_bucket_entropy), 4),
+                "total_questions": int(bucket_total),
+            }
+        attach_relevance(per_question_type, metric_name="distractor_entropy")
+
         return {
             "mean_distractor_entropy": round(float(mean_entropy), 4),
             "low_entropy_count": int(low_count),
             "total_questions": int(total),
             "low_entropy_threshold": self._low_threshold,
             "per_question": per_question,
+            "per_question_type": per_question_type,
         }
 
 
