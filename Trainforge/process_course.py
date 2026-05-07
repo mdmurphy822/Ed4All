@@ -1995,6 +1995,19 @@ class CourseProcessor:
         if section_metadata_extras.get("objective_alignment"):
             chunk["objective_alignment"] = section_metadata_extras["objective_alignment"]
 
+        # Wave 5 W5.G — per-chunk reverse map: for every LO this chunk
+        # claims to teach (chunk["learning_outcome_refs"]), look up the
+        # source-chunk-IDs the page-level JSON-LD declares for that LO
+        # and stamp a {lo_id: [chunk_id, ...]} projection. Lets downstream
+        # consumers (training-pair synthesizer, eval harness) resolve
+        # "which DART/Courseforge chunk(s) source TO-05?" without
+        # re-loading synthesized_objectives.json off disk.
+        reverse_map = self._build_learning_outcome_source_refs(
+            item, chunk.get("learning_outcome_refs") or []
+        )
+        if reverse_map:
+            chunk["learning_outcome_source_refs"] = reverse_map
+
         # Wave 5 (W5.F): when the chunk was emitted from a merge_small_sections
         # boundary, the merged audit arrays passed in via the chunker callback
         # take precedence (or supplement) the per-section JSON-LD harvest.
@@ -2929,6 +2942,72 @@ class CourseProcessor:
             _extend(_normalize(raw_ref))
 
         return refs
+
+    def _build_learning_outcome_source_refs(
+        self,
+        item: Dict[str, Any],
+        lo_refs: List[str],
+    ) -> Dict[str, List[str]]:
+        """Wave 5 W5.G: build a per-chunk reverse map of
+        ``{lo_id: [source_chunk_id, ...]}`` from
+        ``item.courseforge_metadata.learningObjectives[].sourceReferences[]``.
+
+        For each LO in ``lo_refs`` (this chunk's ``learning_outcome_refs``),
+        walks the page-level JSON-LD ``learningObjectives[]`` looking for
+        a matching ``id`` (case-insensitive) and harvests the
+        ``sourceReferences[].sourceId`` strings so downstream consumers
+        can resolve "which DART/Courseforge chunk(s) source TO-05?"
+        without reloading ``synthesized_objectives.json``.
+
+        Output key case follows the JSON-LD emit case (e.g. ``TO-05``,
+        not the chunk's lowercased ``to-05``); chunk lookup is
+        case-insensitive so a lowercased chunk ref can still match a
+        canonical-cased LO id.
+
+        Returns ``{}`` (NOT ``None``) when no matches — the call site
+        gates on truthiness, so empty maps are elided from the chunk
+        dict to preserve the back-compat absence-as-legacy contract.
+        """
+        if not lo_refs:
+            return {}
+        cf_meta = item.get("courseforge_metadata") or {}
+        lo_entries = cf_meta.get("learningObjectives") or []
+        if not lo_entries:
+            return {}
+        # Case-insensitive membership set for matching against JSON-LD ids.
+        lo_ref_lookup = {ref.lower().strip() for ref in lo_refs if isinstance(ref, str) and ref.strip()}
+        if not lo_ref_lookup:
+            return {}
+        reverse_map: Dict[str, List[str]] = {}
+        for entry in lo_entries:
+            if not isinstance(entry, dict):
+                continue
+            raw_id = entry.get("id") or entry.get("@id")
+            if not isinstance(raw_id, str) or not raw_id.strip():
+                continue
+            emit_id = raw_id.strip()
+            if emit_id.lower() not in lo_ref_lookup:
+                continue
+            refs = entry.get("sourceReferences") or []
+            if not isinstance(refs, list):
+                continue
+            collected: List[str] = []
+            for ref in refs:
+                if not isinstance(ref, dict):
+                    continue
+                source_id = ref.get("sourceId")
+                if not isinstance(source_id, str) or not source_id.strip():
+                    continue
+                collected.append(source_id.strip())
+            if collected:
+                # Multiple JSON-LD entries may share the same id (rare;
+                # legacy duplication). Extend rather than overwrite so no
+                # source-chunk-ID is silently dropped.
+                if emit_id in reverse_map:
+                    reverse_map[emit_id].extend(collected)
+                else:
+                    reverse_map[emit_id] = collected
+        return reverse_map
 
     @staticmethod
     def _median_difficulty(blooms: List[str]) -> str:

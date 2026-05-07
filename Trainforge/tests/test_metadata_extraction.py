@@ -709,3 +709,195 @@ class TestCreateChunkW5BStamp:
         # so a downstream observability surface can attribute the absence.
         assert chunk["_metadata_trace"]["key_claims"] == "none"
         assert chunk["_metadata_trace"]["objective_alignment"] == "none"
+
+
+# Wave 5 W5.G — per-chunk learning_outcome_source_refs reverse map.
+# Builds a {lo_id: [source_chunk_id, ...]} projection from the page-level
+# JSON-LD ``learningObjectives[].sourceReferences[]`` so downstream
+# consumers can resolve "which DART/Courseforge chunk(s) source TO-05?"
+# without re-loading synthesized_objectives.json off disk.
+
+
+def _lo_obj(lo_id):
+    """Minimal LearningObjective stand-in that exposes both the `.id`
+    attribute (read by ``_extract_objective_refs``) AND the
+    `.bloom_level` attribute (read by ``_determine_difficulty``)."""
+    from types import SimpleNamespace
+    return SimpleNamespace(id=lo_id, bloom_level=None)
+
+
+def _item_for_w5g(jsonld_los, learning_objective_ids=None):
+    """Item shape that exercises _create_chunk's W5.G stamp.
+
+    ``jsonld_los`` populates ``courseforge_metadata.learningObjectives``
+    (the source of the reverse map). ``learning_objective_ids`` is the
+    list of LO id strings the parser would have produced; each one is
+    wrapped into a ``SimpleNamespace`` LO stand-in so
+    ``_extract_objective_refs`` populates the chunk's
+    ``learning_outcome_refs`` and ``_determine_difficulty`` doesn't
+    AttributeError on missing ``bloom_level``.
+    """
+    cf_meta: Dict[str, Any] = {"learningObjectives": list(jsonld_los)}
+    los = [_lo_obj(lid) for lid in (learning_objective_ids or [])]
+    return {
+        "item_id": "lesson-1",
+        "item_path": "lesson-1.html",
+        "module_id": "m1",
+        "module_title": "Module 1",
+        "title": "Page Title",
+        "resource_type": "page",
+        "raw_html": "",
+        "sections": [],
+        "learning_objectives": los,
+        "courseforge_metadata": cf_meta,
+        "misconceptions": [],
+        "_jsonld_tag_present": True,
+        "_jsonld_parse_failed": False,
+    }
+
+
+class TestCreateChunkW5GLearningOutcomeSourceRefs:
+    """End-to-end: page-level JSON-LD ``learningObjectives[].sourceReferences[]``
+    + chunk's ``learning_outcome_refs[]`` -> chunk dict carries
+    ``learning_outcome_source_refs`` reverse map. Conditional on truthy
+    output — empty maps are elided so legacy corpora stay byte-identical."""
+
+    def test_create_chunk_stamps_learning_outcome_source_refs_when_jsonld_carries_sourceReferences(self):
+        proc = _create_chunk_processor()
+        item = _item_for_w5g(
+            jsonld_los=[
+                {
+                    "id": "TO-05",
+                    "sourceReferences": [
+                        {"sourceId": "dart:rdf-primer-ch3#sec-2"},
+                    ],
+                },
+            ],
+            learning_objective_ids=["TO-05"],
+        )
+        chunk = proc._create_chunk(
+            chunk_id="tst_101_chunk_00010",
+            text=(
+                "RDF triples bind a subject, predicate, and object into a "
+                "single statement that downstream graphs can compose."
+            ),
+            html="<p>RDF triples bind subject + predicate + object.</p>",
+            item=item,
+            section_heading="RDF Graph",
+            chunk_type="explanation",
+        )
+        assert chunk["learning_outcome_source_refs"] == {
+            "TO-05": ["dart:rdf-primer-ch3#sec-2"]
+        }
+
+    def test_create_chunk_omits_reverse_map_when_jsonld_lacks_sourceReferences(self):
+        """Pre-Wave-1.6 page-level JSON-LD doesn't carry sourceReferences[]
+        on its learningObjectives[] entries; chunk MUST NOT carry the
+        reverse-map field at all (back-compat: not even as {})."""
+        proc = _create_chunk_processor()
+        item = _item_for_w5g(
+            jsonld_los=[
+                {"id": "TO-05"},  # no sourceReferences key at all
+                {"id": "TO-06", "sourceReferences": []},  # empty list
+            ],
+            learning_objective_ids=["TO-05", "TO-06"],
+        )
+        chunk = proc._create_chunk(
+            chunk_id="tst_101_chunk_00011",
+            text=(
+                "Legacy chunk text body without any per-LO source-reference "
+                "attribution at the page-level JSON-LD layer."
+            ),
+            html="<p>Legacy chunk.</p>",
+            item=item,
+            section_heading="Legacy Section",
+            chunk_type="explanation",
+        )
+        assert "learning_outcome_source_refs" not in chunk
+
+    def test_create_chunk_handles_case_insensitive_lo_match(self):
+        """Chunk's ``learning_outcome_refs`` lowercases by default
+        (TRAINFORGE_PRESERVE_LO_CASE unset). The reverse map MUST still
+        match those lowercased refs against the canonical-case JSON-LD
+        ``id`` values, AND the output key must preserve the JSON-LD
+        emit case (``TO-05``, not ``to-05``) so downstream consumers
+        can canonicalise via the LO id pattern."""
+        proc = _create_chunk_processor()
+        item = _item_for_w5g(
+            jsonld_los=[
+                {
+                    "id": "TO-05",  # canonical-cased emit form
+                    "sourceReferences": [
+                        {"sourceId": "dart:chunk_alpha"},
+                        {"sourceId": "dart:chunk_beta"},
+                    ],
+                },
+            ],
+            # The parsed LearningObjective dict feeds _extract_objective_refs,
+            # which lowercases under the default case policy. The chunk's
+            # learning_outcome_refs ends up as ["to-05"] post-normalize.
+            learning_objective_ids=["TO-05"],
+        )
+        chunk = proc._create_chunk(
+            chunk_id="tst_101_chunk_00012",
+            text=(
+                "Sample text body for a chunk whose LO refs should match "
+                "case-insensitively against the JSON-LD canonical-case ids."
+            ),
+            html="<p>Case-insensitive match.</p>",
+            item=item,
+            section_heading="Case Match",
+            chunk_type="explanation",
+        )
+        # Chunk's own refs are lowercase per default case policy.
+        assert "to-05" in chunk["learning_outcome_refs"]
+        # But the reverse-map output key preserves the JSON-LD emit case.
+        assert chunk["learning_outcome_source_refs"] == {
+            "TO-05": ["dart:chunk_alpha", "dart:chunk_beta"],
+        }
+
+    def test_create_chunk_defensive_skips_malformed_jsonld_entries(self):
+        """The helper MUST be defensive against missing/empty ``id``,
+        non-list ``sourceReferences``, non-dict ``sourceReferences[]``
+        entries, and missing/empty ``sourceId`` — all skipped silently;
+        valid entries still process and land on the chunk dict.
+
+        Test directly via the helper so the assertions exercise the
+        helper's defensive surface independent of any orthogonal
+        brittleness in sibling chunk-emit helpers (e.g.
+        ``_determine_difficulty`` walks ``learningObjectives[]`` with
+        ``.get(...)`` and would AttributeError on a non-dict entry).
+        The end-to-end ``_create_chunk`` integration is covered by the
+        three sibling W5.G tests above; this one tightens the helper's
+        defensive contract one level deeper."""
+        proc = _create_chunk_processor()
+        item = _item_for_w5g(
+            jsonld_los=[
+                "not-a-dict",  # non-dict LO entry
+                None,
+                {"id": ""},  # empty id
+                {"id": "TO-07", "sourceReferences": "not-a-list"},
+                {
+                    "id": "TO-08",
+                    "sourceReferences": [
+                        "not-a-dict-ref",
+                        {"sourceId": ""},  # empty sourceId
+                        {"sourceId": "dart:valid_ref"},
+                        {"notSourceId": "ignored"},
+                    ],
+                },
+            ],
+            learning_objective_ids=["TO-07", "TO-08"],
+        )
+        # Both lo_refs are present (case-folded under default policy):
+        # the helper should match TO-07 and TO-08 against jsonld_los.
+        reverse_map = proc._build_learning_outcome_source_refs(
+            item, ["to-07", "to-08"]
+        )
+        # TO-07 has a non-list sourceReferences -> entirely skipped.
+        # TO-08 has one valid sourceId among the malformed items.
+        assert reverse_map == {"TO-08": ["dart:valid_ref"]}
+
+        # Bonus contract: an empty lo_refs returns {} (NOT None) so the
+        # call site's ``if reverse_map:`` gate elides the field cleanly.
+        assert proc._build_learning_outcome_source_refs(item, []) == {}
