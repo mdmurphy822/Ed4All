@@ -122,6 +122,7 @@
         "curie_anchoring_check",
         "curriculum_alignment_call",
         "dart_markers_check",
+        "deterministic_pair_audit_stamp",
         "distractor_generation",
         "distractor_misconception_alignment_check",
         "distractor_padding_skipped",
