@@ -508,6 +508,48 @@ workflows:
             threshold:
               min_score: 0.8
               max_critical_issues: 0
+            # Wave 6 W6.C: per-question-type threshold overlay. Operator
+            # surface for the W6.A AssessmentQualityValidator's per-type
+            # quality matrix; merges via the Wave 78 setdefault pattern at
+            # MCP/hardening/validation_gates.py:266-271 (gate.config flows
+            # into validator inputs as ``per_question_type_thresholds``).
+            # Day-1 values mirror the validator's hardcoded
+            # ``_PER_QUESTION_TYPE_THRESHOLDS`` so this block is a
+            # round-trip no-op until an operator tunes it. Per-type gate
+            # failures still emit at warning severity from inside the
+            # validator (-0.05 score deduction); the gate stays critical
+            # only on the legacy aggregate score / critical-issue
+            # thresholds above. Calibration micro-wave (§5 of plan
+            # plans/wave6-per-question-type-matrix-2026-05.md) flips
+            # per-type warnings to critical once the corpus baseline
+            # stabilises.
+            config:
+              per_question_type_thresholds:
+                multiple_choice:
+                  stem_diversity: 0.75
+                  correct_answer_diversity: 0.65
+                  distractor_template_max_ratio: 0.25
+                  min_stem_chars: 12
+                true_false:
+                  stem_diversity: 0.50
+                  correct_answer_diversity: 0.40
+                  distractor_template_max_ratio: 1.0
+                  min_stem_chars: 10
+                short_answer:
+                  stem_diversity: 0.65
+                  correct_answer_diversity: 0.55
+                  distractor_template_max_ratio: 1.0
+                  min_stem_chars: 12
+                essay:
+                  stem_diversity: 0.55
+                  correct_answer_diversity: 0.50
+                  distractor_template_max_ratio: 1.0
+                  min_stem_chars: 15
+                fill_in_blank:
+                  stem_diversity: 0.65
+                  correct_answer_diversity: 0.55
+                  distractor_template_max_ratio: 0.30
+                  min_stem_chars: 10
             behavior:
               on_fail: block
               on_error: fail_closed
@@ -1972,6 +2014,48 @@ workflows:
             threshold:
               min_score: 0.8
               max_critical_issues: 0
+            # Wave 6 W6.C: per-question-type threshold overlay. Operator
+            # surface for the W6.A AssessmentQualityValidator's per-type
+            # quality matrix; merges via the Wave 78 setdefault pattern at
+            # MCP/hardening/validation_gates.py:266-271 (gate.config flows
+            # into validator inputs as ``per_question_type_thresholds``).
+            # Day-1 values mirror the validator's hardcoded
+            # ``_PER_QUESTION_TYPE_THRESHOLDS`` so this block is a
+            # round-trip no-op until an operator tunes it. Per-type gate
+            # failures still emit at warning severity from inside the
+            # validator (-0.05 score deduction); the gate stays critical
+            # only on the legacy aggregate score / critical-issue
+            # thresholds above. Calibration micro-wave (§5 of plan
+            # plans/wave6-per-question-type-matrix-2026-05.md) flips
+            # per-type warnings to critical once the corpus baseline
+            # stabilises.
+            config:
+              per_question_type_thresholds:
+                multiple_choice:
+                  stem_diversity: 0.75
+                  correct_answer_diversity: 0.65
+                  distractor_template_max_ratio: 0.25
+                  min_stem_chars: 12
+                true_false:
+                  stem_diversity: 0.50
+                  correct_answer_diversity: 0.40
+                  distractor_template_max_ratio: 1.0
+                  min_stem_chars: 10
+                short_answer:
+                  stem_diversity: 0.65
+                  correct_answer_diversity: 0.55
+                  distractor_template_max_ratio: 1.0
+                  min_stem_chars: 12
+                essay:
+                  stem_diversity: 0.55
+                  correct_answer_diversity: 0.50
+                  distractor_template_max_ratio: 1.0
+                  min_stem_chars: 15
+                fill_in_blank:
+                  stem_diversity: 0.65
+                  correct_answer_diversity: 0.55
+                  distractor_template_max_ratio: 0.30
+                  min_stem_chars: 10
             behavior:
               on_fail: block
               on_error: fail_closed
