@@ -1159,6 +1159,12 @@ class SLMEvalHarness:
                 "bloom_level": q.get("bloom_level") or "",
                 "feedback": q.get("feedback") or "",
                 "rendered_html": q.get("rendered_html") or q.get("html") or "",
+                # W7.A: thread question_type through so per-evaluator
+                # segmentation (answerable_rate / placeholder_rate /
+                # bloom_alignment_rate / single_correct_rate /
+                # distractor_entropy / source_support_rate) can bucket
+                # by type. Mirror of the W6.A resolution chain.
+                "question_type": q.get("question_type") or q.get("type") or "",
             })
         return prompts
 

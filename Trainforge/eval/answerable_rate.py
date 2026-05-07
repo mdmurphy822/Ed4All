@@ -26,6 +26,10 @@ from lib.validators.assessment_retrieval_grounding import (
     _content_tokens,
     _jaccard,
 )
+from Trainforge.eval._per_type_helpers import (
+    attach_relevance,
+    bucket_per_question_records,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,12 +118,37 @@ class AnswerableRateEvaluator:
             })
 
         rate = (answerable / total) if total > 0 else 0.0
+
+        # W7.A: per-question-type segmentation. Bucket the parallel-
+        # indexed per_question records by question_type, drop the
+        # empty-string ("type unknown") bucket from the per-type emit,
+        # and stamp `relevant: bool` per the canonical relevance table.
+        question_types = [str(p.get("question_type") or "") for p in prompts]
+        buckets = bucket_per_question_records(
+            per_question, question_types=question_types
+        )
+        per_question_type: Dict[str, Dict[str, Any]] = {}
+        for qt, bucket in buckets.items():
+            if not qt:
+                continue  # skip the empty-string bucket from per-type emit
+            answered = sum(1 for r in bucket if r.get("answerable"))
+            bucket_total = len(bucket)
+            per_question_type[qt] = {
+                "answerable_rate": round(answered / bucket_total, 4)
+                if bucket_total
+                else 0.0,
+                "total_questions": int(bucket_total),
+                "answerable_count": int(answered),
+            }
+        attach_relevance(per_question_type, metric_name="answerable_rate")
+
         return {
             "answerable_rate": round(rate, 4),
             "total_questions": int(total),
             "answerable_count": int(answerable),
             "threshold": self._threshold,
             "per_question": per_question,
+            "per_question_type": per_question_type,
         }
 
 
