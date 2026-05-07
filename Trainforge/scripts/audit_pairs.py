@@ -309,22 +309,56 @@ def _check_schema(inst: List[Dict], pref: List[Dict]) -> Dimension:
             severity="info",
             detail="jsonschema not installed; skipped.",
         )
-    inst_schema_p = PROJECT_ROOT / "schemas/knowledge/instruction_pair.schema.json"
-    pref_schema_p = PROJECT_ROOT / "schemas/knowledge/preference_pair.schema.json"
+    # W-D4: pair schemas now $ref the canonical sibling
+    # `pair_audit_fields.schema.json`. Build a referencing registry over
+    # every `*.schema.json` under `schemas/knowledge/` so cross-schema
+    # $ref resolution works when validating each pair against its
+    # parent schema. Mirrors `schemas/tests/test_wave1_additive_contract.py::_build_registry`.
+    knowledge_dir = PROJECT_ROOT / "schemas/knowledge"
+    registry = None
+    try:
+        from referencing import Registry, Resource
+        from referencing.jsonschema import DRAFT202012
+
+        resources = []
+        for sib in knowledge_dir.glob("*.schema.json"):
+            try:
+                sib_schema = json.loads(sib.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            sid = sib_schema.get("$id")
+            if sid:
+                resources.append(
+                    (sid, Resource.from_contents(sib_schema, default_specification=DRAFT202012))
+                )
+        registry = Registry().with_resources(resources)
+    except ImportError:
+        # Older jsonschema without `referencing` — fall back to bare
+        # validate() (pre-W-D4 behavior). $ref resolution may fail.
+        registry = None
+
+    def _validate(schema, payload):
+        if registry is not None:
+            jsonschema.Draft202012Validator(schema, registry=registry).validate(payload)
+        else:
+            jsonschema.validate(payload, schema)
+
+    inst_schema_p = knowledge_dir / "instruction_pair.schema.json"
+    pref_schema_p = knowledge_dir / "preference_pair.schema.json"
     inst_invalid: List[str] = []
     pref_invalid: List[str] = []
     if inst_schema_p.exists():
         schema = json.loads(inst_schema_p.read_text())
         for p in inst:
             try:
-                jsonschema.validate(p, schema)
+                _validate(schema, p)
             except jsonschema.ValidationError as exc:
                 inst_invalid.append(f"{p.get('chunk_id','?')}: {exc.message[:80]}")
     if pref_schema_p.exists():
         schema = json.loads(pref_schema_p.read_text())
         for p in pref:
             try:
-                jsonschema.validate(p, schema)
+                _validate(schema, p)
             except jsonschema.ValidationError as exc:
                 pref_invalid.append(f"{p.get('chunk_id','?')}: {exc.message[:80]}")
     passed = not inst_invalid and not pref_invalid

@@ -1,0 +1,149 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ed4all.dev/ns/knowledge/v1/pair_audit_fields.schema.json",
+  "title": "Pair Audit Fields",
+  "description": "Canonical $defs for the three Wave-4 audit-trail surfaces stamped on every Trainforge instruction / preference pair. Extracted from instruction_pair.schema.json + instruction_pair.strict.schema.json + preference_pair.schema.json so future Wave changes (e.g. Wave 9 TIGHT dual-source DART, W-D1 P0.1 deterministic-template skip) edit one file rather than three. See lib/validators/pair_claim_support.py + pair_lo_refs.py + pair_objective_delivery.py for the validators that emit these shapes.",
+  "$defs": {
+    "PerClaimSupport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sentence", "entailment", "contradiction", "outcome"],
+      "properties": {
+        "sentence": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The verbatim sentence extracted from the completion (or chosen completion, for preference pairs) that was scored by the NLI classifier."
+        },
+        "entailment": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Post-softmax NLI entailment probability for (premise=chunk_text, hypothesis=sentence). When Wave 5 W5.D per-claim attribution scoping fired (source_chunk_ids non-null), this is the max-over-cited-chunks entailment so a sentence backed by ANY cited chunk is entailed."
+        },
+        "contradiction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Post-softmax NLI contradiction probability for the same (premise, hypothesis) pair. When Wave 5 W5.D per-claim attribution scoping fired (source_chunk_ids non-null), this is the max-over-cited-chunks contradiction so a sentence contradicted by ANY cited chunk is contradicted."
+        },
+        "outcome": {
+          "type": "string",
+          "enum": ["entailed", "unsupported", "contradicted", "dart_disagreement"],
+          "description": "Bucketed verdict per the W4.A thresholds — entailment_floor (default 0.70) and contradiction_floor (default 0.50). Wave 9 TIGHT adds the ``dart_disagreement`` value: the IMSCC NLI pass scored ``entailed`` but the dual-source DART cross-check (resolved via the cited chunk's ``source.source_references[].sourceId``) re-scored at >= the DART-side contradiction floor (0.50). Audit-only signal — does NOT reject the pair; gate-runner walk surfaces aggregate-rate ``DART_DISAGREEMENT_RATE_HIGH`` warning when the rate exceeds 5%."
+        },
+        "source_chunk_ids": {
+          "type": ["array", "null"],
+          "items": {"type": "string", "minLength": 1},
+          "description": "GPT Feedback v2 Wave 5 W5.D — per-claim attribution scoping. List of DART/Courseforge chunk-IDs that were used as the NLI premise(s) for this sentence, copied from the matched ``key_claims[].source_chunk_ids[]`` entry on the cited chunk. Null when (a) the cited chunk did not carry the W1.5 / W5.A structured ``key_claims`` shape, (b) the call site did not thread a ``chunk_id_to_text_map`` lookup, or (c) the sentence did not cosine-match (floor 0.50) any structured claim — in any of those arms the validator graceful-degraded to whole-chunk-text NLI scoring for this sentence and no per-claim attribution applies."
+        },
+        "dart_source_check": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["entailment", "contradiction", "outcome"],
+          "properties": {
+            "entailment": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Wave 9 TIGHT — max-over-DART-blocks NLI entailment for (premise=union of cited DART block texts, hypothesis=sentence)."
+            },
+            "contradiction": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1,
+              "description": "Wave 9 TIGHT — max-over-DART-blocks NLI contradiction for the same (premise, hypothesis) pair."
+            },
+            "outcome": {
+              "type": "string",
+              "enum": ["entailed", "unsupported", "dart_disagreement"],
+              "description": "Wave 9 TIGHT — DART-side bucket. ``dart_disagreement`` fires when contradiction >= 0.50; the per-claim outer ``outcome`` is bumped to the same value to surface in the aggregate-rate warning at the gate-runner walk."
+            }
+          },
+          "description": "GPT Feedback v2 Wave 9 TIGHT — dual-source DART cross-check (chunker-drift slice). Stamped only when (a) the IMSCC NLI pass scored this sentence as ``entailed``, (b) the call site threaded ``dart_block_text_map`` + ``dual_source_severity != 'off'`` into ``PairClaimSupportValidator.validate_pair``, and (c) at least one of the cited chunk's ``source.source_references[].sourceId`` resolved against the staged DART HTML map. Absent when any of those conditions is false (back-compat day-1 — the field is optional, legacy corpora pass schema validation unchanged). Closes the chunker-drift slice (Finding 5) — W2.F fires before IMSCC chunking, so it can't see ``merge_small_sections`` / sentence-split sub-chunking drift."
+        }
+      }
+    },
+    "PairLoResolution": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["declared_los", "chunk_los", "phantom_los"],
+      "properties": {
+        "declared_los": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Pair's declared learning_outcome_refs[] (preserves emit case)."
+        },
+        "chunk_los": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "Cited chunk's learning_outcome_refs[] (preserves emit case)."
+        },
+        "phantom_los": {
+          "type": "array",
+          "items": {"type": "string"},
+          "description": "LO refs declared by the pair that the cited chunk does NOT carry (case-insensitive set difference). Empty on pass; non-empty triggers W4.B 'phantom_pair_lo_refs' rejection."
+        },
+        "skipped": {
+          "type": "string",
+          "enum": ["deterministic_template"],
+          "description": "Wave 8 deterministic-pair audit marker — set to ``deterministic_template`` for the four deterministic generators (kg_metadata / violation / abstention / schema_translation) that bypass the W4.A / W4.B / W4.C per-pair filters because their pairs are oracle-grounded by construction. Absent on paraphrase-emitted pairs. Added by W-D1 P0.1; the pre-W-D1 schema rejected this field via additionalProperties: false."
+        }
+      },
+      "description": "GPT Feedback v2 Wave 4 W4.B — audit-trail surface for the per-pair LO-resolution check. Null when the validator hasn't run on this pair (legacy / pre-Wave-4 corpora)."
+    },
+    "PairObjectiveAlignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["objective_id", "status"],
+      "properties": {
+        "objective_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Canonical learning-outcome id (TO-NN / CO-NN) the pair claims to teach / assess. Preserves emit case."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["delivered", "underdelivered", "verb_only", "unverifiable"],
+          "description": "Tri-axis verdict per the W4.C contract: 'delivered' (NLI-entailed AND Bloom-met AND verb present), 'underdelivered' (NLI-unsupported OR Bloom-undermet), 'verb_only' (action-verb hit but NLI-unsupported), 'unverifiable' (NLI deps missing or LO statement absent — graceful-degrade)."
+        },
+        "statement_entailment_score": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Post-softmax NLI entailment probability for (premise=prompt+completion (or prompt+chosen for preference), hypothesis=objective_statement). Null when NLI deps are missing or the LO statement couldn't be resolved."
+        },
+        "contradiction_score": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Post-softmax NLI contradiction probability for the same (premise, hypothesis) pair. Null when NLI deps are missing."
+        },
+        "bloom_gap": {
+          "type": ["integer", "null"],
+          "description": "Difference declared_bloom_index - observed_bloom_index over the canonical 6-value Bloom enum (remember=0 .. create=5). Positive = pair operates BELOW the declared Bloom level (under-delivery); zero = aligned; negative = above. Null when observed_bloom couldn't be classified."
+        },
+        "verb_match_count": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "Number of declared-LO action-verb tokens (from the LO statement's leading verb phrase, normalised) found in the pair's prompt+completion (or prompt+chosen for preference). Null when the LO statement couldn't be resolved."
+        },
+        "declared_bloom": {
+          "type": ["string", "null"],
+          "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create", null],
+          "description": "Declared Bloom level of the cited learning objective (canonical 6-value enum). Null when the LO statement couldn't be resolved."
+        },
+        "observed_bloom": {
+          "type": ["string", "null"],
+          "enum": ["remember", "understand", "apply", "analyze", "evaluate", "create", null],
+          "description": "BERT-ensemble classification of the pair's prompt+completion (or prompt+chosen for preference). Null when the classifier didn't run."
+        },
+        "entailment_threshold": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1,
+          "description": "NLI entailment floor used to decide the 'delivered' vs 'underdelivered' axis on this call. Captures the per-call threshold so audit replay is deterministic across threshold-recalibration waves."
+        }
+      }
+    }
+  }
+}

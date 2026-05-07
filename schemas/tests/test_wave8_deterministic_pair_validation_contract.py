@@ -168,6 +168,30 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
+def _build_pair_validator(schema):
+    """W-D4 — Draft202012 validator wired to resolve cross-schema $refs
+    against every sibling under schemas/knowledge/.
+    """
+    from referencing import Registry, Resource
+    from referencing.jsonschema import DRAFT202012
+    from jsonschema import Draft202012Validator
+
+    knowledge_dir = PROJECT_ROOT / "schemas" / "knowledge"
+    resources = []
+    for sib in knowledge_dir.glob("*.schema.json"):
+        try:
+            sib_schema = json.loads(sib.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        sid = sib_schema.get("$id")
+        if sid:
+            resources.append(
+                (sid, Resource.from_contents(sib_schema, default_specification=DRAFT202012))
+            )
+    registry = Registry().with_resources(resources)
+    return Draft202012Validator(schema, registry=registry)
+
+
 # --------------------------------------------------------------------------- #
 # Inlined fixtures — pedagogy graph + mini training corpus copy helper
 # --------------------------------------------------------------------------- #
@@ -877,8 +901,6 @@ def test_instruction_pair_schema_admits_question_type_enum() -> None:
     """
     pytest.importorskip("jsonschema")
 
-    from jsonschema import Draft202012Validator
-
     schema_path = (
         PROJECT_ROOT
         / "schemas"
@@ -886,7 +908,7 @@ def test_instruction_pair_schema_admits_question_type_enum() -> None:
         / "instruction_pair.schema.json"
     )
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    validator = Draft202012Validator(schema)
+    validator = _build_pair_validator(schema)
 
     def _base_pair() -> Dict[str, Any]:
         # Mirrors :func:`schemas/tests/test_instruction_pair_promotion_fields.py::_base_pair`

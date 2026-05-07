@@ -18,7 +18,7 @@ DART (Document Accessibility Remediation Tool) converts PDFs to WCAG 2.2 AA comp
 
 DART has two entry points serving different purposes:
 
-- **`convert.py`** — Convenience wrapper for PDF to WCAG HTML conversion. Calls `pdf_converter` directly on a raw PDF file.
+- **`python -m DART.pdf_converter`** — CLI for PDF to WCAG HTML conversion. Single entry point with argparse, env-var resolution (`DART_CLAUDE_MODEL`), and WCAG validator wiring. Console-script alias `pdf-to-html` registered in `DART/pyproject.toml::[project.scripts]`.
 - **`multi_source_interpreter.py`** — Multi-source synthesis engine for combined JSON inputs (pdftotext + pdfplumber + OCR). This is the preferred path when pre-extracted source data is available.
 
 ```python

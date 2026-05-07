@@ -34,9 +34,26 @@ def _require_jsonschema():
 def _load_validator():
     _require_jsonschema()
     from jsonschema import Draft202012Validator
+    from referencing import Registry, Resource
+    from referencing.jsonschema import DRAFT202012
 
     schema = json.loads(SCHEMA_PATH.read_text())
-    return Draft202012Validator(schema)
+    # W-D4: cross-schema $ref to pair_audit_fields.schema.json — build a
+    # registry over every sibling schema so $ref resolution works.
+    knowledge_dir = SCHEMAS_DIR / "knowledge"
+    resources = []
+    for sib in knowledge_dir.glob("*.schema.json"):
+        try:
+            sib_schema = json.loads(sib.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        sid = sib_schema.get("$id")
+        if sid:
+            resources.append(
+                (sid, Resource.from_contents(sib_schema, default_specification=DRAFT202012))
+            )
+    registry = Registry().with_resources(resources)
+    return Draft202012Validator(schema, registry=registry)
 
 
 def _base_pair() -> Dict[str, Any]:
