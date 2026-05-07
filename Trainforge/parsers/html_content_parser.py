@@ -72,6 +72,25 @@ class ContentSection:
     # template types into the legacy six. ``None`` for non-Courseforge IMSCC
     # packages or for legacy Courseforge corpora that predate Wave 79 C.
     template_type: Optional[str] = None
+    # Wave 5 (W5.A — ingestion mirror for W1.5): per-block ``keyClaims``
+    # array harvested from the JSON-LD ``blocks[]`` projection. Each entry
+    # carries at minimum ``claim`` (string) + ``source_chunk_ids``
+    # (List[str]) — the chunker uses these to materialize the
+    # ``key_claims`` audit field on ``chunk_v4`` so downstream consumers
+    # (Trainforge synthesis, NLI claim-support gate) can verify per-claim
+    # grounding without re-walking the source HTML. Defensive default
+    # ``[]`` so legacy emit paths (pre-W1.5 Courseforge corpora and
+    # non-Courseforge IMSCC packages) never see ``None``.
+    key_claims: List[Dict[str, Any]] = field(default_factory=list)
+    # Wave 5 (W5.A — ingestion mirror for W1.7): per-block
+    # ``objectiveAlignment`` array harvested from the JSON-LD ``blocks[]``
+    # projection. Each entry declares an ``objective_id`` plus alignment
+    # metadata (``status`` / ``declared_bloom`` / etc.) so the
+    # ``BlockObjectiveDeliveryValidator`` tri-axis check (NLI / Bloom-gap
+    # / verb) has a per-block declaration to validate against rather
+    # than re-deriving from the page-level objective list. Defensive
+    # default ``[]`` so legacy emit paths never see ``None``.
+    objective_alignment: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -579,6 +598,21 @@ class HTMLContentParser:
             template_type = block.get("templateType")
             if not isinstance(template_type, str) or not template_type:
                 template_type = None
+            # Wave 5 (W5.A): project the W1.5 ``keyClaims`` and W1.7
+            # ``objectiveAlignment`` audit arrays. camelCase ↔ snake_case
+            # translation: JSON-LD wire keys are camelCase; Python attrs
+            # are snake_case. Filter to dict entries — defensive against
+            # malformed payloads that slip past schema validation
+            # (mirrors the dict-coerce posture in
+            # ``_extract_blocks_from_jsonld``).
+            raw_key_claims = block.get("keyClaims") or []
+            key_claims: List[Dict[str, Any]] = [
+                kc for kc in raw_key_claims if isinstance(kc, dict)
+            ]
+            raw_objective_alignment = block.get("objectiveAlignment") or []
+            objective_alignment: List[Dict[str, Any]] = [
+                oa for oa in raw_objective_alignment if isinstance(oa, dict)
+            ]
             sections.append(
                 ContentSection(
                     heading="",
@@ -589,6 +623,8 @@ class HTMLContentParser:
                     content_type=content_type,
                     key_terms=key_terms,
                     template_type=template_type,
+                    key_claims=key_claims,
+                    objective_alignment=objective_alignment,
                 )
             )
         return sections
