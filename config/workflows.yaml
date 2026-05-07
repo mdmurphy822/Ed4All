@@ -555,7 +555,7 @@ workflows:
               on_error: fail_closed
 
           - gate_id: bloom_alignment
-            validator: lib.validators.bloom.BloomAlignmentValidator
+            validator: lib.validators.bloom.alignment.BloomAlignmentValidator
             severity: warning
             threshold:
               min_alignment_score: 0.7
@@ -1287,7 +1287,7 @@ workflows:
           # passed=True) — opt-in fail-closed via
           # TRAINFORGE_REQUIRE_BERT_ENSEMBLE=true.
           - gate_id: outline_bloom_classifier_disagreement
-            validator: lib.validators.bloom_classifier_disagreement.BloomClassifierDisagreementValidator
+            validator: lib.validators.bloom.classifier_disagreement.BloomClassifierDisagreementValidator
             severity: warning
             threshold:
               max_critical_issues: 0
@@ -1399,7 +1399,7 @@ workflows:
             description: W7 — per-page pedagogical-density floors (concepts / examples-per-concept / explanation-tokens-per-concept).
 
           - gate_id: outline_bloom_structural_enforcement
-            validator: lib.validators.bloom_structural_enforcement.BloomStructuralEnforcementValidator
+            validator: lib.validators.bloom.structural_enforcement.BloomStructuralEnforcementValidator
             severity: warning
             threshold:
               max_critical_issues: 0
@@ -1675,7 +1675,7 @@ workflows:
           # same shape-dispatch path. Severity warning per the Phase 4
           # PoC contract.
           - gate_id: rewrite_bloom_classifier_disagreement
-            validator: lib.validators.bloom_classifier_disagreement.BloomClassifierDisagreementValidator
+            validator: lib.validators.bloom.classifier_disagreement.BloomClassifierDisagreementValidator
             severity: warning
             threshold:
               max_critical_issues: 0
@@ -1794,7 +1794,7 @@ workflows:
             description: W7 — post-rewrite per-page pedagogical-density floors over the final Block batch.
 
           - gate_id: rewrite_bloom_structural_enforcement
-            validator: lib.validators.bloom_structural_enforcement.BloomStructuralEnforcementValidator
+            validator: lib.validators.bloom.structural_enforcement.BloomStructuralEnforcementValidator
             severity: warning
             threshold:
               max_critical_issues: 0
@@ -2281,7 +2281,7 @@ workflows:
           # gate ``inputs.thresholds`` once the per-corpus baseline is
           # calibrated.
           - gate_id: pair_claim_support
-            validator: lib.validators.pair_claim_support.PairClaimSupportValidator
+            validator: lib.validators.pair.claim_support.PairClaimSupportValidator
             severity: warning
             behavior:
               on_fail: warn
@@ -2296,7 +2296,7 @@ workflows:
           # the trainforge_assessment phase — same regression class,
           # same fail-closed posture).
           - gate_id: pair_lo_refs
-            validator: lib.validators.pair_lo_refs.PairLearningOutcomeRefsValidator
+            validator: lib.validators.pair.lo_refs.PairLearningOutcomeRefsValidator
             severity: critical
             behavior:
               on_fail: block
@@ -2323,7 +2323,7 @@ workflows:
           # block, so the validator pulls its inputs from the phase's
           # exposed outputs at gate-runner dispatch time.
           - gate_id: pair_objective_delivery
-            validator: lib.validators.pair_objective_delivery.PairObjectiveDeliveryValidator
+            validator: lib.validators.pair.objective_delivery.PairObjectiveDeliveryValidator
             severity: warning
             config:
               thresholds:
@@ -2338,7 +2338,7 @@ workflows:
             description: Wave 4 W4.C MEDIUM — per-pair-per-objective tri-axis (NLI entailment + Bloom-gap + verb cooccurrence) delivery audit. Mirrors BlockObjectiveDeliveryValidator on the pair surface. Warning day-1 (NLI confidence is fuzzy on a fresh corpus); operator promotes to critical via gate.config.severity once the per-corpus baseline is calibrated.
 
           - gate_id: pair_promotion
-            validator: lib.validators.training_pair_promotion.TrainingPairPromotionValidator
+            validator: lib.validators.pair.promotion.TrainingPairPromotionValidator
             severity: critical
             behavior:
               on_fail: block
@@ -2411,7 +2411,7 @@ workflows:
         # mismatches, etc.).
         validation_gates:
           - gate_id: libv2_manifest
-            validator: lib.validators.libv2_manifest.LibV2ManifestValidator
+            validator: lib.validators.libv2.manifest.LibV2ManifestValidator
             severity: critical
             threshold:
               max_critical_issues: 0
@@ -2431,7 +2431,7 @@ workflows:
           # to warnings for legacy archives that haven't been re-emit
           # with Wave 76+ pedagogy + concept typing.
           - gate_id: packet_integrity_strict
-            validator: lib.validators.libv2_packet_integrity.PacketIntegrityValidator
+            validator: lib.validators.libv2.packet_integrity.PacketIntegrityValidator
             severity: critical
             threshold:
               max_critical_issues: 0
