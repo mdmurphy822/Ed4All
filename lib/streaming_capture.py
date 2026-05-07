@@ -30,7 +30,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from .constants import MIN_DECISIONS_PER_PHASE, OPERATION_MAP, RELAXED_DECISION_TYPES
-from .decision_capture import InputRef, MLFeatures, OutcomeSignals
+from .decision_capture import (
+    InputRef,
+    MLFeatures,
+    OutcomeSignals,
+    _coerce_record_field,
+    _coerce_record_field_list,
+)
 from .libv2_storage import LibV2Storage
 from .paths import TRAINING_DIR as LEGACY_TRAINING_DIR
 from .quality import assess_decision_quality
@@ -431,10 +437,10 @@ class StreamingDecisionCapture:
             context=context,
             confidence=confidence,
             # ML features and references
-            ml_features=asdict(ml_features) if ml_features else {},
-            inputs_ref=[asdict(ref) for ref in (inputs_ref or [])],
+            ml_features=_coerce_record_field(ml_features) or {},
+            inputs_ref=_coerce_record_field_list(inputs_ref),
             prompt_ref=prompt_ref,
-            outcome=asdict(outcome) if outcome else None,
+            outcome=_coerce_record_field(outcome),
             metadata=metadata
         )
 

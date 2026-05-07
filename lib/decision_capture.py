@@ -25,7 +25,7 @@ import json
 import logging
 import os
 import secrets
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 
 # Worker W3: advisory file locking around the legacy decision-capture write
 # path. fcntl is POSIX-only; Windows / non-POSIX environments degrade to the
@@ -47,6 +47,31 @@ from .constants import (
 )
 from .libv2_storage import LibV2Storage
 from .paths import TRAINING_DIR as LEGACY_TRAINING_DIR
+
+
+def _coerce_record_field(value: Any) -> Any:
+    """Coerce a single decision-record field to its serialisable form.
+
+    Most call sites pass plain ``Dict[str, Any]`` for ``ml_features`` / ``outcome``
+    so they can ship per-event fields (``tier``, ``validator``, …) that the
+    canonical ``MLFeatures`` dataclass doesn't carry. ``asdict()`` raises on
+    those, the defensive try/except at the call site swallows the raise, and
+    the decision event silently loses its ``ml_features`` payload. Branch on
+    dataclass-instance vs already-coerced shape so both paths preserve the
+    payload.
+    """
+    if value is None:
+        return None
+    if is_dataclass(value) and not isinstance(value, type):
+        return asdict(value)
+    return value
+
+
+def _coerce_record_field_list(values: Optional[List[Any]]) -> List[Any]:
+    """List counterpart of :func:`_coerce_record_field`."""
+    if not values:
+        return []
+    return [_coerce_record_field(item) for item in values]
 from .quality import assess_decision_quality
 
 # Phase 0 Hardening imports (graceful fallback if not available)
@@ -481,11 +506,11 @@ class DecisionCapture:
             "context": context,
             "confidence": confidence,
             "is_default": is_default,
-            "ml_features": asdict(ml_features) if ml_features else {},
-            "inputs_ref": [asdict(ref) for ref in (inputs_ref or [])],
+            "ml_features": _coerce_record_field(ml_features) or {},
+            "inputs_ref": _coerce_record_field_list(inputs_ref),
             "prompt_ref": prompt_ref,
-            "outputs": [asdict(out) for out in (outputs or [])],
-            "outcome": asdict(outcome) if outcome else None,
+            "outputs": _coerce_record_field_list(outputs),
+            "outcome": _coerce_record_field(outcome),
             "metadata": {
                 "rationale_length": rationale_length,
                 "quality_level": quality_level,
