@@ -245,6 +245,37 @@ Retrain only after **≥10-20 CURIEs flipped** since the last eval
 baseline. Per-CURIE retrains lose attribution and inflate eval drift
 across runs.
 
+### Pair-validation threshold calibration
+
+Across Waves 5 / 6 / 7 / 9 every new pair-validation gate landed at
+warning-severity day-1 with calibration debt deferred to the operator's
+next corpus rebuild. After a real rebuild,
+`python -m Trainforge.scripts.calibrate_pair_validation --course-code <slug>`
+reads post-rebuild signals and emits a markdown proposal at
+`LibV2/courses/<slug>/quality/pair_calibration_proposal.md`. The
+proposal carries one row per warning threshold (Wave 4 W4.A claim-support
+ceilings + entailment / contradiction floors, Wave 5 W5.D per-claim
+attribution, Wave 6 W6.A per-question-type quality, Wave 7 W7.D per-type
+eval, Wave 9 TIGHT dual-source DART, plus the Wave 1.7 W1.7.C per-block-type
+entailment floors as bonus inventory) with fire rate, recommended critical
+threshold (defaults to the worst-5% catch — overridable via
+`--target-percentile`), 95% bootstrap CI, and a verdict (`READY_TO_FLIP` /
+`NEEDS_MORE_DATA` / `KEEP_WARNING` / `MISSING_INPUT`).
+
+```bash
+python -m Trainforge.scripts.calibrate_pair_validation \
+    --course-code rdf-shacl-551-2
+# → LibV2/courses/rdf-shacl-551-2/quality/pair_calibration_proposal.md
+```
+
+The script is **read-only**: it never edits any threshold source file.
+The operator reviews the proposal, decides which thresholds are stable
+enough to flip warning → critical, and edits the listed `Edit Path`
+(e.g. `lib/validators/claim_support.py::_DEFAULT_MAX_UNSUPPORTED_RATE`)
+manually. Missing inputs (a fresh corpus without `eval_report.json`,
+for instance) surface as `MISSING_INPUT_<file>` warning rows; the
+script continues and produces the rows that DO have data.
+
 ---
 
 ## Decision Capture Protocol
