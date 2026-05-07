@@ -30,6 +30,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
+from lib.validators.assessment import _normalize_question_type
 from MCP.hardening.validation_gates import GateIssue, GateResult
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ def _emit_alignment_decision(
     passed: bool,
     code: Optional[str],
     resolved_via_synthesized_objectives: bool = False,
+    question_type: str = "",
 ) -> None:
     """Emit one ``assessment_objective_alignment_check`` decision per question.
 
@@ -59,16 +61,28 @@ def _emit_alignment_decision(
     rationale + metrics carry the flag so post-hoc replay can attribute
     a passing question to the chunks-side refs OR to the synthesized
     objectives' ``id`` set.
+
+    Wave 6 W6.E extension: ``question_type`` (resolved via
+    :func:`lib.validators.assessment._normalize_question_type` so the
+    QTI ``type`` vs generator ``question_type`` field-name divergence
+    is handled identically to the W6.A quality matrix) is interpolated
+    into the rationale and stamped on the metrics dict so post-hoc
+    replay can segment phantom-objective failures by question shape.
+    Defensive: when the source question carries no resolvable type,
+    the field is stamped as ``""`` (empty string, NOT ``None``) so the
+    metrics dict shape is invariant across all questions.
     """
     if capture is None:
         return
     decision = "passed" if passed else f"failed:{code or 'unknown'}"
+    qt_value = question_type or ""
     rationale = (
         f"AssessmentObjectiveAlignmentValidator audited question "
         f"{question_id!r}: declared_objective_ids={declared_objective_ids!r}, "
         f"resolved_in_chunk={resolved_in_chunk}, "
         f"n_chunks_searched={n_chunks_searched}, "
         f"resolved_via_synthesized_objectives={resolved_via_synthesized_objectives}, "
+        f"question_type={qt_value!r}, "
         f"failure_code={code or 'none'}."
     )
     metrics: Dict[str, Any] = {
@@ -79,6 +93,7 @@ def _emit_alignment_decision(
         "resolved_via_synthesized_objectives": bool(
             resolved_via_synthesized_objectives
         ),
+        "question_type": qt_value,
         "passed": bool(passed),
         "failure_code": code,
     }
@@ -296,6 +311,11 @@ class AssessmentObjectiveAlignmentValidator:
         n_chunks_searched = len(normalized_refs)
         for idx, q in enumerate(questions):
             q_id = str(q.get("question_id") or q.get("id") or f"idx:{idx}")
+            # W6.E: resolve question_type once per question via the
+            # canonical helper (handles QTI ``type`` vs generator
+            # ``question_type`` divergence). Empty-string fallback
+            # preserves the metrics dict shape invariant.
+            q_type = _normalize_question_type(q)
             q_objectives = self._question_objectives(q)
             if not q_objectives:
                 # Missing objective_id on a question → critical: the
@@ -320,6 +340,7 @@ class AssessmentObjectiveAlignmentValidator:
                     resolved_via_synthesized_objectives=(
                         synthesized_objectives_present
                     ),
+                    question_type=q_type,
                 )
                 continue
             q_unresolved: List[str] = []
@@ -343,6 +364,7 @@ class AssessmentObjectiveAlignmentValidator:
                 resolved_via_synthesized_objectives=(
                     synthesized_objectives_present
                 ),
+                question_type=q_type,
             )
 
         if mismatches:
