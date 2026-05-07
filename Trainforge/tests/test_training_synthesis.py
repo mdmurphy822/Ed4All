@@ -28,6 +28,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from lib.utils.jsonschema import validate_pair_record  # noqa: E402
+
 from Trainforge.generators.instruction_factory import (
     COMPLETION_MAX,
     COMPLETION_MIN,
@@ -271,8 +273,13 @@ def test_emitted_pairs_validate_against_schemas(tmp_path):
         seed=17,
     )
 
-    inst_schema = _load_schema("knowledge/instruction_pair.schema.json")
-    pref_schema = _load_schema("knowledge/preference_pair.schema.json")
+    # W-D4 follow-up: pair schemas now $ref the canonical
+    # `pair_audit_fields.schema.json`. Use the registry-aware
+    # `validate_pair_record` helper from `lib.utils.jsonschema` instead
+    # of the bare `jsonschema.validate(rec, schema)` form so the
+    # cross-schema $ref resolves locally without an HTTP fetch.
+    inst_schema_path = SCHEMAS_ROOT / "knowledge" / "instruction_pair.schema.json"
+    pref_schema_path = SCHEMAS_ROOT / "knowledge" / "preference_pair.schema.json"
 
     inst = _load_jsonl(working / "training_specs" / "instruction_pairs.jsonl")
     pref = _load_jsonl(working / "training_specs" / "preference_pairs.jsonl")
@@ -281,13 +288,13 @@ def test_emitted_pairs_validate_against_schemas(tmp_path):
 
     for i, rec in enumerate(inst):
         try:
-            jsonschema.validate(rec, inst_schema)
+            validate_pair_record(rec, inst_schema_path)
         except jsonschema.ValidationError as e:
             pytest.fail(f"Instruction pair {i} failed schema: {e.message}")
 
     for i, rec in enumerate(pref):
         try:
-            jsonschema.validate(rec, pref_schema)
+            validate_pair_record(rec, pref_schema_path)
         except jsonschema.ValidationError as e:
             pytest.fail(f"Preference pair {i} failed schema: {e.message}")
 
@@ -302,13 +309,15 @@ def test_editorial_misconception_dpo_pairs_validate_against_schema(tmp_path):
         include_dpo_from_misconceptions=True,
     )
 
-    pref_schema = _load_schema("knowledge/preference_pair.schema.json")
+    # W-D4 follow-up: registry-aware validator (see comment in
+    # test_emitted_pairs_validate_against_schemas above).
+    pref_schema_path = SCHEMAS_ROOT / "knowledge" / "preference_pair.schema.json"
     pref = _load_jsonl(working / "training_specs" / "preference_pairs.jsonl")
     editorial = [r for r in pref if r.get("source") == "misconception_editorial"]
     assert editorial, "Fixture produced no editorial misconception DPO pairs"
     for i, rec in enumerate(editorial):
         try:
-            jsonschema.validate(rec, pref_schema)
+            validate_pair_record(rec, pref_schema_path)
         except jsonschema.ValidationError as e:
             pytest.fail(f"Editorial DPO pair {i} failed schema: {e.message}")
 

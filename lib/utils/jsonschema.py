@@ -28,7 +28,24 @@ from typing import Any, Dict, Iterable, Optional, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["build_validator"]
+__all__ = ["build_validator", "validate_pair_record", "build_pair_validator"]
+
+
+# W-D4 follow-up: cross-schema $ref registry for pair schemas.
+#
+# As of W-D4, ``schemas/knowledge/instruction_pair{,.strict}.schema.json`` and
+# ``schemas/knowledge/preference_pair.schema.json`` reference
+# ``https://ed4all.dev/ns/knowledge/v1/pair_audit_fields.schema.json#/$defs/...``
+# via ``$ref`` for the per-claim-support / pair-LO-resolution / pair-objective-
+# delivery embedded blocks. A bare ``jsonschema.validate(record, pair_schema)``
+# call attempts to HTTP-fetch that URL and dies with ``socket.gaierror`` in
+# offline environments. The fix is a Draft202012Validator built against a
+# ``referencing.Registry`` populated with every ``*.schema.json`` under
+# ``schemas/knowledge/`` so the cross-schema reference resolves locally.
+#
+# This module owns the canonical pattern; per-call sites stay small.
+
+_PAIR_VALIDATOR_CACHE: Dict[str, Any] = {}
 
 
 def build_validator(
@@ -120,3 +137,85 @@ def build_validator(
     if return_schema:
         return validator, schema
     return validator
+
+
+def _resolve_knowledge_dir(knowledge_dir: Optional[Union[str, Path]] = None) -> Path:
+    """Resolve the ``schemas/knowledge`` directory.
+
+    Defaults to the repo's ``schemas/knowledge`` (walking up from this file:
+    ``lib/utils/jsonschema.py`` → repo root → ``schemas/knowledge``). Callers
+    can override for fixtures or out-of-tree schema mirrors.
+    """
+    if knowledge_dir is not None:
+        return Path(knowledge_dir)
+    # lib/utils/jsonschema.py → repo_root
+    repo_root = Path(__file__).resolve().parents[2]
+    return repo_root / "schemas" / "knowledge"
+
+
+def build_pair_validator(
+    pair_schema_path: Union[str, Path],
+    *,
+    knowledge_dir: Optional[Union[str, Path]] = None,
+):
+    """Build a Draft 2020-12 validator for a pair schema with the cross-schema
+    registry populated from every ``*.schema.json`` under ``schemas/knowledge``.
+
+    This is the W-D4 cross-schema-$ref-aware companion to ``build_validator``,
+    specialized for the pair schemas that ``$ref`` the canonical
+    ``pair_audit_fields.schema.json`` envelope. Cached per
+    ``(pair_schema_path, knowledge_dir)`` key so repeated test invocations
+    don't re-load the directory.
+
+    Args:
+        pair_schema_path: Path to the pair schema (instruction_pair /
+            instruction_pair.strict / preference_pair).
+        knowledge_dir: Override the ``schemas/knowledge`` discovery root.
+            Defaults to the repo's canonical location.
+
+    Returns:
+        A ``Draft202012Validator`` instance, or ``None`` when ``jsonschema`` /
+        ``referencing`` aren't installed (graceful-degrade path).
+    """
+    pair_p = Path(pair_schema_path).resolve()
+    knowledge_p = _resolve_knowledge_dir(knowledge_dir).resolve()
+    cache_key = f"{pair_p}|{knowledge_p}"
+    cached = _PAIR_VALIDATOR_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    validator = build_validator(pair_p, registry_root=knowledge_p)
+    if validator is not None:
+        _PAIR_VALIDATOR_CACHE[cache_key] = validator
+    return validator
+
+
+def validate_pair_record(
+    record: Dict[str, Any],
+    pair_schema_path: Union[str, Path],
+    *,
+    knowledge_dir: Optional[Union[str, Path]] = None,
+) -> None:
+    """Validate a single pair record against a pair schema with cross-schema
+    ``$ref`` resolution.
+
+    Drop-in replacement for ``jsonschema.validate(record, pair_schema)`` that
+    survives the W-D4 cross-schema ``$ref`` to
+    ``pair_audit_fields.schema.json``. Raises ``jsonschema.ValidationError``
+    on shape failure (matching the bare-call contract); is a no-op when
+    ``jsonschema`` / ``referencing`` aren't installed.
+
+    Args:
+        record: The pair dict to validate.
+        pair_schema_path: Path to the pair schema file.
+        knowledge_dir: Override the ``schemas/knowledge`` discovery root.
+
+    Raises:
+        jsonschema.ValidationError: When ``record`` fails the pair schema.
+    """
+    validator = build_pair_validator(
+        pair_schema_path, knowledge_dir=knowledge_dir
+    )
+    if validator is None:
+        return  # graceful-degrade: deps missing
+    validator.validate(record)

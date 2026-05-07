@@ -26,7 +26,20 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from lib.utils.jsonschema import validate_pair_record  # noqa: E402
+
 SCHEMAS_ROOT = PROJECT_ROOT / "schemas"
+
+# W-D4 follow-up: cross-schema $ref to pair_audit_fields.schema.json
+# now lands inline in instruction_pair{,.strict} + preference_pair.
+# Use ``validate_pair_record`` (registry-aware) instead of bare
+# ``jsonschema.validate`` so the cross-schema $ref resolves offline.
+INSTRUCTION_PAIR_SCHEMA = (
+    SCHEMAS_ROOT / "knowledge" / "instruction_pair.schema.json"
+)
+PREFERENCE_PAIR_SCHEMA = (
+    SCHEMAS_ROOT / "knowledge" / "preference_pair.schema.json"
+)
 
 
 def _load_schema(name: str) -> dict:
@@ -89,25 +102,25 @@ def test_minimal_pairs_with_known_providers_validate_baseline():
     """Sanity check: the minimal-pair builders pass schema validation
     under the pre-existing provider values. Catches authoring errors
     in this test file independent of the enum extension."""
-    inst_schema = _load_schema("knowledge/instruction_pair.schema.json")
-    pref_schema = _load_schema("knowledge/preference_pair.schema.json")
     for provider in ("mock", "anthropic"):
-        jsonschema.validate(_minimal_instruction_pair(provider), inst_schema)
-        jsonschema.validate(_minimal_preference_pair(provider), pref_schema)
+        validate_pair_record(
+            _minimal_instruction_pair(provider), INSTRUCTION_PAIR_SCHEMA
+        )
+        validate_pair_record(
+            _minimal_preference_pair(provider), PREFERENCE_PAIR_SCHEMA
+        )
 
 
 def test_instruction_pair_schema_accepts_claude_session_provider():
-    schema = _load_schema("knowledge/instruction_pair.schema.json")
     pair = _minimal_instruction_pair("claude_session")
     # Must not raise. Pre-fix: ValidationError "'claude_session' is not
     # one of ['mock', 'anthropic']".
-    jsonschema.validate(pair, schema)
+    validate_pair_record(pair, INSTRUCTION_PAIR_SCHEMA)
 
 
 def test_preference_pair_schema_accepts_claude_session_provider():
-    schema = _load_schema("knowledge/preference_pair.schema.json")
     pair = _minimal_preference_pair("claude_session")
-    jsonschema.validate(pair, schema)
+    validate_pair_record(pair, PREFERENCE_PAIR_SCHEMA)
 
 
 # ---------------------------------------------------------------------------
@@ -119,15 +132,13 @@ def test_instruction_pair_schema_accepts_together_provider():
     """TogetherSynthesisProvider sets ``provider="together"`` on every
     emitted pair; the instruction_pair schema enum must admit it or
     strict consumers reject every Together-produced row."""
-    schema = _load_schema("knowledge/instruction_pair.schema.json")
     pair = _minimal_instruction_pair("together")
-    jsonschema.validate(pair, schema)
+    validate_pair_record(pair, INSTRUCTION_PAIR_SCHEMA)
 
 
 def test_preference_pair_schema_accepts_together_provider():
-    schema = _load_schema("knowledge/preference_pair.schema.json")
     pair = _minimal_preference_pair("together")
-    jsonschema.validate(pair, schema)
+    validate_pair_record(pair, PREFERENCE_PAIR_SCHEMA)
 
 
 # ---------------------------------------------------------------------------
@@ -139,12 +150,10 @@ def test_instruction_pair_schema_accepts_local_provider():
     """LocalSynthesisProvider sets ``provider="local"`` on every emitted
     pair; the instruction_pair schema enum must admit it or strict
     consumers reject every locally-paraphrased row."""
-    schema = _load_schema("knowledge/instruction_pair.schema.json")
     pair = _minimal_instruction_pair("local")
-    jsonschema.validate(pair, schema)
+    validate_pair_record(pair, INSTRUCTION_PAIR_SCHEMA)
 
 
 def test_preference_pair_schema_accepts_local_provider():
-    schema = _load_schema("knowledge/preference_pair.schema.json")
     pair = _minimal_preference_pair("local")
-    jsonschema.validate(pair, schema)
+    validate_pair_record(pair, PREFERENCE_PAIR_SCHEMA)
