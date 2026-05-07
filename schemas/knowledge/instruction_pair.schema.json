@@ -122,18 +122,23 @@
             "type": "number",
             "minimum": 0,
             "maximum": 1,
-            "description": "Post-softmax NLI entailment probability for (premise=chunk_text, hypothesis=sentence)."
+            "description": "Post-softmax NLI entailment probability for (premise=chunk_text, hypothesis=sentence). When Wave 5 W5.D per-claim attribution scoping fired (source_chunk_ids non-null), this is the max-over-cited-chunks entailment so a sentence backed by ANY cited chunk is entailed."
           },
           "contradiction": {
             "type": "number",
             "minimum": 0,
             "maximum": 1,
-            "description": "Post-softmax NLI contradiction probability for the same (premise, hypothesis) pair."
+            "description": "Post-softmax NLI contradiction probability for the same (premise, hypothesis) pair. When Wave 5 W5.D per-claim attribution scoping fired (source_chunk_ids non-null), this is the max-over-cited-chunks contradiction so a sentence contradicted by ANY cited chunk is contradicted."
           },
           "outcome": {
             "type": "string",
             "enum": ["entailed", "unsupported", "contradicted"],
             "description": "Bucketed verdict per the W4.A thresholds — entailment_floor (default 0.70) and contradiction_floor (default 0.50)."
+          },
+          "source_chunk_ids": {
+            "type": ["array", "null"],
+            "items": {"type": "string", "minLength": 1},
+            "description": "GPT Feedback v2 Wave 5 W5.D — per-claim attribution scoping. List of DART/Courseforge chunk-IDs that were used as the NLI premise(s) for this sentence, copied from the matched ``key_claims[].source_chunk_ids[]`` entry on the cited chunk. Null when (a) the cited chunk did not carry the W1.5 / W5.A structured ``key_claims`` shape, (b) the call site did not thread a ``chunk_id_to_text_map`` lookup, or (c) the sentence did not cosine-match (floor 0.50) any structured claim — in any of those arms the validator graceful-degraded to whole-chunk-text NLI scoring for this sentence and no per-claim attribution applies."
           }
         }
       }

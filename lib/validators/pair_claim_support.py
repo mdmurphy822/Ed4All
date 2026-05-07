@@ -9,6 +9,22 @@ emit, immediately AFTER
 :class:`lib.validators.training_pair_promotion.
 TrainingPairPromotionValidator.validate_pair` returns ``"validated"``.
 
+Wave 5 W5.D extends the per-pair fan-out: when the cited chunk carries
+the new W1.5 structured ``key_claims=[{claim, source_chunk_ids[]}]``
+field (admitted by ``schemas/knowledge/chunk_v4.schema.json`` since
+W5.C), the validator scopes its NLI premise per-claim — each pair-side
+sentence cosine-matches against the closest structured ``claim``
+(threshold 0.50) and (when matched) is scored against ONLY the
+chunk-text(s) listed in that claim's ``source_chunk_ids[]`` rather
+than the whole cited chunk. The match attribution is stamped on each
+``per_claim_support[]`` entry as ``source_chunk_ids: List[str] |
+None`` so the audit trail records which chunk-ID(s) actually grounded
+each pair-side sentence. Back-compat: when ``key_claims`` is absent
+or carries the legacy ``List[str]`` shape, OR when no
+``chunk_id_to_text_map`` lookup is threaded from the call site, the
+validator falls back to whole-chunk-text scoring (byte-identical to
+the W4.A behaviour).
+
 Rationale: W2.E (`TrainingPairPromotionValidator`) checks
 *answer-support* via cosine similarity between the full answer surface
 and the cited chunk. That signal is a single scalar — a training pair
@@ -80,7 +96,11 @@ decision per :meth:`validate_pair` invocation when
 ``decision_capture`` is provided. Rationale interpolates
 ``chunk_id``, ``pair_kind``, ``total_claims``, ``entailed_count``,
 ``unsupported_count``, ``contradicted_count``, ``claim_support_rate``,
-``claim_contradicted_rate``, and the NLI loaded flag.
+``claim_contradicted_rate``, the NLI loaded flag, AND (Wave 5 W5.D)
+``structured_attribution_used: bool`` + ``per_claim_match_count: int``
+so an operator can see at a glance whether the pair benefited from
+the per-claim attribution scoping or fell back to whole-chunk-text
+scoring.
 """
 from __future__ import annotations
 
@@ -191,6 +211,162 @@ def _decompose_sentences(text: str) -> List[str]:
     return sentences
 
 
+# --------------------------------------------------------------------- #
+# Wave 5 W5.D — per-claim attribution helpers
+# --------------------------------------------------------------------- #
+
+
+#: Cosine-similarity floor for declaring that a pair-side sentence
+#: "corresponds to" one of the cited chunk's structured ``key_claims``
+#: entries. Empirically calibrated against the embedder's intrinsic
+#: similarity floor (topically-related but not semantically-aligned
+#: pairs cluster well below 0.40); the 0.50 floor mirrors the Wave 1.7
+#: ``ConceptExampleSimilarityValidator`` precedent at
+#: ``lib/validators/concept_example_similarity.py`` (the looser of the
+#: three statistical-tier gates, because example-style language is
+#: intentionally more concrete than the abstract claim it instantiates
+#: — the same asymmetry holds between a synthesized completion sentence
+#: and the structured claim it expounds).
+_PER_CLAIM_MATCH_COSINE_FLOOR: float = 0.50
+
+
+def _resolve_chunk_key_claims_with_attribution(
+    chunk: Optional[Dict[str, Any]],
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """Pull ``key_claims`` off a chunk dict when it carries the
+    Wave 1.5 / W1.5.A structured shape.
+
+    Mirrors :func:`lib.validators.claim_support._resolve_key_claims`
+    (the Courseforge block-level template) but adapts the surface:
+    here the input is a *chunk* dict (as published in
+    ``schemas/knowledge/chunk_v4.schema.json``) rather than a
+    ``Block`` dataclass.
+
+    Returns ``(per_claim_entries, structured_flag)``:
+
+    - ``per_claim_entries``: ordered list of normalised
+      ``{"claim": str, "source_chunk_ids": List[str]}`` entries (only
+      those carrying both keys; defensive against malformed entries).
+      Empty list when ``key_claims`` is absent, malformed, the legacy
+      ``List[str]`` shape, or carries no usable structured entries.
+    - ``structured_flag``: ``True`` when at least one entry carried
+      ``source_chunk_ids[]`` with at least one usable string ID. When
+      ``False``, the caller MUST fall back to whole-chunk-text NLI
+      scoring (byte-identical to the W4.A pre-W5.D behaviour).
+
+    Defensive contract: drops non-dict entries, drops dicts missing
+    ``claim``, drops empty ``source_chunk_ids[]`` (the legacy
+    ``List[str]`` arm of the schema oneOf intentionally produces
+    no structured entries here — those entries' attribution lives at
+    the chunk level, not per-claim, so per-claim scoping is a no-op
+    on legacy corpora).
+    """
+    if not isinstance(chunk, dict):
+        return [], False
+    raw = chunk.get("key_claims")
+    if not isinstance(raw, list):
+        return [], False
+
+    per_claim_entries: List[Dict[str, Any]] = []
+    structured_flag = False
+    for entry in raw:
+        if not isinstance(entry, dict):
+            # Drop bare strings (legacy List[str] arm) and any other
+            # malformed entries — the caller's fallback path covers
+            # the legacy corpus correctly.
+            continue
+        claim_raw = entry.get("claim")
+        if not isinstance(claim_raw, str) or not claim_raw.strip():
+            continue
+        attribution = entry.get("source_chunk_ids")
+        if isinstance(attribution, list):
+            ids = [
+                sid for sid in attribution
+                if isinstance(sid, str) and sid
+            ]
+        else:
+            ids = []
+        if not ids:
+            # No usable structured attribution on this entry — skip
+            # so the caller doesn't fall back to a degenerate empty
+            # candidate-chunks list (which would score 0 entailment
+            # for every sentence and false-positive the unsupported
+            # rate). Per-claim scoping requires at least one named
+            # source chunk.
+            continue
+        per_claim_entries.append({
+            "claim": claim_raw.strip(),
+            "source_chunk_ids": ids,
+        })
+        structured_flag = True
+    return per_claim_entries, structured_flag
+
+
+def _try_load_embedder_safe() -> Optional[Any]:
+    """Wrap :func:`lib.embedding.sentence_embedder.try_load_embedder`
+    in a try/except so that a missing extras / unexpected import error
+    falls through to whole-chunk-text scoring rather than blowing up
+    the per-pair filter. Strict-mode opt-in via
+    :func:`lib.embedding.sentence_embedder.is_strict_mode` re-raises;
+    the per-pair filter intentionally swallows that re-raise too,
+    because ``deps_missing`` is already a graceful-degrade arm at this
+    layer (see W4.A docstring §3 on the strict-mode rationale).
+    """
+    try:
+        from lib.embedding.sentence_embedder import try_load_embedder
+
+        return try_load_embedder()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "try_load_embedder raised in pair_claim_support per-claim "
+            "attribution path (swallowed, falls back to whole-chunk-"
+            "text scoring): %s", exc,
+        )
+        return None
+
+
+def _cosine_safe(vec_a: Any, vec_b: Any) -> Optional[float]:
+    """Cosine similarity that degrades to ``None`` on any error.
+    Mirrors ``training_pair_promotion._cosine_similarity_safe``."""
+    try:
+        from lib.embedding._math import cosine_similarity
+
+        return float(cosine_similarity(vec_a, vec_b))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("cosine_similarity raised in pair_claim_support: %s", exc)
+        return None
+
+
+def _match_sentence_to_claim(
+    *,
+    sentence: str,
+    sentence_vec: Any,
+    claim_vecs: List[Any],
+    per_claim_entries: List[Dict[str, Any]],
+    floor: float,
+) -> Optional[int]:
+    """Find the closest-matching ``per_claim_entries`` index by cosine
+    similarity. Returns ``None`` when no entry clears ``floor`` or
+    when an embedding error degrades the comparison.
+    """
+    if not per_claim_entries or not claim_vecs:
+        return None
+    best_idx: Optional[int] = None
+    best_score: float = -1.0
+    for idx, claim_vec in enumerate(claim_vecs):
+        if claim_vec is None:
+            continue
+        score = _cosine_safe(sentence_vec, claim_vec)
+        if score is None:
+            continue
+        if score > best_score:
+            best_score = score
+            best_idx = idx
+    if best_idx is None or best_score < floor:
+        return None
+    return best_idx
+
+
 def _emit_decision(
     capture: Any,
     *,
@@ -206,6 +382,8 @@ def _emit_decision(
     claim_contradicted_rate: Optional[float],
     nli_loaded: bool,
     deps_missing: bool,
+    structured_attribution_used: bool = False,
+    per_claim_match_count: int = 0,
 ) -> None:
     """Emit one ``pair_claim_support_check`` decision per
     :meth:`PairClaimSupportValidator.validate_pair` invocation.
@@ -244,6 +422,8 @@ def _emit_decision(
         f"claim_support_rate={rate_str}, "
         f"claim_contradicted_rate={cont_rate_str}, "
         f"nli_loaded={nli_loaded}, deps_missing={deps_missing}, "
+        f"structured_attribution_used={structured_attribution_used}, "
+        f"per_claim_match_count={per_claim_match_count}, "
         f"promotion_status={promotion_status}, "
         f"rejection_reason={rejection_reason or 'none'}."
     )
@@ -343,6 +523,7 @@ class PairClaimSupportValidator:
         *,
         kind: str,
         chunk: Optional[Dict[str, Any]] = None,
+        chunk_id_to_text_map: Optional[Dict[str, str]] = None,
         decision_capture: Any = None,
     ) -> Tuple[str, Optional[str], Dict[str, Any]]:
         """Audit one pair against the per-claim NLI support criteria.
@@ -361,6 +542,20 @@ class PairClaimSupportValidator:
                 catches ``source_free_generation`` upstream, so a
                 ``None`` chunk at this layer is the call-site's bug,
                 not a content-quality failure.
+            chunk_id_to_text_map: Optional mapping ``chunk_id -> text``
+                used by the Wave 5 W5.D per-claim attribution scoping
+                path. When the cited ``chunk`` carries a structured
+                ``key_claims=[{claim, source_chunk_ids[]}]`` field
+                (W1.5 / W5.A) AND this map is wired in, every pair-side
+                sentence cosine-matches against the structured claim
+                texts (threshold 0.50) and (when matched) is NLI-scored
+                against ONLY the chunks listed in that claim's
+                ``source_chunk_ids[]`` rather than the whole cited
+                chunk. When the map is ``None``, the validator
+                graceful-degrades to whole-chunk-text scoring even
+                when ``key_claims`` is structured — so the validator
+                works without this lookup being threaded through every
+                call site (back-compat day-1).
             decision_capture: Optional :class:`DecisionCapture`
                 instance. When wired, one
                 ``pair_claim_support_check`` event per call.
@@ -375,12 +570,19 @@ class PairClaimSupportValidator:
               ``"unsupported_claim"`` | ``None``.
             - ``new_fields``: ``{"per_claim_support": [{"sentence":
               str, "entailment": float, "contradiction": float,
-              "outcome": "entailed" | "unsupported" | "contradicted"}],
+              "outcome": "entailed" | "unsupported" | "contradicted",
+              "source_chunk_ids": List[str] | None}],
               "claim_support_rate": float | None,
               "claim_contradicted_rate": float | None,
               "deps_missing": bool}``. Stamped on the pair regardless
               of pass/fail; the caller MUST ``pair.update(new_fields)``
-              so the audit signals land on disk.
+              so the audit signals land on disk. ``source_chunk_ids``
+              is populated from the matched W1.5 / W5.A entry when
+              per-claim attribution scoping fired; ``None`` when the
+              sentence didn't match any structured claim (or when
+              ``chunk_id_to_text_map`` wasn't threaded so the
+              validator graceful-degraded to whole-chunk-text
+              scoring).
         """
         chunk_id = str(pair.get("chunk_id") or "")
         nli = self._get_nli()
@@ -390,6 +592,26 @@ class PairClaimSupportValidator:
         chunk_text = ""
         if isinstance(chunk, dict):
             chunk_text = str(chunk.get("text") or "")
+
+        # ---- Wave 5 W5.D: resolve structured key_claims ---- #
+        # When the cited chunk carries the W1.5 / W5.A structured
+        # ``key_claims=[{claim, source_chunk_ids[]}]`` field AND the
+        # caller threaded a chunk_id_to_text_map lookup, every pair-
+        # side sentence is routed through the per-claim attribution
+        # scoping path: cosine-match sentence ↔ claim_text, then NLI
+        # against ONLY the chunks named in the matched claim's
+        # ``source_chunk_ids[]`` list. When either condition fails,
+        # ``structured_attribution_used`` stays False and the legacy
+        # whole-chunk-text scoring path runs (byte-identical to the
+        # W4.A pre-W5.D behaviour).
+        per_claim_entries, key_claims_structured = (
+            _resolve_chunk_key_claims_with_attribution(chunk)
+        )
+        structured_attribution_used = (
+            key_claims_structured
+            and isinstance(chunk_id_to_text_map, dict)
+            and bool(chunk_id_to_text_map)
+        )
 
         # ---- Resolve hypothesis surface ---- #
         if kind == "instruction":
@@ -427,6 +649,8 @@ class PairClaimSupportValidator:
                 claim_contradicted_rate=None,
                 nli_loaded=nli_loaded,
                 deps_missing=True,
+                structured_attribution_used=False,
+                per_claim_match_count=0,
             )
             return "validated", None, new_fields
 
@@ -458,17 +682,111 @@ class PairClaimSupportValidator:
                 claim_contradicted_rate=None,
                 nli_loaded=nli_loaded,
                 deps_missing=False,
+                structured_attribution_used=False,
+                per_claim_match_count=0,
             )
             return "validated", None, new_fields
 
-        # ---- Fan-out NLI scoring (one premise, N hypotheses) ---- #
-        # Build (premise=chunk_text, hypothesis=sentence) pairs and
-        # batch-score them. Single chunk (no per-claim attribution at
-        # the training-pair layer — the pair has one cited chunk;
-        # multi-chunk attribution is a Courseforge-block concern).
-        nli_pairs: List[Tuple[str, str]] = [
-            (chunk_text, sentence) for sentence in sentences
+        # ---- Wave 5 W5.D: pre-compute per-sentence attribution ---- #
+        # When structured_attribution_used is on, embed every
+        # sentence + every claim_text once, then route each sentence's
+        # NLI premise to the chunks named in its closest-matching
+        # claim's source_chunk_ids[]. When off, every premise stays
+        # anchored on the whole chunk text (legacy W4.A path).
+        sentence_attributions: List[Optional[List[str]]] = [
+            None for _ in sentences
         ]
+        per_claim_match_count = 0
+        # Per-sentence list of premise texts. Default: one premise =
+        # whole chunk text. Per-claim path replaces this with the
+        # union of cited chunk texts when a sentence-claim match
+        # fires.
+        per_sentence_premises: List[List[str]] = [
+            [chunk_text] for _ in sentences
+        ]
+        if structured_attribution_used:
+            embedder = _try_load_embedder_safe()
+            if embedder is not None:
+                try:
+                    sentence_vecs = [
+                        embedder.encode(s) for s in sentences
+                    ]
+                    claim_vecs = [
+                        embedder.encode(entry["claim"])
+                        for entry in per_claim_entries
+                    ]
+                except Exception as exc:  # noqa: BLE001
+                    # Embedder failed mid-encode. Fall back to whole-
+                    # chunk-text scoring so the run doesn't break on
+                    # a transient model error. Keep
+                    # ``structured_attribution_used`` True for the
+                    # decision-capture rationale (so the audit trail
+                    # records the intent) but flag the per-claim
+                    # path as effectively off.
+                    logger.warning(
+                        "Embedder failed on per-claim attribution "
+                        "encode (chunk_id=%r, kind=%r): %s — falling "
+                        "back to whole-chunk-text NLI scoring.",
+                        chunk_id, kind, exc,
+                    )
+                    sentence_vecs = []
+                    claim_vecs = []
+                # Map each sentence to a per-claim entry, then build
+                # the candidate-premise list from the entry's named
+                # chunks. Sentences with no match keep the default
+                # whole-chunk-text premise.
+                for s_idx, sent_vec in enumerate(sentence_vecs):
+                    matched_idx = _match_sentence_to_claim(
+                        sentence=sentences[s_idx],
+                        sentence_vec=sent_vec,
+                        claim_vecs=claim_vecs,
+                        per_claim_entries=per_claim_entries,
+                        floor=_PER_CLAIM_MATCH_COSINE_FLOOR,
+                    )
+                    if matched_idx is None:
+                        continue
+                    matched_entry = per_claim_entries[matched_idx]
+                    matched_ids = matched_entry["source_chunk_ids"]
+                    candidate_texts: List[str] = []
+                    for sid in matched_ids:
+                        cand_text = (
+                            chunk_id_to_text_map.get(sid)
+                            if isinstance(chunk_id_to_text_map, dict)
+                            else None
+                        )
+                        if isinstance(cand_text, str) and cand_text.strip():
+                            candidate_texts.append(cand_text)
+                    if not candidate_texts:
+                        # Matched entry but none of its named chunks
+                        # are in the lookup map — fall back to whole-
+                        # chunk-text for this sentence (don't drop
+                        # the sentence; the per-claim path is best-
+                        # effort).
+                        continue
+                    per_sentence_premises[s_idx] = candidate_texts
+                    sentence_attributions[s_idx] = list(matched_ids)
+                    per_claim_match_count += 1
+            else:
+                # Embedder couldn't load (default-mode degrade) — fall
+                # back to whole-chunk-text scoring. Keep the decision
+                # capture flag aligned with the actual scoring path.
+                structured_attribution_used = False
+
+        # ---- Fan-out NLI scoring ---- #
+        # Build (premise, hypothesis) pairs. When per-claim attribution
+        # fired for a sentence, the sentence appears once per cited
+        # chunk text (so a max-over-cited-chunks aggregation can
+        # decide its outcome). When the legacy whole-chunk-text path
+        # is on, exactly one (chunk_text, sentence) pair per sentence.
+        nli_pairs: List[Tuple[str, str]] = []
+        per_sentence_pair_index_ranges: List[Tuple[int, int]] = []
+        for s_idx, sentence in enumerate(sentences):
+            premises = per_sentence_premises[s_idx]
+            start = len(nli_pairs)
+            for premise in premises:
+                nli_pairs.append((premise, sentence))
+            end = len(nli_pairs)
+            per_sentence_pair_index_ranges.append((start, end))
         try:
             scores: List[NliScore] = nli.score_batch(pairs=nli_pairs)
         except Exception as exc:  # noqa: BLE001
@@ -500,18 +818,41 @@ class PairClaimSupportValidator:
                 claim_contradicted_rate=None,
                 nli_loaded=nli_loaded,
                 deps_missing=True,
+                structured_attribution_used=structured_attribution_used,
+                per_claim_match_count=per_claim_match_count,
             )
             return "validated", None, new_fields
 
         # ---- Bucket each sentence ---- #
+        # When per-claim attribution fan-out emitted multiple
+        # (premise, sentence) pairs for one sentence (one per cited
+        # chunk text), aggregate via max-entailment / max-
+        # contradiction so a sentence backed by ANY cited chunk is
+        # entailed; a sentence contradicted by ANY cited chunk is
+        # contradicted. Mirrors the W2.F precedent at
+        # ``lib/validators/claim_support.py`` § "rules-1.5: max-over-
+        # candidate-chunks".
         per_claim_support: List[Dict[str, Any]] = []
         entailed_count = 0
         unsupported_count = 0
         contradicted_count = 0
 
-        for sentence, score in zip(sentences, scores):
-            entailment = float(score.entailment)
-            contradiction = float(score.contradiction)
+        for s_idx, sentence in enumerate(sentences):
+            start, end = per_sentence_pair_index_ranges[s_idx]
+            sentence_scores = scores[start:end]
+            if not sentence_scores:
+                # Defensive: shouldn't happen because per_sentence_premises
+                # always has at least one entry. If it does, treat the
+                # sentence as unsupported.
+                entailment = 0.0
+                contradiction = 0.0
+            else:
+                entailment = max(
+                    float(s.entailment) for s in sentence_scores
+                )
+                contradiction = max(
+                    float(s.contradiction) for s in sentence_scores
+                )
             if entailment >= self._entailment_floor:
                 outcome = "entailed"
                 entailed_count += 1
@@ -526,6 +867,7 @@ class PairClaimSupportValidator:
                 "entailment": entailment,
                 "contradiction": contradiction,
                 "outcome": outcome,
+                "source_chunk_ids": sentence_attributions[s_idx],
             })
 
         total_claims = (
@@ -588,6 +930,8 @@ class PairClaimSupportValidator:
             claim_contradicted_rate=claim_contradicted_rate,
             nli_loaded=nli_loaded,
             deps_missing=False,
+            structured_attribution_used=structured_attribution_used,
+            per_claim_match_count=per_claim_match_count,
         )
 
         return promotion_status, rejection_reason, new_fields
@@ -792,9 +1136,11 @@ __all__ = [
     "_DEFAULT_MAX_UNSUPPORTED_RATE",
     "_DEFAULT_MAX_CONTRADICTED_RATE",
     "_MIN_SENTENCE_TOKENS",
+    "_PER_CLAIM_MATCH_COSINE_FLOOR",
     "_REASON_UNSUPPORTED_CLAIM",
     "_REASON_CONTRADICTED_CLAIM",
     "_CODE_NLI_DEPS_MISSING",
     "_CODE_MISSING_PER_CLAIM_SUPPORT",
     "_CODE_MISSING_CLAIM_SUPPORT_RATE",
+    "_resolve_chunk_key_claims_with_attribution",
 ]

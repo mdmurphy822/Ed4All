@@ -231,7 +231,7 @@
     "rationale": {
       "type": "string",
       "minLength": 20,
-      "description": "Why this decision was made (critical for training - minimum 20 chars)"
+      "description": "Why this decision was made (critical for training - minimum 20 chars). Per-decision_type signal contracts: ``pair_claim_support_check`` rationale interpolates ``chunk_id``, ``pair_kind``, ``total_claims``, ``entailed_count``, ``unsupported_count``, ``contradicted_count``, ``claim_support_rate``, ``claim_contradicted_rate``, ``nli_loaded``, ``deps_missing``, ``promotion_status``, ``rejection_reason``, AND (Wave 5 W5.D) ``structured_attribution_used: bool`` + ``per_claim_match_count: int`` so an audit can replay whether the per-claim attribution scoping path fired or the validator fell back to whole-chunk-text scoring. No new enum member."
     },
     "alternatives_considered": {
       "type": ["array", "null"],
