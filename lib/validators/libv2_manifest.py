@@ -21,7 +21,6 @@ Referenced by: ``config/workflows.yaml`` →
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
@@ -29,6 +28,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
+from lib.utils import sha256_file
 
 logger = logging.getLogger(__name__)
 
@@ -420,7 +420,7 @@ class LibV2ManifestValidator:
             # Checksum check (critical when mismatch)
             expected_checksum = entry.get("checksum") or entry.get("sha256")
             if expected_checksum:
-                actual_checksum = _sha256_file(path)
+                actual_checksum = sha256_file(path)
                 if actual_checksum != expected_checksum:
                     issues.append(GateIssue(
                         severity="critical",
@@ -599,7 +599,7 @@ class LibV2ManifestValidator:
         # that catches stale / tampered values.
         if graph_file.exists() and graph_file.is_file():
             try:
-                actual = hashlib.sha256(graph_file.read_bytes()).hexdigest()
+                actual = sha256_file(graph_file)
             except OSError as exc:
                 issues.append(GateIssue(
                     severity="warning",
@@ -687,7 +687,7 @@ class LibV2ManifestValidator:
 
         if chunks_file.exists() and chunks_file.is_file():
             try:
-                actual = hashlib.sha256(chunks_file.read_bytes()).hexdigest()
+                actual = sha256_file(chunks_file)
             except OSError as exc:
                 issues.append(GateIssue(
                     severity="warning",
@@ -776,7 +776,7 @@ class LibV2ManifestValidator:
 
         if chunks_file.exists() and chunks_file.is_file():
             try:
-                actual = hashlib.sha256(chunks_file.read_bytes()).hexdigest()
+                actual = sha256_file(chunks_file)
             except OSError as exc:
                 issues.append(GateIssue(
                     severity="warning",
@@ -837,14 +837,6 @@ class LibV2ManifestValidator:
 # ---------------------------------------------------------------------- #
 # Module helpers
 # ---------------------------------------------------------------------- #
-
-
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _dir_is_empty(path: Path) -> bool:

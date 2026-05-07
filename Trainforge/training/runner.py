@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional
 
 from lib.decision_capture import DecisionCapture
 from lib.paths import LIBV2_COURSES, SCHEMAS_PATH
+from lib.utils import sha256_file, write_jsonl
 
 from Trainforge.training.base_models import BaseModelRegistry, BaseModelSpec
 from Trainforge.training.compute_backend import (
@@ -413,7 +414,7 @@ class TrainingRunner:
                 )
                 out[key] = sha_empty
             else:
-                out[key] = _sha256_file(resolved)
+                out[key] = sha256_file(resolved)
         if critical_missing:
             raise FileNotFoundError(
                 "TrainingRunner cannot mint model card; required "
@@ -1018,23 +1019,19 @@ class TrainingRunner:
         knowing the project's capture conventions.
         """
         decisions_path = run_dir / "training_run.jsonl"
-        with decisions_path.open("w", encoding="utf-8") as fh:
-            for record in capture.decisions:
-                fh.write(json.dumps(record, default=str) + "\n")
+        write_jsonl(
+            decisions_path,
+            capture.decisions,
+            default=str,
+            sort_keys=False,
+            atomic=False,
+        )
         return decisions_path
 
 
 # ---------------------------------------------------------------------- #
 # Module helpers                                                          #
 # ---------------------------------------------------------------------- #
-
-
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _count_jsonl_records(path: Path) -> int:

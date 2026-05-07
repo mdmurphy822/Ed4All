@@ -22,7 +22,6 @@ and ``LibV2/tools/libv2/importer.py::import_model`` (Wave 92).
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
@@ -30,6 +29,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
+from lib.utils import sha256_file
 
 logger = logging.getLogger(__name__)
 
@@ -418,7 +418,7 @@ class LibV2ModelValidator:
         # Optional checksum check
         expected_sha = weights_meta.get("sha256") or weights_meta.get("checksum")
         if expected_sha:
-            actual_sha = _sha256_file(weights_path)
+            actual_sha = sha256_file(weights_path)
             if actual_sha != expected_sha:
                 issues.append(GateIssue(
                     severity="critical",
@@ -489,7 +489,7 @@ class LibV2ModelValidator:
 
         match_found = False
         for candidate in existing:
-            if _sha256_file(candidate) == expected_hash:
+            if sha256_file(candidate) == expected_hash:
                 match_found = True
                 break
 
@@ -652,14 +652,6 @@ class LibV2ModelValidator:
 # ---------------------------------------------------------------------- #
 # Module helpers                                                          #
 # ---------------------------------------------------------------------- #
-
-
-def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _resolve_schema_path() -> Optional[Path]:

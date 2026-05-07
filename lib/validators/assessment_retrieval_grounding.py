@@ -117,7 +117,8 @@ from __future__ import annotations
 import logging
 import re
 import sys
-from html.parser import HTMLParser
+
+from lib.utils import strip_html_to_text
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -233,35 +234,6 @@ _ANSWER_SPAN_RE = re.compile(
 _OUTLINE_FEEDBACK_KEYS: tuple = ("feedback", "rationale", "explanation")
 
 
-class _TextExtractor(HTMLParser):
-    """Stdlib HTML parser that accumulates text from data events."""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self._fragments: List[str] = []
-
-    def handle_data(self, data: str) -> None:
-        if data.strip():
-            self._fragments.append(data)
-
-    def text(self) -> str:
-        return " ".join(self._fragments).strip()
-
-
-def _strip_html_to_text(html: str) -> str:
-    """Strip HTML to plain text via stdlib parser."""
-    if not html:
-        return ""
-    extractor = _TextExtractor()
-    try:
-        extractor.feed(html)
-        extractor.close()
-    except Exception as exc:  # noqa: BLE001 — defensive
-        logger.debug("HTML strip raised: %s", exc)
-        return ""
-    return extractor.text()
-
-
 def _content_tokens(text: str) -> set:
     """Lowercase, stop-word-stripped, alphabetic-only token set."""
     if not text:
@@ -375,7 +347,7 @@ def _extract_rewrite_answer_text(html: str) -> Optional[str]:
     """
     correct_match = _LI_CORRECT_RE.search(html)
     if correct_match:
-        body = _strip_html_to_text(correct_match.group(1) or "")
+        body = strip_html_to_text(correct_match.group(1) or "")
         if body:
             return body
 
@@ -392,7 +364,7 @@ def _extract_rewrite_answer_text(html: str) -> Optional[str]:
                 except (TypeError, ValueError):
                     continue
                 if idx == target_idx:
-                    body = _strip_html_to_text(li_match.group(2) or "")
+                    body = strip_html_to_text(li_match.group(2) or "")
                     if body:
                         return body
     return None
@@ -423,11 +395,11 @@ def _extract_stem_text(block: Any) -> Optional[str]:
             r"<p[^>]*>(.*?)</p>", no_ol, re.IGNORECASE | re.DOTALL
         )
         if p_match:
-            stripped = _strip_html_to_text(p_match.group(1) or "")
+            stripped = strip_html_to_text(p_match.group(1) or "")
             if stripped:
                 return stripped
         # Fallback: strip the whole HTML.
-        stripped = _strip_html_to_text(no_ol)
+        stripped = strip_html_to_text(no_ol)
         if stripped:
             return stripped
     return None
@@ -451,7 +423,7 @@ def _extract_feedback_text(block: Any) -> Optional[str]:
     if isinstance(content, str):
         match = _DIV_FEEDBACK_RE.search(content)
         if match:
-            stripped = _strip_html_to_text(match.group(1) or "")
+            stripped = strip_html_to_text(match.group(1) or "")
             if stripped:
                 return stripped
     return None

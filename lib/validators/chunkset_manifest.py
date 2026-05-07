@@ -67,7 +67,6 @@ Cross-references:
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import re
@@ -75,6 +74,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from MCP.hardening.validation_gates import GateIssue, GateResult
+from lib.utils import sha256_file
 
 logger = logging.getLogger(__name__)
 
@@ -142,16 +142,6 @@ def _resolve_schema_path() -> Optional[Path]:
         if candidate.exists():
             return candidate
     return None
-
-
-def _compute_sha256(path: Path) -> str:
-    """Stream the file through SHA-256, matching the helper used by
-    ``libv2_manifest.py::_compute_sha256``."""
-    h = hashlib.sha256()
-    with path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _count_jsonl_lines(path: Path) -> int:
@@ -420,7 +410,7 @@ class ChunksetManifestValidator:
         manifest_sha = manifest.get("chunks_sha256")
         if isinstance(manifest_sha, str) and _SHA256_RE.match(manifest_sha):
             try:
-                actual_sha = _compute_sha256(chunks_path)
+                actual_sha = sha256_file(chunks_path)
             except OSError as exc:
                 issues.append(
                     GateIssue(

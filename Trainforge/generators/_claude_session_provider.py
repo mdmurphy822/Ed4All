@@ -28,6 +28,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from lib.utils import append_jsonl as _utils_append_jsonl
+
 from Trainforge.generators._anthropic_provider import (
     COMPLETION_MAX,
     COMPLETION_MIN,
@@ -450,16 +452,17 @@ class ClaudeSessionProvider:
         self._cache[key] = outputs
         if self._cache_path is None:
             return
-        line = json.dumps(
-            {
-                "key": key,
-                "kind": kind,
-                "chunk_id": chunk_id,
-                "provider_version": self._provider_version,
-                "outputs": outputs,
-            },
-            sort_keys=True,
-        )
+        record = {
+            "key": key,
+            "kind": kind,
+            "chunk_id": chunk_id,
+            "provider_version": self._provider_version,
+            "outputs": outputs,
+        }
         self._cache_path.parent.mkdir(parents=True, exist_ok=True)
         with self._cache_path.open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
+            # W-D6: append-only sidecar; legacy default ``ensure_ascii=True``
+            # superseded by canonical ``ensure_ascii=False``. Cache key is
+            # derived via SHA-256 in :meth:`_cache_key` so this on-disk
+            # serialization shift does not invalidate keys.
+            _utils_append_jsonl(fh, record, flush=False)

@@ -20,6 +20,8 @@ import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from lib.utils import read_jsonl as _utils_read_jsonl
+
 logger = logging.getLogger(__name__)
 
 
@@ -94,16 +96,7 @@ class DisambiguationEvaluator:
         from lib.libv2_storage import resolve_imscc_chunks_path
         chunks_path = resolve_imscc_chunks_path(self.course_path, "chunks.jsonl")
         out: Dict[str, List[str]] = {}
-        if not chunks_path.exists():
-            return out
-        for line in chunks_path.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                chunk = json.loads(line)
-            except json.JSONDecodeError:
-                continue
+        for chunk in _utils_read_jsonl(chunks_path, skip_invalid=True):
             for mc in chunk.get("misconceptions") or []:
                 if not isinstance(mc, dict):
                     continue

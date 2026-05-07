@@ -50,12 +50,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
-import random
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
+
+from lib.utils import bootstrap_percentile_ci, percentile
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
@@ -140,20 +140,11 @@ _MIN_SAMPLE_FOR_FLIP: int = 20
 _BOOTSTRAP_ITERS: int = 100
 
 
-def _percentile(values: List[float], pct: float) -> Optional[float]:
-    """Linear-interpolated percentile (0-100). ``None`` on empty input."""
-    if not values:
-        return None
-    if len(values) == 1:
-        return float(values[0])
-    s = sorted(values)
-    rank = (pct / 100.0) * (len(s) - 1)
-    lo = int(math.floor(rank))
-    hi = int(math.ceil(rank))
-    if lo == hi:
-        return float(s[lo])
-    frac = rank - lo
-    return float(s[lo]) * (1 - frac) + float(s[hi]) * frac
+# Module-private aliases preserve the legacy ``_percentile`` /
+# ``_bootstrap_percentile_ci`` symbols for any internal helpers that still
+# reference them by underscore-prefix; canonical home is now
+# :mod:`lib.utils.stats` (see W-D6 plan §3.4).
+_percentile = percentile
 
 
 def _bootstrap_percentile_ci(
@@ -162,27 +153,8 @@ def _bootstrap_percentile_ci(
     iterations: int = _BOOTSTRAP_ITERS,
     seed: int = 42,
 ) -> Tuple[Optional[float], Optional[float]]:
-    """Return (ci_low_2.5, ci_high_97.5) for the percentile estimator.
-
-    Pure-stdlib bootstrap. Pinned RNG seed for reproducibility — the
-    same corpus produces the same proposal markdown across runs.
-    """
-    if not values:
-        return (None, None)
-    rng = random.Random(seed)
-    n = len(values)
-    estimates: List[float] = []
-    for _ in range(iterations):
-        sample = [values[rng.randrange(n)] for _ in range(n)]
-        est = _percentile(sample, pct)
-        if est is not None:
-            estimates.append(est)
-    if not estimates:
-        return (None, None)
-    estimates.sort()
-    lo_idx = max(0, int(0.025 * len(estimates)))
-    hi_idx = min(len(estimates) - 1, int(0.975 * len(estimates)))
-    return (float(estimates[lo_idx]), float(estimates[hi_idx]))
+    """Thin wrapper around :func:`lib.utils.bootstrap_percentile_ci`."""
+    return bootstrap_percentile_ci(values, pct, iterations=iterations, seed=seed)
 
 
 def _verdict_from_ci(

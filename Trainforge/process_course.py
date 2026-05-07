@@ -223,54 +223,30 @@ def _load_chunk_validator() -> Any:
         return _CHUNK_VALIDATOR
     if _CHUNK_SCHEMA_LOAD_FAILED:
         return None
-    try:
-        import jsonschema  # noqa: F401
-        from jsonschema import Draft202012Validator
-    except ImportError:
-        _CHUNK_SCHEMA_LOAD_FAILED = True
-        return None
+
     schemas_root = PROJECT_ROOT / "schemas"
     schema_path = schemas_root / "knowledge" / "chunk_v4.schema.json"
     if not schema_path.exists():
         _CHUNK_SCHEMA_LOAD_FAILED = True
         return None
+
+    # W-D6: lift the Draft 2020-12 + ``referencing.Registry`` construction
+    # to :func:`lib.utils.build_validator`. The deprecated ``RefResolver``
+    # fallback is dropped — the project depends on ``referencing``
+    # everywhere else, so the historical defensive branch is no longer
+    # load-bearing.
     try:
-        with open(schema_path) as f:
-            schema = json.load(f)
-        # Collect every local schema keyed by its $id for offline ref
-        # resolution (Worker F taxonomies, source_reference, etc.).
-        id_to_schema: Dict[str, Dict[str, Any]] = {}
-        for p in schemas_root.rglob("*.json"):
-            try:
-                with open(p) as f:
-                    s = json.load(f)
-            except (OSError, json.JSONDecodeError):
-                continue
-            sid = s.get("$id")
-            if sid:
-                id_to_schema[sid] = s
+        from lib.utils import build_validator
 
-        # Prefer the modern `referencing` library (jsonschema 4.18+).
-        # Falls back to the deprecated `RefResolver` only when
-        # `referencing` is unavailable.
-        try:
-            from referencing import Registry, Resource
-            from referencing.jsonschema import DRAFT202012
-
-            resources = [
-                (sid, Resource.from_contents(s, default_specification=DRAFT202012))
-                for sid, s in id_to_schema.items()
-            ]
-            registry = Registry().with_resources(resources)
-            _CHUNK_VALIDATOR = Draft202012Validator(schema, registry=registry)
-        except ImportError:
-            from jsonschema import RefResolver  # type: ignore
-
-            resolver = RefResolver.from_schema(schema, store=dict(id_to_schema))
-            _CHUNK_VALIDATOR = Draft202012Validator(schema, resolver=resolver)
+        validator = build_validator(schema_path, registry_root=schemas_root)
     except Exception:
         _CHUNK_SCHEMA_LOAD_FAILED = True
         return None
+
+    if validator is None:
+        _CHUNK_SCHEMA_LOAD_FAILED = True
+        return None
+    _CHUNK_VALIDATOR = validator
     return _CHUNK_VALIDATOR
 
 

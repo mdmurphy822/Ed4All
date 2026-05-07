@@ -68,6 +68,8 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from lib.decision_capture import DecisionCapture  # noqa: E402
+from lib.utils import append_jsonl as _utils_append_jsonl  # noqa: E402
+from lib.utils import read_jsonl as _utils_read_jsonl  # noqa: E402
 from lib.ontology.family_map import (  # noqa: E402
     FamilyMap,
     load_family_map,
@@ -202,8 +204,7 @@ def _append_backfill_session_log(
         "violations_summary": violations,
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    fh.write(json.dumps(record) + "\n")
-    fh.flush()
+    _utils_append_jsonl(fh, record, sort_keys=False)
 
 
 def _count_curie_frequencies(
@@ -220,20 +221,13 @@ def _count_curie_frequencies(
     if chunks_path is None or not chunks_path.is_file():
         return counts
     try:
-        with chunks_path.open("r", encoding="utf-8") as fh:
-            for line in fh:
-                if not line.strip():
-                    continue
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                text = obj.get("text") or ""
-                if not isinstance(text, str) or not text:
-                    continue
-                for curie in curies:
-                    if curie in text:
-                        counts[curie] += 1
+        for obj in _utils_read_jsonl(chunks_path, skip_invalid=True):
+            text = obj.get("text") or ""
+            if not isinstance(text, str) or not text:
+                continue
+            for curie in curies:
+                if curie in text:
+                    counts[curie] += 1
     except OSError as exc:
         logger.warning(
             "backfill_form_data: failed to read chunks.jsonl at %s (%s); "

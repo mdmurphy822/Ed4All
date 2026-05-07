@@ -64,12 +64,14 @@ Schema: :file:`schemas/governance/promotion_chain.schema.json` (Draft
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+
+from lib.utils import sha256_file as _utils_sha256_file
+from lib.utils import sha256_text as _utils_sha256_text
 
 
 logger = logging.getLogger(__name__)
@@ -99,18 +101,24 @@ ARROW_NAMES: Dict[int, str] = {
 
 
 def _sha256_text(text: str) -> str:
-    """Return the SHA-256 hex digest of a UTF-8 string."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    """Return the SHA-256 hex digest of a UTF-8 string.
+
+    Thin wrapper around :func:`lib.utils.sha256_text`; preserved as a
+    module-private symbol so existing callers within this module (and any
+    future best-effort sibling helpers) keep their import-stable name.
+    """
+    return _utils_sha256_text(text)
 
 
 def _sha256_file(path: Path) -> Optional[str]:
-    """Best-effort SHA-256 of a file's bytes; returns None on any failure."""
+    """Best-effort SHA-256 of a file's bytes; returns None on any failure.
+
+    Thin wrapper around :func:`lib.utils.sha256_file` that preserves the
+    file's ``Optional[str]`` return idiom (callers at lines 327, 448, 449,
+    486, 544, 621, 722 still consume it as ``Optional[str]``).
+    """
     try:
-        h = hashlib.sha256()
-        with path.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(65536), b""):
-                h.update(chunk)
-        return h.hexdigest()
+        return _utils_sha256_file(path)
     except OSError as exc:
         logger.debug("promotion_chain: sha256(%s) failed: %s", path, exc)
         return None

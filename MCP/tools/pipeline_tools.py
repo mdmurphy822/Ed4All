@@ -3287,12 +3287,19 @@ async def _run_content_generation_outline(**kwargs) -> str:
     chunks_sidecar_path = out_dir / "outline_chunks.json"
     objectives_sidecar_path = out_dir / "outline_objectives.json"
     try:
+        # W-D6 callout: ``ensure_ascii=False`` aligns with the canonical
+        # ``lib.utils.write_jsonl`` default + matches the rest of the
+        # JSONL emit chain (non-ASCII characters survive a tail-f read
+        # instead of round-tripping through ``\uXXXX`` escapes).
+        # Observable change for any sidecar carrying non-ASCII content.
         chunks_sidecar_path.write_text(
-            json.dumps(chunks_lookup, indent=2, sort_keys=True),
+            json.dumps(chunks_lookup, indent=2, sort_keys=True, ensure_ascii=False),
             encoding="utf-8",
         )
         objectives_sidecar_path.write_text(
-            json.dumps(objectives_payload, indent=2, sort_keys=True),
+            json.dumps(
+                objectives_payload, indent=2, sort_keys=True, ensure_ascii=False
+            ),
             encoding="utf-8",
         )
     except OSError as exc:
