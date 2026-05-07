@@ -2566,6 +2566,26 @@ class CourseforgeRouter:
         ``GateResult.action`` without round-tripping through the policy
         again.
 
+        Matrix-lookup gate_id normalization (follow-up #36, ref
+        commit ``61fd80c``): the production validators expose ``name``
+        attributes with an ``outline_`` / ``rewrite_`` prefix
+        (``outline_curie_anchoring``, ``rewrite_source_refs``, …) so
+        the same validator class wired at both seams emits seam-tagged
+        GateResult.gate_id values that round-trip into the operator
+        report. The per-block-type matrix YAML, however, uses bare,
+        seam-agnostic tokens (``curie_anchoring``, ``source_ref``,
+        ``content_type``, ``objective_ref``) so a single matrix entry
+        covers both seams without doubling the YAML surface area.
+
+        :meth:`_normalize_gate_id_for_matrix` bridges the two
+        vocabularies at the matrix-lookup path ONLY (this helper +
+        :meth:`_run_validator_chain`'s required/optional action
+        stamping). Every other call site that reads ``validator.name``
+        / ``GateResult.gate_id`` (decision-capture rationales, the
+        02_validation_report writer, the remediation suffix builder)
+        keeps the un-normalized seam-tagged value so the audit trail
+        survives intact.
+
         Resolution semantics:
 
         * **Required gates that fail** trigger the per-block_type
@@ -2622,7 +2642,13 @@ class CourseforgeRouter:
 
         filtered: List[Any] = []
         for validator in validators:
-            gate_id = self._validator_gate_id(validator)
+            # Normalize the validator's name to the matrix token
+            # vocabulary (strip outline_/rewrite_ prefix + apply the
+            # seam-agnostic alias map) so production validators with
+            # seam-tagged names match abstract YAML tokens.
+            gate_id = self._normalize_gate_id_for_matrix(
+                self._validator_gate_id(validator),
+            )
             if gate_id in allowed_set:
                 filtered.append(validator)
         return filtered
@@ -2634,14 +2660,71 @@ class CourseforgeRouter:
         Walks the canonical attribute chain (``gate_id`` → ``name`` →
         class name) so both Validator-Protocol implementations and
         legacy stub validators with only a ``name`` attribute resolve
-        consistently. Lower-cased + stripped to match the YAML
-        gate_id token convention.
+        consistently. Returns the un-normalized value verbatim — the
+        matrix-lookup path layers
+        :meth:`_normalize_gate_id_for_matrix` on top before consulting
+        the per-block-type allowed set; every other call site (decision-
+        capture rationales, GateResult.gate_id round-trip, the
+        02_validation_report writer) keeps the seam-tagged form.
         """
         for attr in ("gate_id", "name", "validator_name"):
             value = getattr(validator, attr, None)
             if isinstance(value, str) and value:
                 return value
         return type(validator).__name__
+
+    # Per-block-type matrix-lookup vocabulary: bridges the production
+    # validator ``name`` attribute (seam-tagged ``outline_*`` /
+    # ``rewrite_*``) and the seam-agnostic YAML token vocabulary
+    # (``Courseforge/config/block_routing.yaml::blocks.*.validators``).
+    # Strip the seam prefix first; THEN apply this alias map so a
+    # single matrix entry covers both seams + canonical singular vs
+    # historic plural validator-name shapes. Follow-up #36, ref commit
+    # ``61fd80c`` (the discovery in #34: with no normalization the
+    # matrix filter strips every production validator for every
+    # block_type and silently no-ops).
+    _MATRIX_GATE_ID_ALIASES: Dict[str, str] = {
+        # BlockSourceRefValidator emits ``*_source_refs`` (plural,
+        # historical) — YAML token is ``source_ref`` (singular,
+        # operator-readable).
+        "source_refs": "source_ref",
+        # BlockPageObjectivesValidator validates that referenced
+        # objectives resolve on the page; the YAML uses
+        # ``objective_ref`` for the same semantic concept (block must
+        # carry an objective reference). Both literal forms route to
+        # the same validator.
+        "page_objectives": "objective_ref",
+    }
+
+    @classmethod
+    def _normalize_gate_id_for_matrix(cls, gate_id: str) -> str:
+        """Map a validator's gate_id label to the matrix YAML vocabulary.
+
+        Two transforms applied in order:
+
+        1. Strip the seam-tag prefix (``outline_`` / ``rewrite_``).
+           The prod validators carry seam-tagged names so the
+           02_validation_report writer + decision-capture audit trail
+           round-trip the seam; the per-block-type matrix YAML is
+           seam-agnostic (a single matrix entry covers both seams).
+        2. Apply the :attr:`_MATRIX_GATE_ID_ALIASES` alias map for
+           historical singular-vs-plural / semantic-equivalence
+           shapes (e.g. ``source_refs`` → ``source_ref``,
+           ``page_objectives`` → ``objective_ref``).
+
+        Narrowly scoped: this helper is consumed ONLY by the matrix-
+        filter path. ``GateResult.gate_id`` and ``validator.name``
+        keep the un-normalized form so the seam tag remains visible
+        in operator reports and decision events.
+        """
+        if not isinstance(gate_id, str) or not gate_id:
+            return gate_id
+        normalized = gate_id
+        for prefix in ("outline_", "rewrite_"):
+            if normalized.startswith(prefix):
+                normalized = normalized[len(prefix):]
+                break
+        return cls._MATRIX_GATE_ID_ALIASES.get(normalized, normalized)
 
     def _resolve_validator_matrix_metadata(
         self, block: Block,
@@ -2884,7 +2967,16 @@ class CourseforgeRouter:
             # Legacy "all gates run" path (no matrix entry) skips this
             # stamping entirely so existing tests stay green.
             if matrix_active:
-                gate_id_for_matrix = self._validator_gate_id(validator)
+                # Apply the same matrix-vocabulary normalization the
+                # filter pass uses so seam-tagged validator names
+                # (``outline_source_refs`` / ``rewrite_curie_anchoring``
+                # / …) match the abstract YAML tokens. Without this
+                # the action-stamp pass would silently no-op on every
+                # production validator. See
+                # :meth:`_normalize_gate_id_for_matrix` (follow-up #36).
+                gate_id_for_matrix = self._normalize_gate_id_for_matrix(
+                    self._validator_gate_id(validator),
+                )
                 if (
                     gate_id_for_matrix in required_set
                     and not gate_result.passed

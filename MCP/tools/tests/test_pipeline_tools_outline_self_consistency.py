@@ -140,32 +140,19 @@ def test_outline_phase_drives_self_consistency(tmp_path, monkeypatch):
     fake = _CurieMissingProvider()
     _patch_router_with_provider(monkeypatch, fake)
 
-    # Follow-up #34 (W3.C interaction): the per-block-type validator
-    # matrix landed in W3.C uses abstract gate-id tokens
-    # (``curie_anchoring`` / ``source_ref`` / ``content_type``) that
-    # do NOT line up with the actual production validator ``name``
-    # attributes (``outline_curie_anchoring`` / ``outline_source_refs``
-    # / ``outline_content_type``). The outline phase stamps stub
-    # blocks with ``block_type="objective"`` (post-#34 fix), and the
-    # ``"objective"`` matrix entry filters every production validator
-    # by name mismatch — masking the regen-loop-engagement signal
-    # this test exists to catch. Drop the ``"objective"`` matrix
-    # entry so ``_dispatch_validation_chain`` falls through to the
-    # legacy "all gates run" path and the curie validator engages.
-    from Courseforge.router import policy as _policy_mod
-    _real_load = _policy_mod.load_block_routing_policy
-
-    def _patched_load(*args, **kwargs):
-        _policy = _real_load(*args, **kwargs)
-        _stripped = {
-            k: v for k, v in _policy.validators_by_block_type.items()
-            if k != "objective"
-        }
-        return dataclasses.replace(_policy, validators_by_block_type=_stripped)
-
-    monkeypatch.setattr(
-        _policy_mod, "load_block_routing_policy", _patched_load,
-    )
+    # Follow-up #36 (closes #34's discovery, ref commit ``61fd80c``):
+    # the per-block-type validator matrix at
+    # ``Courseforge/config/block_routing.yaml`` declares ``"objective"``
+    # blocks require ``curie_anchoring`` + ``source_ref``; production
+    # validators expose seam-tagged ``name`` attributes (e.g.
+    # ``outline_curie_anchoring``). The matrix-filter path now
+    # normalizes seam-tagged validator names to the YAML vocabulary
+    # via :meth:`CourseforgeRouter._normalize_gate_id_for_matrix` so
+    # the curie validator engages on ``"objective"`` blocks WITHOUT
+    # the test-time policy strip the inert-matrix bug used to require.
+    # Removing the monkeypatch here exercises the canonical path end-
+    # to-end and confirms the regen loop fires on the production
+    # matrix entry.
 
     # Cap the regen budget at a small value so the test is fast — the
     # provider always emits CURIE-less content, so every candidate will
