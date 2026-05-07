@@ -238,3 +238,46 @@ def test_out_of_range_rationale_richness_score_fails(schema_path, score):
     assert errors, (
         f"expected validation error for rationale_richness_score={score} on {schema_path.name}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Wave 8 W8.C — optional question_type enum.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("schema_path", [LENIENT_SCHEMA_PATH, STRICT_SCHEMA_PATH])
+@pytest.mark.parametrize(
+    "qtype",
+    ["multiple_choice", "true_false", "short_answer", "essay", "fill_in_blank"],
+)
+def test_instruction_pair_schema_admits_question_type_enum(schema_path, qtype):
+    """Wave 8 W8.C — pair with each canonical question_type validates clean;
+    invalid value fails; pair without question_type validates clean (back-compat
+    with legacy paraphrase pairs pre-Wave-8 stamping)."""
+    validator = _load_validator(schema_path)
+
+    # Canonical 5-value enum — must validate.
+    pair = _base_pair()
+    pair["question_type"] = qtype
+    errors = list(validator.iter_errors(pair))
+    assert errors == [], (
+        f"unexpected errors for question_type={qtype!r} on {schema_path.name}: "
+        f"{[(e.absolute_path, e.message) for e in errors]}"
+    )
+
+    # Invalid enum value — must fail.
+    bad_pair = _base_pair()
+    bad_pair["question_type"] = "invalid"
+    bad_errors = list(validator.iter_errors(bad_pair))
+    assert bad_errors, (
+        f"expected validation error for question_type=='invalid' on {schema_path.name}"
+    )
+
+    # Field absent — must validate (optional, back-compat with pre-Wave-8 pairs).
+    legacy_pair = _base_pair()
+    assert "question_type" not in legacy_pair
+    legacy_errors = list(validator.iter_errors(legacy_pair))
+    assert legacy_errors == [], (
+        f"unexpected errors on legacy pair (no question_type) on {schema_path.name}: "
+        f"{[(e.absolute_path, e.message) for e in legacy_errors]}"
+    )

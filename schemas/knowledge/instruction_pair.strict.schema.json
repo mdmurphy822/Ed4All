@@ -77,6 +77,11 @@
       "enum": ["mock", "anthropic"],
       "description": "Which synthesis provider produced the pair."
     },
+    "question_type": {
+      "type": "string",
+      "enum": ["multiple_choice", "true_false", "short_answer", "essay", "fill_in_blank"],
+      "description": "Optional canonical question-type discriminator consumed by the W6.B per-question-type summary and W7.A-C per-metric segmentation. Optional so legacy corpora pre-Wave-8 stay schema-valid."
+    },
     "schema_version": {
       "type": "string",
       "const": "v1"
