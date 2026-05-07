@@ -50,6 +50,9 @@ def _emit_assessment_quality_decision(
     bloom_level: str,
     is_mcq: bool,
     issue_codes: List[str],
+    question_type: str = "",
+    per_type_thresholds_used: Optional[Dict[str, float]] = None,
+    bucket_size: int = 0,
 ) -> None:
     """Emit one ``assessment_quality_check`` decision per question audited.
 
@@ -57,15 +60,26 @@ def _emit_assessment_quality_decision(
     interpolated (question_id, placeholder_hits, bloom_level, is_mcq,
     issue_codes). Rationale length >= 60 chars to avoid the static-
     rationale regression class.
+
+    Wave 6 W6.A extension: ``question_type``, ``per_type_thresholds_used``,
+    and ``bucket_size`` are interpolated into the rationale so post-hoc
+    replay can reconstruct the per-bucket dispatch (no new
+    ``decision_type`` enum member — Lesson 3 from W5 prefers extending
+    the existing rationale over minting a new value when the surface
+    is mechanically the same).
     """
     if capture is None:
         return
     decision = "passed" if passed else "failed:" + (issue_codes[0] if issue_codes else "unknown")
+    type_used = per_type_thresholds_used or {}
     rationale = (
         f"AssessmentQualityValidator audited question {question_id!r}: "
         f"placeholder_hits={placeholder_hits}, bloom_level={bloom_level or 'n/a'}, "
         f"is_mcq={is_mcq}, issue_codes={issue_codes!r}, "
-        f"per_question_passed={passed}."
+        f"per_question_passed={passed}, "
+        f"question_type={question_type or 'unknown'!r}, "
+        f"bucket_size={bucket_size}, "
+        f"per_type_thresholds_used={type_used!r}."
     )
     metrics: Dict[str, Any] = {
         "question_id": question_id,
@@ -74,6 +88,9 @@ def _emit_assessment_quality_decision(
         "is_mcq": bool(is_mcq),
         "issue_codes": list(issue_codes),
         "passed": bool(passed),
+        "question_type": question_type or "",
+        "per_type_thresholds_used": dict(type_used),
+        "bucket_size": int(bucket_size),
     }
     try:
         capture.log_decision(
@@ -166,6 +183,142 @@ _CHAPTER_HEADING_RE = re.compile(r"\b\d+\.\d+\b")
 _INTEGER_TOKEN_RE = re.compile(r"\b\d+\b")
 
 
+#: Per-question-type quality thresholds (Wave 6 W6.A calibration).
+#: Day-1 starting points; calibrate against the rdf-shacl-551-2 corpus
+#: rebuild before promoting severity from warning to critical.
+#:
+#: Mirrors :data:`lib.validators.block_objective_delivery._PER_BLOCK_TYPE_ENTAILMENT_FLOOR`
+#: (W1.7.C) and :data:`lib.validators.pair_objective_delivery._PER_PAIR_KIND_ENTAILMENT_FLOOR`
+#: (W4.C MEDIUM) shape — closes the assessment-quality side of
+#: "validation reflects question shape, not aggregate noise".
+#:
+#: Rationale per type:
+#:   - multiple_choice: highest stem volume per assessment, MC has
+#:     well-formed stem grammar requirements (interrogative or
+#:     stem-completion form). Tightest distinct-stem floor.
+#:   - true_false: minimal stem complexity; relaxed distinct-stem
+#:     floor because legitimate T/F can repeat declarative shapes.
+#:     Allows verb-less stems (the existing single-exception rule
+#:     already accommodates this; per-type relaxation makes it
+#:     dispatch-clean).
+#:   - short_answer: free-response, moderate diversity required.
+#:   - essay: small-N per assessment (1-3 essay questions); diversity
+#:     ratio is meaningless on N<3, so the floor relaxes for low-N.
+#:   - fill_in_blank: term-recognition format, moderate diversity.
+_PER_QUESTION_TYPE_THRESHOLDS: Dict[str, Dict[str, float]] = {
+    "multiple_choice": {
+        "stem_diversity": 0.75,
+        "correct_answer_diversity": 0.65,
+        "distractor_template_max_ratio": 0.25,
+        "min_stem_chars": 12,
+    },
+    "true_false": {
+        "stem_diversity": 0.50,
+        "correct_answer_diversity": 0.40,
+        "distractor_template_max_ratio": 1.0,  # T/F has no real distractors
+        "min_stem_chars": 10,
+    },
+    "short_answer": {
+        "stem_diversity": 0.65,
+        "correct_answer_diversity": 0.55,
+        "distractor_template_max_ratio": 1.0,  # SA has no distractors
+        "min_stem_chars": 12,
+    },
+    "essay": {
+        "stem_diversity": 0.55,
+        "correct_answer_diversity": 0.50,
+        "distractor_template_max_ratio": 1.0,
+        "min_stem_chars": 15,
+    },
+    "fill_in_blank": {
+        "stem_diversity": 0.65,
+        "correct_answer_diversity": 0.55,
+        "distractor_template_max_ratio": 0.30,
+        "min_stem_chars": 10,
+    },
+}
+
+
+#: Default thresholds — used when a question_type is unknown
+#: (defensive against future type additions or QTI ``matching``).
+#: Same values as the existing module-level constants for back-compat.
+_DEFAULT_QUESTION_TYPE_THRESHOLDS: Dict[str, float] = {
+    "stem_diversity": STEM_DIVERSITY_THRESHOLD,           # 0.7
+    "correct_answer_diversity": CORRECT_ANSWER_DIVERSITY_THRESHOLD,  # 0.6
+    "distractor_template_max_ratio": DISTRACTOR_TEMPLATE_MAX_RATIO,  # 0.30
+    "min_stem_chars": 10,
+}
+
+
+def _normalize_question_type(q: Dict[str, Any]) -> str:
+    """Resolve question_type, tolerating QTI-parsed ``type`` field.
+
+    W4.B Lesson 1 (pair-schema field-name divergence):
+    ``Trainforge/parsers/qti_parser.py:24`` uses ``type:`` while
+    ``Trainforge/generators/assessment_generator.py:101`` uses
+    ``question_type:``. Mirrors W4.B's ``lo_refs`` resolution chain
+    (``pair.get("lo_refs") or pair.get("learning_outcome_refs")``).
+    Generator surface always emits ``question_type``; QTI surface
+    always emits ``type``. Day-1 only generator-emit reaches this
+    validator; this helper is defense-in-depth against a future
+    call site that routes QTI-parsed dicts directly.
+    """
+    if not isinstance(q, dict):
+        return ""
+    return str(q.get("question_type") or q.get("type") or "").lower()
+
+
+def _resolve_per_type_thresholds(
+    inputs: Dict[str, Any],
+) -> Dict[str, Dict[str, float]]:
+    """Resolve the per-question-type quality threshold table.
+
+    Operators can override per-gate via
+    ``gate.config.per_question_type_thresholds`` in ``config/workflows.yaml``;
+    the gate runner merges ``gate.config`` into the inputs dict at
+    ``MCP/hardening/validation_gates.py:266-271`` (Wave 78 setdefault-merge
+    pattern; existing precedent for ``outline_objective_assessment_similarity``
+    and similar warning gates).
+
+    Mirrors :func:`lib.validators.block_objective_delivery._resolve_threshold_table`
+    at ``block_objective_delivery.py:252-271``. Per-type overlay merges
+    on top of the canonical table; entries the operator omits keep the
+    day-1 default values.
+    """
+    raw = inputs.get("per_question_type_thresholds") if isinstance(inputs, dict) else None
+    merged: Dict[str, Dict[str, float]] = {
+        qt: dict(thresholds)
+        for qt, thresholds in _PER_QUESTION_TYPE_THRESHOLDS.items()
+    }
+    if isinstance(raw, dict):
+        for qt, override in raw.items():
+            if not isinstance(override, dict):
+                continue
+            qt_key = str(qt).lower()
+            if qt_key not in merged:
+                merged[qt_key] = dict(_DEFAULT_QUESTION_TYPE_THRESHOLDS)
+            for axis, value in override.items():
+                try:
+                    merged[qt_key][str(axis)] = float(value)
+                except (TypeError, ValueError):
+                    continue
+    return merged
+
+
+def _thresholds_for_type(
+    q_type: str,
+    table: Dict[str, Dict[str, float]],
+) -> Dict[str, float]:
+    """Return the per-type threshold dict, falling back to defaults.
+
+    A question_type not present in ``table`` (e.g. QTI's ``matching``,
+    or a future-added type the operator hasn't calibrated yet) routes
+    through :data:`_DEFAULT_QUESTION_TYPE_THRESHOLDS` so the per-type
+    matrix degrades gracefully on unknown types rather than KeyError'ing.
+    """
+    return table.get(q_type, dict(_DEFAULT_QUESTION_TYPE_THRESHOLDS))
+
+
 def _strip_html_text(s: str) -> str:
     """Helper: strip HTML tags and normalize whitespace."""
     if not s:
@@ -251,13 +404,31 @@ class AssessmentQualityValidator:
 
         questions = data["questions"]
 
+        # Wave 6 W6.A: resolve per-question-type threshold table once
+        # (operator override merges into the canonical table inside
+        # ``_resolve_per_type_thresholds``). The same table threads
+        # through ``_check_question`` (per-type ``min_stem_chars``)
+        # and ``_check_cross_question_failures`` (per-type bucket
+        # diversity sub-checks).
+        per_type_thresholds = _resolve_per_type_thresholds(inputs)
+
+        # Pre-compute bucket sizes for decision-capture rationale
+        # interpolation (the per-question emit needs to surface which
+        # bucket the question landed in, plus the bucket's size, so
+        # post-hoc replay can reconstruct the per-bucket dispatch).
+        bucket_sizes: Dict[str, int] = Counter(
+            _normalize_question_type(q) for q in questions
+        )
+
         # Check each question (per-question issues). Wave H3-W5 wiring:
         # emit one ``assessment_quality_check`` capture event per
         # question audited so post-hoc replay can reconstruct the per-
         # question pass/fail trail (placeholder hits, Bloom level,
         # MCQ flag).
         for q in questions:
-            q_issues = self._check_question(q)
+            q_type = _normalize_question_type(q)
+            q_thresholds = _thresholds_for_type(q_type, per_type_thresholds)
+            q_issues = self._check_question(q, q_thresholds)
             issues.extend(q_issues)
             q_id = str(q.get("question_id", "unknown"))
             placeholder_codes = {
@@ -277,12 +448,17 @@ class AssessmentQualityValidator:
                 passed=q_passed,
                 placeholder_hits=placeholder_hits,
                 bloom_level=str(q.get("bloom_level") or ""),
-                is_mcq=q.get("question_type") == "multiple_choice",
+                is_mcq=q_type == "multiple_choice",
                 issue_codes=issue_codes,
+                question_type=q_type,
+                per_type_thresholds_used=q_thresholds,
+                bucket_size=int(bucket_sizes.get(q_type, 0)),
             )
 
         # Wave 26: cross-question real-failure-mode checks
-        issues.extend(self._check_cross_question_failures(questions))
+        issues.extend(
+            self._check_cross_question_failures(questions, per_type_thresholds)
+        )
 
         # Check objective coverage
         target_objectives = inputs.get("learning_objectives", [])
@@ -316,21 +492,49 @@ class AssessmentQualityValidator:
             issues=issues,
         )
 
-    def _check_question(self, q: Dict[str, Any]) -> List[GateIssue]:
-        """Check a single question for quality issues."""
+    def _check_question(
+        self,
+        q: Dict[str, Any],
+        type_thresholds: Optional[Dict[str, float]] = None,
+    ) -> List[GateIssue]:
+        """Check a single question for quality issues.
+
+        Wave 6 W6.A: ``type_thresholds`` is the per-question-type
+        threshold dict resolved by the validator's ``validate()`` body
+        via :func:`_resolve_per_type_thresholds` + :func:`_thresholds_for_type`.
+        Currently consumed for the ``min_stem_chars`` floor only — every
+        other per-question check (placeholder regex, MCQ-specific
+        min-3-choices, TOC-fragment, verb-less, placeholder-in-feedback)
+        is structural, not calibration-sensitive, so they stay
+        type-agnostic. Callers that don't pass a table (legacy direct
+        invocations from tests) fall back to the default floor.
+        """
+        if type_thresholds is None:
+            type_thresholds = dict(_DEFAULT_QUESTION_TYPE_THRESHOLDS)
         issues = []
         q_id = q.get("question_id", "unknown")
         stem = q.get("stem", "")
-        q_type = q.get("question_type", "")
+        q_type = _normalize_question_type(q)
 
-        # Check stem is non-empty
+        # Check stem is non-empty. Wave 6 W6.A: per-type ``min_stem_chars``
+        # floor (essay = 15, MC = 12, T/F + fill_in_blank = 10) replaces
+        # the prior hardcoded 10.
+        min_stem_chars = int(
+            type_thresholds.get(
+                "min_stem_chars",
+                _DEFAULT_QUESTION_TYPE_THRESHOLDS["min_stem_chars"],
+            )
+        )
         text = re.sub(r"<[^>]+>", "", stem).strip()
-        if len(text) < 10:
+        if len(text) < min_stem_chars:
             issues.append(
                 GateIssue(
                     severity="error",
                     code="SHORT_STEM",
-                    message=f"{q_id}: question stem too short ({len(text)} chars)",
+                    message=(
+                        f"{q_id}: question stem too short ({len(text)} chars; "
+                        f"floor={min_stem_chars} for type={q_type or 'unknown'!r})"
+                    ),
                 )
             )
 
@@ -452,7 +656,9 @@ class AssessmentQualityValidator:
         return issues
 
     def _check_cross_question_failures(
-        self, questions: List[Dict[str, Any]]
+        self,
+        questions: List[Dict[str, Any]],
+        per_type_thresholds: Optional[Dict[str, Dict[str, float]]] = None,
     ) -> List[GateIssue]:
         """Wave 26: cross-question real-failure-mode checks.
 
@@ -466,7 +672,27 @@ class AssessmentQualityValidator:
         The per-question VERB_LESS_STEM warnings are capped at 1 per
         assessment (allowing a single T/F-style verb-less stem); anything
         above the cap is escalated here.
+
+        Wave 6 W6.A extension: when ``per_type_thresholds`` is supplied,
+        questions are ALSO bucketed by ``_normalize_question_type`` and
+        per-type diversity sub-checks fire at ``severity="warning"``
+        with type-suffixed issue codes
+        (``LOW_STEM_DIVERSITY_MULTIPLE_CHOICE``, ``LOW_ANSWER_DIVERSITY_ESSAY``,
+        ``TEMPLATED_DISTRACTORS_FILL_IN_BLANK``, …). The legacy
+        corpus-wide critical checks remain unchanged so existing
+        ``LOW_STEM_DIVERSITY`` / ``LOW_ANSWER_DIVERSITY`` /
+        ``TEMPLATED_DISTRACTORS`` regression coverage stays load-bearing
+        (``test_assessment_validator_real_failures.py``). Per-type
+        warnings are calibration-deferred per plan §5; flip warning →
+        critical in a follow-up micro-wave once per-type pass-rate
+        distributions are calibrated against the post-Wave-5 corpus
+        rebuild.
         """
+        if per_type_thresholds is None:
+            per_type_thresholds = {
+                qt: dict(thresholds)
+                for qt, thresholds in _PER_QUESTION_TYPE_THRESHOLDS.items()
+            }
         issues: List[GateIssue] = []
         total = len(questions)
         if total == 0:
@@ -593,6 +819,157 @@ class AssessmentQualityValidator:
                     ),
                 )
             )
+
+        # Wave 6 W6.A: per-question-type bucketing + diversity sub-checks.
+        # Buckets with <2 questions skip diversity computation (N=1
+        # ratios are mathematically undefined; emitting a "1/1 = 1.0"
+        # passes trivially and a "0/1 = 0" trips a meaningless warning).
+        # Issue codes carry the type suffix so the wave-end gate can
+        # disambiguate from the legacy corpus-wide critical codes.
+        buckets: Dict[str, List[Dict[str, Any]]] = {}
+        for q in questions:
+            qt = _normalize_question_type(q)
+            buckets.setdefault(qt, []).append(q)
+        for qt, bucket_qs in buckets.items():
+            if len(bucket_qs) < 2:
+                continue
+            type_suffix = (qt or "unknown").upper()
+            thresholds = _thresholds_for_type(qt, per_type_thresholds)
+            issues.extend(
+                self._check_diversity_for_bucket(
+                    bucket_qs, thresholds, type_suffix
+                )
+            )
+
+        return issues
+
+    def _check_diversity_for_bucket(
+        self,
+        bucket_qs: List[Dict[str, Any]],
+        type_thresholds: Dict[str, float],
+        type_suffix: str,
+    ) -> List[GateIssue]:
+        """Per-bucket diversity sub-checks (Wave 6 W6.A).
+
+        Mirrors the legacy corpus-wide diversity passes inside
+        :meth:`_check_cross_question_failures` but scoped to a single
+        ``question_type`` bucket and emitting ``severity="warning"``
+        with type-suffixed issue codes. Calibration-deferred per
+        plan §5; severity flip to critical happens in a follow-up
+        micro-wave once per-type warning-fire rates stabilize on the
+        rdf-shacl-551-2 rebuild.
+
+        ``type_suffix`` is the upper-cased question_type for the issue
+        code suffix (``MULTIPLE_CHOICE`` / ``TRUE_FALSE`` / etc.).
+        """
+        issues: List[GateIssue] = []
+        n = len(bucket_qs)
+        if n < 2:
+            return issues
+
+        stem_floor = float(
+            type_thresholds.get(
+                "stem_diversity",
+                _DEFAULT_QUESTION_TYPE_THRESHOLDS["stem_diversity"],
+            )
+        )
+        answer_floor = float(
+            type_thresholds.get(
+                "correct_answer_diversity",
+                _DEFAULT_QUESTION_TYPE_THRESHOLDS["correct_answer_diversity"],
+            )
+        )
+        distractor_max = float(
+            type_thresholds.get(
+                "distractor_template_max_ratio",
+                _DEFAULT_QUESTION_TYPE_THRESHOLDS["distractor_template_max_ratio"],
+            )
+        )
+
+        # 1. Distinct-stem ratio (per bucket).
+        stems = [
+            _strip_html_text(q.get("stem", "")).lower()
+            for q in bucket_qs
+        ]
+        stems = [s for s in stems if s]
+        if stems:
+            ratio = len(set(stems)) / len(stems)
+            if ratio < stem_floor:
+                issues.append(
+                    GateIssue(
+                        severity="warning",
+                        code=f"LOW_STEM_DIVERSITY_{type_suffix}",
+                        message=(
+                            f"[{type_suffix}] Distinct stem ratio {ratio:.2f} "
+                            f"below per-type floor {stem_floor:.2f} "
+                            f"({len(set(stems))}/{len(stems)} unique)"
+                        ),
+                    )
+                )
+
+        # 2. Distinct correct-answer ratio (per bucket).
+        correct_answers: List[str] = []
+        for q in bucket_qs:
+            ca = q.get("correct_answer")
+            if ca:
+                correct_answers.append(_strip_html_text(ca).lower())
+                continue
+            for c in q.get("choices", []):
+                if c.get("is_correct"):
+                    correct_answers.append(
+                        _strip_html_text(c.get("text", "")).lower()
+                    )
+                    break
+        if correct_answers:
+            ratio = len(set(correct_answers)) / len(correct_answers)
+            if ratio < answer_floor:
+                issues.append(
+                    GateIssue(
+                        severity="warning",
+                        code=f"LOW_ANSWER_DIVERSITY_{type_suffix}",
+                        message=(
+                            f"[{type_suffix}] Distinct correct-answer ratio "
+                            f"{ratio:.2f} below per-type floor "
+                            f"{answer_floor:.2f} ({len(set(correct_answers))}/"
+                            f"{len(correct_answers)} unique)"
+                        ),
+                    )
+                )
+
+        # 3. Templated distractors (per bucket). Skip when the type's
+        # distractor floor is 1.0 (T/F / SA / essay have no real
+        # distractors, so the check is always vacuous).
+        if distractor_max < 1.0:
+            distractor_per_q: Counter = Counter()
+            for q in bucket_qs:
+                seen: Set[str] = set()
+                for c in q.get("choices", []):
+                    if c.get("is_correct"):
+                        continue
+                    d = _strip_html_text(c.get("text", "")).lower()
+                    if d and d not in seen:
+                        seen.add(d)
+                for d in seen:
+                    distractor_per_q[d] += 1
+            qs_with_choices = sum(1 for q in bucket_qs if q.get("choices"))
+            if qs_with_choices > 0:
+                threshold = distractor_max * qs_with_choices
+                for template_text, occurrences in distractor_per_q.items():
+                    if occurrences >= threshold and occurrences >= 2:
+                        ratio = occurrences / qs_with_choices
+                        issues.append(
+                            GateIssue(
+                                severity="warning",
+                                code=f"TEMPLATED_DISTRACTORS_{type_suffix}",
+                                message=(
+                                    f"[{type_suffix}] Distractor template "
+                                    f"repeated on {occurrences}/{qs_with_choices} "
+                                    f"({ratio:.0%}) of bucket questions: "
+                                    f"'{template_text[:80]}"
+                                    f"{'...' if len(template_text) > 80 else ''}'"
+                                ),
+                            )
+                        )
 
         return issues
 
