@@ -107,6 +107,30 @@ def _normalized_entropy(texts: List[str]) -> float:
     return min(1.0, ent / max_possible)
 
 
+def _bucket_by_type(
+    questions: List[Dict[str, Any]],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Group ``questions`` by canonical ``question_type``.
+
+    Wave 6 W6.B: pure-projection helper consumed by
+    :func:`build_assessment_dimension` to emit the
+    ``per_question_type_summary`` block. Question-type resolution
+    routes through the canonical
+    :func:`lib.validators.assessment._normalize_question_type` helper
+    so the bucket keys match the per-type matrix the W6.A validator
+    publishes (single source of truth for question-type identity).
+    Empty / unknown question_type values bucket under ``""`` so the
+    caller can decide whether to skip them.
+    """
+    from lib.validators.assessment import _normalize_question_type
+
+    buckets: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for q in questions or []:
+        qt = _normalize_question_type(q)
+        buckets[qt].append(q)
+    return dict(buckets)
+
+
 def _per_question_issues(
     assessment: Dict[str, Any],
     validator_result: Optional[Any] = None,
@@ -122,9 +146,19 @@ def _per_question_issues(
     If ``validator_result`` is provided, its issues are the source of
     truth. Otherwise we run AssessmentQualityValidator + BloomAlignment
     strict.
+
+    Wave 6 W6.B: each per-question entry is stamped with
+    ``question_type`` (resolved via the canonical
+    :func:`lib.validators.assessment._normalize_question_type` helper)
+    so downstream consumers (W2.B aggregator, the per-type summary
+    block emitted by :func:`build_assessment_dimension`) can bucket
+    issues by question shape without re-scanning the source assessment.
     """
     # Import here to avoid circular import at module load time.
-    from lib.validators.assessment import AssessmentQualityValidator
+    from lib.validators.assessment import (
+        AssessmentQualityValidator,
+        _normalize_question_type,
+    )
     from lib.validators.bloom import BloomAlignmentValidator
 
     issues_by_qid: Dict[Optional[str], List[str]] = defaultdict(list)
@@ -165,10 +199,18 @@ def _per_question_issues(
     questions = assessment.get("questions", []) or []
     # Keep original question order.
     known_qids = [q.get("question_id", "") for q in questions]
+    qtype_by_qid: Dict[str, str] = {
+        q.get("question_id", ""): _normalize_question_type(q)
+        for q in questions
+    }
     for qid in known_qids:
         codes = issues_by_qid.get(qid, [])
         if codes:
-            out.append({"question_id": qid, "issues": sorted(set(codes))})
+            out.append({
+                "question_id": qid,
+                "question_type": qtype_by_qid.get(qid, ""),
+                "issues": sorted(set(codes)),
+            })
     # Cross-question (qid is None) or unmatched
     cross_codes = []
     for qid, codes in issues_by_qid.items():
@@ -177,6 +219,7 @@ def _per_question_issues(
     if cross_codes:
         out.append({
             "question_id": None,
+            "question_type": "",
             "issues": sorted(set(cross_codes)),
         })
     return out
@@ -241,6 +284,52 @@ def build_assessment_dimension(
     else:
         objective_coverage_ratio = 1.0 if covered else 0.0
 
+    per_question_issues = _per_question_issues(assessment)
+
+    # Wave 6 W6.B — per-question-type segmentation. The same per-question
+    # issue list is also bucketed by canonical question_type so the
+    # downstream W2.B aggregator + operator-facing report can segment
+    # quality issues by question shape without re-scanning the source.
+    issues_by_qid: Dict[str, List[str]] = {
+        entry["question_id"]: entry["issues"]
+        for entry in per_question_issues
+        if entry.get("question_id") is not None
+    }
+    per_question_type_summary: Dict[str, Dict[str, Any]] = {}
+    for qt, bucket in _bucket_by_type(questions).items():
+        bucket_qids = [q.get("question_id", "") for q in bucket]
+        bucket_codes: List[str] = []
+        for qid in bucket_qids:
+            bucket_codes.extend(issues_by_qid.get(qid, []))
+        bucket_stems = [
+            _strip_html(q.get("stem", "")).lower() for q in bucket
+        ]
+        bucket_stems = [s for s in bucket_stems if s]
+        bucket_correct = [_correct_answer_for(q) for q in bucket]
+        bucket_correct_nonempty = [a for a in bucket_correct if a]
+        summary: Dict[str, Any] = {
+            "question_count": len(bucket),
+            "issue_count": len(bucket_codes),
+            "top_codes": Counter(bucket_codes).most_common(3),
+        }
+        # Distinct ratios are noisy at bucket size 1; skip per spec.
+        if len(bucket) >= 2:
+            if bucket_stems:
+                summary["distinct_stem_ratio"] = round(
+                    len(set(bucket_stems)) / len(bucket_stems), 3
+                )
+            else:
+                summary["distinct_stem_ratio"] = 0.0
+            if bucket_correct_nonempty:
+                summary["distinct_correct_answer_ratio"] = round(
+                    len(set(bucket_correct_nonempty))
+                    / len(bucket_correct_nonempty),
+                    3,
+                )
+            else:
+                summary["distinct_correct_answer_ratio"] = 0.0
+        per_question_type_summary[qt] = summary
+
     dimension: Dict[str, Any] = {
         "total_questions": total,
         "distinct_stems": distinct_stems,
@@ -250,6 +339,7 @@ def build_assessment_dimension(
         "avg_distractor_entropy": avg_distractor_entropy,
         "bloom_distribution_observed": dict(bloom_distribution_observed),
         "objective_coverage_ratio": objective_coverage_ratio,
-        "per_question_issues": _per_question_issues(assessment),
+        "per_question_issues": per_question_issues,
+        "per_question_type_summary": per_question_type_summary,
     }
     return dimension
