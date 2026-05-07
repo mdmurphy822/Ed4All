@@ -1028,9 +1028,11 @@ class TestFixtures:
 
 class TestMetadataTraceDiagnostic:
     """Worker M1 instrumentation: ``_extract_section_metadata`` now returns a
-    4-tuple ending in a ``trace`` dict that names the source path for each
-    enrichment field. Tests cover the four primary trace values for
-    ``content_type_label`` plus the H3-signature trace value for
+    5-tuple ``(bloom_level, content_type_label, key_terms,
+    section_metadata_extras, trace)`` (Wave 5 W5.B added the extras dict
+    between key_terms and trace). The ``trace`` dict names the source path
+    for each enrichment field. Tests cover the four primary trace values
+    for ``content_type_label`` plus the H3-signature trace value for
     ``key_terms``."""
 
     def _item(self, **overrides):
@@ -1060,7 +1062,7 @@ class TestMetadataTraceDiagnostic:
                 }],
             },
         )
-        bloom, ctl, kt, trace = proc._extract_section_metadata(item, "Color Contrast")
+        bloom, ctl, kt, _extras, trace = proc._extract_section_metadata(item, "Color Contrast")
         assert ctl == "explanation"
         assert len(kt) == 1
         assert trace["content_type_label"] == "jsonld_section_match"
@@ -1072,7 +1074,7 @@ class TestMetadataTraceDiagnostic:
 
         proc = CourseProcessor.__new__(CourseProcessor)
         item = self._item(courseforge_metadata={"sections": []})
-        _, ctl, kt, trace = proc._extract_section_metadata(item, "Any Heading")
+        _, ctl, kt, _extras, trace = proc._extract_section_metadata(item, "Any Heading")
         assert ctl is None
         assert kt == []
         assert trace["content_type_label"] == "none_no_jsonld_sections"
@@ -1089,7 +1091,7 @@ class TestMetadataTraceDiagnostic:
                 "sections": [{"heading": "Color Contrast", "contentType": "explanation"}],
             },
         )
-        _, ctl, _, trace = proc._extract_section_metadata(item, "Color—Contrast")  # em-dash drift
+        _, ctl, _, _extras, trace = proc._extract_section_metadata(item, "Color—Contrast")  # em-dash drift
         assert ctl is None
         assert trace["content_type_label"] == "none_heading_mismatch"
 
@@ -1105,7 +1107,7 @@ class TestMetadataTraceDiagnostic:
                 "sections": [{"heading": "Different Section Heading", "contentType": "explanation"}],
             },
         )
-        _, ctl, _, trace = proc._extract_section_metadata(item, "My Page Title")
+        _, ctl, _, _extras, trace = proc._extract_section_metadata(item, "My Page Title")
         assert ctl is None
         assert trace["content_type_label"] == "none_no_sections_path"
 
@@ -1119,7 +1121,7 @@ class TestMetadataTraceDiagnostic:
             _jsonld_tag_present=True,
             _jsonld_parse_failed=True,
         )
-        _, ctl, _, trace = proc._extract_section_metadata(item, "Any Heading")
+        _, ctl, _, _extras, trace = proc._extract_section_metadata(item, "Any Heading")
         assert ctl is None
         assert trace["content_type_label"] == "none_jsonld_parse_failed"
 
@@ -1138,7 +1140,7 @@ class TestMetadataTraceDiagnostic:
                 }],
             },
         )
-        _, ctl, kt, trace = proc._extract_section_metadata(item, "X")
+        _, ctl, kt, _extras, trace = proc._extract_section_metadata(item, "X")
         assert ctl == "explanation"
         assert kt == []
         assert trace["content_type_label"] == "jsonld_section_match"
@@ -1162,7 +1164,7 @@ class TestMetadataTraceDiagnostic:
                 key_terms=["alpha", "beta"],
             )],
         )
-        _, ctl, kt, trace = proc._extract_section_metadata(item, "Some Section")
+        _, ctl, kt, _extras, trace = proc._extract_section_metadata(item, "Some Section")
         assert ctl == "example"
         assert [k["term"] for k in kt] == ["alpha", "beta"]
         assert trace["content_type_label"] == "data_cf_fallback"

@@ -46,12 +46,14 @@ class TestMergedHeadingsResolveJsonLdMetadata:
                 "keyTerms": [{"term": "alpha", "definition": "first letter"}],
             }
         )
-        bloom, ctype, kt, trace = proc._extract_section_metadata(
+        bloom, ctype, kt, extras, trace = proc._extract_section_metadata(
             item, "First H2", merged_headings=["First H2"]
         )
         assert ctype == "explanation"
         assert kt[0]["term"] == "alpha"
         assert trace["content_type_label"] == "jsonld_section_match"
+        # Wave 5 (W5.B): extras default to empty lists when blocks absent.
+        assert extras == {"key_claims": [], "objective_alignment": []}
 
     def test_subheading_match_when_anchor_drifts(self):
         # The merger anchored on the page-title h1, but the JSON-LD
@@ -66,7 +68,7 @@ class TestMergedHeadingsResolveJsonLdMetadata:
                 "keyTerms": [{"term": "beta", "definition": "second letter"}],
             }
         )
-        bloom, ctype, kt, trace = proc._extract_section_metadata(
+        bloom, ctype, kt, _extras, trace = proc._extract_section_metadata(
             item, "Page Title", merged_headings=["Page Title", "Sub One", "Sub Two"]
         )
         assert ctype == "example"
@@ -89,7 +91,7 @@ class TestMergedHeadingsResolveJsonLdMetadata:
                 "keyTerms": [{"term": "sub-term"}],
             },
         )
-        _, ctype, kt, _ = proc._extract_section_metadata(
+        _, ctype, kt, _extras, _trace = proc._extract_section_metadata(
             item, "Anchor", merged_headings=["Anchor", "Sub"]
         )
         # Anchor's metadata wins because it's checked first.
@@ -103,7 +105,7 @@ class TestMergedHeadingsResolveJsonLdMetadata:
         item = _item_with_jsonld_sections(
             {"heading": "Different", "contentType": "explanation"}
         )
-        _, ctype, kt, trace = proc._extract_section_metadata(
+        _, ctype, kt, _extras, trace = proc._extract_section_metadata(
             item, "Anchor", merged_headings=["Anchor", "Sub"]
         )
         assert ctype is None
@@ -121,7 +123,7 @@ class TestMergedHeadingsResolveJsonLdMetadata:
                 "keyTerms": [],
             }
         )
-        _, ctype, _, trace = proc._extract_section_metadata(item, "Anchor")
+        _, ctype, _, _extras, trace = proc._extract_section_metadata(item, "Anchor")
         assert ctype == "procedure"
         assert trace["content_type_label"] == "jsonld_section_match"
 
@@ -136,7 +138,7 @@ class TestMergedHeadingsResolveJsonLdMetadata:
                 "contentType": "explanation",
             }
         )
-        _, ctype, _, _ = proc._extract_section_metadata(
+        _, ctype, _, _extras, _trace = proc._extract_section_metadata(
             item,
             "Real Heading (part 2)",
             merged_headings=["Real Heading (part 2)"],
@@ -165,7 +167,7 @@ class TestMergedHeadingsResolveJsonLdMetadata:
                 ),
             ],
         }
-        _, ctype, kt, trace = proc._extract_section_metadata(
+        _, ctype, kt, _extras, trace = proc._extract_section_metadata(
             item, "Anchor", merged_headings=["Anchor", "Sub Two"]
         )
         assert ctype == "example"
