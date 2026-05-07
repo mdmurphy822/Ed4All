@@ -130,6 +130,61 @@ def test_assessment_objective_alignment_skipped_without_chunks(tmp_path: Path):
     assert inputs["assessments_path"] == str(assessments)
 
 
+def test_assessment_objective_alignment_surfaces_synthesized_objectives_path(
+    tmp_path: Path,
+):
+    """W5.E: builder routes course_planning.synthesized_objectives_path
+    into the validator inputs so the validator can union the
+    objectives' id set into the chunks-side resolution surface."""
+    chunks = tmp_path / "chunks.jsonl"
+    chunks.write_text("{}\n", encoding="utf-8")
+    assessments = tmp_path / "assessments.json"
+    assessments.write_text("{}", encoding="utf-8")
+    synthesized = tmp_path / "synthesized_objectives.json"
+    synthesized.write_text(
+        '{"terminal_objectives": [{"id": "TO-01"}], "chapter_objectives": []}',
+        encoding="utf-8",
+    )
+
+    outputs = {
+        "trainforge_assessment": {
+            "output_path": str(assessments),
+            "chunks_path": str(chunks),
+        },
+        "course_planning": {
+            "synthesized_objectives_path": str(synthesized),
+        },
+    }
+    inputs, missing = _build_assessment_objective_alignment(outputs, {})
+    assert missing == []
+    assert inputs["assessments_path"] == str(assessments)
+    assert inputs["chunks_path"] == str(chunks)
+    assert inputs["synthesized_objectives_path"] == str(synthesized)
+
+
+def test_assessment_objective_alignment_omits_synthesized_when_unset(
+    tmp_path: Path,
+):
+    """W5.E back-compat: when the course_planning phase didn't emit
+    synthesized_objectives_path (e.g. ``rag_training`` legacy
+    workflow), the input is omitted — validator falls back to the
+    chunks-only resolution surface byte-identically."""
+    chunks = tmp_path / "chunks.jsonl"
+    chunks.write_text("{}\n", encoding="utf-8")
+    assessments = tmp_path / "assessments.json"
+    assessments.write_text("{}", encoding="utf-8")
+
+    outputs = {
+        "trainforge_assessment": {
+            "output_path": str(assessments),
+            "chunks_path": str(chunks),
+        },
+    }
+    inputs, missing = _build_assessment_objective_alignment(outputs, {})
+    assert missing == []
+    assert "synthesized_objectives_path" not in inputs
+
+
 # --------------------------------------------------------------------- #
 # dart_markers — batch-aware html_paths
 # --------------------------------------------------------------------- #
