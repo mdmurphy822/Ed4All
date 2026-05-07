@@ -623,6 +623,211 @@ def check_write_facade(verbose: bool = False) -> CheckResult:
     return result
 
 
+def check_validator_test_coverage(
+    validators_path: Path,
+    allowlist_path: Optional[Path] = None,
+    verbose: bool = False,
+) -> CheckResult:
+    """Detect validator modules without a corresponding test file.
+
+    Wave W-D10 T10.3 — closes the gate-coverage feedback gap.
+
+    Walks every ``*.py`` under ``validators_path`` (recursively, post-W-D10
+    subpackages) and confirms a matching test file exists at one of:
+
+    - ``lib/validators/tests/test_{stem}.py``
+    - ``lib/validators/tests/test_{stem}_validator.py``
+    - ``lib/validators/tests/test_{family}_{stem}.py`` (subpackage case)
+    - ``lib/validators/tests/test_{stem}_*.py`` (prefix-match)
+    - same in ``lib/tests/``, ``schemas/tests/``, ``Trainforge/tests/``,
+      ``MCP/tests/``
+    - if the validator is in a subpackage and a flat-name shim still
+      exists, tests for the shim's stem also count as coverage.
+
+    Skips:
+    - ``__init__.py``, ``__pycache__``, ``tests/`` subdirs, and shim
+      modules (modules whose docstring begins with ``DEPRECATED`` and
+      that re-export from a sibling subpackage path).
+    - Modules whose stem appears in ``allowlist_path`` (one stem per
+      line, ``#``-comments allowed).
+
+    Returns ``CheckResult`` with ``passed=False`` and an explicit error
+    per missing-test validator when any non-allow-listed validator
+    lacks a test file. ``passed=True`` otherwise.
+    """
+    import re
+
+    start_time = time.time()
+    result = CheckResult(
+        name="validator_test_coverage",
+        passed=False,
+        message="",
+    )
+
+    if not validators_path.exists():
+        result.message = f"Validators directory not found: {validators_path}"
+        result.warnings.append(result.message)
+        result.passed = True
+        result.duration_seconds = time.time() - start_time
+        return result
+
+    # Canonical test dirs.
+    test_dirs = [
+        validators_path / "tests",
+        PROJECT_ROOT / "lib" / "tests",
+        PROJECT_ROOT / "schemas" / "tests",
+        PROJECT_ROOT / "Trainforge" / "tests",
+        PROJECT_ROOT / "MCP" / "tests",
+    ]
+
+    # Allow-list.
+    allowlisted_stems = set()
+    if allowlist_path is None:
+        allowlist_path = PROJECT_ROOT / "ci" / "validator_test_allowlist.txt"
+    if allowlist_path.exists():
+        for raw in allowlist_path.read_text().splitlines():
+            line = raw.split("#", 1)[0].strip()
+            if line:
+                allowlisted_stems.add(line)
+    result.details["allowlist_count"] = len(allowlisted_stems)
+
+    # Walk validator modules. Skip __init__.py, tests subdirs,
+    # __pycache__, and private modules (anything starting with "_" —
+    # by convention private helper packages or modules extracted from
+    # a public validator are not separately tested; the parent
+    # validator's test exercises them transitively).
+    all_validators = []
+    for py in validators_path.rglob("*.py"):
+        if py.name == "__init__.py":
+            continue
+        if "tests" in py.parts:
+            continue
+        if "__pycache__" in py.parts:
+            continue
+        rel_parts = py.relative_to(validators_path).parts
+        if any(part.startswith("_") for part in rel_parts):
+            continue
+        all_validators.append(py)
+
+    # Detect shim files: modules whose docstring opens with "DEPRECATED"
+    # AND that re-export from a sibling subpackage. Captures both the
+    # `DEPRECATED:` colon form and the ``Wave NNN — DEPRECATED.`` form.
+    def _is_shim(p: Path) -> bool:
+        try:
+            head = p.read_text()[:600]
+        except OSError:
+            return False
+        if "DEPRECATED" not in head:
+            return False
+        body = p.read_text()
+        return (
+            "re-export" in head
+            or "shim" in head.lower()
+            or "warnings.warn" in body[:1500]
+        )
+
+    shims = [p for p in all_validators if _is_shim(p)]
+    real_validators = [p for p in all_validators if p not in shims]
+
+    # Build (family, modname) -> shim_stem map for cross-coverage:
+    # tests for the legacy flat-shim name cover the new subpackage path.
+    shim_for_subpackage: Dict[Tuple[str, str], str] = {}
+    for s in shims:
+        text = s.read_text()
+        m = re.search(r"from lib\.validators\.([\w_]+)\.([\w_]+) import", text)
+        if m:
+            shim_for_subpackage[(m.group(1), m.group(2))] = s.stem
+
+    # Aggregate test stems across canonical dirs.
+    all_test_stems: set = set()
+    for d in test_dirs:
+        if not d.exists():
+            continue
+        for t in d.glob("test_*.py"):
+            all_test_stems.add(t.stem)
+
+    def _has_test(validator: Path) -> bool:
+        rel = validator.relative_to(validators_path)
+        parts = list(rel.parts)
+        parts[-1] = parts[-1].replace(".py", "")
+        stem = parts[-1]
+        family = parts[0] if len(parts) > 1 else None
+
+        candidates = {
+            f"test_{stem}",
+            f"test_{stem}_validator",
+        }
+        if family:
+            candidates.add(f"test_{family}_{stem}")
+            if (family, stem) in shim_for_subpackage:
+                shim_flat = shim_for_subpackage[(family, stem)]
+                candidates.add(f"test_{shim_flat}")
+                candidates.add(f"test_{shim_flat}_validator")
+
+        if candidates & all_test_stems:
+            return True
+
+        # Prefix match: any test stem starting with test_<stem>_<...>
+        # or test_<shim_flat>_<...>.
+        prefixes = [f"test_{stem}_"]
+        if family and (family, stem) in shim_for_subpackage:
+            prefixes.append(f"test_{shim_for_subpackage[(family, stem)]}_")
+        for tname in all_test_stems:
+            if any(tname.startswith(p) for p in prefixes):
+                return True
+        return False
+
+    missing = []
+    for v in real_validators:
+        rel = v.relative_to(validators_path)
+        parts = list(rel.parts)
+        parts[-1] = parts[-1].replace(".py", "")
+        stem = parts[-1]
+        if stem in allowlisted_stems:
+            continue
+        if not _has_test(v):
+            missing.append(v)
+
+    result.details["validator_count"] = len(real_validators)
+    result.details["shim_count"] = len(shims)
+    result.details["missing_count"] = len(missing)
+
+    if missing:
+        for v in missing:
+            result.errors.append(
+                f"validator without test: {v.relative_to(PROJECT_ROOT)} "
+                f"(no matching test_*.py under lib/validators/tests/, "
+                f"lib/tests/, schemas/tests/, Trainforge/tests/, MCP/tests/; "
+                f"add a test or list the stem in "
+                f"ci/validator_test_allowlist.txt)"
+            )
+        result.passed = False
+        result.message = (
+            f"{len(missing)} validator(s) without tests "
+            f"({len(real_validators)} real validators, "
+            f"{len(shims)} shims skipped, "
+            f"{len(allowlisted_stems)} allow-listed)"
+        )
+    else:
+        result.passed = True
+        result.message = (
+            f"All {len(real_validators)} real validators have tests "
+            f"({len(shims)} shims skipped, "
+            f"{len(allowlisted_stems)} allow-listed)"
+        )
+
+    if verbose:
+        logger.info(f"  Real validators: {len(real_validators)}")
+        logger.info(f"  Shims (skipped): {len(shims)}")
+        logger.info(f"  Allow-listed:    {len(allowlisted_stems)}")
+        logger.info(f"  Missing tests:   {len(missing)}")
+        for v in missing:
+            logger.warning(f"    - {v.relative_to(PROJECT_ROOT)}")
+
+    result.duration_seconds = time.time() - start_time
+    return result
+
+
 def check_libv2_vendor_sync(verbose: bool = False) -> CheckResult:
     """Verify LibV2/vendor/bloom_verbs.json matches the authoritative copy.
 
@@ -730,6 +935,13 @@ def run_integrity_checks(
         ("Hash Chains", lambda: check_hash_chains(runs_path, verbose)),
         ("Sample Finalization", lambda: check_sample_finalization(runs_path, verbose)),
         ("LibV2 Vendor Sync", lambda: check_libv2_vendor_sync(verbose)),
+        (
+            "Validator Test Coverage",
+            lambda: check_validator_test_coverage(
+                PROJECT_ROOT / "lib" / "validators",
+                verbose=verbose,
+            ),
+        ),
     ]
 
     for name, check_func in checks:

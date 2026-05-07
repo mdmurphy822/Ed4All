@@ -56,4 +56,3 @@ jobs:
 
       - name: Run integrity checks
         run: python ci/integrity_check.py --verbose
-        continue-on-error: true

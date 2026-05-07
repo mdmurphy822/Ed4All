@@ -27,6 +27,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
+# Wave W-D10 T10.2: ensemble wraps three SHA-pinned HuggingFace BERT
+# classifiers (~700 MB total weights). Tests mock _load_members today
+# but the file is slow-marked so the nightly extras-installed run picks
+# them up via -m "slow" alongside the bert_ensemble_integration suite.
+pytestmark = pytest.mark.slow
+
 from lib.classifiers.bloom_bert_ensemble import (
     _BLOOM_LEVELS,
     _CIP29_TO_BLOOM,

@@ -1,0 +1,28 @@
+# Wave W-D10 T10.3 — validator-without-test allow-list.
+#
+# Each non-comment line is a validator module stem (no .py extension,
+# no path) under lib/validators/ that is permitted to ship without
+# a matching test file in any of the canonical test dirs:
+#   - lib/validators/tests/
+#   - lib/tests/
+#   - schemas/tests/
+#   - Trainforge/tests/
+#   - MCP/tests/
+#
+# Resolve allow-list entries by adding a matching test file under one
+# of the dirs above and removing the line here. The integrity check
+# treats the absence of a matching test as a failure UNLESS the
+# validator's stem appears below.
+#
+# Schedule: each entry should be paired with an issue/plan to write
+# the missing test; the goal is for this list to remain empty.
+
+# Tested by lib/validators/tests/test_orchestration_6a_capture_wiring.py +
+# Trainforge/tests/test_generator_defects.py via class import, but the
+# test stem doesn't follow test_<module>_* convention.
+content_facts
+leak_check
+
+# Tested by lib/validators/tests/test_shacl_result_enricher.py via
+# class import; stem doesn't match the convention.
+shape_provenance
