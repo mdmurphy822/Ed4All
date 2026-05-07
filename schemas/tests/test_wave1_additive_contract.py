@@ -183,18 +183,16 @@ def _build_registry():
 
 
 def _build_validator(schema: Dict[str, Any]):
-    """Return a Draft-aware validator for the given schema.
+    """Return a Draft 2020-12 validator with the cross-schema registry.
 
-    Schemas using the legacy draft-07 ``$schema`` keyword (instruction /
-    preference pair) need a draft-07 validator; everything else uses
-    Draft 2020-12.
+    W-D9 migrated the pair schemas (instruction / instruction_strict /
+    preference) to draft-2020-12, so the legacy draft-07 dispatch branch
+    is now dead. Every schema in the tree uses 2020-12; this helper
+    always returns a Draft202012Validator.
     """
     _require_jsonschema()
-    from jsonschema import Draft7Validator, Draft202012Validator
+    from jsonschema import Draft202012Validator
 
-    schema_uri = schema.get("$schema", "")
-    if "draft-07" in schema_uri:
-        return Draft7Validator(schema)
     return Draft202012Validator(schema, registry=_build_registry())
 
 
