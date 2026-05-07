@@ -93,6 +93,23 @@
     "provenance": "ed4all:provenance",
     "contentHash": "ed4all:contentHash",
     "validationAttempts": { "@id": "ed4all:validationAttempts", "@type": "xsd:nonNegativeInteger" },
-    "escalationMarker": "ed4all:escalationMarker"
+    "escalationMarker": "ed4all:escalationMarker",
+
+    "observedBloomLevel": {
+      "@id": "ed4all:observedBloomLevel",
+      "@type": "@vocab",
+      "@context": { "@vocab": "https://ed4all.dev/vocab/bloom#" }
+    },
+    "bloomAlignment": "ed4all:bloomAlignment",
+    "objectiveAlignment": { "@id": "ed4all:objectiveAlignment", "@container": "@set" },
+    "contentTypeLabel": "ed4all:contentTypeLabel",
+    "objectiveIds": { "@id": "ed4all:objectiveId", "@container": "@set" },
+    "sourceIds": { "@id": "ed4all:sourceId", "@container": "@set" },
+    "sourcePrimary": "ed4all:sourcePrimary",
+    "templateType": "ed4all:templateType",
+    "purpose": "ed4all:purpose",
+    "component": "ed4all:component",
+    "model": "ed4all:model",
+    "timestamp": { "@id": "ed4all:timestamp", "@type": "xsd:dateTime" }
   }
 }
