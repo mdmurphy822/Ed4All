@@ -23,6 +23,12 @@ from pathlib import Path
 
 import pytest
 
+# Wave W-D10 T10.2: this module exercises the [embedding] sentence-
+# transformers extra. PR CI runs without the extras (tests skip on
+# HAS_SENTENCE_TRANSFORMERS); nightly CI installs the extras and runs
+# the full real-model load via -m "slow".
+pytestmark = pytest.mark.slow
+
 
 HAS_SENTENCE_TRANSFORMERS = importlib.util.find_spec("sentence_transformers") is not None
 

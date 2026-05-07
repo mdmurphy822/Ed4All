@@ -111,6 +111,27 @@ Ed4All/
 └── .github/                 # CI/CD workflows
 ```
 
+### Test fixtures
+
+Fixtures live with the code they exercise. A fixture that exercises only one
+project lives under `<Project>/tests/fixtures/` (Trainforge mini-courses,
+Courseforge sample HTML, schema-validation snapshots). A fixture that exercises
+two or more projects (e.g. an end-to-end pipeline fixture that flows
+DART → Courseforge → Trainforge → LibV2) lives under the top-level
+`tests/fixtures/`. Schema-validation fixtures (snapshots that exist solely to
+confirm a JSON Schema or SHACL shape accepts/rejects a known shape) live under
+`schemas/tests/fixtures/<wave>/` and are wave-namespaced. Fixtures must NOT
+cross from one project's `tests/fixtures/` into another project's test code; if
+a Trainforge test needs a Courseforge IMSCC fixture, build the IMSCC at
+fixture-load time from a corpus-fixture builder script (e.g.
+`tests/fixtures/pipeline/build_fixture_pdf.py`) rather than pinning the
+cross-project path. Fixture files are tracked in git; large binaries (e.g. PDFs
+over 1MB) ship as regenerable scripts under `tests/fixtures/regen/` instead of
+the bytes themselves. Active fixture roots: `tests/fixtures/` (cross-project
+end-to-end), `Trainforge/tests/fixtures/` (mini-course corpora),
+`Courseforge/scripts/tests/fixtures/` (sample HTML + IMSCC), and
+`schemas/tests/fixtures/` (per-wave schema snapshots).
+
 ---
 
 ## Orchestrator Protocol

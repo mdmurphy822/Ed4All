@@ -27,6 +27,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
+# Wave W-D10 T10.2: VRAM / wall-clock budget exercise for the BERT
+# ensemble. Mocked classify path runs instantly today; with the [bert]
+# extra installed the test exercises real model inference (~700 MB
+# weights, 5s budget). Slow-marked so the nightly extras-installed run
+# picks it up via -m "slow".
+pytestmark = pytest.mark.slow
+
 from lib.classifiers.bloom_bert_ensemble import (
     BertClassifier,
     BloomBertEnsemble,

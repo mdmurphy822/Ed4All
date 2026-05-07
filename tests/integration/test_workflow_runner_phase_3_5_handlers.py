@@ -34,6 +34,11 @@ from unittest.mock import patch
 
 import pytest
 
+# Wave W-D10 T10.2: end-to-end WorkflowRunner integration test —
+# slow-marked so PR CI -m "not slow" skips it; nightly runs the full
+# matrix.
+pytestmark = pytest.mark.slow
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))

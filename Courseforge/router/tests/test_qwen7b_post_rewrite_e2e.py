@@ -58,6 +58,11 @@ from typing import Any, Dict, List
 
 import pytest
 
+# Wave W-D10 T10.2: end-to-end Qwen-2.5-7B-Q4 post-rewrite regression
+# test — slow-marked so PR CI -m "not slow" skips it; nightly runs the
+# full router validation matrix.
+pytestmark = pytest.mark.slow
+
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))

@@ -18,6 +18,13 @@ from typing import Any, Dict, List
 
 import pytest
 
+# Wave W-D10 T10.2: tests stay CPU-only and dry-run today (no GPU
+# required) but the file is slow-marked because it exercises the
+# [training] extras (torch / transformers / peft) when they're
+# installed. PR CI without [training] still runs the dry-run paths;
+# nightly with [training] picks up the full suite via -m "slow".
+pytestmark = pytest.mark.slow
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
