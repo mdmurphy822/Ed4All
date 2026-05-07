@@ -136,6 +136,98 @@ def test_no_assessments_returns_none():
     assert build_assessment_dimension({"questions": []}) is None
 
 
+def _essay(qid: str, stem: str, bloom="evaluate", obj="LO-01"):
+    """Helper to build a minimal essay question dict (no choices)."""
+    return {
+        "question_id": qid,
+        "question_type": "essay",
+        "stem": stem,
+        "bloom_level": bloom,
+        "objective_id": obj,
+    }
+
+
+def _true_false(qid: str, stem: str, correct=True, bloom="remember", obj="LO-01"):
+    """Helper to build a minimal true/false question dict."""
+    return {
+        "question_id": qid,
+        "question_type": "true_false",
+        "stem": stem,
+        "bloom_level": bloom,
+        "objective_id": obj,
+        "correct_answer": "true" if correct else "false",
+    }
+
+
+def test_per_question_type_summary_emitted():
+    """Wave 6 W6.B — fixture: 3 MC + 2 essay + 1 T/F questions.
+    ``per_question_type_summary`` carries 3 keys, each with the correct
+    ``question_count``."""
+    questions = [
+        _mcq("q-mc-001", "<p>Explain photosynthesis</p>", "light-to-glucose 1"),
+        _mcq("q-mc-002", "<p>Describe the Calvin cycle</p>", "carbon-fixation 2"),
+        _mcq("q-mc-003", "<p>Identify photosystem II role</p>",
+             "water-splitting 3", bloom="remember"),
+        _essay("q-es-001", "<p>Evaluate the impact of climate policy</p>"),
+        _essay("q-es-002", "<p>Critique current renewable strategies</p>"),
+        _true_false("q-tf-001", "<p>Mitochondria produce ATP.</p>", correct=True),
+    ]
+    assessment = {
+        "assessment_id": "ASM-W6B",
+        "questions": questions,
+        "objectives_targeted": ["LO-01"],
+    }
+
+    dim = build_assessment_dimension(assessment)
+    assert dim is not None
+    assert "per_question_type_summary" in dim, dim.keys()
+
+    summary = dim["per_question_type_summary"]
+    assert set(summary.keys()) == {"multiple_choice", "essay", "true_false"}, summary
+    assert summary["multiple_choice"]["question_count"] == 3
+    assert summary["essay"]["question_count"] == 2
+    assert summary["true_false"]["question_count"] == 1
+
+    # Bucket-scoped distinct ratios skipped when bucket size < 2 (true_false here).
+    assert "distinct_stem_ratio" in summary["multiple_choice"]
+    assert "distinct_stem_ratio" in summary["essay"]
+    assert "distinct_stem_ratio" not in summary["true_false"]
+
+    # top_codes is a Counter.most_common(3) shape: list of [code, count] pairs.
+    for qt_summary in summary.values():
+        assert isinstance(qt_summary["top_codes"], list)
+        assert len(qt_summary["top_codes"]) <= 3
+
+
+def test_question_type_stamped_on_per_question_issues():
+    """Wave 6 W6.B — every per-question-issue entry carries the canonical
+    ``question_type`` so consumers can bucket without re-scanning the
+    source."""
+    same_stem = "<p>Which best describes Structural?</p>"
+    questions = [
+        _mcq(f"q-{i:03d}", same_stem, f"answer-{i}") for i in range(5)
+    ]
+    questions.append(_essay("q-essay-001", "<p>Evaluate the policy choice</p>"))
+    assessment = {
+        "assessment_id": "ASM-W6B-STAMP",
+        "questions": questions,
+    }
+
+    dim = build_assessment_dimension(assessment)
+    assert dim is not None
+    assert dim["per_question_issues"], dim["per_question_issues"]
+
+    for entry in dim["per_question_issues"]:
+        assert "question_type" in entry, entry
+        if entry["question_id"] is None:
+            # Cross-question rollup carries empty string.
+            assert entry["question_type"] == ""
+        elif entry["question_id"].startswith("q-essay"):
+            assert entry["question_type"] == "essay"
+        else:
+            assert entry["question_type"] == "multiple_choice"
+
+
 def test_distractor_entropy_range():
     """avg_distractor_entropy is a float in [0.0, 1.0]."""
     questions = [
