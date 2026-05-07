@@ -49,7 +49,71 @@ _DEFAULT_THRESHOLDS = {
     # corpus-derived check (no LLM dispatch). Warning-severity for v1
     # per operator; promote to critical after two clean rebuilds.
     "min_content_type_role_alignment_rate": 0.70,
+    # Wave 7 W7.D: per-type warning floors. Mirrors the corpus-wide
+    # floors above but applies per question_type bucket emitted by
+    # the W7.A/B per-question-type segmentation. Day-1 warning;
+    # calibration-deferred per plan §5 — flip to critical in a
+    # follow-up micro-wave once corpus rebuild produces stable
+    # per-bucket warning-fire rates.
+    "min_per_type_answerable_rate": 0.30,
+    "min_per_type_single_correct_rate": 0.85,  # MC + TF only
+    "min_per_type_distractor_entropy": 0.50,    # MC only
+    "min_per_type_bloom_alignment_rate": 0.50,
+    "max_per_type_placeholder_rate": 0.05,
+    "min_per_type_source_support_rate": 0.40,
 }
+
+
+# Wave 7 W7.D: per-question-type warning surface configuration.
+# Each tuple is (metric_name, threshold_key, value_field, code, direction).
+# `metric_name` keys ``report[<metric>]``; `value_field` reads each bucket's
+# scalar; `direction` is "below" (score < threshold fires) or "above"
+# (score > threshold fires). Codes match the W7.C documentation row in
+# ``Trainforge/CLAUDE.md``.
+PER_TYPE_METRIC_CONFIG: List[tuple] = [
+    (
+        "answerable_rate",
+        "min_per_type_answerable_rate",
+        "answerable_rate",
+        "EVAL_ANSWERABLE_PER_TYPE_BELOW_THRESHOLD",
+        "below",
+    ),
+    (
+        "single_correct_rate",
+        "min_per_type_single_correct_rate",
+        "single_correct_rate",
+        "EVAL_SINGLE_CORRECT_PER_TYPE_BELOW_THRESHOLD",
+        "below",
+    ),
+    (
+        "distractor_entropy",
+        "min_per_type_distractor_entropy",
+        "distractor_entropy_mean",
+        "EVAL_DISTRACTOR_ENTROPY_PER_TYPE_BELOW_THRESHOLD",
+        "below",
+    ),
+    (
+        "bloom_alignment_rate",
+        "min_per_type_bloom_alignment_rate",
+        "bloom_alignment_rate",
+        "EVAL_BLOOM_ALIGNMENT_PER_TYPE_BELOW_THRESHOLD",
+        "below",
+    ),
+    (
+        "placeholder_rate",
+        "max_per_type_placeholder_rate",
+        "placeholder_rate",
+        "EVAL_PLACEHOLDER_PER_TYPE_ABOVE_THRESHOLD",
+        "above",
+    ),
+    (
+        "source_support_rate",
+        "min_per_type_source_support_rate",
+        "source_support_rate",
+        "EVAL_SOURCE_SUPPORT_PER_TYPE_BELOW_THRESHOLD",
+        "below",
+    ),
+]
 
 
 class EvalGatingValidator:
@@ -225,6 +289,64 @@ class EvalGatingValidator:
                 location=str(report_path),
             ))
 
+        # Wave 7 W7.D: per-question-type warning surface. Walks each
+        # W3.F evaluator's ``per_question_type`` block (W7.A + W7.B
+        # emit) and emits warning-severity GateIssues per below-floor
+        # bucket. Day-1 warning per plan §5 — calibration-deferred so
+        # it never blocks promotion until per-bucket fire rates
+        # stabilise across two clean rebuilds. Skips silently when:
+        #   * the evaluator did not emit a per-type block (legacy
+        #     report or pre-W7.A schema);
+        #   * ``per_question_type is None`` (deps_missing path —
+        #     evaluator dependency unavailable); or
+        #   * the bucket carries ``relevant=False`` (the metric is
+        #     structurally meaningless for that question_type — see
+        #     ``Trainforge/eval/_per_type_helpers.py::RELEVANT_QUESTION_TYPES``).
+        per_type_below: List[tuple] = []
+        for (
+            metric_name,
+            threshold_key,
+            value_field,
+            code,
+            direction,
+        ) in PER_TYPE_METRIC_CONFIG:
+            block = report.get(metric_name)
+            if not isinstance(block, dict):
+                continue
+            per_type = block.get("per_question_type")
+            if per_type is None:
+                # deps_missing branch OR no segmentation in legacy report.
+                continue
+            if not isinstance(per_type, dict):
+                continue
+            threshold = thresholds[threshold_key]
+            for qt, payload in per_type.items():
+                if not isinstance(payload, dict):
+                    continue
+                if not payload.get("relevant", True):
+                    continue
+                score = _as_float(payload.get(value_field))
+                if score is None:
+                    continue
+                fired = (
+                    score < threshold
+                    if direction == "below"
+                    else score > threshold
+                )
+                if fired:
+                    per_type_below.append(
+                        (metric_name, qt, value_field, score, threshold, direction)
+                    )
+                    issues.append(GateIssue(
+                        severity="warning",
+                        code=code,
+                        message=(
+                            f"{metric_name}.per_question_type[{qt}].{value_field}={score} "
+                            f"{direction} threshold {threshold}"
+                        ),
+                        location=str(report_path),
+                    ))
+
         # --- Warning advisories ------------------------------------------
         hallucination = _as_float((report.get("metrics") or {}).get("hallucination_rate"))
         if hallucination is not None and hallucination > thresholds["max_hallucination_rate"]:
@@ -285,6 +407,16 @@ class EvalGatingValidator:
         capture = inputs.get("capture")
         if capture is not None:
             try:
+                # Wave 7 W7.D: surface per-type warning detail so a
+                # post-hoc audit can see which buckets fell below their
+                # floor without re-parsing eval_report.json.
+                if per_type_below:
+                    per_type_summary = "; ".join(
+                        f"{m}.{qt}.{vf}={s:.3f} {d} {t}"
+                        for (m, qt, vf, s, t, d) in per_type_below
+                    )
+                else:
+                    per_type_summary = "none"
                 rationale = (
                     f"EvalGatingValidator {('PASSED' if passed else 'BLOCKED')}: "
                     f"faithfulness={faithfulness} "
@@ -294,7 +426,8 @@ class EvalGatingValidator:
                     f"negative_grounding_accuracy={neg} "
                     f"per_property={per_property} "
                     f"alignment_rate={ctra_alignment_rate} "
-                    f"mismatched={ctra_mismatched}. "
+                    f"mismatched={ctra_mismatched} "
+                    f"per_type_below=[{per_type_summary}]. "
                     f"Critical issues: {critical_count}; "
                     f"thresholds={thresholds}."
                 )
