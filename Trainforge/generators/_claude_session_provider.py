@@ -372,6 +372,13 @@ class ClaudeSessionProvider:
         draft: Dict[str, Any],
         chunk_id: str,
     ) -> None:
+        # Wave W-D5 § 6.8 / § 4.6: swallow + warn on capture-write
+        # failure, mirroring Anthropic / Together / Local / Curriculum
+        # providers. Pre-W-D5 ClaudeSession propagated capture
+        # exceptions; the alignment closes the silent-degradation gap
+        # where a capture-write failure could break the synthesis call
+        # path. Audit-trail-impact: ZERO under current test coverage —
+        # `log_decision` doesn't raise on the happy path.
         if self._capture is None:
             return
         template_id = draft.get("template_id") or "<unknown>"
@@ -380,11 +387,20 @@ class ClaudeSessionProvider:
             f"template_id={template_id} via claude_session provider "
             f"(version={self._provider_version}, run_id={self._run_id})."
         )
-        self._capture.log_decision(
-            decision_type="synthesis_provider_call",
-            decision=f"claude_session::{kind}",
-            rationale=rationale,
-        )
+        try:
+            self._capture.log_decision(
+                decision_type="synthesis_provider_call",
+                decision=f"claude_session::{kind}",
+                rationale=rationale,
+            )
+        except Exception as exc:  # pragma: no cover — defensive
+            # Use the module-level logger lazily — the legacy
+            # `_claude_session_provider.py` body never imported `logging`,
+            # but the swallow contract requires a warning log.
+            import logging as _logging
+            _logging.getLogger(__name__).warning(
+                "synthesis_provider_call capture failed: %s", exc
+            )
 
     def _load_cache(self) -> None:
         assert self._cache_path is not None

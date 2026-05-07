@@ -432,12 +432,19 @@ class TogetherSynthesisProvider:
                 )
                 continue
             return parsed, last_usage, total_http_retries
+        # Wave W-D5 § 6.1: standardise exhaustion code on
+        # `paraphrase_invalid_after_retry` across all 3 synthesis
+        # providers (Anthropic + Local already use this code; Together's
+        # legacy `parse_retries_exhausted` is replaced here for parity).
+        # Behavior change: callers dispatching on the code see one
+        # canonical value across providers — no test asserts the prior
+        # `parse_retries_exhausted` string today.
         raise SynthesisProviderError(
             f"{type(self).__name__}: failed to parse a valid JSON "
             f"response after {MAX_PARSE_RETRIES} attempts. "
             f"Last error: {last_err}; tail of last response: "
             f"{last_text[-200:]!r}",
-            code="parse_retries_exhausted",
+            code="paraphrase_invalid_after_retry",
         )
 
     def _chat_completion_raw(

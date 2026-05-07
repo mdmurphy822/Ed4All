@@ -603,3 +603,44 @@ def test_circuit_opens_after_repeated_dispatcher_failures(tmp_path: Path) -> Non
             provider.paraphrase_instruction(draft, chunk)
     with pytest.raises(SynthesisCircuitOpen):
         provider.paraphrase_instruction(draft, chunk)
+
+
+def test_emit_decision_swallows_capture_exceptions() -> None:
+    """Wave W-D5 § 6.8 / § 4.6 regression: a capture whose
+    ``log_decision`` raises must NOT propagate up through
+    ``paraphrase_instruction``. The pre-W-D5 ClaudeSession
+    ``_emit_decision`` did NOT swallow on error; the migration aligns
+    it with Anthropic / Together / Local / Curriculum providers so
+    capture-write failures never break the synthesis call path.
+    """
+    class _RaisingCapture:
+        def log_decision(self, **kwargs: object) -> None:
+            raise RuntimeError("capture backend offline")
+
+    async def agent_tool(**_kwargs: object) -> dict:
+        return make_instruction_response(
+            prompt=_ok_prompt("p-swallow"),
+            completion=_ok_completion("c-swallow"),
+        )
+
+    provider = ClaudeSessionProvider(
+        dispatcher=FakeLocalDispatcher(agent_tool=agent_tool),
+        run_id="run-swallow",
+        capture=_RaisingCapture(),
+    )
+
+    # The paraphrase call must succeed and return a valid pair even
+    # though the capture's log_decision raised. Pre-W-D5 this raised
+    # `RuntimeError("capture backend offline")` from inside the
+    # paraphrase flow; post-W-D5 the exception is logged + swallowed.
+    out = provider.paraphrase_instruction(
+        draft={
+            "prompt": "p1",
+            "completion": "c1",
+            "template_id": "remember._default",
+        },
+        chunk={"id": "chunk_swallow_001", "text": "..."},
+    )
+    assert out["provider"] == "claude_session"
+    assert out["prompt"] == _ok_prompt("p-swallow")
+    assert out["completion"] == _ok_completion("c-swallow")
