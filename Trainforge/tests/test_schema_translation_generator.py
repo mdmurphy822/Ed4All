@@ -141,11 +141,16 @@ def _rdf_shacl_manifest() -> PropertyManifest:
 
 
 def _validate_pair(pair: Dict[str, Any]) -> None:
-    """Validate a single pair against `instruction_pair.schema.json`."""
-    import jsonschema
+    """Validate a single pair against `instruction_pair.schema.json`.
 
-    schema = json.loads(PAIR_SCHEMA_PATH.read_text(encoding="utf-8"))
-    jsonschema.validate(pair, schema)
+    W-D4 follow-up: the pair schema $refs the canonical
+    `pair_audit_fields.schema.json`. The bare `jsonschema.validate(pair,
+    schema)` form would HTTP-fetch the canonical $id; route through the
+    registry-aware helper so cross-schema $ref resolution stays offline.
+    """
+    from lib.utils.jsonschema import validate_pair_record
+
+    validate_pair_record(pair, PAIR_SCHEMA_PATH)
 
 
 # -----------------------------------------------------------------------------

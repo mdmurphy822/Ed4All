@@ -2337,18 +2337,21 @@ def _validate_pair(pair: Dict[str, Any]) -> None:
     """Validate a single pair against `instruction_pair.schema.json`.
 
     Mirrors `kg_metadata_generator`'s schema-validate-on-emit policy.
+
+    W-D4 follow-up: routes through the registry-aware
+    `lib.utils.jsonschema.validate_pair_record` helper so the cross-
+    schema $ref to `pair_audit_fields.schema.json` resolves locally.
     """
-    try:
-        import jsonschema
-    except ImportError:  # pragma: no cover - dev-test dep
-        return
     schema_path = (
         PROJECT_ROOT / "schemas" / "knowledge" / "instruction_pair.schema.json"
     )
     if not schema_path.exists():  # pragma: no cover
         return
-    schema = json.loads(schema_path.read_text(encoding="utf-8"))
-    jsonschema.validate(pair, schema)
+    try:
+        from lib.utils.jsonschema import validate_pair_record
+    except ImportError:  # pragma: no cover - dev-test dep
+        return
+    validate_pair_record(pair, schema_path)
 
 
 def _make_pair(

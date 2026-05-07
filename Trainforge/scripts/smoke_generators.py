@@ -72,11 +72,13 @@ def _resolve_pedagogy_graph(course_dir: Path) -> Dict[str, Any]:
     )
 
 
+_PAIR_SCHEMA_PATH = (
+    PROJECT_ROOT / "schemas" / "knowledge" / "instruction_pair.schema.json"
+)
+
+
 def _load_pair_schema() -> Dict[str, Any]:
-    schema_path = (
-        PROJECT_ROOT / "schemas" / "knowledge" / "instruction_pair.schema.json"
-    )
-    return json.loads(schema_path.read_text())
+    return json.loads(_PAIR_SCHEMA_PATH.read_text())
 
 
 def _validate_pairs(
@@ -84,11 +86,24 @@ def _validate_pairs(
     schema: Dict[str, Any],
     label: str,
 ) -> Tuple[int, List[str]]:
+    """Validate emitted pairs against ``instruction_pair.schema.json``.
+
+    W-D4 follow-up: pair schemas now $ref the canonical
+    ``pair_audit_fields.schema.json`` envelope. Route through the
+    registry-aware ``validate_pair_record`` helper so cross-schema
+    $ref resolution stays offline. The ``schema`` dict argument is
+    retained for back-compat with the function signature but is not
+    consulted directly — the helper loads + caches the validator
+    against ``_PAIR_SCHEMA_PATH``.
+    """
+    from lib.utils.jsonschema import validate_pair_record
+
+    del schema  # back-compat unused; helper owns the schema load
     errors: List[str] = []
     valid = 0
     for i, p in enumerate(pairs):
         try:
-            jsonschema.validate(p, schema)
+            validate_pair_record(p, _PAIR_SCHEMA_PATH)
             valid += 1
         except jsonschema.ValidationError as e:
             errors.append(f"{label}[{i}]: {e.message[:200]}")
