@@ -159,6 +159,31 @@ class SynthesisStats:
     # post-run pilot report and the audit script.
     abstention_pairs_emitted: int = 0
     schema_translation_pairs_emitted: int = 0
+    # Wave 4 W4.C: per-pair claim-support (W4.A) + LO-refs (W4.B)
+    # filter counters. Both validators run AFTER
+    # TrainingPairPromotionValidator (W2.E) returns ``validated`` and
+    # before the pair lands on disk; rejects increment the matching
+    # counter here AND the existing ``promotion_rejection_reasons``
+    # dict (which is free-form and admits the four new reason keys
+    # ``unsupported_claim`` / ``contradicted_claim`` /
+    # ``phantom_pair_lo_refs`` / ``missing_pair_lo_refs`` without a
+    # schema change). ``pair_validation_passed`` is the count of
+    # pairs that survived ALL of W2.E + W4.A + W4.B (i.e. the W2.E
+    # ``validated_pairs_total`` minus the W4.A/W4.B reject deltas).
+    # Invariant:
+    #   pair_validation_passed
+    #     == validated_pairs_total - claim_support_rejected - lo_refs_rejected
+    # Bookkeeping note: ``validated_pairs_total`` keeps the W2.E
+    # promotion-validator semantics — it counts pairs that the
+    # 7-criterion promotion filter accepted, regardless of whether
+    # W4.A/W4.B subsequently rejected them. The new counter
+    # ``pair_validation_passed`` is the post-W4.A/W4.B survivor count.
+    # This preserves the W2.E counter invariant
+    # (``candidate == validated + rejected_promotion``) while still
+    # exposing the additional W4 filter delta to the audit trail.
+    claim_support_rejected: int = 0
+    lo_refs_rejected: int = 0
+    pair_validation_passed: int = 0
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -202,6 +227,15 @@ class SynthesisStats:
             "pairs_with_prereq_recap": self.pairs_with_prereq_recap,
             "source_grounded_pairs": self.source_grounded_pairs,
             "instruction_variants_per_chunk": self.instruction_variants_per_chunk,
+            # Wave 4 W4.C: per-pair claim-support (W4.A) + LO-refs (W4.B)
+            # filter counters projected into the
+            # ``synthesis.last_run`` block of dataset_config.json so
+            # the W2.B aggregator + the eval_report.json pass-through
+            # both see the post-W2.E filter deltas without parsing
+            # decision-capture JSONL.
+            "claim_support_rejected": self.claim_support_rejected,
+            "lo_refs_rejected": self.lo_refs_rejected,
+            "pair_validation_passed": self.pair_validation_passed,
         }
 
 
@@ -1688,6 +1722,27 @@ def run_synthesis(
         )
         _promotion_validator = TrainingPairPromotionValidator()
 
+        # Wave 4 W4.C: per-pair claim-support (W4.A) + LO-refs (W4.B)
+        # filters. Both run AFTER the W2.E promotion validator returns
+        # ``validated``; rejects increment ``claim_support_rejected`` /
+        # ``lo_refs_rejected`` and bump the matching key in the
+        # free-form ``promotion_rejection_reasons`` dict. Imported here
+        # (rather than at module top) to mirror the W2.E lazy-import
+        # convention and to keep the import error surface scoped to
+        # the synthesis call path. W4.A is warning-severity at the
+        # gate-runner surface (NLI confidence is fuzzy day-1) but the
+        # per-pair filter still drops the pair so the audit trail and
+        # disk emit stay consistent. W4.B is critical-severity at the
+        # gate-runner surface (phantom-LO is a structural mismatch).
+        from lib.validators.pair_claim_support import (
+            PairClaimSupportValidator,
+        )
+        from lib.validators.pair_lo_refs import (
+            PairLearningOutcomeRefsValidator,
+        )
+        _claim_support_validator = PairClaimSupportValidator()
+        _lo_refs_validator = PairLearningOutcomeRefsValidator()
+
         for idx, chunk in iter_chunks:
             if _budget_exhausted_exc is not None:
                 break
@@ -1944,6 +1999,84 @@ def run_synthesis(
                         )
                         continue
                     inst_result.pair["promotion_status"] = _promo_status
+                    # Wave 4 W4.C: per-pair claim-support (W4.A) +
+                    # LO-refs (W4.B) filters run AFTER the W2.E
+                    # promotion validator returns ``validated``. Each
+                    # reject increments the matching W4 counter AND
+                    # the existing W2.E ladder counters
+                    # (``rejected_promotion_pairs`` +
+                    # ``promotion_rejection_reasons``) so the
+                    # ``candidate == validated + rejected_promotion``
+                    # invariant from W2.E stays intact — we delay the
+                    # ``validated_pairs_total`` increment until ALL
+                    # three validators pass, rather than incrementing
+                    # at W2.E pass and decrementing on W4 reject.
+                    if _promo_status == "validated":
+                        _claim_status, _claim_reason, _claim_fields = (
+                            _claim_support_validator.validate_pair(
+                                inst_result.pair,
+                                kind="instruction",
+                                chunk=chunk,
+                                decision_capture=capture,
+                            )
+                        )
+                        inst_result.pair.update(_claim_fields)
+                        if _claim_status == "rejected":
+                            inst_result.pair["promotion_status"] = "rejected"
+                            inst_result.pair["rejection_reason"] = _claim_reason
+                            stats.instruction_pairs_rejected += 1
+                            _claim_key = (
+                                f"instruction:claim_support:{_claim_reason}"
+                            )
+                            stats.rejected_reasons[_claim_key] = (
+                                stats.rejected_reasons.get(_claim_key, 0) + 1
+                            )
+                            stats.dropped_count += 1
+                            stats.rejected_promotion_pairs += 1
+                            _claim_reason_key = _claim_reason or "unknown"
+                            stats.promotion_rejection_reasons[
+                                _claim_reason_key
+                            ] = (
+                                stats.promotion_rejection_reasons.get(
+                                    _claim_reason_key, 0,
+                                ) + 1
+                            )
+                            stats.claim_support_rejected += 1
+                            continue
+                        _lo_status, _lo_reason, _lo_fields = (
+                            _lo_refs_validator.validate_pair(
+                                inst_result.pair,
+                                kind="instruction",
+                                chunk=chunk,
+                                decision_capture=capture,
+                            )
+                        )
+                        inst_result.pair.update(_lo_fields)
+                        if _lo_status == "rejected":
+                            inst_result.pair["promotion_status"] = "rejected"
+                            inst_result.pair["rejection_reason"] = _lo_reason
+                            stats.instruction_pairs_rejected += 1
+                            _lo_key = f"instruction:lo_refs:{_lo_reason}"
+                            stats.rejected_reasons[_lo_key] = (
+                                stats.rejected_reasons.get(_lo_key, 0) + 1
+                            )
+                            stats.dropped_count += 1
+                            stats.rejected_promotion_pairs += 1
+                            _lo_reason_key = _lo_reason or "unknown"
+                            stats.promotion_rejection_reasons[
+                                _lo_reason_key
+                            ] = (
+                                stats.promotion_rejection_reasons.get(
+                                    _lo_reason_key, 0,
+                                ) + 1
+                            )
+                            stats.lo_refs_rejected += 1
+                            continue
+                        # All three validators (W2.E + W4.A + W4.B)
+                        # passed — surface on both the W2.E counter
+                        # (preserves the invariant) and the new W4.C
+                        # post-W4 survivor counter.
+                        stats.pair_validation_passed += 1
                     # Worker W3.B: validated counter increments on
                     # promotion_status != "rejected".
                     stats.validated_pairs_total += 1
@@ -2151,40 +2284,137 @@ def run_synthesis(
                             pref_result.pair["promotion_status"] = (
                                 _pref_promo_status
                             )
-                            # Worker W3.B: validated counter increments
-                            # on promotion_status != "rejected".
-                            stats.validated_pairs_total += 1
-                            preference_records.append(pref_result.pair)
-                            emitted_pref_prompts.add(final_pref_prompt)
-                            stats.preference_pairs_emitted += 1
-                            # Worker W3.B: trainable counter — pair has
-                            # landed in the in-memory records list and
-                            # will be flushed to JSONL via _write_jsonl
-                            # at end of run.
-                            stats.trainable_pairs_total += 1
-                            # Wave 116: mirror to .in_progress sidecar.
-                            pref_progress_fh.write(
-                                json.dumps(
-                                    pref_result.pair,
-                                    ensure_ascii=False,
-                                    sort_keys=True,
+                            # Wave 4 W4.C: per-pair claim-support
+                            # (W4.A) + LO-refs (W4.B) filters mirror
+                            # the instruction-pair branch. ``_pref_w4_rejected``
+                            # tracks whether either W4 validator
+                            # short-circuited so the surrounding
+                            # nested-if structure (preference branch
+                            # uses if/else rather than ``continue``)
+                            # falls through to the chunk-loop
+                            # progress block without appending the
+                            # rejected pair to ``preference_records``.
+                            _pref_w4_rejected = False
+                            if _pref_promo_status == "validated":
+                                _pref_claim_status, _pref_claim_reason, _pref_claim_fields = (
+                                    _claim_support_validator.validate_pair(
+                                        pref_result.pair,
+                                        kind="preference",
+                                        chunk=chunk,
+                                        decision_capture=capture,
+                                    )
                                 )
-                                + "\n"
-                            )
-                            pref_progress_fh.flush()
-                            # Worker A: append the accepted preference
-                            # pair to the resume checkpoint.
-                            _append_synthesis_pairs_checkpoint(
-                                checkpoint_fh,
-                                chunk_id=str(
-                                    pref_result.pair.get("chunk_id", "")
-                                ),
-                                kind="preference",
-                                variant_index=0,
-                                pair=pref_result.pair,
-                                provider=provider,
-                                seed=pair_seed,
-                            )
+                                pref_result.pair.update(_pref_claim_fields)
+                                if _pref_claim_status == "rejected":
+                                    pref_result.pair["promotion_status"] = "rejected"
+                                    pref_result.pair["rejection_reason"] = _pref_claim_reason
+                                    stats.preference_pairs_rejected += 1
+                                    _pref_claim_key = (
+                                        f"preference:claim_support:{_pref_claim_reason}"
+                                    )
+                                    stats.rejected_reasons[_pref_claim_key] = (
+                                        stats.rejected_reasons.get(
+                                            _pref_claim_key, 0,
+                                        ) + 1
+                                    )
+                                    stats.dropped_count += 1
+                                    stats.rejected_promotion_pairs += 1
+                                    _pref_claim_reason_key = (
+                                        _pref_claim_reason or "unknown"
+                                    )
+                                    stats.promotion_rejection_reasons[
+                                        _pref_claim_reason_key
+                                    ] = (
+                                        stats.promotion_rejection_reasons.get(
+                                            _pref_claim_reason_key, 0,
+                                        ) + 1
+                                    )
+                                    stats.claim_support_rejected += 1
+                                    _pref_w4_rejected = True
+                                else:
+                                    _pref_lo_status, _pref_lo_reason, _pref_lo_fields = (
+                                        _lo_refs_validator.validate_pair(
+                                            pref_result.pair,
+                                            kind="preference",
+                                            chunk=chunk,
+                                            decision_capture=capture,
+                                        )
+                                    )
+                                    pref_result.pair.update(_pref_lo_fields)
+                                    if _pref_lo_status == "rejected":
+                                        pref_result.pair["promotion_status"] = "rejected"
+                                        pref_result.pair["rejection_reason"] = _pref_lo_reason
+                                        stats.preference_pairs_rejected += 1
+                                        _pref_lo_key = (
+                                            f"preference:lo_refs:{_pref_lo_reason}"
+                                        )
+                                        stats.rejected_reasons[_pref_lo_key] = (
+                                            stats.rejected_reasons.get(
+                                                _pref_lo_key, 0,
+                                            ) + 1
+                                        )
+                                        stats.dropped_count += 1
+                                        stats.rejected_promotion_pairs += 1
+                                        _pref_lo_reason_key = (
+                                            _pref_lo_reason or "unknown"
+                                        )
+                                        stats.promotion_rejection_reasons[
+                                            _pref_lo_reason_key
+                                        ] = (
+                                            stats.promotion_rejection_reasons.get(
+                                                _pref_lo_reason_key, 0,
+                                            ) + 1
+                                        )
+                                        stats.lo_refs_rejected += 1
+                                        _pref_w4_rejected = True
+                                    else:
+                                        # All three validators passed.
+                                        stats.pair_validation_passed += 1
+                            if _pref_w4_rejected:
+                                # Skip the emit branch — fall through
+                                # to the chunk-loop progress block.
+                                # Don't append to preference_records,
+                                # don't bump preference_pairs_emitted,
+                                # don't mirror to sidecar / checkpoint;
+                                # the rejection counters were already
+                                # bumped inside the W4 branches above.
+                                pass
+                            else:
+                                # Worker W3.B: validated counter
+                                # increments on promotion_status !=
+                                # "rejected" AND post-W4 survival.
+                                stats.validated_pairs_total += 1
+                                preference_records.append(pref_result.pair)
+                                emitted_pref_prompts.add(final_pref_prompt)
+                                stats.preference_pairs_emitted += 1
+                                # Worker W3.B: trainable counter — pair
+                                # has landed in the in-memory records
+                                # list and will be flushed to JSONL via
+                                # _write_jsonl at end of run.
+                                stats.trainable_pairs_total += 1
+                                # Wave 116: mirror to .in_progress sidecar.
+                                pref_progress_fh.write(
+                                    json.dumps(
+                                        pref_result.pair,
+                                        ensure_ascii=False,
+                                        sort_keys=True,
+                                    )
+                                    + "\n"
+                                )
+                                pref_progress_fh.flush()
+                                # Worker A: append the accepted preference
+                                # pair to the resume checkpoint.
+                                _append_synthesis_pairs_checkpoint(
+                                    checkpoint_fh,
+                                    chunk_id=str(
+                                        pref_result.pair.get("chunk_id", "")
+                                    ),
+                                    kind="preference",
+                                    variant_index=0,
+                                    pair=pref_result.pair,
+                                    provider=provider,
+                                    seed=pair_seed,
+                                )
 
             # Wave 117: every N processed chunks, regenerate the
             # in-flight pilot_report.md so the operator running a
